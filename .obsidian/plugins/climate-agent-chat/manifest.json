@@ -1,0 +1,9 @@
+{
+  "id": "climate-agent-chat",
+  "name": "Climate Agent Chat",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Chat with the Climate Monitor Wiki through the local agentic RAG API.",
+  "author": "Climate Monitor Wiki",
+  "isDesktopOnly": false
+}

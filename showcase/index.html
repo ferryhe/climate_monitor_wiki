@@ -1,127 +1,84 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Climate Monitor Wiki Showcase</title>
+    <title>Climate Monitor Wiki Agent</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="/showcase/styles.css" />
   </head>
   <body>
-    <div class="bg-orb orb-a"></div>
-    <div class="bg-orb orb-b"></div>
-
-    <main class="layout">
-      <header class="hero">
-        <p class="badge">Codespaces Public Demo</p>
-        <h1>Climate Monitor Wiki Explorer</h1>
-        <p class="subtitle">
-          A single page combining an Obsidian-style graph and a Dataview-style
-          data table.
-        </p>
-        <div class="meta">
-          <span id="metaNotes">Loading...</span>
-          <span id="metaEdges">Loading...</span>
-        </div>
-      </header>
-
-      <section class="panel graph-panel">
-        <div class="panel-head">
-          <h2>Graph View</h2>
-          <div class="legend">
-            <span><i class="dot dot-daily"></i>Daily</span>
-            <span><i class="dot dot-topic"></i>Topic</span>
-            <span><i class="dot dot-index"></i>Index</span>
+    <main class="workspace">
+      <section class="chat-shell" aria-label="Climate Monitor Wiki Agent chat">
+        <header class="app-header">
+          <div>
+            <p class="eyebrow">Climate Monitor Wiki Agent</p>
+            <h1>气候风险 Wiki 对话助手</h1>
           </div>
-        </div>
-        <div id="graphWrap" class="graph-wrap">
-          <svg
-            id="graphSvg"
-            viewBox="0 0 1200 700"
-            preserveAspectRatio="xMidYMid meet"
-          ></svg>
-        </div>
-        <p id="graphHint" class="hint">
-          Drag nodes to rearrange the graph, then click nodes or table rows to
-          inspect details in the right sidebar.
-        </p>
+          <div id="connectionStatus" class="status-pill">连接中</div>
+        </header>
+
+        <section id="messages" class="message-list" aria-live="polite"></section>
+
+        <form id="chatForm" class="composer">
+          <label class="sr-only" for="messageInput">输入问题</label>
+          <textarea
+            id="messageInput"
+            name="message"
+            rows="2"
+            placeholder="问一个关于气候风险、巨灾保险、IFRS S2、IAIS 或精算研究的问题..."
+          ></textarea>
+          <button id="sendButton" type="submit">发送</button>
+        </form>
       </section>
 
-      <section class="table-and-detail">
-        <section class="panel table-panel">
-          <div class="panel-head">
-            <h2>Dataview</h2>
-            <input
-              id="searchInput"
-              type="search"
-              placeholder="Search by page, type, date..."
-            />
+      <aside class="context-shell" aria-label="Wiki context">
+        <img
+          class="context-image"
+          src="https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=1200&q=80"
+          alt="Mountain lake landscape"
+        />
+
+        <section class="context-section">
+          <div class="section-heading">
+            <h2>检索证据</h2>
+            <span id="sourceCount">0</span>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Page</th>
-                  <th>Type</th>
-                  <th>Date</th>
-                  <th>Words</th>
-                  <th>Outlinks</th>
-                  <th>Inlinks</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="rows"></tbody>
-            </table>
+          <div id="sourceList" class="source-list">
+            <p class="muted">回答后会在这里列出引用的 wiki 页面。</p>
           </div>
         </section>
 
-        <aside class="panel detail-panel">
-          <div class="panel-head detail-head">
-            <h2>Node Detail</h2>
-            <span id="detailType" class="type-chip">None</span>
+        <section class="context-section">
+          <div class="section-heading">
+            <h2>Wiki 页面</h2>
+            <span id="wikiStats">加载中</span>
           </div>
-          <h3 id="detailTitle" class="detail-title">
-            Select a node or table row
-          </h3>
-          <dl class="detail-meta">
-            <div>
-              <dt>Date</dt>
-              <dd id="detailDate">-</dd>
-            </div>
-            <div>
-              <dt>Words</dt>
-              <dd id="detailWords">-</dd>
-            </div>
-            <div>
-              <dt>Outlinks</dt>
-              <dd id="detailOutlinks">-</dd>
-            </div>
-            <div>
-              <dt>Inlinks</dt>
-              <dd id="detailInlinks">-</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd id="detailStatus">-</dd>
-            </div>
-            <div>
-              <dt>Source</dt>
-              <dd id="detailFile">-</dd>
-            </div>
-          </dl>
-          <h4 class="preview-title">Raw Markdown</h4>
-          <pre id="detailMarkdown" class="md-preview">
-Select a node to preview its markdown source.</pre
-          >
-        </aside>
-      </section>
+          <input
+            id="wikiSearch"
+            class="wiki-search"
+            type="search"
+            placeholder="搜索页面或主题"
+          />
+          <div id="wikiList" class="wiki-list"></div>
+        </section>
+
+        <section class="context-section context-section--preview">
+          <div class="section-heading">
+            <h2>当前上下文</h2>
+            <button id="clearContextButton" type="button">清除</button>
+          </div>
+          <p id="activeContext" class="active-context">未指定页面</p>
+          <pre id="markdownPreview" class="markdown-preview">选择一个 wiki 页面后，机器人会优先参考它。</pre>
+        </section>
+      </aside>
     </main>
 
-    <script src="app.js"></script>
+    <script src="/showcase/app.js"></script>
   </body>
 </html>
