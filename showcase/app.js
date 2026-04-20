@@ -1,427 +1,325 @@
-const NOTE_FILES = [
-  "actuaries-climate-index.md",
-  "cas-soa-climate-research.md",
-  "climate-monitor-2026-04-01.md",
-  "climate-monitor-2026-04-02.md",
-  "climate-monitor-2026-04-03.md",
-  "climate-monitor-2026-04-04.md",
-  "climate-monitor-2026-04-05.md",
-  "climate-monitor-2026-04-06.md",
-  "climate-monitor-2026-04-07.md",
-  "climate-monitor-2026-04-08.md",
-  "climate-monitor-2026-04-09.md",
-  "climate-monitor-2026-04-10.md",
-  "climate-monitor-2026-04-11.md",
-  "climate-monitor-2026-04-12.md",
-  "climate-monitor-2026-04-13.md",
-  "climate-monitor-2026-04-14.md",
-  "climate-monitor-2026-04-15.md",
-  "climate-monitor-2026-04-16.md",
-  "climate-monitor-2026-04-17.md",
-  "climate-monitor-2026-04-18.md",
-  "climate-monitor-2026-04-19.md",
-  "climate-monitor-2026-04-20.md",
-  "fsb-climate-risk.md",
-  "iais-climate-risk.md",
-  "index.md",
-  "isbb-ifrs-s2.md",
-  "log.md",
-  "nat-cat-protection-gap.md",
-  "parametric-insurance.md",
-  "secondary-perils.md",
-  "swiss-re-sigma.md",
-  "talents-gap.md",
-  "wri-colombia.md",
+const STORAGE_KEY = "climate-monitor-agent-thread";
+
+const SUGGESTIONS = [
+  "最新的气候风险监测有什么重点？",
+  "secondary perils 为什么对保险定价重要？",
+  "IFRS S2 对保险公司的气候披露有什么影响？",
+  "参数保险和 nat-cat protection gap 有什么关系？",
 ];
 
-const COLORS = {
-  daily: "#e67e22",
-  topic: "#158f77",
-  index: "#ca2c55",
+const state = {
+  messages: [],
+  documents: [],
+  filteredDocuments: [],
+  activeContextPath: null,
+  isSending: false,
 };
 
-const GITHUB_REPO_URL = "https://github.com/ferryhe/climate_monitor_wiki";
-const GITHUB_BRANCH = "main";
+const els = {
+  messages: document.getElementById("messages"),
+  form: document.getElementById("chatForm"),
+  input: document.getElementById("messageInput"),
+  send: document.getElementById("sendButton"),
+  status: document.getElementById("connectionStatus"),
+  sourceList: document.getElementById("sourceList"),
+  sourceCount: document.getElementById("sourceCount"),
+  wikiStats: document.getElementById("wikiStats"),
+  wikiSearch: document.getElementById("wikiSearch"),
+  wikiList: document.getElementById("wikiList"),
+  activeContext: document.getElementById("activeContext"),
+  markdownPreview: document.getElementById("markdownPreview"),
+  clearContext: document.getElementById("clearContextButton"),
+};
 
-const titleFromFile = (name) => name.replace(/\.md$/i, "");
+function escapeHtml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
-function normalizeMojibake(text) {
-  let normalized = text;
+function renderMarkdownLite(value) {
+  const escaped = escapeHtml(value);
+  return escaped
+    .replace(/^### (.*)$/gm, "<h4>$1</h4>")
+    .replace(/^## (.*)$/gm, "<h3>$1</h3>")
+    .replace(/^# (.*)$/gm, "<h3>$1</h3>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>')
+    .replace(/^- (.*)$/gm, "<li>$1</li>")
+    .replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
+    .replace(/\n\n/g, "</p><p>")
+    .replace(/\n/g, "<br>");
+}
 
-  // Repair common UTF-8 -> Latin-1 mis-decoding patterns like "Ã", "â", "Â".
-  if (/[ÃâÂ]/.test(normalized)) {
-    try {
-      const bytes = Uint8Array.from(normalized, (ch) => ch.charCodeAt(0));
-      normalized = new TextDecoder("utf-8").decode(bytes);
-    } catch {
-      // Keep original text if heuristic repair fails.
+function loadThread() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      state.messages = parsed.filter((item) => item.role && item.content);
     }
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
   }
-
-  return normalized
-    .replaceAll("鈫�", "→")
-    .replaceAll("鈥�", "—")
-    .replaceAll("锟�", "")
-    .replaceAll("â†’", "→")
-    .replaceAll("â€”", "—")
-    .replaceAll("â€“", "–")
-    .replaceAll("â€œ", "\"")
-    .replaceAll("â€\x9d", "\"")
-    .replaceAll("â€˜", "'")
-    .replaceAll("â€™", "'")
-    .replaceAll("�", "");
 }
 
-function shortType(type) {
-  if (type === "daily") return "DAILY";
-  if (type === "index") return "INDEX";
-  return "TOPIC";
+function saveThread() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.messages.slice(-16)));
 }
 
-function detectType(title) {
-  if (title === "index") return "index";
-  if (/^climate-monitor-\d{4}-\d{2}-\d{2}$/.test(title)) return "daily";
-  return "topic";
+function messageToApi(item) {
+  return {
+    role: item.role,
+    content: item.content,
+  };
 }
 
-function extractDate(title) {
-  const m = title.match(/(\d{4}-\d{2}-\d{2})/);
-  return m ? m[1] : "-";
-}
-
-function parseLinks(markdown) {
-  const links = [];
-  const rgx = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
-  let m;
-  while ((m = rgx.exec(markdown)) !== null) {
-    links.push(m[1].replace(/^\.\//, "").replace(/\.md$/i, ""));
-  }
-  return links;
-}
-
-function countWords(markdown) {
-  return markdown
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[#>*\[\]()|`_-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean).length;
-}
-
-function rowStatus(type, markdown) {
-  if (type !== "daily") return "-";
-  return /no report/i.test(markdown) ? "No report" : "Reported";
-}
-
-function buildData(entries) {
-  const notes = entries.map((entry) => {
-    const title = titleFromFile(entry.file);
-    return {
-      file: entry.file,
-      title,
-      type: detectType(title),
-      date: extractDate(title),
-      markdown: entry.markdown,
-      links: parseLinks(entry.markdown),
-      words: countWords(entry.markdown),
-    };
+function appendMessage(role, content, options = {}) {
+  state.messages.push({
+    role,
+    content,
+    sources: options.sources || [],
+    pending: Boolean(options.pending),
   });
-
-  const byTitle = new Map(notes.map((n) => [n.title, n]));
-  const edges = [];
-  for (const note of notes) {
-    for (const rawTarget of note.links) {
-      const target = rawTarget.replace(/^wiki\//, "");
-      if (!byTitle.has(target)) continue;
-      edges.push({ source: note.title, target });
-    }
-  }
-
-  const inCount = new Map(notes.map((n) => [n.title, 0]));
-  for (const edge of edges) {
-    inCount.set(edge.target, (inCount.get(edge.target) || 0) + 1);
-  }
-
-  const rows = notes
-    .map((n) => ({
-      ...n,
-      outlinks: edges.filter((e) => e.source === n.title).length,
-      inlinks: inCount.get(n.title) || 0,
-      status: rowStatus(n.type, n.markdown),
-    }))
-    .sort((a, b) => a.title.localeCompare(b.title));
-
-  return { rows, edges };
+  saveThread();
+  renderMessages();
 }
 
-function renderDetail(row) {
-  const detailType = document.getElementById("detailType");
-  const detailTitle = document.getElementById("detailTitle");
-  const detailDate = document.getElementById("detailDate");
-  const detailWords = document.getElementById("detailWords");
-  const detailOutlinks = document.getElementById("detailOutlinks");
-  const detailInlinks = document.getElementById("detailInlinks");
-  const detailStatus = document.getElementById("detailStatus");
-  const detailFile = document.getElementById("detailFile");
-  const detailMarkdown = document.getElementById("detailMarkdown");
+function replacePendingAssistant(content, sources = []) {
+  const pending = state.messages.findLast(
+    (item) => item.role === "assistant" && item.pending,
+  );
+  if (pending) {
+    pending.content = content;
+    pending.sources = sources;
+    pending.pending = false;
+  } else {
+    state.messages.push({ role: "assistant", content, sources });
+  }
+  saveThread();
+  renderMessages();
+}
 
-  if (!row) {
-    detailType.textContent = "None";
-    detailTitle.textContent = "Select a node or table row";
-    detailDate.textContent = "-";
-    detailWords.textContent = "-";
-    detailOutlinks.textContent = "-";
-    detailInlinks.textContent = "-";
-    detailStatus.textContent = "-";
-    detailFile.textContent = "-";
-    detailMarkdown.textContent =
-      "Select a node to preview its markdown source.";
+function renderEmptyState() {
+  const shell = document.createElement("section");
+  shell.className = "empty-state";
+  shell.innerHTML = `
+    <p class="empty-state__lead">基于当前 Obsidian wiki 检索、规划和引用证据，再生成回答。</p>
+    <div class="suggestions">
+      ${SUGGESTIONS.map(
+        (prompt) =>
+          `<button class="suggestion-chip" type="button" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`,
+      ).join("")}
+    </div>
+  `;
+  shell.querySelectorAll(".suggestion-chip").forEach((button) => {
+    button.addEventListener("click", () => {
+      els.input.value = button.getAttribute("data-prompt");
+      els.form.requestSubmit();
+    });
+  });
+  els.messages.appendChild(shell);
+}
+
+function renderMessages() {
+  els.messages.innerHTML = "";
+  if (state.messages.length === 0) {
+    renderEmptyState();
+  }
+
+  state.messages.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = `message-row message-row--${item.role}`;
+    const bubble = document.createElement("div");
+    bubble.className = `message-bubble message-bubble--${item.role}`;
+    if (item.pending) {
+      bubble.innerHTML = `<span class="typing-dot"></span>正在检索 wiki 并组织回答...`;
+    } else if (item.role === "assistant") {
+      bubble.innerHTML = `<p>${renderMarkdownLite(item.content)}</p>`;
+    } else {
+      bubble.textContent = item.content;
+    }
+    row.appendChild(bubble);
+    els.messages.appendChild(row);
+  });
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function setSending(value) {
+  state.isSending = value;
+  els.send.disabled = value;
+  els.input.disabled = value;
+  els.send.textContent = value ? "生成中" : "发送";
+}
+
+async function sendMessage(message) {
+  setSending(true);
+  appendMessage("user", message);
+  appendMessage("assistant", "", { pending: true });
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: state.messages
+          .filter((item) => !item.pending)
+          .map(messageToApi),
+        contextPath: state.activeContextPath,
+        language: "zh",
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || `HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    replacePendingAssistant(payload.text, payload.sources || []);
+    renderSources(payload.sources || []);
+    els.status.textContent =
+      payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "离线演示";
+    els.status.classList.toggle("status-pill--offline", payload.agent_mode !== "openai");
+  } catch (error) {
+    replacePendingAssistant(`请求失败：${error.message}`);
+  } finally {
+    setSending(false);
+    els.input.focus();
+  }
+}
+
+function renderSources(sources) {
+  els.sourceCount.textContent = String(sources.length);
+  if (!sources.length) {
+    els.sourceList.innerHTML = `<p class="muted">没有返回来源。</p>`;
     return;
   }
 
-  detailType.textContent = shortType(row.type);
-  detailTitle.textContent = row.title;
-  detailDate.textContent = row.date;
-  detailWords.textContent = String(row.words);
-  detailOutlinks.textContent = String(row.outlinks);
-  detailInlinks.textContent = String(row.inlinks);
-  detailStatus.textContent = row.status;
-  const sourcePath = `wiki/${row.file}`;
-  const sourceHref = `${GITHUB_REPO_URL}/blob/${GITHUB_BRANCH}/${encodeURI(sourcePath)}`;
-  detailFile.innerHTML = `<a href="${sourceHref}" target="_blank" rel="noopener noreferrer">${sourcePath}</a>`;
-  detailMarkdown.textContent = row.markdown;
-}
-
-function renderRows(rows, selectedTitle, onSelect) {
-  const tbody = document.getElementById("rows");
-  tbody.innerHTML = rows
-    .map((row) => {
-      const statusClass =
-        row.status === "Reported"
-          ? "status-ok"
-          : row.status === "No report"
-            ? "status-empty"
-            : "";
-      const selectedClass = row.title === selectedTitle ? " is-selected" : "";
-      return `
-      <tr data-page="${row.title}" class="${selectedClass.trim()}">
-        <td>${row.title}</td>
-        <td>${row.type}</td>
-        <td>${row.date}</td>
-        <td>${row.words}</td>
-        <td>${row.outlinks}</td>
-        <td>${row.inlinks}</td>
-        <td class="${statusClass}">${row.status}</td>
-      </tr>`;
-    })
+  els.sourceList.innerHTML = sources
+    .map(
+      (source) => `
+      <button class="source-item" type="button" data-path="${escapeHtml(source.path)}">
+        <span class="source-item__index">[${source.index}]</span>
+        <span class="source-item__title">${escapeHtml(source.title)}</span>
+        <span class="source-item__meta">${escapeHtml(source.heading || source.path)}</span>
+        <span class="source-item__snippet">${escapeHtml(source.snippet || "")}</span>
+      </button>
+    `,
+    )
     .join("");
 
-  Array.from(tbody.querySelectorAll("tr[data-page]")).forEach((tr) => {
-    tr.addEventListener("click", () => {
-      onSelect(tr.getAttribute("data-page"));
-    });
+  els.sourceList.querySelectorAll(".source-item").forEach((button) => {
+    button.addEventListener("click", () => setActiveContext(button.dataset.path));
   });
 }
 
-function attachSearch(state, renderTable) {
-  const input = document.getElementById("searchInput");
-  input.addEventListener("input", () => {
-    const q = input.value.trim().toLowerCase();
-    state.filteredRows = state.allRows.filter((r) =>
-      `${r.title} ${r.type} ${r.date} ${r.status}`.toLowerCase().includes(q),
-    );
-    renderTable();
-  });
-}
-
-function renderGraph(rows, edges, onSelect) {
-  const svg = document.getElementById("graphSvg");
-  const NS = "http://www.w3.org/2000/svg";
-  const width = 1200;
-  const height = 700;
-
-  svg.innerHTML = "";
-
-  const nodes = rows.map((row, i) => ({
-    id: row.title,
-    type: row.type,
-    x: (i % 8) * 130 + 90,
-    y: Math.floor(i / 8) * 120 + 90,
-    vx: 0,
-    vy: 0,
-    pinned: false,
-  }));
-
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const links = edges
-    .map((e) => ({ source: byId.get(e.source), target: byId.get(e.target) }))
-    .filter((e) => e.source && e.target);
-
-  const linkGroup = document.createElementNS(NS, "g");
-  const nodeGroup = document.createElementNS(NS, "g");
-  svg.appendChild(linkGroup);
-  svg.appendChild(nodeGroup);
-
-  const lineEls = links.map(() => {
-    const line = document.createElementNS(NS, "line");
-    line.setAttribute("stroke", "#99b4c6");
-    line.setAttribute("stroke-opacity", "0.45");
-    line.setAttribute("stroke-width", "1.1");
-    linkGroup.appendChild(line);
-    return line;
-  });
-
-  const nodeEls = nodes.map((node) => {
-    const g = document.createElementNS(NS, "g");
-    const circle = document.createElementNS(NS, "circle");
-    const label = document.createElementNS(NS, "text");
-    circle.setAttribute("r", node.type === "index" ? "9" : "6");
-    circle.setAttribute("fill", COLORS[node.type] || COLORS.topic);
-    circle.setAttribute("stroke", "#113245");
-    circle.setAttribute("stroke-width", "0.8");
-
-    label.textContent = node.id;
-    label.setAttribute("class", "node-label");
-    label.setAttribute("x", "10");
-    label.setAttribute("y", "4");
-
-    g.appendChild(circle);
-    g.appendChild(label);
-    nodeGroup.appendChild(g);
-
-    g.addEventListener("click", () => {
-      onSelect(node.id);
-    });
-
-    let dragging = false;
-    g.addEventListener("pointerdown", (ev) => {
-      dragging = true;
-      node.pinned = true;
-      g.setPointerCapture(ev.pointerId);
-    });
-    g.addEventListener("pointermove", (ev) => {
-      if (!dragging) return;
-      const rect = svg.getBoundingClientRect();
-      const sx = width / rect.width;
-      const sy = height / rect.height;
-      node.x = (ev.clientX - rect.left) * sx;
-      node.y = (ev.clientY - rect.top) * sy;
-    });
-    g.addEventListener("pointerup", () => {
-      dragging = false;
-    });
-
-    return g;
-  });
-
-  function tick() {
-    for (const n of nodes) {
-      n.vx *= 0.86;
-      n.vy *= 0.86;
-    }
-
-    for (let i = 0; i < nodes.length; i += 1) {
-      for (let j = i + 1; j < nodes.length; j += 1) {
-        const a = nodes[i];
-        const b = nodes[j];
-        let dx = a.x - b.x;
-        let dy = a.y - b.y;
-        const dist2 = dx * dx + dy * dy + 0.01;
-        const repulse = 1600 / dist2;
-        dx *= repulse;
-        dy *= repulse;
-        if (!a.pinned) {
-          a.vx += dx;
-          a.vy += dy;
-        }
-        if (!b.pinned) {
-          b.vx -= dx;
-          b.vy -= dy;
-        }
-      }
-    }
-
-    for (const e of links) {
-      const dx = e.target.x - e.source.x;
-      const dy = e.target.y - e.source.y;
-      const pull = 0.0009;
-      if (!e.source.pinned) {
-        e.source.vx += dx * pull;
-        e.source.vy += dy * pull;
-      }
-      if (!e.target.pinned) {
-        e.target.vx -= dx * pull;
-        e.target.vy -= dy * pull;
-      }
-    }
-
-    for (const n of nodes) {
-      if (n.pinned) continue;
-      n.x += n.vx;
-      n.y += n.vy;
-      n.x = Math.max(18, Math.min(width - 18, n.x));
-      n.y = Math.max(18, Math.min(height - 18, n.y));
-    }
-
-    links.forEach((e, i) => {
-      lineEls[i].setAttribute("x1", e.source.x);
-      lineEls[i].setAttribute("y1", e.source.y);
-      lineEls[i].setAttribute("x2", e.target.x);
-      lineEls[i].setAttribute("y2", e.target.y);
-    });
-
-    nodes.forEach((n, i) => {
-      nodeEls[i].setAttribute("transform", `translate(${n.x},${n.y})`);
-    });
-
-    requestAnimationFrame(tick);
+function renderWikiList() {
+  if (!state.filteredDocuments.length) {
+    els.wikiList.innerHTML = `<p class="muted">没有匹配的页面。</p>`;
+    return;
   }
 
-  requestAnimationFrame(tick);
+  els.wikiList.innerHTML = state.filteredDocuments
+    .map(
+      (doc) => `
+      <button class="wiki-row ${doc.path === state.activeContextPath ? "is-active" : ""}" type="button" data-path="${escapeHtml(doc.path)}">
+        <span>
+          <strong>${escapeHtml(doc.title)}</strong>
+          <small>${escapeHtml(doc.type)} · ${escapeHtml(doc.date || "-")} · ${doc.words} words</small>
+        </span>
+      </button>
+    `,
+    )
+    .join("");
+
+  els.wikiList.querySelectorAll(".wiki-row").forEach((button) => {
+    button.addEventListener("click", () => setActiveContext(button.dataset.path));
+  });
+}
+
+async function setActiveContext(path) {
+  if (!path) return;
+  state.activeContextPath = path;
+  const doc = state.documents.find((item) => item.path === path);
+  els.activeContext.textContent = doc ? `${doc.title} (${doc.path})` : path;
+  renderWikiList();
+  try {
+    const response = await fetch(`/${path}`);
+    const markdown = await response.text();
+    els.markdownPreview.textContent = markdown;
+  } catch (error) {
+    els.markdownPreview.textContent = `加载失败：${error.message}`;
+  }
+}
+
+function clearContext() {
+  state.activeContextPath = null;
+  els.activeContext.textContent = "未指定页面";
+  els.markdownPreview.textContent = "选择一个 wiki 页面后，机器人会优先参考它。";
+  renderWikiList();
+}
+
+async function loadConfig() {
+  const response = await fetch("/api/config");
+  if (!response.ok) {
+    throw new Error(`API ${response.status}`);
+  }
+  const config = await response.json();
+  state.documents = config.documents || [];
+  state.filteredDocuments = state.documents;
+  els.wikiStats.textContent = `${config.wiki.documents} 页 / ${config.wiki.chunks} 段`;
+  els.status.textContent =
+    config.agent_mode === "openai" ? `OpenAI: ${config.model}` : "离线演示";
+  els.status.classList.toggle("status-pill--offline", config.agent_mode !== "openai");
+  renderWikiList();
+}
+
+function attachEvents() {
+  els.form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const message = els.input.value.trim();
+    if (!message || state.isSending) return;
+    els.input.value = "";
+    sendMessage(message);
+  });
+
+  els.input.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      els.form.requestSubmit();
+    }
+  });
+
+  els.wikiSearch.addEventListener("input", () => {
+    const query = els.wikiSearch.value.trim().toLowerCase();
+    state.filteredDocuments = state.documents.filter((doc) =>
+      `${doc.title} ${doc.type} ${doc.date} ${doc.path}`.toLowerCase().includes(query),
+    );
+    renderWikiList();
+  });
+
+  els.clearContext.addEventListener("click", clearContext);
 }
 
 async function main() {
-  const decoder = new TextDecoder("utf-8");
-
-  const entries = await Promise.all(
-    NOTE_FILES.map(async (file) => {
-      const markdown = await fetch(`../wiki/${file}`).then(async (r) => {
-        const bytes = await r.arrayBuffer();
-        return normalizeMojibake(decoder.decode(bytes));
-      });
-      return { file, markdown };
-    }),
-  );
-
-  const { rows, edges } = buildData(entries);
-  const state = {
-    allRows: rows,
-    filteredRows: rows,
-    selectedTitle: null,
-  };
-
-  document.getElementById("metaNotes").textContent = `Notes: ${rows.length}`;
-  document.getElementById("metaEdges").textContent = `Edges: ${edges.length}`;
-
-  const selectPage = (title) => {
-    state.selectedTitle = title;
-    const selected = state.allRows.find((r) => r.title === title) || null;
-    renderDetail(selected);
-    renderRows(state.filteredRows, state.selectedTitle, selectPage);
-    const rowEl = document.querySelector(`tr[data-page="${title}"]`);
-    if (rowEl) rowEl.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
-
-  const renderTable = () => {
-    renderRows(state.filteredRows, state.selectedTitle, selectPage);
-  };
-
-  renderDetail(null);
-  renderTable();
-  attachSearch(state, renderTable);
-  renderGraph(rows, edges, selectPage);
+  loadThread();
+  renderMessages();
+  renderSources([]);
+  attachEvents();
+  try {
+    await loadConfig();
+  } catch (error) {
+    els.status.textContent = "API 未连接";
+    els.status.classList.add("status-pill--offline");
+    els.wikiStats.textContent = "失败";
+    appendMessage(
+      "assistant",
+      `没有连上后端服务：${error.message}\n\n请用 \`uvicorn api_server:app --host 0.0.0.0 --port 8501\` 启动。`,
+    );
+  }
 }
 
-main().catch((err) => {
-  const hint = document.getElementById("graphHint");
-  hint.textContent = `Load failed: ${err.message}`;
-});
+main();
