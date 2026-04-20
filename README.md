@@ -66,7 +66,7 @@ Example API call:
 ```bash
 curl -s http://localhost:8501/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"最新的气候风险监测有什么重点？","language":"zh"}'
+  -d '{"message":"What are the latest Climate Monitor highlights?","language":"en"}'
 ```
 
 ### Obsidian integration
