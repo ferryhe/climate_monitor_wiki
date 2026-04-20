@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Climate Monitor Wiki Showcase</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <main class="layout">
+    <header class="hero">
+      <p class="badge">Codespaces Public Demo</p>
+      <h1>Climate Monitor Wiki Explorer</h1>
+      <p class="subtitle">A single page combining an Obsidian-style graph and a Dataview-style data table.</p>
+      <div class="meta">
+        <span id="metaNotes">Loading...</span>
+        <span id="metaEdges">Loading...</span>
+      </div>
+    </header>
+
+    <section class="panel graph-panel">
+      <div class="panel-head">
+        <h2>Graph View</h2>
+        <div class="legend">
+          <span><i class="dot dot-daily"></i>Daily</span>
+          <span><i class="dot dot-topic"></i>Topic</span>
+          <span><i class="dot dot-index"></i>Index</span>
+        </div>
+      </div>
+      <div id="graphWrap" class="graph-wrap">
+        <svg id="graphSvg" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <p id="graphHint" class="hint">Drag nodes to rearrange the graph, click a node to jump to its row below.</p>
+    </section>
+
+    <section class="panel table-panel">
+      <div class="panel-head">
+        <h2>Dataview</h2>
+        <input id="searchInput" type="search" placeholder="Search by page, type, date...">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Page</th>
+              <th>Type</th>
+              <th>Date</th>
+              <th>Words</th>
+              <th>Outlinks</th>
+              <th>Inlinks</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
