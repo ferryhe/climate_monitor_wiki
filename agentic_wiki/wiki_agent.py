@@ -47,34 +47,24 @@ STOPWORDS = {
     "to",
     "what",
     "with",
-    "哪些",
-    "什么",
-    "一下",
-    "这个",
-    "如何",
-    "有关",
-    "介绍",
 }
 
 QUERY_ALIASES = {
-    "最新": "latest 2026-04-20 climate monitor update current summary",
-    "今天": "2026-04-20 latest daily report climate monitor",
-    "次生": "secondary perils severe convective storms wildfire flood nat cat losses",
-    "二级灾害": "secondary perils severe convective storms wildfire flood nat cat losses",
-    "巨灾": "natural catastrophe nat cat reinsurance catastrophe losses protection gap",
-    "自然灾害": "natural catastrophe nat cat reinsurance catastrophe losses protection gap",
-    "保护缺口": "nat cat protection gap uninsured losses sovereign balance sheets",
-    "缺口": "protection gap uninsured losses",
-    "参数": "parametric insurance index triggered products protection gap",
-    "指数": "actuaries climate index ACI extreme weather sea level weather derivatives",
-    "精算": "actuaries actuarial climate risk modelling reserving pricing",
-    "气候风险": "climate risk physical risk transition risk liability risk",
-    "披露": "IFRS S2 ISSB TCFD TNFD disclosure reporting standards",
-    "监管": "IAIS FSB EIOPA climate risk supervision framework",
-    "偿付": "solvency insurance regulation capital risk management",
-    "再保险": "Swiss Re sigma reinsurance natural catastrophe losses",
-    "人才": "talent gap climate analytics skills shortage insurance",
-    "哥伦比亚": "WRI Colombia water energy food nexus energy communities",
+    "latest": "latest 2026-04-20 climate monitor update current summary",
+    "today": "2026-04-20 latest daily report climate monitor",
+    "secondary perils": "secondary perils severe convective storms wildfire flood nat cat losses",
+    "nat cat": "natural catastrophe reinsurance catastrophe losses protection gap",
+    "natural catastrophe": "natural catastrophe reinsurance catastrophe losses protection gap",
+    "protection gap": "nat cat protection gap uninsured losses sovereign balance sheets",
+    "parametric": "parametric insurance index triggered products protection gap",
+    "actuarial": "actuaries actuarial climate risk modelling reserving pricing",
+    "climate risk": "climate risk physical risk transition risk liability risk",
+    "disclosure": "IFRS S2 ISSB TCFD TNFD disclosure reporting standards",
+    "supervision": "IAIS FSB EIOPA climate risk supervision framework",
+    "solvency": "solvency insurance regulation capital risk management",
+    "reinsurance": "Swiss Re sigma reinsurance natural catastrophe losses",
+    "talent": "talent gap climate analytics skills shortage insurance",
+    "colombia": "WRI Colombia water energy food nexus energy communities",
 }
 
 
@@ -101,9 +91,9 @@ def _extract_date(title: str, markdown: str) -> str:
 def _normalize_text(text: str) -> str:
     return (
         text.replace("\r\n", "\n")
-        .replace("鈫�", "->")
-        .replace("鈥�", "-")
-        .replace("锟�", "")
+        .replace("\u922b\ufffd", "->")
+        .replace("\u9225\ufffd", "-")
+        .replace("\u951f\ufffd", "")
         .replace("â†’", "->")
         .replace("â€”", "-")
         .replace("â€“", "-")
@@ -346,9 +336,7 @@ class WikiKnowledgeBase:
         query_set = set(query_tokens)
         query_lower = expanded.lower()
         requested_dates = re.findall(r"\d{4}-\d{2}-\d{2}", expanded)
-        asks_latest = any(term in query_lower for term in ["latest", "current", "recent"]) or any(
-            term in query for term in ["最新", "今天", "最近"]
-        )
+        asks_latest = any(term in query_lower for term in ["latest", "current", "recent"])
         context_path = (context_path or "").lstrip("/")
 
         scored: list[SearchHit] = []
@@ -494,7 +482,7 @@ class AgenticWikiResponder:
         *,
         history: list[dict[str, str]] | None = None,
         context_path: str | None = None,
-        language: str = "zh",
+        language: str = "en",
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -601,7 +589,7 @@ class AgenticWikiResponder:
                     "You plan retrieval for a grounded Markdown wiki RAG system. "
                     "Return JSON only: {\"sub_queries\": [\"...\"]}. "
                     "Create 2-4 search queries that cover the user's intent. "
-                    "Include English domain terms when the user asks in Chinese."
+                    "Include canonical English domain terms for ambiguous queries."
                 ),
             },
             {
@@ -628,9 +616,9 @@ class AgenticWikiResponder:
         expanded = _expand_query(question)
         queries = [question, expanded]
         lower = question.lower()
-        if any(term in lower for term in ["latest", "current", "recent"]) or "最新" in question:
+        if any(term in lower for term in ["latest", "current", "recent"]):
             queries.append("2026-04-20 latest Climate Monitor summary")
-        if "compare" in lower or "对比" in question or "区别" in question:
+        if "compare" in lower or "difference" in lower or "distinguish" in lower:
             queries.append("climate risk frameworks comparison IAIS FSB ISSB TCFD TNFD")
         return self._unique_queries(queries, 4)
 
@@ -694,9 +682,9 @@ class AgenticWikiResponder:
     ) -> str:
         if not hits:
             return (
-                "我没有在当前 Climate Monitor Wiki 里找到足够证据来回答这个问题。"
-                "可以换一个更具体的主题，例如 secondary perils、IFRS S2、IAIS、"
-                "parametric insurance 或 nat-cat protection gap。"
+                "I could not find enough evidence in the current Climate Monitor Wiki to answer this question. "
+                "Try a more specific topic such as secondary perils, IFRS S2, IAIS, "
+                "parametric insurance, or the nat-cat protection gap."
             )
 
         if self.client is None:
@@ -713,7 +701,7 @@ class AgenticWikiResponder:
             "Do not invent sources, dates, figures, or URLs."
         )
         user = (
-            f"Answer language: {'Chinese' if language == 'zh' else 'English'}\n"
+            "Answer language: English\n"
             f"Recent conversation:\n{history_text or '(none)'}\n\n"
             f"Question: {question}\n\n"
             f"Evidence:\n{evidence}\n\n"
@@ -745,31 +733,15 @@ class AgenticWikiResponder:
         return "\n\n".join(blocks)
 
     def _offline_answer(self, question: str, hits: list[SearchHit], language: str) -> str:
-        if language != "zh":
-            lines = [
-                "I found relevant wiki evidence, but no OpenAI API key is configured, so this is an extractive answer.",
-                "",
-                "Key evidence:",
-            ]
-            for index, hit in enumerate(hits[:5], start=1):
-                lines.append(f"- [{index}] {hit.chunk.title}: {_shorten(hit.chunk.text, 240)}")
-            lines.append("")
-            lines.append("Set OPENAI_API_KEY in .env to enable synthesized agentic answers.")
-            return "\n".join(lines)
-
         lines = [
-            "我已经在当前 wiki 里做了检索和证据筛选。当前没有配置 `OPENAI_API_KEY`，所以先给出可演示的离线抽取式回答：",
+            "I found relevant wiki evidence, but no OpenAI API key is configured, so this is an extractive answer.",
             "",
-            "关键证据：",
+            "Key evidence:",
         ]
         for index, hit in enumerate(hits[:5], start=1):
-            lines.append(f"- [{index}] {hit.chunk.title}：{_shorten(hit.chunk.text, 220)}")
-        lines.extend(
-            [
-                "",
-                "要启用真正的模型综合回复，请在 `.env` 里配置 `OPENAI_API_KEY`，然后重启服务。",
-            ]
-        )
+            lines.append(f"- [{index}] {hit.chunk.title}: {_shorten(hit.chunk.text, 240)}")
+        lines.append("")
+        lines.append("Set OPENAI_API_KEY in .env to enable synthesized agentic answers.")
         return "\n".join(lines)
 
     @staticmethod

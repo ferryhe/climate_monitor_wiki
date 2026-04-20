@@ -1,10 +1,10 @@
 const STORAGE_KEY = "climate-monitor-agent-thread";
 
 const SUGGESTIONS = [
-  "最新的气候风险监测有什么重点？",
-  "secondary perils 为什么对保险定价重要？",
-  "IFRS S2 对保险公司的气候披露有什么影响？",
-  "参数保险和 nat-cat protection gap 有什么关系？",
+  "What are the latest Climate Monitor highlights?",
+  "Why do secondary perils matter for insurance pricing?",
+  "How does IFRS S2 affect climate disclosure for insurers?",
+  "How does parametric insurance relate to the nat-cat protection gap?",
 ];
 
 const state = {
@@ -109,7 +109,7 @@ function renderEmptyState() {
   const shell = document.createElement("section");
   shell.className = "empty-state";
   shell.innerHTML = `
-    <p class="empty-state__lead">基于当前 Obsidian wiki 检索、规划和引用证据，再生成回答。</p>
+    <p class="empty-state__lead">Ask the agent to retrieve, plan, cite, and answer from the current Obsidian wiki.</p>
     <div class="suggestions">
       ${SUGGESTIONS.map(
         (prompt) =>
@@ -138,7 +138,7 @@ function renderMessages() {
     const bubble = document.createElement("div");
     bubble.className = `message-bubble message-bubble--${item.role}`;
     if (item.pending) {
-      bubble.innerHTML = `<span class="typing-dot"></span>正在检索 wiki 并组织回答...`;
+      bubble.innerHTML = `<span class="typing-dot"></span>Searching the wiki and drafting an answer...`;
     } else if (item.role === "assistant") {
       bubble.innerHTML = `<p>${renderMarkdownLite(item.content)}</p>`;
     } else {
@@ -154,7 +154,7 @@ function setSending(value) {
   state.isSending = value;
   els.send.disabled = value;
   els.input.disabled = value;
-  els.send.textContent = value ? "生成中" : "发送";
+  els.send.textContent = value ? "Drafting" : "Send";
 }
 
 async function sendMessage(message) {
@@ -171,7 +171,7 @@ async function sendMessage(message) {
           .filter((item) => !item.pending)
           .map(messageToApi),
         contextPath: state.activeContextPath,
-        language: "zh",
+        language: "en",
       }),
     });
     if (!response.ok) {
@@ -182,10 +182,10 @@ async function sendMessage(message) {
     replacePendingAssistant(payload.text, payload.sources || []);
     renderSources(payload.sources || []);
     els.status.textContent =
-      payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "离线演示";
+      payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "Offline demo";
     els.status.classList.toggle("status-pill--offline", payload.agent_mode !== "openai");
   } catch (error) {
-    replacePendingAssistant(`请求失败：${error.message}`);
+    replacePendingAssistant(`Request failed: ${error.message}`);
   } finally {
     setSending(false);
     els.input.focus();
@@ -195,7 +195,7 @@ async function sendMessage(message) {
 function renderSources(sources) {
   els.sourceCount.textContent = String(sources.length);
   if (!sources.length) {
-    els.sourceList.innerHTML = `<p class="muted">没有返回来源。</p>`;
+    els.sourceList.innerHTML = `<p class="muted">No sources returned yet.</p>`;
     return;
   }
 
@@ -219,7 +219,7 @@ function renderSources(sources) {
 
 function renderWikiList() {
   if (!state.filteredDocuments.length) {
-    els.wikiList.innerHTML = `<p class="muted">没有匹配的页面。</p>`;
+    els.wikiList.innerHTML = `<p class="muted">No matching pages.</p>`;
     return;
   }
 
@@ -229,7 +229,7 @@ function renderWikiList() {
       <button class="wiki-row ${doc.path === state.activeContextPath ? "is-active" : ""}" type="button" data-path="${escapeHtml(doc.path)}">
         <span>
           <strong>${escapeHtml(doc.title)}</strong>
-          <small>${escapeHtml(doc.type)} · ${escapeHtml(doc.date || "-")} · ${doc.words} words</small>
+          <small>${escapeHtml(doc.type)} | ${escapeHtml(doc.date || "-")} | ${doc.words} words</small>
         </span>
       </button>
     `,
@@ -252,14 +252,14 @@ async function setActiveContext(path) {
     const markdown = await response.text();
     els.markdownPreview.textContent = markdown;
   } catch (error) {
-    els.markdownPreview.textContent = `加载失败：${error.message}`;
+    els.markdownPreview.textContent = `Load failed: ${error.message}`;
   }
 }
 
 function clearContext() {
   state.activeContextPath = null;
-  els.activeContext.textContent = "未指定页面";
-  els.markdownPreview.textContent = "选择一个 wiki 页面后，机器人会优先参考它。";
+  els.activeContext.textContent = "No page selected";
+  els.markdownPreview.textContent = "Select a wiki page to prioritize it during retrieval.";
   renderWikiList();
 }
 
@@ -271,9 +271,9 @@ async function loadConfig() {
   const config = await response.json();
   state.documents = config.documents || [];
   state.filteredDocuments = state.documents;
-  els.wikiStats.textContent = `${config.wiki.documents} 页 / ${config.wiki.chunks} 段`;
+  els.wikiStats.textContent = `${config.wiki.documents} pages / ${config.wiki.chunks} chunks`;
   els.status.textContent =
-    config.agent_mode === "openai" ? `OpenAI: ${config.model}` : "离线演示";
+    config.agent_mode === "openai" ? `OpenAI: ${config.model}` : "Offline demo";
   els.status.classList.toggle("status-pill--offline", config.agent_mode !== "openai");
   renderWikiList();
 }
@@ -312,12 +312,12 @@ async function main() {
   try {
     await loadConfig();
   } catch (error) {
-    els.status.textContent = "API 未连接";
+    els.status.textContent = "API offline";
     els.status.classList.add("status-pill--offline");
-    els.wikiStats.textContent = "失败";
+    els.wikiStats.textContent = "Failed";
     appendMessage(
       "assistant",
-      `没有连上后端服务：${error.message}\n\n请用 \`uvicorn api_server:app --host 0.0.0.0 --port 8501\` 启动。`,
+      `Could not reach the backend service: ${error.message}\n\nStart it with \`uvicorn api_server:app --host 0.0.0.0 --port 8501\`.`,
     );
   }
 }

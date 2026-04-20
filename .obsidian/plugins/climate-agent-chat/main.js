@@ -172,7 +172,7 @@ class ClimateAgentView extends ItemView {
             content: message.content,
           })),
         contextPath: this.getActiveContextPath(),
-        language: "zh",
+        language: "en",
       });
       this.messages[this.messages.length - 1] = {
         role: "assistant",

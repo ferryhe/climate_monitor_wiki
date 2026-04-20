@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -18,22 +18,22 @@
         <header class="app-header">
           <div>
             <p class="eyebrow">Climate Monitor Wiki Agent</p>
-            <h1>气候风险 Wiki 对话助手</h1>
+            <h1>Climate Risk Wiki Chat</h1>
           </div>
-          <div id="connectionStatus" class="status-pill">连接中</div>
+          <div id="connectionStatus" class="status-pill">Connecting</div>
         </header>
 
         <section id="messages" class="message-list" aria-live="polite"></section>
 
         <form id="chatForm" class="composer">
-          <label class="sr-only" for="messageInput">输入问题</label>
+          <label class="sr-only" for="messageInput">Ask a question</label>
           <textarea
             id="messageInput"
             name="message"
             rows="2"
-            placeholder="问一个关于气候风险、巨灾保险、IFRS S2、IAIS 或精算研究的问题..."
+            placeholder="Ask about climate risk, nat-cat insurance, IFRS S2, IAIS, or actuarial research..."
           ></textarea>
-          <button id="sendButton" type="submit">发送</button>
+          <button id="sendButton" type="submit">Send</button>
         </form>
       </section>
 
@@ -46,35 +46,35 @@
 
         <section class="context-section">
           <div class="section-heading">
-            <h2>检索证据</h2>
+            <h2>Evidence</h2>
             <span id="sourceCount">0</span>
           </div>
           <div id="sourceList" class="source-list">
-            <p class="muted">回答后会在这里列出引用的 wiki 页面。</p>
+            <p class="muted">Cited wiki pages will appear here after an answer.</p>
           </div>
         </section>
 
         <section class="context-section">
           <div class="section-heading">
-            <h2>Wiki 页面</h2>
-            <span id="wikiStats">加载中</span>
+            <h2>Wiki Pages</h2>
+            <span id="wikiStats">Loading</span>
           </div>
           <input
             id="wikiSearch"
             class="wiki-search"
             type="search"
-            placeholder="搜索页面或主题"
+            placeholder="Search pages or topics"
           />
           <div id="wikiList" class="wiki-list"></div>
         </section>
 
         <section class="context-section context-section--preview">
           <div class="section-heading">
-            <h2>当前上下文</h2>
-            <button id="clearContextButton" type="button">清除</button>
+            <h2>Active Context</h2>
+            <button id="clearContextButton" type="button">Clear</button>
           </div>
-          <p id="activeContext" class="active-context">未指定页面</p>
-          <pre id="markdownPreview" class="markdown-preview">选择一个 wiki 页面后，机器人会优先参考它。</pre>
+          <p id="activeContext" class="active-context">No page selected</p>
+          <pre id="markdownPreview" class="markdown-preview">Select a wiki page to prioritize it during retrieval.</pre>
         </section>
       </aside>
     </main>

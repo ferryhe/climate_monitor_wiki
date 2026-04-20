@@ -11,9 +11,9 @@ def test_wiki_index_loads_documents_and_chunks():
 
 def test_context_path_prioritizes_active_note():
     result = AgenticWikiResponder().answer(
-        "这页主要讲什么？",
+        "What is this page mainly about?",
         context_path="wiki/parametric-insurance.md",
-        language="zh",
+        language="en",
     )
 
     assert result["sources"]
