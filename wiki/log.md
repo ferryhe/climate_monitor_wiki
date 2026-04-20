@@ -6,6 +6,17 @@ Structure: sources/, wiki/
 Next: ingest climate monitor reports from Feishu Wiki (space: 7630875621968186332)
 ---
 
+## [2026-04-20] batch-2 | Fill Gaps — 04-01, 04-10, 04-11~04-13, 04-18, 04-19
+Source: Feishu docs + manual creation
+Actions:
+  - Feishu Wiki: created nodes for 04-01, 04-10, 04-11(No), 04-12(No), 04-13(No), 04-18, 04-19(No)
+  - Feishu Wiki: updated Index with all 20 date links
+  - GitHub sources/: added 04-01.md, 04-10.md (already complete)
+  - GitHub wiki/: created all 20 daily report pages + updated index.md + updated README.md
+  - Push: git push completed
+Missing (no cron/doc found): 04-11, 04-12, 04-13, 04-15, 04-19
+---
+
 ## [2026-04-20] ingest | Climate Monitor Reports (Batch 1)
 Source: Feishu Wiki — 12 daily reports from 2026-04-02 to 2026-04-20
 Files ingested: 12 source files written to sources/

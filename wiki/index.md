@@ -1,6 +1,31 @@
 # Wiki Index
 
-_Last updated: 2026-04-20 — 13 pages_
+_Last updated: 2026-04-20 — 13 pages + 20 daily report pages_
+
+## Daily Reports
+
+| Date | Report | Status |
+|------|--------|--------|
+| 2026-04-01 | [[climate-monitor-2026-04-01]] | ✅ |
+| 2026-04-02 | [[climate-monitor-2026-04-02]] | ✅ |
+| 2026-04-03 | [[climate-monitor-2026-04-03]] | ✅ |
+| 2026-04-04 | [[climate-monitor-2026-04-04]] | ✅ |
+| 2026-04-05 | [[climate-monitor-2026-04-05]] | ✅ |
+| 2026-04-06 | [[climate-monitor-2026-04-06]] | ✅ |
+| 2026-04-07 | [[climate-monitor-2026-04-07]] | ✅ |
+| 2026-04-08 | [[climate-monitor-2026-04-08]] | ✅ |
+| 2026-04-09 | [[climate-monitor-2026-04-09]] | ✅ |
+| 2026-04-10 | [[climate-monitor-2026-04-10]] | ✅ |
+| 2026-04-11 | [[climate-monitor-2026-04-11]] | ⚠️ No report |
+| 2026-04-12 | [[climate-monitor-2026-04-12]] | ⚠️ No report |
+| 2026-04-13 | [[climate-monitor-2026-04-13]] | ⚠️ No report |
+| 2026-04-14 | [[climate-monitor-2026-04-14]] | ✅ |
+| 2026-04-15 | [[climate-monitor-2026-04-15]] | ⚠️ No report |
+| 2026-04-16 | [[climate-monitor-2026-04-16]] | ✅ |
+| 2026-04-17 | [[climate-monitor-2026-04-17]] | ✅ |
+| 2026-04-18 | [[climate-monitor-2026-04-18]] | ✅ |
+| 2026-04-19 | [[climate-monitor-2026-04-19]] | ⚠️ No report |
+| 2026-04-20 | [[climate-monitor-2026-04-20]] | ✅ |
 
 ## Entities
 
@@ -23,19 +48,4 @@ _Last updated: 2026-04-20 — 13 pages_
 | [[cas-soa-climate-research]] | CAS $75K RFP for climate frameworks; SOA weather derivatives research | 2026-04-20 |
 | [[talents-gap]] | Insurance talent gap escalated to strategic risk; climate analytics skills shortage | 2026-04-20 |
 
-## Sources processed
-
-| Page | Summary | Updated |
-|------|---------|---------|
-| [[climate-monitor-2026-04-20]] | 7 new research items | 2026-04-20 |
-| [[climate-monitor-2026-04-17]] | ISSB nature-related disclosures; SCIPP forum | 2026-04-20 |
-| [[climate-monitor-2026-04-16]] | 14 new research items | 2026-04-20 |
-| [[climate-monitor-2026-04-14]] | WRI Colombia; NZ Actuaries guidance | 2026-04-20 |
-| [[climate-monitor-2026-04-09]] | CAS RFP; MSCI; Swiss Re projections | 2026-04-20 |
-| [[climate-monitor-2026-04-08]] | Swiss Re/Aon nat cat data | 2026-04-20 |
-| [[climate-monitor-2026-04-07]] | Swiss Re sigma; Aon SCS | 2026-04-20 |
-| [[climate-monitor-2026-04-06]] | No new research captured | 2026-04-20 |
-| [[climate-monitor-2026-04-05]] | FSB climate roadmap; GCA leadership | 2026-04-20 |
-| [[climate-monitor-2026-04-04]] | IAIS strategic themes; ISSB | 2026-04-20 |
-| [[climate-monitor-2026-04-03]] | IAIS Holistic Framework; CTA | 2026-04-20 |
-| [[climate-monitor-2026-04-02]] | Swiss Re/Aon 2025 data; IFoA | 2026-04-20 |
+_Last updated: 2026-04-20_

@@ -6,12 +6,19 @@ A structured, interlinked knowledge base on climate risk, natural catastrophe in
 
 ```
 .
-├── sources/           # Raw daily monitoring reports (immutable)
-└── wiki/              # Curated topic pages (AI-maintained)
-    ├── index.md       # Master catalog
+├── sources/           # Raw daily monitoring reports (immutable, one .md per date)
+└── wiki/              # Curated topic + daily report pages (Obsidian vault)
+    ├── index.md       # Master catalog — daily reports + concept pages
     ├── log.md         # Operation history
-    └── *.md           # Topic/entity pages
+    └── *.md           # Topic/entity/daily report pages
 ```
+
+## Daily Reports
+
+20 daily report pages in `wiki/` covering **2026-03-31 through 2026-04-20**.
+Source files in `sources/` with full original report content.
+
+**Missing dates** (no cron run / no doc found): 04-11, 04-12, 04-13, 04-15, 04-19
 
 ## For Obsidian Users
 
