@@ -18,8 +18,7 @@ body {
   margin: 0;
   font-family: "Barlow", sans-serif;
   color: var(--ink);
-  background:
-    radial-gradient(circle at 15% 20%, #f8f6d6 0%, transparent 45%),
+  background: radial-gradient(circle at 15% 20%, #f8f6d6 0%, transparent 45%),
     radial-gradient(circle at 80% 10%, #d6f0ec 0%, transparent 50%),
     linear-gradient(180deg, #eef4f7 0%, #d9e6ef 100%);
   min-height: 100vh;
@@ -39,7 +38,7 @@ body {
   border-radius: 18px;
   padding: 22px 24px;
   box-shadow: 0 18px 38px rgba(15, 40, 62, 0.12);
-  animation: rise .55s ease-out;
+  animation: rise 0.55s ease-out;
 }
 
 .badge {
@@ -50,7 +49,7 @@ body {
   background: #163247;
   color: #e8f3fb;
   font-size: 12px;
-  letter-spacing: .06em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -81,7 +80,7 @@ h1 {
   border-radius: 18px;
   padding: 16px;
   box-shadow: 0 12px 30px rgba(11, 37, 54, 0.1);
-  animation: rise .7s ease-out;
+  animation: rise 0.7s ease-out;
 }
 
 .panel-head {
@@ -111,9 +110,15 @@ h2 {
   margin-right: 4px;
 }
 
-.dot-daily { background: var(--daily); }
-.dot-topic { background: var(--topic); }
-.dot-index { background: var(--index); }
+.dot-daily {
+  background: var(--daily);
+}
+.dot-topic {
+  background: var(--topic);
+}
+.dot-index {
+  background: var(--index);
+}
 
 .graph-wrap {
   width: 100%;
@@ -174,7 +179,8 @@ thead {
   background: #dbeaf4;
 }
 
-th, td {
+th,
+td {
   border-bottom: 1px solid #d8e3ec;
   text-align: left;
   padding: 10px 12px;
@@ -230,7 +236,7 @@ tbody tr.is-selected {
   font-size: 12px;
   color: #567386;
   text-transform: uppercase;
-  letter-spacing: .03em;
+  letter-spacing: 0.03em;
 }
 
 .detail-meta dd {
@@ -255,7 +261,7 @@ tbody tr.is-selected {
   font-size: 14px;
   color: #355a71;
   text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: 0.04em;
 }
 
 .md-preview {
@@ -280,8 +286,14 @@ tbody tr.is-selected {
   pointer-events: none;
 }
 
-.status-ok { color: #167e52; font-weight: 600; }
-.status-empty { color: #b45720; font-weight: 600; }
+.status-ok {
+  color: #167e52;
+  font-weight: 600;
+}
+.status-empty {
+  color: #b45720;
+  font-weight: 600;
+}
 
 .bg-orb {
   position: fixed;
@@ -308,8 +320,14 @@ tbody tr.is-selected {
 }
 
 @keyframes rise {
-  from { transform: translateY(12px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 @media (max-width: 900px) {

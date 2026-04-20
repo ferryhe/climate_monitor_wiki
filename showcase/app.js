@@ -31,16 +31,46 @@ const NOTE_FILES = [
   "secondary-perils.md",
   "swiss-re-sigma.md",
   "talents-gap.md",
-  "wri-colombia.md"
+  "wri-colombia.md",
 ];
 
 const COLORS = {
   daily: "#e67e22",
   topic: "#158f77",
-  index: "#ca2c55"
+  index: "#ca2c55",
 };
 
+const GITHUB_REPO_URL = "https://github.com/ferryhe/climate_monitor_wiki";
+const GITHUB_BRANCH = "main";
+
 const titleFromFile = (name) => name.replace(/\.md$/i, "");
+
+function normalizeMojibake(text) {
+  let normalized = text;
+
+  // Repair common UTF-8 -> Latin-1 mis-decoding patterns like "Ã", "â", "Â".
+  if (/[ÃâÂ]/.test(normalized)) {
+    try {
+      const bytes = Uint8Array.from(normalized, (ch) => ch.charCodeAt(0));
+      normalized = new TextDecoder("utf-8").decode(bytes);
+    } catch {
+      // Keep original text if heuristic repair fails.
+    }
+  }
+
+  return normalized
+    .replaceAll("鈫�", "→")
+    .replaceAll("鈥�", "—")
+    .replaceAll("锟�", "")
+    .replaceAll("â†’", "→")
+    .replaceAll("â€”", "—")
+    .replaceAll("â€“", "–")
+    .replaceAll("â€œ", "\"")
+    .replaceAll("â€\x9d", "\"")
+    .replaceAll("â€˜", "'")
+    .replaceAll("â€™", "'")
+    .replaceAll("�", "");
+}
 
 function shortType(type) {
   if (type === "daily") return "DAILY";
@@ -92,7 +122,7 @@ function buildData(entries) {
       date: extractDate(title),
       markdown: entry.markdown,
       links: parseLinks(entry.markdown),
-      words: countWords(entry.markdown)
+      words: countWords(entry.markdown),
     };
   });
 
@@ -116,7 +146,7 @@ function buildData(entries) {
       ...n,
       outlinks: edges.filter((e) => e.source === n.title).length,
       inlinks: inCount.get(n.title) || 0,
-      status: rowStatus(n.type, n.markdown)
+      status: rowStatus(n.type, n.markdown),
     }))
     .sort((a, b) => a.title.localeCompare(b.title));
 
@@ -143,7 +173,8 @@ function renderDetail(row) {
     detailInlinks.textContent = "-";
     detailStatus.textContent = "-";
     detailFile.textContent = "-";
-    detailMarkdown.textContent = "Select a node to preview its markdown source.";
+    detailMarkdown.textContent =
+      "Select a node to preview its markdown source.";
     return;
   }
 
@@ -155,7 +186,7 @@ function renderDetail(row) {
   detailInlinks.textContent = String(row.inlinks);
   detailStatus.textContent = row.status;
   const sourcePath = `wiki/${row.file}`;
-  const sourceHref = `../${encodeURI(sourcePath)}`;
+  const sourceHref = `${GITHUB_REPO_URL}/blob/${GITHUB_BRANCH}/${encodeURI(sourcePath)}`;
   detailFile.innerHTML = `<a href="${sourceHref}" target="_blank" rel="noopener noreferrer">${sourcePath}</a>`;
   detailMarkdown.textContent = row.markdown;
 }
@@ -164,7 +195,12 @@ function renderRows(rows, selectedTitle, onSelect) {
   const tbody = document.getElementById("rows");
   tbody.innerHTML = rows
     .map((row) => {
-      const statusClass = row.status === "Reported" ? "status-ok" : row.status === "No report" ? "status-empty" : "";
+      const statusClass =
+        row.status === "Reported"
+          ? "status-ok"
+          : row.status === "No report"
+            ? "status-empty"
+            : "";
       const selectedClass = row.title === selectedTitle ? " is-selected" : "";
       return `
       <tr data-page="${row.title}" class="${selectedClass.trim()}">
@@ -191,7 +227,7 @@ function attachSearch(state, renderTable) {
   input.addEventListener("input", () => {
     const q = input.value.trim().toLowerCase();
     state.filteredRows = state.allRows.filter((r) =>
-      `${r.title} ${r.type} ${r.date} ${r.status}`.toLowerCase().includes(q)
+      `${r.title} ${r.type} ${r.date} ${r.status}`.toLowerCase().includes(q),
     );
     renderTable();
   });
@@ -212,7 +248,7 @@ function renderGraph(rows, edges, onSelect) {
     y: Math.floor(i / 8) * 120 + 90,
     vx: 0,
     vy: 0,
-    pinned: false
+    pinned: false,
   }));
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -344,18 +380,23 @@ function renderGraph(rows, edges, onSelect) {
 }
 
 async function main() {
+  const decoder = new TextDecoder("utf-8");
+
   const entries = await Promise.all(
     NOTE_FILES.map(async (file) => {
-      const markdown = await fetch(`../wiki/${file}`).then((r) => r.text());
+      const markdown = await fetch(`../wiki/${file}`).then(async (r) => {
+        const bytes = await r.arrayBuffer();
+        return normalizeMojibake(decoder.decode(bytes));
+      });
       return { file, markdown };
-    })
+    }),
   );
 
   const { rows, edges } = buildData(entries);
   const state = {
     allRows: rows,
     filteredRows: rows,
-    selectedTitle: null
+    selectedTitle: null,
   };
 
   document.getElementById("metaNotes").textContent = `Notes: ${rows.length}`;

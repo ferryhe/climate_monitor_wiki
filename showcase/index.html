@@ -1,106 +1,127 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Climate Monitor Wiki Showcase</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <div class="bg-orb orb-a"></div>
-  <div class="bg-orb orb-b"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Climate Monitor Wiki Showcase</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
 
-  <main class="layout">
-    <header class="hero">
-      <p class="badge">Codespaces Public Demo</p>
-      <h1>Climate Monitor Wiki Explorer</h1>
-      <p class="subtitle">A single page combining an Obsidian-style graph and a Dataview-style data table.</p>
-      <div class="meta">
-        <span id="metaNotes">Loading...</span>
-        <span id="metaEdges">Loading...</span>
-      </div>
-    </header>
-
-    <section class="panel graph-panel">
-      <div class="panel-head">
-        <h2>Graph View</h2>
-        <div class="legend">
-          <span><i class="dot dot-daily"></i>Daily</span>
-          <span><i class="dot dot-topic"></i>Topic</span>
-          <span><i class="dot dot-index"></i>Index</span>
+    <main class="layout">
+      <header class="hero">
+        <p class="badge">Codespaces Public Demo</p>
+        <h1>Climate Monitor Wiki Explorer</h1>
+        <p class="subtitle">
+          A single page combining an Obsidian-style graph and a Dataview-style
+          data table.
+        </p>
+        <div class="meta">
+          <span id="metaNotes">Loading...</span>
+          <span id="metaEdges">Loading...</span>
         </div>
-      </div>
-      <div id="graphWrap" class="graph-wrap">
-        <svg id="graphSvg" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet"></svg>
-      </div>
-      <p id="graphHint" class="hint">Drag nodes to rearrange the graph, then click nodes or table rows to inspect details in the right sidebar.</p>
-    </section>
+      </header>
 
-    <section class="table-and-detail">
-      <section class="panel table-panel">
+      <section class="panel graph-panel">
         <div class="panel-head">
-          <h2>Dataview</h2>
-          <input id="searchInput" type="search" placeholder="Search by page, type, date...">
+          <h2>Graph View</h2>
+          <div class="legend">
+            <span><i class="dot dot-daily"></i>Daily</span>
+            <span><i class="dot dot-topic"></i>Topic</span>
+            <span><i class="dot dot-index"></i>Index</span>
+          </div>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Page</th>
-                <th>Type</th>
-                <th>Date</th>
-                <th>Words</th>
-                <th>Outlinks</th>
-                <th>Inlinks</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody id="rows"></tbody>
-          </table>
+        <div id="graphWrap" class="graph-wrap">
+          <svg
+            id="graphSvg"
+            viewBox="0 0 1200 700"
+            preserveAspectRatio="xMidYMid meet"
+          ></svg>
         </div>
+        <p id="graphHint" class="hint">
+          Drag nodes to rearrange the graph, then click nodes or table rows to
+          inspect details in the right sidebar.
+        </p>
       </section>
 
-      <aside class="panel detail-panel">
-        <div class="panel-head detail-head">
-          <h2>Node Detail</h2>
-          <span id="detailType" class="type-chip">None</span>
-        </div>
-        <h3 id="detailTitle" class="detail-title">Select a node or table row</h3>
-        <dl class="detail-meta">
-          <div>
-            <dt>Date</dt>
-            <dd id="detailDate">-</dd>
+      <section class="table-and-detail">
+        <section class="panel table-panel">
+          <div class="panel-head">
+            <h2>Dataview</h2>
+            <input
+              id="searchInput"
+              type="search"
+              placeholder="Search by page, type, date..."
+            />
           </div>
-          <div>
-            <dt>Words</dt>
-            <dd id="detailWords">-</dd>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Page</th>
+                  <th>Type</th>
+                  <th>Date</th>
+                  <th>Words</th>
+                  <th>Outlinks</th>
+                  <th>Inlinks</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
           </div>
-          <div>
-            <dt>Outlinks</dt>
-            <dd id="detailOutlinks">-</dd>
-          </div>
-          <div>
-            <dt>Inlinks</dt>
-            <dd id="detailInlinks">-</dd>
-          </div>
-          <div>
-            <dt>Status</dt>
-            <dd id="detailStatus">-</dd>
-          </div>
-          <div>
-            <dt>Source</dt>
-            <dd id="detailFile">-</dd>
-          </div>
-        </dl>
-        <h4 class="preview-title">Raw Markdown</h4>
-        <pre id="detailMarkdown" class="md-preview">Select a node to preview its markdown source.</pre>
-      </aside>
-    </section>
-  </main>
+        </section>
 
-  <script src="app.js"></script>
-</body>
+        <aside class="panel detail-panel">
+          <div class="panel-head detail-head">
+            <h2>Node Detail</h2>
+            <span id="detailType" class="type-chip">None</span>
+          </div>
+          <h3 id="detailTitle" class="detail-title">
+            Select a node or table row
+          </h3>
+          <dl class="detail-meta">
+            <div>
+              <dt>Date</dt>
+              <dd id="detailDate">-</dd>
+            </div>
+            <div>
+              <dt>Words</dt>
+              <dd id="detailWords">-</dd>
+            </div>
+            <div>
+              <dt>Outlinks</dt>
+              <dd id="detailOutlinks">-</dd>
+            </div>
+            <div>
+              <dt>Inlinks</dt>
+              <dd id="detailInlinks">-</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd id="detailStatus">-</dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd id="detailFile">-</dd>
+            </div>
+          </dl>
+          <h4 class="preview-title">Raw Markdown</h4>
+          <pre id="detailMarkdown" class="md-preview">
+Select a node to preview its markdown source.</pre
+          >
+        </aside>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
 </html>
