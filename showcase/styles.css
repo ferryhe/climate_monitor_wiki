@@ -150,6 +150,17 @@ input[type="search"] {
   border-radius: 12px;
 }
 
+.table-and-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 2.15fr) minmax(320px, 1fr);
+  gap: 18px;
+}
+
+.table-panel,
+.detail-panel {
+  min-height: 560px;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
@@ -172,6 +183,94 @@ th, td {
 
 tbody tr:hover {
   background: #edf7fd;
+}
+
+tbody tr.is-selected {
+  background: #d8edf9;
+  outline: 1px solid #8cb8d2;
+}
+
+.detail-head {
+  align-items: center;
+}
+
+.type-chip {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  border: 1px solid #9eb7c8;
+  color: #1d4157;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ecf5fb;
+  text-transform: uppercase;
+}
+
+.detail-title {
+  margin: 4px 0 10px;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.detail-meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+
+.detail-meta div {
+  border: 1px solid #d5e3ee;
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(250, 253, 255, 0.8);
+}
+
+.detail-meta dt {
+  margin: 0;
+  font-size: 12px;
+  color: #567386;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.detail-meta dd {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-family: "IBM Plex Mono", monospace;
+  color: #1b3d53;
+  word-break: break-word;
+}
+
+.detail-meta dd a {
+  color: #1c6ea4;
+  text-decoration: underline;
+}
+
+.detail-meta dd a:hover {
+  color: #174f75;
+}
+
+.preview-title {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  color: #355a71;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.md-preview {
+  margin: 0;
+  border: 1px solid #d2dfe8;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f7fbfe 0%, #eef6fb 100%);
+  padding: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 330px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .node-label {
@@ -214,6 +313,10 @@ tbody tr:hover {
 }
 
 @media (max-width: 900px) {
+  .table-and-detail {
+    grid-template-columns: 1fr;
+  }
+
   .panel-head {
     flex-direction: column;
     align-items: flex-start;

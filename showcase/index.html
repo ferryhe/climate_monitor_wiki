@@ -36,30 +36,68 @@
       <div id="graphWrap" class="graph-wrap">
         <svg id="graphSvg" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet"></svg>
       </div>
-      <p id="graphHint" class="hint">Drag nodes to rearrange the graph, click a node to jump to its row below.</p>
+      <p id="graphHint" class="hint">Drag nodes to rearrange the graph, then click nodes or table rows to inspect details in the right sidebar.</p>
     </section>
 
-    <section class="panel table-panel">
-      <div class="panel-head">
-        <h2>Dataview</h2>
-        <input id="searchInput" type="search" placeholder="Search by page, type, date...">
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Page</th>
-              <th>Type</th>
-              <th>Date</th>
-              <th>Words</th>
-              <th>Outlinks</th>
-              <th>Inlinks</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
+    <section class="table-and-detail">
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Dataview</h2>
+          <input id="searchInput" type="search" placeholder="Search by page, type, date...">
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Page</th>
+                <th>Type</th>
+                <th>Date</th>
+                <th>Words</th>
+                <th>Outlinks</th>
+                <th>Inlinks</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="panel detail-panel">
+        <div class="panel-head detail-head">
+          <h2>Node Detail</h2>
+          <span id="detailType" class="type-chip">None</span>
+        </div>
+        <h3 id="detailTitle" class="detail-title">Select a node or table row</h3>
+        <dl class="detail-meta">
+          <div>
+            <dt>Date</dt>
+            <dd id="detailDate">-</dd>
+          </div>
+          <div>
+            <dt>Words</dt>
+            <dd id="detailWords">-</dd>
+          </div>
+          <div>
+            <dt>Outlinks</dt>
+            <dd id="detailOutlinks">-</dd>
+          </div>
+          <div>
+            <dt>Inlinks</dt>
+            <dd id="detailInlinks">-</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd id="detailStatus">-</dd>
+          </div>
+          <div>
+            <dt>Source</dt>
+            <dd id="detailFile">-</dd>
+          </div>
+        </dl>
+        <h4 class="preview-title">Raw Markdown</h4>
+        <pre id="detailMarkdown" class="md-preview">Select a node to preview its markdown source.</pre>
+      </aside>
     </section>
   </main>
 

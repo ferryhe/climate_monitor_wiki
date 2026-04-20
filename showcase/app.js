@@ -42,6 +42,12 @@ const COLORS = {
 
 const titleFromFile = (name) => name.replace(/\.md$/i, "");
 
+function shortType(type) {
+  if (type === "daily") return "DAILY";
+  if (type === "index") return "INDEX";
+  return "TOPIC";
+}
+
 function detectType(title) {
   if (title === "index") return "index";
   if (/^climate-monitor-\d{4}-\d{2}-\d{2}$/.test(title)) return "daily";
@@ -117,13 +123,51 @@ function buildData(entries) {
   return { rows, edges };
 }
 
-function renderRows(rows) {
+function renderDetail(row) {
+  const detailType = document.getElementById("detailType");
+  const detailTitle = document.getElementById("detailTitle");
+  const detailDate = document.getElementById("detailDate");
+  const detailWords = document.getElementById("detailWords");
+  const detailOutlinks = document.getElementById("detailOutlinks");
+  const detailInlinks = document.getElementById("detailInlinks");
+  const detailStatus = document.getElementById("detailStatus");
+  const detailFile = document.getElementById("detailFile");
+  const detailMarkdown = document.getElementById("detailMarkdown");
+
+  if (!row) {
+    detailType.textContent = "None";
+    detailTitle.textContent = "Select a node or table row";
+    detailDate.textContent = "-";
+    detailWords.textContent = "-";
+    detailOutlinks.textContent = "-";
+    detailInlinks.textContent = "-";
+    detailStatus.textContent = "-";
+    detailFile.textContent = "-";
+    detailMarkdown.textContent = "Select a node to preview its markdown source.";
+    return;
+  }
+
+  detailType.textContent = shortType(row.type);
+  detailTitle.textContent = row.title;
+  detailDate.textContent = row.date;
+  detailWords.textContent = String(row.words);
+  detailOutlinks.textContent = String(row.outlinks);
+  detailInlinks.textContent = String(row.inlinks);
+  detailStatus.textContent = row.status;
+  const sourcePath = `wiki/${row.file}`;
+  const sourceHref = `../${encodeURI(sourcePath)}`;
+  detailFile.innerHTML = `<a href="${sourceHref}" target="_blank" rel="noopener noreferrer">${sourcePath}</a>`;
+  detailMarkdown.textContent = row.markdown;
+}
+
+function renderRows(rows, selectedTitle, onSelect) {
   const tbody = document.getElementById("rows");
   tbody.innerHTML = rows
     .map((row) => {
       const statusClass = row.status === "Reported" ? "status-ok" : row.status === "No report" ? "status-empty" : "";
+      const selectedClass = row.title === selectedTitle ? " is-selected" : "";
       return `
-      <tr data-page="${row.title}">
+      <tr data-page="${row.title}" class="${selectedClass.trim()}">
         <td>${row.title}</td>
         <td>${row.type}</td>
         <td>${row.date}</td>
@@ -134,20 +178,26 @@ function renderRows(rows) {
       </tr>`;
     })
     .join("");
-}
 
-function attachSearch(rows) {
-  const input = document.getElementById("searchInput");
-  input.addEventListener("input", () => {
-    const q = input.value.trim().toLowerCase();
-    const filtered = rows.filter((r) =>
-      `${r.title} ${r.type} ${r.date} ${r.status}`.toLowerCase().includes(q)
-    );
-    renderRows(filtered);
+  Array.from(tbody.querySelectorAll("tr[data-page]")).forEach((tr) => {
+    tr.addEventListener("click", () => {
+      onSelect(tr.getAttribute("data-page"));
+    });
   });
 }
 
-function renderGraph(rows, edges) {
+function attachSearch(state, renderTable) {
+  const input = document.getElementById("searchInput");
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    state.filteredRows = state.allRows.filter((r) =>
+      `${r.title} ${r.type} ${r.date} ${r.status}`.toLowerCase().includes(q)
+    );
+    renderTable();
+  });
+}
+
+function renderGraph(rows, edges, onSelect) {
   const svg = document.getElementById("graphSvg");
   const NS = "http://www.w3.org/2000/svg";
   const width = 1200;
@@ -203,8 +253,7 @@ function renderGraph(rows, edges) {
     nodeGroup.appendChild(g);
 
     g.addEventListener("click", () => {
-      const row = document.querySelector(`tr[data-page="${node.id}"]`);
-      if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+      onSelect(node.id);
     });
 
     let dragging = false;
@@ -303,12 +352,32 @@ async function main() {
   );
 
   const { rows, edges } = buildData(entries);
+  const state = {
+    allRows: rows,
+    filteredRows: rows,
+    selectedTitle: null
+  };
+
   document.getElementById("metaNotes").textContent = `Notes: ${rows.length}`;
   document.getElementById("metaEdges").textContent = `Edges: ${edges.length}`;
 
-  renderRows(rows);
-  attachSearch(rows);
-  renderGraph(rows, edges);
+  const selectPage = (title) => {
+    state.selectedTitle = title;
+    const selected = state.allRows.find((r) => r.title === title) || null;
+    renderDetail(selected);
+    renderRows(state.filteredRows, state.selectedTitle, selectPage);
+    const rowEl = document.querySelector(`tr[data-page="${title}"]`);
+    if (rowEl) rowEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const renderTable = () => {
+    renderRows(state.filteredRows, state.selectedTitle, selectPage);
+  };
+
+  renderDetail(null);
+  renderTable();
+  attachSearch(state, renderTable);
+  renderGraph(rows, edges, selectPage);
 }
 
 main().catch((err) => {
