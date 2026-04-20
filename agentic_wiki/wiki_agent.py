@@ -541,7 +541,7 @@ class AgenticWikiResponder:
                     }
                 )
 
-        ranked_hits = self._rank_for_answer(question, hits)
+        ranked_hits = self._rank_for_answer(question, hits, context_path=context_path)
         sources = [
             hit.to_source(index, self.base_source_url)
             for index, hit in enumerate(ranked_hits[:8], start=1)
@@ -661,17 +661,38 @@ class AgenticWikiResponder:
             "additional_queries": [],
         }
 
-    def _rank_for_answer(self, question: str, hits: list[SearchHit]) -> list[SearchHit]:
+    def _rank_for_answer(
+        self,
+        question: str,
+        hits: list[SearchHit],
+        *,
+        context_path: str | None = None,
+    ) -> list[SearchHit]:
         if not hits:
             return []
         expanded_tokens = set(_tokens(_expand_query(question)))
+        normalized_context_path = (context_path or "").lstrip("/")
 
         def answer_score(hit: SearchHit) -> float:
             overlap = len(expanded_tokens & set(hit.chunk.tokens))
             source_bonus = 0.8 if hit.chunk.type == "topic" else 0.2
             return hit.score + overlap + source_bonus
 
-        return sorted(hits, key=answer_score, reverse=True)
+        ranked = sorted(hits, key=answer_score, reverse=True)
+        if not normalized_context_path:
+            return ranked
+
+        # Keep active-note evidence first to ensure Obsidian context is honored.
+        context_hits = [
+            hit for hit in ranked if hit.chunk.path == normalized_context_path
+        ]
+        if not context_hits:
+            return ranked
+
+        non_context_hits = [
+            hit for hit in ranked if hit.chunk.path != normalized_context_path
+        ]
+        return context_hits + non_context_hits
 
     def _synthesize(
         self,
