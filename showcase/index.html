@@ -13,72 +13,122 @@
     <link rel="stylesheet" href="/showcase/styles.css" />
   </head>
   <body>
-    <main class="workspace">
-      <section class="chat-shell" aria-label="Climate Monitor Wiki Agent chat">
-        <header class="app-header">
-          <div>
-            <p class="eyebrow">Climate Monitor Wiki Agent</p>
-            <h1>Climate Risk Wiki Chat</h1>
-          </div>
+    <div class="app-shell">
+
+      <!-- ── Tab bar ── -->
+      <nav class="tabbar" aria-label="Main navigation">
+        <div class="tabbar__brand">
+          <span class="tabbar__dot" aria-hidden="true"></span>
+          <strong class="tabbar__name">Climate Monitor</strong>
+        </div>
+        <div class="tabbar__tabs" role="tablist">
+          <button class="tabbar__tab is-active" role="tab" type="button"
+              data-view="chatView" aria-selected="true">
+            <svg class="tabbar__icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M1 2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5l-4 3V2Z"
+                stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+            Chat
+          </button>
+          <button class="tabbar__tab" role="tab" type="button"
+              data-view="obsidianView" aria-selected="false">
+            <svg class="tabbar__icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M5 5h6M5 8h6M5 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            Wiki
+          </button>
+        </div>
+        <div class="tabbar__right">
           <div id="connectionStatus" class="status-pill">Connecting</div>
-        </header>
+        </div>
+      </nav>
 
-        <section id="messages" class="message-list" aria-live="polite"></section>
+      <!-- ── Chat view ── -->
+      <div id="chatView" class="view-panel" role="tabpanel">
+        <div class="chat-layout">
+          <section class="chat-shell" aria-label="Chat">
+            <section id="messages" class="message-list" aria-live="polite"></section>
+            <form id="chatForm" class="composer">
+              <label class="sr-only" for="messageInput">Ask a question</label>
+              <textarea
+                id="messageInput"
+                name="message"
+                rows="2"
+                placeholder="Ask about climate risk, nat-cat insurance, IFRS S2, IAIS, or actuarial research…"
+              ></textarea>
+              <button id="clearChatButton" type="button">Clear</button>
+              <button id="sendButton" type="submit">Send</button>
+            </form>
+          </section>
 
-        <form id="chatForm" class="composer">
-          <label class="sr-only" for="messageInput">Ask a question</label>
-          <textarea
-            id="messageInput"
-            name="message"
-            rows="2"
-            placeholder="Ask about climate risk, nat-cat insurance, IFRS S2, IAIS, or actuarial research..."
-          ></textarea>
-          <button id="sendButton" type="submit">Send</button>
-        </form>
-      </section>
+          <aside class="evidence-shell" aria-label="Evidence">
+            <button class="ev-toggle" type="button" data-target="evidencePanel" aria-expanded="false">
+              <span class="ev-toggle__label">Evidence</span>
+              <span id="sourceCount" class="ev-toggle__badge">0</span>
+              <svg class="ev-toggle__chevron" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div id="evidencePanel" class="ev-panel" hidden>
+              <div id="sourceList" class="source-list">
+                <p class="muted">Cited pages appear here after an answer.</p>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
 
-      <aside class="context-shell" aria-label="Wiki context">
-        <img
-          class="context-image"
-          src="https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=1200&q=80"
-          alt="Mountain lake landscape"
-        />
+      <!-- ── Wiki / Obsidian view ── -->
+      <div id="obsidianView" class="view-panel" role="tabpanel" hidden>
+        <div class="obsidian-layout">
 
-        <section class="context-section">
-          <div class="section-heading">
-            <h2>Evidence</h2>
-            <span id="sourceCount">0</span>
-          </div>
-          <div id="sourceList" class="source-list">
-            <p class="muted">Cited wiki pages will appear here after an answer.</p>
-          </div>
-        </section>
+          <nav class="obs-sidebar" aria-label="Wiki pages">
+            <div class="obs-sidebar__head">
+              <span class="obs-sidebar__title">Pages</span>
+              <span id="wikiStats" class="obs-sidebar__stats">—</span>
+            </div>
+            <div class="obs-sidebar__search">
+              <svg class="obs-search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="m11 11 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <input id="wikiSearch" type="search" placeholder="Search pages…" autocomplete="off" />
+            </div>
+            <div id="wikiList" class="obs-filelist"></div>
+          </nav>
 
-        <section class="context-section">
-          <div class="section-heading">
-            <h2>Wiki Pages</h2>
-            <span id="wikiStats">Loading</span>
-          </div>
-          <input
-            id="wikiSearch"
-            class="wiki-search"
-            type="search"
-            placeholder="Search pages or topics"
-          />
-          <div id="wikiList" class="wiki-list"></div>
-        </section>
+          <main id="obsContent" class="obs-content">
+            <div id="obsEmptyState" class="obs-empty">
+              <svg width="56" height="56" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                <rect x="8" y="5" width="32" height="38" rx="3" stroke="#4a6b5a" stroke-width="1.8"/>
+                <path d="M14 15h20M14 21h20M14 27h14" stroke="#4a6b5a" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <p>Select a page from the sidebar to preview it.<br/>
+                The active page is prioritized during chat retrieval.</p>
+            </div>
 
-        <section class="context-section context-section--preview">
-          <div class="section-heading">
-            <h2>Active Context</h2>
-            <button id="clearContextButton" type="button">Clear</button>
-          </div>
-          <p id="activeContext" class="active-context">No page selected</p>
-          <pre id="markdownPreview" class="markdown-preview">Select a wiki page to prioritize it during retrieval.</pre>
-        </section>
-      </aside>
-    </main>
+            <article id="obsArticle" class="obs-article" hidden>
+              <header class="obs-article__header">
+                <div class="obs-article__meta">
+                  <span id="obsArticleType" class="obs-badge"></span>
+                  <span id="obsArticleDate" class="obs-meta-item"></span>
+                  <span id="obsArticleWords" class="obs-meta-item"></span>
+                </div>
+                <div class="obs-article__title-row">
+                  <h1 id="activeContext" class="obs-article__title">—</h1>
+                  <button id="clearContextButton" class="obs-deactivate" type="button">Deactivate</button>
+                </div>
+              </header>
+              <div id="markdownPreview" class="obs-article__body"></div>
+            </article>
+          </main>
 
+        </div>
+      </div>
+
+    </div>
     <script src="/showcase/app.js"></script>
   </body>
 </html>
