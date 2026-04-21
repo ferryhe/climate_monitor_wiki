@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +34,7 @@ app.add_middleware(
 )
 
 responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
+RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
 
 
 class ChatMessage(BaseModel):
@@ -60,7 +61,19 @@ def config() -> dict:
 
 
 @app.post("/api/reload")
-def reload_wiki() -> dict:
+def reload_wiki(request: Request, x_reload_token: str | None = Header(default=None)) -> dict:
+    client_host = (request.client.host if request.client else "").strip()
+    is_local_client = client_host in {"127.0.0.1", "::1", "localhost"}
+
+    if RELOAD_TOKEN:
+        if x_reload_token != RELOAD_TOKEN:
+            raise HTTPException(status_code=403, detail="Invalid reload token.")
+    elif not is_local_client:
+        raise HTTPException(
+            status_code=403,
+            detail="Reload is restricted to localhost unless RELOAD_TOKEN is configured.",
+        )
+
     responder.kb.reload()
     return responder.config()
 

@@ -25,19 +25,23 @@
 
         <div class="tabbar__tabs" role="tablist">
           <button
+            id="chatTab"
             class="tabbar__tab is-active"
             role="tab"
             type="button"
             data-view="chatView"
+            aria-controls="chatView"
             aria-selected="true"
           >
             Chat
           </button>
           <button
+            id="obsidianTab"
             class="tabbar__tab"
             role="tab"
             type="button"
             data-view="obsidianView"
+            aria-controls="obsidianView"
             aria-selected="false"
           >
             Obsidian
@@ -48,7 +52,7 @@
       </nav>
 
       <main class="workspace">
-        <section id="chatView" class="view-panel" role="tabpanel">
+        <section id="chatView" class="view-panel" role="tabpanel" aria-labelledby="chatTab">
           <div class="chat-app">
             <header class="chat-hero">
               <div class="chat-hero__copy">
@@ -133,7 +137,13 @@
           </div>
         </section>
 
-        <section id="obsidianView" class="view-panel" role="tabpanel" hidden>
+        <section
+          id="obsidianView"
+          class="view-panel"
+          role="tabpanel"
+          aria-labelledby="obsidianTab"
+          hidden
+        >
           <div class="obsidian-shell">
             <header class="obsidian-hero">
               <div>
