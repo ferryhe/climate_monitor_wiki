@@ -7,13 +7,53 @@ const SUGGESTIONS = [
   "How does parametric insurance relate to the nat-cat protection gap?",
 ];
 
+const GRAPH_COLORS = {
+  daily: "#cf9156",
+  topic: "#7eb696",
+  index: "#87a8c7",
+  keyword: "#83a6c8",
+};
+
+const GRAPH_COPY = {
+  notes: {
+    title: "Vault Links",
+    hint:
+      "Drag note nodes to rearrange the graph. Click a node or a Dataview row to inspect the note and set it as the active chat context.",
+    legendHtml: `
+      <span><i class="dot dot-daily"></i>Daily</span>
+      <span><i class="dot dot-topic"></i>Topic</span>
+      <span><i class="dot dot-index"></i>Index</span>
+    `,
+  },
+  keywords: {
+    title: "Keyword Map",
+    hint:
+      "Keyword mode connects notes to source-backed concepts. Click a note to inspect it, or click a keyword to filter the Dataview table.",
+    legendHtml: `
+      <span><i class="dot dot-daily"></i>Daily</span>
+      <span><i class="dot dot-topic"></i>Topic</span>
+      <span><i class="dot dot-index"></i>Index</span>
+      <span><i class="dot dot-keyword"></i>Keyword</span>
+    `,
+  },
+};
+
 const state = {
   messages: [],
   documents: [],
-  filteredDocuments: [],
+  concepts: [],
+  rows: [],
+  filteredRows: [],
+  edges: [],
+  graphMode: "notes",
+  answerMode: "detailed",
   activeContextPath: null,
   isSending: false,
   activeView: "chatView",
+  markdownByPath: {},
+  markdownRequests: {},
+  graph: null,
+  graphFrame: 0,
 };
 
 const els = {
@@ -22,42 +62,68 @@ const els = {
   input: document.getElementById("messageInput"),
   send: document.getElementById("sendButton"),
   clearChat: document.getElementById("clearChatButton"),
+  clearContext: document.getElementById("clearContextButton"),
+  jumpToWiki: document.getElementById("jumpToWikiButton"),
+  useInChat: document.getElementById("useInChatButton"),
+  clearSelection: document.getElementById("clearSelectionButton"),
   status: document.getElementById("connectionStatus"),
-  sourceList: document.getElementById("sourceList"),
-  sourceCount: document.getElementById("sourceCount"),
+  activeContextBadge: document.getElementById("activeContextBadge"),
+  activeContext: document.getElementById("activeContext"),
+  detailTitle: document.getElementById("detailTitle"),
+  detailType: document.getElementById("detailType"),
+  detailDate: document.getElementById("detailDate"),
+  detailWords: document.getElementById("detailWords"),
+  detailOutlinks: document.getElementById("detailOutlinks"),
+  detailInlinks: document.getElementById("detailInlinks"),
+  detailStatus: document.getElementById("detailStatus"),
+  detailFile: document.getElementById("detailFile"),
+  detailMarkdown: document.getElementById("detailMarkdown"),
+  metaNotes: document.getElementById("metaNotes"),
+  metaEdges: document.getElementById("metaEdges"),
   wikiStats: document.getElementById("wikiStats"),
   wikiSearch: document.getElementById("wikiSearch"),
-  wikiList: document.getElementById("wikiList"),
-  activeContext: document.getElementById("activeContext"),
-  markdownPreview: document.getElementById("markdownPreview"),
+  rows: document.getElementById("rows"),
+  graphSvg: document.getElementById("graphSvg"),
+  graphTitle: document.getElementById("graphTitle"),
+  graphLegend: document.getElementById("graphLegend"),
+  graphHint: document.getElementById("graphHint"),
   chatView: document.getElementById("chatView"),
   obsidianView: document.getElementById("obsidianView"),
-  obsContent: document.getElementById("obsContent"),
-  obsEmptyState: document.getElementById("obsEmptyState"),
-  obsArticle: document.getElementById("obsArticle"),
-  obsArticleType: document.getElementById("obsArticleType"),
-  obsArticleDate: document.getElementById("obsArticleDate"),
-  obsArticleWords: document.getElementById("obsArticleWords"),
+  answerModeButtons: Array.from(document.querySelectorAll("[data-answer-mode]")),
+  graphModeButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   workspaceTabs: Array.from(document.querySelectorAll(".tabbar__tab")),
 };
-
-// ── Helpers ──────────────────────────────────────────────
 
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
-// Inline markdown → HTML (safe: only escapes &, <, > before formatting)
+function normalizeMojibake(text) {
+  return text
+    .replaceAll("鈫�", "→")
+    .replaceAll("鈥�", "—")
+    .replaceAll("锟�", "")
+    .replaceAll("â†’", "→")
+    .replaceAll("â€”", "—")
+    .replaceAll("â€“", "–")
+    .replaceAll("â€œ", '"')
+    .replaceAll("â€\x9d", '"')
+    .replaceAll("â€˜", "'")
+    .replaceAll("â€™", "'")
+    .replaceAll("�", "");
+}
+
 function inlineFmt(raw) {
-  const t = raw.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  return t
+  const text = escapeHtml(raw);
+  return text
     .replace(
       /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
       (_, page, alias) =>
-        `<a class="obs-wikilink" data-page="${encodeURIComponent(page.trim())}">${(alias || page).trim()}</a>`,
+        `<a class="obs-wikilink" data-page="${encodeURIComponent(page.trim())}">${escapeHtml((alias || page).trim())}</a>`,
     )
     .replace(
       /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
@@ -69,7 +135,6 @@ function inlineFmt(raw) {
     .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>');
 }
 
-// Full markdown → rendered HTML for Obsidian preview
 function renderMarkdownFull(markdown) {
   const lines = markdown.split("\n");
   const out = [];
@@ -78,15 +143,17 @@ function renderMarkdownFull(markdown) {
   let inTable = false;
 
   const flushCode = () => {
-    out.push(`<pre class="obs-code"><code>${escapeHtml(codeLines.join("\n").trimEnd())}</code></pre>`);
+    out.push(`<pre><code>${escapeHtml(codeLines.join("\n").trimEnd())}</code></pre>`);
     codeLines = [];
   };
 
   for (const line of lines) {
-    // Code fence
     if (line.startsWith("```")) {
       if (!inCode) {
-        if (inTable) { out.push("</tbody></table>"); inTable = false; }
+        if (inTable) {
+          out.push("</tbody></table>");
+          inTable = false;
+        }
         inCode = true;
         codeLines = [];
       } else {
@@ -95,84 +162,266 @@ function renderMarkdownFull(markdown) {
       }
       continue;
     }
-    if (inCode) { codeLines.push(line); continue; }
 
-    // Table rows (contains |)
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
     if (line.includes("|")) {
-      const cells = line.split("|").slice(1, -1).map((c) => c.trim());
-      if (cells.length && cells.every((c) => /^[-: ]+$/.test(c))) continue; // separator
+      const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+      if (cells.length && cells.every((cell) => /^[-: ]+$/.test(cell))) {
+        continue;
+      }
       if (!inTable) {
         inTable = true;
-        out.push(`<table><thead><tr>${cells.map((c) => `<th>${inlineFmt(c)}</th>`).join("")}</tr></thead><tbody>`);
+        out.push(
+          `<table><thead><tr>${cells.map((cell) => `<th>${inlineFmt(cell)}</th>`).join("")}</tr></thead><tbody>`,
+        );
       } else {
-        out.push(`<tr>${cells.map((c) => `<td>${inlineFmt(c)}</td>`).join("")}</tr>`);
+        out.push(`<tr>${cells.map((cell) => `<td>${inlineFmt(cell)}</td>`).join("")}</tr>`);
       }
       continue;
     }
-    if (inTable) { out.push("</tbody></table>"); inTable = false; }
 
-    if (!line.trim()) continue;
+    if (inTable) {
+      out.push("</tbody></table>");
+      inTable = false;
+    }
 
-    // Heading
-    const hm = line.match(/^(#{1,4})\s+(.+)$/);
-    if (hm) {
-      const lvl = Math.min(hm[1].length + 1, 5);
-      out.push(`<h${lvl}>${inlineFmt(hm[2])}</h${lvl}>`);
+    if (!line.trim()) {
       continue;
     }
 
-    // Horizontal rule
-    if (/^[-*_]{3,}$/.test(line.trim())) { out.push("<hr>"); continue; }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(heading[1].length + 1, 5);
+      out.push(`<h${level}>${inlineFmt(heading[2])}</h${level}>`);
+      continue;
+    }
 
-    // Blockquote
-    const bq = line.match(/^>\s*(.*)$/);
-    if (bq) { out.push(`<blockquote>${inlineFmt(bq[1])}</blockquote>`); continue; }
+    if (/^[-*_]{3,}$/.test(line.trim())) {
+      out.push("<hr>");
+      continue;
+    }
 
-    // Ordered list
-    const oli = line.match(/^\d+\.\s+(.+)$/);
-    if (oli) { out.push(`<ol><li>${inlineFmt(oli[1])}</li></ol>`); continue; }
+    const blockquote = line.match(/^>\s*(.*)$/);
+    if (blockquote) {
+      out.push(`<blockquote>${inlineFmt(blockquote[1])}</blockquote>`);
+      continue;
+    }
 
-    // Unordered list
-    const uli = line.match(/^[-*+]\s+(.+)$/);
-    if (uli) { out.push(`<ul><li>${inlineFmt(uli[1])}</li></ul>`); continue; }
+    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    if (ordered) {
+      out.push(`<ol><li>${inlineFmt(ordered[1])}</li></ol>`);
+      continue;
+    }
+
+    const unordered = line.match(/^[-*+]\s+(.+)$/);
+    if (unordered) {
+      out.push(`<ul><li>${inlineFmt(unordered[1])}</li></ul>`);
+      continue;
+    }
 
     out.push(`<p>${inlineFmt(line)}</p>`);
   }
 
-  if (inCode) flushCode();
-  if (inTable) out.push("</tbody></table>");
+  if (inCode) {
+    flushCode();
+  }
 
-  return out
-    .join("\n")
-    .replace(/<\/ul>\n<ul>/g, "")
-    .replace(/<\/ol>\n<ol>/g, "");
+  if (inTable) {
+    out.push("</tbody></table>");
+  }
+
+  return out.join("\n").replace(/<\/ul>\n<ul>/g, "").replace(/<\/ol>\n<ol>/g, "");
 }
 
-// Lite markdown renderer for chat bubbles
-function renderMarkdownLite(value) {
-  const escaped = escapeHtml(value);
-  return escaped
-    .replace(/^### (.*)$/gm, "<h4>$1</h4>")
-    .replace(/^## (.*)$/gm, "<h3>$1</h3>")
-    .replace(/^# (.*)$/gm, "<h3>$1</h3>")
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>')
-    .replace(/^- (.*)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
-    .replace(/\n\n/g, "</p><p>")
-    .replace(/\n/g, "<br>");
+function titleFromPath(path) {
+  return path.split("/").pop().replace(/\.md$/i, "");
 }
 
-// ── Thread persistence ───────────────────────────────────
+function normalizeSearchText(value) {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function deriveStatus(doc, markdown) {
+  if (doc.type !== "daily") {
+    return "-";
+  }
+  return /no climate monitor report|no report/i.test(markdown) ? "No report" : "Reported";
+}
+
+function buildWorkspaceData(documents) {
+  const byTitle = new Map(documents.map((doc) => [doc.title, doc]));
+  const inCount = new Map(documents.map((doc) => [doc.path, 0]));
+  const outCount = new Map(documents.map((doc) => [doc.path, 0]));
+  const edges = [];
+
+  for (const doc of documents) {
+    const uniqueLinks = [...new Set(doc.links || [])];
+    for (const rawLink of uniqueLinks) {
+      const normalized = rawLink.replace(/^wiki\//, "").replace(/\.md$/i, "");
+      const target = byTitle.get(normalized);
+      if (!target) {
+        continue;
+      }
+      edges.push({ source: doc.path, target: target.path });
+      outCount.set(doc.path, (outCount.get(doc.path) || 0) + 1);
+      inCount.set(target.path, (inCount.get(target.path) || 0) + 1);
+    }
+  }
+
+  const rows = documents
+    .map((doc) => ({
+      ...doc,
+      outlinks: outCount.get(doc.path) || 0,
+      inlinks: inCount.get(doc.path) || 0,
+      status: doc.status || (doc.type === "daily" ? "Loading..." : "-"),
+    }))
+    .sort((left, right) => left.title.localeCompare(right.title));
+
+  return { rows, edges };
+}
+
+function keywordNodeId(label) {
+  return `keyword:${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function buildNoteGraph(rows, edges) {
+  return {
+    mode: "notes",
+    title: GRAPH_COPY.notes.title,
+    hint: GRAPH_COPY.notes.hint,
+    legendHtml: GRAPH_COPY.notes.legendHtml,
+    nodes: rows.map((row) => ({
+      id: row.path,
+      refPath: row.path,
+      label: row.title,
+      kind: "note",
+      type: row.type,
+    })),
+    links: edges.map((edge) => ({ source: edge.source, target: edge.target })),
+  };
+}
+
+function buildKeywordGraph(rows) {
+  const docKeywords = new Map(
+    rows.map((row) => [row.path, (row.concepts || []).map((concept) => concept.label)]),
+  );
+  const keywordEntries = (state.concepts || [])
+    .filter((concept) => concept.document_count >= 2)
+    .slice(0, 18);
+  const fallbackEntries = (state.concepts || []).slice(0, 12);
+  const selectedEntries = keywordEntries.length ? keywordEntries : fallbackEntries;
+  const selectedKeywords = new Set(selectedEntries.map((concept) => concept.label));
+  const connectedRows = rows.filter((row) => (docKeywords.get(row.path) || []).some((label) => selectedKeywords.has(label)));
+
+  const nodes = connectedRows.map((row) => ({
+    id: row.path,
+    refPath: row.path,
+    label: row.title,
+    kind: "note",
+    type: row.type,
+  }));
+
+  for (const concept of selectedEntries) {
+    nodes.push({
+      id: keywordNodeId(concept.label),
+      label: concept.label,
+      kind: "keyword",
+      type: "keyword",
+      weight: concept.document_count,
+    });
+  }
+
+  const links = [];
+  for (const row of connectedRows) {
+    for (const label of docKeywords.get(row.path) || []) {
+      if (selectedKeywords.has(label)) {
+        links.push({ source: row.path, target: keywordNodeId(label) });
+      }
+    }
+  }
+
+  return {
+    mode: "keywords",
+    title: GRAPH_COPY.keywords.title,
+    hint: selectedEntries.length
+      ? GRAPH_COPY.keywords.hint
+      : "Keyword mode is still warming up. Once concepts are indexed from wiki and raw source files, they will appear here.",
+    legendHtml: GRAPH_COPY.keywords.legendHtml,
+    nodes,
+    links,
+  };
+}
+
+function graphDataForCurrentMode() {
+  return state.graphMode === "keywords"
+    ? buildKeywordGraph(state.rows)
+    : buildNoteGraph(state.rows, state.edges);
+}
+
+function setGraphMode(mode) {
+  if (!mode) {
+    return;
+  }
+  state.graphMode = mode;
+  els.graphModeButtons.forEach((button) => {
+    const active = button.dataset.graphMode === mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  renderCurrentGraph();
+}
+
+function getNodeRadius(node) {
+  if (node.kind === "keyword") {
+    return Math.min(11, 6 + Math.max(0, (node.weight || 1) - 1));
+  }
+  return node.type === "index" ? 8 : 6;
+}
+
+function projectGridPosition(index, count, minX, maxX, minY, maxY) {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
+  const rows = Math.max(1, Math.ceil(count / cols));
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+  return {
+    x: minX + ((col + 0.5) / cols) * (maxX - minX),
+    y: minY + ((row + 0.5) / rows) * (maxY - minY),
+  };
+}
+
+function setConnectionStatus(agentMode, model) {
+  if (!els.status) {
+    return;
+  }
+  els.status.textContent = agentMode === "openai" ? `OpenAI: ${model}` : "Offline demo";
+  els.status.classList.toggle("status-pill--offline", agentMode !== "openai");
+}
+
+function setAnswerMode(mode) {
+  if (!mode) {
+    return;
+  }
+  state.answerMode = mode;
+  els.answerModeButtons.forEach((button) => {
+    const active = button.dataset.answerMode === mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
 
 function loadThread() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+    if (!raw) {
+      return;
+    }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      state.messages = parsed.filter((item) => item.role && item.content);
+      state.messages = parsed.filter((item) => item && item.role && item.content !== undefined);
     }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
@@ -187,53 +436,95 @@ function clearThread() {
   state.messages = [];
   localStorage.removeItem(STORAGE_KEY);
   renderMessages();
-  renderSources([]);
 }
-
-// ── Tab switching ────────────────────────────────────────
 
 function setWorkspaceView(viewId) {
-  if (!viewId) return;
+  if (!viewId) {
+    return;
+  }
   state.activeView = viewId;
-  if (els.chatView) els.chatView.hidden = viewId !== "chatView";
-  if (els.obsidianView) els.obsidianView.hidden = viewId !== "obsidianView";
-  els.workspaceTabs.forEach((btn) => {
-    const active = btn.dataset.view === viewId;
-    btn.classList.toggle("is-active", active);
-    btn.setAttribute("aria-selected", String(active));
+  if (els.chatView) {
+    els.chatView.hidden = viewId !== "chatView";
+  }
+  if (els.obsidianView) {
+    els.obsidianView.hidden = viewId !== "obsidianView";
+  }
+  els.workspaceTabs.forEach((button) => {
+    const active = button.dataset.view === viewId;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
   });
 }
-
-// ── Chat messages ────────────────────────────────────────
 
 function messageToApi(item) {
   return { role: item.role, content: item.content };
 }
 
 function appendMessage(role, content, options = {}) {
-  state.messages.push({ role, content, sources: options.sources || [], pending: Boolean(options.pending) });
+  state.messages.push({
+    role,
+    content,
+    sources: options.sources || [],
+    pending: Boolean(options.pending),
+  });
   saveThread();
   renderMessages();
 }
 
 function replacePendingAssistant(content, sources = []) {
-  const pending = state.messages.findLast((item) => item.role === "assistant" && item.pending);
-  if (pending) {
-    pending.content = content;
-    pending.sources = sources;
-    pending.pending = false;
-  } else {
-    state.messages.push({ role: "assistant", content, sources });
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
+    if (message.role === "assistant" && message.pending) {
+      message.content = content;
+      message.sources = sources;
+      message.pending = false;
+      saveThread();
+      renderMessages();
+      return;
+    }
   }
+
+  state.messages.push({ role: "assistant", content, sources, pending: false });
   saveThread();
   renderMessages();
+}
+
+function renderSourceCards(sources) {
+  if (!sources.length) {
+    return "";
+  }
+  return `
+    <details class="message-sources">
+      <summary>Evidence ${sources.length}</summary>
+      <div class="source-list">
+        ${sources
+          .map(
+            (source) => `
+              <button class="source-card" type="button" data-path="${escapeHtml(source.path || "")}">
+                <div class="source-card__title">
+                  <span class="source-card__index">[${source.index}]</span>
+                  <span class="source-card__heading">${escapeHtml(source.title || source.path || "Source")}</span>
+                </div>
+                <p class="source-card__meta">${escapeHtml((source.corpus || "wiki").toUpperCase())} · ${escapeHtml(source.heading || source.path || "")}</p>
+                <p class="source-card__snippet">${escapeHtml(source.snippet || "")}</p>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    </details>
+  `;
 }
 
 function renderEmptyState() {
   const shell = document.createElement("section");
   shell.className = "empty-state";
   shell.innerHTML = `
-    <p class="empty-state__lead">Ask the agent to retrieve, plan, cite, and answer from the wiki.</p>
+    <p class="empty-state__lead">
+      Ask the agent to retrieve, compare, and cite notes from the climate-risk wiki. Switch to the
+      Obsidian tab whenever you want to inspect the graph, Dataview table, or choose the active
+      note for retrieval.
+    </p>
     <div class="suggestions">
       ${SUGGESTIONS.map(
         (prompt) =>
@@ -241,47 +532,73 @@ function renderEmptyState() {
       ).join("")}
     </div>
   `;
+
   shell.querySelectorAll(".suggestion-chip").forEach((button) => {
     button.addEventListener("click", () => {
       els.input.value = button.getAttribute("data-prompt");
       els.form.requestSubmit();
     });
   });
+
   els.messages.appendChild(shell);
 }
 
 function renderMessages() {
+  if (!els.messages) {
+    return;
+  }
+
   els.messages.innerHTML = "";
-  if (state.messages.length === 0) { renderEmptyState(); return; }
+  if (state.messages.length === 0) {
+    renderEmptyState();
+    return;
+  }
+
   state.messages.forEach((item) => {
     const row = document.createElement("article");
     row.className = `message-row message-row--${item.role}`;
+
     const bubble = document.createElement("div");
     bubble.className = `message-bubble message-bubble--${item.role}`;
+
     if (item.pending) {
-      bubble.innerHTML = `<span class="typing-dot"></span>Searching the wiki and drafting an answer…`;
+      bubble.innerHTML = `
+        <div class="message-bubble__typing">
+          <span class="typing-dot" aria-hidden="true"></span>
+          Searching the wiki and drafting an answer…
+        </div>
+      `;
     } else if (item.role === "assistant") {
-      bubble.innerHTML = `<p>${renderMarkdownLite(item.content)}</p>`;
+      bubble.innerHTML = `
+        <div class="message-markdown">${renderMarkdownFull(item.content)}</div>
+        ${renderSourceCards(item.sources || [])}
+      `;
     } else {
-      bubble.textContent = item.content;
+      bubble.innerHTML = `<p class="message-bubble__plain">${escapeHtml(item.content)}</p>`;
     }
+
     row.appendChild(bubble);
     els.messages.appendChild(row);
   });
+
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
 function setSending(value) {
   state.isSending = value;
-  els.send.disabled = value;
-  els.input.disabled = value;
-  els.send.textContent = value ? "Drafting" : "Send";
+  if (els.send) {
+    els.send.disabled = value;
+  }
+  if (els.form) {
+    els.form.setAttribute("aria-busy", String(value));
+  }
 }
 
 async function sendMessage(message) {
   setSending(true);
   appendMessage("user", message);
   appendMessage("assistant", "", { pending: true });
+
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -290,149 +607,553 @@ async function sendMessage(message) {
         messages: state.messages.filter((item) => !item.pending).map(messageToApi),
         contextPath: state.activeContextPath,
         language: "en",
+        answerMode: state.answerMode,
       }),
     });
+
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(detail || `HTTP ${response.status}`);
     }
+
     const payload = await response.json();
     replacePendingAssistant(payload.text, payload.sources || []);
-    renderSources(payload.sources || []);
-    els.status.textContent =
-      payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "Offline demo";
-    els.status.classList.toggle("status-pill--offline", payload.agent_mode !== "openai");
+    setConnectionStatus(payload.agent_mode, payload.model);
+    setAnswerMode(payload.answer_mode || state.answerMode);
   } catch (error) {
     replacePendingAssistant(`Request failed: ${error.message}`);
   } finally {
     setSending(false);
-    els.input.focus();
+    if (els.input) {
+      els.input.focus();
+    }
   }
 }
 
-// ── Evidence panel ───────────────────────────────────────
+function renderChatContext() {
+  const doc = state.rows.find((item) => item.path === state.activeContextPath);
 
-function openEvidencePanel() {
-  const panel = document.getElementById("evidencePanel");
-  const toggle = document.querySelector(".ev-toggle");
-  if (!panel || !toggle || !panel.hidden) return;
-  panel.hidden = false;
-  toggle.setAttribute("aria-expanded", "true");
-  toggle.classList.add("is-open");
-}
-
-function renderSources(sources) {
-  els.sourceCount.textContent = String(sources.length);
-  if (!sources.length) {
-    els.sourceList.innerHTML = `<p class="muted">No sources returned yet.</p>`;
+  if (!doc) {
+    els.activeContextBadge.textContent = "No active note";
+    els.activeContextBadge.classList.add("is-empty");
+    els.activeContext.textContent = "No active note selected for chat.";
+    if (els.clearContext) {
+      els.clearContext.disabled = true;
+    }
+    if (els.useInChat) {
+      els.useInChat.disabled = true;
+    }
+    if (els.clearSelection) {
+      els.clearSelection.disabled = true;
+    }
     return;
   }
-  openEvidencePanel();
-  els.sourceList.innerHTML = sources
-    .map(
-      (source) => `
-      <button class="source-item" type="button" data-path="${escapeHtml(source.path)}">
-        <span class="source-item__index">[${source.index}]</span>
-        <span class="source-item__title">${escapeHtml(source.title)}</span>
-        <span class="source-item__meta">${escapeHtml(source.heading || source.path)}</span>
-        <span class="source-item__snippet">${escapeHtml(source.snippet || "")}</span>
-      </button>`,
-    )
+
+  els.activeContextBadge.textContent = `Active note: ${doc.title}`;
+  els.activeContextBadge.classList.remove("is-empty");
+  els.activeContext.textContent = `${doc.title} is the active note prioritized during chat retrieval.`;
+  if (els.clearContext) {
+    els.clearContext.disabled = false;
+  }
+  if (els.useInChat) {
+    els.useInChat.disabled = false;
+  }
+  if (els.clearSelection) {
+    els.clearSelection.disabled = false;
+  }
+}
+
+function renderWorkspaceMetrics(graphData = null) {
+  if (els.metaNotes) {
+    els.metaNotes.textContent = `Notes: ${state.rows.length}`;
+  }
+  if (els.metaEdges) {
+    const edgeCount = graphData ? graphData.links.length : state.edges.length;
+    els.metaEdges.textContent = state.graphMode === "keywords" ? `Links: ${edgeCount}` : `Edges: ${edgeCount}`;
+  }
+  if (els.wikiStats) {
+    els.wikiStats.textContent = `Pages: ${state.documents.length}`;
+  }
+}
+
+function renderRows() {
+  if (!els.rows) {
+    return;
+  }
+
+  if (!state.filteredRows.length) {
+    els.rows.innerHTML = `
+      <tr>
+        <td colspan="7" class="muted">No matching pages.</td>
+      </tr>
+    `;
+    return;
+  }
+
+  els.rows.innerHTML = state.filteredRows
+    .map((row) => {
+      const selectedClass = row.path === state.activeContextPath ? "is-selected" : "";
+      const statusClass =
+        row.status === "Reported"
+          ? "status-ok"
+          : row.status === "No report"
+            ? "status-empty"
+            : row.status === "Loading..."
+              ? "status-loading"
+              : "";
+      return `
+        <tr class="${selectedClass}" data-path="${escapeHtml(row.path)}">
+          <td>${escapeHtml(row.title)}</td>
+          <td>${escapeHtml(row.type)}</td>
+          <td>${escapeHtml(row.date || "-")}</td>
+          <td>${row.words}</td>
+          <td>${row.outlinks}</td>
+          <td>${row.inlinks}</td>
+          <td class="${statusClass}">${escapeHtml(row.status)}</td>
+        </tr>
+      `;
+    })
     .join("");
-  els.sourceList.querySelectorAll(".source-item").forEach((button) => {
-    button.addEventListener("click", () => setActiveContext(button.dataset.path));
+
+  els.rows.querySelectorAll("tr[data-path]").forEach((rowEl) => {
+    rowEl.addEventListener("click", () => {
+      setActiveContext(rowEl.dataset.path);
+    });
   });
 }
 
-// ── Wiki file list ───────────────────────────────────────
+function applyTableFilter(query = "") {
+  const needle = normalizeSearchText(query);
+  state.filteredRows = state.rows.filter((row) => {
+    const concepts = (row.concepts || []).map((concept) => concept.label).join(" ");
+    const haystack = normalizeSearchText(
+      `${row.title} ${row.type} ${row.date} ${row.status} ${row.path} ${concepts}`,
+    );
+    return !needle || haystack.includes(needle);
+  });
+  if (!needle && !state.filteredRows.length && state.rows.length) {
+    state.filteredRows = [...state.rows];
+  }
+  renderRows();
+}
 
-const DOC_ICON = `<svg class="wiki-row__icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M5 5h6M5 8h6M5 11h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+function renderDetail(path) {
+  const row = state.rows.find((item) => item.path === path);
 
-function renderWikiList() {
-  if (!state.filteredDocuments.length) {
-    els.wikiList.innerHTML = `<p style="color:var(--obs-muted);font-size:12px;padding:8px;">No matching pages.</p>`;
+  if (!row) {
+    els.detailTitle.textContent = "Select a note";
+    els.detailType.textContent = "None";
+    els.detailDate.textContent = "-";
+    els.detailWords.textContent = "-";
+    els.detailOutlinks.textContent = "-";
+    els.detailInlinks.textContent = "-";
+    els.detailStatus.textContent = "-";
+    els.detailFile.textContent = "-";
+    els.detailMarkdown.textContent = "Select a note to preview its markdown source.";
+    renderChatContext();
     return;
   }
-  els.wikiList.innerHTML = state.filteredDocuments
-    .map(
-      (doc) => `
-      <button class="wiki-row ${doc.path === state.activeContextPath ? "is-active" : ""}"
-          type="button" data-path="${escapeHtml(doc.path)}">
-        ${DOC_ICON}
-        <span class="wiki-row__body">
-          <strong>${escapeHtml(doc.title)}</strong>
-          <small>${escapeHtml(doc.type)}${doc.date && doc.date !== "-" ? " · " + escapeHtml(doc.date) : ""}</small>
-        </span>
-      </button>`,
-    )
-    .join("");
-  els.wikiList.querySelectorAll(".wiki-row").forEach((button) => {
-    button.addEventListener("click", () => setActiveContext(button.dataset.path));
+
+  els.detailTitle.textContent = row.title;
+  els.detailType.textContent = row.type;
+  els.detailDate.textContent = row.date || "-";
+  els.detailWords.textContent = String(row.words);
+  els.detailOutlinks.textContent = String(row.outlinks);
+  els.detailInlinks.textContent = String(row.inlinks);
+  els.detailStatus.textContent = row.status;
+  els.detailFile.innerHTML = `<a href="/${row.path}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.path)}</a>`;
+
+  const markdown = state.markdownByPath[path];
+  els.detailMarkdown.textContent = markdown || "Loading markdown preview…";
+  renderChatContext();
+}
+
+function updateGraphSelection() {
+  if (!state.graph) {
+    return;
+  }
+  state.graph.nodes.forEach((node, index) => {
+    const active = node.kind === "note" && (node.refPath || node.id) === state.activeContextPath;
+    const group = state.graph.nodeEls[index];
+    const circle = group.querySelector("circle");
+    group.classList.toggle("is-active", active);
+    if (circle) {
+      const baseRadius = getNodeRadius(node);
+      circle.setAttribute("r", String(active ? baseRadius + 2 : baseRadius));
+      circle.setAttribute("stroke-width", active ? "2" : "1");
+    }
   });
 }
 
-// ── Active context (Obsidian view) ───────────────────────
-
-async function setActiveContext(path) {
-  if (!path) return;
-  state.activeContextPath = path;
-  const doc = state.documents.find((item) => item.path === path);
-
-  if (els.obsArticle) els.obsArticle.hidden = false;
-  if (els.obsEmptyState) els.obsEmptyState.hidden = true;
-
-  if (els.activeContext) els.activeContext.textContent = doc ? doc.title : path;
-  if (els.obsArticleType && doc) els.obsArticleType.textContent = doc.type;
-  if (els.obsArticleDate && doc) els.obsArticleDate.textContent = doc.date && doc.date !== "-" ? doc.date : "";
-  if (els.obsArticleWords && doc) els.obsArticleWords.textContent = doc.words ? `${doc.words} words` : "";
-
-  renderWikiList();
-
-  try {
-    const response = await fetch(`/${path}`);
-    const markdown = await response.text();
-    if (els.markdownPreview) {
-      els.markdownPreview.innerHTML = renderMarkdownFull(markdown);
-      if (els.obsContent) els.obsContent.scrollTo({ top: 0, behavior: "instant" });
-    }
-  } catch (error) {
-    if (els.markdownPreview) {
-      els.markdownPreview.innerHTML = `<p class="muted">Load failed: ${escapeHtml(error.message)}</p>`;
-    }
+function renderCurrentGraph() {
+  const graphData = graphDataForCurrentMode();
+  if (els.graphTitle) {
+    els.graphTitle.textContent = graphData.title;
   }
+  if (els.graphLegend) {
+    els.graphLegend.innerHTML = graphData.legendHtml;
+  }
+  if (els.graphHint) {
+    els.graphHint.textContent = graphData.hint;
+  }
+  renderWorkspaceMetrics(graphData);
+  renderGraph(graphData);
+}
+
+function renderGraph(graphData) {
+  if (!els.graphSvg) {
+    return;
+  }
+
+  if (state.graphFrame) {
+    cancelAnimationFrame(state.graphFrame);
+    state.graphFrame = 0;
+  }
+
+  const svg = els.graphSvg;
+  const NS = "http://www.w3.org/2000/svg";
+  const width = 1200;
+  const height = 700;
+  svg.innerHTML = "";
+
+  if (!graphData.nodes.length) {
+    const empty = document.createElementNS(NS, "text");
+    empty.textContent = "Graph data is loading…";
+    empty.setAttribute("x", String(width / 2));
+    empty.setAttribute("y", String(height / 2));
+    empty.setAttribute("fill", "#97a3aa");
+    empty.setAttribute("font-size", "16");
+    empty.setAttribute("text-anchor", "middle");
+    svg.appendChild(empty);
+    state.graph = { nodes: [], nodeEls: [] };
+    return;
+  }
+
+  const noteCount = graphData.nodes.filter((node) => node.kind !== "keyword").length;
+  const keywordCount = graphData.nodes.filter((node) => node.kind === "keyword").length;
+  let noteIndex = 0;
+  let keywordIndex = 0;
+
+  const nodes = graphData.nodes.map((node) => {
+    const position =
+      graphData.mode === "keywords" && node.kind === "keyword"
+        ? projectGridPosition(keywordIndex++, keywordCount, width * 0.68, width - 80, 90, height - 90)
+        : graphData.mode === "keywords"
+          ? projectGridPosition(noteIndex++, noteCount, 70, width * 0.58, 70, height - 70)
+          : projectGridPosition(noteIndex++, noteCount, 70, width - 70, 70, height - 70);
+
+    return {
+      ...node,
+      ...position,
+      vx: 0,
+      vy: 0,
+      pinned: false,
+    };
+  });
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const links = graphData.links
+    .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
+    .filter((edge) => edge.source && edge.target);
+
+  const linkGroup = document.createElementNS(NS, "g");
+  const nodeGroup = document.createElementNS(NS, "g");
+  svg.appendChild(linkGroup);
+  svg.appendChild(nodeGroup);
+
+  const lineEls = links.map(() => {
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute(
+      "stroke",
+      graphData.mode === "keywords" ? "rgba(135, 168, 199, 0.28)" : "rgba(151, 163, 170, 0.42)",
+    );
+    line.setAttribute("stroke-width", "1.1");
+    linkGroup.appendChild(line);
+    return line;
+  });
+
+  const nodeEls = nodes.map((node) => {
+    const group = document.createElementNS(NS, "g");
+    group.setAttribute("class", `graph-node graph-node--${node.kind || "note"}`);
+
+    const circle = document.createElementNS(NS, "circle");
+    circle.setAttribute("r", String(getNodeRadius(node)));
+    circle.setAttribute("fill", GRAPH_COLORS[node.type] || GRAPH_COLORS.topic);
+    circle.setAttribute("stroke", "#0d1411");
+    circle.setAttribute("stroke-width", "1");
+
+    const label = document.createElementNS(NS, "text");
+    label.textContent = node.label;
+    label.setAttribute("x", "10");
+    label.setAttribute("y", "4");
+
+    group.appendChild(circle);
+    group.appendChild(label);
+    nodeGroup.appendChild(group);
+
+    group.addEventListener("click", () => {
+      if (node.kind === "keyword") {
+        if (els.wikiSearch) {
+          els.wikiSearch.value = node.label;
+          applyTableFilter(node.label);
+        }
+        return;
+      }
+      setActiveContext(node.refPath || node.id);
+    });
+
+    let dragging = false;
+    group.addEventListener("pointerdown", (event) => {
+      dragging = true;
+      node.pinned = true;
+      group.setPointerCapture(event.pointerId);
+    });
+
+    group.addEventListener("pointermove", (event) => {
+      if (!dragging) {
+        return;
+      }
+      const rect = svg.getBoundingClientRect();
+      const sx = width / rect.width;
+      const sy = height / rect.height;
+      node.x = (event.clientX - rect.left) * sx;
+      node.y = (event.clientY - rect.top) * sy;
+    });
+
+    group.addEventListener("pointerup", () => {
+      dragging = false;
+    });
+
+    return group;
+  });
+
+  function tick() {
+    for (const node of nodes) {
+      node.vx *= 0.86;
+      node.vy *= 0.86;
+    }
+
+    for (let left = 0; left < nodes.length; left += 1) {
+      for (let right = left + 1; right < nodes.length; right += 1) {
+        const a = nodes[left];
+        const b = nodes[right];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        const dist2 = dx * dx + dy * dy + 0.01;
+        const repulse = 1600 / dist2;
+        dx *= repulse;
+        dy *= repulse;
+        if (!a.pinned) {
+          a.vx += dx;
+          a.vy += dy;
+        }
+        if (!b.pinned) {
+          b.vx -= dx;
+          b.vy -= dy;
+        }
+      }
+    }
+
+    for (const edge of links) {
+      const dx = edge.target.x - edge.source.x;
+      const dy = edge.target.y - edge.source.y;
+      const pull = graphData.mode === "keywords" ? 0.0013 : 0.0009;
+      if (!edge.source.pinned) {
+        edge.source.vx += dx * pull;
+        edge.source.vy += dy * pull;
+      }
+      if (!edge.target.pinned) {
+        edge.target.vx -= dx * pull;
+        edge.target.vy -= dy * pull;
+      }
+    }
+
+    for (const node of nodes) {
+      if (node.pinned) {
+        continue;
+      }
+      node.x += node.vx;
+      node.y += node.vy;
+      node.x = Math.max(18, Math.min(width - 18, node.x));
+      node.y = Math.max(18, Math.min(height - 18, node.y));
+    }
+
+    links.forEach((edge, index) => {
+      lineEls[index].setAttribute("x1", edge.source.x);
+      lineEls[index].setAttribute("y1", edge.source.y);
+      lineEls[index].setAttribute("x2", edge.target.x);
+      lineEls[index].setAttribute("y2", edge.target.y);
+    });
+
+    nodes.forEach((node, index) => {
+      nodeEls[index].setAttribute("transform", `translate(${node.x},${node.y})`);
+    });
+
+    state.graphFrame = requestAnimationFrame(tick);
+  }
+
+  state.graph = { nodes, nodeEls };
+  updateGraphSelection();
+  state.graphFrame = requestAnimationFrame(tick);
+}
+
+async function fetchMarkdown(path) {
+  const response = await fetch(`/${path}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load ${path}: ${response.status}`);
+  }
+  return normalizeMojibake(await response.text());
+}
+
+function updateDocumentStatus(path, markdown) {
+  let changed = false;
+  state.documents = state.documents.map((doc) => {
+    if (doc.path !== path) {
+      return doc;
+    }
+    const nextStatus = deriveStatus(doc, markdown);
+    if (doc.status === nextStatus) {
+      return doc;
+    }
+    changed = true;
+    return { ...doc, status: nextStatus };
+  });
+
+  if (!changed) {
+    if (state.graphMode === "keywords") {
+      renderCurrentGraph();
+    }
+    return;
+  }
+
+  const data = buildWorkspaceData(state.documents);
+  state.rows = data.rows;
+  state.edges = data.edges;
+  applyTableFilter(els.wikiSearch ? els.wikiSearch.value : "");
+  renderDetail(state.activeContextPath);
+  if (state.graphMode === "keywords") {
+    renderCurrentGraph();
+  } else {
+    renderWorkspaceMetrics();
+  }
+}
+
+async function ensureMarkdownLoaded(path) {
+  if (!path) {
+    return null;
+  }
+
+  if (state.markdownByPath[path]) {
+    return state.markdownByPath[path];
+  }
+
+  if (state.markdownRequests[path]) {
+    return state.markdownRequests[path];
+  }
+
+  state.markdownRequests[path] = fetchMarkdown(path)
+    .then((markdown) => {
+      state.markdownByPath[path] = markdown;
+      updateDocumentStatus(path, markdown);
+      if (state.activeContextPath === path) {
+        renderDetail(path);
+      }
+      return markdown;
+    })
+    .catch((error) => {
+      if (state.activeContextPath === path) {
+        els.detailMarkdown.textContent = `Load failed: ${error.message}`;
+      }
+      return null;
+    })
+    .finally(() => {
+      delete state.markdownRequests[path];
+    });
+
+  return state.markdownRequests[path];
+}
+
+async function hydrateDocumentsInBackground() {
+  const tasks = state.documents.map((doc) =>
+    ensureMarkdownLoaded(doc.path).catch(() => null),
+  );
+  await Promise.all(tasks);
 }
 
 function clearContext() {
   state.activeContextPath = null;
-  if (els.obsArticle) els.obsArticle.hidden = true;
-  if (els.obsEmptyState) els.obsEmptyState.hidden = false;
-  if (els.activeContext) els.activeContext.textContent = "—";
-  renderWikiList();
+  renderChatContext();
+  renderRows();
+  renderDetail(null);
+  updateGraphSelection();
 }
 
-// ── Config loading ───────────────────────────────────────
+function scrollSelectedRowIntoView() {
+  if (state.activeView !== "obsidianView") {
+    return;
+  }
+  const rowEl = document.querySelector(`tr[data-path="${CSS.escape(state.activeContextPath || "")}"]`);
+  if (rowEl) {
+    rowEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+function setActiveContext(path, options = {}) {
+  if (!path) {
+    clearContext();
+    return;
+  }
+
+  state.activeContextPath = path;
+  renderChatContext();
+  renderRows();
+  renderDetail(path);
+  updateGraphSelection();
+
+  if (options.switchView) {
+    setWorkspaceView(options.switchView);
+  }
+
+  scrollSelectedRowIntoView();
+  void ensureMarkdownLoaded(path);
+}
 
 async function loadConfig() {
   const response = await fetch("/api/config");
-  if (!response.ok) throw new Error(`API ${response.status}`);
-  const config = await response.json();
-  state.documents = config.documents || [];
-  state.filteredDocuments = state.documents;
-  els.wikiStats.textContent = `${config.wiki.documents} pages`;
-  els.status.textContent =
-    config.agent_mode === "openai" ? `OpenAI: ${config.model}` : "Offline demo";
-  els.status.classList.toggle("status-pill--offline", config.agent_mode !== "openai");
-  renderWikiList();
-}
+  if (!response.ok) {
+    throw new Error(`API ${response.status}`);
+  }
 
-// ── Events ───────────────────────────────────────────────
+  const config = await response.json();
+  state.concepts = config.concepts || [];
+  state.documents = (config.documents || []).map((doc) => ({
+    ...doc,
+    status: doc.type === "daily" ? "Loading..." : "-",
+  }));
+
+  const data = buildWorkspaceData(state.documents);
+  state.rows = data.rows;
+  state.edges = data.edges;
+
+  if (els.wikiSearch) {
+    els.wikiSearch.value = "";
+  }
+  applyTableFilter("");
+  renderDetail(null);
+  renderChatContext();
+  setConnectionStatus(config.agent_mode, config.model);
+  setAnswerMode(config.default_answer_mode || "detailed");
+  setGraphMode(state.graphMode);
+}
 
 function attachEvents() {
   if (els.form) {
     els.form.addEventListener("submit", (event) => {
       event.preventDefault();
       const message = els.input.value.trim();
-      if (!message || state.isSending) return;
+      if (!message || state.isSending) {
+        return;
+      }
       els.input.value = "";
       sendMessage(message);
     });
@@ -448,69 +1169,109 @@ function attachEvents() {
 
   if (els.wikiSearch) {
     els.wikiSearch.addEventListener("input", () => {
-      const query = els.wikiSearch.value.trim().toLowerCase();
-      state.filteredDocuments = state.documents.filter((doc) =>
-        `${doc.title} ${doc.type} ${doc.date} ${doc.path}`.toLowerCase().includes(query),
-      );
-      renderWikiList();
+      applyTableFilter(els.wikiSearch.value);
     });
   }
 
-  // Global delegation — handles tabs, evidence toggle, clear, wiki links
+  if (els.jumpToWiki) {
+    els.jumpToWiki.addEventListener("click", () => {
+      setWorkspaceView("obsidianView");
+      scrollSelectedRowIntoView();
+    });
+  }
+
+  if (els.useInChat) {
+    els.useInChat.addEventListener("click", () => {
+      if (!state.activeContextPath) {
+        return;
+      }
+      setWorkspaceView("chatView");
+      els.input.focus();
+    });
+  }
+
+  if (els.clearChat) {
+    els.clearChat.addEventListener("click", () => {
+      clearThread();
+    });
+  }
+
+  if (els.clearContext) {
+    els.clearContext.addEventListener("click", () => {
+      clearContext();
+    });
+  }
+
+  if (els.clearSelection) {
+    els.clearSelection.addEventListener("click", () => {
+      clearContext();
+    });
+  }
+
+  els.answerModeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setAnswerMode(button.dataset.answerMode || "detailed");
+    });
+  });
+
+  els.graphModeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setGraphMode(button.dataset.graphMode || "notes");
+    });
+  });
+
   document.addEventListener("click", (event) => {
     const target = event.target;
-    if (!(target instanceof Element)) return;
+    if (!(target instanceof Element)) {
+      return;
+    }
 
-    // Tab buttons
     const tab = target.closest(".tabbar__tab");
-    if (tab) { setWorkspaceView(tab.dataset.view); return; }
+    if (tab) {
+      setWorkspaceView(tab.dataset.view);
+      return;
+    }
 
-    // Evidence accordion
-    const evToggle = target.closest(".ev-toggle");
-    if (evToggle) {
-      const panel = document.getElementById(evToggle.dataset.target);
-      if (panel) {
-        const opening = panel.hidden;
-        panel.hidden = !opening;
-        evToggle.setAttribute("aria-expanded", String(opening));
-        evToggle.classList.toggle("is-open", opening);
+    const sourceCard = target.closest(".source-card");
+    if (sourceCard && sourceCard.dataset.path) {
+      if (sourceCard.dataset.path.startsWith("wiki/")) {
+        setActiveContext(sourceCard.dataset.path, { switchView: "obsidianView" });
+      } else {
+        window.open(`/${sourceCard.dataset.path}`, "_blank", "noopener");
       }
       return;
     }
 
-    // Deactivate context
-    if (target.closest("#clearContextButton")) { clearContext(); return; }
-
-    // Clear chat
-    if (target.closest("#clearChatButton")) { clearThread(); return; }
-
-    // Obsidian internal [[wiki link]]
     const wikiLink = target.closest(".obs-wikilink");
     if (wikiLink) {
       const pageName = decodeURIComponent(wikiLink.dataset.page || "");
-      const doc = state.documents.find(
-        (d) => d.title === pageName || d.path === pageName || d.path === `wiki/${pageName}.md`,
+      const doc = state.rows.find(
+        (item) => item.title === pageName || item.path === pageName || item.path === `wiki/${pageName}.md`,
       );
-      if (doc) setActiveContext(doc.path);
-      return;
+      if (doc) {
+        setActiveContext(doc.path, { switchView: "obsidianView" });
+      }
     }
   });
 }
 
-// ── Bootstrap ────────────────────────────────────────────
-
 async function main() {
   loadThread();
+  setAnswerMode(state.answerMode);
+  setGraphMode(state.graphMode);
   setWorkspaceView(state.activeView);
   renderMessages();
-  renderSources([]);
   attachEvents();
+
   try {
     await loadConfig();
+    void hydrateDocumentsInBackground();
   } catch (error) {
     els.status.textContent = "API offline";
     els.status.classList.add("status-pill--offline");
-    if (els.wikiStats) els.wikiStats.textContent = "Failed";
+    if (els.graphHint) {
+      els.graphHint.textContent = `Load failed: ${error.message}`;
+    }
     appendMessage(
       "assistant",
       `Could not reach the backend service: ${error.message}\n\nStart it with \`uvicorn api_server:app --host 0.0.0.0 --port 8501\`.`,
