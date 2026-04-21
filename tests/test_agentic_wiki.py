@@ -61,6 +61,7 @@ def test_api_config_exposes_graph_and_dataview_fields():
     assert payload["wiki"]["concepts"] >= 10
     assert payload["documents"]
     assert payload["concepts"]
+    assert payload["github_blob_base_url"].startswith("https://github.com/")
     assert payload["default_answer_mode"] == "detailed"
     assert payload["answer_modes"] == ["brief", "detailed"]
 
@@ -74,6 +75,13 @@ def test_api_config_exposes_graph_and_dataview_fields():
     parametric_doc = next(doc for doc in payload["documents"] if doc["path"] == "wiki/parametric-insurance.md")
     assert any(concept["label"] == "Parametric Insurance" for concept in parametric_doc["concepts"])
     assert any(concept["label"] == "IAIS" for concept in payload["concepts"])
+
+    daily_doc = next(doc for doc in payload["documents"] if doc["path"] == "wiki/climate-monitor-2026-04-02.md")
+    assert daily_doc["source_path"] == "sources/climate-monitor-2026-04-02.md"
+    assert (
+        daily_doc["source_url"]
+        == "https://github.com/ferryhe/climate_monitor_wiki/blob/main/sources/climate-monitor-2026-04-02.md"
+    )
 
 
 def test_showcase_root_contains_chat_and_obsidian_workspace():
@@ -90,6 +98,7 @@ def test_showcase_root_contains_chat_and_obsidian_workspace():
     assert 'id="rows"' in body
     assert 'data-answer-mode="detailed"' in body
     assert 'data-graph-mode="keywords"' in body
+    assert body.index("Page Index") < body.index("Graph View")
 
 
 def test_detailed_mode_brings_in_raw_source_evidence():

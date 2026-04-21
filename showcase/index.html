@@ -152,54 +152,6 @@
               </div>
             </header>
 
-            <section class="panel panel--graph">
-              <div class="panel__head">
-                <div>
-                  <p class="panel__eyebrow">Graph View</p>
-                  <h3 id="graphTitle">Vault Links</h3>
-                </div>
-
-                <div class="panel__controls">
-                  <div id="graphLegend" class="legend">
-                    <span><i class="dot dot-daily"></i>Daily</span>
-                    <span><i class="dot dot-topic"></i>Topic</span>
-                    <span><i class="dot dot-index"></i>Index</span>
-                  </div>
-                  <div class="mode-switch" role="group" aria-label="Graph mode">
-                    <button
-                      class="mode-switch__button is-active"
-                      type="button"
-                      data-graph-mode="notes"
-                      aria-pressed="true"
-                    >
-                      Notes
-                    </button>
-                    <button
-                      class="mode-switch__button"
-                      type="button"
-                      data-graph-mode="keywords"
-                      aria-pressed="false"
-                    >
-                      Keywords
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="graph-wrap">
-                <svg
-                  id="graphSvg"
-                  viewBox="0 0 1200 700"
-                  preserveAspectRatio="xMidYMid meet"
-                ></svg>
-              </div>
-
-              <p id="graphHint" class="hint">
-                Drag nodes to rearrange the graph. Click a node or a Dataview row to inspect the
-                note and set it as the active chat context.
-              </p>
-            </section>
-
             <section class="obsidian-grid">
               <section class="panel panel--table">
                 <div class="panel__head">
@@ -288,6 +240,54 @@
 Select a note to preview its markdown source.</pre
                 >
               </aside>
+            </section>
+
+            <section class="panel panel--graph">
+              <div class="panel__head">
+                <div>
+                  <p class="panel__eyebrow">Graph View</p>
+                  <h3 id="graphTitle">Vault Links</h3>
+                </div>
+
+                <div class="panel__controls">
+                  <div id="graphLegend" class="legend">
+                    <span><i class="dot dot-daily"></i>Daily</span>
+                    <span><i class="dot dot-topic"></i>Topic</span>
+                    <span><i class="dot dot-index"></i>Index</span>
+                  </div>
+                  <div class="mode-switch" role="group" aria-label="Graph mode">
+                    <button
+                      class="mode-switch__button is-active"
+                      type="button"
+                      data-graph-mode="notes"
+                      aria-pressed="true"
+                    >
+                      Notes
+                    </button>
+                    <button
+                      class="mode-switch__button"
+                      type="button"
+                      data-graph-mode="keywords"
+                      aria-pressed="false"
+                    >
+                      Keywords
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="graph-wrap">
+                <svg
+                  id="graphSvg"
+                  viewBox="0 0 1200 700"
+                  preserveAspectRatio="xMidYMid meet"
+                ></svg>
+              </div>
+
+              <p id="graphHint" class="hint">
+                Drag nodes to rearrange the graph. Click a node or a Dataview row to inspect the
+                note and set it as the active chat context.
+              </p>
             </section>
           </div>
         </section>

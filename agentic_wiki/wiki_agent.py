@@ -504,6 +504,7 @@ class WikiKnowledgeBase:
         self.source_dir = source_dir
         self.documents: list[WikiDocument] = []
         self.source_documents: list[WikiDocument] = []
+        self.source_documents_by_title: dict[str, WikiDocument] = {}
         self.chunks: list[WikiChunk] = []
         self.document_concepts: dict[str, list[dict[str, str]]] = {}
         self.concepts: list[dict[str, Any]] = []
@@ -519,6 +520,7 @@ class WikiKnowledgeBase:
 
         self.documents = wiki_docs
         self.source_documents = source_docs
+        self.source_documents_by_title = {doc.title: doc for doc in source_docs}
         self.chunks = wiki_chunks + source_chunks
         self.document_concepts, self.concepts = self._build_concept_index()
         self.latest_date = max(
@@ -732,7 +734,7 @@ class WikiKnowledgeBase:
             "words": sum(doc.words for doc in self.documents + self.source_documents),
         }
 
-    def document_catalog(self) -> list[dict[str, Any]]:
+    def document_catalog(self, github_blob_base_url: str = "") -> list[dict[str, Any]]:
         return [
             {
                 "title": doc.title,
@@ -743,6 +745,14 @@ class WikiKnowledgeBase:
                 "words": doc.words,
                 "links": doc.links,
                 "concepts": self.document_concepts.get(doc.path, []),
+                "source_path": self.source_documents_by_title[doc.title].path
+                if doc.type == "daily" and doc.title in self.source_documents_by_title
+                else None,
+                "source_url": (
+                    f"{github_blob_base_url}/{self.source_documents_by_title[doc.title].path}"
+                    if github_blob_base_url and doc.type == "daily" and doc.title in self.source_documents_by_title
+                    else None
+                ),
             }
             for doc in self.documents
         ]
@@ -907,13 +917,33 @@ class AgenticWikiResponder:
         self.model = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
         self.base_source_url = self._github_blob_base_url()
+        self.source_document_base_url = self._github_blob_base_url(
+            branch=self._github_default_branch()
+        ) or self.base_source_url
         self.client = None
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key and OpenAI is not None:
             self.client = OpenAI(api_key=api_key)
 
     @staticmethod
-    def _github_blob_base_url() -> str:
+    def _github_default_branch() -> str:
+        try:
+            remote_head = subprocess.run(
+                ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except Exception:
+            return "main"
+
+        if remote_head.startswith("origin/"):
+            return remote_head.split("/", 1)[1] or "main"
+        return remote_head or "main"
+
+    @staticmethod
+    def _github_blob_base_url(branch: str | None = None) -> str:
         try:
             remote = subprocess.run(
                 ["git", "config", "--get", "remote.origin.url"],
@@ -922,15 +952,20 @@ class AgenticWikiResponder:
                 capture_output=True,
                 text=True,
             ).stdout.strip()
-            branch = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=REPO_ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
         except Exception:
             return ""
+
+        if branch is None:
+            try:
+                branch = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            except Exception:
+                branch = ""
 
         if remote.startswith("git@github.com:"):
             remote = remote.replace("git@github.com:", "https://github.com/")
@@ -945,8 +980,9 @@ class AgenticWikiResponder:
             "agent_mode": "openai" if self.client else "offline",
             "model": self.model if self.client else "offline-extractive",
             "wiki": self.kb.stats(),
-            "documents": self.kb.document_catalog(),
+            "documents": self.kb.document_catalog(self.source_document_base_url),
             "concepts": self.kb.concept_catalog(),
+            "github_blob_base_url": self.base_source_url,
             "answer_modes": ["brief", "detailed"],
             "default_answer_mode": "detailed",
             "retrieval_corpora": {
