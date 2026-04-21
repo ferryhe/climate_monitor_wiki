@@ -31,11 +31,13 @@ The Obsidian workspace restores the older browsing affordances:
 - `Dataview`: searchable table for page metadata, links, and daily-report status
 - `Note Detail`: metadata plus raw Markdown preview for the selected note
 
+The current page order is `Dataview + Note Detail` first, then `Graph View`.
 `Notes` mode keeps the Obsidian-style note-link graph.
 `Keywords` mode now renders a note-to-concept map built from a backend concept index derived from both curated wiki notes and `sources/` raw reports.
 
 Selecting a note node, Dataview row, or evidence source sets the active note for chat retrieval.
 Clicking a keyword node applies that concept as a Dataview filter so you can jump straight to the relevant note set.
+For daily report notes, the `Source` link in the detail panel points to the corresponding `sources/*.md` file on GitHub's default branch instead of the local wiki summary note.
 
 ## Active Context Rules
 
@@ -57,9 +59,12 @@ The web workspace depends on `GET /api/config` returning:
 - `documents[].words`
 - `documents[].links`
 - `documents[].concepts`
+- `documents[].source_path`
+- `documents[].source_url`
 - `concepts[].label`
 - `concepts[].type`
 - `concepts[].document_count`
+- `github_blob_base_url`
 - `default_answer_mode`
 - `answer_modes`
 - `wiki.source_documents`

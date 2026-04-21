@@ -241,6 +241,18 @@ function titleFromPath(path) {
   return path.split("/").pop().replace(/\.md$/i, "");
 }
 
+function sourceLinkForRow(row) {
+  if (!row) {
+    return { href: "", label: "-" };
+  }
+
+  if (row.type === "daily" && row.source_url && row.source_path) {
+    return { href: row.source_url, label: row.source_path };
+  }
+
+  return { href: `/${row.path}`, label: row.path };
+}
+
 function normalizeSearchText(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -761,7 +773,8 @@ function renderDetail(path) {
   els.detailOutlinks.textContent = String(row.outlinks);
   els.detailInlinks.textContent = String(row.inlinks);
   els.detailStatus.textContent = row.status;
-  els.detailFile.innerHTML = `<a href="/${row.path}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.path)}</a>`;
+  const sourceLink = sourceLinkForRow(row);
+  els.detailFile.innerHTML = `<a href="${escapeHtml(sourceLink.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceLink.label)}</a>`;
 
   const markdown = state.markdownByPath[path];
   els.detailMarkdown.textContent = markdown || "Loading markdown preview…";
