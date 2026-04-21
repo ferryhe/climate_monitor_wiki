@@ -36,13 +36,15 @@ Current automated coverage includes:
 ### Obsidian Workspace
 
 1. Open the `Obsidian` tab.
-2. Confirm `Graph View` renders nodes and link lines.
-3. Click a graph node and verify:
+2. Confirm the page order is `Dataview + Note Detail` first, then `Graph View`.
+3. Confirm `Graph View` renders nodes and link lines.
+4. Click a graph node and verify:
    - the Dataview row becomes selected
    - the detail panel updates
    - the chat header shows the active note badge
-4. Search in the Dataview box and confirm the table filters in place.
-5. Click `Use in chat`, switch back to `Chat`, and ask a question about the selected note in `Detailed` mode.
+5. Search in the Dataview box and confirm the table filters in place.
+6. Select a daily report note and click `Source`; confirm it opens the matching `sources/*.md` file on GitHub `main`.
+7. Click `Use in chat`, switch back to `Chat`, and ask a question about the selected note in `Detailed` mode.
 
 ### Offline Mode
 

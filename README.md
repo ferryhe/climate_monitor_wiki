@@ -8,8 +8,9 @@ This repo now exposes the same wiki through three aligned surfaces:
 
 - `showcase/` serves a two-tab web workspace.
 - `Chat` uses a minimal single-column conversation layout inspired by `ferryhe/c-ross-2`, but recolored to match the Obsidian workspace.
-- `Obsidian` restores the earlier `Graph View + Dataview + Note Detail` experience for browsing the vault and selecting the active retrieval context.
-  The graph now supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
+- `Obsidian` restores the earlier browsing workspace with `Dataview`, `Note Detail`, and `Graph View` for selecting the active retrieval context.
+  The page order is now `Dataview + Note Detail` first, then `Graph View`.
+  The graph supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
@@ -96,6 +97,7 @@ For the best vault experience, keep these Obsidian plugins enabled:
 
 The vault already includes `Dataview`, and the web workspace now mirrors that browsing model with a Dataview-style table and graph explorer.
 The Obsidian plugin now also lets you switch between `Brief` and `Detailed` answers before sending.
+For daily report notes, the detail panel's `Source` link opens the matching raw Markdown file under the GitHub repo's `main` branch `sources/` directory.
 
 ## Testing
 
