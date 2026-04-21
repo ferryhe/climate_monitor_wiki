@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Literal
 
@@ -66,7 +67,7 @@ def reload_wiki(request: Request, x_reload_token: str | None = Header(default=No
     is_local_client = client_host in {"127.0.0.1", "::1", "localhost"}
 
     if RELOAD_TOKEN:
-        if x_reload_token != RELOAD_TOKEN:
+        if not x_reload_token or not secrets.compare_digest(x_reload_token, RELOAD_TOKEN):
             raise HTTPException(status_code=403, detail="Invalid reload token.")
     elif not is_local_client:
         raise HTTPException(
