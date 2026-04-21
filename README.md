@@ -1,22 +1,37 @@
 # Climate Monitor Wiki
 
-A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research — compiled daily by an AI agent from automated monitoring.
+A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research, compiled daily from automated monitoring.
 
-## Agentic AI Chatbot
+## Web + Obsidian Surfaces
 
-This branch adds a lightweight agentic RAG layer on top of the existing wiki:
+This repo now exposes the same wiki through three aligned surfaces:
 
-- `api_server.py` serves the Codespace web demo and `/api/chat`.
-- `agentic_wiki/` loads `wiki/*.md`, chunks pages, plans retrieval queries, searches evidence, reflects once, and synthesizes a cited answer.
-- `showcase/` is now a chat-first UI with source inspection and active wiki context.
+- `showcase/` serves a two-tab web workspace.
+- `Chat` uses a minimal single-column conversation layout inspired by `ferryhe/c-ross-2`, but recolored to match the Obsidian workspace.
+- `Obsidian` restores the earlier `Graph View + Dataview + Note Detail` experience for browsing the vault and selecting the active retrieval context.
+  The graph now supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
+
+The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
+Chat now also exposes two answer modes:
+
+- `Brief`: faster, tighter synthesis
+- `Detailed`: richer answers that pull more aggressively from `sources/` raw reports
+
+## Runtime
+
+- `api_server.py` serves the Codespaces demo and the `/api/*` API routes.
+- `agentic_wiki/` loads both `wiki/*.md` and `sources/*.md`, chunks notes and raw reports, plans retrieval, ranks evidence, and synthesizes cited answers.
+- `showcase/` is a static frontend with the shared chat and wiki workspace.
+
+Range-style daily-report questions such as `Summarize the past 7 days of reports` are now expanded into exact report dates based on the latest available corpus day, so detailed mode can cover each day in the requested window instead of returning only one or two standout reports.
 
 The chatbot can run in two modes:
 
 - **OpenAI mode**: set `OPENAI_API_KEY` in `.env`; answers are synthesized by `OPENAI_MODEL`.
-- **Offline demo mode**: no key required; the app still demonstrates wiki retrieval and cited extractive answers.
+- **Offline demo mode**: no key required; the app still demonstrates retrieval and cited extractive answers.
 
-### Python virtual environment
+## Setup
 
 From the repository root:
 
@@ -27,51 +42,41 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Required Python packages are listed in `requirements.txt`:
-
-- `fastapi`
-- `uvicorn[standard]`
-- `openai`
-- `python-dotenv`
-- `pydantic`
-- `pytest`
-
-To enable model-backed replies, edit `.env`:
+Optional model-backed configuration:
 
 ```bash
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.4-mini
+SOURCE_DIR=sources
 ```
 
-In GitHub Codespaces, the safer option is to add `OPENAI_API_KEY` as a
-**Codespaces secret** with access to this repository. After adding or changing a
-Codespaces secret, stop and restart the codespace so the environment variable is
-injected into the terminal and API server process.
+In GitHub Codespaces, prefer storing `OPENAI_API_KEY` as a Codespaces secret for this repository, then restart the Codespace so the variable is injected into the terminal and API process.
 
-### Codespace demo
+## Run
 
 ```bash
 source .venv/bin/activate
 uvicorn api_server:app --host 0.0.0.0 --port 8501
 ```
 
-Open the forwarded Codespaces port `8501`. The root page serves the chat UI, and the API is available at:
+Open the forwarded Codespaces port `8501`.
 
-- `GET /api/config`
-- `POST /api/chat`
-- `POST /api/reload`
+- `/` serves the web workspace.
+- `GET /api/config` returns wiki metadata, retrieval corpus stats, and answer mode defaults.
+- `POST /api/chat` runs retrieval + answering.
+- `POST /api/reload` reloads the wiki files from disk.
 
 Example API call:
 
 ```bash
 curl -s http://localhost:8501/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"What are the latest Climate Monitor highlights?","language":"en"}'
+  -d '{"message":"What are the latest Climate Monitor highlights?","language":"en","answerMode":"detailed"}'
 ```
 
-### Obsidian integration
+## Obsidian Integration
 
-The plugin is already placed under:
+The plugin already lives at:
 
 ```text
 .obsidian/plugins/climate-agent-chat/
@@ -82,39 +87,62 @@ To use it:
 1. Start the API server with `uvicorn api_server:app --host 0.0.0.0 --port 8501`.
 2. Open this folder as an Obsidian vault.
 3. Enable **Climate Agent Chat** under Community plugins.
-4. Click the message icon or run the command **Open Climate Agent Chat**.
+4. Click the message icon or run **Open Climate Agent Chat**.
 
-The plugin sends the active note path as `contextPath`, so if a wiki page is open, the agent prioritizes that page during retrieval. The API key stays in the backend `.env`; it is not stored in Obsidian.
+For the best vault experience, keep these Obsidian plugins enabled:
+
+- `Dataview`
+- `Obsidian Git`
+
+The vault already includes `Dataview`, and the web workspace now mirrors that browsing model with a Dataview-style table and graph explorer.
+The Obsidian plugin now also lets you switch between `Brief` and `Detailed` answers before sending.
+
+## Testing
+
+Automated checks:
+
+```bash
+source .venv/bin/activate
+python -m pytest
+node --check showcase/app.js
+```
+
+Coverage today focuses on:
+
+- wiki indexing and chunking
+- raw `sources/` ingestion into retrieval
+- `contextPath` ranking behavior
+- `brief` vs `detailed` answer-mode behavior
+- rolling date-window summary coverage such as `past 7 days`
+- `/api/config` metadata needed by graph/dataview
+- showcase root HTML contract for the chat and Obsidian tabs
+
+Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details live in [docs/ui-surfaces.md](docs/ui-surfaces.md).
 
 ## Structure
 
-```
+```text
 .
 ├── sources/           # Raw daily monitoring reports (immutable, one .md per date)
-└── wiki/              # Curated topic + daily report pages (Obsidian vault)
-    ├── index.md       # Master catalog — daily reports + concept pages
-    ├── log.md         # Operation history
-    └── *.md           # Topic/entity/daily report pages
+├── wiki/              # Curated topic + daily report pages and Obsidian vault content
+├── showcase/          # Static web workspace (chat + graph/dataview explorer)
+├── agentic_wiki/      # Mixed-corpus retrieval over wiki + raw sources
+├── tests/             # API and retrieval regression tests
+└── .obsidian/         # Vault config + local plugin
 ```
 
 ## Daily Reports
 
 20 daily report pages in `wiki/` covering **2026-03-31 through 2026-04-20**.
-Source files in `sources/` with full original report content.
+Source files in `sources/` contain the original report content.
 
-**Missing dates** (no cron run / no doc found): 04-11, 04-12, 04-13, 04-15, 04-19
-
-## For Obsidian Users
-
-Open this folder as a vault in Obsidian. The `wiki/` directory is your Obsidian vault. Install the **Dataview** and **Obsidian Git** plugins for the best experience:
-- **Dataview**: query pages by tags, dates, links
-- **Obsidian Git**: auto-sync changes back to GitHub
+Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 ## Key Topics
 
-- [[secondary-perils]] — 92% of nat cat losses now from secondary perils
-- [[swiss-re-sigma]] — 2025 losses $107B; 2026 forecast $148B–$320B
-- [[isbb-ifrs-s2]] — IFRS S2 effective Jan 2027
+- [[secondary-perils]] — 92% of nat-cat losses now come from secondary perils
+- [[swiss-re-sigma]] — 2025 losses reached $107B; 2026 forecast $148B to $320B
+- [[isbb-ifrs-s2]] — IFRS S2 becomes effective in January 2027
 - [[parametric-insurance]] — +38% growth; 58% EU protection gap
 - [[actuaries-climate-index]] — ACI extended to weather derivatives
 - [[nat-cat-protection-gap]] — 49% gap concentrating risk on sovereigns
@@ -123,6 +151,6 @@ Open this folder as a vault in Obsidian. The `wiki/` directory is your Obsidian 
 
 ## Data Sources
 
-Daily reports sourced from 14 high-priority orgs (IAIS, ISSB, EIOPA, Swiss Re, etc.) and 5 rotating normal-priority orgs via automated monitoring.
+Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
 
 _Last updated: 2026-04-20_

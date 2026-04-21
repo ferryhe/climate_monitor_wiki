@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 SHOWCASE_DIR = ROOT / "showcase"
 WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
+SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
 
 app = FastAPI(
     title="Climate Monitor Wiki Agent",
@@ -32,7 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-responder = AgenticWikiResponder(WIKI_DIR)
+responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
 
 
 class ChatMessage(BaseModel):
@@ -45,6 +46,7 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     context_path: str | None = Field(default=None, alias="contextPath")
     language: Literal["en"] = "en"
+    answer_mode: Literal["brief", "detailed"] = Field(default="detailed", alias="answerMode")
 
 
 @app.get("/api/health")
@@ -85,12 +87,14 @@ def chat(request: ChatRequest) -> dict:
             history=history,
             context_path=request.context_path,
             language=request.language,
+            answer_mode=request.answer_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 app.mount("/wiki", StaticFiles(directory=WIKI_DIR), name="wiki")
+app.mount("/sources", StaticFiles(directory=SOURCE_DIR), name="sources")
 app.mount("/showcase", StaticFiles(directory=SHOWCASE_DIR), name="showcase")
 
 

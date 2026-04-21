@@ -17,6 +17,7 @@ class ClimateAgentView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.messages = [];
+    this.answerMode = "detailed";
   }
 
   getViewType() {
@@ -64,6 +65,15 @@ class ClimateAgentView extends ItemView {
     const contextButton = controls.createEl("button", {
       text: "Use active note",
       type: "button",
+    });
+    const modeWrap = controls.createDiv({ cls: "climate-agent-mode-wrap" });
+    modeWrap.createSpan({ cls: "climate-agent-mode-label", text: "Answer" });
+    this.modeSelect = modeWrap.createEl("select", { cls: "climate-agent-mode" });
+    this.modeSelect.createEl("option", { text: "Brief", value: "brief" });
+    this.modeSelect.createEl("option", { text: "Detailed", value: "detailed" });
+    this.modeSelect.value = this.answerMode;
+    this.modeSelect.addEventListener("change", () => {
+      this.answerMode = this.modeSelect.value || "detailed";
     });
     this.sendButton = controls.createEl("button", {
       text: "Send",
@@ -147,6 +157,10 @@ class ClimateAgentView extends ItemView {
   async checkConfig() {
     try {
       const payload = await this.requestJson("/api/config", "GET");
+      this.answerMode = payload.default_answer_mode || this.answerMode;
+      if (this.modeSelect) {
+        this.modeSelect.value = this.answerMode;
+      }
       this.statusEl.setText(
         payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "Offline demo",
       );
@@ -173,11 +187,16 @@ class ClimateAgentView extends ItemView {
           })),
         contextPath: this.getActiveContextPath(),
         language: "en",
+        answerMode: this.answerMode,
       });
       this.messages[this.messages.length - 1] = {
         role: "assistant",
         content: payload.text,
       };
+      this.answerMode = payload.answer_mode || this.answerMode;
+      if (this.modeSelect) {
+        this.modeSelect.value = this.answerMode;
+      }
       this.renderMessages();
       this.renderSources(payload.sources || []);
       this.statusEl.setText(
