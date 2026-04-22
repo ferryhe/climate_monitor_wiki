@@ -4413,7 +4413,7 @@ const numberingSystems = {
   deva: "[\u0966-\u096F]",
   fullwide: "[\uFF10-\uFF19]",
   gujr: "[\u0AE6-\u0AEF]",
-  hanidec: "[〇|一|二|三|四|五|六|七|八|九]",
+  hanidec: "[\u3007\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d]",
   khmr: "[\u17E0-\u17E9]",
   knda: "[\u0CE6-\u0CEF]",
   laoo: "[\u0ED0-\u0ED9]",

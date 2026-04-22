@@ -1,0 +1,142 @@
+.climate-agent-view {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  padding: 12px;
+}
+
+.climate-agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.climate-agent-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.climate-agent-status {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: 8px;
+  color: var(--interactive-accent);
+  font-size: 12px;
+}
+
+.climate-agent-status.is-offline {
+  border-color: var(--text-warning);
+  color: var(--text-warning);
+}
+
+.climate-agent-messages {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.climate-agent-empty {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.climate-agent-message {
+  display: flex;
+}
+
+.climate-agent-message-user {
+  justify-content: flex-end;
+}
+
+.climate-agent-message-assistant {
+  justify-content: flex-start;
+}
+
+.climate-agent-bubble {
+  max-width: 92%;
+  padding: 9px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.climate-agent-message-user .climate-agent-bubble {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.climate-agent-sources {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.climate-agent-sources h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.climate-agent-source {
+  width: 100%;
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  text-align: left;
+}
+
+.climate-agent-source-title {
+  font-weight: 600;
+}
+
+.climate-agent-source-path {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.climate-agent-form {
+  display: grid;
+  gap: 8px;
+}
+
+.climate-agent-form textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 76px;
+  border-radius: 8px;
+}
+
+.climate-agent-controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.climate-agent-controls button {
+  border-radius: 8px;
+}
+
+.climate-agent-mode-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.climate-agent-mode {
+  border-radius: 8px;
+}

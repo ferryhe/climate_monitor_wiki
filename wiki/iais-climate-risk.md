@@ -10,7 +10,7 @@
 - FSB now receives annual risk assessment results from IAIS
 
 ### Nat Cat Assessment Tool
--委托CLIMADA Technologies (Swiss firm)
+- Commissioned CLIMADA Technologies, a Swiss firm
 - Covers 250+ regions under multiple climate scenarios (RCP 8.5)
 - Supports supervisors in evaluating physical risk exposure globally
 

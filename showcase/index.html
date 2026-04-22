@@ -3,125 +3,307 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Climate Monitor Wiki Showcase</title>
+    <title>Climate Monitor Wiki Agent</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="/showcase/styles.css" />
   </head>
   <body>
-    <div class="bg-orb orb-a"></div>
-    <div class="bg-orb orb-b"></div>
-
-    <main class="layout">
-      <header class="hero">
-        <p class="badge">Codespaces Public Demo</p>
-        <h1>Climate Monitor Wiki Explorer</h1>
-        <p class="subtitle">
-          A single page combining an Obsidian-style graph and a Dataview-style
-          data table.
-        </p>
-        <div class="meta">
-          <span id="metaNotes">Loading...</span>
-          <span id="metaEdges">Loading...</span>
-        </div>
-      </header>
-
-      <section class="panel graph-panel">
-        <div class="panel-head">
-          <h2>Graph View</h2>
-          <div class="legend">
-            <span><i class="dot dot-daily"></i>Daily</span>
-            <span><i class="dot dot-topic"></i>Topic</span>
-            <span><i class="dot dot-index"></i>Index</span>
+    <div class="app-shell">
+      <nav class="tabbar" aria-label="Workspace navigation">
+        <div class="tabbar__brand">
+          <span class="tabbar__dot" aria-hidden="true"></span>
+          <div class="tabbar__copy">
+            <strong>Climate Monitor</strong>
+            <span>Wiki agent workspace</span>
           </div>
         </div>
-        <div id="graphWrap" class="graph-wrap">
-          <svg
-            id="graphSvg"
-            viewBox="0 0 1200 700"
-            preserveAspectRatio="xMidYMid meet"
-          ></svg>
-        </div>
-        <p id="graphHint" class="hint">
-          Drag nodes to rearrange the graph, then click nodes or table rows to
-          inspect details in the right sidebar.
-        </p>
-      </section>
 
-      <section class="table-and-detail">
-        <section class="panel table-panel">
-          <div class="panel-head">
-            <h2>Dataview</h2>
-            <input
-              id="searchInput"
-              type="search"
-              placeholder="Search by page, type, date..."
-            />
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Page</th>
-                  <th>Type</th>
-                  <th>Date</th>
-                  <th>Words</th>
-                  <th>Outlinks</th>
-                  <th>Inlinks</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="rows"></tbody>
-            </table>
+        <div class="tabbar__tabs" role="tablist">
+          <button
+            id="chatTab"
+            class="tabbar__tab is-active"
+            role="tab"
+            type="button"
+            data-view="chatView"
+            aria-controls="chatView"
+            aria-selected="true"
+          >
+            Chat
+          </button>
+          <button
+            id="obsidianTab"
+            class="tabbar__tab"
+            role="tab"
+            type="button"
+            data-view="obsidianView"
+            aria-controls="obsidianView"
+            aria-selected="false"
+          >
+            Obsidian
+          </button>
+        </div>
+
+        <div id="connectionStatus" class="status-pill">Connecting</div>
+      </nav>
+
+      <main class="workspace">
+        <section id="chatView" class="view-panel" role="tabpanel" aria-labelledby="chatTab">
+          <div class="chat-app">
+            <header class="chat-hero">
+              <div class="chat-hero__copy">
+                <p class="chat-hero__eyebrow">Minimal Chat Surface</p>
+                <h1>Climate Monitor Wiki Agent</h1>
+                <p class="chat-hero__subtitle">
+                  Ask grounded questions over the climate-risk wiki. The active note selected in
+                  the Obsidian workspace is prioritized during retrieval.
+                </p>
+              </div>
+
+              <div class="chat-hero__meta">
+                <div id="activeContextBadge" class="context-badge is-empty">No active note</div>
+                <div class="chat-hero__actions">
+                  <button id="jumpToWikiButton" class="ghost-button" type="button">
+                    Open Obsidian
+                  </button>
+                  <button id="clearContextButton" class="ghost-button" type="button">
+                    Clear context
+                  </button>
+                </div>
+              </div>
+            </header>
+
+            <section class="chat-stage">
+              <div id="messages" class="message-list" aria-live="polite"></div>
+            </section>
+
+            <footer class="composer-shell">
+              <div class="composer-shell__inner">
+                <div class="composer-shell__utility">
+                  <div class="composer-shell__controls">
+                    <button id="clearChatButton" class="utility-button" type="button">
+                      New thread
+                    </button>
+                    <div class="mode-switch" role="group" aria-label="Answer detail mode">
+                      <button
+                        class="mode-switch__button"
+                        type="button"
+                        data-answer-mode="brief"
+                        aria-pressed="false"
+                      >
+                        Brief
+                      </button>
+                      <button
+                        class="mode-switch__button is-active"
+                        type="button"
+                        data-answer-mode="detailed"
+                        aria-pressed="true"
+                      >
+                        Detailed
+                      </button>
+                    </div>
+                  </div>
+                  <span class="composer-shell__hint">
+                    Enter for a new line. Use Ctrl/⌘ + Enter to send.
+                  </span>
+                </div>
+
+                <form id="chatForm" class="composer-card">
+                  <label class="sr-only" for="messageInput">Ask a question</label>
+                  <textarea
+                    id="messageInput"
+                    name="message"
+                    rows="2"
+                    placeholder="Ask about climate risk, nat-cat insurance, IFRS S2, IAIS, or the latest Climate Monitor update…"
+                  ></textarea>
+                  <button
+                    id="sendButton"
+                    class="composer-action-button"
+                    type="submit"
+                    aria-label="Send message"
+                  >
+                    <svg aria-hidden="true" class="composer-action-button__icon" viewBox="0 0 20 20">
+                      <path d="M4 10h10" />
+                      <path d="M10 4l6 6-6 6" />
+                    </svg>
+                  </button>
+                </form>
+              </div>
+            </footer>
           </div>
         </section>
 
-        <aside class="panel detail-panel">
-          <div class="panel-head detail-head">
-            <h2>Node Detail</h2>
-            <span id="detailType" class="type-chip">None</span>
-          </div>
-          <h3 id="detailTitle" class="detail-title">
-            Select a node or table row
-          </h3>
-          <dl class="detail-meta">
-            <div>
-              <dt>Date</dt>
-              <dd id="detailDate">-</dd>
-            </div>
-            <div>
-              <dt>Words</dt>
-              <dd id="detailWords">-</dd>
-            </div>
-            <div>
-              <dt>Outlinks</dt>
-              <dd id="detailOutlinks">-</dd>
-            </div>
-            <div>
-              <dt>Inlinks</dt>
-              <dd id="detailInlinks">-</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd id="detailStatus">-</dd>
-            </div>
-            <div>
-              <dt>Source</dt>
-              <dd id="detailFile">-</dd>
-            </div>
-          </dl>
-          <h4 class="preview-title">Raw Markdown</h4>
-          <pre id="detailMarkdown" class="md-preview">
-Select a node to preview its markdown source.</pre
-          >
-        </aside>
-      </section>
-    </main>
+        <section
+          id="obsidianView"
+          class="view-panel"
+          role="tabpanel"
+          aria-labelledby="obsidianTab"
+          hidden
+        >
+          <div class="obsidian-shell">
+            <header class="obsidian-hero">
+              <div>
+                <p class="obsidian-hero__eyebrow">Graph + Dataview Workspace</p>
+                <h2>Obsidian-style Explorer</h2>
+                <p class="obsidian-hero__subtitle">
+                  Browse the vault as a graph, filter it like Dataview, and set the active note
+                  used by chat retrieval.
+                </p>
+              </div>
 
-    <script src="app.js"></script>
+              <div class="obsidian-hero__meta">
+                <span id="metaNotes" class="metric-chip">Notes: —</span>
+                <span id="metaEdges" class="metric-chip">Edges: —</span>
+                <span id="wikiStats" class="metric-chip">Pages: —</span>
+              </div>
+            </header>
+
+            <section class="obsidian-grid">
+              <section class="panel panel--table">
+                <div class="panel__head">
+                  <div>
+                    <p class="panel__eyebrow">Dataview</p>
+                    <h3>Page Index</h3>
+                  </div>
+
+                  <label class="sr-only" for="wikiSearch">Search wiki pages</label>
+                  <input
+                    id="wikiSearch"
+                    class="search-input"
+                    type="search"
+                    placeholder="Search by page, type, date, or status..."
+                    autocomplete="off"
+                  />
+                </div>
+
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Page</th>
+                        <th>Type</th>
+                        <th>Date</th>
+                        <th>Words</th>
+                        <th>Outlinks</th>
+                        <th>Inlinks</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="rows"></tbody>
+                  </table>
+                </div>
+              </section>
+
+              <aside class="panel panel--detail">
+                <div class="panel__head detail-head">
+                  <div>
+                    <p class="panel__eyebrow">Note Detail</p>
+                    <h3 id="detailTitle">Select a note</h3>
+                  </div>
+                  <span id="detailType" class="type-chip">None</span>
+                </div>
+
+                <div class="detail-actions">
+                  <button id="useInChatButton" class="ghost-button" type="button" disabled>
+                    Use in chat
+                  </button>
+                  <button id="clearSelectionButton" class="ghost-button" type="button" disabled>
+                    Clear selection
+                  </button>
+                </div>
+
+                <dl class="detail-meta">
+                  <div>
+                    <dt>Date</dt>
+                    <dd id="detailDate">-</dd>
+                  </div>
+                  <div>
+                    <dt>Words</dt>
+                    <dd id="detailWords">-</dd>
+                  </div>
+                  <div>
+                    <dt>Outlinks</dt>
+                    <dd id="detailOutlinks">-</dd>
+                  </div>
+                  <div>
+                    <dt>Inlinks</dt>
+                    <dd id="detailInlinks">-</dd>
+                  </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd id="detailStatus">-</dd>
+                  </div>
+                  <div>
+                    <dt>Source</dt>
+                    <dd id="detailFile">-</dd>
+                  </div>
+                </dl>
+
+                <p id="activeContext" class="active-context">No active note selected for chat.</p>
+
+                <h4 class="preview-title">Markdown Preview</h4>
+                <pre id="detailMarkdown" class="md-preview">
+Select a note to preview its markdown source.</pre
+                >
+              </aside>
+            </section>
+
+            <section class="panel panel--graph">
+              <div class="panel__head">
+                <div>
+                  <p class="panel__eyebrow">Graph View</p>
+                  <h3 id="graphTitle">Vault Links</h3>
+                </div>
+
+                <div class="panel__controls">
+                  <div id="graphLegend" class="legend">
+                    <span><i class="dot dot-daily"></i>Daily</span>
+                    <span><i class="dot dot-topic"></i>Topic</span>
+                    <span><i class="dot dot-index"></i>Index</span>
+                  </div>
+                  <div class="mode-switch" role="group" aria-label="Graph mode">
+                    <button
+                      class="mode-switch__button is-active"
+                      type="button"
+                      data-graph-mode="notes"
+                      aria-pressed="true"
+                    >
+                      Notes
+                    </button>
+                    <button
+                      class="mode-switch__button"
+                      type="button"
+                      data-graph-mode="keywords"
+                      aria-pressed="false"
+                    >
+                      Keywords
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="graph-wrap">
+                <svg
+                  id="graphSvg"
+                  viewBox="0 0 1200 700"
+                  preserveAspectRatio="xMidYMid meet"
+                ></svg>
+              </div>
+
+              <p id="graphHint" class="hint">
+                Drag nodes to rearrange the graph. Click a node or a Dataview row to inspect the
+                note and set it as the active chat context.
+              </p>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/showcase/app.js"></script>
   </body>
 </html>

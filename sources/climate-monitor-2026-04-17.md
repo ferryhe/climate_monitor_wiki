@@ -17,7 +17,7 @@ No substantive new content found in today's updates. All 10 orgs with changed pa
 
 ### 🎯 Actuarial-Relevant Research
 
-**ISSB动态追踪（2026年3月刊）——自然相关披露最新进展**
+**ISSB March 2026 Update: Latest Developments in Nature-Related Disclosures**
 Summary: The March 2026 ISSB update reveals a significant rebranding: the "BEES" (Biodiversity, Ecosystems and Ecosystem Services) project has been officially renamed to **"Nature-related Disclosures"**, expanding its scope beyond biodiversity to cover all natural-related risks and opportunities. The renamed project will serve as a targeted supplement to IFRS S1 and IFRS S2, maintaining full compatibility with existing ISSB standards while aligning with TNFD, SASB, GRI, and ESRS frameworks to reduce duplicative corporate disclosures. ISSB discussed advancing the Nature-related Disclosures project toward a consultation draft, marking it as the next major standard-setting milestone after the IFRS S2 amendments.
 Source: https://www.sohu.com/a/1006527431_122014422 | Published: 2026-04-07
 
