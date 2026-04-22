@@ -29,7 +29,7 @@ Range-style daily-report questions such as `Summarize the past 7 days of reports
 
 The chatbot can run in two modes:
 
-- **OpenAI mode**: set `OPENAI_API_KEY` in `.env`; answers are synthesized by `OPENAI_MODEL`.
+- **OpenAI mode**: set `OPENAI_API_KEY` in your local `.env` or in your host's environment variables; answers are synthesized by `OPENAI_MODEL`.
 - **Offline demo mode**: no key required; the app still demonstrates retrieval and cited extractive answers.
 
 ## Setup
@@ -48,10 +48,14 @@ Optional model-backed configuration:
 ```bash
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.4-mini
+OPENAI_TEMPERATURE=0.2
 SOURCE_DIR=sources
+RELOAD_TOKEN=your-shared-secret
 ```
 
 In GitHub Codespaces, prefer storing `OPENAI_API_KEY` as a Codespaces secret for this repository, then restart the Codespace so the variable is injected into the terminal and API process.
+
+Your local `.env` is for development convenience only. Keep using `.env.example` as the template, and do not commit a real `.env` file.
 
 ## Run
 
@@ -74,6 +78,34 @@ curl -s http://localhost:8501/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"What are the latest Climate Monitor highlights?","language":"en","answerMode":"detailed"}'
 ```
+
+## Deploy on Render
+
+This repo includes a [`render.yaml`](render.yaml) Blueprint and a [`.python-version`](.python-version) pin for Render.
+
+If you deploy it as a Render web service, the relevant settings are:
+
+- Build Command: `pip install -r requirements.txt`
+- Start Command: `uvicorn api_server:app --host 0.0.0.0 --port $PORT`
+- Health Check Path: `/api/health`
+
+The Blueprint also sets:
+
+- `PYTHON_VERSION=3.12.1`
+- `OPENAI_MODEL=gpt-5.4-mini`
+- `OPENAI_TEMPERATURE=0.2`
+- `WIKI_DIR=wiki`
+- `SOURCE_DIR=sources`
+- `RELOAD_TOKEN` as a generated secret
+- `OPENAI_API_KEY` as a placeholder secret (`sync: false`)
+
+For secrets on Render:
+
+- add `OPENAI_API_KEY` in the Render Environment page, or provide it during the initial Blueprint creation flow
+- do not commit a real `.env` file to the repo
+- if your key currently exists only as a GitHub or Codespaces secret, add the same value to Render separately
+
+Render's environment variable docs describe setting secrets in the Render Dashboard, bulk-importing them from a local `.env`, or declaring placeholders in `render.yaml`.
 
 ## Obsidian Integration
 
