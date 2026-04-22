@@ -79,6 +79,21 @@ curl -s http://localhost:8501/api/chat \
   -d '{"message":"What are the latest Climate Monitor highlights?","language":"en","answerMode":"detailed"}'
 ```
 
+## When Sources Update
+
+If `sources/` changes, do the following:
+
+1. Add or update the raw file in `sources/`.
+2. If it is a new date, create the matching `wiki/climate-monitor-YYYY-MM-DD.md`.
+3. Update `wiki/index.md`.
+4. Reload the API and run the smoke test:
+
+```bash
+python scripts/reload_and_smoke_test.py --date 2026-04-21
+```
+
+The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
+
 ## Deploy on Render
 
 This repo includes a [`render.yaml`](render.yaml) Blueprint and a [`.python-version`](.python-version) pin for Render.
@@ -167,7 +182,7 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ## Daily Reports
 
-20 daily report pages in `wiki/` covering **2026-03-31 through 2026-04-20**.
+21 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-21**.
 Source files in `sources/` contain the original report content.
 
 Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
@@ -187,4 +202,4 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
 
-_Last updated: 2026-04-20_
+_Last updated: 2026-04-21_

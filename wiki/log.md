@@ -1,5 +1,16 @@
 # Wiki Log
 
+## [2026-04-21] daily-update | Add 2026-04-21 report + source update workflow
+Source: GitHub sources + repo maintenance
+Actions:
+  - GitHub wiki/: created climate-monitor-2026-04-21.md
+  - GitHub wiki/: updated index.md for the new daily report row
+  - GitHub docs/: added source-update-sop.md
+  - GitHub scripts/: added reload_and_smoke_test.py
+  - GitHub README.md: documented the sources update workflow
+  - Contributor cleanup request: no `Copilot penggaolai` string found in tracked repo files
+---
+
 ## [2026-04-20] init | Wiki initialized
 Wiki root: ~/wiki
 Structure: sources/, wiki/

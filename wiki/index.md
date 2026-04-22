@@ -1,6 +1,6 @@
 # Wiki Index
 
-_Last updated: 2026-04-20 — 13 pages + 20 daily report pages_
+_Last updated: 2026-04-21 — 13 pages + 21 daily report pages_
 
 ## Daily Reports
 
@@ -26,6 +26,7 @@ _Last updated: 2026-04-20 — 13 pages + 20 daily report pages_
 | 2026-04-18 | [[climate-monitor-2026-04-18]] | ✅ |
 | 2026-04-19 | [[climate-monitor-2026-04-19]] | ⚠️ No report |
 | 2026-04-20 | [[climate-monitor-2026-04-20]] | ✅ |
+| 2026-04-21 | [[climate-monitor-2026-04-21]] | ✅ |
 
 ## Entities
 
@@ -48,4 +49,4 @@ _Last updated: 2026-04-20 — 13 pages + 20 daily report pages_
 | [[cas-soa-climate-research]] | CAS $75K RFP for climate frameworks; SOA weather derivatives research | 2026-04-20 |
 | [[talents-gap]] | Insurance talent gap escalated to strategic risk; climate analytics skills shortage | 2026-04-20 |
 
-_Last updated: 2026-04-20_
+_Last updated: 2026-04-21_
