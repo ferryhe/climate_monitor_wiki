@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
 from api_server import app, responder
 from fastapi.testclient import TestClient
@@ -141,6 +143,10 @@ def test_detailed_mode_is_richer_than_brief_mode_offline():
 def test_past_week_daily_summary_covers_requested_window_offline():
     responder_instance = AgenticWikiResponder()
     responder_instance.client = None
+    latest_date_value = responder_instance.kb.latest_date
+    assert latest_date_value is not None
+    latest_date = date.fromisoformat(latest_date_value)
+    window_start = latest_date - timedelta(days=6)
 
     result = responder_instance.answer(
         "帮我把过去7天的日报总结一下给我",
@@ -149,16 +155,12 @@ def test_past_week_daily_summary_covers_requested_window_offline():
     )
 
     assert result["answer_mode"] == "detailed"
-    assert "Coverage window: 2026-04-14 to 2026-04-20" in result["text"]
-    assert "- 2026-04-19:" in result["text"]
+    assert f"Coverage window: {window_start.isoformat()} to {latest_date.isoformat()}" in result["text"]
+    assert f"- {latest_date.isoformat()}:" in result["text"]
 
-    source_paths = [source["path"] for source in result["sources"][:7]]
-    assert source_paths == [
-        "wiki/climate-monitor-2026-04-14.md",
-        "wiki/climate-monitor-2026-04-15.md",
-        "wiki/climate-monitor-2026-04-16.md",
-        "wiki/climate-monitor-2026-04-17.md",
-        "wiki/climate-monitor-2026-04-18.md",
-        "wiki/climate-monitor-2026-04-19.md",
-        "wiki/climate-monitor-2026-04-20.md",
+    source_paths = [source["path"] for source in result["sources"]]
+    expected_paths = [
+        f"wiki/climate-monitor-{(window_start + timedelta(days=offset)).isoformat()}.md"
+        for offset in range(7)
     ]
+    assert source_paths[: len(expected_paths)] == expected_paths

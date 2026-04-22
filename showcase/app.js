@@ -147,6 +147,18 @@ function renderMarkdownFull(markdown) {
     codeLines = [];
   };
 
+  const parseTableCells = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) {
+      return null;
+    }
+    const cells = trimmed
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+    return cells.length >= 2 ? cells : null;
+  };
+
   for (const line of lines) {
     if (line.startsWith("```")) {
       if (!inCode) {
@@ -168,8 +180,8 @@ function renderMarkdownFull(markdown) {
       continue;
     }
 
-    if (line.includes("|")) {
-      const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+    const cells = parseTableCells(line);
+    if (cells) {
       if (cells.length && cells.every((cell) => /^[-: ]+$/.test(cell))) {
         continue;
       }

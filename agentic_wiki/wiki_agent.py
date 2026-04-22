@@ -956,8 +956,9 @@ class AgenticWikiResponder:
             return ""
 
         if branch is None:
+            default_branch = AgenticWikiResponder._github_default_branch()
             try:
-                branch = subprocess.run(
+                current_branch = subprocess.run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     cwd=REPO_ROOT,
                     check=True,
@@ -965,7 +966,22 @@ class AgenticWikiResponder:
                     text=True,
                 ).stdout.strip()
             except Exception:
-                branch = ""
+                current_branch = ""
+
+            branch = default_branch
+            if current_branch and current_branch != "HEAD":
+                branch_on_origin = (
+                    subprocess.run(
+                        ["git", "show-ref", "--verify", f"refs/remotes/origin/{current_branch}"],
+                        cwd=REPO_ROOT,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode
+                    == 0
+                )
+                if branch_on_origin:
+                    branch = current_branch
 
         if remote.startswith("git@github.com:"):
             remote = remote.replace("git@github.com:", "https://github.com/")
