@@ -5,6 +5,7 @@ import math
 import os
 import re
 import subprocess
+from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -27,8 +28,22 @@ LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 SOURCE_ITEM_RE = re.compile(r"^(?:→\s*)?\*\*(.+?)\*\*\s*$")
 DAY_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:day|days)", re.IGNORECASE)
-ZH_DAY_RANGE_RE = re.compile(r"(?:过去|最近|近)\s*(\d{1,2})\s*(?:天|日)")
 ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+ISO_RANGE_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2})\b\s*(?:to|through|thru|until)\s*\b(\d{4}-\d{2}-\d{2})\b",
+    re.IGNORECASE,
+)
+MONTH_NAME_RE = (
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+)
+MONTH_RANGE_RE = re.compile(
+    rf"\b(?:from\s+|between\s+)?({MONTH_NAME_RE})\s+(\d{{1,2}})(?:,\s*(\d{{4}})|\s+(\d{{4}}))?"
+    rf"\s*(?:to|through|thru|until|and)\s*"
+    rf"({MONTH_NAME_RE})\s+(\d{{1,2}})(?:,\s*(\d{{4}})|\s+(\d{{4}}))?\b",
+    re.IGNORECASE,
+)
+MONTH_YEAR_RE = re.compile(rf"\b({MONTH_NAME_RE})\s+(\d{{4}})\b", re.IGNORECASE)
 
 STOPWORDS = {
     "a",
@@ -158,9 +173,68 @@ BOILERPLATE_HEADINGS = {
     "tags",
 }
 
+MONTH_NAME_TO_NUMBER = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
 CorpusType = Literal["wiki", "source"]
-AnswerMode = Literal["brief", "detailed"]
-VALID_ANSWER_MODES = {"brief", "detailed"}
+AnswerMode = Literal["brief", "detailed", "executive"]
+VALID_ANSWER_MODES = {"brief", "detailed", "executive"}
+PROMPT_STARTERS: tuple[dict[str, str], ...] = (
+    {
+        "label": "Monthly report",
+        "prompt": "Give me a report for this month. Cover major themes, notable signals, and gaps.",
+        "answer_mode": "executive",
+        "description": "Theme-clustered report with date coverage, notable signals, and missing-report gaps.",
+    },
+    {
+        "label": "30-day change",
+        "prompt": "What changed materially over the last 30 days for insurers?",
+        "answer_mode": "executive",
+        "description": "Best for trend shifts across a recent window instead of only the latest report.",
+    },
+    {
+        "label": "14-day themes",
+        "prompt": "Summarize the past 14 days by theme, not by day.",
+        "answer_mode": "executive",
+        "description": "Synthesizes recurring themes first, then uses daily coverage as supporting context.",
+    },
+    {
+        "label": "Pricing explainer",
+        "prompt": "Why do secondary perils matter for insurance pricing? Cite the strongest evidence.",
+        "answer_mode": "detailed",
+        "description": "Evidence-heavy explanation grounded in the source reports and linked wiki notes.",
+    },
+    {
+        "label": "Latest snapshot",
+        "prompt": "What are the latest Climate Monitor highlights in five bullets?",
+        "answer_mode": "brief",
+        "description": "Fast snapshot for a quick scan of the most recent material developments.",
+    },
+)
 
 
 def _title_from_file(path: Path) -> str:
@@ -253,6 +327,11 @@ def _shorten(text: str, limit: int = 900) -> str:
     return f"{compact[:limit].rstrip()}..."
 
 
+def _summary_excerpt(text: str, limit: int = 240) -> str:
+    compact = _shorten(text, limit)
+    return re.sub(r"^(?:summary|executive summary)\s+", "", compact, flags=re.IGNORECASE)
+
+
 def _parse_iso_date(value: str) -> date | None:
     try:
         return date.fromisoformat(value)
@@ -260,18 +339,102 @@ def _parse_iso_date(value: str) -> date | None:
         return None
 
 
+def _dates_between(start: date, end: date, *, max_days: int = 93) -> list[str]:
+    if end < start:
+        start, end = end, start
+    span = (end - start).days + 1
+    if span > max_days:
+        return []
+    return [(start + timedelta(days=offset)).isoformat() for offset in range(span)]
+
+
+def _month_bounds(year: int, month: int) -> tuple[date, date]:
+    last_day = monthrange(year, month)[1]
+    return date(year, month, 1), date(year, month, last_day)
+
+
+def _month_number(value: str) -> int | None:
+    return MONTH_NAME_TO_NUMBER.get(value.strip().lower())
+
+
+def _explicit_range_dates(question: str, latest_date: str) -> list[str]:
+    latest = _parse_iso_date(latest_date)
+
+    iso_match = ISO_RANGE_RE.search(question)
+    if iso_match:
+        start = _parse_iso_date(iso_match.group(1))
+        end = _parse_iso_date(iso_match.group(2))
+        if start and end:
+            return _dates_between(start, end)
+
+    month_match = MONTH_RANGE_RE.search(question)
+    if not month_match:
+        return []
+
+    start_month = _month_number(month_match.group(1) or "")
+    end_month = _month_number(month_match.group(5) or "")
+    if start_month is None or end_month is None:
+        return []
+
+    default_year = latest.year if latest else None
+    start_year_text = month_match.group(3) or month_match.group(4)
+    end_year_text = month_match.group(7) or month_match.group(8)
+    start_year = int(start_year_text) if start_year_text else default_year
+    end_year = int(end_year_text) if end_year_text else start_year or default_year
+    if start_year is None or end_year is None:
+        return []
+
+    try:
+        start = date(start_year, start_month, int(month_match.group(2)))
+        end = date(end_year, end_month, int(month_match.group(6)))
+    except ValueError:
+        return []
+    return _dates_between(start, end)
+
+
+def _month_window_dates(question: str, latest_date: str) -> list[str]:
+    latest = _parse_iso_date(latest_date)
+    if latest is None:
+        return []
+
+    lower = question.lower()
+    if any(term in lower for term in ["this month", "current month"]):
+        start = date(latest.year, latest.month, 1)
+        return _dates_between(start, latest)
+
+    if any(term in lower for term in ["last month", "previous month"]):
+        if latest.month == 1:
+            year = latest.year - 1
+            month = 12
+        else:
+            year = latest.year
+            month = latest.month - 1
+        start, end = _month_bounds(year, month)
+        return _dates_between(start, end)
+
+    month_year_match = MONTH_YEAR_RE.search(question)
+    if not month_year_match:
+        return []
+
+    month = _month_number(month_year_match.group(1) or "")
+    year = int(month_year_match.group(2))
+    if month is None:
+        return []
+
+    start, end = _month_bounds(year, month)
+    if latest.year == year and latest.month == month:
+        end = min(end, latest)
+    return _dates_between(start, end)
+
+
 def _date_range_days(question: str) -> int | None:
     lower = question.lower()
     if any(term in lower for term in ["last week", "past week", "recent week"]):
         return 7
-    if any(term in question for term in ["过去一周", "最近一周", "近一周", "过去7天", "最近7天", "近7天"]):
-        return 7
+    if "past month" in lower or "recent month" in lower:
+        return 30
 
     match = DAY_RANGE_RE.search(question)
-    if match:
-        return max(1, min(int(match.group(1)), 30))
-
-    match = ZH_DAY_RANGE_RE.search(question)
     if match:
         return max(1, min(int(match.group(1)), 30))
 
@@ -288,6 +451,12 @@ def _window_dates(question: str, latest_date: str) -> list[str]:
 
 
 def _requested_dates(question: str, latest_date: str = "") -> list[str]:
+    explicit_range = _explicit_range_dates(question, latest_date)
+    if explicit_range:
+        return explicit_range
+    month_window = _month_window_dates(question, latest_date)
+    if month_window:
+        return month_window
     explicit = list(dict.fromkeys(ISO_DATE_RE.findall(question)))
     window = _window_dates(question, latest_date)
     return explicit or window
@@ -314,10 +483,18 @@ def _asks_daily_summary(question: str) -> bool:
             "past 7 days",
             "last 7 days",
             "recent 7 days",
+            "past month",
+            "last month",
+            "previous month",
+            "this month",
+            "current month",
+            "monthly",
+            "executive brief",
+            "executive summary",
             "summarize",
             "summary",
         ]
-    ) or any(term in question for term in ["日报", "最近7天", "过去7天", "最近一周", "过去一周", "总结", "汇总"])
+    )
 
 
 def _display_title(title: str) -> str:
@@ -494,6 +671,19 @@ class SearchHit:
         }
 
 
+@dataclass
+class ThemeCluster:
+    label: str
+    concept_type: str
+    days: list[str]
+    report_days: int
+    raw_source_days: int
+    summary: str
+    raw_signal: str
+    wiki_hit: SearchHit | None
+    source_hit: SearchHit | None
+
+
 class WikiKnowledgeBase:
     def __init__(
         self,
@@ -508,6 +698,7 @@ class WikiKnowledgeBase:
         self.chunks: list[WikiChunk] = []
         self.document_concepts: dict[str, list[dict[str, str]]] = {}
         self.concepts: list[dict[str, Any]] = []
+        self.graphs: dict[str, dict[str, Any]] = {}
         self.latest_date = ""
         self._load()
 
@@ -523,6 +714,7 @@ class WikiKnowledgeBase:
         self.source_documents_by_title = {doc.title: doc for doc in source_docs}
         self.chunks = wiki_chunks + source_chunks
         self.document_concepts, self.concepts = self._build_concept_index()
+        self.graphs = self._build_graph_catalog()
         self.latest_date = max(
             (
                 doc.date
@@ -722,6 +914,91 @@ class WikiKnowledgeBase:
         )
         return document_concepts, concepts
 
+    @staticmethod
+    def _keyword_node_id(label: str) -> str:
+        return f"keyword:{re.sub(r'[^a-z0-9]+', '-', label.casefold()).strip('-')}"
+
+    def _build_note_graph(self) -> dict[str, Any]:
+        by_title = {doc.title: doc for doc in self.documents}
+        nodes = [
+            {
+                "id": doc.path,
+                "refPath": doc.path,
+                "label": doc.title,
+                "kind": "note",
+                "type": doc.type,
+            }
+            for doc in sorted(self.documents, key=lambda item: item.title.casefold())
+        ]
+
+        links: list[dict[str, str]] = []
+        for doc in self.documents:
+            for raw_link in dict.fromkeys(doc.links):
+                normalized = raw_link.replace("wiki/", "").replace(".md", "").strip()
+                target = by_title.get(normalized)
+                if target is None:
+                    continue
+                links.append({"source": doc.path, "target": target.path})
+
+        return {"nodes": nodes, "links": links}
+
+    def _build_keyword_graph(self) -> dict[str, Any]:
+        rows = sorted(self.documents, key=lambda item: item.title.casefold())
+        keyword_entries = [concept for concept in self.concepts if concept["document_count"] >= 2][:18]
+        fallback_entries = self.concepts[:12]
+        selected_entries = keyword_entries or fallback_entries
+        selected_labels = {concept["label"] for concept in selected_entries}
+
+        connected_rows = [
+            doc
+            for doc in rows
+            if any(
+                concept["label"] in selected_labels
+                for concept in self.document_concepts.get(doc.path, [])
+            )
+        ]
+
+        nodes = [
+            {
+                "id": doc.path,
+                "refPath": doc.path,
+                "label": doc.title,
+                "kind": "note",
+                "type": doc.type,
+            }
+            for doc in connected_rows
+        ]
+        for concept in selected_entries:
+            nodes.append(
+                {
+                    "id": self._keyword_node_id(concept["label"]),
+                    "label": concept["label"],
+                    "kind": "keyword",
+                    "type": "keyword",
+                    "weight": concept["document_count"],
+                }
+            )
+
+        links: list[dict[str, str]] = []
+        for doc in connected_rows:
+            for concept in self.document_concepts.get(doc.path, []):
+                label = concept["label"]
+                if label not in selected_labels:
+                    continue
+                links.append({"source": doc.path, "target": self._keyword_node_id(label)})
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "static_layout": True,
+        }
+
+    def _build_graph_catalog(self) -> dict[str, dict[str, Any]]:
+        return {
+            "notes": self._build_note_graph(),
+            "keywords": self._build_keyword_graph(),
+        }
+
     def stats(self) -> dict[str, Any]:
         return {
             "documents": len(self.documents),
@@ -759,6 +1036,9 @@ class WikiKnowledgeBase:
 
     def concept_catalog(self) -> list[dict[str, Any]]:
         return self.concepts
+
+    def graph_catalog(self) -> dict[str, dict[str, Any]]:
+        return self.graphs
 
     def search(
         self,
@@ -998,9 +1278,11 @@ class AgenticWikiResponder:
             "wiki": self.kb.stats(),
             "documents": self.kb.document_catalog(self.source_document_base_url),
             "concepts": self.kb.concept_catalog(),
+            "graphs": self.kb.graph_catalog(),
             "github_blob_base_url": self.base_source_url,
-            "answer_modes": ["brief", "detailed"],
+            "answer_modes": ["brief", "detailed", "executive"],
             "default_answer_mode": "detailed",
+            "prompt_starters": [dict(item) for item in PROMPT_STARTERS],
             "retrieval_corpora": {
                 "wiki_documents": len(self.kb.documents),
                 "source_documents": len(self.kb.source_documents),
@@ -1094,14 +1376,30 @@ class AgenticWikiResponder:
             context_path=context_path,
             answer_mode=answer_mode,
         )
-        max_sources = 10 if answer_mode == "detailed" else 8
+        synthesis_hits = ranked_hits
+        if answer_mode == "executive" and requested_dates:
+            coverage_hits = self._window_coverage_hits(requested_dates, ranked_hits)
+            cluster_hits = self._theme_cluster_supporting_hits(
+                self._theme_clusters(self._timeline_entries(requested_dates, ranked_hits), ranked_hits)
+            )
+            synthesis_hits = []
+            seen_ids: set[str] = set()
+            for hit in [*cluster_hits, *coverage_hits, *ranked_hits]:
+                if hit.chunk.id in seen_ids:
+                    continue
+                synthesis_hits.append(hit)
+                seen_ids.add(hit.chunk.id)
+
+        max_sources = 10 if answer_mode == "detailed" else 12 if answer_mode == "executive" else 8
         if requested_dates:
-            max_sources = max(max_sources, min(14, len(requested_dates) + 4))
+            max_sources = max(max_sources, min(18 if answer_mode == "executive" else 14, len(requested_dates) + 4))
+        source_hits = synthesis_hits[:max_sources]
         sources = [
             hit.to_source(index, self.base_source_url)
-            for index, hit in enumerate(ranked_hits[:max_sources], start=1)
+            for index, hit in enumerate(source_hits, start=1)
         ]
-        text = self._synthesize(question, ranked_hits[:max_sources], history or [], language, answer_mode)
+        synthesis_selection = synthesis_hits if answer_mode == "executive" else source_hits
+        text = self._synthesize(question, synthesis_selection, history or [], language, answer_mode)
 
         return {
             "text": text,
@@ -1116,8 +1414,8 @@ class AgenticWikiResponder:
             "language": language,
             "answer_mode": answer_mode,
             "retrieval_summary": {
-                "wiki_hits": sum(1 for hit in ranked_hits[:max_sources] if hit.chunk.corpus == "wiki"),
-                "source_hits": sum(1 for hit in ranked_hits[:max_sources] if hit.chunk.corpus == "source"),
+                "wiki_hits": sum(1 for hit in source_hits if hit.chunk.corpus == "wiki"),
+                "source_hits": sum(1 for hit in source_hits if hit.chunk.corpus == "source"),
             },
         }
 
@@ -1147,12 +1445,13 @@ class AgenticWikiResponder:
             {
                 "role": "system",
                 "content": (
-                    "You plan retrieval for a grounded Markdown RAG system that has both curated wiki notes "
-                    "and raw daily source reports. Return JSON only: {\"sub_queries\": [\"...\"]}. "
-                    "Create 2-4 search queries that cover the user's intent and include canonical English domain terms. "
-                    "If the user wants detail, include a raw-source-oriented query."
-                ),
-            },
+                "You plan retrieval for a grounded Markdown RAG system that has both curated wiki notes "
+                "and raw daily source reports. Return JSON only: {\"sub_queries\": [\"...\"]}. "
+                "Create 2-4 search queries that cover the user's intent and include canonical English domain terms. "
+                "If the user wants detail or an executive brief, include a raw-source-oriented query "
+                "and a date-coverage-oriented query when the prompt spans a period."
+            ),
+        },
             {
                 "role": "user",
                 "content": (
@@ -1192,6 +1491,9 @@ class AgenticWikiResponder:
             queries.append("climate risk frameworks comparison IAIS FSB ISSB TCFD TNFD")
         if answer_mode == "detailed":
             queries.append(f"{question} raw source detailed evidence figures dates")
+        if answer_mode == "executive":
+            queries.append(f"{question} executive brief major themes coverage insurance implications")
+            queries.append(f"{question} raw source executive brief figures dates")
         return self._unique_queries(queries, 4)
 
     @staticmethod
@@ -1227,10 +1529,10 @@ class AgenticWikiResponder:
 
         top_paths = {hit.chunk.path for hit in hits[:5]}
         source_hits = [hit for hit in hits[:6] if hit.chunk.corpus == "source"]
-        if answer_mode == "detailed" and not source_hits:
+        if answer_mode in {"detailed", "executive"} and not source_hits:
             return {
                 "decision": "continue",
-                "reason": "Detailed mode wants raw evidence, but the first pass was mostly curated wiki notes.",
+                "reason": "This answer mode wants raw evidence, but the first pass was mostly curated wiki notes.",
                 "additional_queries": [f"{question} primary source report figures dates"],
             }
 
@@ -1281,7 +1583,11 @@ class AgenticWikiResponder:
 
         def corpus_bonus(hit: SearchHit) -> float:
             if hit.chunk.corpus == "source":
-                return 1.6 if answer_mode == "detailed" else 1.0
+                if answer_mode == "detailed":
+                    return 1.6
+                if answer_mode == "executive":
+                    return 1.2
+                return 1.0
             if hit.chunk.type == "topic":
                 return 0.9
             if hit.chunk.type == "daily":
@@ -1352,6 +1658,325 @@ class AgenticWikiResponder:
         non_context_hits = [hit for hit in ranked if hit.chunk.id not in pinned_ids]
         return context_hits + raw_context_hits + non_context_hits
 
+    @staticmethod
+    def _daily_page_path(day: str, corpus: CorpusType) -> str:
+        return f"{corpus}/climate-monitor-{day}.md"
+
+    def _daily_hit_candidates(
+        self,
+        requested_date: str,
+        hits: list[SearchHit],
+        *,
+        corpus: CorpusType,
+    ) -> list[SearchHit]:
+        path = self._daily_page_path(requested_date, corpus)
+        candidates = [
+            hit
+            for hit in hits
+            if hit.chunk.date == requested_date and hit.chunk.path == path
+        ]
+        if candidates:
+            return candidates
+
+        fallback_candidates = [
+            hit
+            for hit in hits
+            if hit.chunk.date == requested_date and hit.chunk.corpus == corpus
+        ]
+        if fallback_candidates:
+            return fallback_candidates
+
+        chunk_candidates = [
+            chunk
+            for chunk in self.kb.chunks
+            if chunk.date == requested_date and chunk.path == path
+        ]
+        return [
+            SearchHit(chunk=chunk, score=0.0, reason="window coverage fallback")
+            for chunk in chunk_candidates
+        ]
+
+    def _best_daily_wiki_hit(self, requested_date: str, hits: list[SearchHit]) -> SearchHit | None:
+        candidates = self._daily_hit_candidates(requested_date, hits, corpus="wiki")
+        if not candidates:
+            return None
+
+        def sort_key(hit: SearchHit) -> tuple[int, float]:
+            heading = _heading_key(hit.chunk.heading)
+            summary_rank = 0
+            if heading == "summary":
+                summary_rank = 4
+            elif heading == "executive summary":
+                summary_rank = 3
+            elif _is_boilerplate_heading(hit.chunk.heading):
+                summary_rank = -3
+            return (summary_rank, hit.score)
+
+        return max(candidates, key=sort_key)
+
+    def _best_daily_source_hit(self, requested_date: str, hits: list[SearchHit]) -> SearchHit | None:
+        candidates = self._daily_hit_candidates(requested_date, hits, corpus="source")
+        candidates = [hit for hit in candidates if not _is_boilerplate_heading(hit.chunk.heading)]
+        if not candidates:
+            return None
+
+        def sort_key(hit: SearchHit) -> tuple[int, float]:
+            heading = _heading_key(hit.chunk.heading)
+            preferred = 1 if heading in {"summary", "executive summary"} else 0
+            return (preferred, hit.score)
+
+        return max(candidates, key=sort_key)
+
+    def _window_coverage_hits(self, requested_dates: list[str], hits: list[SearchHit]) -> list[SearchHit]:
+        if not requested_dates:
+            return hits
+
+        pinned: list[SearchHit] = []
+        pinned_ids: set[str] = set()
+        for requested_date in requested_dates:
+            for hit in (
+                self._best_daily_wiki_hit(requested_date, hits),
+                self._best_daily_source_hit(requested_date, hits),
+            ):
+                if hit is None or hit.chunk.id in pinned_ids:
+                    continue
+                pinned.append(hit)
+                pinned_ids.add(hit.chunk.id)
+
+        remainder = [hit for hit in hits if hit.chunk.id not in pinned_ids]
+        return pinned + remainder
+
+    def _timeline_entries(self, requested_dates: list[str], hits: list[SearchHit]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for requested_date in requested_dates:
+            wiki_hit = self._best_daily_wiki_hit(requested_date, hits)
+            source_hit = self._best_daily_source_hit(requested_date, hits)
+            concepts = self.kb.document_concepts.get(wiki_hit.chunk.path, []) if wiki_hit is not None else []
+            summary_text = ""
+            if wiki_hit is not None:
+                summary_text = _summary_excerpt(wiki_hit.chunk.text, 220)
+            elif source_hit is not None:
+                summary_text = _summary_excerpt(source_hit.chunk.text, 220)
+            else:
+                summary_text = "No report was available for this date in the current corpus."
+            entries.append(
+                {
+                    "date": requested_date,
+                    "wiki_hit": wiki_hit,
+                    "source_hit": source_hit,
+                    "summary": summary_text,
+                    "has_report": bool(wiki_hit or source_hit),
+                    "concepts": concepts,
+                }
+            )
+        return entries
+
+    def _clusterable_concepts(self, entry: dict[str, Any]) -> list[tuple[str, str]]:
+        values: list[tuple[str, str]] = []
+        for concept in entry.get("concepts", []):
+            label = str(concept.get("label", "")).strip()
+            concept_type = str(concept.get("type", "")).strip()
+            if not label or concept_type == "geography":
+                continue
+            values.append((label, concept_type or "topic"))
+        return values
+
+    @staticmethod
+    def _label_mention_score(label: str, hit: SearchHit) -> int:
+        label_lower = label.casefold()
+        score = 0
+        if label_lower in hit.chunk.heading.casefold():
+            score += 4
+        if label_lower in hit.chunk.title.casefold():
+            score += 3
+        if label_lower in hit.chunk.text.casefold():
+            score += 2
+        return score
+
+    def _theme_clusters(self, entries: list[dict[str, Any]], hits: list[SearchHit]) -> list[ThemeCluster]:
+        buckets: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            if not entry.get("has_report"):
+                continue
+            for label, concept_type in self._clusterable_concepts(entry):
+                bucket = buckets.setdefault(
+                    label,
+                    {
+                        "concept_type": concept_type,
+                        "entries": [],
+                        "days": set(),
+                        "raw_source_days": set(),
+                    },
+                )
+                bucket["entries"].append(entry)
+                bucket["days"].add(entry["date"])
+                if entry.get("source_hit") is not None:
+                    bucket["raw_source_days"].add(entry["date"])
+
+        if not buckets:
+            return []
+
+        minimum_days = 2 if len(entries) >= 10 else 1
+        type_bonus = {
+            "topic": 2.2,
+            "framework": 1.8,
+            "program": 1.5,
+            "organization": 1.0,
+        }
+
+        clusters: list[ThemeCluster] = []
+        for label, bucket in buckets.items():
+            days = sorted(bucket["days"])
+            if len(days) < minimum_days:
+                continue
+
+            cluster_entries = bucket["entries"]
+            wiki_candidates = [
+                hit
+                for hit in [entry["wiki_hit"] for entry in cluster_entries if entry.get("wiki_hit") is not None]
+            ]
+            source_candidates = [
+                hit
+                for hit in hits
+                if hit.chunk.corpus == "source" and hit.chunk.date in bucket["days"]
+            ]
+
+            wiki_hit = max(
+                wiki_candidates,
+                key=lambda hit: (
+                    self._label_mention_score(label, hit),
+                    hit.score,
+                ),
+                default=None,
+            )
+            source_hit = max(
+                source_candidates,
+                key=lambda hit: (
+                    self._label_mention_score(label, hit),
+                    0 if _heading_key(hit.chunk.heading) in {"summary", "executive summary"} else 2,
+                    0 if _is_boilerplate_heading(hit.chunk.heading) else 1,
+                    hit.score,
+                ),
+                default=None,
+            )
+
+            source_mention = self._label_mention_score(label, source_hit) if source_hit is not None else 0
+            summary_seed = source_hit if source_hit is not None and source_mention > 0 else (wiki_hit or source_hit)
+            summary = _summary_excerpt(summary_seed.chunk.text, 220) if summary_seed is not None else ""
+            raw_signal = _summary_excerpt(source_hit.chunk.text, 180) if source_hit is not None and source_mention > 0 else ""
+
+            clusters.append(
+                ThemeCluster(
+                    label=label,
+                    concept_type=bucket["concept_type"],
+                    days=days,
+                    report_days=len(days),
+                    raw_source_days=len(bucket["raw_source_days"]),
+                    summary=summary or "No cluster summary was available.",
+                    raw_signal=raw_signal,
+                    wiki_hit=wiki_hit,
+                    source_hit=source_hit,
+                )
+            )
+
+        if not clusters:
+            return []
+
+        def cluster_score(cluster: ThemeCluster) -> tuple[float, int, str]:
+            score = (
+                cluster.report_days * 3.0
+                + cluster.raw_source_days * 1.2
+                + type_bonus.get(cluster.concept_type, 0.8)
+            )
+            return (score, cluster.report_days, cluster.label.casefold())
+
+        clusters.sort(key=cluster_score, reverse=True)
+        return clusters[:5]
+
+    def _theme_cluster_lines(self, clusters: list[ThemeCluster]) -> list[str]:
+        if not clusters:
+            return ["- No recurring themes could be extracted from the requested window."]
+
+        lines: list[str] = []
+        for cluster in clusters:
+            days_preview = ", ".join(cluster.days[:6])
+            if len(cluster.days) > 6:
+                days_preview += ", ..."
+            lines.append(
+                f"- {cluster.label} ({cluster.concept_type}) | {cluster.report_days} day(s) | dates: {days_preview}"
+            )
+            lines.append(f"  Summary: {cluster.summary}")
+            if cluster.raw_signal:
+                lines.append(f"  Raw signal: {cluster.raw_signal}")
+        return lines
+
+    def _theme_cluster_supporting_hits(self, clusters: list[ThemeCluster]) -> list[SearchHit]:
+        hits: list[SearchHit] = []
+        seen_ids: set[str] = set()
+        for cluster in clusters:
+            for hit in (cluster.wiki_hit, cluster.source_hit):
+                if hit is None or hit.chunk.id in seen_ids:
+                    continue
+                hits.append(hit)
+                seen_ids.add(hit.chunk.id)
+        return hits
+
+    def _format_executive_context(self, question: str, hits: list[SearchHit]) -> str:
+        requested_dates = _requested_dates(question, self.kb.latest_date)
+        if not requested_dates:
+            return (
+                "Question:\n"
+                f"{question}\n\n"
+                "Supporting Evidence Blocks:\n"
+                f"{self._format_evidence(hits[: min(12, len(hits))], 'detailed')}"
+            )
+
+        entries = self._timeline_entries(requested_dates, hits)
+        clusters = self._theme_clusters(entries, hits)
+        raw_source_days = sum(1 for entry in entries if entry["source_hit"] is not None)
+        report_days = sum(1 for entry in entries if entry["has_report"])
+        missing_days = [entry["date"] for entry in entries if not entry["has_report"]]
+
+        timeline_lines = []
+        for entry in entries:
+            raw_signal = ""
+            if entry["source_hit"] is not None:
+                raw_signal = f" | raw source: {_shorten(entry['source_hit'].chunk.text, 150)}"
+            timeline_lines.append(f"- {entry['date']}: {entry['summary']}{raw_signal}")
+
+        cluster_lines = self._theme_cluster_lines(clusters)
+
+        coverage_lines = [
+            f"Coverage window: {requested_dates[0]} to {requested_dates[-1]}",
+            f"Daily pages with evidence: {report_days} of {len(requested_dates)}",
+            f"Raw source days: {raw_source_days} of {len(requested_dates)}",
+        ]
+        if missing_days:
+            coverage_lines.append(f"Missing or no-report days: {', '.join(missing_days[:12])}")
+
+        supporting_hits = self._theme_cluster_supporting_hits(clusters)
+        if len(supporting_hits) < 12:
+            seen_ids = {hit.chunk.id for hit in supporting_hits}
+            for hit in hits:
+                if hit.chunk.id in seen_ids:
+                    continue
+                supporting_hits.append(hit)
+                seen_ids.add(hit.chunk.id)
+                if len(supporting_hits) >= 12:
+                    break
+        return (
+            "Question:\n"
+            f"{question}\n\n"
+            "Date Coverage:\n"
+            f"{chr(10).join(coverage_lines)}\n\n"
+            "Theme Clusters:\n"
+            f"{chr(10).join(cluster_lines)}\n\n"
+            "Day-by-Day Notes:\n"
+            f"{chr(10).join(timeline_lines)}\n\n"
+            "Supporting Evidence Blocks:\n"
+            f"{self._format_evidence(supporting_hits, 'detailed')}"
+        )
+
     def _synthesize(
         self,
         question: str,
@@ -1370,7 +1995,7 @@ class AgenticWikiResponder:
         if self.client is None:
             return self._offline_answer(question, hits, language, answer_mode)
 
-        evidence = self._format_evidence(hits, answer_mode)
+        evidence = self._format_executive_context(question, hits) if answer_mode == "executive" else self._format_evidence(hits, answer_mode)
         history_text = self._render_history(history)
         requested_dates = _requested_dates(question, self.kb.latest_date)
         system = (
@@ -1385,6 +2010,14 @@ class AgenticWikiResponder:
                 "Write a genuinely detailed answer. Start with a short direct answer, then expand with "
                 "supporting evidence, concrete figures, dates, and distinctions between the curated wiki view "
                 "and the raw source reports when useful. Avoid being terse."
+            )
+        elif answer_mode == "executive":
+            user_instruction = (
+                "Write an executive brief for insurance and climate-risk readers. "
+                "Use the exact section headings: Executive Summary, Major Themes, Date Coverage, "
+                "Notable Signals, Day-by-Day Coverage, and Gaps and Caveats. "
+                "Use the supplied theme clusters as the primary organizing structure, and use the day-by-day notes as supporting coverage. "
+                "Cover the full requested window explicitly and do not skip quiet or missing-report days silently."
             )
         else:
             user_instruction = (
@@ -1416,9 +2049,9 @@ class AgenticWikiResponder:
     def _format_evidence(self, hits: list[SearchHit], answer_mode: AnswerMode) -> str:
         blocks: list[str] = []
         used_chars = 0
-        block_limit = 1500 if answer_mode == "detailed" else 1000
+        block_limit = 1500 if answer_mode in {"detailed", "executive"} else 1000
         char_limit = (
-            MAX_EVIDENCE_CHARS_DETAILED if answer_mode == "detailed" else MAX_EVIDENCE_CHARS_BRIEF
+            MAX_EVIDENCE_CHARS_DETAILED if answer_mode in {"detailed", "executive"} else MAX_EVIDENCE_CHARS_BRIEF
         )
         for index, hit in enumerate(hits, start=1):
             source_urls = "\n".join(f"URL: {url}" for url in hit.chunk.urls[:4])
@@ -1432,6 +2065,86 @@ class AgenticWikiResponder:
                 break
             blocks.append(block)
         return "\n\n".join(blocks)
+
+    def _offline_executive_answer(self, question: str, hits: list[SearchHit]) -> str:
+        requested_dates = _requested_dates(question, self.kb.latest_date)
+        if not requested_dates:
+            lines = [
+                "I found relevant evidence, but no OpenAI API key is configured, so this is a structured extractive report.",
+                "",
+                "Executive Summary:",
+                _shorten(hits[0].chunk.text, 420),
+                "",
+                "Major Themes:",
+            ]
+            for index, hit in enumerate(hits[:5], start=1):
+                lines.append(f"- [{index}] {hit.chunk.path}: {_shorten(hit.chunk.text, 220)}")
+            lines.append("")
+            lines.append("Set OPENAI_API_KEY in .env to enable synthesized reports.")
+            return "\n".join(lines)
+
+        entries = self._timeline_entries(requested_dates, hits)
+        clusters = self._theme_clusters(entries, hits)
+        raw_source_days = sum(1 for entry in entries if entry["source_hit"] is not None)
+        report_days = sum(1 for entry in entries if entry["has_report"])
+        missing_days = [entry["date"] for entry in entries if not entry["has_report"]]
+        cluster_lines = self._theme_cluster_lines(clusters)
+
+        notable_signal_lines: list[str] = []
+        for cluster in clusters:
+            source_hit = cluster.source_hit
+            if source_hit is None:
+                continue
+            notable_signal_lines.append(
+                f"- {cluster.label}: {_shorten(source_hit.chunk.text, 220)}"
+            )
+            if len(notable_signal_lines) >= 6:
+                break
+        if not notable_signal_lines:
+            notable_signal_lines = ["- No raw-source-only signals were available in the selected window."]
+
+        summary_seed = [entry["summary"] for entry in entries if entry["has_report"]][:3]
+        summary_text = " ".join(summary_seed) if summary_seed else "No daily reports were available in the selected window."
+        lines = [
+            "I found relevant evidence, but no OpenAI API key is configured, so this is a structured extractive report.",
+            "",
+            "Executive Summary:",
+            (
+                f"The requested window runs from {requested_dates[0]} to {requested_dates[-1]}. "
+                f"The current corpus has evidence for {report_days} of {len(requested_dates)} day(s), "
+                f"with raw source support on {raw_source_days} day(s). {_shorten(summary_text, 520)}"
+            ),
+            "",
+            "Major Themes:",
+            *cluster_lines,
+            "",
+            "Date Coverage:",
+            f"- Coverage window: {requested_dates[0]} to {requested_dates[-1]}",
+            f"- Daily pages with evidence: {report_days} of {len(requested_dates)}",
+            f"- Raw source days: {raw_source_days} of {len(requested_dates)}",
+        ]
+        if missing_days:
+            lines.append(f"- Missing or no-report days: {', '.join(missing_days[:12])}")
+        lines.extend(
+            [
+                "",
+                "Notable Signals:",
+                *notable_signal_lines,
+                "",
+                "Day-by-Day Coverage:",
+            ]
+        )
+        for entry in entries:
+            lines.append(f"- {entry['date']}: {entry['summary']}")
+        lines.extend(
+            [
+                "",
+                "Gaps and Caveats:",
+                "- This answer is extractive and based only on the current local corpus.",
+                "- Set OPENAI_API_KEY in .env to enable synthesized reports.",
+            ]
+        )
+        return "\n".join(lines)
 
     def _offline_answer(
         self,
@@ -1456,6 +2169,9 @@ class AgenticWikiResponder:
             lines.append("")
             lines.append("Set OPENAI_API_KEY in .env to enable synthesized answers.")
             return "\n".join(lines)
+
+        if answer_mode == "executive":
+            return self._offline_executive_answer(question, hits)
 
         requested_dates = _requested_dates(question, self.kb.latest_date)
         if requested_dates and _asks_daily_summary(question):

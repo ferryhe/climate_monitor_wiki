@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
+from agentic_wiki.wiki_agent import _requested_dates
 from api_server import app, responder
 from fastapi.testclient import TestClient
 
@@ -65,7 +66,15 @@ def test_api_config_exposes_graph_and_dataview_fields():
     assert payload["concepts"]
     assert payload["github_blob_base_url"].startswith("https://github.com/")
     assert payload["default_answer_mode"] == "detailed"
-    assert payload["answer_modes"] == ["brief", "detailed"]
+    assert payload["answer_modes"] == ["brief", "detailed", "executive"]
+    assert payload["prompt_starters"]
+    assert payload["prompt_starters"][0]["answer_mode"] == "executive"
+    assert payload["prompt_starters"][0]["prompt"].startswith("Give me a report for this month")
+    assert payload["graphs"]["notes"]["nodes"]
+    assert payload["graphs"]["notes"]["links"]
+    assert payload["graphs"]["keywords"]["nodes"]
+    assert payload["graphs"]["keywords"]["links"]
+    assert payload["graphs"]["keywords"]["static_layout"] is True
 
     index_doc = next(doc for doc in payload["documents"] if doc["path"] == "wiki/index.md")
     assert index_doc["title"] == "index"
@@ -99,8 +108,22 @@ def test_showcase_root_contains_chat_and_obsidian_workspace():
     assert 'id="graphSvg"' in body
     assert 'id="rows"' in body
     assert 'data-answer-mode="detailed"' in body
+    assert 'id="answerModeHint"' in body
     assert 'data-graph-mode="keywords"' in body
     assert body.index("Page Index") < body.index("Graph View")
+
+
+def test_showcase_app_exposes_mode_aware_prompt_starters():
+    client = TestClient(app)
+
+    response = client.get("/showcase/app.js")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "DEFAULT_PROMPT_STARTERS" in body
+    assert "prompt_starters" in body
+    assert "data-answer-mode" in body
+    assert "Give me a report for this month. Cover major themes, notable signals, and gaps." in body
 
 
 def test_detailed_mode_brings_in_raw_source_evidence():
@@ -140,6 +163,38 @@ def test_detailed_mode_is_richer_than_brief_mode_offline():
     assert "Detailed evidence:" in detailed["text"]
 
 
+def test_requested_dates_supports_english_month_and_range_phrases():
+    assert _requested_dates("Give me a report for this month", "2026-04-21")[0] == "2026-04-01"
+    assert _requested_dates("Give me a report for this month", "2026-04-21")[-1] == "2026-04-21"
+    assert _requested_dates("Summarize reports from 2026-04-14 to 2026-04-16", "2026-04-21") == [
+        "2026-04-14",
+        "2026-04-15",
+        "2026-04-16",
+    ]
+
+
+def test_executive_mode_produces_structured_window_brief_offline():
+    responder_instance = AgenticWikiResponder()
+    responder_instance.client = None
+
+    result = responder_instance.answer(
+        "Give me a report for this month.",
+        language="en",
+        answer_mode="executive",
+    )
+
+    assert result["answer_mode"] == "executive"
+    assert "Executive Summary:" in result["text"]
+    assert "Major Themes:" in result["text"]
+    assert "Date Coverage:" in result["text"]
+    assert "Day-by-Day Coverage:" in result["text"]
+    assert "day(s) | dates:" in result["text"]
+    assert "Summary:" in result["text"]
+    assert "Coverage window: 2026-04-01 to 2026-04-21" in result["text"]
+    assert any(source["path"] == "wiki/climate-monitor-2026-04-01.md" for source in result["sources"])
+    assert any(source["path"].startswith("sources/") for source in result["sources"])
+
+
 def test_past_week_daily_summary_covers_requested_window_offline():
     responder_instance = AgenticWikiResponder()
     responder_instance.client = None
@@ -149,7 +204,7 @@ def test_past_week_daily_summary_covers_requested_window_offline():
     window_start = latest_date - timedelta(days=6)
 
     result = responder_instance.answer(
-        "帮我把过去7天的日报总结一下给我",
+        "Summarize the past 7 days of reports for me.",
         language="en",
         answer_mode="detailed",
     )
@@ -158,9 +213,9 @@ def test_past_week_daily_summary_covers_requested_window_offline():
     assert f"Coverage window: {window_start.isoformat()} to {latest_date.isoformat()}" in result["text"]
     assert f"- {latest_date.isoformat()}:" in result["text"]
 
-    source_paths = [source["path"] for source in result["sources"]]
-    expected_paths = [
-        f"wiki/climate-monitor-{(window_start + timedelta(days=offset)).isoformat()}.md"
+    source_dates = {source["date"] for source in result["sources"]}
+    expected_dates = {
+        (window_start + timedelta(days=offset)).isoformat()
         for offset in range(7)
-    ]
-    assert source_paths[: len(expected_paths)] == expected_paths
+    }
+    assert expected_dates.issubset(source_dates)

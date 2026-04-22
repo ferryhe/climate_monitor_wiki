@@ -71,6 +71,7 @@ class ClimateAgentView extends ItemView {
     this.modeSelect = modeWrap.createEl("select", { cls: "climate-agent-mode" });
     this.modeSelect.createEl("option", { text: "Brief", value: "brief" });
     this.modeSelect.createEl("option", { text: "Detailed", value: "detailed" });
+    this.modeSelect.createEl("option", { text: "Report", value: "executive" });
     this.modeSelect.value = this.answerMode;
     this.modeSelect.addEventListener("change", () => {
       this.answerMode = this.modeSelect.value || "detailed";

@@ -48,7 +48,7 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     context_path: str | None = Field(default=None, alias="contextPath")
     language: Literal["en"] = "en"
-    answer_mode: Literal["brief", "detailed"] = Field(default="detailed", alias="answerMode")
+    answer_mode: Literal["brief", "detailed", "executive"] = Field(default="detailed", alias="answerMode")
 
 
 @app.get("/api/health")

@@ -1,10 +1,36 @@
 const STORAGE_KEY = "climate-monitor-agent-thread";
 
-const SUGGESTIONS = [
-  "What are the latest Climate Monitor highlights?",
-  "Why do secondary perils matter for insurance pricing?",
-  "How does IFRS S2 affect climate disclosure for insurers?",
-  "How does parametric insurance relate to the nat-cat protection gap?",
+const DEFAULT_PROMPT_STARTERS = [
+  {
+    label: "Monthly report",
+    prompt: "Give me a report for this month. Cover major themes, notable signals, and gaps.",
+    answer_mode: "executive",
+    description: "Theme-clustered report with date coverage, notable signals, and missing-report gaps.",
+  },
+  {
+    label: "30-day change",
+    prompt: "What changed materially over the last 30 days for insurers?",
+    answer_mode: "executive",
+    description: "Best for trend shifts across a recent window instead of only the latest report.",
+  },
+  {
+    label: "14-day themes",
+    prompt: "Summarize the past 14 days by theme, not by day.",
+    answer_mode: "executive",
+    description: "Synthesizes recurring themes first, then uses daily coverage as supporting context.",
+  },
+  {
+    label: "Pricing explainer",
+    prompt: "Why do secondary perils matter for insurance pricing? Cite the strongest evidence.",
+    answer_mode: "detailed",
+    description: "Evidence-heavy explanation grounded in the source reports and linked wiki notes.",
+  },
+  {
+    label: "Latest snapshot",
+    prompt: "What are the latest Climate Monitor highlights in five bullets?",
+    answer_mode: "brief",
+    description: "Fast snapshot for a quick scan of the most recent material developments.",
+  },
 ];
 
 const GRAPH_COLORS = {
@@ -38,6 +64,27 @@ const GRAPH_COPY = {
   },
 };
 
+const ANSWER_MODE_COPY = {
+  brief: {
+    label: "Brief",
+    title: "Fast snapshot mode with a short, focused answer.",
+    note: "Fastest mode. Returns a short, focused answer with only the most relevant evidence.",
+    placeholder: "Ask for a quick snapshot, the latest highlights, or a short answer in a few bullets...",
+  },
+  detailed: {
+    label: "Detailed",
+    title: "Evidence-heavy mode for focused explainers and source-backed questions.",
+    note: "Richer grounded answers that pull more aggressively from raw source reports.",
+    placeholder: "Ask for a source-backed explainer, a focused comparison, or a deeper answer with evidence...",
+  },
+  executive: {
+    label: "Report",
+    title: "Structured report mode for period summaries, trend shifts, and big-picture questions.",
+    note: "Best for period summaries. Produces a structured report with themes, coverage, and notable signals.",
+    placeholder: "Ask for a report across a time window, a theme-based synthesis, or a big-picture trend brief...",
+  },
+};
+
 const state = {
   messages: [],
   documents: [],
@@ -54,6 +101,8 @@ const state = {
   markdownRequests: {},
   graph: null,
   graphFrame: 0,
+  graphData: { notes: null, keywords: null },
+  promptStarters: DEFAULT_PROMPT_STARTERS,
 };
 
 const els = {
@@ -92,6 +141,7 @@ const els = {
   answerModeButtons: Array.from(document.querySelectorAll("[data-answer-mode]")),
   graphModeButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   workspaceTabs: Array.from(document.querySelectorAll(".tabbar__tab")),
+  answerModeHint: document.getElementById("answerModeHint"),
 };
 
 function escapeHtml(value) {
@@ -104,9 +154,6 @@ function escapeHtml(value) {
 
 function normalizeMojibake(text) {
   return text
-    .replaceAll("鈫�", "→")
-    .replaceAll("鈥�", "—")
-    .replaceAll("锟�", "")
     .replaceAll("â†’", "→")
     .replaceAll("â€”", "—")
     .replaceAll("â€“", "–")
@@ -377,10 +424,34 @@ function buildKeywordGraph(rows) {
     legendHtml: GRAPH_COPY.keywords.legendHtml,
     nodes,
     links,
+    staticLayout: true,
+  };
+}
+
+function normalizeGraphData(mode, graph) {
+  const copy = GRAPH_COPY[mode] || GRAPH_COPY.notes;
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const links = Array.isArray(graph?.links) ? graph.links : [];
+  const hasKeywords = nodes.some((node) => node.kind === "keyword");
+  return {
+    mode,
+    title: copy.title,
+    hint:
+      mode === "keywords" && !hasKeywords
+        ? "Keyword mode is still warming up. Once concepts are indexed from wiki and raw source files, they will appear here."
+        : copy.hint,
+    legendHtml: copy.legendHtml,
+    nodes,
+    links,
+    staticLayout: Boolean(graph?.static_layout || graph?.staticLayout),
   };
 }
 
 function graphDataForCurrentMode() {
+  const precomputed = state.graphData?.[state.graphMode];
+  if (precomputed) {
+    return normalizeGraphData(state.graphMode, precomputed);
+  }
   return state.graphMode === "keywords"
     ? buildKeywordGraph(state.rows)
     : buildNoteGraph(state.rows, state.edges);
@@ -430,11 +501,21 @@ function setAnswerMode(mode) {
     return;
   }
   state.answerMode = mode;
+  const copy = ANSWER_MODE_COPY[mode] || ANSWER_MODE_COPY.detailed;
   els.answerModeButtons.forEach((button) => {
-    const active = button.dataset.answerMode === mode;
+    const buttonMode = button.dataset.answerMode || "detailed";
+    const buttonCopy = ANSWER_MODE_COPY[buttonMode] || ANSWER_MODE_COPY.detailed;
+    const active = buttonMode === mode;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
+    button.title = buttonCopy.title;
   });
+  if (els.answerModeHint) {
+    els.answerModeHint.textContent = copy.note;
+  }
+  if (els.input && copy.placeholder) {
+    els.input.placeholder = copy.placeholder;
+  }
 }
 
 function loadThread() {
@@ -541,24 +622,36 @@ function renderSourceCards(sources) {
 }
 
 function renderEmptyState() {
+  const starters = Array.isArray(state.promptStarters) && state.promptStarters.length
+    ? state.promptStarters
+    : DEFAULT_PROMPT_STARTERS;
   const shell = document.createElement("section");
   shell.className = "empty-state";
   shell.innerHTML = `
     <p class="empty-state__lead">
-      Ask the agent to retrieve, compare, and cite notes from the climate-risk wiki. Switch to the
-      Obsidian tab whenever you want to inspect the graph, Dataview table, or choose the active
-      note for retrieval.
+      Start with a task, not just a topic. These prompt starters switch to the best answer mode
+      automatically, so period questions open in Report while explainers stay in Detailed.
+      Switch to the Obsidian tab whenever you want to inspect the graph, Dataview table, or choose
+      the active note for retrieval.
     </p>
     <div class="suggestions">
-      ${SUGGESTIONS.map(
-        (prompt) =>
-          `<button class="suggestion-chip" type="button" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`,
+      ${starters.map(
+        (starter) =>
+          `<button class="suggestion-chip" type="button" data-prompt="${escapeHtml(starter.prompt || "")}" data-answer-mode="${escapeHtml(starter.answer_mode || "detailed")}" title="${escapeHtml(starter.description || "")}">
+            <span class="suggestion-chip__meta">
+              <span class="suggestion-chip__mode">${escapeHtml((ANSWER_MODE_COPY[starter.answer_mode] || ANSWER_MODE_COPY.detailed).label)}</span>
+              <span class="suggestion-chip__label">${escapeHtml(starter.label || "")}</span>
+            </span>
+            <span class="suggestion-chip__prompt">${escapeHtml(starter.prompt || "")}</span>
+            <span class="suggestion-chip__description">${escapeHtml(starter.description || "")}</span>
+          </button>`,
       ).join("")}
     </div>
   `;
 
   shell.querySelectorAll(".suggestion-chip").forEach((button) => {
     button.addEventListener("click", () => {
+      setAnswerMode(button.getAttribute("data-answer-mode") || state.answerMode);
       els.input.value = button.getAttribute("data-prompt");
       els.form.requestSubmit();
     });
@@ -861,11 +954,13 @@ function renderGraph(graphData) {
 
   const nodes = graphData.nodes.map((node) => {
     const position =
-      graphData.mode === "keywords" && node.kind === "keyword"
-        ? projectGridPosition(keywordIndex++, keywordCount, width * 0.68, width - 80, 90, height - 90)
-        : graphData.mode === "keywords"
-          ? projectGridPosition(noteIndex++, noteCount, 70, width * 0.58, 70, height - 70)
-          : projectGridPosition(noteIndex++, noteCount, 70, width - 70, 70, height - 70);
+      Number.isFinite(node.x) && Number.isFinite(node.y)
+        ? { x: node.x, y: node.y }
+        : graphData.mode === "keywords" && node.kind === "keyword"
+          ? projectGridPosition(keywordIndex++, keywordCount, width * 0.68, width - 80, 90, height - 90)
+          : graphData.mode === "keywords"
+            ? projectGridPosition(noteIndex++, noteCount, 70, width * 0.58, 70, height - 70)
+            : projectGridPosition(noteIndex++, noteCount, 70, width - 70, 70, height - 70);
 
     return {
       ...node,
@@ -880,6 +975,7 @@ function renderGraph(graphData) {
   const links = graphData.links
     .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
     .filter((edge) => edge.source && edge.target);
+  const staticLayout = Boolean(graphData.staticLayout);
 
   const linkGroup = document.createElementNS(NS, "g");
   const nodeGroup = document.createElementNS(NS, "g");
@@ -943,6 +1039,9 @@ function renderGraph(graphData) {
       const sy = height / rect.height;
       node.x = (event.clientX - rect.left) * sx;
       node.y = (event.clientY - rect.top) * sy;
+      if (staticLayout) {
+        draw();
+      }
     });
 
     group.addEventListener("pointerup", () => {
@@ -951,6 +1050,19 @@ function renderGraph(graphData) {
 
     return group;
   });
+
+  function draw() {
+    links.forEach((edge, index) => {
+      lineEls[index].setAttribute("x1", edge.source.x);
+      lineEls[index].setAttribute("y1", edge.source.y);
+      lineEls[index].setAttribute("x2", edge.target.x);
+      lineEls[index].setAttribute("y2", edge.target.y);
+    });
+
+    nodes.forEach((node, index) => {
+      nodeEls[index].setAttribute("transform", `translate(${node.x},${node.y})`);
+    });
+  }
 
   function tick() {
     for (const node of nodes) {
@@ -1003,22 +1115,16 @@ function renderGraph(graphData) {
       node.y = Math.max(18, Math.min(height - 18, node.y));
     }
 
-    links.forEach((edge, index) => {
-      lineEls[index].setAttribute("x1", edge.source.x);
-      lineEls[index].setAttribute("y1", edge.source.y);
-      lineEls[index].setAttribute("x2", edge.target.x);
-      lineEls[index].setAttribute("y2", edge.target.y);
-    });
-
-    nodes.forEach((node, index) => {
-      nodeEls[index].setAttribute("transform", `translate(${node.x},${node.y})`);
-    });
-
+    draw();
     state.graphFrame = requestAnimationFrame(tick);
   }
 
   state.graph = { nodes, nodeEls };
   updateGraphSelection();
+  draw();
+  if (staticLayout) {
+    return;
+  }
   state.graphFrame = requestAnimationFrame(tick);
 }
 
@@ -1151,6 +1257,10 @@ async function loadConfig() {
 
   const config = await response.json();
   state.concepts = config.concepts || [];
+  state.graphData = config.graphs || { notes: null, keywords: null };
+  state.promptStarters = Array.isArray(config.prompt_starters) && config.prompt_starters.length
+    ? config.prompt_starters
+    : DEFAULT_PROMPT_STARTERS;
   state.documents = (config.documents || []).map((doc) => ({
     ...doc,
     status: doc.type === "daily" ? "Loading..." : "-",
@@ -1169,6 +1279,9 @@ async function loadConfig() {
   setConnectionStatus(config.agent_mode, config.model);
   setAnswerMode(config.default_answer_mode || "detailed");
   setGraphMode(state.graphMode);
+  if (state.messages.length === 0) {
+    renderMessages();
+  }
 }
 
 function attachEvents() {

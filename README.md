@@ -11,13 +11,15 @@ This repo now exposes the same wiki through three aligned surfaces:
 - `Obsidian` restores the earlier browsing workspace with `Dataview`, `Note Detail`, and `Graph View` for selecting the active retrieval context.
   The page order is now `Dataview + Note Detail` first, then `Graph View`.
   The graph supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
+  Both graph modes are precomputed by the API so the workspace can render quickly without rebuilding the graph client-side.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
-Chat now also exposes two answer modes:
+Chat now also exposes three answer modes:
 
 - `Brief`: faster, tighter synthesis
 - `Detailed`: richer answers that pull more aggressively from `sources/` raw reports
+- `Report`: a theme-clustered, date-coverage-aware report mode that works better for prompts such as `Give me a report for this month`
 
 ## Runtime
 
@@ -25,7 +27,7 @@ Chat now also exposes two answer modes:
 - `agentic_wiki/` loads both `wiki/*.md` and `sources/*.md`, chunks notes and raw reports, plans retrieval, ranks evidence, and synthesizes cited answers.
 - `showcase/` is a static frontend with the shared chat and wiki workspace.
 
-Range-style daily-report questions such as `Summarize the past 7 days of reports` are now expanded into exact report dates based on the latest available corpus day, so detailed mode can cover each day in the requested window instead of returning only one or two standout reports.
+Range-style daily-report questions such as `Summarize the past 7 days of reports`, `Give me a report for this month`, or `Summarize reports from 2026-04-14 to 2026-04-21` are expanded into exact report dates based on the latest available corpus day, so the assistant can cover the requested window more deliberately instead of returning only one or two standout reports.
 
 The chatbot can run in two modes:
 
@@ -67,7 +69,7 @@ uvicorn api_server:app --host 0.0.0.0 --port 8501
 Open the forwarded Codespaces port `8501`.
 
 - `/` serves the web workspace.
-- `GET /api/config` returns wiki metadata, retrieval corpus stats, and answer mode defaults.
+- `GET /api/config` returns wiki metadata, retrieval corpus stats, answer mode defaults, prompt starters, and precomputed graph payloads for the Obsidian workspace.
 - `POST /api/chat` runs retrieval + answering.
 - `POST /api/reload` reloads the wiki files from disk.
 
@@ -143,7 +145,7 @@ For the best vault experience, keep these Obsidian plugins enabled:
 - `Obsidian Git`
 
 The vault already includes `Dataview`, and the web workspace now mirrors that browsing model with a Dataview-style table and graph explorer.
-The Obsidian plugin now also lets you switch between `Brief` and `Detailed` answers before sending.
+The Obsidian plugin now also lets you switch between `Brief`, `Detailed`, and `Report` answers before sending.
 For daily report notes, the detail panel's `Source` link opens the matching raw Markdown file under the GitHub repo's `main` branch `sources/` directory.
 
 ## Testing
