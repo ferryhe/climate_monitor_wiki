@@ -164,9 +164,9 @@ def test_detailed_mode_is_richer_than_brief_mode_offline():
 
 
 def test_requested_dates_supports_english_month_and_range_phrases():
-    assert _requested_dates("Give me a report for this month", "2026-04-21")[0] == "2026-04-01"
-    assert _requested_dates("Give me a report for this month", "2026-04-21")[-1] == "2026-04-21"
-    assert _requested_dates("Summarize reports from 2026-04-14 to 2026-04-16", "2026-04-21") == [
+    assert _requested_dates("Give me a report for this month", "2026-04-22")[0] == "2026-04-01"
+    assert _requested_dates("Give me a report for this month", "2026-04-22")[-1] == "2026-04-22"
+    assert _requested_dates("Summarize reports from 2026-04-14 to 2026-04-16", "2026-04-22") == [
         "2026-04-14",
         "2026-04-15",
         "2026-04-16",
@@ -176,6 +176,8 @@ def test_requested_dates_supports_english_month_and_range_phrases():
 def test_executive_mode_produces_structured_window_brief_offline():
     responder_instance = AgenticWikiResponder()
     responder_instance.client = None
+    latest_date_value = responder_instance.kb.latest_date
+    assert latest_date_value is not None
 
     result = responder_instance.answer(
         "Give me a report for this month.",
@@ -190,7 +192,7 @@ def test_executive_mode_produces_structured_window_brief_offline():
     assert "Day-by-Day Coverage:" in result["text"]
     assert "day(s) | dates:" in result["text"]
     assert "Summary:" in result["text"]
-    assert "Coverage window: 2026-04-01 to 2026-04-21" in result["text"]
+    assert f"Coverage window: 2026-04-01 to {latest_date_value}" in result["text"]
     assert any(source["path"] == "wiki/climate-monitor-2026-04-01.md" for source in result["sources"])
     assert any(source["path"].startswith("sources/") for source in result["sources"])
 

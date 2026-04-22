@@ -91,7 +91,7 @@ If `sources/` changes, do the following:
 4. Reload the API and run the smoke test:
 
 ```bash
-python scripts/reload_and_smoke_test.py --date 2026-04-21
+python scripts/reload_and_smoke_test.py --date 2026-04-22
 ```
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
@@ -184,7 +184,7 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ## Daily Reports
 
-21 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-21**.
+22 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-22**.
 Source files in `sources/` contain the original report content.
 
 Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
@@ -204,4 +204,4 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
 
-_Last updated: 2026-04-21_
+_Last updated: 2026-04-22_

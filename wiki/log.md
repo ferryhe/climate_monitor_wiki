@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-04-22] daily-update | Add 2026-04-22 report materials
+Source: GitHub sources/climate-monitor-2026-04-22.md (after remote duplicate cleanup)
+Actions:
+  - GitHub wiki/: created climate-monitor-2026-04-22.md
+  - GitHub wiki/: updated index.md for the new daily report row
+  - GitHub README.md: updated daily report coverage and smoke-test example
+  - Topic-page review: no new standalone topic page added; 2026-04-22 mainly extends existing themes already covered in the wiki
+---
+
 ## [2026-04-21] daily-update | Add 2026-04-21 report + source update workflow
 Source: GitHub sources + repo maintenance
 Actions:
