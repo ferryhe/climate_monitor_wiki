@@ -1,11 +1,11 @@
-# Climate Monitor — 2026-04-02
+# Climate Monitor - 2026-04-02
 
-**Report Date:** 2026-2026-04-02
-Source: [[sources/climate-monitor-2026-2026-04-02]]
+**Report Date:** 2026-04-02
+Source: [[sources/climate-monitor-2026-04-02]]
 
 ## Summary
 
-6 orgs, 26 new items; 8 new research items; Swiss Re/Aon 2025 nat cat data; IFoA climate risk guidance [source available]
+Website Updates with NEW Content: 6 orgs, 26 new items Research (≤30 days old, not yet reported): 8 items Sites Monitored: 14 high-priority + 5 rotating normal-priority
 
 ## Tags
-#climate-monitor #daily-report #2026-2026-04-02
+#climate-monitor #daily-report #2026-04-02

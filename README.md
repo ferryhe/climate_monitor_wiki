@@ -86,12 +86,16 @@ curl -s http://localhost:8501/api/chat \
 If `sources/` changes, do the following:
 
 1. Add or update the raw file in `sources/`.
-2. If it is a new date, create the matching `wiki/climate-monitor-YYYY-MM-DD.md`.
-3. Update `wiki/index.md`.
-4. Reload the API and run the smoke test:
+2. Regenerate the daily wiki pages and `wiki/index.md`:
 
 ```bash
-python scripts/reload_and_smoke_test.py --date 2026-04-22
+python scripts/sync_source_wiki.py
+```
+
+3. Reload the API and run the smoke test:
+
+```bash
+python scripts/reload_and_smoke_test.py --date 2026-04-23
 ```
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
@@ -184,7 +188,7 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ## Daily Reports
 
-22 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-22**.
+23 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-23**.
 Source files in `sources/` contain the original report content.
 
 Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
@@ -195,6 +199,7 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 - [[swiss-re-sigma]] — 2025 losses reached $107B; 2026 forecast $148B to $320B
 - [[isbb-ifrs-s2]] — IFRS S2 becomes effective in January 2027
 - [[parametric-insurance]] — +38% growth; 58% EU protection gap
+- [[climate-finance]] — trillions in financing gap; cat bonds and blended finance scaling
 - [[actuaries-climate-index]] — ACI extended to weather derivatives
 - [[nat-cat-protection-gap]] — 49% gap concentrating risk on sovereigns
 - [[iais-climate-risk]] — IAIS Holistic Framework + CLIMADA tool
@@ -204,4 +209,4 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
 
-_Last updated: 2026-04-22_
+_Last updated: 2026-04-23_

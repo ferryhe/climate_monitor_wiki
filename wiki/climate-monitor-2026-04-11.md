@@ -1,11 +1,11 @@
-# Climate Monitor — 2026-04-11
+# Climate Monitor - 2026-04-11
 
-**Report Date:** 2026-2026-04-11
-Source: [[sources/climate-monitor-2026-2026-04-11]]
+**Report Date:** 2026-04-11
+Source: missing
 
 ## Summary
 
-No report — cron may not have run [NO source file]
+No report - source file missing for this date.
 
 ## Tags
-#climate-monitor #daily-report #2026-2026-04-11
+#climate-monitor #daily-report #2026-04-11

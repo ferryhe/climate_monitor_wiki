@@ -5,12 +5,13 @@ Use this workflow whenever `sources/` changes so the app, Dataview, and chat all
 ## Standard Flow
 
 1. Add or update the raw markdown file in `sources/`.
-2. If the change introduces a new date, create the matching `wiki/climate-monitor-YYYY-MM-DD.md` summary page.
-3. Update `wiki/index.md` so the new date appears in the daily report table.
-4. Optionally append an entry to `wiki/log.md` and refresh any date/count text in `README.md`.
-5. Reload the running API so the in-memory corpus picks up the filesystem change.
-6. Run a smoke test against `/api/config` and `/api/chat`.
-7. Run the fuller regression checks when the change is more than a simple append.
+2. Run `python scripts/sync_source_wiki.py` to regenerate all `wiki/climate-monitor-YYYY-MM-DD.md` pages and rebuild `wiki/index.md`.
+3. Optionally append an entry to `wiki/log.md` and refresh any date/count text in `README.md`.
+4. Reload the running API so the in-memory corpus picks up the filesystem change.
+5. Run a smoke test against `/api/config` and `/api/chat`.
+6. Run the fuller regression checks when the change is more than a simple append.
+
+The sync script treats the source filename as the canonical day, so it can still regenerate the matching wiki page even when a source file's internal `Report Date` line is stale or malformed. It also keeps no-report placeholder pages for missing days inside the known date range so executive summaries can still surface coverage gaps cleanly.
 
 ## Why Reload Is Required
 
@@ -21,19 +22,22 @@ Use this workflow whenever `sources/` changes so the app, Dataview, and chat all
 From the repository root:
 
 ```bash
-python scripts/reload_and_smoke_test.py --date 2026-04-21
+python scripts/sync_source_wiki.py
+python scripts/reload_and_smoke_test.py --date 2026-04-23
 ```
 
 If your API is not on the default local URL:
 
 ```bash
-python scripts/reload_and_smoke_test.py --base-url http://localhost:8501 --date 2026-04-21
+python scripts/sync_source_wiki.py
+python scripts/reload_and_smoke_test.py --base-url http://localhost:8501 --date 2026-04-23
 ```
 
 If `/api/reload` is protected:
 
 ```bash
-RELOAD_TOKEN=your-token python scripts/reload_and_smoke_test.py --date 2026-04-21
+python scripts/sync_source_wiki.py
+RELOAD_TOKEN=your-token python scripts/reload_and_smoke_test.py --date 2026-04-23
 ```
 
 ## Full Validation

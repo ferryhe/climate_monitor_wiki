@@ -1,6 +1,6 @@
 # Wiki Index
 
-_Last updated: 2026-04-22 — 13 pages + 22 daily report pages_
+_Last updated: 2026-04-23 - 12 pages + 23 daily report pages_
 
 ## Daily Reports
 
@@ -28,6 +28,7 @@ _Last updated: 2026-04-22 — 13 pages + 22 daily report pages_
 | 2026-04-20 | [[climate-monitor-2026-04-20]] | ✅ |
 | 2026-04-21 | [[climate-monitor-2026-04-21]] | ✅ |
 | 2026-04-22 | [[climate-monitor-2026-04-22]] | ✅ |
+| 2026-04-23 | [[climate-monitor-2026-04-23]] | ✅ |
 
 ## Entities
 
@@ -40,14 +41,15 @@ _Last updated: 2026-04-22 — 13 pages + 22 daily report pages_
 | Page | Summary | Updated |
 |------|---------|---------|
 | [[secondary-perils]] | Secondary perils now drive 92% of nat cat insured losses; structural shift from primary perils | 2026-04-20 |
-| [[isbb-ifrs-s2]] | ISSB IFRS S2 effective Jan 2027; Scope 3 financed emissions simplified for banks/insurers | 2026-04-20 |
+| [[isbb-ifrs-s2]] | IFRS S2 implementation now includes biogenic emissions guidance and proposed industry-based updates | 2026-04-23 |
 | [[actuaries-climate-index]] | ACI tracks climate extremes; SOA extending it to weather derivatives pricing | 2026-04-20 |
-| [[parametric-insurance]] | Index-triggered products growing +38%; 58% EU protection gap creates massive opportunity | 2026-04-20 |
-| [[nat-cat-protection-gap]] | ~49% protection gap; losses shifting to sovereign/banking balance sheets | 2026-04-20 |
-| [[iais-climate-risk]] | IAIS Holistic Framework for systemic risk; CLIMADA nat cat tool for 250+ regions | 2026-04-20 |
+| [[parametric-insurance]] | Parametric cover is expanding into sovereign flood and cat-bond structures across Africa, Central Asia, and Europe | 2026-04-23 |
+| [[climate-finance]] | Climate finance gaps remain in the trillions; blended finance and cat-bond structures are scaling | 2026-04-23 |
+| [[nat-cat-protection-gap]] | Europe's climate protection gap is pushing EIOPA toward structural nat-cat pooling solutions | 2026-04-23 |
+| [[iais-climate-risk]] | IAIS climate guidance is now feeding broader supervisor and IMF financial-stability work | 2026-04-23 |
 | [[fsb-climate-risk]] | FSB Climate Roadmap: 4 pillars; vulnerability analysis framework (Jan 2025) | 2026-04-20 |
 | [[swiss-re-sigma]] | 2025 nat cat losses US$107bn; 2026 forecast US$148bn–$320bn | 2026-04-20 |
 | [[cas-soa-climate-research]] | CAS $75K RFP for climate frameworks; SOA weather derivatives research | 2026-04-20 |
 | [[talents-gap]] | Insurance talent gap escalated to strategic risk; climate analytics skills shortage | 2026-04-20 |
 
-_Last updated: 2026-04-22_
+_Last updated: 2026-04-23_

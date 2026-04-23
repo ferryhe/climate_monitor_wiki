@@ -1,6 +1,6 @@
-# IAIS — Climate Risk & Systemic Risk Framework
+# IAIS - Climate Risk & Systemic Risk Framework
 
-> The International Association of Insurance Supervisors has made climate risk a core strategic theme, with tools ranging from supervisory guidance to a global nat cat modelling tool.
+> The International Association of Insurance Supervisors has made climate risk a core strategic theme, with tools ranging from supervisory guidance to a global nat-cat modelling tool.
 
 ## Key Framework Elements
 
@@ -14,8 +14,9 @@
 - Covers 250+ regions under multiple climate scenarios (RCP 8.5)
 - Supports supervisors in evaluating physical risk exposure globally
 
-### Insurance Core Principles (ICPs) — Updated Dec 2024
+### Insurance Core Principles (ICPs) and Application Papers
 - Climate risk incorporated into investment and ERM guidance for supervisors
+- The 2025 IAIS/SIF Application Paper on Climate-related Risks is now being cited in broader supervisory work, including the IMF's 2026 Financial System Review
 
 ### Nov 2025 GIMAR Special Topic
 - Natural catastrophe insurance protection gaps → systemic risk to financial stability
@@ -29,9 +30,10 @@
 
 - IAIS Climate Risk pages → [[climate-monitor-2026-04-02]], [[climate-monitor-2026-04-03]]
 - IAIS Holistic Framework → [[climate-monitor-2026-04-03]]
+- IMF Financial System Review 2026 supervisor lens → [[climate-monitor-2026-04-23]]
 
 ## Related
 
 - [[nat-cat-protection-gap]] — GIMAR findings on systemic implications
 - [[fsb-climate-risk]] — FSB endorsed IAIS framework
-- [[isbb-ifrs-s2]] — ISSB standards IAIS supervisors will reference
+- [[isbb-ifrs-s2]] — disclosure and supervision are converging around climate-risk governance

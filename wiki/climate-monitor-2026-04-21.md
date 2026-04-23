@@ -1,11 +1,11 @@
-# Climate Monitor — 2026-04-21
+# Climate Monitor - 2026-04-21
 
 **Report Date:** 2026-04-21
 Source: [[sources/climate-monitor-2026-04-21]]
 
 ## Summary
 
-5 new items; actuarial pricing for extreme weather; Munich Re on a second straight $100B+ nat-cat insured loss year; Artemis parametric insurance developments; UN DESA sustainable development finance report; World Bank Morocco green growth facility [source available]
+5 new items across climate risk, insurance, and climate finance — including parametric insurance developments, Munich Re's record nat cat loss year, a new World Bank green Morocco facility, and UN DESA's 2026 financing for sustainable development report.
 
 ## Tags
 #climate-monitor #daily-report #2026-04-21

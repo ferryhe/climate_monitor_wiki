@@ -1,11 +1,11 @@
-# Climate Monitor — 2026-04-18
+# Climate Monitor - 2026-04-18
 
-**Report Date:** 2026-2026-04-18
-Source: [[sources/climate-monitor-2026-2026-04-18]]
+**Report Date:** 2026-04-18
+Source: [[sources/climate-monitor-2026-04-18]]
 
 ## Summary
 
-5 new research items; Financing for Sustainable Development; UNDP FfD Forum; WEF systemic risk; Forbes parametric insurance [source available]
+Website Updates with NEW Content: 0 orgs, 0 items (skipped all already-reported links) Research (≤30 days old, not yet reported): 5 items Sites Monitored: 14 high-priority + 5 rotating normal-priority
 
 ## Tags
-#climate-monitor #daily-report #2026-2026-04-18
+#climate-monitor #daily-report #2026-04-18

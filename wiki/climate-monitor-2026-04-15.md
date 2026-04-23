@@ -1,11 +1,11 @@
-# Climate Monitor — 2026-04-15
+# Climate Monitor - 2026-04-15
 
-**Report Date:** 2026-2026-04-15
-Source: [[sources/climate-monitor-2026-2026-04-15]]
+**Report Date:** 2026-04-15
+Source: missing
 
 ## Summary
 
-No Climate Monitor report — this date contained a different work log [NO source file]
+No report - source file missing for this date.
 
 ## Tags
-#climate-monitor #daily-report #2026-2026-04-15
+#climate-monitor #daily-report #2026-04-15
