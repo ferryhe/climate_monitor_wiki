@@ -95,7 +95,7 @@ python scripts/sync_source_wiki.py
 3. Reload the API and run the smoke test:
 
 ```bash
-python scripts/reload_and_smoke_test.py --date 2026-04-23
+python scripts/reload_and_smoke_test.py --date 2026-04-25
 ```
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
@@ -188,7 +188,7 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ## Daily Reports
 
-23 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-23**.
+25 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-25**.
 Source files in `sources/` contain the original report content.
 
 Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
@@ -197,10 +197,10 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 - [[secondary-perils]] — 92% of nat-cat losses now come from secondary perils
 - [[swiss-re-sigma]] — 2025 losses reached $107B; 2026 forecast $148B to $320B
-- [[isbb-ifrs-s2]] — IFRS S2 becomes effective in January 2027
-- [[parametric-insurance]] — +38% growth; 58% EU protection gap
-- [[climate-finance]] — trillions in financing gap; cat bonds and blended finance scaling
-- [[actuaries-climate-index]] — ACI extended to weather derivatives
+- [[isbb-ifrs-s2]] — IFRS S2 implementation now spans industry updates and practical audit guidance ahead of 2027
+- [[parametric-insurance]] — parametric cover is expanding from sovereign flood and cat bonds into retail heatwave and data-center climate-stress use cases
+- [[climate-finance]] — 2026 focus has shifted from headline targets to implementing the $1.3T climate-finance pathway while adaptation gaps stay large
+- [[actuaries-climate-index]] — ACI is increasingly used for insurance balance-sheet measurement as well as weather-derivatives work
 - [[nat-cat-protection-gap]] — 49% gap concentrating risk on sovereigns
 - [[iais-climate-risk]] — IAIS Holistic Framework + CLIMADA tool
 - [[cas-soa-climate-research]] — CAS $75K RFP; SOA research
@@ -209,4 +209,4 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
 
-_Last updated: 2026-04-23_
+_Last updated: 2026-04-25_

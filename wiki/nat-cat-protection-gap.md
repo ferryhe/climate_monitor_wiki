@@ -10,6 +10,7 @@ The protection gap (difference between total economic losses and insured losses)
 
 - **Global protection gap in 2025: ~49%** of nat cat economic losses remained uninsured
 - **European nat-cat protection gap: roughly 75%** in the EIOPA/ESM debate over a regional pool mechanism
+- **EIOPA baseline warning:** only about **25%** of EU nat-cat losses have been insured over recent decades
 - **EIOPA warning:** climate-driven claims could push property insurance premia sharply higher in exposed markets, with reinsurer capacity a binding constraint
 - **Proposed response:** a European Natural Catastrophe Pool could spread catastrophe risk across borders and keep coverage available
 - **IAIS Nov 2025 GIMAR special:** uninsurance of nat-cat losses is concentrating risk on banking and sovereign balance sheets, especially in EMDEs
@@ -22,6 +23,7 @@ The protection gap (difference between total economic losses and insured losses)
 - EIOPA natcat pool debate → [[climate-monitor-2026-04-16]]
 - EIOPA protection gaps in a changing climate → [[climate-monitor-2026-04-20]], [[climate-monitor-2026-04-23]]
 - EIOPA / ESM European natcat pool mechanism → [[climate-monitor-2026-04-23]]
+- EIOPA protection-gap warning + ESM pool framing refresh → [[climate-monitor-2026-04-24]]
 
 ## Related
 

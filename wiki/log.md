@@ -1,5 +1,16 @@
 # Wiki Log
 
+## [2026-04-25] daily-update | Add 2026-04-24/25 reports + topic refresh
+Source: GitHub sources/climate-monitor-2026-04-24.md and climate-monitor-2026-04-25.md
+Actions:
+  - GitHub wiki/: created climate-monitor-2026-04-24.md and climate-monitor-2026-04-25.md via sync_source_wiki.py
+  - GitHub wiki/: refreshed index.md for the two new daily report rows and updated concept summaries/dates
+  - GitHub wiki/: updated actuaries-climate-index.md, parametric-insurance.md, nat-cat-protection-gap.md, isbb-ifrs-s2.md, climate-finance.md
+  - GitHub sources/: normalized 2026-04-25 into the standard daily-monitor source format so wiki sync extracts a clean summary
+  - GitHub README.md and docs/source-update-sop.md: rolled forward latest-date examples and coverage text
+  - Validation: pytest passed; sync_source_wiki.py regenerated the expected daily pages
+---
+
 ## [2026-04-23] daily-update | Add 2026-04-23 report + topic refresh
 Source: GitHub sources/climate-monitor-2026-04-23.md
 Actions:

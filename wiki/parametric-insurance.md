@@ -13,7 +13,9 @@ Parametric insurance pays out when a predefined trigger (wind speed, earthquake 
 - **ADB:** preparing its first multi-country **parametric cat bond** for Kyrgyz Republic and Tajikistan (**$120-150M**, 3-year term)
 - **Groupama:** launched a first-of-its-kind **EUR120M hail-focused catastrophe bond**
 - **ARC (African Risk Capacity):** launched Africa's first sovereign parametric flood insurance policy for Madagascar
-- **2026 trend:** parametric structures are spreading across SME, agriculture, sovereign, and catastrophe-bond use cases
+- **AXA Hong Kong:** launched a retail heatwave parametric product with direct payouts or anti-heatwave kits once temperatures exceed **36.0°C**
+- **Descartes:** now markets temperature-triggered climate-stress cover for data centers with limits up to **$80M** and explicit non-damage BI use cases
+- **2026 trend:** parametric structures are spreading across SME, agriculture, sovereign, retail climate, and catastrophe-bond use cases
 
 ## Sources
 
@@ -22,6 +24,8 @@ Parametric insurance pays out when a predefined trigger (wind speed, earthquake 
 - CAS Climate Research → [[climate-monitor-2026-04-20]]
 - Parametric insurance market outlook → [[climate-monitor-2026-04-22]]
 - ADB / Groupama / ARC parametric developments → [[climate-monitor-2026-04-23]]
+- AXA heatwave parametric launch + InRiskLabs platform → [[climate-monitor-2026-04-24]]
+- Descartes data-center climate-stress cover → [[climate-monitor-2026-04-25]]
 
 ## Related
 

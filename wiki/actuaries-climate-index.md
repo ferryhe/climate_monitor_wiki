@@ -9,6 +9,7 @@ The Actuaries Climate Index (ACI) was launched in 2016 by the American Academy o
 ## Key Developments (2026)
 
 - **March 2026 data disclosure update** released by the four societies
+- **Actuarial measurement survey:** 2026 review highlights the ACI, European IACI, and French FACI as practical tools for linking climate extremes to insurance balance sheets and business sustainability
 - **SOA 2026 research:** Evaluating applicability of ACI within weather derivatives pricing frameworks
   - Index-based products (cooling degree days CDD, heating degree days HDD) already trade on CME
   - Proposes extending ACI methodology to weather derivatives as complementary risk transfer mechanism
@@ -20,6 +21,7 @@ The Actuaries Climate Index (ACI) was launched in 2016 by the American Academy o
 - ACI March 2026 Update → [[climate-monitor-2026-04-20]]
 - SOA Weather Derivatives Framework → [[climate-monitor-2026-04-20]]
 - SOA NGFS Climate Scenarios → [[climate-monitor-2026-04-09]]
+- Global Policy Journal survey on actuarial climate measurement → [[climate-monitor-2026-04-24]]
 
 ## Related
 

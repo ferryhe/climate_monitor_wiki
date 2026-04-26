@@ -23,21 +23,21 @@ From the repository root:
 
 ```bash
 python scripts/sync_source_wiki.py
-python scripts/reload_and_smoke_test.py --date 2026-04-23
+python scripts/reload_and_smoke_test.py --date 2026-04-25
 ```
 
 If your API is not on the default local URL:
 
 ```bash
 python scripts/sync_source_wiki.py
-python scripts/reload_and_smoke_test.py --base-url http://localhost:8501 --date 2026-04-23
+python scripts/reload_and_smoke_test.py --base-url http://localhost:8501 --date 2026-04-25
 ```
 
 If `/api/reload` is protected:
 
 ```bash
 python scripts/sync_source_wiki.py
-RELOAD_TOKEN=your-token python scripts/reload_and_smoke_test.py --date 2026-04-23
+RELOAD_TOKEN=your-token python scripts/reload_and_smoke_test.py --date 2026-04-25
 ```
 
 ## Full Validation
