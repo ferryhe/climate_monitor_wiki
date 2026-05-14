@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any, Literal
 
 
@@ -96,7 +97,7 @@ class MonitorRunResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "report_date": self.report_date.isoformat(),
-            "report_path": self.report_path,
+            "report_path": _safe_path(self.report_path),
             "synced": self.synced,
             "item_count": len(self.items),
             "items": [_candidate_item_to_dict(item) for item in self.items],
@@ -135,6 +136,18 @@ def _candidate_item_to_dict(item: CandidateItem) -> dict[str, Any]:
     if item.lane == "document":
         payload.update(_document_metadata(item))
     return payload
+
+
+def _safe_path(value: str | None) -> str | None:
+    if not value:
+        return value
+    path = Path(value)
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _document_metadata(item: CandidateItem) -> dict[str, Any]:

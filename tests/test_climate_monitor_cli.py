@@ -136,6 +136,8 @@ output:
     assert "Report written:" not in completed.stdout
     assert "sk-test-secret-not-output" not in completed.stdout
     assert payload["report_date"] == "2026-05-14"
+    assert not os.path.isabs(payload["report_path"])
+    assert payload["report_path"] == "climate-monitor-2026-05-14.md"
     assert payload["synced"] is False
     assert payload["item_count"] == 3
     assert payload["items"][0]["title"] == "Climate supervision update"

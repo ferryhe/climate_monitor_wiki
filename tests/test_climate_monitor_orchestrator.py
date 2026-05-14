@@ -326,7 +326,7 @@ def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
     object.__setattr__(item, "asset_media_type", "application/pdf")
     result = MonitorRunResult(
         report_date=date(2026, 5, 14),
-        report_path="sources/climate-monitor-2026-05-14.md",
+        report_path="C:\\Users\\ferry\\Downloads\\climate-monitor-2026-05-14.md",
         items=(item,),
         dedup_notes=("Duplicate title - skipped",),
         warnings=("iais seed timeout",),
@@ -345,7 +345,7 @@ def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
         "warnings",
     ]
     assert payload["report_date"] == "2026-05-14"
-    assert payload["report_path"] == "sources/climate-monitor-2026-05-14.md"
+    assert payload["report_path"] == "climate-monitor-2026-05-14.md"
     assert payload["synced"] is True
     assert payload["item_count"] == 1
     assert payload["dedup_notes"] == ["Duplicate title - skipped"]
