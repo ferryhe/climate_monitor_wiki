@@ -10,7 +10,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.1
       - key: OPENAI_MODEL
-        value: gpt-5.2
+        value: gpt-5.4-mini
       - key: OPENAI_TEMPERATURE
         value: "0.2"
       - key: WIKI_DIR
