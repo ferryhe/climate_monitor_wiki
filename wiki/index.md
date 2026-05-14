@@ -1,6 +1,6 @@
 # Wiki Index
 
-_Last updated: 2026-04-25 - 12 pages + 25 daily report pages_
+_Last updated: 2026-05-14 - 12 pages + 44 daily report pages_
 
 ## Daily Reports
 
@@ -31,6 +31,25 @@ _Last updated: 2026-04-25 - 12 pages + 25 daily report pages_
 | 2026-04-23 | [[climate-monitor-2026-04-23]] | ✅ |
 | 2026-04-24 | [[climate-monitor-2026-04-24]] | ✅ |
 | 2026-04-25 | [[climate-monitor-2026-04-25]] | ✅ |
+| 2026-04-26 | [[climate-monitor-2026-04-26]] | ⚠️ No report |
+| 2026-04-27 | [[climate-monitor-2026-04-27]] | ⚠️ No report |
+| 2026-04-28 | [[climate-monitor-2026-04-28]] | ⚠️ No report |
+| 2026-04-29 | [[climate-monitor-2026-04-29]] | ⚠️ No report |
+| 2026-04-30 | [[climate-monitor-2026-04-30]] | ⚠️ No report |
+| 2026-05-01 | [[climate-monitor-2026-05-01]] | ⚠️ No report |
+| 2026-05-02 | [[climate-monitor-2026-05-02]] | ⚠️ No report |
+| 2026-05-03 | [[climate-monitor-2026-05-03]] | ⚠️ No report |
+| 2026-05-04 | [[climate-monitor-2026-05-04]] | ⚠️ No report |
+| 2026-05-05 | [[climate-monitor-2026-05-05]] | ⚠️ No report |
+| 2026-05-06 | [[climate-monitor-2026-05-06]] | ⚠️ No report |
+| 2026-05-07 | [[climate-monitor-2026-05-07]] | ⚠️ No report |
+| 2026-05-08 | [[climate-monitor-2026-05-08]] | ⚠️ No report |
+| 2026-05-09 | [[climate-monitor-2026-05-09]] | ⚠️ No report |
+| 2026-05-10 | [[climate-monitor-2026-05-10]] | ⚠️ No report |
+| 2026-05-11 | [[climate-monitor-2026-05-11]] | ⚠️ No report |
+| 2026-05-12 | [[climate-monitor-2026-05-12]] | ⚠️ No report |
+| 2026-05-13 | [[climate-monitor-2026-05-13]] | ⚠️ No report |
+| 2026-05-14 | [[climate-monitor-2026-05-14]] | ✅ |
 
 ## Entities
 
@@ -54,4 +73,4 @@ _Last updated: 2026-04-25 - 12 pages + 25 daily report pages_
 | [[cas-soa-climate-research]] | CAS $75K RFP for climate frameworks; SOA weather derivatives research | 2026-04-20 |
 | [[talents-gap]] | Insurance talent gap escalated to strategic risk; climate analytics skills shortage | 2026-04-20 |
 
-_Last updated: 2026-04-25_
+_Last updated: 2026-05-14_
