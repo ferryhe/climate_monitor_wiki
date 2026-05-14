@@ -1,0 +1,19 @@
+{
+  "schema_version": "web-listening-manifest.v1",
+  "source": {
+    "source_id": "iais",
+    "site_name": "IAIS"
+  },
+  "discovered_items": [
+    {
+      "item_id": "iais-2026-05-14-1",
+      "item_type": "page",
+      "url": "https://www.iais.org/climate-supervision",
+      "title": "Climate supervision update",
+      "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
+      "status": "new",
+      "observed_at": "2026-05-14T00:00:00Z"
+    }
+  ],
+  "downloaded_assets": []
+}

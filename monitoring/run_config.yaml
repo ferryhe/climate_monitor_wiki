@@ -1,0 +1,58 @@
+schema_version: climate-monitor-run-config.v1
+report_title: Daily Climate & Actuarial Monitor
+default_language: en
+max_items_per_report: 12
+website_lane:
+  enabled: true
+  default_fetch_mode: http
+  high_priority_limit: 15
+  normal_priority_limit: 10
+research_lane:
+  enabled: true
+  lookback_days: 30
+  max_results: 12
+  queries:
+    - climate risk insurance report
+    - climate change actuarial research
+    - natural catastrophe insurance climate report
+    - climate financial risk supervision insurance
+climate_keywords:
+  - climate
+  - warming
+  - decarbonization
+  - transition risk
+  - physical risk
+  - adaptation
+  - resilience
+  - net zero
+  - emissions
+  - natural catastrophe
+  - flood
+  - wildfire
+  - heatwave
+actuarial_keywords:
+  - actuarial
+  - actuary
+  - insurance
+  - reinsurance
+  - solvency
+  - capital
+  - reserving
+  - pricing
+  - underwriting
+  - catastrophe model
+  - mortality
+  - pension
+  - supervision
+  - disclosure
+dedupe:
+  url_tracking_path: monitoring/state/seen_urls.json
+  title_tracking_path: monitoring/state/seen_titles.json
+output:
+  source_dir: sources
+  wiki_dir: wiki
+  write_empty_report: false
+web_listening:
+  project_path_env: WEB_LISTENING_PROJECT_PATH
+  data_dir: .tmp/web_listening
+  command: web-listening

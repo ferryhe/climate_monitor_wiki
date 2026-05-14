@@ -13,6 +13,8 @@ Use this workflow whenever `sources/` changes so the app, Dataview, and chat all
 
 The sync script treats the source filename as the canonical day, so it can still regenerate the matching wiki page even when a source file's internal `Report Date` line is stale or malformed. It also keeps no-report placeholder pages for missing days inside the known date range so executive summaries can still surface coverage gaps cleanly.
 
+For automated runs, `scripts/run_climate_monitor.py` performs steps 1 and 2 together: it writes the daily source report and calls `sync_source_wiki`. Manual source edits can continue to use the existing flow.
+
 ## Why Reload Is Required
 
 `api_server.py` creates one `AgenticWikiResponder` at startup, and the knowledge base loads `wiki/` and `sources/` into memory. Updating files on disk does not refresh chat retrieval, Dataview metadata, concept indexing, or `latest` date handling until you call `/api/reload` or restart the server.
