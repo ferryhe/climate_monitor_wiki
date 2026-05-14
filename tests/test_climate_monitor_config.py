@@ -1,3 +1,4 @@
+from pathlib import Path
 from textwrap import dedent
 
 import pytest
@@ -89,7 +90,7 @@ def test_load_site_scopes_returns_valid_scopes(tmp_path):
 def test_load_sources_registry_contains_excel_url_rows_and_missing_url_notes():
     registry_path = "monitoring/supranational_sources.yaml"
 
-    payload = yaml.safe_load(open(registry_path, encoding="utf-8"))
+    payload = yaml.safe_load(Path(registry_path).read_text(encoding="utf-8"))
     sources = load_sources(registry_path)
 
     assert len(sources) == 34

@@ -17,6 +17,9 @@ from .research_search import search_recent_research
 from .web_listening_adapter import collect_website_items
 
 
+DEFAULT_STATE_DIR = Path("monitoring/state")
+
+
 def _load_string_set(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -111,7 +114,7 @@ def run_monitor(
 
     seen_urls_path = _resolve_path(config.seen_urls_path, root=repo_root)
     seen_titles_path = _resolve_path(config.seen_titles_path, root=repo_root)
-    if state_dir != "monitoring/state":
+    if state_root != _resolve_path(DEFAULT_STATE_DIR, root=repo_root):
         seen_urls_path = state_root / "seen_urls.json"
         seen_titles_path = state_root / "seen_titles.json"
     seen_urls = _load_string_set(seen_urls_path)
