@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--wiki-dir", default="")
     parser.add_argument("--no-sync", action="store_true")
     parser.add_argument("--no-update-seen-state", action="store_true")
+    parser.add_argument("--json", action="store_true", help="Print structured JSON for ai_interface.")
     args = parser.parse_args()
 
     report_date = date.fromisoformat(args.date) if args.date else None
@@ -41,6 +42,10 @@ def main() -> None:
         sync=not args.no_sync,
         update_seen_state=not args.no_update_seen_state,
     )
+
+    if args.json:
+        print(result.to_json(), end="")
+        return
 
     if result.report_path:
         print(f"Report written: {result.report_path}")

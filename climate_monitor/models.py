@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
+
+
+DOCUMENT_JSON_FIELDS = (
+    "source_item_id",
+    "asset_id",
+    "asset_tracked_path",
+    "asset_filename",
+    "asset_media_type",
+    "asset_bytes",
+    "asset_checksum_algorithm",
+    "asset_checksum_value",
+)
 
 
 @dataclass(frozen=True)
@@ -45,7 +58,7 @@ class CandidateItem:
     url: str
     summary: str
     source_name: str
-    lane: Literal["website", "research"]
+    lane: Literal["website", "research", "document"]
     published: str = ""
     detected_at: str = ""
     content_hash: str = ""
@@ -57,6 +70,17 @@ class CandidateItem:
     actuarial_signal: str = "none"
     confidence: float = 0.0
     evidence_snippet: str = ""
+    source_item_id: str = ""
+    asset_id: str = ""
+    asset_local_path: str = ""
+    asset_canonical_blob_path: str = ""
+    asset_tracked_path: str = ""
+    asset_filename: str = ""
+    asset_media_type: str = ""
+    asset_bytes: int | None = None
+    asset_checksum_algorithm: str = ""
+    asset_checksum_value: str = ""
+    asset_metadata: dict[str, Any] | None = None
     topics: tuple[str, ...] = ()
 
 
@@ -68,3 +92,71 @@ class MonitorRunResult:
     dedup_notes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     synced: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "report_date": self.report_date.isoformat(),
+            "report_path": self.report_path,
+            "synced": self.synced,
+            "item_count": len(self.items),
+            "items": [_candidate_item_to_dict(item) for item in self.items],
+            "dedup_notes": list(self.dedup_notes),
+            "warnings": list(self.warnings),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2) + "\n"
+
+
+def _candidate_item_to_dict(item: CandidateItem) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "lane": item.lane,
+        "source": item.source_name,
+        "title": item.title,
+        "url": item.url,
+        "summary": item.summary,
+        "published": item.published,
+        "detected": item.detected_at,
+        "content_hash": item.content_hash,
+        "relevance": {
+            "reason": item.relevance_reason,
+            "confidence": item.confidence,
+        },
+        "climate": {
+            "related": item.climate_related,
+            "signal": item.climate_signal,
+        },
+        "actuarial": {
+            "related": item.actuarial_related,
+            "signal": item.actuarial_signal,
+        },
+        "topics": list(item.topics),
+    }
+    if item.lane == "document":
+        payload.update(_document_metadata(item))
+    return payload
+
+
+def _document_metadata(item: CandidateItem) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for name in DOCUMENT_JSON_FIELDS:
+        value = getattr(item, name)
+        if _has_json_value(value):
+            metadata[name] = _json_value(value)
+    return metadata
+
+
+def _has_json_value(value: Any) -> bool:
+    return value is not None and value != "" and value != () and value != [] and value != {}
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(value[key]) for key in sorted(value)}
+    return value

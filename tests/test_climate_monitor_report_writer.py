@@ -20,6 +20,16 @@ class CandidateItem:
     actuarial_signal: str = "none"
     confidence: float = 0.0
     evidence_snippet: str = ""
+    source_item_id: str = ""
+    asset_id: str = ""
+    asset_local_path: str = ""
+    asset_canonical_blob_path: str = ""
+    asset_tracked_path: str = ""
+    asset_filename: str = ""
+    asset_media_type: str = ""
+    asset_bytes: int | None = None
+    asset_checksum_algorithm: str = ""
+    asset_checksum_value: str = ""
     topics: tuple[str, ...] = ()
 
 
@@ -96,3 +106,60 @@ def test_render_report_groups_website_updates_and_research_items():
     assert text.index("## New Research") < text.index("Climate insurance capital research")
     assert "## Warnings" in text
     assert "- warning text" in text
+
+
+def test_render_report_places_document_files_between_website_updates_and_research_with_metadata():
+    website_item = CandidateItem(
+        title="Climate supervision update",
+        url="https://example.com/supervision",
+        summary="Website update summary.",
+        source_name="IAIS",
+        lane="website",
+    )
+    document_item = CandidateItem(
+        title="Climate report PDF",
+        url="https://example.com/climate-report.pdf",
+        summary="Document summary.",
+        source_name="IAIS",
+        lane="document",
+        source_item_id="file-1",
+        asset_id="sha256-abc123",
+        asset_local_path="C:\\Users\\ferry\\Downloads\\climate-report.pdf",
+        asset_canonical_blob_path="data/downloads/_blobs/ab/abc123.pdf",
+        asset_tracked_path="data/downloads/_tracked/iais/climate-report.pdf",
+        asset_filename="climate-report.pdf",
+        asset_media_type="application/pdf",
+        asset_bytes=123456,
+        asset_checksum_algorithm="sha256",
+        asset_checksum_value="abc123",
+    )
+    research_item = CandidateItem(
+        title="Climate insurance capital research",
+        url="https://example.com/research",
+        summary="Research summary.",
+        source_name="Example Research",
+        lane="research",
+    )
+
+    text = render_report(
+        report_date=date(2026, 5, 14),
+        title="Daily Climate & Actuarial Monitor",
+        items=[website_item, document_item, research_item],
+        dedup_notes=[],
+        sites_monitored=34,
+        warnings=[],
+    )
+
+    assert text.index("## Website Updates") < text.index("## Document & Report Files")
+    assert text.index("## Document & Report Files") < text.index("Climate report PDF")
+    assert text.index("Climate report PDF") < text.index("## New Research")
+    assert "**Document file:** climate-report.pdf" in text
+    assert "**File type:** application/pdf" in text
+    assert "**File size:** 123456 bytes" in text
+    assert "**Local asset:**" not in text
+    assert "C:\\Users\\ferry" not in text
+    assert "**Tracked asset:** data/downloads/_tracked/iais/climate-report.pdf" in text
+    assert "**Canonical blob:**" not in text
+    assert "**Asset ID:** sha256-abc123" in text
+    assert "**Source item ID:** file-1" in text
+    assert "**Checksum:** sha256: abc123" in text

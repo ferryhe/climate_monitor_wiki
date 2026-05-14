@@ -13,7 +13,38 @@
       "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
       "status": "new",
       "observed_at": "2026-05-14T00:00:00Z"
+    },
+    {
+      "item_id": "iais-2026-05-14-2",
+      "item_type": "file_link",
+      "url": "https://www.iais.org/uploads/climate-risk-report.pdf",
+      "title": "Climate risk report PDF",
+      "summary": "IAIS published a climate risk report PDF relevant to insurance supervisors.",
+      "status": "new",
+      "observed_at": "2026-05-14T00:05:00Z",
+      "content_type": "application/pdf",
+      "checksum": {
+        "algorithm": "sha256",
+        "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
     }
   ],
-  "downloaded_assets": []
+  "downloaded_assets": [
+    {
+      "asset_id": "sha256-0123456789abcdef",
+      "source_item_id": "iais-2026-05-14-2",
+      "url": "https://www.iais.org/uploads/climate-risk-report.pdf",
+      "local_path": "data/downloads/_tracked/iais/climate-risk-report.pdf",
+      "canonical_blob_path": "data/downloads/_blobs/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.pdf",
+      "tracked_path": "data/downloads/_tracked/iais/climate-risk-report.pdf",
+      "filename": "climate-risk-report.pdf",
+      "media_type": "application/pdf",
+      "bytes": 123456,
+      "checksum": {
+        "algorithm": "sha256",
+        "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      "status": "downloaded"
+    }
+  ]
 }
