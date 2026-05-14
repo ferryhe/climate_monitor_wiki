@@ -8,6 +8,9 @@ import yaml
 from .models import MonitorSource, RunConfig, SiteScope
 
 
+_ALLOWED_FETCH_MODES = {"", "http", "browser", "auto"}
+
+
 def _load_yaml(path: Path) -> dict:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict):
@@ -65,6 +68,22 @@ def _string_tuple(values: object, field_name: str) -> tuple[str, ...]:
     return tuple(str(value).strip() for value in values if str(value).strip())
 
 
+def _fetch_mode(value: object, *, source_key: str) -> str:
+    mode = str(value or "").strip().lower()
+    if mode not in _ALLOWED_FETCH_MODES:
+        allowed = ", ".join(sorted(mode for mode in _ALLOWED_FETCH_MODES if mode))
+        raise ValueError(f"{source_key}.fetch_mode must be one of: {allowed}.")
+    return mode
+
+
+def _optional_mapping(value: object, field_name: str) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a YAML object.")
+    return dict(value)
+
+
 def load_site_scopes(path: str | Path) -> list[SiteScope]:
     payload = _load_yaml(Path(path))
     scopes = payload.get("site_scopes", [])
@@ -88,6 +107,9 @@ def load_site_scopes(path: str | Path) -> list[SiteScope]:
                 seed_urls=seed_urls,
                 include_patterns=_string_tuple(item.get("include_patterns", []), "include_patterns"),
                 exclude_patterns=_string_tuple(item.get("exclude_patterns", []), "exclude_patterns"),
+                include_source_url=bool(item.get("include_source_url", True)),
+                fetch_mode=_fetch_mode(item.get("fetch_mode", ""), source_key=source_key),
+                fetch_config_json=_optional_mapping(item.get("fetch_config_json"), "fetch_config_json"),
                 notes=str(item.get("notes", "")).strip(),
             )
         )

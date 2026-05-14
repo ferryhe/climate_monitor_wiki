@@ -16,15 +16,17 @@ site_scopes:
   - source_key: iea
     seed_urls:
       - https://www.iea.org/news
-      - https://www.iea.org/reports
+      - https://www.iea.org/topics/climate-change
+      - https://www.iea.org/sitemap.xml
     include_patterns:
       - /news
       - /reports
       - /topics/climate-change
+      - /sitemap.xml
     exclude_patterns:
       - /events
       - /jobs
-    notes: Reviewed IEA public news, reports, and climate topic paths.
+    notes: Reviewed IEA public news, climate topic, and sitemap inventory after /reports returned 404.
   - source_key: ipcc
     seed_urls:
       - https://www.ipcc.ch/reports/
@@ -49,17 +51,22 @@ site_scopes:
       - /events
     notes: Reviewed UNDP IRFF news and publications paths.
   - source_key: issa
-    seed_urls:
-      - https://www.issa.int/news
-      - https://www.issa.int/analysis
+    seed_urls: []
     include_patterns:
       - /news
       - /analysis
       - /topics
+      - /publication
     exclude_patterns:
       - /events
       - /membership
-    notes: Reviewed ISSA news and analysis paths.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed ISSA with browser_rendered; homepage is reachable while news and analysis section seeds trigger security verification.
   - source_key: issb
     seed_urls:
       - https://www.ifrs.org/groups/international-sustainability-standards-board/
@@ -77,26 +84,32 @@ site_scopes:
     seed_urls:
       - https://www.oecd.org/en/topics/climate-change.html
       - https://www.oecd.org/en/publications.html
-      - https://www.oecd.org/en/news.html
+      - https://www.oecd.org/en/about/newsroom.html
     include_patterns:
       - /topics/climate-change
       - /publications
-      - /news
+      - /about/newsroom
     exclude_patterns:
       - /events
       - /careers
-    notes: Reviewed OECD climate topic, publications, and news paths.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed OECD with browser_rendered; legacy /en/news.html returned 404 and newsroom is now under /en/about/newsroom.html.
   - source_key: pcaf
     seed_urls:
-      - https://carbonaccountingfinancials.com/news
+      - https://carbonaccountingfinancials.com/resources
       - https://carbonaccountingfinancials.com/standard
     include_patterns:
-      - /news
+      - /resources
       - /standard
       - /publications
     exclude_patterns:
       - /events
-    notes: Reviewed PCAF news, standard, and publications paths.
+    notes: Reviewed PCAF resources, standard, and publications paths after /news returned 404.
   - source_key: psi
     seed_urls:
       - https://www.unepfi.org/insurance/insurance/
@@ -113,27 +126,37 @@ site_scopes:
   - source_key: tnfd
     seed_urls:
       - https://tnfd.global/news/
-      - https://tnfd.global/publication/
+      - https://tnfd.global/tnfd-publications/
+      - https://tnfd.global/knowledge-bank/
     include_patterns:
       - /news/
+      - /tnfd-publications/
       - /publication/
       - /knowledge-bank/
     exclude_patterns:
       - /events/
-    notes: Reviewed TNFD news, publications, and knowledge bank paths.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed TNFD with browser_rendered; HTTP feed works, but rendered pages expose richer news and publication links.
   - source_key: undp
+    include_source_url: false
     seed_urls:
-      - https://www.undp.org/climate
-      - https://www.undp.org/publications
-      - https://www.undp.org/news-centre
+      - https://climatepromise.undp.org/news-and-stories
+      - https://climatepromise.undp.org/research-and-reports
+      - https://climatepromise.undp.org/what-we-do
     include_patterns:
+      - /news-and-stories
+      - /research-and-reports
+      - /what-we-do
       - /climate
-      - /publications
-      - /news
     exclude_patterns:
       - /jobs
       - /events
-    notes: Reviewed UNDP climate, publications, and news paths.
+    notes: Reviewed UNDP Climate Promise pages because www.undp.org returns 403 from web_listening HTTP and browser probes.
   - source_key: unep
     seed_urls:
       - https://www.unep.org/topics/climate-action
@@ -145,19 +168,31 @@ site_scopes:
       - /resources
     exclude_patterns:
       - /events
-    notes: Reviewed UNEP climate action, news, and resources paths.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed UNEP with browser_rendered because the climate action topic returns 403 to HTTP.
   - source_key: wef
     seed_urls:
-      - https://www.weforum.org/agenda/climate-change/
+      - https://www.weforum.org/stories/climate-action/
       - https://www.weforum.org/publications/
     include_patterns:
-      - /agenda/climate-change/
+      - /stories/climate-action/
       - /publications/
       - /reports/
     exclude_patterns:
       - /events/
       - /jobs/
-    notes: Reviewed WEF climate agenda and publications paths.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed WEF with browser_rendered; HTTP returns 403 and the climate agenda path redirects to /stories/climate-action/.
   - source_key: world-bank
     seed_urls:
       - https://www.worldbank.org/en/topic/climatechange
@@ -187,17 +222,23 @@ site_scopes:
     notes: Reviewed ADB climate change, news, and publications paths.
   - source_key: afdb
     seed_urls:
-      - https://www.afdb.org/en/topics-and-sectors/initiatives-partnerships/climate-change
+      - https://www.afdb.org/en/topics-and-sectors/sectors/climate-change
       - https://www.afdb.org/en/news-and-events
-      - https://www.afdb.org/en/documents
+      - https://www.afdb.org/en/documents/publications
     include_patterns:
       - /climate-change
       - /news-and-events
-      - /documents
+      - /documents/publications
     exclude_patterns:
       - /events/calendar
       - /careers
-    notes: Reviewed AfDB climate, news, and document paths.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed AfDB with browser_rendered; HTTP returns 403 and old initiative climate/documents paths returned 404.
   - source_key: bcbs
     seed_urls:
       - https://www.bis.org/bcbs/index.htm
@@ -211,29 +252,37 @@ site_scopes:
     notes: Reviewed BCBS index and publications paths on BIS.
   - source_key: bis
     seed_urls:
-      - https://www.bis.org/topic/climate.htm
-      - https://www.bis.org/publications/index.htm
-      - https://www.bis.org/press/
+      - https://www.bis.org/topic/green_finance.htm
+      - https://www.bis.org/wpapers/index.htm
+      - https://www.bis.org/rss/index.htm
     include_patterns:
-      - /topic/climate
-      - /publications/
-      - /press/
+      - /topic/green_finance
+      - /wpapers/
+      - /rss/
     exclude_patterns:
       - /events/
       - /jobs/
-    notes: Reviewed BIS climate topic, publications, and press paths.
+    notes: Reviewed BIS green finance, working papers, and RSS paths after old climate/publications/press paths returned 404.
   - source_key: caf
     seed_urls:
       - https://www.caf.com/en/currently/news/
-      - https://www.caf.com/en/knowledge/views/
+      - https://www.caf.com/en/blog
+      - https://www.caf.com/en/knowledge/
     include_patterns:
       - /currently/news/
+      - /blog
       - /knowledge/
       - /environment/
       - /climate
     exclude_patterns:
       - /events/
-    notes: Reviewed CAF news and knowledge paths with climate/environment filters.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed CAF with browser_rendered because HTTP fails certificate validation; /knowledge/views now redirects to /en/blog.
   - source_key: fit
     seed_urls:
       - https://www.unepfi.org/forum-for-insurance-transition-to-net-zero/
@@ -260,91 +309,95 @@ site_scopes:
     notes: Reviewed FSB climate-related risks, publications, and press paths.
   - source_key: g20
     seed_urls:
-      - https://g20.org/news/
-      - https://g20.org/documents/
+      - https://g20.org/
+      - https://g20.org/feed/
     include_patterns:
-      - /news/
-      - /documents/
+      - https://g20.org/
+      - /feed/
       - /climate
     exclude_patterns:
       - /events/
-    notes: Reviewed G20 news and documents paths.
+    notes: Reviewed G20 homepage and RSS feed after /news and /documents returned 404.
   - source_key: gca
     seed_urls:
-      - https://gca.org/news/
+      - https://gca.org/news
       - https://gca.org/reports/
-      - https://gca.org/topics/
+      - https://gca.org/feed/
     include_patterns:
-      - /news/
+      - /gca-news/
       - /reports/
-      - /topics/
+      - /feed/
     exclude_patterns:
       - /events/
-    notes: Reviewed GCA news, reports, and topic paths.
+    notes: Reviewed GCA news redirect, reports, and feed paths after /topics returned 404.
   - source_key: ifac
     seed_urls:
       - https://www.ifac.org/knowledge-gateway
-      - https://www.ifac.org/news-events
+      - https://www.ifac.org/rss.xml
     include_patterns:
       - /knowledge-gateway
       - /news-events
       - /sustainability
+      - /rss.xml
     exclude_patterns:
       - /events
-    notes: Reviewed IFAC knowledge gateway, news, and sustainability paths.
+    notes: Reviewed IFAC knowledge gateway, news, sustainability, and RSS paths after /news-events returned 404.
   - source_key: ilo
     seed_urls:
-      - https://www.ilo.org/topics/climate-change
-      - https://www.ilo.org/resource/news
+      - https://www.ilo.org/global/topics/green-jobs/lang--en/index.htm
       - https://www.ilo.org/publications
+      - https://www.ilo.org/rss.xml
     include_patterns:
-      - /topics/climate-change
-      - /resource/news
+      - /topics-and-sectors/just-transition
+      - /green-jobs
       - /publications
+      - /rss.xml
     exclude_patterns:
       - /events
       - /jobs
-    notes: Reviewed ILO climate topic, news, and publications paths.
+    notes: Reviewed ILO just transition, publications, and RSS paths after old climate and resource news paths returned 404.
   - source_key: imf
     seed_urls:
-      - https://www.imf.org/en/Topics/climate-change
-      - https://www.imf.org/en/Publications
-      - https://www.imf.org/en/News
+      - https://www.imf.org/en/topics/climate-change
+      - https://www.imf.org/en/publications
+      - https://www.imf.org/en/news
     include_patterns:
-      - /Topics/climate-change
-      - /Publications
-      - /News
+      - /topics/climate-change
+      - /publications
+      - /news
     exclude_patterns:
-      - /Events
-      - /Jobs
-    notes: Reviewed IMF climate topic, publications, and news paths.
+      - /events
+      - /jobs
+    fetch_config_json: {}
+    notes: Reviewed IMF climate topic, publications, and news paths with default web_http headers because browser-like UA receives 403.
   - source_key: ngfs
     seed_urls:
-      - https://www.ngfs.net/en/publications
+      - https://www.ngfs.net/sitemap.xml
       - https://www.ngfs.net/en/press-release
+      - https://www.ngfs.net/en/news
     include_patterns:
       - /publications
       - /press-release
+      - /news
       - /climate
     exclude_patterns:
       - /events
-    notes: Reviewed NGFS publications and press release paths.
+    notes: Reviewed NGFS sitemap, press release, and news paths after /en/publications redirected to a 403 page.
   - source_key: sif
     seed_urls:
-      - https://sustainableinsuranceforum.org/publications/
-      - https://sustainableinsuranceforum.org/news/
+      - https://sdgfinance.undp.org/sustainable-insurance-forum
+      - https://sdgfinance.undp.org/news-events
     include_patterns:
-      - /publications/
-      - /news/
+      - /sustainable-insurance-forum
+      - /news-events
       - /climate
     exclude_patterns:
       - /events/
-    notes: Reviewed SIF publications and news paths.
+    notes: Reviewed SIF through UNDP Sustainable Finance Hub because sustainableinsuranceforum.org redirects to a parked Linkila page.
   - source_key: unctad
     seed_urls:
-      - https://unctad.org/topic/climate-change
       - https://unctad.org/publications
-      - https://unctad.org/news
+      - https://unctad.org/
     include_patterns:
       - /topic/climate-change
       - /publications
@@ -352,20 +405,21 @@ site_scopes:
     exclude_patterns:
       - /meetings
       - /events
-    notes: Reviewed UNCTAD climate topic, publications, and news paths.
+    notes: Reviewed UNCTAD homepage and publications paths after climate topic and /news returned 404.
   - source_key: unfccc
+    include_source_url: false
     seed_urls:
-      - https://unfccc.int/news
-      - https://unfccc.int/documents
-      - https://unfccc.int/topics
+      - https://unfccc.int/sitemap.xml
     include_patterns:
       - /news
       - /documents
       - /topics
+      - /sitemap.xml
     exclude_patterns:
       - /calendar
       - /events
-    notes: Reviewed UNFCCC news, documents, and topics paths.
+    fetch_config_json: {}
+    notes: Reviewed UNFCCC sitemap inventory because news/documents/topics pages return Incapsula or empty responses to HTTP and browser probes.
   - source_key: who
     seed_urls:
       - https://www.who.int/health-topics/climate-change
@@ -382,15 +436,15 @@ site_scopes:
   - source_key: wmo
     seed_urls:
       - https://wmo.int/topics/climate
-      - https://wmo.int/media/news
+      - https://wmo.int/news
       - https://wmo.int/publication-series
     include_patterns:
       - /topics/climate
-      - /media/news
+      - /news
       - /publication
     exclude_patterns:
       - /events
-    notes: Reviewed WMO climate topic, news, and publication paths.
+    notes: Reviewed WMO climate topic, news, and publication paths after /media/news returned 404.
   - source_key: wri
     seed_urls:
       - https://www.wri.org/climate
@@ -407,13 +461,14 @@ site_scopes:
     notes: Reviewed WRI climate, research, news, and insights paths.
   - source_key: wto
     seed_urls:
-      - https://www.wto.org/english/tratop_e/envir_e/climate_change_e.htm
+      - https://www.wto.org/english/tratop_e/envir_e/climate_challenge_e.htm
       - https://www.wto.org/english/news_e/news_e.htm
       - https://www.wto.org/english/res_e/publications_e/publications_e.htm
     include_patterns:
-      - /envir_e/climate_change
+      - /envir_e/climate_challenge
+      - /envir_e/climate_intro
       - /news_e/
       - /publications_e/
     exclude_patterns:
       - /events_e/
-    notes: Reviewed WTO climate change, news, and publications paths.
+    notes: Reviewed WTO climate challenge, news, and publications paths after climate_change_e.htm resolved to the WTO error page.

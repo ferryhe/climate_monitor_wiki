@@ -35,6 +35,9 @@ class SiteScope:
     seed_urls: tuple[str, ...]
     include_patterns: tuple[str, ...]
     exclude_patterns: tuple[str, ...]
+    include_source_url: bool = True
+    fetch_mode: str = ""
+    fetch_config_json: dict[str, Any] | None = None
     notes: str = ""
 
 

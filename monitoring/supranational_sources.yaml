@@ -177,7 +177,7 @@ sources:
   - key: sif
     abbreviation: SIF
     full_name: Sustainable Insurance Forum
-    url: https://sustainableinsuranceforum.org/
+    url: https://sdgfinance.undp.org/sustainable-insurance-forum
     high_priority: false
     tags: [insurance, supervision]
   - key: unctad

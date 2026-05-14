@@ -448,6 +448,71 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
     assert item_urls.count("https://www.iais.org/climate/report.pdf") == 2
 
 
+def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monkeypatch):
+    class Page:
+        final_url = "https://www.oecd.org/en/topics/climate-change.html"
+        fit_markdown = "Climate page"
+        markdown = ""
+        content_text = ""
+        metadata_json = {"links": []}
+        raw_html = ""
+        status_code = 200
+
+    class FakeCrawler:
+        init_modes: list[str] = []
+        fetch_modes: list[str] = []
+        fetch_configs: list[dict] = []
+
+        def __init__(self, *, fetch_mode: str):
+            self.init_modes.append(fetch_mode)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
+            self.fetch_modes.append(fetch_mode)
+            self.fetch_configs.append(fetch_config_json or {})
+            return Page()
+
+    diff = {
+        "compute_hash": lambda text: "hash",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [],
+        "find_new_links": lambda previous, current: [],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="oecd",
+        abbreviation="OECD",
+        full_name="Organisation for Economic Co-operation and Development",
+        url="https://www.oecd.org/",
+    )
+    scope = SiteScope(
+        source_key="oecd",
+        seed_urls=("https://www.oecd.org/en/topics/climate-change.html",),
+        include_patterns=("/topics/climate-change",),
+        exclude_patterns=(),
+        fetch_mode="browser",
+        fetch_config_json={
+            "user_agent_profile": "browser",
+            "wait_until": "domcontentloaded",
+            "extra_wait_ms": 2500,
+        },
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
+
+    assert FakeCrawler.init_modes == ["browser", "browser"]
+    assert FakeCrawler.fetch_modes == ["browser", "browser"]
+    assert FakeCrawler.fetch_configs == [scope.fetch_config_json, scope.fetch_config_json]
+
+
 def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(tmp_path, monkeypatch):
     class Page:
         def __init__(self, links: list[str]):
