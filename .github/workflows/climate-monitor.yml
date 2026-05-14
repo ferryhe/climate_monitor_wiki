@@ -12,12 +12,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout climate monitor wiki
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
       - name: Checkout web_listening
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ferryhe/web_listening
           ref: b63652e80161784d7530a02d0e537805c3e74dbe
@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version-file: .python-version
 
@@ -34,6 +34,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install ./external/web_listening
+
+      - name: Validate repository
+        run: |
+          python -m pytest tests
+          node --check showcase/app.js
 
       - name: Run climate monitor
         env:
@@ -46,11 +51,13 @@ jobs:
 
       - name: Validate generated wiki
         run: |
-          python -m pytest tests
-          node --check showcase/app.js
+          test -d monitoring/state
+          test -d sources
+          test -d wiki
+          test -f wiki/index.md
 
       - name: Upload generated monitor outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: climate-monitor-generated
           path: |
@@ -66,10 +73,10 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout climate monitor wiki
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download generated monitor outputs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: climate-monitor-generated
           path: .
