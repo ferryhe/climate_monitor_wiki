@@ -49,7 +49,7 @@ Optional model-backed configuration:
 
 ```bash
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.2
+OPENAI_MODEL=gpt-5.4-mini
 OPENAI_TEMPERATURE=0.2
 SOURCE_DIR=sources
 RELOAD_TOKEN=your-shared-secret
@@ -138,7 +138,7 @@ If you deploy it as a Render web service, the relevant settings are:
 The Blueprint also sets:
 
 - `PYTHON_VERSION=3.12.1`
-- `OPENAI_MODEL=gpt-5.2`
+- `OPENAI_MODEL=gpt-5.4-mini`
 - `OPENAI_TEMPERATURE=0.2`
 - `WIKI_DIR=wiki`
 - `SOURCE_DIR=sources`
