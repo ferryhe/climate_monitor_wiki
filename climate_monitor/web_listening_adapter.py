@@ -21,6 +21,14 @@ _BAD_FINAL_URL_MARKERS = (
     "not-found",
     "redirect_captcha",
 )
+_BLOCKED_CONTENT_MARKERS = (
+    "access denied",
+    "checking if the site connection is secure",
+    "performing security verification",
+    "please complete the security check",
+    "request unsuccessful",
+    "security verification",
+)
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -306,6 +314,55 @@ def _fetch_failure_reason(page: Any, *, final_url: str) -> str:
     lowered_final_url = final_url.lower()
     if any(marker in lowered_final_url for marker in _BAD_FINAL_URL_MARKERS):
         return f"resolved to a likely error page: {final_url}"
+    metadata = getattr(page, "metadata_json", {}) or {}
+    text = _best_page_text(page)
+    blocked_marker = _blocked_content_marker(text)
+    if blocked_marker:
+        return f"blocked or rejected content marker `{blocked_marker}` at {final_url}"
+    word_count = _metadata_int(metadata, "word_count", default=len(text.split()))
+    link_count = _page_link_count(metadata)
+    source_kind = str(metadata.get("source_kind", "html") or "html")
+    item_count = _metadata_int(metadata, "item_count")
+    if source_kind == "xml_feed" and item_count == 0 and link_count == 0:
+        return f"empty feed (status={status_code or 'unknown'}, final_url={final_url})"
+    if source_kind == "xml_sitemap" and link_count == 0:
+        return f"empty sitemap (status={status_code or 'unknown'}, final_url={final_url})"
+    if word_count == 0 and link_count == 0:
+        return (
+            "no usable information "
+            f"(status={status_code or 'unknown'}, words={word_count}, links={link_count}, "
+            f"source_kind={source_kind}, final_url={final_url})"
+        )
+    return ""
+
+
+def _best_page_text(page: Any) -> str:
+    return (
+        str(getattr(page, "fit_markdown", "") or "")
+        or str(getattr(page, "markdown", "") or "")
+        or str(getattr(page, "content_text", "") or "")
+    )
+
+
+def _metadata_int(metadata: dict[str, Any], key: str, *, default: int = 0) -> int:
+    try:
+        return int(metadata.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _page_link_count(metadata: dict[str, Any]) -> int:
+    links = metadata.get("links")
+    if isinstance(links, list):
+        return len({str(link) for link in links if str(link).strip()})
+    return _metadata_int(metadata, "link_count")
+
+
+def _blocked_content_marker(text: str) -> str:
+    lowered = text.lower()
+    for marker in _BLOCKED_CONTENT_MARKERS:
+        if marker in lowered:
+            return marker
     return ""
 
 

@@ -208,6 +208,7 @@ site_scopes:
       - /events
     notes: Reviewed World Bank climate, research, news, and publication paths.
   - source_key: adb
+    include_source_url: false
     seed_urls:
       - https://www.adb.org/climate-change
       - https://www.adb.org/news

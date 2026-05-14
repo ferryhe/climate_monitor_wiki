@@ -513,6 +513,154 @@ def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monke
     assert FakeCrawler.fetch_configs == [scope.fetch_config_json, scope.fetch_config_json]
 
 
+def test_collect_source_items_warns_when_seed_has_no_usable_information(tmp_path, monkeypatch):
+    class Page:
+        final_url = "https://www.example.org/empty"
+        fit_markdown = ""
+        markdown = ""
+        content_text = ""
+        metadata_json = {"link_count": 0, "word_count": 0, "source_kind": "html"}
+        raw_html = "<html><body></body></html>"
+        status_code = 200
+
+    class FakeCrawler:
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
+            return Page()
+
+    diff = {
+        "compute_hash": lambda text: "hash",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [],
+        "find_new_links": lambda previous, current: [],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="example",
+        abbreviation="EXAMPLE",
+        full_name="Example",
+        url="https://www.example.org/empty",
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+
+    assert items == []
+    assert len(warnings) == 1
+    assert "no usable information" in warnings[0]
+    assert "words=0" in warnings[0]
+    assert "links=0" in warnings[0]
+
+
+def test_collect_source_items_warns_when_seed_returns_security_verification(tmp_path, monkeypatch):
+    class Page:
+        final_url = "https://www.example.org/protected"
+        fit_markdown = "# www.example.org\n\n## Performing security verification"
+        markdown = ""
+        content_text = ""
+        metadata_json = {"link_count": 2, "word_count": 6, "source_kind": "html"}
+        raw_html = "<html><body>Performing security verification</body></html>"
+        status_code = 200
+
+    class FakeCrawler:
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
+            return Page()
+
+    diff = {
+        "compute_hash": lambda text: "hash",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [],
+        "find_new_links": lambda previous, current: [],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="example",
+        abbreviation="EXAMPLE",
+        full_name="Example",
+        url="https://www.example.org/protected",
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+
+    assert items == []
+    assert len(warnings) == 1
+    assert "blocked or rejected content marker `performing security verification`" in warnings[0]
+
+
+def test_collect_source_items_allows_pages_with_incidental_human_verification_text(tmp_path, monkeypatch):
+    class Page:
+        final_url = "https://www.example.org/page"
+        fit_markdown = "Public climate disclosure update with a sign-in link to verify you are human."
+        markdown = ""
+        content_text = ""
+        metadata_json = {
+            "links": [
+                "https://www.example.org/climate/report.pdf",
+                "https://www.example.org/news/update",
+                "https://www.example.org/publications",
+            ]
+        }
+        raw_html = ""
+        status_code = 200
+
+    class FakeCrawler:
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
+            return Page()
+
+    diff = {
+        "compute_hash": lambda text: "hash",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
+        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="example",
+        abbreviation="EXAMPLE",
+        full_name="Example",
+        url="https://www.example.org/page",
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+
+    assert items == []
+    assert warnings == []
+
+
 def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(tmp_path, monkeypatch):
     class Page:
         def __init__(self, links: list[str]):
