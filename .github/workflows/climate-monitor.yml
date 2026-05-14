@@ -45,7 +45,7 @@ jobs:
       - name: Run climate monitor
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLIMATE_MONITOR_SEARCH_MODEL: ${{ vars.CLIMATE_MONITOR_SEARCH_MODEL || 'gpt-5.2' }}
+          CLIMATE_MONITOR_SEARCH_MODEL: ${{ vars.CLIMATE_MONITOR_SEARCH_MODEL || 'gpt-5.4-mini' }}
           CLIMATE_MONITOR_ENABLE_LIVE_RESEARCH: "1"
           WEB_LISTENING_PROJECT_PATH: ${{ github.workspace }}/external/web_listening
           CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING: "1"
