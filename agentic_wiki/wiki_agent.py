@@ -1194,7 +1194,7 @@ class AgenticWikiResponder:
         source_dir: Path = DEFAULT_SOURCE_DIR,
     ) -> None:
         self.kb = WikiKnowledgeBase(wiki_dir, source_dir)
-        self.model = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+        self.model = os.getenv("OPENAI_MODEL", "gpt-5.2")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
         self.base_source_url = self._github_blob_base_url()
         self.source_document_base_url = self._github_blob_base_url(

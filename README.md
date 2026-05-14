@@ -49,7 +49,7 @@ Optional model-backed configuration:
 
 ```bash
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.4-mini
+OPENAI_MODEL=gpt-5.2
 OPENAI_TEMPERATURE=0.2
 SOURCE_DIR=sources
 RELOAD_TOKEN=your-shared-secret
@@ -100,6 +100,30 @@ python scripts/reload_and_smoke_test.py --date 2026-04-25
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
 
+## Automated Climate Monitor
+
+The scheduled monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, writes `sources/climate-monitor-YYYY-MM-DD.md`, and regenerates the matching wiki pages with `scripts/sync_source_wiki.py`.
+
+Local dry run:
+
+```bash
+python scripts/run_climate_monitor.py \
+  --date 2026-05-14 \
+  --manifest-fixture monitoring/fixtures/web_listening_manifest_sample.json \
+  --research-fixture monitoring/fixtures/research_results_sample.json
+```
+
+For live website collection, install or point to `web_listening`, then opt in explicitly:
+
+```bash
+WEB_LISTENING_PROJECT_PATH=../web_listening \
+CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1 \
+CLIMATE_MONITOR_ENABLE_LIVE_RESEARCH=1 \
+python scripts/run_climate_monitor.py
+```
+
+The GitHub workflow lives at `.github/workflows/climate-monitor.yml`. It opens a pull request only when generated files change.
+
 ## Deploy on Render
 
 This repo includes a [`render.yaml`](render.yaml) Blueprint and a [`.python-version`](.python-version) pin for Render.
@@ -113,7 +137,7 @@ If you deploy it as a Render web service, the relevant settings are:
 The Blueprint also sets:
 
 - `PYTHON_VERSION=3.12.1`
-- `OPENAI_MODEL=gpt-5.4-mini`
+- `OPENAI_MODEL=gpt-5.2`
 - `OPENAI_TEMPERATURE=0.2`
 - `WIKI_DIR=wiki`
 - `SOURCE_DIR=sources`

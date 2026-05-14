@@ -1,0 +1,218 @@
+schema_version: supranational-sources.v1
+generated_from: IAA CSC - Supranational Organizations Working Group - Database.xlsx
+generated_at: 2026-05-14
+missing_url_notes:
+  - abbreviation: A2ii
+    full_name: Access to Insurance Initiative
+    note: Missing website link in source spreadsheet.
+  - abbreviation: FAO
+    full_name: Food and Agriculture Organization of the United Nations
+    note: Missing website link in source spreadsheet.
+  - abbreviation: UN Water
+    full_name: UN-Water
+    note: Missing website link in source spreadsheet.
+sources:
+  - key: iais
+    abbreviation: IAIS
+    full_name: International Association of Insurance Supervisors
+    url: https://www.iais.org/
+    high_priority: true
+    tags: [insurance, supervision, climate]
+  - key: iea
+    abbreviation: IEA
+    full_name: International Energy Agency
+    url: https://iea.org
+    high_priority: true
+    tags: [energy, climate]
+  - key: ipcc
+    abbreviation: IPCC
+    full_name: Intergovernmental Panel on Climate Change
+    url: https://www.ipcc.ch/
+    high_priority: true
+    tags: [science, climate]
+  - key: irff
+    abbreviation: IRFF
+    full_name: Insurance and Risk Finance Facility
+    url: https://irff.undp.org/
+    high_priority: true
+    tags: [insurance, risk-finance]
+  - key: issa
+    abbreviation: ISSA
+    full_name: International Social Security Association
+    url: https://www.issa.int/
+    high_priority: true
+    tags: [social-security]
+  - key: issb
+    abbreviation: ISSB
+    full_name: International Sustainability Standards Board
+    url: https://www.ifrs.org/groups/international-sustainability-standards-board/
+    high_priority: true
+    tags: [disclosure, sustainability]
+  - key: oecd
+    abbreviation: OECD
+    full_name: Organisation for Economic Co-operation and Development
+    url: https://www.oecd.org/
+    high_priority: true
+    tags: [policy, climate]
+  - key: pcaf
+    abbreviation: PCAF
+    full_name: Partnership for Carbon Accounting Financials
+    url: https://carbonaccountingfinancials.com/
+    high_priority: true
+    tags: [carbon-accounting, finance]
+  - key: psi
+    abbreviation: PSI
+    full_name: Principles for Sustainable Insurance
+    url: https://www.unepfi.org/insurance/insurance/
+    high_priority: true
+    tags: [insurance, sustainability]
+  - key: tnfd
+    abbreviation: TNFD
+    full_name: Taskforce on Nature-related Financial Disclosures
+    url: https://tnfd.global/
+    high_priority: true
+    tags: [nature, disclosure]
+  - key: undp
+    abbreviation: UNDP
+    full_name: United Nations Development Programme
+    url: https://www.undp.org
+    high_priority: true
+    tags: [development, climate]
+  - key: unep
+    abbreviation: UNEP
+    full_name: United Nations Environment Programme
+    url: https://www.unep.org
+    high_priority: true
+    tags: [environment, climate]
+  - key: wef
+    abbreviation: WEF
+    full_name: World Economic Forum
+    url: https://www.weforum.org
+    high_priority: true
+    tags: [economy, risk]
+  - key: world-bank
+    abbreviation: World Bank
+    full_name: World Bank Group
+    url: https://www.worldbank.org/
+    high_priority: true
+    tags: [development, finance]
+  - key: adb
+    abbreviation: ADB
+    full_name: Asian Development Bank
+    url: https://www.adb.org/
+    high_priority: false
+    tags: [development, finance]
+  - key: afdb
+    abbreviation: AFDB
+    full_name: African Development Bank Group
+    url: https://www.afdb.org/en
+    high_priority: false
+    tags: [development, finance]
+  - key: bcbs
+    abbreviation: BCBS
+    full_name: The Basel Committee on Banking Supervision
+    url: https://www.bis.org/bcbs/index.htm
+    high_priority: false
+    tags: [banking, supervision]
+  - key: bis
+    abbreviation: BIS
+    full_name: Bank for International Settlements
+    url: https://www.bis.org/index.htm
+    high_priority: false
+    tags: [finance, supervision]
+  - key: caf
+    abbreviation: CAF
+    full_name: CAF - Development Bank of Latin America and the Caribbean
+    url: https://www.caf.com/en/
+    high_priority: false
+    tags: [development, finance]
+  - key: fit
+    abbreviation: FIT
+    full_name: Forum for Insurance Transition to Net Zero
+    url: https://www.unepfi.org/forum-for-insurance-transition-to-net-zero/
+    high_priority: false
+    tags: [insurance, transition]
+  - key: fsb
+    abbreviation: FSB
+    full_name: Financial Stability Board
+    url: https://www.fsb.org/
+    high_priority: false
+    tags: [finance, supervision]
+  - key: g20
+    abbreviation: G20
+    full_name: Group of Twenty
+    url: https://g20.org
+    high_priority: false
+    tags: [policy]
+  - key: gca
+    abbreviation: GCA
+    full_name: Global Center on Adaptation
+    url: https://gca.org/
+    high_priority: false
+    tags: [adaptation, climate]
+  - key: ifac
+    abbreviation: IFAC
+    full_name: International Federation of Accountants
+    url: https://www.ifac.org/
+    high_priority: false
+    tags: [accounting, disclosure]
+  - key: ilo
+    abbreviation: ILO
+    full_name: International Labour Organization
+    url: https://www.ilo.org/
+    high_priority: false
+    tags: [labor, social]
+  - key: imf
+    abbreviation: IMF
+    full_name: International Monetary Fund
+    url: https://www.imf.org/
+    high_priority: false
+    tags: [finance, macroeconomics]
+  - key: ngfs
+    abbreviation: NGFS
+    full_name: Network for Greening the Financial System
+    url: https://www.ngfs.net/
+    high_priority: false
+    tags: [finance, climate]
+  - key: sif
+    abbreviation: SIF
+    full_name: Sustainable Insurance Forum
+    url: https://sustainableinsuranceforum.org/
+    high_priority: false
+    tags: [insurance, supervision]
+  - key: unctad
+    abbreviation: UNCTAD
+    full_name: United Nations Conference on Trade and Development
+    url: https://unctad.org/
+    high_priority: false
+    tags: [trade, development]
+  - key: unfccc
+    abbreviation: UNFCCC
+    full_name: United Nations Framework Convention on Climate Change
+    url: https://unfccc.int/
+    high_priority: false
+    tags: [climate, policy]
+  - key: who
+    abbreviation: WHO
+    full_name: World Health Organization
+    url: https://www.who.int/
+    high_priority: false
+    tags: [health, climate]
+  - key: wmo
+    abbreviation: WMO
+    full_name: World Meteorological Organization
+    url: https://wmo.int/
+    high_priority: false
+    tags: [weather, climate]
+  - key: wri
+    abbreviation: WRI
+    full_name: World Resources Institute
+    url: https://www.wri.org/
+    high_priority: false
+    tags: [climate, research]
+  - key: wto
+    abbreviation: WTO
+    full_name: World Trade Organization
+    url: https://www.wto.org/
+    high_priority: false
+    tags: [trade]

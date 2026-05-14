@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+from datetime import date
+from textwrap import dedent
+
+from climate_monitor.orchestrator import run_monitor
+
+
+def test_run_monitor_writes_source_report_and_syncs_wiki(tmp_path):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    research = tmp_path / "research.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    source_config.write_text(
+        dedent(
+            """
+            sources:
+              - key: iais
+                abbreviation: IAIS
+                full_name: International Association of Insurance Supervisors
+                url: https://www.iais.org/
+                high_priority: true
+                tags: [insurance, climate]
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate, flood, wildfire]
+actuarial_keywords: [insurance, supervision, capital]
+research_lane:
+  lookback_days: 30
+  queries: [climate insurance report]
+output:
+  source_dir: {source_dir.as_posix()}
+  wiki_dir: {wiki_dir.as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {tmp_path.as_posix()}/state/seen_urls.json
+  title_tracking_path: {tmp_path.as_posix()}/state/seen_titles.json
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        """
+{
+  "schema_version": "web-listening-manifest.v1",
+  "source": {"source_id": "iais", "site_name": "IAIS"},
+  "discovered_items": [
+    {
+      "item_id": "1",
+      "item_type": "page",
+      "url": "https://www.iais.org/climate-supervision",
+      "title": "Climate supervision update",
+      "summary": "Insurance supervisors discuss climate risk.",
+      "status": "new",
+      "observed_at": "2026-05-14T00:00:00Z"
+    }
+  ],
+  "downloaded_assets": []
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    research.write_text(
+        """
+[
+  {
+    "title": "Climate risk and insurance capital report",
+    "url": "https://example.org/report",
+    "summary": "A report about climate risk and insurance capital.",
+    "source_name": "Example Research",
+    "published": "2026-05-01"
+  }
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        manifest_fixture_path=manifest,
+        research_fixture_path=research,
+        state_dir=tmp_path / "state",
+        sync=True,
+    )
+
+    assert result.report_path is not None
+    report_text = (source_dir / "climate-monitor-2026-05-14.md").read_text(encoding="utf-8")
+    assert "Climate supervision update" in report_text
+    assert "Climate risk and insurance capital report" in report_text
+    wiki_text = (wiki_dir / "climate-monitor-2026-05-14.md").read_text(encoding="utf-8")
+    assert "Source: [[sources/climate-monitor-2026-05-14]]" in wiki_text
+    assert result.synced is True
+
+
+def test_run_monitor_skips_empty_report_when_no_relevant_items(tmp_path):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+
+    source_config.write_text(
+        "sources:\n  - key: wto\n    abbreviation: WTO\n    full_name: World Trade Organization\n    url: https://www.wto.org/\n",
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {source_dir.as_posix()}
+  wiki_dir: {wiki_dir.as_posix()}
+  write_empty_report: false
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        '{"source":{"site_name":"WTO"},"discovered_items":[{"url":"https://www.wto.org/trade","title":"Tariff note"}]}',
+        encoding="utf-8",
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        manifest_fixture_path=manifest,
+        state_dir=tmp_path / "state",
+        sync=False,
+    )
+
+    assert result.report_path is None
+    assert not source_dir.exists()
+
+
+def test_run_monitor_fails_when_live_collection_fails_for_every_source(tmp_path, monkeypatch):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    source_config.write_text(
+        "sources:\n  - key: bad\n    abbreviation: BAD\n    full_name: Bad Source\n    url: https://bad.example/\n",
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        """
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: sources
+  wiki_dir: wiki
+  write_empty_report: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None):
+        return [], ["bad: network failure"]
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.orchestrator.collect_website_items", fake_collect)
+
+    try:
+        run_monitor(
+            source_config_path=source_config,
+            run_config_path=run_config,
+            state_dir=tmp_path / "state",
+            sync=False,
+        )
+    except RuntimeError as exc:
+        assert "failed for every configured source" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
