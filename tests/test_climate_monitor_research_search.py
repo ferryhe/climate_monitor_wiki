@@ -162,6 +162,117 @@ def test_read_manifest_items_converts_discovered_items_to_website_candidates(tmp
     assert items[0].detected_at == "2026-05-14T00:00:00Z"
 
 
+def test_read_manifest_items_maps_file_links_to_document_candidates_with_asset_metadata(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "web-listening-manifest.v1",
+                "source": {"source_id": "iais", "site_name": "IAIS"},
+                "discovered_items": [
+                    {
+                        "item_id": "page-1",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/climate-supervision",
+                        "title": "Climate supervision update",
+                        "summary": "Website update summary.",
+                        "status": "new",
+                        "observed_at": "2026-05-14T00:00:00Z",
+                    },
+                    {
+                        "item_id": "file-1",
+                        "item_type": "file_link",
+                        "url": "https://www.iais.org/uploads/climate-report.pdf",
+                        "title": "Climate report PDF",
+                        "summary": "Insurance supervisors discuss climate reporting.",
+                        "status": "new",
+                        "observed_at": "2026-05-14T00:01:00Z",
+                        "content_type": "application/pdf",
+                    },
+                ],
+                "downloaded_assets": [
+                    {
+                        "asset_id": "sha256-abc123",
+                        "source_item_id": "file-1",
+                        "url": "https://www.iais.org/uploads/climate-report.pdf",
+                        "local_path": "data/downloads/_tracked/iais/climate-report.pdf",
+                        "canonical_blob_path": "data/downloads/_blobs/ab/abc123.pdf",
+                        "tracked_path": "data/downloads/_tracked/iais/climate-report.pdf",
+                        "filename": "climate-report.pdf",
+                        "media_type": "application/pdf",
+                        "bytes": 123456,
+                        "checksum": {"algorithm": "sha256", "value": "abc123"},
+                        "status": "downloaded",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    items = read_manifest_items(manifest)
+
+    assert [item.lane for item in items] == ["website", "document"]
+    document = items[1]
+    assert document.source_item_id == "file-1"
+    assert document.asset_id == "sha256-abc123"
+    assert document.asset_local_path == "data/downloads/_tracked/iais/climate-report.pdf"
+    assert document.asset_canonical_blob_path == "data/downloads/_blobs/ab/abc123.pdf"
+    assert document.asset_tracked_path == "data/downloads/_tracked/iais/climate-report.pdf"
+    assert document.asset_filename == "climate-report.pdf"
+    assert document.asset_media_type == "application/pdf"
+    assert document.asset_bytes == 123456
+    assert document.asset_checksum_algorithm == "sha256"
+    assert document.asset_checksum_value == "abc123"
+    assert document.asset_metadata == {
+        "asset_id": "sha256-abc123",
+        "source_item_id": "file-1",
+        "url": "https://www.iais.org/uploads/climate-report.pdf",
+        "local_path": "data/downloads/_tracked/iais/climate-report.pdf",
+        "canonical_blob_path": "data/downloads/_blobs/ab/abc123.pdf",
+        "tracked_path": "data/downloads/_tracked/iais/climate-report.pdf",
+        "filename": "climate-report.pdf",
+        "media_type": "application/pdf",
+        "bytes": 123456,
+        "checksum": {"algorithm": "sha256", "value": "abc123"},
+        "status": "downloaded",
+    }
+
+
+def test_read_manifest_items_only_attaches_assets_to_document_candidates(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "source": {"site_name": "IAIS"},
+                "discovered_items": [
+                    {
+                        "item_id": "page-1",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/climate-supervision",
+                        "title": "Climate supervision update",
+                    }
+                ],
+                "downloaded_assets": [
+                    {
+                        "asset_id": "sha256-secret",
+                        "source_item_id": "page-1",
+                        "local_path": "C:\\Users\\ferry\\Downloads\\secret.pdf",
+                        "filename": "secret.pdf",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    items = read_manifest_items(manifest)
+
+    assert items[0].lane == "website"
+    assert items[0].asset_id == ""
+    assert items[0].asset_local_path == ""
+
+
 def test_collect_website_items_uses_fixture_without_live_web_listening(tmp_path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
@@ -335,6 +446,124 @@ def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(t
     assert [item.url for item in items] == ["https://www.iais.org/climate/report.pdf"]
     assert len(warnings) == 1
     assert "broken seed" in warnings[0]
+
+
+def test_collect_source_items_emits_document_lane_for_doc_links_and_website_lane_for_other_links(tmp_path, monkeypatch):
+    class Page:
+        def __init__(self, links: list[str]):
+            self.final_url = "https://www.iais.org/"
+            self.fit_markdown = "Climate page"
+            self.markdown = ""
+            self.content_text = ""
+            self.metadata_json = {"links": links}
+            self.raw_html = ""
+
+    class FakeCrawler:
+        fetch_count = 0
+
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str):
+            self.__class__.fetch_count += 1
+            if self.__class__.fetch_count == 1:
+                return Page([])
+            return Page(
+                [
+                    "https://www.iais.org/climate/report.pdf",
+                    "https://www.iais.org/climate/news-update",
+                ]
+            )
+
+    diff = {
+        "compute_hash": lambda text: "hash",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
+        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="iais",
+        abbreviation="IAIS",
+        full_name="International Association of Insurance Supervisors",
+        url="https://www.iais.org/",
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    baseline_items, baseline_warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+
+    assert baseline_items == []
+    assert baseline_warnings == []
+    assert warnings == []
+    lanes_by_url = {item.url: item.lane for item in items}
+    assert lanes_by_url == {
+        "https://www.iais.org/climate/report.pdf": "document",
+        "https://www.iais.org/climate/news-update": "website",
+    }
+
+
+def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_path, monkeypatch):
+    class Page:
+        def __init__(self, links: list[str]):
+            self.final_url = "https://www.example.org/climate/"
+            self.fit_markdown = "Climate transition risk adaptation insurance supervision"
+            self.markdown = ""
+            self.content_text = ""
+            self.metadata_json = {"links": links}
+            self.raw_html = ""
+
+    class FakeCrawler:
+        fetch_count = 0
+
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str):
+            self.__class__.fetch_count += 1
+            if self.__class__.fetch_count == 1:
+                return Page([])
+            return Page(["https://www.example.org/files/board-minutes.pdf"])
+
+    diff = {
+        "compute_hash": lambda text: f"hash:{text}",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
+        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="example",
+        abbreviation="EXAMPLE",
+        full_name="Example",
+        url="https://www.example.org/climate/",
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    collect_source_items(source=source, state_dir=tmp_path / "state")
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+
+    assert warnings == []
+    document = next(item for item in items if item.lane == "document")
+    assert document.url == "https://www.example.org/files/board-minutes.pdf"
+    assert "Climate transition risk" not in document.evidence_text
+    assert document.evidence_text == "https://www.example.org/files/board-minutes.pdf Board Minutes"
 
 
 def test_classify_candidate_sets_climate_and_actuarial_flags():

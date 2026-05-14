@@ -21,6 +21,7 @@ def read_manifest_items(path: str | Path) -> list[CandidateItem]:
             continue
         source = manifest.get("source", {}) or {}
         source_name = str(source.get("site_name") or source.get("source_id") or "Website")
+        assets_by_source_item_id = _assets_by_source_item_id(manifest.get("downloaded_assets", []) or [])
         for raw in manifest.get("discovered_items", []) or []:
             if not isinstance(raw, dict):
                 continue
@@ -28,15 +29,21 @@ def read_manifest_items(path: str | Path) -> list[CandidateItem]:
             if not url:
                 continue
             title = str(raw.get("title") or _title_from_url(url))
+            item_id = str(raw.get("item_id", ""))
+            item_type = str(raw.get("item_type", ""))
+            lane = "document" if item_type == "file_link" else "website"
+            asset = assets_by_source_item_id.get(item_id) if lane == "document" else None
             items.append(
                 CandidateItem(
                     title=title,
                     url=url,
-                    summary=str(raw.get("summary") or f"{source_name} published or changed: {title}."),
+                    summary=str(raw.get("summary") or _manifest_summary(source_name, title, lane=lane)),
                     source_name=source_name,
-                    lane="website",
+                    lane=lane,
                     detected_at=str(raw.get("observed_at", "")),
-                    content_hash=str(raw.get("content_hash", "")),
+                    content_hash=_content_hash(raw),
+                    source_item_id=item_id,
+                    **_asset_fields(asset, raw=raw),
                 )
             )
     return items
@@ -96,15 +103,19 @@ def collect_source_items(
                         evidence_text=compare_text[:5000],
                     )
                 )
-            for link in doc_links + [link for link in new_links if link not in doc_links]:
+            doc_link_set = set(doc_links)
+            for link in doc_links + [link for link in new_links if link not in doc_link_set]:
+                lane = "document" if link in doc_link_set else "website"
+                link_title = _title_from_url(link)
+                evidence_text = f"{link} {link_title}" if lane == "document" else " ".join([link, link_title, compare_text[:1000]])
                 items.append(
                     CandidateItem(
-                        title=_title_from_url(link),
+                        title=link_title,
                         url=link,
-                        summary=f"{source.abbreviation} added a new link observed from {seed_url}. Link text: {_title_from_url(link)}.",
+                        summary=f"{source.abbreviation} added a new link observed from {seed_url}. Link text: {link_title}.",
                         source_name=source.abbreviation,
-                        lane="website",
-                        evidence_text=" ".join([link, _title_from_url(link), compare_text[:1000]]),
+                        lane=lane,
+                        evidence_text=evidence_text,
                     )
                 )
             _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
@@ -173,6 +184,60 @@ def _load_web_listening() -> tuple[Any, dict[str, Any]]:
         "find_new_links": find_new_links,
         "select_compare_text": select_compare_text,
     }
+
+
+def _assets_by_source_item_id(raw_assets: list[Any]) -> dict[str, dict[str, Any]]:
+    assets: dict[str, dict[str, Any]] = {}
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, dict):
+            continue
+        source_item_id = str(raw_asset.get("source_item_id", ""))
+        if not source_item_id or source_item_id in assets:
+            continue
+        assets[source_item_id] = raw_asset
+    return assets
+
+
+def _asset_fields(asset: dict[str, Any] | None, *, raw: dict[str, Any]) -> dict[str, Any]:
+    checksum = asset.get("checksum", {}) if isinstance(asset, dict) else {}
+    if not isinstance(checksum, dict):
+        checksum = {}
+    return {
+        "asset_id": str(asset.get("asset_id", "")) if asset else "",
+        "asset_local_path": str(asset.get("local_path", "")) if asset else "",
+        "asset_canonical_blob_path": str(asset.get("canonical_blob_path", "")) if asset else "",
+        "asset_tracked_path": str(asset.get("tracked_path", "")) if asset else "",
+        "asset_filename": str(asset.get("filename", "")) if asset else "",
+        "asset_media_type": str(asset.get("media_type") or raw.get("content_type") or "") if asset else str(raw.get("content_type", "")),
+        "asset_bytes": _int_or_none(asset.get("bytes")) if asset else None,
+        "asset_checksum_algorithm": str(checksum.get("algorithm", "")),
+        "asset_checksum_value": str(checksum.get("value", "")),
+        "asset_metadata": dict(asset) if asset else None,
+    }
+
+
+def _content_hash(raw: dict[str, Any]) -> str:
+    content_hash = raw.get("content_hash")
+    if content_hash:
+        return str(content_hash)
+    checksum = raw.get("checksum")
+    if isinstance(checksum, dict):
+        return str(checksum.get("value") or "")
+    return ""
+
+
+def _manifest_summary(source_name: str, title: str, *, lane: str) -> str:
+    if lane == "document":
+        return f"{source_name} published or changed a document/report file: {title}."
+    return f"{source_name} published or changed: {title}."
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _load_state(path: Path) -> dict[str, Any]:

@@ -103,6 +103,7 @@ The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/sou
 ## Automated Climate Monitor
 
 The scheduled monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, writes `sources/climate-monitor-YYYY-MM-DD.md`, and regenerates the matching wiki pages with `scripts/sync_source_wiki.py`.
+Website page changes, document/report file links, and research search results are reported in separate daily report sections.
 
 Local dry run:
 

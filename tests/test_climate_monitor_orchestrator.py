@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date
 from textwrap import dedent
 
-from climate_monitor.models import CandidateItem
+import json
+
+from climate_monitor.models import CandidateItem, MonitorRunResult
 from climate_monitor.orchestrator import run_monitor
 
 
@@ -295,3 +297,86 @@ site_scopes:
     )
 
     assert seen["site_scopes"]["iais"].seed_urls == ("https://www.iais.org/news/",)
+
+
+def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
+    item = CandidateItem(
+        title="Climate supervision update",
+        url="https://www.iais.org/climate-supervision",
+        summary="Insurance supervisors discuss climate risk.",
+        source_name="IAIS",
+        lane="website",
+        published="2026-05-01",
+        detected_at="2026-05-14T00:00:00Z",
+        content_hash="abc123",
+        evidence_text="OPENAI_API_KEY=sk-test-secret",
+        climate_related=True,
+        actuarial_related=True,
+        relevance_reason="Climate and insurance terms matched.",
+        climate_signal="physical_risk",
+        actuarial_signal="insurance_risk",
+        confidence=0.82,
+        topics=("climate", "insurance"),
+    )
+    object.__setattr__(item, "document_secret", "sk-test-secret")
+    object.__setattr__(item, "source_item_id", "file-1")
+    object.__setattr__(item, "asset_id", "sha256-abc123")
+    object.__setattr__(item, "asset_local_path", "C:\\Users\\ferry\\Downloads\\secret.pdf")
+    object.__setattr__(item, "asset_tracked_path", "data/downloads/_tracked/iais/climate-report.pdf")
+    object.__setattr__(item, "asset_media_type", "application/pdf")
+    result = MonitorRunResult(
+        report_date=date(2026, 5, 14),
+        report_path="C:\\Users\\ferry\\Downloads\\climate-monitor-2026-05-14.md",
+        items=(item,),
+        dedup_notes=("Duplicate title - skipped",),
+        warnings=("iais seed timeout",),
+        synced=True,
+    )
+
+    payload = json.loads(result.to_json())
+
+    assert list(payload) == [
+        "report_date",
+        "report_path",
+        "synced",
+        "item_count",
+        "items",
+        "dedup_notes",
+        "warnings",
+    ]
+    assert payload["report_date"] == "2026-05-14"
+    assert payload["report_path"] == "climate-monitor-2026-05-14.md"
+    assert payload["synced"] is True
+    assert payload["item_count"] == 1
+    assert payload["dedup_notes"] == ["Duplicate title - skipped"]
+    assert payload["warnings"] == ["iais seed timeout"]
+    assert payload["items"] == [
+        {
+            "lane": "website",
+            "source": "IAIS",
+            "title": "Climate supervision update",
+            "url": "https://www.iais.org/climate-supervision",
+            "summary": "Insurance supervisors discuss climate risk.",
+            "published": "2026-05-01",
+            "detected": "2026-05-14T00:00:00Z",
+            "content_hash": "abc123",
+            "relevance": {
+                "reason": "Climate and insurance terms matched.",
+                "confidence": 0.82,
+            },
+            "climate": {
+                "related": True,
+                "signal": "physical_risk",
+            },
+            "actuarial": {
+                "related": True,
+                "signal": "insurance_risk",
+            },
+            "topics": ["climate", "insurance"],
+        }
+    ]
+    assert "asset_id" not in payload["items"][0]
+    assert "asset_local_path" not in payload["items"][0]
+    assert "C:\\Users\\ferry" not in result.to_json()
+    assert "OPENAI_API_KEY" not in result.to_json()
+    assert "sk-test-secret" not in result.to_json()
