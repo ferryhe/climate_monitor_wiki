@@ -453,3 +453,16 @@ def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
     assert "C:\\Users\\ferry" not in result.to_json()
     assert "OPENAI_API_KEY" not in result.to_json()
     assert "sk-test-secret" not in result.to_json()
+
+
+def test_monitor_run_result_serializes_posix_absolute_report_path_safely_on_windows():
+    result = MonitorRunResult(
+        report_date=date(2026, 5, 14),
+        report_path="/home/runner/work/secret/climate-monitor-2026-05-14.md",
+        synced=True,
+    )
+
+    payload = json.loads(result.to_json())
+
+    assert payload["report_path"] == "climate-monitor-2026-05-14.md"
+    assert "/home/runner/work/secret" not in result.to_json()

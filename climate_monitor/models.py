@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 
@@ -141,13 +141,28 @@ def _candidate_item_to_dict(item: CandidateItem) -> dict[str, Any]:
 def _safe_path(value: str | None) -> str | None:
     if not value:
         return value
-    path = Path(value)
+    raw = str(value)
+    path = Path(raw)
+    if not path.is_absolute() and _portable_absolute_path(raw):
+        return _portable_name(raw)
     if not path.is_absolute():
         return path.as_posix()
     try:
         return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
     except ValueError:
-        return path.name
+        return _portable_name(raw)
+
+
+def _portable_absolute_path(value: str) -> bool:
+    return PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
+
+
+def _portable_name(value: str) -> str:
+    windows_name = PureWindowsPath(value).name
+    posix_name = PurePosixPath(value).name
+    if "\\" in value or PureWindowsPath(value).drive:
+        return windows_name or posix_name or value
+    return posix_name or windows_name or value
 
 
 def _document_metadata(item: CandidateItem) -> dict[str, Any]:
