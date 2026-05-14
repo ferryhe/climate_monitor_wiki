@@ -52,7 +52,7 @@ def main() -> None:
         print(f"Items included: {len(result.items)}")
         print(f"Wiki synced: {'yes' if result.synced else 'no'}")
     else:
-        print("No climate-related updates found; no report written.")
+        print("No monitor-matching updates found; no report written.")
     for note in result.dedup_notes:
         print(f"Dedup: {note}")
     for warning in result.warnings:
