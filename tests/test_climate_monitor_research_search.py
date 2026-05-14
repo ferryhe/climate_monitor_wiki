@@ -162,6 +162,62 @@ def test_read_manifest_items_converts_discovered_items_to_website_candidates(tmp
     assert items[0].detected_at == "2026-05-14T00:00:00Z"
 
 
+def test_read_manifest_items_ignores_manifest_entries_without_actionable_status(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "source": {"site_name": "IAIS"},
+                "discovered_items": [
+                    {
+                        "item_id": "old",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/old-climate",
+                        "title": "Old climate page",
+                        "status": "unchanged",
+                    },
+                    {
+                        "item_id": "skipped",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/skipped-climate",
+                        "title": "Skipped climate page",
+                        "status": "skipped",
+                    },
+                    {
+                        "item_id": "new",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/new-climate",
+                        "title": "New climate page",
+                        "status": "new",
+                    },
+                    {
+                        "item_id": "changed",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/changed-climate",
+                        "title": "Changed climate page",
+                        "status": "changed",
+                    },
+                    {
+                        "item_id": "legacy",
+                        "item_type": "page",
+                        "url": "https://www.iais.org/legacy-climate",
+                        "title": "Legacy climate page",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    items = read_manifest_items(manifest)
+
+    assert [item.title for item in items] == [
+        "New climate page",
+        "Changed climate page",
+        "Legacy climate page",
+    ]
+
+
 def test_read_manifest_items_maps_file_links_to_document_candidates_with_asset_metadata(tmp_path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(

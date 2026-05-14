@@ -88,6 +88,11 @@ jobs:
           fi
           git commit -m "docs: add automated climate monitor update"
           git push --force-with-lease origin codex/automated-climate-monitor
+          existing_pr="$(gh pr view codex/automated-climate-monitor --json url --jq .url 2>/dev/null || true)"
+          if [ -n "$existing_pr" ]; then
+            echo "Updated existing pull request: $existing_pr"
+            exit 0
+          fi
           gh pr create \
             --title "Automated climate monitor update" \
             --body "Automated update from the climate monitor workflow." \

@@ -12,6 +12,9 @@ from urllib.parse import unquote, urlparse
 from .models import CandidateItem, MonitorSource, SiteScope
 
 
+_ACTIONABLE_MANIFEST_STATUSES = {"changed", "downloaded", "new", "updated"}
+
+
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     manifests = payload if isinstance(payload, list) else [payload]
@@ -24,6 +27,8 @@ def read_manifest_items(path: str | Path) -> list[CandidateItem]:
         assets_by_source_item_id = _assets_by_source_item_id(manifest.get("downloaded_assets", []) or [])
         for raw in manifest.get("discovered_items", []) or []:
             if not isinstance(raw, dict):
+                continue
+            if not _manifest_item_is_actionable(raw):
                 continue
             url = str(raw.get("url", "")).strip()
             if not url:
@@ -47,6 +52,16 @@ def read_manifest_items(path: str | Path) -> list[CandidateItem]:
                 )
             )
     return items
+
+
+def _manifest_item_is_actionable(raw: dict[str, Any]) -> bool:
+    status = raw.get("status")
+    if status is None:
+        return True
+    status_text = str(status).strip().lower()
+    if not status_text:
+        return True
+    return status_text in _ACTIONABLE_MANIFEST_STATUSES
 
 
 def collect_source_items(

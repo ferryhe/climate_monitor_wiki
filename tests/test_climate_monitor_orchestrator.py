@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from textwrap import dedent
 
 import json
@@ -146,6 +147,78 @@ output:
     )
 
     assert result.report_path is None
+    assert not source_dir.exists()
+
+
+def test_run_monitor_respects_configured_dedupe_paths_when_state_dir_is_default_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    custom_state = tmp_path / "custom-state"
+    custom_state.mkdir()
+    (custom_state / "seen_urls.json").write_text(
+        json.dumps(["https://www.iais.org/climate-supervision"]),
+        encoding="utf-8",
+    )
+    (custom_state / "seen_titles.json").write_text("[]", encoding="utf-8")
+    source_config.write_text(
+        "sources:\n  - key: iais\n    abbreviation: IAIS\n    full_name: IAIS\n    url: https://www.iais.org/\n",
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {source_dir.as_posix()}
+  wiki_dir: {wiki_dir.as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {(custom_state / "seen_urls.json").as_posix()}
+  title_tracking_path: {(custom_state / "seen_titles.json").as_posix()}
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        """
+{
+  "source": {"site_name": "IAIS"},
+  "discovered_items": [
+    {
+      "item_id": "1",
+      "item_type": "page",
+      "url": "https://www.iais.org/climate-supervision",
+      "title": "Climate supervision update",
+      "summary": "Insurance supervisors discuss climate risk.",
+      "status": "new"
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        manifest_fixture_path=manifest,
+        state_dir=Path("monitoring/state"),
+        sync=False,
+    )
+
+    assert result.report_path is None
+    assert result.dedup_notes == (
+        "Climate supervision update (https://www.iais.org/climate-supervision) already in URL history - skipped",
+    )
     assert not source_dir.exists()
 
 
