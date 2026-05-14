@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from textwrap import dedent
 
+from climate_monitor.models import CandidateItem
 from climate_monitor.orchestrator import run_monitor
 
 
@@ -170,7 +171,7 @@ output:
         encoding="utf-8",
     )
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None):
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
         return [], ["bad: network failure"]
 
     monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
@@ -187,3 +188,110 @@ output:
         assert "failed for every configured source" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
+
+
+def test_run_monitor_keeps_partial_seed_warnings_from_failing_live_run(tmp_path, monkeypatch):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    source_config.write_text(
+        "sources:\n  - key: iais\n    abbreviation: IAIS\n    full_name: IAIS\n    url: https://www.iais.org/\n",
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {source_dir.as_posix()}
+  wiki_dir: {wiki_dir.as_posix()}
+  write_empty_report: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+        return [
+            CandidateItem(
+                title="Climate risk update",
+                url="https://www.iais.org/climate-risk/",
+                summary="IAIS published a climate risk update.",
+                source_name="IAIS",
+                lane="website",
+            )
+        ], ["iais seed https://www.iais.org/broken/: timeout"]
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.orchestrator.collect_website_items", fake_collect)
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        state_dir=tmp_path / "state",
+        sync=False,
+    )
+
+    assert result.report_path is not None
+    assert result.warnings == ("iais seed https://www.iais.org/broken/: timeout",)
+
+
+def test_run_monitor_passes_site_scopes_to_live_collection(tmp_path, monkeypatch):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    scopes_config = tmp_path / "site_scopes.yaml"
+    source_config.write_text(
+        "sources:\n  - key: iais\n    abbreviation: IAIS\n    full_name: IAIS\n    url: https://www.iais.org/\n",
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        """
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: sources
+  wiki_dir: wiki
+  write_empty_report: false
+""".strip(),
+        encoding="utf-8",
+    )
+    scopes_config.write_text(
+        """
+site_scopes:
+  - source_key: iais
+    seed_urls:
+      - https://www.iais.org/news/
+    include_patterns:
+      - /climate/
+    exclude_patterns: []
+""".strip(),
+        encoding="utf-8",
+    )
+    seen = {}
+
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+        seen["site_scopes"] = site_scopes
+        return [], []
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.orchestrator.collect_website_items", fake_collect)
+
+    run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        site_scopes_path=scopes_config,
+        state_dir=tmp_path / "state",
+        sync=False,
+    )
+
+    assert seen["site_scopes"]["iais"].seed_urls == ("https://www.iais.org/news/",)

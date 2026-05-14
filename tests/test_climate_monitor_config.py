@@ -3,7 +3,7 @@ from textwrap import dedent
 import pytest
 import yaml
 
-from climate_monitor.config import load_run_config, load_sources
+from climate_monitor.config import load_run_config, load_site_scopes, load_sources
 
 
 def test_load_sources_normalizes_urls_and_rejects_duplicate_keys(tmp_path):
@@ -56,6 +56,36 @@ def test_load_sources_returns_valid_sources(tmp_path):
     assert sources[0].tags == ("insurance", "climate")
 
 
+def test_load_site_scopes_returns_valid_scopes(tmp_path):
+    path = tmp_path / "site_scopes.yaml"
+    path.write_text(
+        dedent(
+            """
+            site_scopes:
+              - source_key: iais
+                seed_urls:
+                  - https://www.iais.org/news/
+                include_patterns:
+                  - /news/
+                  - /climate/
+                exclude_patterns:
+                  - /events/
+                notes: Reviewed IAIS news and climate-related paths.
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    scopes = load_site_scopes(path)
+
+    assert len(scopes) == 1
+    assert scopes[0].source_key == "iais"
+    assert scopes[0].seed_urls == ("https://www.iais.org/news/",)
+    assert scopes[0].include_patterns == ("/news/", "/climate/")
+    assert scopes[0].exclude_patterns == ("/events/",)
+    assert scopes[0].notes == "Reviewed IAIS news and climate-related paths."
+
+
 def test_load_sources_registry_contains_excel_url_rows_and_missing_url_notes():
     registry_path = "monitoring/supranational_sources.yaml"
 
@@ -71,6 +101,34 @@ def test_load_sources_registry_contains_excel_url_rows_and_missing_url_notes():
     }
     assert all(source.url.startswith(("https://", "http://")) for source in sources)
     assert {source.key for source in sources} >= {"iais", "iea", "ipcc", "wto"}
+
+
+def test_site_scopes_registry_covers_every_url_bearing_source():
+    source_keys = {source.key for source in load_sources("monitoring/supranational_sources.yaml")}
+    scopes = load_site_scopes("monitoring/site_scopes.yaml")
+
+    assert len(scopes) == 34
+    assert {scope.source_key for scope in scopes} == source_keys
+
+
+def test_site_scopes_high_priority_examples_have_reviewed_climate_paths():
+    scopes = {
+        scope.source_key: scope
+        for scope in load_site_scopes("monitoring/site_scopes.yaml")
+    }
+    useful_terms = (
+        "climate",
+        "research",
+        "publication",
+        "publications",
+        "news",
+        "sustainability",
+    )
+
+    for source_key in ("iais", "ipcc", "issb", "oecd", "wri"):
+        scope = scopes[source_key]
+        reviewed_text = " ".join(scope.seed_urls + scope.include_patterns).lower()
+        assert any(term in reviewed_text for term in useful_terms), source_key
 
 
 def test_load_run_config_reads_keywords_and_output_paths(tmp_path):

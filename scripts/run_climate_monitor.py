@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--date", default="")
     parser.add_argument("--manifest-fixture", default="")
     parser.add_argument("--research-fixture", default="")
+    parser.add_argument("--site-scopes", default="monitoring/site_scopes.yaml")
     parser.add_argument("--state-dir", default="monitoring/state")
     parser.add_argument("--source-dir", default="")
     parser.add_argument("--wiki-dir", default="")
@@ -33,6 +34,7 @@ def main() -> None:
         report_date=report_date,
         manifest_fixture_path=Path(args.manifest_fixture) if args.manifest_fixture else None,
         research_fixture_path=Path(args.research_fixture) if args.research_fixture else None,
+        site_scopes_path=Path(args.site_scopes) if args.site_scopes else None,
         state_dir=Path(args.state_dir),
         source_dir=Path(args.source_dir) if args.source_dir else None,
         wiki_dir=Path(args.wiki_dir) if args.wiki_dir else None,

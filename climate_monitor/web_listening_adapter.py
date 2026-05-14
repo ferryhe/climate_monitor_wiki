@@ -4,11 +4,12 @@ import hashlib
 import json
 import os
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .models import CandidateItem, MonitorSource
+from .models import CandidateItem, MonitorSource, SiteScope
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -46,59 +47,70 @@ def collect_source_items(
     source: MonitorSource,
     state_dir: Path,
     fetch_mode: str = "http",
-) -> list[CandidateItem]:
+    scope: SiteScope | None = None,
+) -> tuple[list[CandidateItem], list[str]]:
     if os.getenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING") != "1":
         raise RuntimeError("live web_listening collection requires CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1")
 
     _extend_web_listening_path()
     Crawler, diff = _load_web_listening()
-    state_file = _state_path(state_dir, source)
-    previous = _load_state(state_file)
-    with Crawler(fetch_mode=fetch_mode) as crawler:
-        page = crawler.fetch_page(source.url, fetch_mode=fetch_mode)
-
-    compare_text = diff["select_compare_text"](
-        fit_markdown=getattr(page, "fit_markdown", ""),
-        markdown=getattr(page, "markdown", ""),
-        content_text=getattr(page, "content_text", ""),
-    )
-    content_hash = diff["compute_hash"](compare_text)
-    current_links = list((getattr(page, "metadata_json", {}) or {}).get("links", []))
-    if not current_links and diff.get("extract_links"):
-        current_links = diff["extract_links"](getattr(page, "raw_html", ""), getattr(page, "final_url", "") or source.url)
-
-    new_links = diff["find_new_links"](previous.get("links", []), current_links)
-    doc_links = diff["find_document_links"](new_links)
     items: list[CandidateItem] = []
-    if not previous.get("content_hash"):
-        _save_state(state_file, {"content_hash": content_hash, "links": current_links})
-        return items
+    warnings: list[str] = []
+    for seed_url in _seed_urls(source, scope):
+        try:
+            state_file = _state_path(state_dir, source, seed_url)
+            previous = _load_state(state_file)
+            with Crawler(fetch_mode=fetch_mode) as crawler:
+                page = crawler.fetch_page(seed_url, fetch_mode=fetch_mode)
 
-    if previous.get("content_hash") and previous.get("content_hash") != content_hash:
-        items.append(
-            CandidateItem(
-                title=f"{source.abbreviation} website content changed",
-                url=getattr(page, "final_url", "") or source.url,
-                summary=_summary_from_text(compare_text, fallback=f"{source.full_name} homepage or monitored landing page changed."),
-                source_name=source.abbreviation,
-                lane="website",
-                content_hash=content_hash,
-                evidence_text=compare_text[:5000],
+            final_url = getattr(page, "final_url", "") or seed_url
+            compare_text = diff["select_compare_text"](
+                fit_markdown=getattr(page, "fit_markdown", ""),
+                markdown=getattr(page, "markdown", ""),
+                content_text=getattr(page, "content_text", ""),
             )
-        )
-    for link in doc_links + [link for link in new_links if link not in doc_links]:
-        items.append(
-            CandidateItem(
-                title=_title_from_url(link),
-                url=link,
-                summary=f"{source.abbreviation} added a new link observed from {source.url}. Link text: {_title_from_url(link)}.",
-                source_name=source.abbreviation,
-                lane="website",
-                evidence_text=" ".join([link, _title_from_url(link), compare_text[:1000]]),
-            )
-        )
-    _save_state(state_file, {"content_hash": content_hash, "links": current_links})
-    return items
+            content_hash = diff["compute_hash"](compare_text)
+            current_links = list((getattr(page, "metadata_json", {}) or {}).get("links", []))
+            if not current_links and diff.get("extract_links"):
+                current_links = diff["extract_links"](getattr(page, "raw_html", ""), final_url)
+
+            eligible_links = [link for link in current_links if _url_allowed(link, scope)]
+            new_links = diff["find_new_links"](previous.get("links", []), eligible_links)
+            doc_links = diff["find_document_links"](new_links)
+            if not previous.get("content_hash"):
+                _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
+                continue
+
+            if previous.get("content_hash") and previous.get("content_hash") != content_hash and _url_allowed(final_url, scope):
+                items.append(
+                    CandidateItem(
+                        title=f"{source.abbreviation} website content changed",
+                        url=final_url,
+                        summary=_summary_from_text(
+                            compare_text,
+                            fallback=f"{source.full_name} homepage or monitored landing page changed.",
+                        ),
+                        source_name=source.abbreviation,
+                        lane="website",
+                        content_hash=content_hash,
+                        evidence_text=compare_text[:5000],
+                    )
+                )
+            for link in doc_links + [link for link in new_links if link not in doc_links]:
+                items.append(
+                    CandidateItem(
+                        title=_title_from_url(link),
+                        url=link,
+                        summary=f"{source.abbreviation} added a new link observed from {seed_url}. Link text: {_title_from_url(link)}.",
+                        source_name=source.abbreviation,
+                        lane="website",
+                        evidence_text=" ".join([link, _title_from_url(link), compare_text[:1000]]),
+                    )
+                )
+            _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
+        except Exception as exc:
+            warnings.append(f"{source.key} seed {seed_url}: {exc}")
+    return items, warnings
 
 
 def collect_website_items(
@@ -106,16 +118,28 @@ def collect_website_items(
     *,
     state_dir: Path,
     manifest_fixture_path: str | Path | None = None,
+    site_scopes: dict[str, SiteScope] | list[SiteScope] | tuple[SiteScope, ...] | None = None,
 ) -> tuple[list[CandidateItem], list[str]]:
     if manifest_fixture_path:
         return read_manifest_items(manifest_fixture_path), []
+    scope_by_key = _scope_by_source_key(site_scopes)
     items: list[CandidateItem] = []
     warnings: list[str] = []
+    seen_urls: set[str] = set()
     for source in sources:
+        scope = scope_by_key.get(source.key)
         try:
-            items.extend(collect_source_items(source=source, state_dir=state_dir))
+            source_items, source_warnings = collect_source_items(source=source, state_dir=state_dir, scope=scope)
+            if source_warnings and not source_items and len(source_warnings) >= len(_seed_urls(source, scope)):
+                warnings.append(f"Source failure for {source.key}: all monitored seeds failed.")
+            warnings.extend(source_warnings)
+            for item in source_items:
+                if item.url in seen_urls:
+                    continue
+                seen_urls.add(item.url)
+                items.append(item)
         except Exception as exc:
-            warnings.append(f"{source.key}: {exc}")
+            warnings.append(f"Source failure for {source.key}: {exc}")
     return items, warnings
 
 
@@ -162,9 +186,72 @@ def _save_state(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _state_path(state_dir: Path, source: MonitorSource) -> Path:
-    digest = hashlib.sha256(source.url.encode("utf-8")).hexdigest()[:12]
+def _state_path(state_dir: Path, source: MonitorSource, seed_url: str | None = None) -> Path:
+    digest = hashlib.sha256((seed_url or source.url).encode("utf-8")).hexdigest()[:12]
     return state_dir / f"{source.key}-{digest}.json"
+
+
+def _seed_urls(source: MonitorSource, scope: SiteScope | None) -> list[str]:
+    urls = [source.url]
+    if scope:
+        urls.extend(scope.seed_urls)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        unique.append(url)
+    return unique
+
+
+def _scope_by_source_key(
+    site_scopes: dict[str, SiteScope] | list[SiteScope] | tuple[SiteScope, ...] | None,
+) -> dict[str, SiteScope]:
+    if site_scopes is None:
+        return {}
+    if isinstance(site_scopes, dict):
+        return site_scopes
+    return {scope.source_key: scope for scope in site_scopes}
+
+
+def _url_allowed(url: str, scope: SiteScope | None) -> bool:
+    if _globally_excluded(url):
+        return False
+    if scope is None:
+        return True
+    if scope.exclude_patterns and _matches_any(url, scope.exclude_patterns):
+        return False
+    if not scope.include_patterns:
+        return True
+    return _matches_any(url, scope.include_patterns)
+
+
+def _globally_excluded(url: str) -> bool:
+    lowered = url.lower()
+    return any(
+        token in lowered
+        for token in (
+            "_wp_link_placeholder",
+            "/wp-admin/",
+            "/wp-login",
+            "mailto:",
+            "javascript:",
+        )
+    )
+
+
+def _matches_any(url: str, patterns: tuple[str, ...]) -> bool:
+    parsed = urlparse(url)
+    candidates = (url, parsed.path or "/", unquote(parsed.path or "/"))
+    for pattern in patterns:
+        lowered_pattern = pattern.lower()
+        glob_pattern = lowered_pattern if any(token in lowered_pattern for token in "*?[]") else f"*{lowered_pattern}*"
+        for candidate in candidates:
+            lowered_candidate = candidate.lower()
+            if lowered_pattern in lowered_candidate or fnmatch(lowered_candidate, glob_pattern):
+                return True
+    return False
 
 
 def _title_from_url(url: str) -> str:

@@ -16,6 +16,15 @@ class MonitorSource:
 
 
 @dataclass(frozen=True)
+class SiteScope:
+    source_key: str
+    seed_urls: tuple[str, ...]
+    include_patterns: tuple[str, ...]
+    exclude_patterns: tuple[str, ...]
+    notes: str = ""
+
+
+@dataclass(frozen=True)
 class RunConfig:
     report_title: str
     climate_keywords: tuple[str, ...]
