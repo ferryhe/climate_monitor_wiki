@@ -71,6 +71,11 @@ def test_load_site_scopes_returns_valid_scopes(tmp_path):
                   - /climate/
                 exclude_patterns:
                   - /events/
+                include_source_url: false
+                fetch_mode: browser
+                fetch_config_json:
+                  user_agent_profile: browser
+                  wait_until: domcontentloaded
                 notes: Reviewed IAIS news and climate-related paths.
             """
         ).strip(),
@@ -84,6 +89,12 @@ def test_load_site_scopes_returns_valid_scopes(tmp_path):
     assert scopes[0].seed_urls == ("https://www.iais.org/news/",)
     assert scopes[0].include_patterns == ("/news/", "/climate/")
     assert scopes[0].exclude_patterns == ("/events/",)
+    assert scopes[0].include_source_url is False
+    assert scopes[0].fetch_mode == "browser"
+    assert scopes[0].fetch_config_json == {
+        "user_agent_profile": "browser",
+        "wait_until": "domcontentloaded",
+    }
     assert scopes[0].notes == "Reviewed IAIS news and climate-related paths."
 
 

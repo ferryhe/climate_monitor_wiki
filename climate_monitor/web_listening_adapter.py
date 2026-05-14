@@ -14,6 +14,13 @@ from .models import CandidateItem, MonitorSource, SiteScope
 
 _ACTIONABLE_MANIFEST_STATUSES = {"changed", "downloaded", "new", "updated"}
 _BROWSER_FETCH_CONFIG = {"user_agent_profile": "browser"}
+_BAD_FINAL_URL_MARKERS = (
+    "/404",
+    "/error/",
+    "error_404",
+    "not-found",
+    "redirect_captcha",
+)
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -79,18 +86,24 @@ def collect_source_items(
     Crawler, diff = _load_web_listening()
     items: list[CandidateItem] = []
     warnings: list[str] = []
+    resolved_fetch_mode = _scope_fetch_mode(fetch_mode, scope)
+    fetch_config = _scope_fetch_config(scope)
     for seed_url in _seed_urls(source, scope):
         try:
             state_file = _state_path(state_dir, source, seed_url)
             previous = _load_state(state_file)
-            with Crawler(fetch_mode=fetch_mode) as crawler:
+            with Crawler(fetch_mode=resolved_fetch_mode) as crawler:
                 page = crawler.fetch_page(
                     seed_url,
-                    fetch_mode=fetch_mode,
-                    fetch_config_json=_BROWSER_FETCH_CONFIG,
+                    fetch_mode=resolved_fetch_mode,
+                    fetch_config_json=fetch_config,
                 )
 
             final_url = getattr(page, "final_url", "") or seed_url
+            failure_reason = _fetch_failure_reason(page, final_url=final_url)
+            if failure_reason:
+                warnings.append(f"{source.key} seed {seed_url}: {failure_reason}")
+                continue
             compare_text = diff["select_compare_text"](
                 fit_markdown=getattr(page, "fit_markdown", ""),
                 markdown=getattr(page, "markdown", ""),
@@ -261,7 +274,7 @@ def _state_path(state_dir: Path, source: MonitorSource, seed_url: str | None = N
 
 
 def _seed_urls(source: MonitorSource, scope: SiteScope | None) -> list[str]:
-    urls = [source.url]
+    urls = [source.url] if scope is None or scope.include_source_url else []
     if scope:
         urls.extend(scope.seed_urls)
     unique: list[str] = []
@@ -272,6 +285,28 @@ def _seed_urls(source: MonitorSource, scope: SiteScope | None) -> list[str]:
         seen.add(url)
         unique.append(url)
     return unique
+
+
+def _scope_fetch_mode(default_fetch_mode: str, scope: SiteScope | None) -> str:
+    if scope and scope.fetch_mode:
+        return scope.fetch_mode
+    return default_fetch_mode
+
+
+def _scope_fetch_config(scope: SiteScope | None) -> dict[str, Any]:
+    if scope and scope.fetch_config_json is not None:
+        return dict(scope.fetch_config_json)
+    return dict(_BROWSER_FETCH_CONFIG)
+
+
+def _fetch_failure_reason(page: Any, *, final_url: str) -> str:
+    status_code = getattr(page, "status_code", None)
+    if isinstance(status_code, int) and status_code >= 400:
+        return f"HTTP {status_code} at {final_url}"
+    lowered_final_url = final_url.lower()
+    if any(marker in lowered_final_url for marker in _BAD_FINAL_URL_MARKERS):
+        return f"resolved to a likely error page: {final_url}"
+    return ""
 
 
 def _scope_by_source_key(
