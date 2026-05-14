@@ -176,11 +176,9 @@ def test_requested_dates_supports_english_month_and_range_phrases():
 def test_executive_mode_produces_structured_window_brief_offline():
     responder_instance = AgenticWikiResponder()
     responder_instance.client = None
-    latest_date_value = responder_instance.kb.latest_date
-    assert latest_date_value is not None
 
     result = responder_instance.answer(
-        "Give me a report for this month.",
+        "Give me a report for April 2026.",
         language="en",
         answer_mode="executive",
     )
@@ -192,7 +190,7 @@ def test_executive_mode_produces_structured_window_brief_offline():
     assert "Day-by-Day Coverage:" in result["text"]
     assert "day(s) | dates:" in result["text"]
     assert "Summary:" in result["text"]
-    assert f"Coverage window: 2026-04-01 to {latest_date_value}" in result["text"]
+    assert "Coverage window: 2026-04-01 to 2026-04-30" in result["text"]
     assert any(source["path"] == "wiki/climate-monitor-2026-04-01.md" for source in result["sources"])
     assert any(source["path"].startswith("sources/") for source in result["sources"])
 
