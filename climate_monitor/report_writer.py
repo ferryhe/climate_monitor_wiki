@@ -4,8 +4,30 @@ from datetime import date
 from typing import Any
 
 
+_MAX_WARNING_LINES = 20
+
+
 def _item_value(item: Any, name: str, default: Any = "") -> Any:
     return getattr(item, name, default)
+
+
+def _warning_line(warning: str) -> str:
+    parts = []
+    for line in str(warning or "").splitlines():
+        cleaned = line.strip()
+        if not cleaned or cleaned.startswith("For more information check:"):
+            continue
+        parts.append(cleaned)
+    return " ".join(parts)
+
+
+def _render_warnings(warnings: list[str]) -> list[str]:
+    cleaned = [line for warning in warnings if (line := _warning_line(warning))]
+    lines = [f"- {warning}" for warning in cleaned[:_MAX_WARNING_LINES]]
+    omitted = len(cleaned) - _MAX_WARNING_LINES
+    if omitted > 0:
+        lines.append(f"- {omitted} additional warning(s) omitted.")
+    return lines
 
 
 def _document_metadata_lines(item: Any) -> list[str]:
@@ -123,7 +145,7 @@ def render_report(
 
     if warnings:
         lines.extend(["", "## Warnings"])
-        lines.extend(f"- {warning}" for warning in warnings)
+        lines.extend(_render_warnings(warnings))
 
     lines.extend(
         [

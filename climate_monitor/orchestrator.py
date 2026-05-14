@@ -110,7 +110,7 @@ def run_monitor(
 
     research_items = search_recent_research(config, fixture_path=research_fixture_path, today=day)
     classified = [classify_candidate(item, config) for item in website_items + research_items]
-    relevant = [item for item in classified if item.climate_related]
+    relevant = [item for item in classified if item.climate_related and item.actuarial_related]
 
     seen_urls_path = _resolve_path(config.seen_urls_path, root=repo_root)
     seen_titles_path = _resolve_path(config.seen_titles_path, root=repo_root)

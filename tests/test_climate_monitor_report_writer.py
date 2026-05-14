@@ -163,3 +163,24 @@ def test_render_report_places_document_files_between_website_updates_and_researc
     assert "**Asset ID:** sha256-abc123" in text
     assert "**Source item ID:** file-1" in text
     assert "**Checksum:** sha256: abc123" in text
+
+
+def test_render_report_sanitizes_and_limits_warning_lines():
+    warnings = [
+        "iea seed https://iea.org: Client error '403 Forbidden'\nFor more information check: https://developer.mozilla.org/",
+        *[f"warning {index}" for index in range(25)],
+    ]
+
+    text = render_report(
+        report_date=date(2026, 5, 14),
+        title="Daily Climate & Actuarial Monitor",
+        items=[],
+        dedup_notes=[],
+        sites_monitored=34,
+        warnings=warnings,
+    )
+
+    assert "For more information check:" not in text
+    assert "- iea seed https://iea.org: Client error '403 Forbidden'" in text
+    assert "- 6 additional warning(s) omitted." in text
+    assert "warning 24" not in text

@@ -190,7 +190,7 @@ def test_executive_mode_produces_structured_window_brief_offline():
     assert "Day-by-Day Coverage:" in result["text"]
     assert "day(s) | dates:" in result["text"]
     assert "Summary:" in result["text"]
-    assert "Coverage window: 2026-04-01 to 2026-04-30" in result["text"]
+    assert "Coverage window: 2026-04-01 to 2026-04-25" in result["text"]
     assert any(source["path"] == "wiki/climate-monitor-2026-04-01.md" for source in result["sources"])
     assert any(source["path"].startswith("sources/") for source in result["sources"])
 

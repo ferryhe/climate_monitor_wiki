@@ -150,6 +150,63 @@ output:
     assert not source_dir.exists()
 
 
+def test_run_monitor_requires_actuarial_relevance_for_report_items(tmp_path):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+
+    source_config.write_text(
+        "sources:\n  - key: imf\n    abbreviation: IMF\n    full_name: International Monetary Fund\n    url: https://www.imf.org/\n",
+        encoding="utf-8",
+    )
+    run_config.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {source_dir.as_posix()}
+  wiki_dir: {wiki_dir.as_posix()}
+  write_empty_report: false
+""".strip(),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        """
+{
+  "source": {"site_name": "IMF"},
+  "discovered_items": [
+    {
+      "url": "https://www.imf.org/en/topics/climate-change",
+      "title": "Climate change",
+      "summary": "Climate adaptation and resilience.",
+      "status": "new"
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        manifest_fixture_path=manifest,
+        state_dir=tmp_path / "state",
+        sync=False,
+    )
+
+    assert result.report_path is None
+    assert not source_dir.exists()
+
+
 def test_run_monitor_respects_configured_dedupe_paths_when_state_dir_is_default_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source_config = tmp_path / "sources.yaml"
@@ -293,13 +350,13 @@ output:
 
     def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
         return [
-            CandidateItem(
-                title="Climate risk update",
-                url="https://www.iais.org/climate-risk/",
-                summary="IAIS published a climate risk update.",
-                source_name="IAIS",
-                lane="website",
-            )
+                CandidateItem(
+                    title="Climate insurance risk update",
+                    url="https://www.iais.org/climate-risk/",
+                    summary="IAIS published a climate insurance risk update.",
+                    source_name="IAIS",
+                    lane="website",
+                )
         ], ["iais seed https://www.iais.org/broken/: timeout"]
 
     monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
