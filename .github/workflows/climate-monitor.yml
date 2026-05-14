@@ -46,7 +46,7 @@ jobs:
 
       - name: Validate generated wiki
         run: |
-          python -m pytest
+          python -m pytest tests
           node --check showcase/app.js
 
       - name: Upload generated monitor outputs
@@ -80,6 +80,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin codex/automated-climate-monitor:refs/remotes/origin/codex/automated-climate-monitor || true
           git checkout -B codex/automated-climate-monitor
           git add monitoring/state/ sources/ wiki/
           if git diff --cached --quiet; then
@@ -97,4 +98,8 @@ jobs:
             --title "Automated climate monitor update" \
             --body "Automated update from the climate monitor workflow." \
             --base main \
-            --head codex/automated-climate-monitor
+            --head codex/automated-climate-monitor \
+            || {
+              echo "::warning::Generated monitor outputs were pushed to codex/automated-climate-monitor, but this repository does not allow GitHub Actions to create pull requests."
+              exit 0
+            }
