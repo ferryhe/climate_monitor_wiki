@@ -11,6 +11,9 @@ from pydantic import BaseModel
 from .models import CandidateItem, RunConfig
 
 
+DEFAULT_SEARCH_MODEL = "gpt-5.4-mini"
+
+
 class ResearchSearchItem(BaseModel):
     title: str
     url: str
@@ -83,7 +86,7 @@ def search_recent_research(
 
     client = openai_client or _build_openai_client()
     response = client.responses.parse(
-        model=os.getenv("CLIMATE_MONITOR_SEARCH_MODEL", "gpt-5.2"),
+        model=os.getenv("CLIMATE_MONITOR_SEARCH_MODEL", DEFAULT_SEARCH_MODEL),
         tools=[{"type": "web_search"}],
         input=[
             {

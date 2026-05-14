@@ -5,6 +5,7 @@ import json
 from climate_monitor.ai_filter import classify_candidate
 from climate_monitor.models import CandidateItem, MonitorSource, RunConfig, SiteScope
 from climate_monitor.research_search import (
+    DEFAULT_SEARCH_MODEL,
     filter_recent_items,
     parse_openai_research_payload,
     read_research_fixture,
@@ -124,10 +125,12 @@ def test_search_recent_research_uses_injected_openai_client_when_key_is_set(monk
     client = Client()
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_RESEARCH", "1")
+    monkeypatch.delenv("CLIMATE_MONITOR_SEARCH_MODEL", raising=False)
 
     items = search_recent_research(_config(), openai_client=client)
 
     assert items[0].title == "Wildfire insurance paper"
+    assert client.responses.kwargs["model"] == DEFAULT_SEARCH_MODEL
     assert client.responses.kwargs["tools"] == [{"type": "web_search"}]
     assert client.responses.kwargs["text_format"].__name__ == "ResearchSearchPayload"
 
