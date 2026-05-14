@@ -1,0 +1,419 @@
+schema_version: site-scopes.v1
+reviewed_at: 2026-05-14
+site_scopes:
+  - source_key: iais
+    seed_urls:
+      - https://www.iais.org/activities-topics/climate-risk/
+      - https://www.iais.org/publications/
+    include_patterns:
+      - /news/
+      - /activities-topics/climate-risk/
+      - /publications/
+    exclude_patterns:
+      - /events/
+      - /calendar/
+    notes: Reviewed IAIS public publications and climate risk topic pages.
+  - source_key: iea
+    seed_urls:
+      - https://www.iea.org/news
+      - https://www.iea.org/reports
+    include_patterns:
+      - /news
+      - /reports
+      - /topics/climate-change
+    exclude_patterns:
+      - /events
+      - /jobs
+    notes: Reviewed IEA public news, reports, and climate topic paths.
+  - source_key: ipcc
+    seed_urls:
+      - https://www.ipcc.ch/reports/
+      - https://www.ipcc.ch/news/
+    include_patterns:
+      - /reports/
+      - /news/
+      - /assessment-report/
+    exclude_patterns:
+      - /calendar/
+      - /events/
+    notes: Reviewed IPCC report and news paths.
+  - source_key: irff
+    seed_urls:
+      - https://irff.undp.org/news
+      - https://irff.undp.org/publications
+    include_patterns:
+      - /news
+      - /publications
+      - /climate
+    exclude_patterns:
+      - /events
+    notes: Reviewed UNDP IRFF news and publications paths.
+  - source_key: issa
+    seed_urls:
+      - https://www.issa.int/news
+      - https://www.issa.int/analysis
+    include_patterns:
+      - /news
+      - /analysis
+      - /topics
+    exclude_patterns:
+      - /events
+      - /membership
+    notes: Reviewed ISSA news and analysis paths.
+  - source_key: issb
+    seed_urls:
+      - https://www.ifrs.org/groups/international-sustainability-standards-board/
+      - https://www.ifrs.org/news-and-events/news/
+      - https://www.ifrs.org/issued-standards/ifrs-sustainability-standards-navigator/
+    include_patterns:
+      - /groups/international-sustainability-standards-board/
+      - /news-and-events/news/
+      - /ifrs-sustainability-standards
+    exclude_patterns:
+      - /meetings/
+      - /calendar/
+    notes: Reviewed IFRS ISSB group, sustainability standards, and news paths.
+  - source_key: oecd
+    seed_urls:
+      - https://www.oecd.org/en/topics/climate-change.html
+      - https://www.oecd.org/en/publications.html
+      - https://www.oecd.org/en/news.html
+    include_patterns:
+      - /topics/climate-change
+      - /publications
+      - /news
+    exclude_patterns:
+      - /events
+      - /careers
+    notes: Reviewed OECD climate topic, publications, and news paths.
+  - source_key: pcaf
+    seed_urls:
+      - https://carbonaccountingfinancials.com/news
+      - https://carbonaccountingfinancials.com/standard
+    include_patterns:
+      - /news
+      - /standard
+      - /publications
+    exclude_patterns:
+      - /events
+    notes: Reviewed PCAF news, standard, and publications paths.
+  - source_key: psi
+    seed_urls:
+      - https://www.unepfi.org/insurance/insurance/
+      - https://www.unepfi.org/category/news/
+      - https://www.unepfi.org/publications/
+    include_patterns:
+      - /insurance/
+      - /category/news/
+      - /publications/
+      - /climate
+    exclude_patterns:
+      - /events/
+    notes: Reviewed UNEP FI PSI insurance, news, publications, and climate paths.
+  - source_key: tnfd
+    seed_urls:
+      - https://tnfd.global/news/
+      - https://tnfd.global/publication/
+    include_patterns:
+      - /news/
+      - /publication/
+      - /knowledge-bank/
+    exclude_patterns:
+      - /events/
+    notes: Reviewed TNFD news, publications, and knowledge bank paths.
+  - source_key: undp
+    seed_urls:
+      - https://www.undp.org/climate
+      - https://www.undp.org/publications
+      - https://www.undp.org/news-centre
+    include_patterns:
+      - /climate
+      - /publications
+      - /news
+    exclude_patterns:
+      - /jobs
+      - /events
+    notes: Reviewed UNDP climate, publications, and news paths.
+  - source_key: unep
+    seed_urls:
+      - https://www.unep.org/topics/climate-action
+      - https://www.unep.org/news-and-stories
+      - https://www.unep.org/resources
+    include_patterns:
+      - /topics/climate-action
+      - /news-and-stories
+      - /resources
+    exclude_patterns:
+      - /events
+    notes: Reviewed UNEP climate action, news, and resources paths.
+  - source_key: wef
+    seed_urls:
+      - https://www.weforum.org/agenda/climate-change/
+      - https://www.weforum.org/publications/
+    include_patterns:
+      - /agenda/climate-change/
+      - /publications/
+      - /reports/
+    exclude_patterns:
+      - /events/
+      - /jobs/
+    notes: Reviewed WEF climate agenda and publications paths.
+  - source_key: world-bank
+    seed_urls:
+      - https://www.worldbank.org/en/topic/climatechange
+      - https://www.worldbank.org/en/research
+      - https://www.worldbank.org/en/news
+    include_patterns:
+      - /topic/climatechange
+      - /research
+      - /news
+      - /publication
+    exclude_patterns:
+      - /jobs
+      - /events
+    notes: Reviewed World Bank climate, research, news, and publication paths.
+  - source_key: adb
+    seed_urls:
+      - https://www.adb.org/climate-change
+      - https://www.adb.org/news
+      - https://www.adb.org/publications
+    include_patterns:
+      - /climate-change
+      - /news
+      - /publications
+    exclude_patterns:
+      - /events
+      - /careers
+    notes: Reviewed ADB climate change, news, and publications paths.
+  - source_key: afdb
+    seed_urls:
+      - https://www.afdb.org/en/topics-and-sectors/initiatives-partnerships/climate-change
+      - https://www.afdb.org/en/news-and-events
+      - https://www.afdb.org/en/documents
+    include_patterns:
+      - /climate-change
+      - /news-and-events
+      - /documents
+    exclude_patterns:
+      - /events/calendar
+      - /careers
+    notes: Reviewed AfDB climate, news, and document paths.
+  - source_key: bcbs
+    seed_urls:
+      - https://www.bis.org/bcbs/index.htm
+      - https://www.bis.org/bcbs/publications.htm
+    include_patterns:
+      - /bcbs/
+      - /bcbs/publications
+      - climate
+    exclude_patterns:
+      - /events/
+    notes: Reviewed BCBS index and publications paths on BIS.
+  - source_key: bis
+    seed_urls:
+      - https://www.bis.org/topic/climate.htm
+      - https://www.bis.org/publications/index.htm
+      - https://www.bis.org/press/
+    include_patterns:
+      - /topic/climate
+      - /publications/
+      - /press/
+    exclude_patterns:
+      - /events/
+      - /jobs/
+    notes: Reviewed BIS climate topic, publications, and press paths.
+  - source_key: caf
+    seed_urls:
+      - https://www.caf.com/en/currently/news/
+      - https://www.caf.com/en/knowledge/views/
+    include_patterns:
+      - /currently/news/
+      - /knowledge/
+      - /environment/
+      - /climate
+    exclude_patterns:
+      - /events/
+    notes: Reviewed CAF news and knowledge paths with climate/environment filters.
+  - source_key: fit
+    seed_urls:
+      - https://www.unepfi.org/forum-for-insurance-transition-to-net-zero/
+      - https://www.unepfi.org/category/news/
+      - https://www.unepfi.org/publications/
+    include_patterns:
+      - /forum-for-insurance-transition-to-net-zero/
+      - /category/news/
+      - /publications/
+    exclude_patterns:
+      - /events/
+    notes: Reviewed UNEP FI FIT page, news, and publications paths.
+  - source_key: fsb
+    seed_urls:
+      - https://www.fsb.org/work-of-the-fsb/financial-innovation-and-structural-change/climate-related-risks/
+      - https://www.fsb.org/publications/
+      - https://www.fsb.org/press/
+    include_patterns:
+      - /climate-related-risks/
+      - /publications/
+      - /press/
+    exclude_patterns:
+      - /events/
+    notes: Reviewed FSB climate-related risks, publications, and press paths.
+  - source_key: g20
+    seed_urls:
+      - https://g20.org/news/
+      - https://g20.org/documents/
+    include_patterns:
+      - /news/
+      - /documents/
+      - /climate
+    exclude_patterns:
+      - /events/
+    notes: Reviewed G20 news and documents paths.
+  - source_key: gca
+    seed_urls:
+      - https://gca.org/news/
+      - https://gca.org/reports/
+      - https://gca.org/topics/
+    include_patterns:
+      - /news/
+      - /reports/
+      - /topics/
+    exclude_patterns:
+      - /events/
+    notes: Reviewed GCA news, reports, and topic paths.
+  - source_key: ifac
+    seed_urls:
+      - https://www.ifac.org/knowledge-gateway
+      - https://www.ifac.org/news-events
+    include_patterns:
+      - /knowledge-gateway
+      - /news-events
+      - /sustainability
+    exclude_patterns:
+      - /events
+    notes: Reviewed IFAC knowledge gateway, news, and sustainability paths.
+  - source_key: ilo
+    seed_urls:
+      - https://www.ilo.org/topics/climate-change
+      - https://www.ilo.org/resource/news
+      - https://www.ilo.org/publications
+    include_patterns:
+      - /topics/climate-change
+      - /resource/news
+      - /publications
+    exclude_patterns:
+      - /events
+      - /jobs
+    notes: Reviewed ILO climate topic, news, and publications paths.
+  - source_key: imf
+    seed_urls:
+      - https://www.imf.org/en/Topics/climate-change
+      - https://www.imf.org/en/Publications
+      - https://www.imf.org/en/News
+    include_patterns:
+      - /Topics/climate-change
+      - /Publications
+      - /News
+    exclude_patterns:
+      - /Events
+      - /Jobs
+    notes: Reviewed IMF climate topic, publications, and news paths.
+  - source_key: ngfs
+    seed_urls:
+      - https://www.ngfs.net/en/publications
+      - https://www.ngfs.net/en/press-release
+    include_patterns:
+      - /publications
+      - /press-release
+      - /climate
+    exclude_patterns:
+      - /events
+    notes: Reviewed NGFS publications and press release paths.
+  - source_key: sif
+    seed_urls:
+      - https://sustainableinsuranceforum.org/publications/
+      - https://sustainableinsuranceforum.org/news/
+    include_patterns:
+      - /publications/
+      - /news/
+      - /climate
+    exclude_patterns:
+      - /events/
+    notes: Reviewed SIF publications and news paths.
+  - source_key: unctad
+    seed_urls:
+      - https://unctad.org/topic/climate-change
+      - https://unctad.org/publications
+      - https://unctad.org/news
+    include_patterns:
+      - /topic/climate-change
+      - /publications
+      - /news
+    exclude_patterns:
+      - /meetings
+      - /events
+    notes: Reviewed UNCTAD climate topic, publications, and news paths.
+  - source_key: unfccc
+    seed_urls:
+      - https://unfccc.int/news
+      - https://unfccc.int/documents
+      - https://unfccc.int/topics
+    include_patterns:
+      - /news
+      - /documents
+      - /topics
+    exclude_patterns:
+      - /calendar
+      - /events
+    notes: Reviewed UNFCCC news, documents, and topics paths.
+  - source_key: who
+    seed_urls:
+      - https://www.who.int/health-topics/climate-change
+      - https://www.who.int/news-room
+      - https://www.who.int/publications
+    include_patterns:
+      - /health-topics/climate-change
+      - /news-room
+      - /publications
+    exclude_patterns:
+      - /careers
+      - /campaigns
+    notes: Reviewed WHO climate health topic, news room, and publications paths.
+  - source_key: wmo
+    seed_urls:
+      - https://wmo.int/topics/climate
+      - https://wmo.int/media/news
+      - https://wmo.int/publication-series
+    include_patterns:
+      - /topics/climate
+      - /media/news
+      - /publication
+    exclude_patterns:
+      - /events
+    notes: Reviewed WMO climate topic, news, and publication paths.
+  - source_key: wri
+    seed_urls:
+      - https://www.wri.org/climate
+      - https://www.wri.org/research
+      - https://www.wri.org/news
+    include_patterns:
+      - /climate
+      - /research
+      - /news
+      - /insights
+    exclude_patterns:
+      - /events
+      - /jobs
+    notes: Reviewed WRI climate, research, news, and insights paths.
+  - source_key: wto
+    seed_urls:
+      - https://www.wto.org/english/tratop_e/envir_e/climate_change_e.htm
+      - https://www.wto.org/english/news_e/news_e.htm
+      - https://www.wto.org/english/res_e/publications_e/publications_e.htm
+    include_patterns:
+      - /envir_e/climate_change
+      - /news_e/
+      - /publications_e/
+    exclude_patterns:
+      - /events_e/
+    notes: Reviewed WTO climate change, news, and publications paths.

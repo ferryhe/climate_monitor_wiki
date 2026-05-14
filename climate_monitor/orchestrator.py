@@ -9,7 +9,7 @@ from pathlib import Path
 from scripts.sync_source_wiki import sync_source_wiki
 
 from .ai_filter import classify_candidate
-from .config import load_run_config, load_sources
+from .config import load_run_config, load_site_scopes, load_sources
 from .dedupe import canonical_title, canonical_url, dedupe_items
 from .models import CandidateItem, MonitorRunResult, RunConfig
 from .report_writer import render_report
@@ -52,6 +52,20 @@ def _with_output_overrides(config: RunConfig, *, source_dir: str | Path | None, 
     )
 
 
+def _failed_source_count(warnings: list[str], source_keys: set[str]) -> int:
+    failed: set[str] = set()
+    for warning in warnings:
+        if warning.startswith("Source failure for "):
+            key = warning.removeprefix("Source failure for ").split(":", 1)[0].strip()
+            if key in source_keys:
+                failed.add(key)
+            continue
+        key = warning.split(":", 1)[0].strip()
+        if key in source_keys and " seed " not in warning:
+            failed.add(key)
+    return len(failed)
+
+
 def run_monitor(
     *,
     source_config_path: str | Path = "monitoring/supranational_sources.yaml",
@@ -59,6 +73,7 @@ def run_monitor(
     report_date: date | None = None,
     manifest_fixture_path: str | Path | None = None,
     research_fixture_path: str | Path | None = None,
+    site_scopes_path: str | Path | None = "monitoring/site_scopes.yaml",
     state_dir: str | Path = "monitoring/state",
     source_dir: str | Path | None = None,
     wiki_dir: str | Path | None = None,
@@ -70,17 +85,23 @@ def run_monitor(
     sources = load_sources(source_config_path)
     config = _with_output_overrides(load_run_config(run_config_path), source_dir=source_dir, wiki_dir=wiki_dir)
     state_root = _resolve_path(state_dir, root=repo_root)
+    site_scopes = None
+    if manifest_fixture_path is None and site_scopes_path is not None:
+        resolved_site_scopes_path = _resolve_path(site_scopes_path, root=repo_root)
+        if resolved_site_scopes_path.exists():
+            site_scopes = {scope.source_key: scope for scope in load_site_scopes(resolved_site_scopes_path)}
 
     website_items, website_warnings = collect_website_items(
         sources,
         state_dir=state_root / "websites",
         manifest_fixture_path=manifest_fixture_path,
+        site_scopes=site_scopes,
     )
     if (
         manifest_fixture_path is None
         and os.getenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING") == "1"
         and sources
-        and len(website_warnings) >= len(sources)
+        and _failed_source_count(website_warnings, {source.key for source in sources}) >= len(sources)
     ):
         raise RuntimeError("Live website monitoring failed for every configured source.")
 

@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from .models import MonitorSource, RunConfig
+from .models import MonitorSource, RunConfig, SiteScope
 
 
 def _load_yaml(path: Path) -> dict:
@@ -52,6 +52,43 @@ def load_sources(path: str | Path) -> list[MonitorSource]:
                 url=_normalize_url(str(item.get("url", ""))),
                 high_priority=bool(item.get("high_priority", False)),
                 tags=tags,
+            )
+        )
+    return result
+
+
+def _string_tuple(values: object, field_name: str) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, list):
+        raise ValueError(f"{field_name} must be a list.")
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def load_site_scopes(path: str | Path) -> list[SiteScope]:
+    payload = _load_yaml(Path(path))
+    scopes = payload.get("site_scopes", [])
+    if not isinstance(scopes, list):
+        raise ValueError("site_scopes must be a list.")
+    result: list[SiteScope] = []
+    seen_keys: set[str] = set()
+    for item in scopes:
+        if not isinstance(item, dict):
+            raise ValueError("Each site scope must be a YAML object.")
+        source_key = str(item.get("source_key", "")).strip().lower()
+        if not source_key:
+            raise ValueError("Each site scope needs a source_key.")
+        if source_key in seen_keys:
+            raise ValueError(f"Duplicate site scope source_key: {source_key}")
+        seen_keys.add(source_key)
+        seed_urls = tuple(_normalize_url(url) for url in _string_tuple(item.get("seed_urls", []), "seed_urls"))
+        result.append(
+            SiteScope(
+                source_key=source_key,
+                seed_urls=seed_urls,
+                include_patterns=_string_tuple(item.get("include_patterns", []), "include_patterns"),
+                exclude_patterns=_string_tuple(item.get("exclude_patterns", []), "exclude_patterns"),
+                notes=str(item.get("notes", "")).strip(),
             )
         )
     return result

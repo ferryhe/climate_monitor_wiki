@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 
 from climate_monitor.ai_filter import classify_candidate
-from climate_monitor.models import CandidateItem, MonitorSource, RunConfig
+from climate_monitor.models import CandidateItem, MonitorSource, RunConfig, SiteScope
 from climate_monitor.research_search import (
     filter_recent_items,
     parse_openai_research_payload,
     read_research_fixture,
     search_recent_research,
 )
-from climate_monitor.web_listening_adapter import collect_website_items, read_manifest_items
+from climate_monitor.web_listening_adapter import collect_source_items, collect_website_items, read_manifest_items
 
 
 def _config() -> RunConfig:
@@ -195,6 +195,146 @@ def test_collect_website_items_uses_fixture_without_live_web_listening(tmp_path)
 
     assert warnings == []
     assert items[0].title == "Climate update"
+
+
+def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path, monkeypatch):
+    class Page:
+        def __init__(self, url: str, links: list[str], text: str):
+            self.final_url = url
+            self.fit_markdown = text
+            self.markdown = ""
+            self.content_text = ""
+            self.metadata_json = {"links": links}
+            self.raw_html = ""
+
+    class FakeCrawler:
+        fetched: list[str] = []
+        fetch_counts: dict[str, int] = {}
+
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str):
+            self.fetched.append(url)
+            self.fetch_counts[url] = self.fetch_counts.get(url, 0) + 1
+            links = ["https://www.iais.org/events/agenda.pdf"]
+            if self.fetch_counts[url] > 1:
+                links.append("https://www.iais.org/climate/report.pdf")
+            return Page(
+                url,
+                links,
+                f"Climate page for {url} version {self.fetch_counts[url]}",
+            )
+
+    diff = {
+        "compute_hash": lambda text: f"hash:{text}",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
+        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="iais",
+        abbreviation="IAIS",
+        full_name="International Association of Insurance Supervisors",
+        url="https://www.iais.org/",
+    )
+    scope = SiteScope(
+        source_key="iais",
+        seed_urls=("https://www.iais.org/news/",),
+        include_patterns=("/news/", "/climate/"),
+        exclude_patterns=("/events/",),
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    baseline_items, baseline_warnings = collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
+
+    assert baseline_items == []
+    assert baseline_warnings == []
+    assert warnings == []
+    assert FakeCrawler.fetched == [
+        "https://www.iais.org/",
+        "https://www.iais.org/news/",
+        "https://www.iais.org/",
+        "https://www.iais.org/news/",
+    ]
+    assert len(list((tmp_path / "state").glob("*.json"))) == 2
+    saved_states = [json.loads(path.read_text(encoding="utf-8")) for path in (tmp_path / "state").glob("*.json")]
+    assert all("https://www.iais.org/events/agenda.pdf" not in state["links"] for state in saved_states)
+    item_urls = [item.url for item in items]
+    assert "https://www.iais.org/news/" in item_urls
+    assert item_urls.count("https://www.iais.org/climate/report.pdf") == 2
+
+
+def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(tmp_path, monkeypatch):
+    class Page:
+        def __init__(self, links: list[str]):
+            self.final_url = "https://www.iais.org/"
+            self.fit_markdown = "Climate page"
+            self.markdown = ""
+            self.content_text = ""
+            self.metadata_json = {"links": links}
+            self.raw_html = ""
+
+    class FakeCrawler:
+        fetch_count = 0
+
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str):
+            if url.endswith("/broken/"):
+                raise RuntimeError("broken seed")
+            self.__class__.fetch_count += 1
+            links = []
+            if self.__class__.fetch_count > 1:
+                links.append("https://www.iais.org/climate/report.pdf")
+            return Page(links)
+
+    diff = {
+        "compute_hash": lambda text: "hash",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
+        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="iais",
+        abbreviation="IAIS",
+        full_name="International Association of Insurance Supervisors",
+        url="https://www.iais.org/",
+    )
+    scope = SiteScope(
+        source_key="iais",
+        seed_urls=("https://www.iais.org/broken/",),
+        include_patterns=("/climate/",),
+        exclude_patterns=(),
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
+
+    assert [item.url for item in items] == ["https://www.iais.org/climate/report.pdf"]
+    assert len(warnings) == 1
+    assert "broken seed" in warnings[0]
 
 
 def test_classify_candidate_sets_climate_and_actuarial_flags():
