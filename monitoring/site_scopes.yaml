@@ -14,6 +14,7 @@ site_scopes:
       - /calendar/
     notes: Reviewed IAIS public publications and climate risk topic pages.
   - source_key: iea
+    include_source_url: false
     seed_urls:
       - https://www.iea.org/news
       - https://www.iea.org/topics/climate-change
@@ -26,7 +27,13 @@ site_scopes:
     exclude_patterns:
       - /events
       - /jobs
-    notes: Reviewed IEA public news, climate topic, and sitemap inventory after /reports returned 404.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed IEA public news, climate topic, and sitemap inventory after /reports returned 404; GitHub runner requires browser_rendered.
   - source_key: ipcc
     seed_urls:
       - https://www.ipcc.ch/reports/
@@ -435,6 +442,7 @@ site_scopes:
       - /campaigns
     notes: Reviewed WHO climate health topic, news room, and publications paths.
   - source_key: wmo
+    include_source_url: false
     seed_urls:
       - https://wmo.int/topics/climate
       - https://wmo.int/news
@@ -445,7 +453,13 @@ site_scopes:
       - /publication
     exclude_patterns:
       - /events
-    notes: Reviewed WMO climate topic, news, and publication paths after /media/news returned 404.
+    fetch_mode: browser
+    fetch_config_json:
+      user_agent_profile: browser
+      wait_until: domcontentloaded
+      extra_wait_ms: 2500
+      timeout_ms: 25000
+    notes: Reviewed WMO climate topic, news, and publication paths after /media/news returned 404; GitHub runner requires browser_rendered.
   - source_key: wri
     seed_urls:
       - https://www.wri.org/climate
