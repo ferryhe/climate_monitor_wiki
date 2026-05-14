@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      report_written: ${{ steps.report-output.outputs.report_written }}
     steps:
       - name: Checkout climate monitor wiki
         uses: actions/checkout@v5
@@ -49,6 +51,18 @@ jobs:
           CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING: "1"
         run: python scripts/run_climate_monitor.py
 
+      - name: Check report output
+        id: report-output
+        run: |
+          report_path="sources/climate-monitor-$(date +%F).md"
+          if [ -f "$report_path" ]; then
+            echo "report_written=true" >> "$GITHUB_OUTPUT"
+            echo "Report output detected: $report_path"
+          else
+            echo "report_written=false" >> "$GITHUB_OUTPUT"
+            echo "No report output detected for $(date +%F)."
+          fi
+
       - name: Validate generated wiki
         run: |
           test -d monitoring/state
@@ -57,6 +71,7 @@ jobs:
           test -f wiki/index.md
 
       - name: Upload generated monitor outputs
+        if: steps.report-output.outputs.report_written == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: climate-monitor-generated
@@ -68,6 +83,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: monitor
+    if: needs.monitor.outputs.report_written == 'true'
     permissions:
       contents: write
       pull-requests: write
