@@ -13,6 +13,7 @@ from .models import CandidateItem, MonitorSource, SiteScope
 
 
 _ACTIONABLE_MANIFEST_STATUSES = {"changed", "downloaded", "new", "updated"}
+_BROWSER_FETCH_CONFIG = {"user_agent_profile": "browser"}
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -83,7 +84,11 @@ def collect_source_items(
             state_file = _state_path(state_dir, source, seed_url)
             previous = _load_state(state_file)
             with Crawler(fetch_mode=fetch_mode) as crawler:
-                page = crawler.fetch_page(seed_url, fetch_mode=fetch_mode)
+                page = crawler.fetch_page(
+                    seed_url,
+                    fetch_mode=fetch_mode,
+                    fetch_config_json=_BROWSER_FETCH_CONFIG,
+                )
 
             final_url = getattr(page, "final_url", "") or seed_url
             compare_text = diff["select_compare_text"](
@@ -103,34 +108,18 @@ def collect_source_items(
                 _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
                 continue
 
-            if previous.get("content_hash") and previous.get("content_hash") != content_hash and _url_allowed(final_url, scope):
-                items.append(
-                    CandidateItem(
-                        title=f"{source.abbreviation} website content changed",
-                        url=final_url,
-                        summary=_summary_from_text(
-                            compare_text,
-                            fallback=f"{source.full_name} homepage or monitored landing page changed.",
-                        ),
-                        source_name=source.abbreviation,
-                        lane="website",
-                        content_hash=content_hash,
-                        evidence_text=compare_text[:5000],
-                    )
-                )
             doc_link_set = set(doc_links)
             for link in doc_links + [link for link in new_links if link not in doc_link_set]:
                 lane = "document" if link in doc_link_set else "website"
                 link_title = _title_from_url(link)
-                evidence_text = f"{link} {link_title}" if lane == "document" else " ".join([link, link_title, compare_text[:1000]])
                 items.append(
                     CandidateItem(
                         title=link_title,
                         url=link,
-                        summary=f"{source.abbreviation} added a new link observed from {seed_url}. Link text: {link_title}.",
+                        summary=f"{source.abbreviation} added a new {lane} link. Link text: {link_title}.",
                         source_name=source.abbreviation,
                         lane=lane,
-                        evidence_text=evidence_text,
+                        evidence_text=f"{link} {link_title}",
                     )
                 )
             _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
@@ -341,9 +330,3 @@ def _title_from_url(url: str) -> str:
     stem = Path(path).name.rsplit(".", 1)[0]
     return stem.replace("-", " ").replace("_", " ").strip().title() or url
 
-
-def _summary_from_text(text: str, *, fallback: str) -> str:
-    cleaned = " ".join(str(text or "").split())
-    if not cleaned:
-        return fallback
-    return cleaned[:500] + ("..." if len(cleaned) > 500 else "")

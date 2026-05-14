@@ -376,6 +376,7 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
 
     class FakeCrawler:
         fetched: list[str] = []
+        fetch_configs: list[dict] = []
         fetch_counts: dict[str, int] = {}
 
         def __init__(self, *, fetch_mode: str):
@@ -387,8 +388,9 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def fetch_page(self, url: str, *, fetch_mode: str):
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
             self.fetched.append(url)
+            self.fetch_configs.append(fetch_config_json or {})
             self.fetch_counts[url] = self.fetch_counts.get(url, 0) + 1
             links = ["https://www.iais.org/events/agenda.pdf"]
             if self.fetch_counts[url] > 1:
@@ -434,11 +436,12 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
         "https://www.iais.org/",
         "https://www.iais.org/news/",
     ]
+    assert all(config == {"user_agent_profile": "browser"} for config in FakeCrawler.fetch_configs)
     assert len(list((tmp_path / "state").glob("*.json"))) == 2
     saved_states = [json.loads(path.read_text(encoding="utf-8")) for path in (tmp_path / "state").glob("*.json")]
     assert all("https://www.iais.org/events/agenda.pdf" not in state["links"] for state in saved_states)
     item_urls = [item.url for item in items]
-    assert "https://www.iais.org/news/" in item_urls
+    assert "https://www.iais.org/news/" not in item_urls
     assert item_urls.count("https://www.iais.org/climate/report.pdf") == 2
 
 
@@ -464,7 +467,7 @@ def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(t
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def fetch_page(self, url: str, *, fetch_mode: str):
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
             if url.endswith("/broken/"):
                 raise RuntimeError("broken seed")
             self.__class__.fetch_count += 1
@@ -526,7 +529,7 @@ def test_collect_source_items_emits_document_lane_for_doc_links_and_website_lane
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def fetch_page(self, url: str, *, fetch_mode: str):
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
             self.__class__.fetch_count += 1
             if self.__class__.fetch_count == 1:
                 return Page([])
@@ -589,7 +592,7 @@ def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def fetch_page(self, url: str, *, fetch_mode: str):
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
             self.__class__.fetch_count += 1
             if self.__class__.fetch_count == 1:
                 return Page([])
@@ -620,6 +623,63 @@ def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_
     assert document.url == "https://www.example.org/files/board-minutes.pdf"
     assert "Climate transition risk" not in document.evidence_text
     assert document.evidence_text == "https://www.example.org/files/board-minutes.pdf Board Minutes"
+
+
+def test_live_website_link_uses_link_evidence_not_seed_page_text(tmp_path, monkeypatch):
+    class Page:
+        def __init__(self, links: list[str]):
+            self.final_url = "https://www.example.org/climate/"
+            self.fit_markdown = "Climate adaptation insurance capital supervision seed page"
+            self.markdown = ""
+            self.content_text = ""
+            self.metadata_json = {"links": links}
+            self.raw_html = ""
+
+    class FakeCrawler:
+        fetch_count = 0
+
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
+            self.__class__.fetch_count += 1
+            if self.__class__.fetch_count == 1:
+                return Page([])
+            return Page(["https://www.example.org/news/barbados-precautionary-sba"])
+
+    diff = {
+        "compute_hash": lambda text: f"hash:{text}",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
+        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="example",
+        abbreviation="EXAMPLE",
+        full_name="Example",
+        url="https://www.example.org/climate/",
+    )
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+
+    collect_source_items(source=source, state_dir=tmp_path / "state")
+    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+
+    assert warnings == []
+    assert len(items) == 1
+    assert items[0].summary == "EXAMPLE added a new website link. Link text: Barbados Precautionary Sba."
+    assert items[0].evidence_text == "https://www.example.org/news/barbados-precautionary-sba Barbados Precautionary Sba"
+    classified = classify_candidate(items[0], _config())
+    assert classified.climate_related is False
+    assert classified.actuarial_related is False
 
 
 def test_classify_candidate_sets_climate_and_actuarial_flags():
