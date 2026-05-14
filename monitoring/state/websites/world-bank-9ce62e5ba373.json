@@ -1,0 +1,28 @@
+{
+  "content_hash": "f76e05aa2aeb52d36d68de860004f04f0d6ea0deef9fa784752fffc50a57c240",
+  "links": [
+    "https://search.worldbank.org/api/v2/news?format=json&rows=20&fct=displayconttype_exact,%20topic_exact,%20lang_exact,%20count_exact,%20countcode_exact,%20admreg_exact&src=cq55&apilang=en&displayconttype_exact=Statement&lang_exact=English&os=0",
+    "https://search.worldbank.org/api/v2/news?format=json&rows=20&fct=displayconttype_exact,%20topic_exact,%20lang_exact,%20count_exact,%20countcode_exact,%20admreg_exact&src=cq55&apilang=en&lang_exact=English&displayconttype_exact=Feature%20Story&os=0",
+    "https://search.worldbank.org/api/v2/news?format=json&rows=20&fct=displayconttype_exact,%20topic_exact,%20lang_exact,%20count_exact,%20countcode_exact,%20admreg_exact&src=cq55&apilang=en&lang_exact=English&displayconttype_exact=Press%20Release&os=0",
+    "https://www.worldbank.org/en/news/all?displayconttype_exact=Press+Release&lang_exact=English&qterm=",
+    "https://www.worldbank.org/en/news/all?lang_exact=English&displayconttype_exact=Feature%20Story",
+    "https://www.worldbank.org/en/news/all?lang_exact=English&displayconttype_exact=Press%20Release",
+    "https://www.worldbank.org/en/news/all?lang_exact=English&displayconttype_exact=Speeches%20and%20Transcripts",
+    "https://www.worldbank.org/en/news/all?lang_exact=English&displayconttype_exact=Statement",
+    "https://www.worldbank.org/en/news/all?lang_exact=English&qterm=",
+    "https://www.worldbank.org/en/news/contacts",
+    "https://www.worldbank.org/en/news/immersive-story/2026/02/26/ida20-retrospective",
+    "https://www.worldbank.org/en/news/podcast/2026/03/12/knowledge-age-disinformation",
+    "https://www.worldbank.org/en/news/press-release/2026/04/15/world-bank-group-launches-initiative-to-improve-water-security-for-1-billion-people",
+    "https://www.worldbank.org/en/news/press-release/2026/04/17/mdb-heads-deepen-collaboration-to-support-countries-through-heightened-global-uncertainty",
+    "https://www.worldbank.org/en/news/press-release/2026/04/28/commodity-markets-outlook-april-2026-press-release",
+    "https://www.worldbank.org/en/news/statement/2026/04/13/joint-statement-by-the-heads-of-the-international-energy-agency-international-monetary-fund-and-world-bank-group",
+    "https://www.worldbank.org/en/news/statement/2026/04/16/mdb-common-approach-to-measuring-jobs-outcomes",
+    "https://www.worldbank.org/en/news/statement/2026/04/16/world-bank-group-announces-resumption-of-dealings-with-venezuela",
+    "https://www.worldbank.org/en/news/statement/2026/04/17/mdbs-powering-critical-minerals-value-chains",
+    "https://www.worldbank.org/en/news/video/2026/03/10/frontier-market-economies",
+    "https://www.worldbank.org/en/who-we-are/news/immersive-story",
+    "https://www.worldbank.org/en/who-we-are/news/multimedia/all",
+    "https://www.worldbank.org/ext/en/news"
+  ]
+}
