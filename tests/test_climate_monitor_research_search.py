@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from climate_monitor.ai_filter import classify_candidate
 from climate_monitor.models import CandidateItem, MonitorSource, RunConfig, SiteScope
@@ -127,7 +128,9 @@ def test_search_recent_research_uses_injected_openai_client_when_key_is_set(monk
     monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_RESEARCH", "1")
     monkeypatch.delenv("CLIMATE_MONITOR_SEARCH_MODEL", raising=False)
 
-    items = search_recent_research(_config(), openai_client=client)
+    items = search_recent_research(
+        _config(), openai_client=client, today=date(2026, 5, 14)
+    )
 
     assert items[0].title == "Wildfire insurance paper"
     assert client.responses.kwargs["model"] == DEFAULT_SEARCH_MODEL
@@ -972,6 +975,6 @@ def test_filter_recent_items_enforces_lookback_window():
         ),
     ]
 
-    recent = filter_recent_items(items, today=__import__("datetime").date(2026, 5, 14), lookback_days=30)
+    recent = filter_recent_items(items, today=date(2026, 5, 14), lookback_days=30)
 
     assert [item.title for item in recent] == ["Recent climate report"]
