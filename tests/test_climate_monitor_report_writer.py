@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 
+from agentic_wiki.wiki_agent import URL_RE
 from climate_monitor.report_writer import render_report
 
 
@@ -74,6 +75,8 @@ def test_render_report_matches_existing_source_shape():
     assert "## Dedup Notes" in text
     assert "## Summary" in text
     assert "- Sites monitored: 34" in text
+    assert all(line == line.rstrip() for line in text.splitlines())
+    assert URL_RE.findall(text) == ["https://example.com/report.pdf"]
 
 
 def test_render_report_groups_website_updates_and_research_items():

@@ -63,6 +63,7 @@ def _strip_markdown(text: str) -> str:
     cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
     cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
     cleaned = WIKILINK_RE.sub(lambda match: match.group(2) or match.group(1), cleaned)
+    cleaned = re.sub(r"<br\s*/?>", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^[#>*+\-\s]+", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
     cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
