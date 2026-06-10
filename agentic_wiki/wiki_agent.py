@@ -285,6 +285,7 @@ def _strip_markdown(text: str) -> str:
     cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
     cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
     cleaned = re.sub(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]", r"\2 \1", cleaned)
+    cleaned = re.sub(r"<br\s*/?>", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"[#>*_`|]", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 

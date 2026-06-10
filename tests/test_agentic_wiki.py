@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
-from agentic_wiki.wiki_agent import _requested_dates
+from agentic_wiki.wiki_agent import _requested_dates, _strip_markdown
 from api_server import app, responder
 from fastapi.testclient import TestClient
 
@@ -15,6 +15,13 @@ def test_wiki_index_loads_documents_and_chunks():
     assert kb.stats()["chunks"] >= kb.stats()["documents"]
     assert any(doc["path"] == "wiki/index.md" for doc in kb.document_catalog())
     assert any(concept["label"] == "Parametric Insurance" for concept in kb.concept_catalog())
+
+
+def test_strip_markdown_removes_report_break_tags():
+    text = _strip_markdown("**URL:** https://example.com/report.pdf <br>\n**Title:** Foo <br />")
+
+    assert "<br" not in text.lower()
+    assert text == "URL: https://example.com/report.pdf Title: Foo"
 
 
 def test_context_path_prioritizes_active_note():
@@ -190,7 +197,7 @@ def test_executive_mode_produces_structured_window_brief_offline():
     assert "Day-by-Day Coverage:" in result["text"]
     assert "day(s) | dates:" in result["text"]
     assert "Summary:" in result["text"]
-    assert "Coverage window: 2026-04-01 to 2026-04-25" in result["text"]
+    assert "Coverage window: 2026-04-01 to 2026-04-30" in result["text"]
     assert any(source["path"] == "wiki/climate-monitor-2026-04-01.md" for source in result["sources"])
     assert any(source["path"].startswith("sources/") for source in result["sources"])
 

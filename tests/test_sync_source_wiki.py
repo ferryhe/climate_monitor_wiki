@@ -19,7 +19,7 @@ def test_sync_source_wiki_generates_daily_pages_and_rebuilds_index(tmp_path):
         **Report Date:** 2026-04-21
 
         ## Executive Summary
-        April 21 summary with [linked evidence](https://example.com) and **strong** signal.
+        April 21 summary with [linked evidence](https://example.com) and **strong** signal. <br>
         """,
     )
     _write(

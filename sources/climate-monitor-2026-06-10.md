@@ -7,17 +7,17 @@ This report captures 1 climate-related item(s) from monitored websites, document
 ## Website Updates
 
 ### 1. Commitment Action Six Practical Steps Government Climate Disclosure
-**Title:** Commitment Action Six Practical Steps Government Climate Disclosure  
-**Source:** IFAC  
-**Summary:** IFAC added a new website link. Link text: Commitment Action Six Practical Steps Government Climate Disclosure.  
-**URL:** https://www.ifac.org/knowledge-gateway/discussion/commitment-action-six-practical-steps-government-climate-disclosure  
-**Published:** Unknown  
-**Actuarial relevance:** Yes  
-**Climate signal:** general_climate  
-**Actuarial signal:** supervision_disclosure  
-**Confidence:** 0.7  
-**Relevance reason:** Climate signal `general_climate` from terms: climate; Actuarial signal `supervision_disclosure` from terms: disclosure  
-**Evidence:** https://www.ifac.org/knowledge-gateway/discussion/commitment-action-six-practical-steps-government-climate-disclosure Commitment Action Six Practical Steps Government Climate Disclosure  
+**Title:** Commitment Action Six Practical Steps Government Climate Disclosure <br>
+**Source:** IFAC <br>
+**Summary:** IFAC added a new website link. Link text: Commitment Action Six Practical Steps Government Climate Disclosure. <br>
+**URL:** https://www.ifac.org/knowledge-gateway/discussion/commitment-action-six-practical-steps-government-climate-disclosure <br>
+**Published:** Unknown <br>
+**Actuarial relevance:** Yes <br>
+**Climate signal:** general_climate <br>
+**Actuarial signal:** supervision_disclosure <br>
+**Confidence:** 0.7 <br>
+**Relevance reason:** Climate signal `general_climate` from terms: climate; Actuarial signal `supervision_disclosure` from terms: disclosure <br>
+**Evidence:** https://www.ifac.org/knowledge-gateway/discussion/commitment-action-six-practical-steps-government-climate-disclosure Commitment Action Six Practical Steps Government Climate Disclosure <br>
 **Topics:** climate, disclosure
 
 ---

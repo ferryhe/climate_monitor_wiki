@@ -36,21 +36,21 @@ def _document_metadata_lines(item: Any) -> list[str]:
 
     lines: list[str] = []
     if _item_value(item, "asset_filename"):
-        lines.append(f"**Document file:** {_item_value(item, 'asset_filename')}  ")
+        lines.append(f"**Document file:** {_item_value(item, 'asset_filename')} <br>")
     if _item_value(item, "asset_media_type"):
-        lines.append(f"**File type:** {_item_value(item, 'asset_media_type')}  ")
+        lines.append(f"**File type:** {_item_value(item, 'asset_media_type')} <br>")
     if _item_value(item, "asset_bytes", None) is not None:
-        lines.append(f"**File size:** {_item_value(item, 'asset_bytes')} bytes  ")
+        lines.append(f"**File size:** {_item_value(item, 'asset_bytes')} bytes <br>")
     if _item_value(item, "asset_tracked_path"):
-        lines.append(f"**Tracked asset:** {_item_value(item, 'asset_tracked_path')}  ")
+        lines.append(f"**Tracked asset:** {_item_value(item, 'asset_tracked_path')} <br>")
     if _item_value(item, "asset_id"):
-        lines.append(f"**Asset ID:** {_item_value(item, 'asset_id')}  ")
+        lines.append(f"**Asset ID:** {_item_value(item, 'asset_id')} <br>")
     if _item_value(item, "source_item_id"):
-        lines.append(f"**Source item ID:** {_item_value(item, 'source_item_id')}  ")
+        lines.append(f"**Source item ID:** {_item_value(item, 'source_item_id')} <br>")
     checksum_value = _item_value(item, "asset_checksum_value")
     if checksum_value:
         checksum_algorithm = _item_value(item, "asset_checksum_algorithm") or "checksum"
-        lines.append(f"**Checksum:** {checksum_algorithm}: {checksum_value}  ")
+        lines.append(f"**Checksum:** {checksum_algorithm}: {checksum_value} <br>")
     return lines
 
 
@@ -65,17 +65,17 @@ def _render_item(index: int, item: Any) -> str:
     confidence = _item_value(item, "confidence", 0.0)
     lines = [
         f"### {index}. {title}",
-        f"**Title:** {title}  ",
-        f"**Source:** {_item_value(item, 'source_name')}  ",
-        f"**Summary:** {_item_value(item, 'summary')}  ",
-        f"**URL:** {_item_value(item, 'url')}  ",
-        f"**Published:** {published}  ",
-        f"**Actuarial relevance:** {actuarial}  ",
-        f"**Climate signal:** {_item_value(item, 'climate_signal', 'general')}  ",
-        f"**Actuarial signal:** {_item_value(item, 'actuarial_signal', 'none')}  ",
-        f"**Confidence:** {confidence}  ",
-        f"**Relevance reason:** {relevance_reason}  ",
-        f"**Evidence:** {evidence_snippet}  ",
+        f"**Title:** {title} <br>",
+        f"**Source:** {_item_value(item, 'source_name')} <br>",
+        f"**Summary:** {_item_value(item, 'summary')} <br>",
+        f"**URL:** {_item_value(item, 'url')} <br>",
+        f"**Published:** {published} <br>",
+        f"**Actuarial relevance:** {actuarial} <br>",
+        f"**Climate signal:** {_item_value(item, 'climate_signal', 'general')} <br>",
+        f"**Actuarial signal:** {_item_value(item, 'actuarial_signal', 'none')} <br>",
+        f"**Confidence:** {confidence} <br>",
+        f"**Relevance reason:** {relevance_reason} <br>",
+        f"**Evidence:** {evidence_snippet} <br>",
     ]
     lines.extend(_document_metadata_lines(item))
     lines.extend(
