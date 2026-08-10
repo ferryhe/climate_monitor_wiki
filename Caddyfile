@@ -1,0 +1,36 @@
+# Climate Monitor Wiki — local HTTPS via Caddy's internal CA.
+#
+# Serves on the host's LAN IP with a Caddy-signed certificate. Browsers show a
+# trust warning until the Caddy root CA is imported (see docs/deployment.md);
+# the connection itself is real TLS.
+#
+# default_sni is REQUIRED here: clients connecting to a bare IP literal send no
+# SNI (RFC 6066 forbids IP addresses in SNI), so without it Caddy cannot match
+# a site block and aborts the handshake with "tlsv1 alert internal error".
+{
+	auto_https disable_redirects
+	local_certs
+	default_sni {$SITE_HOST:172.31.10.77}
+}
+
+https://{$SITE_HOST:172.31.10.77} {
+	encode gzip zstd
+
+	tls internal
+
+	reverse_proxy wiki:8501 {
+		health_uri /api/config
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	log {
+		output file /var/log/caddy/access.log
+		format json
+	}
+}
+
+# Plain HTTP redirects to HTTPS so http://<ip> still lands on the app.
+http://{$SITE_HOST:172.31.10.77} {
+	redir https://{host}{uri} permanent
+}

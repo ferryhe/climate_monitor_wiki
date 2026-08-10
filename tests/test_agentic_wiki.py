@@ -221,8 +221,18 @@ def test_past_week_daily_summary_covers_requested_window_offline():
     assert f"- {latest_date.isoformat()}:" in result["text"]
 
     source_dates = {source["date"] for source in result["sources"]}
-    expected_dates = {
-        (window_start + timedelta(days=offset)).isoformat()
-        for offset in range(7)
+    # Under the weekly cadence the corpus no longer contains a report for every
+    # calendar day, so requiring all 7 dates would assert on the ingest schedule
+    # rather than on retrieval. The contract is: every report that EXISTS in the
+    # requested window is covered, and the window's latest report is included.
+    corpus_dates = {
+        document.date
+        for document in responder_instance.kb.documents
+        if getattr(document, "date", None)
     }
+    expected_dates = {
+        (window_start + timedelta(days=offset)).isoformat() for offset in range(7)
+    } & corpus_dates
+    assert expected_dates, "no reports in the requested window to cover"
     assert expected_dates.issubset(source_dates)
+    assert latest_date.isoformat() in source_dates
