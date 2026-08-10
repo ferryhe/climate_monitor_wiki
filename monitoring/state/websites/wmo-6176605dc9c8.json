@@ -1,24 +1,14 @@
 {
-  "content_hash": "3b7c9273ed40d2efa74aa0d3a640ed0fb64a770e0360fd0ac78a29d0b5bf5876",
+  "content_hash": "c6d4f000c78bfc5a4076bca33ca9e3181e65ab82709221b1171ed87b53c663d4",
   "links": [
-    "https://wmo.int/media/news-from-members/charting-winds-of-change-chinas-local-meteorological-innovation-connects-asean-trade-and-livelihoods",
-    "https://wmo.int/media/news-from-members/trinidad-and-tobago-meteorological-service-hosts-20th-national-climate-outlook-forum-and-national",
-    "https://wmo.int/media/news-from-members/workshop-egyptian-meteorological-authoritys-contributions-national-climate-change-adaptation-plan",
-    "https://wmo.int/media/news/below-normal-rainfall-expected-norther-greater-horn-of-africa",
-    "https://wmo.int/media/news/hydrosos-implementation-ra-vi-quick-reference-guide-now-available-members",
-    "https://wmo.int/media/news/new-report-suggests-more-global-temperature-records-ahead",
-    "https://wmo.int/media/news/noaa-forecasts-below-average-hurricane-season",
-    "https://wmo.int/media/news/ra-vi-advances-hydrosos-implementation-new-guidance-and-technical-exchange",
-    "https://wmo.int/media/news/wmo-prepare-el-nino",
-    "https://wmo.int/media/news/wmo-updates-guidance-global-observation-systems-meet-growing-needs",
+    "https://wmo.int/media/news-from-members/distinguished-achievements-space-science-applications-chinese-scientist-wins-william-nordberg-medal",
+    "https://wmo.int/media/news-from-members/el-azizia-recorded-highest-temperature-libya-23-july-2026",
+    "https://wmo.int/media/news-from-members/young-voices-shape-early-warning-dialogue-morocco",
+    "https://wmo.int/media/news/strong-el-nino-expected-intensify",
     "https://wmo.int/news",
     "https://wmo.int/news#main-content",
-    "https://wmo.int/news/campaigns",
-    "https://wmo.int/news/campaigns/call-action-wmo-secretary-general-accelerating-implementation-of-early-warnings-all-initiative",
     "https://wmo.int/news/media-centre/information-journalists",
     "https://wmo.int/news/media-centre/press-releases",
-    "https://wmo.int/news/photo-galleries",
-    "https://wmo.int/news/videos",
     "https://wmo.int/news?f%5B0%5D=audience%3A0",
     "https://wmo.int/news?f%5B0%5D=audience%3A1",
     "https://wmo.int/news?f%5B0%5D=topic%3A20012",
@@ -28,6 +18,7 @@
     "https://wmo.int/news?f%5B0%5D=topic%3A20285",
     "https://wmo.int/news?f%5B0%5D=topic%3A20288",
     "https://wmo.int/news?f%5B0%5D=topic%3A20322",
+    "https://wmo.int/news?f%5B0%5D=topic%3A20326",
     "https://wmo.int/news?f%5B0%5D=topic%3A20344",
     "https://wmo.int/news?f%5B0%5D=topic%3A20441",
     "https://wmo.int/news?f%5B0%5D=topic%3A20514",
@@ -67,6 +58,6 @@
     "https://wmo.int/news?page=0",
     "https://wmo.int/news?page=1",
     "https://wmo.int/news?page=2",
-    "https://wmo.int/resources/publication-series"
+    "https://wmo.int/resources/publications"
   ]
 }
