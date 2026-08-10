@@ -12,6 +12,25 @@ BASE_URL="${BASE_URL:-https://172.31.10.77}"
 
 cd "$REPO"
 
+# RELOAD_TOKEN lives in .env (gitignored, chmod 600). /api/reload rejects
+# non-localhost callers unless the token is presented.
+if [ -f "$REPO/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$REPO/.env"
+  set +a
+fi
+
+wait_healthy() {
+  for _ in $(seq 1 30); do
+    if [ "$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "$BASE_URL/api/config")" = "200" ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 echo "== ingest + sync =="
 "$PY" scripts/ingest_weekly_reports.py --commit
 
@@ -26,7 +45,10 @@ else
 fi
 
 echo "== verify =="
-status="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$BASE_URL/api/config")"
-echo "api/config -> $status"
-[ "$status" = "200" ] || exit 1
+if wait_healthy; then
+  echo "api/config -> 200"
+else
+  echo "api/config never returned 200 after restart" >&2
+  exit 1
+fi
 echo "weekly wiki refresh complete"
