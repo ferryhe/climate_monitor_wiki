@@ -6,20 +6,27 @@
 # Intended to run from cron ~1h after the monitor job (which fires Mon 08:00 UTC).
 set -euo pipefail
 
-REPO="/home/ubuntu/climate_monitor_wiki"
+# Resolve the repo from this script's own location so the script is portable.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 PY="$REPO/.venv/bin/python"
-BASE_URL="${BASE_URL:-https://172.31.10.77}"
 
 cd "$REPO"
 
-# RELOAD_TOKEN lives in .env (gitignored, chmod 600). /api/reload rejects
-# non-localhost callers unless the token is presented.
+# Load .env BEFORE resolving BASE_URL: it carries SITE_HOST (the address Caddy
+# serves on) and RELOAD_TOKEN (/api/reload rejects non-localhost callers
+# without it). Resolving BASE_URL first would pin a stale IP and silently send
+# reloads and health checks to the wrong host after an address change.
 if [ -f "$REPO/.env" ]; then
   set -a
   # shellcheck disable=SC1091
   . "$REPO/.env"
   set +a
 fi
+
+# Precedence: explicit BASE_URL > SITE_HOST from .env > loopback fallback.
+BASE_URL="${BASE_URL:-https://${SITE_HOST:-127.0.0.1}}"
+echo "target: $BASE_URL"
 
 wait_healthy() {
   for _ in $(seq 1 30); do

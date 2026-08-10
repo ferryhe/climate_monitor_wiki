@@ -227,7 +227,10 @@ def test_past_week_daily_summary_covers_requested_window_offline():
     # requested window is covered, and the window's latest report is included.
     corpus_dates = {
         document.date
-        for document in responder_instance.kb.documents
+        for document in (
+            *responder_instance.kb.documents,
+            *getattr(responder_instance.kb, "source_documents", ()),
+        )
         if getattr(document, "date", None)
     }
     expected_dates = {

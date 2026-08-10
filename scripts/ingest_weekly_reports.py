@@ -106,12 +106,19 @@ def main() -> int:
 
     if args.commit:
         subprocess.run(["git", "add", "sources", "wiki"], cwd=REPO_ROOT, check=True)
+        # `git diff --quiet` exits 0 = no changes, 1 = changes, >1 = real error.
+        # Treating "non-zero" as "has changes" would hide a broken repo state
+        # and then attempt a commit anyway.
         status = subprocess.run(
             ["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT
         ).returncode
         if status == 0:
             print("commit: nothing to commit")
             return 0
+        if status > 1:
+            raise SystemExit(
+                f"git diff --cached failed with exit code {status}; refusing to commit"
+            )
         msg = f"docs: weekly climate monitor update ({result.latest_date})"
         subprocess.run(["git", "commit", "-m", msg], cwd=REPO_ROOT, check=True)
         print(f"commit: {msg}")

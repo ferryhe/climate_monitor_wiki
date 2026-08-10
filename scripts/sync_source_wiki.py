@@ -242,7 +242,9 @@ def sync_source_wiki(
     existing_daily_dates = _discover_daily_dates(wiki_dir)
     known_dates = source_dates | existing_daily_dates
     if not known_dates:
-        raise RuntimeError("No climate-monitor daily files were found in sources/ or wiki/.")
+        raise RuntimeError(
+            "No climate-monitor report files were found in sources/ or wiki/."
+        )
 
     pruned_pages: list[str] = []
     if cadence == "weekly" and prune_sourceless:
@@ -325,7 +327,10 @@ def sync_source_wiki(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate daily wiki pages from sources/ and rebuild wiki/index.md."
+        description=(
+            "Generate dated wiki report pages from sources/ and rebuild "
+            "wiki/index.md. Supports daily and weekly cadences."
+        )
     )
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--wiki-dir", type=Path, default=DEFAULT_WIKI_DIR)

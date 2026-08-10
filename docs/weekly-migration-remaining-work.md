@@ -1,14 +1,16 @@
 # Weekly migration: what still needs changing
 
-Status of the daily → weekly switch. **Phase 1 is done and merged into this
-branch.** This document is the research output for what remains.
+**Status of the daily → weekly switch.** Phase 1 is implemented on this branch.
+This document is the research output for what remains.
 
 Every claim below was verified by running the code against the real corpus
 (`latest_date = 2026-08-10`), not by reading it.
 
 ---
 
-## Phase 1 — DONE (this branch)
+## Phase 1 — landed in this branch (PR #24)
+
+Status refers to this branch's contents, not to `main`.
 
 | Change | File |
 |---|---|
