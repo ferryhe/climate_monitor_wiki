@@ -1,7 +1,8 @@
 # Weekly migration: what still needs changing
 
-**Status of the daily → weekly switch.** Phase 1 is implemented on this branch.
-This document is the research output for what remains.
+**Status of the daily → weekly switch.** Phase 1 plus the PR review follow-ups
+are implemented on this branch. This document is the research output for what
+remains.
 
 Every claim below was verified by running the code against the real corpus
 (`latest_date = 2026-08-10`), not by reading it.
@@ -21,53 +22,50 @@ Status refers to this branch's contents, not to `main`.
 | One-command refresh (ingest → sync → commit → reload → health check) | `scripts/weekly_wiki_refresh.sh` |
 | Fixed a test that asserted the ingest schedule, not retrieval | `tests/test_agentic_wiki.py` |
 | Docker + Caddy HTTPS on the host IP | `Dockerfile`, `Caddyfile`, `docker-compose.yml` |
+| Week-based date windows and window-scoped citations | `agentic_wiki/wiki_agent.py`, `tests/test_agentic_wiki.py` |
+| Monday-only GitHub Actions monitor with weekly wiki sync | `.github/workflows/climate-monitor.yml` |
 
 Result: **24 pages / 24 sources / 0 missing** (was 74 pages with 50 phantoms).
-Suite: **62 passed**.
+Suite: **63 passed**.
 
 ---
 
-## Phase 2 — the one that actually matters: week-based date windows
+## Phase 2 — landed after review: week-based date windows
 
-**This is the highest-value remaining change.** Everything else is cosmetic.
+This was the highest-value correctness follow-up and is now implemented on this
+branch.
 
 `_date_range_days()` in `agentic_wiki/wiki_agent.py` understands *days* and
-*months*, but has **no concept of weeks**. Verified against the live corpus:
+*months*, and now also understands *weeks*. Verified against the live corpus:
 
 | Question | days parsed | dates returned |
 |---|---|---|
 | `Summarize the past 7 days of reports` | 7 | 7 dates ✅ |
 | `summarize the last week` | 7 | 7 dates ✅ |
 | `Give me a report for this month` | — | 10 dates ✅ |
-| **`past 2 weeks`** | **None** | **0** ❌ |
-| **`last 3 weeks of reports`** | **None** | **0** ❌ |
-| **`Summarize the past 4 weeks`** | **None** | **0** ❌ |
-| **`recent 6 weeks trends`** | **None** | **0** ❌ |
+| `past 2 weeks` | 14 | 14 dates ✅ |
+| `last 3 weeks of reports` | 21 | 21 dates ✅ |
+| `Summarize the past 4 weeks` | 28 | 28 dates ✅ |
+| `recent 6 weeks trends` | 42 | 42 dates ✅ |
 
 Under a weekly cadence, "past N weeks" is *the* natural way to ask for a range —
-and it is exactly the phrasing that silently returns no date window. The query
-still answers, but it falls back to generic relevance ranking with no date
-coverage, so the user gets a plausible answer that quietly ignores the window
-they asked for. **Silent wrong-scope is worse than an error.**
+and it now returns a real date window. The answer source list is also scoped to
+that window so old April reports do not appear as citations for an August window.
 
-Three sub-issues:
+Two follow-up improvements remain:
 
-1. **No `week(s)` pattern.** `DAY_RANGE_RE` only matches `day|days`. Needs a
-   sibling `WEEK_RANGE_RE` matching `(?:past|last|recent)\s+(\d{1,2})\s+weeks?`,
-   converted as `weeks * 7` days.
-2. **The 30-day cap.** `_date_range_days` clamps to `min(n, 30)`. With weekly
-   reports, 30 days is only ~4 data points; "past 6 months" of weekly reports is
-   a perfectly reasonable ask. The cap should be raised (e.g. 180 days) or
-   expressed as a max **number of reports** rather than a max number of days.
-3. **`_window_dates` enumerates every calendar day.** For a 12-week window that
+1. **Month/quarter wording can be better tuned for weekly density.** The parser
+   now allows longer rolling day/week windows, but the prompt starters still need
+   copy work (see Phase 5).
+2. **`_window_dates` enumerates every calendar day.** For a 12-week window that
    builds an 84-element list where at most 12 can ever match. It works (the
    intersection is harmless) but it is wasteful and it makes the
    "coverage" reporting misleading — it counts 84 requested dates against 12
    possible hits. Better: intersect the window with the dates that actually
    exist in the corpus (`kb` already knows them) before reporting coverage.
 
-**Recommended fix:** add week parsing, raise the cap, and intersect the window
-with real corpus dates. Contained to ~3 functions in one file, plus tests.
+**Remaining recommended fix:** intersect the displayed coverage denominator with
+real corpus dates for weekly windows.
 
 ---
 
@@ -148,36 +146,20 @@ exists would ship a built-in button that silently returns no date window.
 
 ---
 
-## Phase 7 — GitHub Actions still on a weekday schedule
+## Phase 7 — landed after review: GitHub Actions weekly alignment
 
-`.github/workflows/climate-monitor.yml` runs `cron: "30 10 * * 1-5"` —
-**Mon–Fri**, i.e. still the daily model, and it calls
-`scripts/run_climate_monitor.py` directly (not the new weekly path).
-
-This workflow is **independent of the local pipeline** built in Phase 1. Today
-it would open a PR with a new dated report five times a week, competing with the
-local weekly cadence.
-
-Two coherent options — the choice is yours:
-
-- **(a) Align it:** `cron: "30 10 * * 1"` and pass `--cadence weekly` to the
-  sync step. CI becomes the weekly generator.
-- **(b) Disable it:** drop the `schedule:` trigger, keep `workflow_dispatch:`
-  for manual runs, and let the local cron own the cadence.
-
-**I recommend (b)** while the local Docker service is the delivery surface —
-having two independent generators writing dated reports into the same repo is a
-recipe for conflicting commits. Revisit if the service ever moves off this host.
+`.github/workflows/climate-monitor.yml` now runs `cron: "30 10 * * 1"` —
+Mondays only — and sets `CLIMATE_WIKI_CADENCE=weekly` before calling
+`scripts/run_climate_monitor.py`. The workflow is still independent of the local
+pipeline built in Phase 1, but it no longer opens weekday daily-style update PRs.
 
 ---
 
 ## Suggested order
 
-1. **Phase 2** (week windows) — the only change with real correctness impact
-2. **Phase 4** (stale dates) — tiny, measurable bias fix
-3. **Phase 7** (decide CI) — needs your call, prevents duplicate generators
-4. **Phase 5** (prompt starters) — after Phase 2 lands
-5. **Phase 6** (docs), **Phase 3** (labels) — cosmetic cleanup
+1. **Phase 4** (stale dates) — tiny, measurable bias fix
+2. **Phase 5** (prompt starters) — now that week windows work
+3. **Phase 6** (docs), **Phase 3** (labels) — cosmetic cleanup
 
-Phases 2 and 4 are contained to `agentic_wiki/wiki_agent.py` and are covered by
-the existing test suite; they are the natural next PR.
+Phase 4 is contained to `agentic_wiki/wiki_agent.py` and is covered by the
+existing test suite; it is the natural next correctness PR.

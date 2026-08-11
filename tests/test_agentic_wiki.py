@@ -178,6 +178,10 @@ def test_requested_dates_supports_english_month_and_range_phrases():
         "2026-04-15",
         "2026-04-16",
     ]
+    two_weeks = _requested_dates("Summarize the past 2 weeks of reports", "2026-08-10")
+    assert len(two_weeks) == 14
+    assert two_weeks[0] == "2026-07-28"
+    assert two_weeks[-1] == "2026-08-10"
 
 
 def test_executive_mode_produces_structured_window_brief_offline():
@@ -238,4 +242,45 @@ def test_past_week_daily_summary_covers_requested_window_offline():
     } & corpus_dates
     assert expected_dates, "no reports in the requested window to cover"
     assert expected_dates.issubset(source_dates)
+    assert source_dates.issubset(
+        {
+            (window_start + timedelta(days=offset)).isoformat()
+            for offset in range(7)
+        }
+    )
     assert latest_date.isoformat() in source_dates
+
+
+def test_past_two_weeks_summary_parses_weeks_and_scopes_sources_offline():
+    responder_instance = AgenticWikiResponder()
+    responder_instance.client = None
+    latest_date_value = responder_instance.kb.latest_date
+    assert latest_date_value is not None
+    latest_date = date.fromisoformat(latest_date_value)
+    window_start = latest_date - timedelta(days=13)
+    window_dates = {
+        (window_start + timedelta(days=offset)).isoformat() for offset in range(14)
+    }
+
+    result = responder_instance.answer(
+        "Summarize the past 2 weeks of reports for me.",
+        language="en",
+        answer_mode="detailed",
+    )
+
+    assert result["answer_mode"] == "detailed"
+    assert f"Coverage window: {window_start.isoformat()} to {latest_date.isoformat()}" in result["text"]
+
+    source_dates = {source["date"] for source in result["sources"]}
+    corpus_dates = {
+        document.date
+        for document in (
+            *responder_instance.kb.documents,
+            *getattr(responder_instance.kb, "source_documents", ()),
+        )
+        if getattr(document, "date", None)
+    }
+    expected_dates = window_dates & corpus_dates
+    assert expected_dates, "no reports in the requested window to cover"
+    assert expected_dates.issubset(source_dates)
+    assert source_dates.issubset(window_dates)

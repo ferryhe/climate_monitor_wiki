@@ -75,7 +75,7 @@ window's latest report is included.
 Four tests were added for weekly behaviour: no gap-filling, placeholder pruning,
 `--keep-sourceless`, and a regression guard that daily cadence still fills gaps.
 
-Suite: **62 passed**.
+Suite: **63 passed**.
 
 ## Scheduling
 
@@ -95,8 +95,7 @@ manual entry point.
 
 ## GitHub Actions
 
-`.github/workflows/climate-monitor.yml` still carries the original
-`cron: "30 10 * * 1-5"` (weekdays) and calls `run_climate_monitor.py` directly.
-It is independent of the local cron pipeline above. If you want CI to follow the
-weekly cadence too, change that schedule to `30 10 * * 1` and pass
-`--cadence weekly` to the sync step.
+`.github/workflows/climate-monitor.yml` is aligned to the weekly cadence:
+`cron: "30 10 * * 1"` (Mondays) and `CLIMATE_WIKI_CADENCE=weekly` for the
+monitor run. It is still independent of the local cron pipeline above, but it no
+longer generates weekday daily-grid updates.
