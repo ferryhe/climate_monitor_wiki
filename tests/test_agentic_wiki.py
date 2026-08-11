@@ -120,6 +120,16 @@ def test_showcase_root_contains_chat_and_obsidian_workspace():
     assert body.index("Page Index") < body.index("Graph View")
 
 
+def test_robots_txt_disallows_crawling():
+    client = TestClient(app)
+
+    response = client.get("/robots.txt")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "User-agent: *\nDisallow: /\n"
+
+
 def test_showcase_app_exposes_mode_aware_prompt_starters():
     client = TestClient(app)
 
