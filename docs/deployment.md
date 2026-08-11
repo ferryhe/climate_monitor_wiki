@@ -1,8 +1,9 @@
-# Deployment: Docker + Caddy HTTPS on the local host
+# Deployment: Docker + Caddy HTTPS
 
-The wiki runs as two containers behind Caddy, which terminates TLS using its
-built-in internal CA. No public domain and no Let's Encrypt account are needed —
-the service is reachable at `https://<host-ip>` on the LAN.
+The wiki runs as two containers behind Caddy. The public site is available at
+`https://climate.aiinforsearch.com` with Caddy-managed public-CA TLS. The host's
+private IP remains available for internal health checks with Caddy's internal
+CA.
 
 Current host IP: **172.31.10.77**
 
@@ -34,22 +35,27 @@ sudo docker compose ps      # both containers should be Up, app "(healthy)"
 Verify:
 
 ```bash
+curl -s  -o /dev/null -w '%{http_code} %{redirect_url}\n' http://climate.aiinforsearch.com/  # 301 -> HTTPS
+curl -s  -o /dev/null -w '%{http_code}\n' https://climate.aiinforsearch.com/api/config  # 200
 curl -sk -o /dev/null -w '%{http_code}\n' https://172.31.10.77/api/config   # 200
 curl -s  -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
 ```
 
 ## Certificate trust
 
-Caddy issues the cert from its own local CA, so clients show a trust warning
-until the root is imported. Export it with:
+Caddy automatically obtains and renews a publicly trusted certificate for
+`climate.aiinforsearch.com`; DNS must resolve to this host and ports 80/443 must
+be reachable for issuance and renewal.
+
+The private-IP site uses Caddy's local CA, so clients connecting to the IP show
+a trust warning until its root is imported. Export it with:
 
 ```bash
 sudo docker cp climate-wiki-caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
 ```
 
 Then import `caddy-root.crt` into the OS/browser trust store. `curl -k` skips
-this for scripted checks. Swap in a real domain + `tls` email in the `Caddyfile`
-if the service is ever exposed publicly.
+this only for private-IP scripted checks. Public checks should not use `-k`.
 
 ## Gotcha: bare-IP TLS needs `default_sni`
 
