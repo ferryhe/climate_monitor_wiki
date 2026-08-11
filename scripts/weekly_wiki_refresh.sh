@@ -43,7 +43,7 @@ echo "== ingest + sync =="
 
 echo "== reload running service =="
 if curl -sk --max-time 15 -X POST "$BASE_URL/api/reload" \
-     ${RELOAD_TOKEN:+-H "X-Reload-Token: $RELOAD_TOKEN"} -o /tmp/reload.json -w '%{http_code}\n' \
+     ${RELOAD_TOKEN:+-H "X-Reload-Token: $RELOAD_TOKEN"} -o /dev/null -w '%{http_code}\n' \
    | grep -q '^2'; then
   echo "reload ok"
 else

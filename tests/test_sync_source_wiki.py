@@ -1,11 +1,19 @@
 from textwrap import dedent
 
-from scripts.sync_source_wiki import sync_source_wiki
+from scripts.sync_source_wiki import _default_cadence, sync_source_wiki
 
 
 def _write(path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(content).lstrip("\n"), encoding="utf-8")
+
+
+def test_default_cadence_normalizes_environment_value(monkeypatch):
+    monkeypatch.setenv("CLIMATE_WIKI_CADENCE", " Weekly ")
+    assert _default_cadence() == "weekly"
+
+    monkeypatch.setenv("CLIMATE_WIKI_CADENCE", "sometimes")
+    assert _default_cadence() == "daily"
 
 
 def test_sync_source_wiki_generates_daily_pages_and_rebuilds_index(tmp_path):

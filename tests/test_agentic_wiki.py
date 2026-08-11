@@ -294,3 +294,17 @@ def test_past_two_weeks_summary_parses_weeks_and_scopes_sources_offline():
     assert expected_dates, "no reports in the requested window to cover"
     assert expected_dates.issubset(source_dates)
     assert source_dates.issubset(window_dates)
+
+
+def test_unknown_requested_date_keeps_relevant_evidence_offline():
+    responder_instance = AgenticWikiResponder()
+    responder_instance.client = None
+
+    result = responder_instance.answer(
+        "What are the main climate insurance themes on 2099-01-01?",
+        language="en",
+        answer_mode="detailed",
+    )
+
+    assert result["sources"]
+    assert "could not find enough evidence" not in result["text"]

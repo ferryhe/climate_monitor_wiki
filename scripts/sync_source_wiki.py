@@ -12,9 +12,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DIR = REPO_ROOT / "sources"
 DEFAULT_WIKI_DIR = REPO_ROOT / "wiki"
 DAILY_FILE_RE = re.compile(r"^climate-monitor-(\d{4}-\d{2}-\d{2})\.md$")
-DEFAULT_CADENCE = os.environ.get("CLIMATE_WIKI_CADENCE", "daily")
 LAST_UPDATED_RE = re.compile(r"^_Last updated: .+_$", re.MULTILINE)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
+
+
+def _default_cadence() -> str:
+    cadence = os.environ.get("CLIMATE_WIKI_CADENCE", "daily").strip().lower()
+    return cadence if cadence in {"daily", "weekly"} else "daily"
+
+
+DEFAULT_CADENCE = _default_cadence()
 
 
 @dataclass(frozen=True)

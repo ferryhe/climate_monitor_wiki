@@ -1408,12 +1408,14 @@ class AgenticWikiResponder:
         synthesis_pool = synthesis_hits
         if requested_dates:
             requested_date_set = set(requested_dates)
-            synthesis_pool = [
+            date_scoped_hits = [
                 hit
                 for hit in synthesis_hits
                 if hit.chunk.date in requested_date_set
                 and not _is_boilerplate_heading(hit.chunk.heading)
             ]
+            if date_scoped_hits:
+                synthesis_pool = date_scoped_hits
         source_hits = synthesis_pool[:max_sources]
         sources = [
             hit.to_source(index, self.base_source_url)
