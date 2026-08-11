@@ -1,5 +1,10 @@
 # Climate Web Listening Monitor Implementation Plan
 
+> **Historical planning snapshot:** Automation and cadence details below record
+> the original design and are not current operating instructions. See
+> `docs/weekly-cadence.md` for the Hermes rolling-PR workflow. The GitHub
+> report-generator workflow planned below has been deleted.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an adapter-first monitor that uses `web_listening` to track supranational-organization sites, filters climate and actuarial signals, writes daily English source reports, syncs the wiki, and prepares GitHub automation for recurring updates.

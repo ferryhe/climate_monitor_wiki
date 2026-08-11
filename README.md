@@ -1,6 +1,6 @@
 # Climate Monitor Wiki
 
-A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research, compiled daily from automated monitoring.
+A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research, compiled weekly from automated monitoring.
 
 ## Web + Obsidian Surfaces
 
@@ -86,44 +86,54 @@ curl -s http://localhost:8501/api/chat \
 If `sources/` changes, do the following:
 
 1. Add or update the raw file in `sources/`.
-2. Regenerate the daily wiki pages and `wiki/index.md`:
+2. Regenerate the weekly report pages and `wiki/index.md`:
 
 ```bash
-python scripts/sync_source_wiki.py
+REPORT_DATE="<new Monday, YYYY-MM-DD>"
+python scripts/sync_source_wiki.py --cadence weekly
+python scripts/reload_and_smoke_test.py --date "$REPORT_DATE"
 ```
 
-3. Reload the API and run the smoke test:
-
-```bash
-python scripts/reload_and_smoke_test.py --date 2026-04-25
-```
+3. Confirm the reload and smoke test succeed for that same `REPORT_DATE`.
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
 
 ## Automated Climate Monitor
 
-The scheduled monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, writes `sources/climate-monitor-YYYY-MM-DD.md`, and regenerates the matching wiki pages with `scripts/sync_source_wiki.py`.
-Website page changes, document/report file links, and research search results are reported in separate daily report sections.
+The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. Two hours later, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
 
-Local dry run:
+The production checkout is never used as a generation workspace. Publication is deliberately split into **generate → rolling PR → human merge → server deploy** so production `main` stays clean and can be fast-forwarded safely.
+
+Isolated local fixture run (all generated state, sources, and wiki pages stay
+outside the checkout):
 
 ```bash
+DRY_RUN_DIR="$(mktemp -d)"
+CLIMATE_WIKI_CADENCE=weekly \
 python scripts/run_climate_monitor.py \
-  --date 2026-05-14 \
+  --date 2026-05-18 \
   --manifest-fixture monitoring/fixtures/web_listening_manifest_sample.json \
-  --research-fixture monitoring/fixtures/research_results_sample.json
+  --research-fixture monitoring/fixtures/research_results_sample.json \
+  --state-dir "$DRY_RUN_DIR/state" \
+  --source-dir "$DRY_RUN_DIR/sources" \
+  --wiki-dir "$DRY_RUN_DIR/wiki" \
+  --no-update-seen-state
+echo "Fixture outputs: $DRY_RUN_DIR"
 ```
 
-For live website collection, install or point to `web_listening`, then opt in explicitly:
+For an intentional live, mutating run on the controlled server, choose the
+Monday report date, install or point to `web_listening`, then opt in explicitly:
 
 ```bash
+REPORT_DATE="<new Monday, YYYY-MM-DD>"
 WEB_LISTENING_PROJECT_PATH=../web_listening \
 CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1 \
 CLIMATE_MONITOR_ENABLE_LIVE_RESEARCH=1 \
-python scripts/run_climate_monitor.py
+CLIMATE_WIKI_CADENCE=weekly \
+python scripts/run_climate_monitor.py --date "$REPORT_DATE"
 ```
 
-The GitHub workflow lives at `.github/workflows/climate-monitor.yml`. It opens a pull request only when generated files change.
+Hermes is the sole report generator. There is no GitHub Actions generator. An emergency manual run is performed only on the controlled server with the existing monitor and rolling-PR publisher.
 
 ## Deploy on Render
 

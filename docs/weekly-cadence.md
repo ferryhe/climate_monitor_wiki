@@ -59,9 +59,19 @@ duplicates of the same monitoring week; ingesting them would create several
 
 ```bash
 python scripts/ingest_weekly_reports.py --dry-run     # preview
-python scripts/ingest_weekly_reports.py               # ingest + sync
-python scripts/ingest_weekly_reports.py --commit      # + git commit
+python scripts/ingest_weekly_reports.py               # ingest + sync only
 ```
+
+The ingest command has no commit or push mode. Automated publication is owned
+by `scripts/publish_weekly_reports.py`, which works only in a temporary clone of
+the latest `origin/main` and updates the fixed rolling branch
+`codex/hermes-weekly-monitor`. It first pushes a unique temporary candidate ref
+that is never connected to a PR, rechecks `main`, then promotes the candidate to
+the rolling ref with an exact lease. A final `main` check happens immediately
+after promotion. There is an unavoidable very short window in which rolling can
+be based on a just-superseded `main`; the publisher detects that before any PR
+operation and uses an exact lease to restore the previous good ref (or delete a
+new ref) before retrying. Human review and merge remain the safety boundary.
 
 ### 5. Test suite
 
@@ -75,7 +85,7 @@ window's latest report is included.
 Four tests were added for weekly behaviour: no gap-filling, placeholder pruning,
 `--keep-sourceless`, and a regression guard that daily cadence still fills gaps.
 
-Suite: **63 passed**.
+Suite: **112 passed**.
 
 ## Scheduling
 
@@ -84,18 +94,23 @@ Two jobs, deliberately separated so a monitoring failure cannot corrupt the wiki
 | Job | Schedule | Does |
 |---|---|---|
 | Weekly Climate & Actuarial Monitor (`f5259a8ec2d9`) | Mon 08:00 UTC | crawls 57 sites, writes `data/reports/climate-monitor-<date>.md` |
-| Weekly Climate Wiki Rebuild (`dccb79cd69bc`) | Mon 10:00 UTC | ingests that report, regenerates the wiki, commits, reloads the service |
+| Weekly Climate Wiki Publisher (`dccb79cd69bc`) | Mon 10:00 UTC | validates/imports reports in a temporary clone and updates a rolling PR |
 
 The 2-hour offset gives the monitor room to finish (~6 min of crawling, plus
-retries) before the wiki rebuild reads its output. If no new Monday report
-exists, the rebuild is a no-op and reports "no new report" rather than failing.
+retries) before the publisher reads its output. If `main` already contains all
+eligible Monday reports, publication is a no-op.
 
-The rebuild runs `scripts/weekly_wiki_refresh.sh`, which is also the correct
-manual entry point.
+The publisher runs `scripts/weekly_wiki_refresh.sh`. A host `flock` prevents
+overlap. The wrapper does not source `.env`, alter the production checkout,
+reload the app, restart containers, or deploy anything.
 
-## GitHub Actions
+The complete production flow is: **Hermes generate → rolling PR → human merge
+→ separate server deploy**. The production checkout remains clean and tracks
+`origin/main` throughout generation.
 
-`.github/workflows/climate-monitor.yml` is aligned to the weekly cadence:
-`cron: "30 10 * * 1"` (Mondays) and `CLIMATE_WIKI_CADENCE=weekly` for the
-monitor run. It is still independent of the local cron pipeline above, but it no
-longer generates weekday daily-grid updates.
+## No GitHub report generator
+
+The competing GitHub Actions generator was deleted. Hermes is the only report
+generator. Emergency manual generation is performed only on the controlled
+server with the existing monitor and rolling-PR publisher; do not recreate a
+scheduled or `workflow_dispatch` generator.

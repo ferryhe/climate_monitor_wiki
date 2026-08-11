@@ -1,5 +1,11 @@
 # Climate Monitor Wiki — Repo Study & Weekly Integration Report
 
+> **Historical snapshot:** This report records the earlier local-commit/reload
+> design and is not current operating guidance. The live workflow is documented
+> in `docs/weekly-cadence.md`: Hermes generate → rolling PR → human merge →
+> separate server deploy. The GitHub report-generator workflow described below
+> has been deleted.
+
 **Prepared:** 2026-08-10 · **Repo:** github.com/ferryhe/climate_monitor_wiki
 **Live service:** https://172.31.10.77
 
