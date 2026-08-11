@@ -2,22 +2,22 @@ const STORAGE_KEY = "climate-monitor-agent-thread";
 
 const DEFAULT_PROMPT_STARTERS = [
   {
-    label: "Monthly report",
-    prompt: "Give me a report for this month. Cover major themes, notable signals, and gaps.",
+    label: "Last 4 weeks",
+    prompt: "Summarize the past 4 weeks by theme and identify material changes across the weekly reports.",
     answer_mode: "executive",
-    description: "Theme-clustered report with date coverage, notable signals, and missing-report gaps.",
+    description: "Compares the recent weekly reports, organized around recurring themes and material shifts.",
   },
   {
-    label: "30-day change",
-    prompt: "What changed materially over the last 30 days for insurers?",
+    label: "Last 12 weeks",
+    prompt: "Give me an executive report for the past 12 weeks. Highlight trends, turning points, and evidence gaps.",
     answer_mode: "executive",
-    description: "Best for trend shifts across a recent window instead of only the latest report.",
+    description: "Uses roughly a quarter of weekly reports to separate persistent trends from one-off signals.",
   },
   {
-    label: "14-day themes",
-    prompt: "Summarize the past 14 days by theme, not by day.",
-    answer_mode: "executive",
-    description: "Synthesizes recurring themes first, then uses daily coverage as supporting context.",
+    label: "Insurer implications",
+    prompt: "Across the past 4 weeks, what developments matter most for insurers and actuaries? Cite the weekly reports.",
+    answer_mode: "detailed",
+    description: "Focuses the recent evidence on pricing, reserving, capital, supervision, and protection gaps.",
   },
   {
     label: "Pricing explainer",
@@ -26,10 +26,10 @@ const DEFAULT_PROMPT_STARTERS = [
     description: "Evidence-heavy explanation grounded in the source reports and linked wiki notes.",
   },
   {
-    label: "Latest snapshot",
-    prompt: "What are the latest Climate Monitor highlights in five bullets?",
+    label: "Latest report",
+    prompt: "Summarize the latest Climate Monitor report in five bullets and include the report date.",
     answer_mode: "brief",
-    description: "Fast snapshot for a quick scan of the most recent material developments.",
+    description: "Fast snapshot grounded only in the newest available weekly report.",
   },
 ];
 

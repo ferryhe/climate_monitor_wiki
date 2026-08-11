@@ -74,8 +74,6 @@ STOPWORDS = {
 }
 
 QUERY_ALIASES = {
-    "latest": "latest 2026-04-20 climate monitor update current summary",
-    "today": "2026-04-20 latest daily report climate monitor",
     "secondary perils": "secondary perils severe convective storms wildfire flood nat cat losses",
     "nat cat": "natural catastrophe reinsurance catastrophe losses protection gap",
     "natural catastrophe": "natural catastrophe reinsurance catastrophe losses protection gap",
@@ -207,22 +205,22 @@ AnswerMode = Literal["brief", "detailed", "executive"]
 VALID_ANSWER_MODES = {"brief", "detailed", "executive"}
 PROMPT_STARTERS: tuple[dict[str, str], ...] = (
     {
-        "label": "Monthly report",
-        "prompt": "Give me a report for this month. Cover major themes, notable signals, and gaps.",
+        "label": "Last 4 weeks",
+        "prompt": "Summarize the past 4 weeks by theme and identify material changes across the weekly reports.",
         "answer_mode": "executive",
-        "description": "Theme-clustered report with date coverage, notable signals, and missing-report gaps.",
+        "description": "Compares the recent weekly reports, organized around recurring themes and material shifts.",
     },
     {
-        "label": "30-day change",
-        "prompt": "What changed materially over the last 30 days for insurers?",
+        "label": "Last 12 weeks",
+        "prompt": "Give me an executive report for the past 12 weeks. Highlight trends, turning points, and evidence gaps.",
         "answer_mode": "executive",
-        "description": "Best for trend shifts across a recent window instead of only the latest report.",
+        "description": "Uses roughly a quarter of weekly reports to separate persistent trends from one-off signals.",
     },
     {
-        "label": "14-day themes",
-        "prompt": "Summarize the past 14 days by theme, not by day.",
-        "answer_mode": "executive",
-        "description": "Synthesizes recurring themes first, then uses daily coverage as supporting context.",
+        "label": "Insurer implications",
+        "prompt": "Across the past 4 weeks, what developments matter most for insurers and actuaries? Cite the weekly reports.",
+        "answer_mode": "detailed",
+        "description": "Focuses the recent evidence on pricing, reserving, capital, supervision, and protection gaps.",
     },
     {
         "label": "Pricing explainer",
@@ -231,10 +229,10 @@ PROMPT_STARTERS: tuple[dict[str, str], ...] = (
         "description": "Evidence-heavy explanation grounded in the source reports and linked wiki notes.",
     },
     {
-        "label": "Latest snapshot",
-        "prompt": "What are the latest Climate Monitor highlights in five bullets?",
+        "label": "Latest report",
+        "prompt": "Summarize the latest Climate Monitor report in five bullets and include the report date.",
         "answer_mode": "brief",
-        "description": "Fast snapshot for a quick scan of the most recent material developments.",
+        "description": "Fast snapshot grounded only in the newest available weekly report.",
     },
 )
 
@@ -302,12 +300,16 @@ def _tokens(text: str) -> list[str]:
     return values
 
 
-def _expand_query(query: str) -> str:
+def _expand_query(query: str, latest_date: str = "") -> str:
     expanded = [query]
     lower = query.lower()
     for key, value in QUERY_ALIASES.items():
         if key in query or key.lower() in lower:
             expanded.append(value)
+    if latest_date and "latest" in lower:
+        expanded.append(f"{latest_date} latest weekly Climate Monitor report current summary")
+    if latest_date and "today" in lower:
+        expanded.append(f"{latest_date} latest weekly Climate Monitor report current update")
     if "ifrs" in lower or "issb" in lower:
         expanded.append("IFRS S2 ISSB scope 3 financed emissions climate disclosure")
     if "iais" in lower:
@@ -487,6 +489,9 @@ def _asks_daily_summary(question: str) -> bool:
         for term in [
             "daily report",
             "daily reports",
+            "weekly report",
+            "weekly reports",
+            "report by report",
             "day by day",
             "past week",
             "last week",
@@ -709,6 +714,7 @@ class WikiKnowledgeBase:
         self.document_concepts: dict[str, list[dict[str, str]]] = {}
         self.concepts: list[dict[str, Any]] = []
         self.graphs: dict[str, dict[str, Any]] = {}
+        self.report_dates: list[str] = []
         self.latest_date = ""
         self._load()
 
@@ -725,14 +731,16 @@ class WikiKnowledgeBase:
         self.chunks = wiki_chunks + source_chunks
         self.document_concepts, self.concepts = self._build_concept_index()
         self.graphs = self._build_graph_catalog()
-        self.latest_date = max(
-            (
-                doc.date
-                for doc in [*wiki_docs, *source_docs]
-                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc.date)
-            ),
-            default="",
-        )
+        source_dates = {
+            doc.date for doc in source_docs if re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc.date)
+        }
+        wiki_report_dates = {
+            doc.date
+            for doc in wiki_docs
+            if doc.type == "daily" and re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc.date)
+        }
+        self.report_dates = sorted(source_dates or wiki_report_dates)
+        self.latest_date = max(self.report_dates, default="")
 
     def _load_directory(
         self,
@@ -1021,6 +1029,10 @@ class WikiKnowledgeBase:
             "words": sum(doc.words for doc in self.documents + self.source_documents),
         }
 
+    def reports_in_window(self, requested_dates: list[str]) -> list[str]:
+        available = set(self.report_dates)
+        return [report_date for report_date in requested_dates if report_date in available]
+
     def document_catalog(self, github_blob_base_url: str = "") -> list[dict[str, Any]]:
         return [
             {
@@ -1057,7 +1069,7 @@ class WikiKnowledgeBase:
         top_k: int = 6,
         context_path: str | None = None,
     ) -> list[SearchHit]:
-        expanded = _expand_query(query)
+        expanded = _expand_query(query, self.latest_date)
         query_tokens = _tokens(expanded)
         if not query_tokens:
             query_tokens = _tokens(query)
@@ -1138,7 +1150,7 @@ class WikiKnowledgeBase:
 
             if asks_daily and chunk.type == "daily":
                 score += 2.5
-                reason_parts.append("daily report intent")
+                reason_parts.append("report-summary intent")
 
             if asks_daily and _heading_key(chunk.heading) in {"summary", "executive summary"}:
                 score += 3.5
@@ -1320,12 +1332,13 @@ class AgenticWikiResponder:
 
         planned_queries = self._plan_queries(question, history or [], language, answer_mode)
         requested_dates = _requested_dates(question, self.kb.latest_date)
+        report_dates = self.kb.reports_in_window(requested_dates)
         hits: list[SearchHit] = []
         retrieval_log: list[dict[str, Any]] = []
         seen_chunks: set[str] = set()
         initial_top_k = 6 if answer_mode == "detailed" else 5
-        if requested_dates:
-            initial_top_k = min(20, max(initial_top_k, len(requested_dates) * 2))
+        if report_dates:
+            initial_top_k = min(20, max(initial_top_k, len(report_dates) * 2))
 
         for query in planned_queries:
             round_hits = self.kb.search(query, top_k=initial_top_k, context_path=context_path)
@@ -1355,8 +1368,8 @@ class AgenticWikiResponder:
         if reflection["additional_queries"]:
             for query in reflection["additional_queries"]:
                 follow_up_top_k = 5
-                if requested_dates:
-                    follow_up_top_k = min(18, max(follow_up_top_k, len(requested_dates) * 2 - 1))
+                if report_dates:
+                    follow_up_top_k = min(18, max(follow_up_top_k, len(report_dates) * 2 - 1))
                 round_hits = self.kb.search(query, top_k=follow_up_top_k, context_path=context_path)
                 new_hits = []
                 for hit in round_hits:
@@ -1469,7 +1482,7 @@ class AgenticWikiResponder:
                 "role": "system",
                 "content": (
                 "You plan retrieval for a grounded Markdown RAG system that has both curated wiki notes "
-                "and raw daily source reports. Return JSON only: {\"sub_queries\": [\"...\"]}. "
+                "and raw weekly source reports. Return JSON only: {\"sub_queries\": [\"...\"]}. "
                 "Create 2-4 search queries that cover the user's intent and include canonical English domain terms. "
                 "If the user wants detail or an executive brief, include a raw-source-oriented query "
                 "and a date-coverage-oriented query when the prompt spans a period."
@@ -1484,7 +1497,7 @@ class AgenticWikiResponder:
                     f"Question: {question}\n"
                     "The corpus covers climate risk, natural catastrophe insurance, "
                     "actuarial research, ISSB/IFRS S2, IAIS, FSB, Swiss Re, "
-                    "parametric insurance, protection gaps, and raw daily monitoring reports."
+                    "parametric insurance, protection gaps, and raw weekly monitoring reports."
                 ),
             },
         ]
@@ -1497,19 +1510,19 @@ class AgenticWikiResponder:
             return local
 
     def _local_plan(self, question: str, answer_mode: AnswerMode) -> list[str]:
-        expanded = _expand_query(question)
+        expanded = _expand_query(question, self.kb.latest_date)
         queries = [question, expanded]
         lower = question.lower()
         window_dates = _window_dates(question, self.kb.latest_date)
         if window_dates:
-            date_span = " ".join(window_dates)
-            queries.append(f"Climate Monitor daily report summaries {date_span}")
+            date_span = f"{window_dates[0]} through {window_dates[-1]}"
+            queries.append(f"Climate Monitor weekly report summaries {date_span}")
             if answer_mode == "detailed":
-                queries.append(f"Climate Monitor raw daily reports highlights figures dates {date_span}")
+                queries.append(f"Climate Monitor raw weekly reports highlights figures dates {date_span}")
         if any(term in lower for term in ["latest", "current", "recent"]):
             queries.append(f"{self.kb.latest_date} latest Climate Monitor summary")
         if _asks_daily_summary(question):
-            queries.append("Climate Monitor daily report summary highlights")
+            queries.append("Climate Monitor weekly report summary highlights")
         if "compare" in lower or "difference" in lower or "distinguish" in lower:
             queries.append("climate risk frameworks comparison IAIS FSB ISSB TCFD TNFD")
         if answer_mode == "detailed":
@@ -1546,7 +1559,7 @@ class AgenticWikiResponder:
         if not hits:
             return {
                 "decision": "continue",
-                "reason": "No evidence found on the first pass; broadened to the wiki index and raw daily reports.",
+                "reason": "No evidence found on the first pass; broadened to the wiki index and raw weekly reports.",
                 "additional_queries": ["climate risk insurance actuarial wiki index raw source report"],
             }
 
@@ -1560,17 +1573,18 @@ class AgenticWikiResponder:
             }
 
         if requested_dates:
+            report_dates = self.kb.reports_in_window(requested_dates)
             covered_dates = {
                 hit.chunk.date
                 for hit in hits
-                if hit.chunk.date in set(requested_dates) and not _is_boilerplate_heading(hit.chunk.heading)
+                if hit.chunk.date in set(report_dates) and not _is_boilerplate_heading(hit.chunk.heading)
             }
-            if len(covered_dates) < min(len(requested_dates), 4):
+            if report_dates and len(covered_dates) < min(len(report_dates), 4):
                 return {
                     "decision": "continue",
-                    "reason": "A date-range question needs broader daily coverage across the requested window.",
+                    "reason": "A date-range question needs broader weekly-report coverage across the requested window.",
                     "additional_queries": [
-                        f"Climate Monitor daily report summaries {' '.join(requested_dates)}"
+                        f"Climate Monitor weekly report summaries {requested_dates[0]} through {requested_dates[-1]}"
                     ],
                 }
 
@@ -1598,7 +1612,7 @@ class AgenticWikiResponder:
         if not hits:
             return []
 
-        expanded_tokens = set(_tokens(_expand_query(question)))
+        expanded_tokens = set(_tokens(_expand_query(question, self.kb.latest_date)))
         normalized_context_path = (context_path or "").lstrip("/")
         context_title = _context_title_from_path(normalized_context_path)
         requested_dates = _requested_dates(question, self.kb.latest_date)
@@ -1926,7 +1940,7 @@ class AgenticWikiResponder:
             if len(cluster.days) > 6:
                 days_preview += ", ..."
             lines.append(
-                f"- {cluster.label} ({cluster.concept_type}) | {cluster.report_days} day(s) | dates: {days_preview}"
+                f"- {cluster.label} ({cluster.concept_type}) | {cluster.report_days} report(s) | dates: {days_preview}"
             )
             lines.append(f"  Summary: {cluster.summary}")
             if cluster.raw_signal:
@@ -1954,11 +1968,11 @@ class AgenticWikiResponder:
                 f"{self._format_evidence(hits[: min(12, len(hits))], 'detailed')}"
             )
 
-        entries = self._timeline_entries(requested_dates, hits)
+        report_dates = self.kb.reports_in_window(requested_dates)
+        entries = self._timeline_entries(report_dates, hits)
         clusters = self._theme_clusters(entries, hits)
-        raw_source_days = sum(1 for entry in entries if entry["source_hit"] is not None)
-        report_days = sum(1 for entry in entries if entry["has_report"])
-        missing_days = [entry["date"] for entry in entries if not entry["has_report"]]
+        raw_source_reports = sum(1 for entry in entries if entry["source_hit"] is not None)
+        reports_with_evidence = sum(1 for entry in entries if entry["has_report"])
 
         timeline_lines = []
         for entry in entries:
@@ -1971,11 +1985,10 @@ class AgenticWikiResponder:
 
         coverage_lines = [
             f"Coverage window: {requested_dates[0]} to {requested_dates[-1]}",
-            f"Daily pages with evidence: {report_days} of {len(requested_dates)}",
-            f"Raw source days: {raw_source_days} of {len(requested_dates)}",
+            f"Reports with evidence: {reports_with_evidence}",
+            f"Raw source reports: {raw_source_reports}",
+            f"Report dates: {', '.join(report_dates) if report_dates else 'none available'}",
         ]
-        if missing_days:
-            coverage_lines.append(f"Missing or no-report days: {', '.join(missing_days[:12])}")
 
         supporting_hits = self._theme_cluster_supporting_hits(clusters)
         if len(supporting_hits) < 12:
@@ -1994,7 +2007,7 @@ class AgenticWikiResponder:
             f"{chr(10).join(coverage_lines)}\n\n"
             "Theme Clusters:\n"
             f"{chr(10).join(cluster_lines)}\n\n"
-            "Day-by-Day Notes:\n"
+            "Report-by-Report Notes:\n"
             f"{chr(10).join(timeline_lines)}\n\n"
             "Supporting Evidence Blocks:\n"
             f"{self._format_evidence(supporting_hits, 'detailed')}"
@@ -2038,9 +2051,9 @@ class AgenticWikiResponder:
             user_instruction = (
                 "Write an executive brief for insurance and climate-risk readers. "
                 "Use the exact section headings: Executive Summary, Major Themes, Date Coverage, "
-                "Notable Signals, Day-by-Day Coverage, and Gaps and Caveats. "
-                "Use the supplied theme clusters as the primary organizing structure, and use the day-by-day notes as supporting coverage. "
-                "Cover the full requested window explicitly and do not skip quiet or missing-report days silently."
+                "Notable Signals, Report-by-Report Coverage, and Gaps and Caveats. "
+                "Use the supplied theme clusters as the primary organizing structure, and use the report-by-report notes as supporting coverage. "
+                "State which report dates are present; do not treat non-report days between weekly runs as missing reports."
             )
         else:
             user_instruction = (
@@ -2048,8 +2061,9 @@ class AgenticWikiResponder:
             )
         if requested_dates and _asks_daily_summary(question):
             user_instruction += (
-                f" This is a date-window daily-report summary request. Cover the full window from "
-                f"{requested_dates[0]} to {requested_dates[-1]} and mention exact dates explicitly."
+                f" This is a date-window weekly-report summary request. Cover the window from "
+                f"{requested_dates[0]} to {requested_dates[-1]}, mention the available report dates explicitly, "
+                "and do not invent reports for intervening days."
             )
 
         user = (
@@ -2106,11 +2120,11 @@ class AgenticWikiResponder:
             lines.append("Set OPENAI_API_KEY in .env to enable synthesized reports.")
             return "\n".join(lines)
 
-        entries = self._timeline_entries(requested_dates, hits)
+        report_dates = self.kb.reports_in_window(requested_dates)
+        entries = self._timeline_entries(report_dates, hits)
         clusters = self._theme_clusters(entries, hits)
-        raw_source_days = sum(1 for entry in entries if entry["source_hit"] is not None)
-        report_days = sum(1 for entry in entries if entry["has_report"])
-        missing_days = [entry["date"] for entry in entries if not entry["has_report"]]
+        raw_source_reports = sum(1 for entry in entries if entry["source_hit"] is not None)
+        reports_with_evidence = sum(1 for entry in entries if entry["has_report"])
         cluster_lines = self._theme_cluster_lines(clusters)
 
         notable_signal_lines: list[str] = []
@@ -2127,15 +2141,15 @@ class AgenticWikiResponder:
             notable_signal_lines = ["- No raw-source-only signals were available in the selected window."]
 
         summary_seed = [entry["summary"] for entry in entries if entry["has_report"]][:3]
-        summary_text = " ".join(summary_seed) if summary_seed else "No daily reports were available in the selected window."
+        summary_text = " ".join(summary_seed) if summary_seed else "No reports were available in the selected window."
         lines = [
             "I found relevant evidence, but no OpenAI API key is configured, so this is a structured extractive report.",
             "",
             "Executive Summary:",
             (
                 f"The requested window runs from {requested_dates[0]} to {requested_dates[-1]}. "
-                f"The current corpus has evidence for {report_days} of {len(requested_dates)} day(s), "
-                f"with raw source support on {raw_source_days} day(s). {_shorten(summary_text, 520)}"
+                f"The current corpus has {reports_with_evidence} report(s) with evidence, "
+                f"including raw source support for {raw_source_reports} report(s). {_shorten(summary_text, 520)}"
             ),
             "",
             "Major Themes:",
@@ -2143,18 +2157,17 @@ class AgenticWikiResponder:
             "",
             "Date Coverage:",
             f"- Coverage window: {requested_dates[0]} to {requested_dates[-1]}",
-            f"- Daily pages with evidence: {report_days} of {len(requested_dates)}",
-            f"- Raw source days: {raw_source_days} of {len(requested_dates)}",
+            f"- Reports with evidence: {reports_with_evidence}",
+            f"- Raw source reports: {raw_source_reports}",
+            f"- Report dates: {', '.join(report_dates) if report_dates else 'none available'}",
         ]
-        if missing_days:
-            lines.append(f"- Missing or no-report days: {', '.join(missing_days[:12])}")
         lines.extend(
             [
                 "",
                 "Notable Signals:",
                 *notable_signal_lines,
                 "",
-                "Day-by-Day Coverage:",
+                "Report-by-Report Coverage:",
             ]
         )
         for entry in entries:
@@ -2198,28 +2211,29 @@ class AgenticWikiResponder:
 
         requested_dates = _requested_dates(question, self.kb.latest_date)
         if requested_dates and _asks_daily_summary(question):
+            report_dates = set(self.kb.reports_in_window(requested_dates))
             lines = [
                 "I found relevant evidence, but no OpenAI API key is configured, so this is a detailed extractive answer.",
                 "",
                 f"Coverage window: {requested_dates[0]} to {requested_dates[-1]}",
                 "",
-                "Day-by-day summary:",
+                "Report-by-report summary:",
             ]
             used_dates: set[str] = set()
             for hit in hits:
-                if hit.chunk.date not in requested_dates or hit.chunk.date in used_dates:
+                if hit.chunk.date not in report_dates or hit.chunk.date in used_dates:
                     continue
                 if _is_boilerplate_heading(hit.chunk.heading):
                     continue
                 used_dates.add(hit.chunk.date)
                 lines.append(f"- {hit.chunk.date}: {_shorten(hit.chunk.text, 360)}")
 
-            source_hits = [hit for hit in hits if hit.chunk.corpus == "source" and hit.chunk.date in requested_dates]
+            source_hits = [hit for hit in hits if hit.chunk.corpus == "source" and hit.chunk.date in report_dates]
             if source_hits:
                 lines.extend(
                     [
                         "",
-                        f"Raw source coverage: {len({hit.chunk.date for hit in source_hits})} day(s) in the window have raw-source evidence in the selected set.",
+                        f"Raw source coverage: {len({hit.chunk.date for hit in source_hits})} report(s) in the window have raw-source evidence in the selected set.",
                     ]
                 )
             lines.append("")

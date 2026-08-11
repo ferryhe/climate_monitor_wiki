@@ -16,7 +16,7 @@ Current automated coverage includes:
 - raw `sources/` ingestion into retrieval
 - `contextPath` source prioritization
 - `brief` vs `detailed` vs `executive` answer-mode behavior
-- rolling date-window daily summaries such as `past 7 days`
+- rolling weekly-report summaries such as `past 4 weeks`
 - monthly/date-range prompts such as `this month` and explicit ISO date ranges
 - `/api/config` payload fields required by graph/dataview, prompt starters, and precomputed graph payloads
 - showcase root HTML containing both `Chat` and `Obsidian` workspaces
@@ -28,12 +28,12 @@ Current automated coverage includes:
 1. Start `uvicorn api_server:app --host 0.0.0.0 --port 8501`.
 2. Open `/`.
 3. Switch between `Brief`, `Detailed`, and `Report` and ask the same question in all three modes.
-4. Confirm the detailed answer is meaningfully richer than `Brief`, and that `Report` uses sectioned report-style output with clustered themes instead of only a day-by-day recap.
+4. Confirm the detailed answer is meaningfully richer than `Brief`, and that `Report` uses sectioned output with clustered themes plus report-by-report coverage.
 5. Expand the `Evidence` drawer inside the assistant message.
 6. Click a `wiki/` source card and confirm the app switches to the `Obsidian` tab with that note selected.
 7. Click a `sources/` source card and confirm the raw report opens.
-8. Ask `Summarize the past 7 days of reports` and confirm the answer explicitly covers each date in the window, including days with no source report.
-9. Ask `Give me a report for this month` and confirm the answer includes `Executive Summary`, `Major Themes`, and `Date Coverage`.
+8. Ask `Summarize the past 4 weeks` and confirm the answer lists only real report dates in the window, without manufacturing missing daily updates.
+9. Ask `Give me an executive report for the past 12 weeks` and confirm the answer includes `Executive Summary`, `Major Themes`, `Date Coverage`, and `Report-by-Report Coverage`.
 
 ### Obsidian Workspace
 
