@@ -480,7 +480,7 @@ def _is_boilerplate_heading(value: str) -> bool:
     return _heading_key(value) in BOILERPLATE_HEADINGS
 
 
-def _asks_daily_summary(question: str) -> bool:
+def _asks_report_summary(question: str) -> bool:
     lower = question.lower()
     if _date_range_days(question) is not None:
         return True
@@ -1081,7 +1081,7 @@ class WikiKnowledgeBase:
             term in query_lower
             for term in ["detail", "detailed", "evidence", "quote", "quotes", "raw", "source"]
         )
-        asks_daily = _asks_daily_summary(query)
+        asks_report_summary = _asks_report_summary(query)
         requested_date_set = set(requested_dates)
         context_path = (context_path or "").lstrip("/")
         context_title = _context_title_from_path(context_path)
@@ -1148,11 +1148,11 @@ class WikiKnowledgeBase:
                 if chunk.type == "daily" or chunk.corpus == "source":
                     score -= 4.5
 
-            if asks_daily and chunk.type == "daily":
+            if asks_report_summary and chunk.type == "daily":
                 score += 2.5
                 reason_parts.append("report-summary intent")
 
-            if asks_daily and _heading_key(chunk.heading) in {"summary", "executive summary"}:
+            if asks_report_summary and _heading_key(chunk.heading) in {"summary", "executive summary"}:
                 score += 3.5
                 reason_parts.append("summary section")
 
@@ -1521,7 +1521,7 @@ class AgenticWikiResponder:
                 queries.append(f"Climate Monitor raw weekly reports highlights figures dates {date_span}")
         if any(term in lower for term in ["latest", "current", "recent"]):
             queries.append(f"{self.kb.latest_date} latest Climate Monitor summary")
-        if _asks_daily_summary(question):
+        if _asks_report_summary(question):
             queries.append("Climate Monitor weekly report summary highlights")
         if "compare" in lower or "difference" in lower or "distinguish" in lower:
             queries.append("climate risk frameworks comparison IAIS FSB ISSB TCFD TNFD")
@@ -1616,7 +1616,7 @@ class AgenticWikiResponder:
         normalized_context_path = (context_path or "").lstrip("/")
         context_title = _context_title_from_path(normalized_context_path)
         requested_dates = _requested_dates(question, self.kb.latest_date)
-        asks_daily = _asks_daily_summary(question)
+        asks_report_summary = _asks_report_summary(question)
 
         def corpus_bonus(hit: SearchHit) -> float:
             if hit.chunk.corpus == "source":
@@ -1641,9 +1641,9 @@ class AgenticWikiResponder:
             date_bonus = 0.0
             if requested_dates and hit.chunk.date in set(requested_dates):
                 date_bonus += 3.0
-            if asks_daily and hit.chunk.type == "daily":
+            if asks_report_summary and hit.chunk.type == "daily":
                 date_bonus += 2.0
-            if asks_daily and _heading_key(hit.chunk.heading) in {"summary", "executive summary"}:
+            if asks_report_summary and _heading_key(hit.chunk.heading) in {"summary", "executive summary"}:
                 date_bonus += 2.5
             if _is_boilerplate_heading(hit.chunk.heading):
                 date_bonus -= 10.0
@@ -1651,7 +1651,7 @@ class AgenticWikiResponder:
 
         ranked = sorted(hits, key=answer_score, reverse=True)
 
-        if requested_dates and asks_daily:
+        if requested_dates and asks_report_summary:
             selected: list[SearchHit] = []
             selected_ids: set[str] = set()
             for requested_date in requested_dates:
@@ -1795,14 +1795,14 @@ class AgenticWikiResponder:
             elif source_hit is not None:
                 summary_text = _summary_excerpt(source_hit.chunk.text, 220)
             else:
-                summary_text = "No report was available for this date in the current corpus."
+                summary_text = "No retrieved evidence was selected for this report date."
             entries.append(
                 {
                     "date": requested_date,
                     "wiki_hit": wiki_hit,
                     "source_hit": source_hit,
                     "summary": summary_text,
-                    "has_report": bool(wiki_hit or source_hit),
+                    "has_evidence": bool(wiki_hit or source_hit),
                     "concepts": concepts,
                 }
             )
@@ -1833,7 +1833,7 @@ class AgenticWikiResponder:
     def _theme_clusters(self, entries: list[dict[str, Any]], hits: list[SearchHit]) -> list[ThemeCluster]:
         buckets: dict[str, dict[str, Any]] = {}
         for entry in entries:
-            if not entry.get("has_report"):
+            if not entry.get("has_evidence"):
                 continue
             for label, concept_type in self._clusterable_concepts(entry):
                 bucket = buckets.setdefault(
@@ -1972,7 +1972,7 @@ class AgenticWikiResponder:
         entries = self._timeline_entries(report_dates, hits)
         clusters = self._theme_clusters(entries, hits)
         raw_source_reports = sum(1 for entry in entries if entry["source_hit"] is not None)
-        reports_with_evidence = sum(1 for entry in entries if entry["has_report"])
+        reports_with_evidence = sum(1 for entry in entries if entry["has_evidence"])
 
         timeline_lines = []
         for entry in entries:
@@ -2059,7 +2059,7 @@ class AgenticWikiResponder:
             user_instruction = (
                 "Write a concise answer with a short direct answer first, then key evidence bullets only if useful."
             )
-        if requested_dates and _asks_daily_summary(question):
+        if requested_dates and _asks_report_summary(question):
             user_instruction += (
                 f" This is a date-window weekly-report summary request. Cover the window from "
                 f"{requested_dates[0]} to {requested_dates[-1]}, mention the available report dates explicitly, "
@@ -2124,7 +2124,7 @@ class AgenticWikiResponder:
         entries = self._timeline_entries(report_dates, hits)
         clusters = self._theme_clusters(entries, hits)
         raw_source_reports = sum(1 for entry in entries if entry["source_hit"] is not None)
-        reports_with_evidence = sum(1 for entry in entries if entry["has_report"])
+        reports_with_evidence = sum(1 for entry in entries if entry["has_evidence"])
         cluster_lines = self._theme_cluster_lines(clusters)
 
         notable_signal_lines: list[str] = []
@@ -2140,7 +2140,7 @@ class AgenticWikiResponder:
         if not notable_signal_lines:
             notable_signal_lines = ["- No raw-source-only signals were available in the selected window."]
 
-        summary_seed = [entry["summary"] for entry in entries if entry["has_report"]][:3]
+        summary_seed = [entry["summary"] for entry in entries if entry["has_evidence"]][:3]
         summary_text = " ".join(summary_seed) if summary_seed else "No reports were available in the selected window."
         lines = [
             "I found relevant evidence, but no OpenAI API key is configured, so this is a structured extractive report.",
@@ -2210,7 +2210,7 @@ class AgenticWikiResponder:
             return self._offline_executive_answer(question, hits)
 
         requested_dates = _requested_dates(question, self.kb.latest_date)
-        if requested_dates and _asks_daily_summary(question):
+        if requested_dates and _asks_report_summary(question):
             report_dates = set(self.kb.reports_in_window(requested_dates))
             lines = [
                 "I found relevant evidence, but no OpenAI API key is configured, so this is a detailed extractive answer.",

@@ -145,7 +145,7 @@ before touching cadence logic.
 ## Verification — required before claiming done
 
 ```bash
-.venv/bin/python -m pytest -q          # expect: 119 passed
+.venv/bin/python -m pytest -q          # expect: 120 passed
 node --check showcase/app.js           # frontend has no build step
 ```
 

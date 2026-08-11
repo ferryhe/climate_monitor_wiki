@@ -26,7 +26,7 @@ Status refers to this branch's contents, not to `main`.
 | Removed the competing GitHub Actions generator | `.github/workflows/climate-monitor.yml` (deleted) |
 
 Result: **24 pages / 24 sources / 0 missing** (was 74 pages with 50 phantoms).
-Current suite: **119 passed**.
+Current suite: **120 passed**.
 
 ---
 
@@ -65,7 +65,7 @@ rather than claiming most days are missing.
 **`"daily"`**. That string is load-bearing across the whole stack:
 
 - `agentic_wiki/wiki_agent.py` — ranking boosts (`chunk.type == "daily"`),
-  `_asks_daily_summary()`, `_daily_page_path()`, source-link mapping
+  `_asks_report_summary()`, `_daily_page_path()`, source-link mapping
 - `showcase/app.js` — `GRAPH_COLORS.daily`, graph legend, Dataview row rendering
   (`doc.type === "daily"`), status placeholders
 - `showcase/styles.css` — `--daily` colour token, `.dot-daily`

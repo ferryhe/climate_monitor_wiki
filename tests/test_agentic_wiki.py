@@ -362,6 +362,22 @@ def test_four_week_executive_summary_counts_reports_not_calendar_days():
         assert f"- {report_date}:" in result["text"]
 
 
+def test_timeline_distinguishes_retrieval_gap_from_missing_report(tmp_path):
+    wiki_dir = tmp_path / "wiki"
+    source_dir = tmp_path / "sources"
+    wiki_dir.mkdir()
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-08-10.md").write_text("", encoding="utf-8")
+    responder_instance = AgenticWikiResponder(wiki_dir=wiki_dir, source_dir=source_dir)
+    responder_instance.client = None
+
+    entry = responder_instance._timeline_entries(["2026-08-10"], [])[0]
+
+    assert entry["summary"] == "No retrieved evidence was selected for this report date."
+    assert entry["has_evidence"] is False
+    assert "has_report" not in entry
+
+
 def test_unknown_requested_date_keeps_relevant_evidence_offline():
     responder_instance = AgenticWikiResponder()
     responder_instance.client = None
