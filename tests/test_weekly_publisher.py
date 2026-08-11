@@ -1346,6 +1346,12 @@ def test_allowlist_rejects_source_overwrite_and_unrelated_wiki():
         )
 
 
+@pytest.mark.parametrize("status", ["T", "U", "X", "C100"])
+def test_allowlist_rejects_unsupported_git_statuses(status):
+    with pytest.raises(publisher.PublishError, match="unsupported git change status"):
+        publisher.validate_allowlist([(status, "wiki/index.md")])
+
+
 def test_remote_url_with_embedded_password_is_rejected():
     with pytest.raises(publisher.PublishError, match="credential helper"):
         publisher._validate_remote_url("https://user:secret@example.test/repo.git")

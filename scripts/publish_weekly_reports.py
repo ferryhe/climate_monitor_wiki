@@ -153,6 +153,8 @@ def validate_allowlist(
     for status, path in changes:
         if status.startswith("D") or status.startswith("R"):
             raise PublishError(f"deletion/rename is not allowed: {status} {path}")
+        if status not in {"A", "M"}:
+            raise PublishError(f"unsupported git change status: {status} {path}")
         source_match = re.fullmatch(r"sources/climate-monitor-(\d{4}-\d{2}-\d{2})\.md", path)
         wiki_match = re.fullmatch(r"wiki/climate-monitor-(\d{4}-\d{2}-\d{2})\.md", path)
         if source_match:
