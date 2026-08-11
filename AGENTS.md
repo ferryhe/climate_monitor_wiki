@@ -84,13 +84,23 @@ endpoint → Caddy fronts it over HTTPS.
 ```bash
 scripts/run_climate_monitor.py     # generate a new report (calls out to LLM/web)
 scripts/ingest_weekly_reports.py   # sources/ <- monitoring output, then sync
+scripts/publish_weekly_reports.py  # isolated-clone rolling-PR publisher
 scripts/sync_source_wiki.py        # regenerate wiki/ pages + index
-scripts/weekly_wiki_refresh.sh     # full pipeline: ingest→sync→commit→reload→verify
+scripts/weekly_wiki_refresh.sh     # locked Hermes wrapper around the publisher
 scripts/reload_and_smoke_test.py   # post-deploy verification
 ```
 
-`weekly_wiki_refresh.sh` is the one the weekly cron runs. Prefer it over calling
-the steps by hand — it has the correct ordering and health checks.
+`weekly_wiki_refresh.sh` is the one the weekly Hermes job runs. It does not
+modify the production checkout or reload the app: it publishes generated files
+from a temporary clone to the fixed `codex/hermes-weekly-monitor` pull-request
+branch. Merge and deployment are separate, human-controlled steps.
+
+Publication uses a unique temporary candidate ref that is never connected to a
+PR. After checking `main`, the publisher promotes it to the rolling branch with
+an exact lease and immediately checks `main` again. A race in that short window
+is CAS-rolled back before any PR operation. Do not claim ordinary Git pushes can
+make the `main` check and rolling update atomic; human review and merge remain
+the final safety boundary.
 
 ---
 
@@ -135,7 +145,7 @@ before touching cadence logic.
 ## Verification — required before claiming done
 
 ```bash
-.venv/bin/python -m pytest -q          # expect: 66 passed
+.venv/bin/python -m pytest -q          # expect: 112 passed
 node --check showcase/app.js           # frontend has no build step
 ```
 
@@ -187,12 +197,14 @@ Two traps already solved — do not "fix" them back:
 - **Bare-IP TLS needs `default_sni`.** RFC 6066 forbids IP literals in SNI, so
   clients send none, Caddy cannot match a site block, and the handshake fails
   with `tlsv1 alert internal error`.
-- **`/api/reload` is localhost-only unless `RELOAD_TOKEN` is set.** The refresh
-  script sources `.env` and falls back to a container restart.
+- **`/api/reload` is localhost-only unless `RELOAD_TOKEN` is set.** Deployment
+  tooling may call it after a merged content update; the weekly publisher must
+  never read `.env`, reload the app, or restart a container.
 
-`weekly_wiki_refresh.sh` loads `.env` **before** resolving `BASE_URL` (precedence:
-`BASE_URL` > `SITE_HOST` > loopback). Resolving first would pin a stale IP and
-silently health-check the wrong host while reporting success.
+The production checkout must remain clean and track `origin/main`. Weekly
+generation never commits there. The publication path is: Hermes generates a
+report → the publisher rebuilds in a temporary clone → rolling PR → human merge
+→ a separate server deployment updates and reloads the service.
 
 See `docs/deployment.md`.
 
@@ -203,20 +215,21 @@ See `docs/deployment.md`.
 | Job | ID | Schedule (UTC) |
 |---|---|---|
 | Weekly Climate & Actuarial Monitor | `f5259a8ec2d9` | Mon 08:00 |
-| Weekly Climate Wiki Rebuild | `dccb79cd69bc` | Mon 10:00 |
+| Weekly Climate Wiki Publisher | `dccb79cd69bc` | Mon 10:00 |
 
-The rebuild runs 2h after the monitor so the report exists before ingest. If you
-change one schedule, preserve that gap.
+The publisher runs 2h after the monitor so the report exists before ingest. If
+you change one schedule, preserve that gap. It updates one rolling PR; it does
+not deploy or write to the production checkout.
 
 These are **Hermes cron jobs** (this host's scheduler), not GitHub Actions.
 Inspect with the Hermes `cronjob` tool: `cronjob action=list`.
 
-### GitHub Actions — already aligned
+### No GitHub report generator
 
-`.github/workflows/climate-monitor.yml` uses `cron: "30 10 * * 1"` (Mondays
-only) and passes `--cadence weekly`. It is **not** a competing weekday
-generator — that was resolved in commit `1707f94`. Do not "fix" it as if it were
-still Mon–Fri.
+Hermes is the only report generator. The competing GitHub Actions workflow was
+deleted; do not recreate a scheduled or manually dispatched generator. An
+emergency manual run happens only on the controlled server using the existing
+monitor and rolling-PR publisher, with the same Monday report validation.
 
 ---
 
@@ -239,7 +252,7 @@ Already landed — do **not** redo:
 - **Week-window parsing** (`Phase 2`) is **fixed**. Verified: `past 2 weeks` →
   14 dates, `last 3 weeks` → 21, `past 4 weeks` → 28. Earlier docs describing
   these as returning 0 dates are stale.
-- **GitHub Actions alignment** (`Phase 7`) — see above.
+- **Single automated generator and rolling-PR publication** — see above.
 
 Deliberately **not** done: renaming the `"daily"` document type — it is
 load-bearing across ranking, `app.js`, CSS, and the Obsidian plugin contract, so

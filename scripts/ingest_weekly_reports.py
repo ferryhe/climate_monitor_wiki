@@ -5,19 +5,18 @@ Source of truth: /home/ubuntu/web_listening/data/reports/climate-monitor-YYYY-MM
 produced by the weekly Hermes cron job (job f5259a8ec2d9, Mondays 08:00 UTC).
 
 This script copies any report not yet present under sources/, then regenerates
-the wiki pages with the weekly cadence and (optionally) commits + pushes.
+the wiki pages with the weekly cadence. Git publication is deliberately handled
+by ``publish_weekly_reports.py`` in an isolated clone.
 
 Usage:
     python scripts/ingest_weekly_reports.py                 # ingest all new + sync
     python scripts/ingest_weekly_reports.py --date 2026-08-10
-    python scripts/ingest_weekly_reports.py --commit --push
     python scripts/ingest_weekly_reports.py --dry-run
 """
 from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -65,10 +64,7 @@ def main() -> int:
         action="store_true",
         help="Also ingest non-Monday reports (manual re-runs). Off by default.",
     )
-    parser.add_argument("--force", action="store_true", help="Overwrite existing sources/ files.")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--commit", action="store_true")
-    parser.add_argument("--push", action="store_true")
     args = parser.parse_args()
 
     sources_dir = REPO_ROOT / "sources"
@@ -77,7 +73,7 @@ def main() -> int:
     copied, skipped = [], []
     for src in discover(args.report_dir, args.date, args.allow_offcycle):
         dest = sources_dir / src.name
-        if dest.exists() and not args.force:
+        if dest.exists():
             skipped.append(dest.name)
             continue
         if args.dry_run:
@@ -104,27 +100,6 @@ def main() -> int:
     for warning in result.warnings:
         print(f"  warn: {warning}")
 
-    if args.commit:
-        subprocess.run(["git", "add", "sources", "wiki"], cwd=REPO_ROOT, check=True)
-        # `git diff --quiet` exits 0 = no changes, 1 = changes, >1 = real error.
-        # Treating "non-zero" as "has changes" would hide a broken repo state
-        # and then attempt a commit anyway.
-        status = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT
-        ).returncode
-        if status == 0:
-            print("commit: nothing to commit")
-            return 0
-        if status > 1:
-            raise SystemExit(
-                f"git diff --cached failed with exit code {status}; refusing to commit"
-            )
-        msg = f"docs: weekly climate monitor update ({result.latest_date})"
-        subprocess.run(["git", "commit", "-m", msg], cwd=REPO_ROOT, check=True)
-        print(f"commit: {msg}")
-        if args.push:
-            subprocess.run(["git", "push"], cwd=REPO_ROOT, check=True)
-            print("push: done")
     return 0
 
 

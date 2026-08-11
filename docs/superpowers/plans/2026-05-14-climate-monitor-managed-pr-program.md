@@ -1,5 +1,10 @@
 # Climate Monitor Managed PR Program
 
+> **Historical planning snapshot:** Scheduled GitHub Actions guidance below has
+> been superseded and that workflow has been deleted. Hermes is the sole report
+> generator; see
+> `docs/weekly-cadence.md` for the current rolling-PR workflow.
+
 ## Final User Outcome
 
 1. Monitor every website listed in the Excel source file when a URL is available. Detect page/file changes, keep only climate-related items, and skip sites with no relevant changes.

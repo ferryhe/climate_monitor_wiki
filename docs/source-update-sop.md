@@ -2,18 +2,43 @@
 
 Use this workflow whenever `sources/` changes so the app, Dataview, and chat all stay in sync.
 
-## Standard Flow
+## Manual source-edit flow
 
 1. Add or update the raw markdown file in `sources/`.
-2. Run `python scripts/sync_source_wiki.py` to regenerate all `wiki/climate-monitor-YYYY-MM-DD.md` pages and rebuild `wiki/index.md`.
+2. Run `python scripts/sync_source_wiki.py --cadence weekly` to regenerate the
+   matching `wiki/climate-monitor-YYYY-MM-DD.md` pages and rebuild
+   `wiki/index.md`.
 3. Optionally append an entry to `wiki/log.md` and refresh any date/count text in `README.md`.
 4. Reload the running API so the in-memory corpus picks up the filesystem change.
 5. Run a smoke test against `/api/config` and `/api/chat`.
 6. Run the fuller regression checks when the change is more than a simple append.
 
-The sync script treats the source filename as the canonical day, so it can still regenerate the matching wiki page even when a source file's internal `Report Date` line is stale or malformed. It also keeps no-report placeholder pages for missing days inside the known date range so executive summaries can still surface coverage gaps cleanly.
+Validate that the filename date and internal `Report Date` agree before syncing.
+Weekly mode renders only dates backed by real source files; it does not create
+daily gap placeholders.
 
-For automated runs, `scripts/run_climate_monitor.py` performs steps 1 and 2 together: it writes the daily source report and calls `sync_source_wiki`. Manual source edits can continue to use the existing flow.
+Manual source edits use the steps above on a feature branch and go through
+normal review.
+
+## Automated weekly flow
+
+Hermes is the only scheduled production generator:
+
+1. The monitor writes a Monday-dated report to the authoritative external
+   report directory.
+2. `scripts/weekly_wiki_refresh.sh` acquires a host lock and calls
+   `scripts/publish_weekly_reports.py`.
+3. The publisher clones the latest `origin/main` into a temporary directory,
+   imports only missing validated reports, regenerates the weekly wiki, and
+   runs the full test suite and static checks.
+4. It updates only `codex/hermes-weekly-monitor` and creates or reuses its PR.
+5. A human reviews and merges the PR. A separate server deployment then updates
+   the clean production checkout and reloads the app.
+
+The automated publisher never writes, commits, or syncs inside the production
+checkout. It never reads `.env`, reloads the API, or restarts Docker. There is
+no GitHub Actions report generator. Emergency manual generation runs only on
+the controlled server through the same monitor and publisher.
 
 ## Why Reload Is Required
 
@@ -24,22 +49,28 @@ For automated runs, `scripts/run_climate_monitor.py` performs steps 1 and 2 toge
 From the repository root:
 
 ```bash
-python scripts/sync_source_wiki.py
-python scripts/reload_and_smoke_test.py --date 2026-04-25
+REPORT_DATE="<new Monday, YYYY-MM-DD>"
+python scripts/sync_source_wiki.py --cadence weekly
+python scripts/reload_and_smoke_test.py --date "$REPORT_DATE"
 ```
 
 If your API is not on the default local URL:
 
 ```bash
-python scripts/sync_source_wiki.py
-python scripts/reload_and_smoke_test.py --base-url http://localhost:8501 --date 2026-04-25
+REPORT_DATE="<new Monday, YYYY-MM-DD>"
+python scripts/sync_source_wiki.py --cadence weekly
+python scripts/reload_and_smoke_test.py \
+  --base-url http://localhost:8501 \
+  --date "$REPORT_DATE"
 ```
 
 If `/api/reload` is protected:
 
 ```bash
-python scripts/sync_source_wiki.py
-RELOAD_TOKEN=your-token python scripts/reload_and_smoke_test.py --date 2026-04-25
+REPORT_DATE="<new Monday, YYYY-MM-DD>"
+python scripts/sync_source_wiki.py --cadence weekly
+RELOAD_TOKEN=your-token \
+  python scripts/reload_and_smoke_test.py --date "$REPORT_DATE"
 ```
 
 ## Full Validation
@@ -52,6 +83,6 @@ node --check showcase/app.js
 ## Expected Outcome
 
 - `/api/config` includes `wiki/climate-monitor-YYYY-MM-DD.md`
-- that daily page points to `sources/climate-monitor-YYYY-MM-DD.md`
+- that report page points to `sources/climate-monitor-YYYY-MM-DD.md`
 - `/api/chat` returns a non-empty answer with evidence
-- the web workspace and Obsidian surface can see the new daily page after reload
+- the web workspace and Obsidian surface can see the new report page after reload

@@ -19,14 +19,14 @@ Status refers to this branch's contents, not to `main`.
 | Prune legacy sourceless placeholder pages | `scripts/sync_source_wiki.py` |
 | Weekly labels (`## Weekly Reports`, `#weekly-report`) | `scripts/sync_source_wiki.py` |
 | Monday-only ingest from the monitoring job | `scripts/ingest_weekly_reports.py` |
-| One-command refresh (ingest → sync → commit → reload → health check) | `scripts/weekly_wiki_refresh.sh` |
+| Isolated weekly publication (temporary clone → rolling PR) | `scripts/publish_weekly_reports.py`, `scripts/weekly_wiki_refresh.sh` |
 | Fixed a test that asserted the ingest schedule, not retrieval | `tests/test_agentic_wiki.py` |
 | Docker + Caddy HTTPS on the host IP | `Dockerfile`, `Caddyfile`, `docker-compose.yml` |
 | Week-based date windows and window-scoped citations | `agentic_wiki/wiki_agent.py`, `tests/test_agentic_wiki.py` |
-| Monday-only GitHub Actions monitor with weekly wiki sync | `.github/workflows/climate-monitor.yml` |
+| Removed the competing GitHub Actions generator | `.github/workflows/climate-monitor.yml` (deleted) |
 
 Result: **24 pages / 24 sources / 0 missing** (was 74 pages with 50 phantoms).
-Suite: **63 passed**.
+Current suite: **112 passed**.
 
 ---
 
@@ -146,12 +146,22 @@ exists would ship a built-in button that silently returns no date window.
 
 ---
 
-## Phase 7 — landed after review: GitHub Actions weekly alignment
+## Phase 7 — superseded: one automatic generator
 
-`.github/workflows/climate-monitor.yml` now runs `cron: "30 10 * * 1"` —
-Mondays only — and sets `CLIMATE_WIKI_CADENCE=weekly` before calling
-`scripts/run_climate_monitor.py`. The workflow is still independent of the local
-pipeline built in Phase 1, but it no longer opens weekday daily-style update PRs.
+Hermes is now the only report generator. The competing GitHub Actions workflow
+was deleted entirely. Emergency manual generation runs only on the controlled
+server through the same monitor and rolling-PR publisher.
+
+Hermes publication no longer commits on the production checkout. The publisher
+starts from the latest `origin/main` in a temporary clone, validates and imports
+all unpublished Monday reports, runs the complete checks, and updates
+`codex/hermes-weekly-monitor` through an unconnected temporary candidate ref.
+The publisher checks `main` before exact-lease promotion and immediately after.
+The second window cannot be eliminated with ordinary Git pushes: if `main`
+moves there, the publisher CAS-restores the previous good rolling ref (or
+deletes a newly created one), removes the candidate, and retries before any PR
+operation. Human review and merge are the final safety boundary. The operational
+flow is **generate → rolling PR → human merge → server deploy**.
 
 ---
 

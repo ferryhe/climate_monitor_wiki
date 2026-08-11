@@ -76,14 +76,24 @@ sudo docker compose down               # stop everything (volumes persist)
 Access logs are written as JSON to the `caddy_logs` volume at
 `/var/log/caddy/access.log`.
 
-## Refreshing content
+## Publishing and deploying weekly content
 
-Use the wrapper rather than calling the sync script by hand:
+The Hermes schedule invokes the locked publisher wrapper:
 
 ```bash
 bash scripts/weekly_wiki_refresh.sh
 ```
 
-It ingests new reports, regenerates the wiki under the weekly cadence, commits,
-reloads the container, and health-checks the result. It is what the scheduled
-job runs. See [weekly-cadence.md](weekly-cadence.md).
+This is a publication command, not a deployment command. It validates and
+imports reports in a temporary clone of the latest `origin/main`, regenerates
+the weekly wiki, runs the full checks, and updates the fixed
+`codex/hermes-weekly-monitor` pull request. It never changes the production
+checkout, reads `.env`, reloads the API, or restarts a container.
+
+After human review and merge, the server deployment process may fast-forward a
+clean production checkout to `origin/main` and reload content. Code or
+dependency changes require rebuilding only the application container. Those
+deployment actions are intentionally separate from weekly generation.
+
+Flow: **Hermes generate → rolling PR → human merge → server deploy**. See
+[weekly-cadence.md](weekly-cadence.md).
