@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -13,6 +14,14 @@ DEFAULT_WIKI_DIR = REPO_ROOT / "wiki"
 DAILY_FILE_RE = re.compile(r"^climate-monitor-(\d{4}-\d{2}-\d{2})\.md$")
 LAST_UPDATED_RE = re.compile(r"^_Last updated: .+_$", re.MULTILINE)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
+
+
+def _default_cadence() -> str:
+    cadence = os.environ.get("CLIMATE_WIKI_CADENCE", "daily").strip().lower()
+    return cadence if cadence in {"daily", "weekly"} else "daily"
+
+
+DEFAULT_CADENCE = _default_cadence()
 
 
 @dataclass(frozen=True)
@@ -26,6 +35,7 @@ class SyncResult:
     updated_pages: list[str]
     unchanged_pages: list[str]
     warnings: list[str]
+    pruned_pages: list[str] = field(default_factory=list)
 
 
 def _normalize_text(text: str) -> str:
@@ -48,14 +58,29 @@ def _discover_daily_dates(directory: Path) -> set[str]:
     return dates
 
 
-def _iter_dates(start: str, end: str) -> list[str]:
+def _iter_dates(start: str, end: str, *, step_days: int = 1) -> list[str]:
     current = date.fromisoformat(start)
     final = date.fromisoformat(end)
     days: list[str] = []
     while current <= final:
         days.append(current.isoformat())
-        current += timedelta(days=1)
+        current += timedelta(days=step_days)
     return days
+
+
+def _iter_report_dates(known: set[str], cadence: str) -> list[str]:
+    """Enumerate the report dates the wiki should contain.
+
+    daily  -> every calendar day between the first and last known report, so a
+              skipped weekday shows up as an explicit "No report" gap row.
+    weekly -> exactly the dates that exist. Filling a 7-day grid is wrong here:
+              the corpus mixes a historical daily run (April 2026) with the
+              current weekly cadence, and any synthetic grid manufactures dozens
+              of phantom "No report" pages that never corresponded to a run.
+    """
+    if cadence == "daily":
+        return _iter_dates(min(known), max(known))
+    return sorted(known)
 
 
 def _strip_markdown(text: str) -> str:
@@ -106,7 +131,9 @@ def extract_summary(markdown: str) -> str:
     return _strip_markdown(" ".join(lines))
 
 
-def render_daily_page(day: str, *, summary: str, has_source: bool) -> str:
+def render_daily_page(
+    day: str, *, summary: str, has_source: bool, cadence: str = "daily"
+) -> str:
     source_line = (
         f"Source: [[sources/climate-monitor-{day}]]"
         if has_source
@@ -125,7 +152,7 @@ def render_daily_page(day: str, *, summary: str, has_source: bool) -> str:
             body,
             "",
             "## Tags",
-            f"#climate-monitor #daily-report #{day}",
+            f"#climate-monitor #{cadence}-report #{day}",
             "",
         ]
     )
@@ -168,7 +195,9 @@ def build_index(
     daily_days: list[str],
     topic_pages: list[Path],
     index_tail: str,
+    cadence: str = "daily",
 ) -> str:
+    label = "Daily" if cadence == "daily" else "Weekly"
     latest_date = daily_days[-1] if daily_days else ""
     rows = []
     for day in daily_days:
@@ -178,9 +207,9 @@ def build_index(
     blocks = [
         "# Wiki Index",
         "",
-        f"_Last updated: {latest_date} - {len(topic_pages)} pages + {len(daily_days)} daily report pages_",
+        f"_Last updated: {latest_date} - {len(topic_pages)} pages + {len(daily_days)} {label.lower()} report pages_",
         "",
-        "## Daily Reports",
+        f"## {label} Reports",
         "",
         "| Date | Report | Status |",
         "|------|--------|--------|",
@@ -210,14 +239,36 @@ def sync_source_wiki(
     *,
     source_dir: Path = DEFAULT_SOURCE_DIR,
     wiki_dir: Path = DEFAULT_WIKI_DIR,
+    cadence: str = DEFAULT_CADENCE,
+    prune_sourceless: bool = True,
 ) -> SyncResult:
+    if cadence not in {"daily", "weekly"}:
+        raise ValueError(f"unsupported cadence: {cadence!r} (expected daily or weekly)")
+    wiki_dir.mkdir(parents=True, exist_ok=True)
     source_dates = _discover_daily_dates(source_dir)
     existing_daily_dates = _discover_daily_dates(wiki_dir)
     known_dates = source_dates | existing_daily_dates
     if not known_dates:
-        raise RuntimeError("No climate-monitor daily files were found in sources/ or wiki/.")
+        raise RuntimeError(
+            "No climate-monitor report files were found in sources/ or wiki/."
+        )
 
-    daily_days = _iter_dates(min(known_dates), max(known_dates))
+    pruned_pages: list[str] = []
+    if cadence == "weekly" and prune_sourceless:
+        # The April daily run left placeholder pages for dates that never had a
+        # report ("No report - source file missing"). Under weekly cadence those
+        # are pure noise in the index and in retrieval, so drop any report page
+        # with no matching sources/ file.
+        for orphan in sorted(existing_daily_dates - source_dates):
+            orphan_path = wiki_dir / f"climate-monitor-{orphan}.md"
+            if orphan_path.exists():
+                orphan_path.unlink()
+                pruned_pages.append(orphan_path.name)
+        known_dates = set(source_dates)
+        if not known_dates:
+            raise RuntimeError("No climate-monitor source files were found in sources/.")
+
+    daily_days = _iter_report_dates(known_dates, cadence)
     topic_pages = _read_topic_pages(wiki_dir)
     index_tail = _preserved_index_tail(wiki_dir / "index.md")
 
@@ -240,7 +291,9 @@ def sync_source_wiki(
                 )
             summary = extract_summary(source_markdown)
 
-        page_content = render_daily_page(day, summary=summary, has_source=has_source)
+        page_content = render_daily_page(
+            day, summary=summary, has_source=has_source, cadence=cadence
+        )
         target_path = wiki_dir / f"climate-monitor-{day}.md"
         write_state = _write_if_changed(target_path, page_content)
         if write_state == "created":
@@ -255,6 +308,7 @@ def sync_source_wiki(
         daily_days=daily_days,
         topic_pages=topic_pages,
         index_tail=index_tail,
+        cadence=cadence,
     )
     index_state = _write_if_changed(wiki_dir / "index.md", index_content)
     if index_state == "created":
@@ -274,18 +328,38 @@ def sync_source_wiki(
         updated_pages=updated_pages,
         unchanged_pages=unchanged_pages,
         warnings=warnings,
+        pruned_pages=pruned_pages,
     )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate daily wiki pages from sources/ and rebuild wiki/index.md."
+        description=(
+            "Generate dated wiki report pages from sources/ and rebuild "
+            "wiki/index.md. Supports daily and weekly cadences."
+        )
     )
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--wiki-dir", type=Path, default=DEFAULT_WIKI_DIR)
+    parser.add_argument(
+        "--cadence",
+        choices=("daily", "weekly"),
+        default=DEFAULT_CADENCE,
+        help="Report cadence: controls date-grid expansion and page/index labels.",
+    )
+    parser.add_argument(
+        "--keep-sourceless",
+        action="store_true",
+        help="Weekly cadence only: keep legacy report pages that have no sources/ file.",
+    )
     args = parser.parse_args()
 
-    result = sync_source_wiki(source_dir=args.source_dir, wiki_dir=args.wiki_dir)
+    result = sync_source_wiki(
+        source_dir=args.source_dir,
+        wiki_dir=args.wiki_dir,
+        cadence=args.cadence,
+        prune_sourceless=not args.keep_sourceless,
+    )
     print(
         "Synced wiki:",
         f"latest_date={result.latest_date}",

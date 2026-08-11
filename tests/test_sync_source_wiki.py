@@ -1,11 +1,19 @@
 from textwrap import dedent
 
-from scripts.sync_source_wiki import sync_source_wiki
+from scripts.sync_source_wiki import _default_cadence, sync_source_wiki
 
 
 def _write(path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(content).lstrip("\n"), encoding="utf-8")
+
+
+def test_default_cadence_normalizes_environment_value(monkeypatch):
+    monkeypatch.setenv("CLIMATE_WIKI_CADENCE", " Weekly ")
+    assert _default_cadence() == "weekly"
+
+    monkeypatch.setenv("CLIMATE_WIKI_CADENCE", "sometimes")
+    assert _default_cadence() == "daily"
 
 
 def test_sync_source_wiki_generates_daily_pages_and_rebuilds_index(tmp_path):
@@ -93,3 +101,125 @@ def test_sync_source_wiki_generates_daily_pages_and_rebuilds_index(tmp_path):
     assert "## Concepts" in index_text
     assert "| [[parametric-insurance]] | Index-triggered products keep expanding. | 2026-04-21 |" in index_text
     assert index_text.rstrip().endswith("_Last updated: 2026-04-23_")
+
+
+def test_weekly_cadence_renders_only_existing_dates_and_weekly_labels(tmp_path):
+    """Weekly cadence must not fill the gap between two reports 7 days apart."""
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+
+    for day in ("2026-08-03", "2026-08-10"):
+        _write(
+            source_dir / f"climate-monitor-{day}.md",
+            f"""
+            # Weekly Climate & Actuarial Monitor
+            **Report Date:** {day}
+
+            ## Executive Summary
+            Sites checked: 57, succeeded: 57, failed: 0 for {day}.
+            """,
+        )
+
+    result = sync_source_wiki(source_dir=source_dir, wiki_dir=wiki_dir, cadence="weekly")
+
+    assert result.daily_pages == 2
+    assert result.source_days == 2
+    assert result.missing_days == []
+    # No phantom pages for the six intervening weekdays.
+    assert not (wiki_dir / "climate-monitor-2026-08-05.md").exists()
+
+    page = (wiki_dir / "climate-monitor-2026-08-10.md").read_text(encoding="utf-8")
+    assert "#climate-monitor #weekly-report #2026-08-10" in page
+    assert "Sites checked: 57" in page
+
+    index_text = (wiki_dir / "index.md").read_text(encoding="utf-8")
+    assert "## Weekly Reports" in index_text
+    assert "weekly report pages_" in index_text
+    assert "No report" not in index_text
+
+
+def test_weekly_cadence_prunes_sourceless_legacy_pages(tmp_path):
+    """Placeholder pages left by the old daily grid are removed under weekly."""
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+
+    _write(
+        source_dir / "climate-monitor-2026-08-10.md",
+        """
+        # Weekly Climate & Actuarial Monitor
+        **Report Date:** 2026-08-10
+
+        ## Executive Summary
+        Real weekly report.
+        """,
+    )
+    _write(
+        wiki_dir / "climate-monitor-2026-04-11.md",
+        """
+        # Climate Monitor - 2026-04-11
+        Source: missing
+
+        ## Summary
+        No report - source file missing for this date.
+        """,
+    )
+
+    result = sync_source_wiki(source_dir=source_dir, wiki_dir=wiki_dir, cadence="weekly")
+
+    assert result.pruned_pages == ["climate-monitor-2026-04-11.md"]
+    assert not (wiki_dir / "climate-monitor-2026-04-11.md").exists()
+    assert result.daily_pages == 1
+
+
+def test_weekly_cadence_can_keep_sourceless_pages(tmp_path):
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+
+    _write(
+        source_dir / "climate-monitor-2026-08-10.md",
+        """
+        # Weekly Climate & Actuarial Monitor
+        **Report Date:** 2026-08-10
+
+        ## Executive Summary
+        Real weekly report.
+        """,
+    )
+    _write(wiki_dir / "climate-monitor-2026-04-11.md", "# Climate Monitor - 2026-04-11\n")
+
+    result = sync_source_wiki(
+        source_dir=source_dir,
+        wiki_dir=wiki_dir,
+        cadence="weekly",
+        prune_sourceless=False,
+    )
+
+    assert result.pruned_pages == []
+    assert (wiki_dir / "climate-monitor-2026-04-11.md").exists()
+    assert result.daily_pages == 2
+
+
+def test_daily_cadence_still_fills_gaps(tmp_path):
+    """Regression guard: the historical daily behavior is unchanged."""
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+
+    for day in ("2026-04-21", "2026-04-23"):
+        _write(
+            source_dir / f"climate-monitor-{day}.md",
+            f"""
+            # Daily Climate Monitor
+            **Report Date:** {day}
+
+            ## Executive Summary
+            Summary for {day}.
+            """,
+        )
+
+    result = sync_source_wiki(source_dir=source_dir, wiki_dir=wiki_dir, cadence="daily")
+
+    assert result.daily_pages == 3
+    assert result.missing_days == ["2026-04-22"]
+    gap = (wiki_dir / "climate-monitor-2026-04-22.md").read_text(encoding="utf-8")
+    assert "No report - source file missing for this date." in gap
+    assert "#daily-report" in gap

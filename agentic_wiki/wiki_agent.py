@@ -28,6 +28,8 @@ LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 SOURCE_ITEM_RE = re.compile(r"^(?:→\s*)?\*\*(.+?)\*\*\s*$")
 DAY_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:day|days)", re.IGNORECASE)
+WEEK_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:week|weeks)", re.IGNORECASE)
+MAX_ROLLING_WINDOW_DAYS = 366
 ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 ISO_RANGE_RE = re.compile(
     r"\b(\d{4}-\d{2}-\d{2})\b\s*(?:to|through|thru|until)\s*\b(\d{4}-\d{2}-\d{2})\b",
@@ -435,9 +437,14 @@ def _date_range_days(question: str) -> int | None:
     if "past month" in lower or "recent month" in lower:
         return 30
 
+    match = WEEK_RANGE_RE.search(question)
+    if match:
+        weeks = max(1, min(int(match.group(1)), 52))
+        return weeks * 7
+
     match = DAY_RANGE_RE.search(question)
     if match:
-        return max(1, min(int(match.group(1)), 30))
+        return max(1, min(int(match.group(1)), MAX_ROLLING_WINDOW_DAYS))
 
     return None
 
@@ -473,6 +480,8 @@ def _is_boilerplate_heading(value: str) -> bool:
 
 def _asks_daily_summary(question: str) -> bool:
     lower = question.lower()
+    if _date_range_days(question) is not None:
+        return True
     return any(
         term in lower
         for term in [
@@ -1390,16 +1399,29 @@ class AgenticWikiResponder:
                     continue
                 synthesis_hits.append(hit)
                 seen_ids.add(hit.chunk.id)
+        elif requested_dates:
+            synthesis_hits = self._window_coverage_hits(requested_dates, synthesis_hits)
 
         max_sources = 10 if answer_mode == "detailed" else 12 if answer_mode == "executive" else 8
         if requested_dates:
             max_sources = max(max_sources, min(18 if answer_mode == "executive" else 14, len(requested_dates) + 4))
-        source_hits = synthesis_hits[:max_sources]
+        synthesis_pool = synthesis_hits
+        if requested_dates:
+            requested_date_set = set(requested_dates)
+            date_scoped_hits = [
+                hit
+                for hit in synthesis_hits
+                if hit.chunk.date in requested_date_set
+                and not _is_boilerplate_heading(hit.chunk.heading)
+            ]
+            if date_scoped_hits:
+                synthesis_pool = date_scoped_hits
+        source_hits = synthesis_pool[:max_sources]
         sources = [
             hit.to_source(index, self.base_source_url)
             for index, hit in enumerate(source_hits, start=1)
         ]
-        synthesis_selection = synthesis_hits if answer_mode == "executive" else source_hits
+        synthesis_selection = synthesis_pool if answer_mode == "executive" else source_hits
         text = self._synthesize(question, synthesis_selection, history or [], language, answer_mode)
 
         return {

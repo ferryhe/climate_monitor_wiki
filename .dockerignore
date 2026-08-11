@@ -1,0 +1,35 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+.python-version
+
+# Git and editor state
+.git/
+.github/
+.gitignore
+.obsidian/
+
+# Python/runtime caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local/generated workspace output
+.tmp/
+external/
+tests/
+docs/
+monitoring/
+climate_monitor/
+
+# Miscellaneous host artifacts
+*.log
+.DS_Store
+Thumbs.db

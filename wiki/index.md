@@ -1,8 +1,8 @@
 # Wiki Index
 
-_Last updated: 2026-06-10 - 12 pages + 71 daily report pages_
+_Last updated: 2026-08-10 - 12 pages + 24 weekly report pages_
 
-## Daily Reports
+## Weekly Reports
 
 | Date | Report | Status |
 |------|--------|--------|
@@ -16,67 +16,20 @@ _Last updated: 2026-06-10 - 12 pages + 71 daily report pages_
 | 2026-04-08 | [[climate-monitor-2026-04-08]] | ✅ |
 | 2026-04-09 | [[climate-monitor-2026-04-09]] | ✅ |
 | 2026-04-10 | [[climate-monitor-2026-04-10]] | ✅ |
-| 2026-04-11 | [[climate-monitor-2026-04-11]] | ⚠️ No report |
-| 2026-04-12 | [[climate-monitor-2026-04-12]] | ⚠️ No report |
-| 2026-04-13 | [[climate-monitor-2026-04-13]] | ⚠️ No report |
 | 2026-04-14 | [[climate-monitor-2026-04-14]] | ✅ |
-| 2026-04-15 | [[climate-monitor-2026-04-15]] | ⚠️ No report |
 | 2026-04-16 | [[climate-monitor-2026-04-16]] | ✅ |
 | 2026-04-17 | [[climate-monitor-2026-04-17]] | ✅ |
 | 2026-04-18 | [[climate-monitor-2026-04-18]] | ✅ |
-| 2026-04-19 | [[climate-monitor-2026-04-19]] | ⚠️ No report |
 | 2026-04-20 | [[climate-monitor-2026-04-20]] | ✅ |
 | 2026-04-21 | [[climate-monitor-2026-04-21]] | ✅ |
 | 2026-04-22 | [[climate-monitor-2026-04-22]] | ✅ |
 | 2026-04-23 | [[climate-monitor-2026-04-23]] | ✅ |
 | 2026-04-24 | [[climate-monitor-2026-04-24]] | ✅ |
 | 2026-04-25 | [[climate-monitor-2026-04-25]] | ✅ |
-| 2026-04-26 | [[climate-monitor-2026-04-26]] | ⚠️ No report |
-| 2026-04-27 | [[climate-monitor-2026-04-27]] | ⚠️ No report |
-| 2026-04-28 | [[climate-monitor-2026-04-28]] | ⚠️ No report |
-| 2026-04-29 | [[climate-monitor-2026-04-29]] | ⚠️ No report |
-| 2026-04-30 | [[climate-monitor-2026-04-30]] | ⚠️ No report |
-| 2026-05-01 | [[climate-monitor-2026-05-01]] | ⚠️ No report |
-| 2026-05-02 | [[climate-monitor-2026-05-02]] | ⚠️ No report |
-| 2026-05-03 | [[climate-monitor-2026-05-03]] | ⚠️ No report |
-| 2026-05-04 | [[climate-monitor-2026-05-04]] | ⚠️ No report |
-| 2026-05-05 | [[climate-monitor-2026-05-05]] | ⚠️ No report |
-| 2026-05-06 | [[climate-monitor-2026-05-06]] | ⚠️ No report |
-| 2026-05-07 | [[climate-monitor-2026-05-07]] | ⚠️ No report |
-| 2026-05-08 | [[climate-monitor-2026-05-08]] | ⚠️ No report |
-| 2026-05-09 | [[climate-monitor-2026-05-09]] | ⚠️ No report |
-| 2026-05-10 | [[climate-monitor-2026-05-10]] | ⚠️ No report |
-| 2026-05-11 | [[climate-monitor-2026-05-11]] | ⚠️ No report |
-| 2026-05-12 | [[climate-monitor-2026-05-12]] | ⚠️ No report |
-| 2026-05-13 | [[climate-monitor-2026-05-13]] | ⚠️ No report |
-| 2026-05-14 | [[climate-monitor-2026-05-14]] | ⚠️ No report |
-| 2026-05-15 | [[climate-monitor-2026-05-15]] | ⚠️ No report |
-| 2026-05-16 | [[climate-monitor-2026-05-16]] | ⚠️ No report |
-| 2026-05-17 | [[climate-monitor-2026-05-17]] | ⚠️ No report |
-| 2026-05-18 | [[climate-monitor-2026-05-18]] | ⚠️ No report |
-| 2026-05-19 | [[climate-monitor-2026-05-19]] | ⚠️ No report |
-| 2026-05-20 | [[climate-monitor-2026-05-20]] | ⚠️ No report |
-| 2026-05-21 | [[climate-monitor-2026-05-21]] | ⚠️ No report |
-| 2026-05-22 | [[climate-monitor-2026-05-22]] | ⚠️ No report |
-| 2026-05-23 | [[climate-monitor-2026-05-23]] | ⚠️ No report |
-| 2026-05-24 | [[climate-monitor-2026-05-24]] | ⚠️ No report |
-| 2026-05-25 | [[climate-monitor-2026-05-25]] | ⚠️ No report |
-| 2026-05-26 | [[climate-monitor-2026-05-26]] | ⚠️ No report |
-| 2026-05-27 | [[climate-monitor-2026-05-27]] | ⚠️ No report |
-| 2026-05-28 | [[climate-monitor-2026-05-28]] | ⚠️ No report |
-| 2026-05-29 | [[climate-monitor-2026-05-29]] | ⚠️ No report |
-| 2026-05-30 | [[climate-monitor-2026-05-30]] | ⚠️ No report |
-| 2026-05-31 | [[climate-monitor-2026-05-31]] | ⚠️ No report |
-| 2026-06-01 | [[climate-monitor-2026-06-01]] | ⚠️ No report |
-| 2026-06-02 | [[climate-monitor-2026-06-02]] | ⚠️ No report |
-| 2026-06-03 | [[climate-monitor-2026-06-03]] | ⚠️ No report |
-| 2026-06-04 | [[climate-monitor-2026-06-04]] | ⚠️ No report |
-| 2026-06-05 | [[climate-monitor-2026-06-05]] | ⚠️ No report |
-| 2026-06-06 | [[climate-monitor-2026-06-06]] | ⚠️ No report |
-| 2026-06-07 | [[climate-monitor-2026-06-07]] | ⚠️ No report |
-| 2026-06-08 | [[climate-monitor-2026-06-08]] | ⚠️ No report |
-| 2026-06-09 | [[climate-monitor-2026-06-09]] | ⚠️ No report |
 | 2026-06-10 | [[climate-monitor-2026-06-10]] | ✅ |
+| 2026-07-27 | [[climate-monitor-2026-07-27]] | ✅ |
+| 2026-08-03 | [[climate-monitor-2026-08-03]] | ✅ |
+| 2026-08-10 | [[climate-monitor-2026-08-10]] | ✅ |
 
 ## Entities
 
@@ -100,4 +53,4 @@ _Last updated: 2026-06-10 - 12 pages + 71 daily report pages_
 | [[cas-soa-climate-research]] | CAS $75K RFP for climate frameworks; SOA weather derivatives research | 2026-04-20 |
 | [[talents-gap]] | Insurance talent gap escalated to strategic risk; climate analytics skills shortage | 2026-04-20 |
 
-_Last updated: 2026-06-10_
+_Last updated: 2026-08-10_
