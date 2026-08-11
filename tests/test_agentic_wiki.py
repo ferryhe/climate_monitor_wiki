@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
-from agentic_wiki.wiki_agent import _requested_dates, _strip_markdown
+from agentic_wiki.wiki_agent import _expand_query, _requested_dates, _strip_markdown
 from api_server import app, responder
 from fastapi.testclient import TestClient
 
@@ -76,7 +76,14 @@ def test_api_config_exposes_graph_and_dataview_fields():
     assert payload["answer_modes"] == ["brief", "detailed", "executive"]
     assert payload["prompt_starters"]
     assert payload["prompt_starters"][0]["answer_mode"] == "executive"
-    assert payload["prompt_starters"][0]["prompt"].startswith("Give me a report for this month")
+    assert [item["label"] for item in payload["prompt_starters"]] == [
+        "Last 4 weeks",
+        "Last 12 weeks",
+        "Insurer implications",
+        "Pricing explainer",
+        "Latest report",
+    ]
+    assert all("daily" not in item["description"].lower() for item in payload["prompt_starters"])
     assert payload["graphs"]["notes"]["nodes"]
     assert payload["graphs"]["notes"]["links"]
     assert payload["graphs"]["keywords"]["nodes"]
@@ -140,7 +147,12 @@ def test_showcase_app_exposes_mode_aware_prompt_starters():
     assert "DEFAULT_PROMPT_STARTERS" in body
     assert "prompt_starters" in body
     assert "data-answer-mode" in body
-    assert "Give me a report for this month. Cover major themes, notable signals, and gaps." in body
+    assert "Summarize the past 4 weeks by theme" in body
+    assert "Summarize the latest Climate Monitor report in five bullets" in body
+    assert "Summarize the past 14 days by theme" not in body
+    for starter in responder.config()["prompt_starters"]:
+        for value in starter.values():
+            assert value in body
 
 
 def test_detailed_mode_brings_in_raw_source_evidence():
@@ -180,6 +192,29 @@ def test_detailed_mode_is_richer_than_brief_mode_offline():
     assert "Detailed evidence:" in detailed["text"]
 
 
+def test_latest_alias_uses_runtime_corpus_date_without_stale_daily_bias():
+    expanded = _expand_query("What is the latest update today?", "2026-08-10")
+
+    assert "2026-08-10" in expanded
+    assert "2026-04-20" not in expanded
+    assert "daily report" not in expanded.lower()
+
+
+def test_latest_answer_does_not_cite_the_stale_hardcoded_date():
+    responder_instance = AgenticWikiResponder()
+    responder_instance.client = None
+
+    result = responder_instance.answer(
+        "What are the latest Climate Monitor highlights?",
+        language="en",
+        answer_mode="brief",
+    )
+
+    source_dates = {source["date"] for source in result["sources"] if source["date"]}
+    assert responder_instance.kb.latest_date in source_dates
+    assert "2026-04-20" not in source_dates
+
+
 def test_requested_dates_supports_english_month_and_range_phrases():
     assert _requested_dates("Give me a report for this month", "2026-04-22")[0] == "2026-04-01"
     assert _requested_dates("Give me a report for this month", "2026-04-22")[-1] == "2026-04-22"
@@ -208,15 +243,15 @@ def test_executive_mode_produces_structured_window_brief_offline():
     assert "Executive Summary:" in result["text"]
     assert "Major Themes:" in result["text"]
     assert "Date Coverage:" in result["text"]
-    assert "Day-by-Day Coverage:" in result["text"]
-    assert "day(s) | dates:" in result["text"]
+    assert "Report-by-Report Coverage:" in result["text"]
+    assert "report(s) | dates:" in result["text"]
     assert "Summary:" in result["text"]
     assert "Coverage window: 2026-04-01 to 2026-04-30" in result["text"]
     assert any(source["path"] == "wiki/climate-monitor-2026-04-01.md" for source in result["sources"])
     assert any(source["path"].startswith("sources/") for source in result["sources"])
 
 
-def test_past_week_daily_summary_covers_requested_window_offline():
+def test_past_week_report_summary_covers_requested_window_offline():
     responder_instance = AgenticWikiResponder()
     responder_instance.client = None
     latest_date_value = responder_instance.kb.latest_date
@@ -294,6 +329,53 @@ def test_past_two_weeks_summary_parses_weeks_and_scopes_sources_offline():
     assert expected_dates, "no reports in the requested window to cover"
     assert expected_dates.issubset(source_dates)
     assert source_dates.issubset(window_dates)
+
+
+def test_four_week_executive_summary_counts_reports_not_calendar_days():
+    responder_instance = AgenticWikiResponder()
+    responder_instance.client = None
+    latest_date = date.fromisoformat(responder_instance.kb.latest_date)
+    window_start = latest_date - timedelta(days=27)
+    window_dates = {
+        (window_start + timedelta(days=offset)).isoformat() for offset in range(28)
+    }
+    corpus_dates = {
+        document.date
+        for document in (
+            *responder_instance.kb.documents,
+            *responder_instance.kb.source_documents,
+        )
+        if document.date in window_dates
+    }
+
+    result = responder_instance.answer(
+        "Summarize the past 4 weeks by theme and identify material changes across the weekly reports.",
+        language="en",
+        answer_mode="executive",
+    )
+
+    assert f"Reports with evidence: {len(corpus_dates)}" in result["text"]
+    assert "Report-by-Report Coverage:" in result["text"]
+    assert "Daily pages with evidence" not in result["text"]
+    assert "Missing or no-report days" not in result["text"]
+    for report_date in corpus_dates:
+        assert f"- {report_date}:" in result["text"]
+
+
+def test_timeline_distinguishes_retrieval_gap_from_missing_report(tmp_path):
+    wiki_dir = tmp_path / "wiki"
+    source_dir = tmp_path / "sources"
+    wiki_dir.mkdir()
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-08-10.md").write_text("", encoding="utf-8")
+    responder_instance = AgenticWikiResponder(wiki_dir=wiki_dir, source_dir=source_dir)
+    responder_instance.client = None
+
+    entry = responder_instance._timeline_entries(["2026-08-10"], [])[0]
+
+    assert entry["summary"] == "No retrieved evidence was selected for this report date."
+    assert entry["has_evidence"] is False
+    assert "has_report" not in entry
 
 
 def test_unknown_requested_date_keeps_relevant_evidence_offline():

@@ -19,7 +19,7 @@ Chat now also exposes three answer modes:
 
 - `Brief`: faster, tighter synthesis
 - `Detailed`: richer answers that pull more aggressively from `sources/` raw reports
-- `Report`: a theme-clustered, date-coverage-aware report mode that works better for prompts such as `Give me a report for this month`
+- `Report`: a theme-clustered, date-coverage-aware report mode tuned for prompts such as `Summarize the past 4 weeks`
 
 ## Runtime
 
@@ -27,7 +27,7 @@ Chat now also exposes three answer modes:
 - `agentic_wiki/` loads both `wiki/*.md` and `sources/*.md`, chunks notes and raw reports, plans retrieval, ranks evidence, and synthesizes cited answers.
 - `showcase/` is a static frontend with the shared chat and wiki workspace.
 
-Range-style daily-report questions such as `Summarize the past 7 days of reports`, `Give me a report for this month`, or `Summarize reports from 2026-04-14 to 2026-04-21` are expanded into exact report dates based on the latest available corpus day, so the assistant can cover the requested window more deliberately instead of returning only one or two standout reports.
+Range-style weekly-report questions such as `Summarize the past 4 weeks`, `Give me an executive report for the past 12 weeks`, or `Summarize reports from 2026-07-27 to 2026-08-10` are anchored to the latest available corpus date. Chat covers the real reports found inside that calendar window and does not treat intervening non-report days as missing updates.
 
 The chatbot can run in two modes:
 

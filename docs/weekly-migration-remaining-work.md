@@ -1,8 +1,8 @@
 # Weekly migration: what still needs changing
 
-**Status of the daily → weekly switch.** Phase 1 plus the PR review follow-ups
-are implemented on this branch. This document is the research output for what
-remains.
+**Status of the daily → weekly switch.** Phases 1, 2, 4, 5, and the PR review
+follow-ups are implemented. This document records both the remaining work and
+the reasoning behind completed migration steps.
 
 Every claim below was verified by running the code against the real corpus
 (`latest_date = 2026-08-10`), not by reading it.
@@ -26,7 +26,7 @@ Status refers to this branch's contents, not to `main`.
 | Removed the competing GitHub Actions generator | `.github/workflows/climate-monitor.yml` (deleted) |
 
 Result: **24 pages / 24 sources / 0 missing** (was 74 pages with 50 phantoms).
-Current suite: **112 passed**.
+Current suite: **120 passed**.
 
 ---
 
@@ -52,20 +52,10 @@ Under a weekly cadence, "past N weeks" is *the* natural way to ask for a range �
 and it now returns a real date window. The answer source list is also scoped to
 that window so old April reports do not appear as citations for an August window.
 
-Two follow-up improvements remain:
-
-1. **Month/quarter wording can be better tuned for weekly density.** The parser
-   now allows longer rolling day/week windows, but the prompt starters still need
-   copy work (see Phase 5).
-2. **`_window_dates` enumerates every calendar day.** For a 12-week window that
-   builds an 84-element list where at most 12 can ever match. It works (the
-   intersection is harmless) but it is wasteful and it makes the
-   "coverage" reporting misleading — it counts 84 requested dates against 12
-   possible hits. Better: intersect the window with the dates that actually
-   exist in the corpus (`kb` already knows them) before reporting coverage.
-
-**Remaining recommended fix:** intersect the displayed coverage denominator with
-real corpus dates for weekly windows.
+The parser still represents a rolling period as calendar dates for query
+scoping. Retrieval and displayed coverage now intersect that window with real
+corpus report dates, so a 4-week question reports the available weekly reports
+rather than claiming most days are missing.
 
 ---
 
@@ -75,7 +65,7 @@ real corpus dates for weekly windows.
 **`"daily"`**. That string is load-bearing across the whole stack:
 
 - `agentic_wiki/wiki_agent.py` — ranking boosts (`chunk.type == "daily"`),
-  `_asks_daily_summary()`, `_daily_page_path()`, source-link mapping
+  `_asks_report_summary()`, `_daily_page_path()`, source-link mapping
 - `showcase/app.js` — `GRAPH_COLORS.daily`, graph legend, Dataview row rendering
   (`doc.type === "daily"`), status placeholders
 - `showcase/styles.css` — `--daily` colour token, `.dot-daily`
@@ -95,9 +85,9 @@ wanted later, do it as its own PR with a compatibility alias.
 
 ---
 
-## Phase 4 — stale hardcoded dates (small but real)
+## Phase 4 — landed: runtime latest-date aliases
 
-`QUERY_ALIASES` in `wiki_agent.py` hardcodes April dates:
+The former `QUERY_ALIASES` entries hardcoded April dates:
 
 ```python
 "latest": "latest 2026-04-20 climate monitor update current summary",
@@ -109,15 +99,16 @@ string `2026-04-20` into the retrieval query, actively biasing results toward a
 four-month-old report. Verified: the query returns `2026-08-10` **and**
 `2026-04-20` among its sources — the stale bias is measurable.
 
-**Fix:** build these aliases from `kb.latest_date` at runtime instead of
-hardcoding. Also drop the word "daily" from the alias text.
+`_expand_query()` now receives `kb.latest_date` at runtime and builds `latest`
+and `today` expansions from that value using cadence-neutral report wording.
+Verified against the real corpus: a latest-report query cites 2026-08-10 and no
+longer cites 2026-04-20.
 
 ---
 
-## Phase 5 — prompt starters assume daily density
+## Phase 5 — landed: weekly-density prompt starters
 
-`PROMPT_STARTERS` (duplicated in `wiki_agent.py` **and** `showcase/app.js` —
-they must be kept in sync) offers:
+The former prompt starters included:
 
 - "30-day change" → ~4 weekly reports
 - "14-day themes" → ~2 weekly reports, described as "uses daily coverage as
@@ -126,10 +117,10 @@ they must be kept in sync) offers:
 "Summarize the past 14 days by theme, not by day" is close to meaningless when
 that window holds two reports.
 
-**Fix:** retune to the new cadence — e.g. "Last 4 weeks", "Last quarter",
-"Latest report" — and drop "daily" from the descriptions. **Note:** this depends
-on Phase 2; changing the starter text to "past 4 weeks" *before* week-parsing
-exists would ship a built-in button that silently returns no date window.
+The API and frontend fallback now offer `Last 4 weeks`, `Last 12 weeks`,
+`Insurer implications`, `Pricing explainer`, and `Latest report`. Their prompts
+and descriptions use weekly-report semantics and are regression-tested to stay
+in sync.
 
 ---
 

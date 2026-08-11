@@ -145,7 +145,7 @@ before touching cadence logic.
 ## Verification — required before claiming done
 
 ```bash
-.venv/bin/python -m pytest -q          # expect: 112 passed
+.venv/bin/python -m pytest -q          # expect: 120 passed
 node --check showcase/app.js           # frontend has no build step
 ```
 
@@ -239,20 +239,17 @@ monitor and rolling-PR publisher, with the same Monday report validation.
 trusting it** — it lists phases that have since landed. Re-check each against
 the code rather than assuming it is current.
 
-Confirmed still open (verified against the live corpus):
-
-- **Stale hardcoded dates** (`Phase 4`): `QUERY_ALIASES["latest"]` still pins
-  `2026-04-20` while the corpus latest is `2026-08-10`, injecting a four-month-old
-  date into retrieval. Should derive from `kb.latest_date` at runtime.
-- **Prompt starters assume daily density** (`Phase 5`): "Summarize the past 14
-  days" spans ~2 reports under a weekly cadence.
-
 Already landed — do **not** redo:
 
 - **Week-window parsing** (`Phase 2`) is **fixed**. Verified: `past 2 weeks` →
   14 dates, `last 3 weeks` → 21, `past 4 weeks` → 28. Earlier docs describing
   these as returning 0 dates are stale.
 - **Single automated generator and rolling-PR publication** — see above.
+- **Runtime latest-date aliases** (`Phase 4`) — `latest` and `today` expand from
+  `kb.latest_date`; no corpus date is hardcoded into retrieval aliases.
+- **Weekly Chat coverage and prompt starters** (`Phase 5`) — rolling windows
+  report only real corpus dates, and the API/frontend presets use 4-week,
+  12-week, insurer-implication, and latest-report wording.
 
 Deliberately **not** done: renaming the `"daily"` document type — it is
 load-bearing across ranking, `app.js`, CSS, and the Obsidian plugin contract, so
