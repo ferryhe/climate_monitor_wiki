@@ -192,6 +192,7 @@ def test_message_id_changes_when_rendered_payload_or_envelope_changes(configured
 
     pdf.write_bytes(b"%PDF-changed")
     assert first_id() != baseline
+
     pdf.write_bytes(b"%PDF-test")
 
     changed_sender = replace(configured, smtp=replace(configured.smtp, from_name="Changed sender"))
@@ -206,6 +207,57 @@ def test_message_id_changes_when_rendered_payload_or_envelope_changes(configured
     original_html = delivery_module._html_body
     monkeypatch.setattr(delivery_module, "_html_body", lambda summary: original_html(summary) + "<!-- template-v2 -->")
     assert first_id() != baseline
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_deliver_renders_message_material_once(configured, tmp_path, monkeypatch, dry_run):
+    import climate_delivery.delivery as delivery_module
+
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-test")
+    counts = {"plain": 0, "html": 0}
+    original_plain = delivery_module._plain_body
+    original_html = delivery_module._html_body
+
+    def counted_plain(summary):
+        counts["plain"] += 1
+        return original_plain(summary)
+
+    def counted_html(summary):
+        counts["html"] += 1
+        return original_html(summary)
+
+    monkeypatch.setattr(delivery_module, "_plain_body", counted_plain)
+    monkeypatch.setattr(delivery_module, "_html_body", counted_html)
+
+    class SMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, context=None):
+            return None
+
+        def login(self, username, password):
+            return None
+
+        def send_message(self, message):
+            return {}
+
+    deliver(
+        SUMMARY,
+        pdf,
+        configured,
+        tmp_path / "state",
+        dry_run=dry_run,
+        smtp_factory=SMTP if not dry_run else lambda *args, **kwargs: pytest.fail("SMTP used in dry-run"),
+    )
+    assert counts == {"plain": 1, "html": 1}
 
 
 @pytest.mark.parametrize(
@@ -490,7 +542,7 @@ def test_legacy_state_without_payload_binding_fails_closed(configured, tmp_path)
     }
     (state_dir / f"{'a' * 64}.json").write_text(json.dumps(legacy), encoding="utf-8")
 
-    with pytest.raises(LockStateError, match="manual reconciliation"):
+    with pytest.raises(LockStateError, match="legacy.*schema.*manual reconciliation"):
         deliver(SUMMARY, pdf, configured, state_dir, smtp_factory=lambda *args, **kwargs: pytest.fail("SMTP used"))
 
 

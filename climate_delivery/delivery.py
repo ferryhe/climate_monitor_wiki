@@ -228,13 +228,23 @@ def prepare_messages(
     _validate_summary(summary)
     if pdf_data is None:
         pdf_data = _read_pdf(pdf_path)
+    material = _message_material(summary, pdf_data, config)
+    return _prepare_messages(summary, pdf_data, config, material, clock=clock)
+
+
+def _prepare_messages(
+    summary: dict[str, Any],
+    pdf_data: bytes,
+    config: DeliveryConfig,
+    material: tuple[str, str, str, str, dict[str, str]],
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> list[tuple[str, bytes]]:
     now = (clock or (lambda: datetime.now(timezone.utc)))()
     if now.tzinfo is None or now.utcoffset() is None:
         raise InputError("message clock must return a timezone-aware datetime")
     now = now.astimezone(timezone.utc)
-    subject, plain_body, html_body, attachment_filename, fingerprints = _message_material(
-        summary, pdf_data, config
-    )
+    subject, plain_body, html_body, attachment_filename, fingerprints = material
     output: list[tuple[str, bytes]] = []
     for recipient in config.recipients:
         message = EmailMessage()
@@ -303,6 +313,8 @@ def _read_state(
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise LockStateError("delivery state is unreadable; manual reconciliation required") from exc
     expected_ids = {item.id for item in config.recipients}
+    if isinstance(state, dict) and state.get("schema_version") == 1:
+        raise LockStateError("legacy delivery state schema 1 is unsupported; manual reconciliation required")
     if not isinstance(state, dict) or state.get("schema_version") != 2 or not isinstance(state.get("recipients"), dict):
         raise LockStateError("delivery state is invalid; manual reconciliation required")
     if state.get("report_sha256") != summary["report"]["sha256"] or set(state["recipients"]) != expected_ids:
@@ -401,7 +413,8 @@ def deliver(
 
         def dry_execute() -> dict[str, Any]:
             pdf_data = _read_pdf(pdf_path, existing_state=state_path.exists())
-            message_fingerprints = _message_material(summary, pdf_data, config)[-1]
+            material = _message_material(summary, pdf_data, config)
+            message_fingerprints = material[-1]
             if state_path.exists():
                 state = _read_state(
                     state_path,
@@ -413,7 +426,7 @@ def deliver(
                 )
                 if any(value["status"] in {"sending", "unknown"} for value in state["recipients"].values()):
                     raise LockStateError("ambiguous sending/unknown state; manual reconciliation required")
-            messages = prepare_messages(summary, pdf_path, config, pdf_data=pdf_data, clock=clock)
+            messages = _prepare_messages(summary, pdf_data, config, material, clock=clock)
             return {
                 "status": "dry-run",
                 "messages": len(messages),
@@ -435,7 +448,8 @@ def deliver(
         state_path = state_dir / f"{digest}.json"
         pdf_data = _read_pdf(pdf_path, existing_state=state_path.exists())
         pdf_hash = hashlib.sha256(pdf_data).hexdigest()
-        message_fingerprints = _message_material(summary, pdf_data, config)[-1]
+        material = _message_material(summary, pdf_data, config)
+        message_fingerprints = material[-1]
         state = _read_state(
             state_path,
             summary,
@@ -453,7 +467,7 @@ def deliver(
                 "messages": 0,
                 "recipients": _recipient_results(state, config),
             }
-        messages = prepare_messages(summary, pdf_path, config, pdf_data=pdf_data, clock=clock)
+        messages = _prepare_messages(summary, pdf_data, config, material, clock=clock)
         for recipient_id, raw in messages:
             if state["recipients"][recipient_id]["status"] == "sent":
                 continue
