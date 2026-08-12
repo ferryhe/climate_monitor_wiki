@@ -9,6 +9,7 @@ smtp:
   username_env: CLIMATE_DELIVERY_SMTP_USERNAME
   password_env: CLIMATE_DELIVERY_SMTP_PASSWORD
   from_address_env: CLIMATE_DELIVERY_FROM_ADDRESS
+  from_name: IAA Weekly Climate Newsletter
   security: starttls
 
 recipients:

@@ -54,8 +54,14 @@ delivery state.
 non-secret idempotency key. Changing recipient IDs after a run requires manual
 state reconciliation; the module deliberately fails closed.
 
-The generated email has a plain-text body, an escaped HTML alternative, and a
-PDF attachment. One independent MIME message is built and sent per recipient.
+`smtp.from_name` controls the human-readable sender name while
+`smtp.from_address_env` still resolves the authenticated email address. The
+recommended display name is `IAA Weekly Climate Newsletter`.
+
+The generated email has a plain-text body, an escaped, table-based HTML
+alternative, and a PDF attachment. The email features up to the first three
+report-ordered highlights from each pillar; the attachment contains every
+highlight. One independent MIME message is built and sent per recipient.
 No `List-Unsubscribe` header is emitted because v1 has no real unsubscribe
 endpoint.
 

@@ -20,6 +20,7 @@ class SMTPConfig:
     username: str
     password: str
     from_address: str
+    from_name: str
     security: str
 
 
@@ -71,6 +72,7 @@ def load_delivery_config(path: Path) -> DeliveryConfig:
         "username_env",
         "password_env",
         "from_address_env",
+        "from_name",
         "security",
     }
     if set(smtp) != expected_smtp:
@@ -89,6 +91,14 @@ def load_delivery_config(path: Path) -> DeliveryConfig:
     from_address = _resolved_env(smtp, "from_address_env")
     if not EMAIL.fullmatch(from_address):
         raise InputError("SMTP from address is invalid")
+    from_name = smtp.get("from_name")
+    if (
+        not isinstance(from_name, str)
+        or not from_name.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in from_name)
+        or len(from_name.strip()) > 100
+    ):
+        raise InputError("smtp.from_name must be a non-empty, header-safe display name")
 
     resolved: list[Recipient] = []
     seen: set[str] = set()
@@ -116,6 +126,7 @@ def load_delivery_config(path: Path) -> DeliveryConfig:
             username=_resolved_env(smtp, "username_env"),
             password=_resolved_env(smtp, "password_env"),
             from_address=from_address,
+            from_name=from_name.strip(),
             security=security,
         ),
         recipients=tuple(resolved),

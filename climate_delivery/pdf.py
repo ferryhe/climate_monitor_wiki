@@ -5,14 +5,27 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from reportlab.lib.pagesizes import LETTER
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .errors import GenerationError
 from .io import atomic_replace
+
+
+NAVY = colors.HexColor("#0b3d62")
+TEAL = colors.HexColor("#1f6f8b")
+LIGHT = colors.HexColor("#f4f7f9")
+RULE = colors.HexColor("#d7dee4")
+GREY = colors.HexColor("#47535f")
+LINK = colors.HexColor("#1a73e8")
+WHITE = colors.white
+MARGIN = 18 * mm
+FRAME_WIDTH = A4[0] - (2 * MARGIN)
 
 
 ASCII_REPLACEMENTS = str.maketrans(
@@ -45,39 +58,200 @@ def _safe(value: str) -> str:
     return html.escape(ascii_display_text(value))
 
 
+def _scope_line(summary: dict[str, Any]) -> str:
+    sites = summary["report"].get("sites", {})
+    if all(isinstance(sites.get(key), int) for key in ("checked", "succeeded", "failed")):
+        return (
+            f"{sites['checked']} sites checked - "
+            f"{sites['succeeded']} succeeded - {sites['failed']} failed"
+        )
+    return "Weekly report"
+
+
 def _page_footer(pdf_canvas, document) -> None:
     pdf_canvas.saveState()
-    pdf_canvas.setFont("Helvetica", 8)
-    pdf_canvas.drawCentredString(LETTER[0] / 2, 0.4 * inch, f"Page {document.page}")
+    pdf_canvas.setStrokeColor(RULE)
+    pdf_canvas.setLineWidth(0.5)
+    pdf_canvas.line(MARGIN, 14 * mm, A4[0] - MARGIN, 14 * mm)
+    pdf_canvas.setFillColor(GREY)
+    pdf_canvas.setFont("Helvetica", 7.5)
+    pdf_canvas.drawString(MARGIN, 10 * mm, "Weekly Climate & Actuarial Monitor - Supranational Organizations")
+    pdf_canvas.drawRightString(A4[0] - MARGIN, 10 * mm, f"Page {document.page}")
     pdf_canvas.restoreState()
+
+
+def _styles():
+    base = getSampleStyleSheet()
+    return {
+        "cover_kicker": ParagraphStyle(
+            "ClimateCoverKicker",
+            parent=base["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor("#a9d6e5"),
+            spaceAfter=4,
+        ),
+        "cover_title": ParagraphStyle(
+            "ClimateCoverTitle",
+            parent=base["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=17,
+            leading=21,
+            alignment=TA_LEFT,
+            textColor=WHITE,
+            spaceAfter=5,
+        ),
+        "cover_meta": ParagraphStyle(
+            "ClimateCoverMeta",
+            parent=base["Normal"],
+            fontName="Helvetica",
+            fontSize=8.5,
+            leading=12,
+            textColor=colors.HexColor("#cfe6ee"),
+        ),
+        "section": ParagraphStyle(
+            "ClimateSection",
+            parent=base["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=14,
+            leading=18,
+            textColor=NAVY,
+            spaceBefore=4,
+            spaceAfter=4,
+        ),
+        "body": ParagraphStyle(
+            "ClimateBody",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=9,
+            leading=13,
+            textColor=GREY,
+            spaceAfter=5,
+        ),
+        "card_label": ParagraphStyle(
+            "ClimateCardLabel",
+            parent=base["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=7.5,
+            leading=10,
+            textColor=TEAL,
+            spaceAfter=3,
+        ),
+        "card_title": ParagraphStyle(
+            "ClimateCardTitle",
+            parent=base["Heading3"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=13,
+            textColor=NAVY,
+            spaceAfter=4,
+        ),
+        "card_body": ParagraphStyle(
+            "ClimateCardBody",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=8.5,
+            leading=12,
+            textColor=GREY,
+            spaceAfter=5,
+        ),
+        "url": ParagraphStyle(
+            "ClimateCardURL",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=7.5,
+            leading=10,
+            textColor=LINK,
+            wordWrap="CJK",
+        ),
+    }
+
+
+def _section_header(title: str, styles) -> list:
+    return [
+        Paragraph(_safe(title), styles["section"]),
+        HRFlowable(width="100%", thickness=1, color=RULE, spaceBefore=0, spaceAfter=7),
+    ]
+
+
+def _highlight_card(item: dict[str, str], styles) -> KeepTogether:
+    url = _safe(item["url"])
+    content = [
+        Paragraph(f"PILLAR {_safe(item['pillar'])}", styles["card_label"]),
+        Paragraph(_safe(item["title"]), styles["card_title"]),
+    ]
+    if item["summary"]:
+        content.append(Paragraph(_safe(item["summary"]), styles["card_body"]))
+    content.append(Paragraph(f'<b>Source:</b> <link href="{url}" color="#1a73e8">{url}</link>', styles["url"]))
+    card = Table([[content]], colWidths=[FRAME_WIDTH], hAlign="LEFT")
+    card.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, TEAL),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    return KeepTogether([card, Spacer(1, 2 * mm)])
 
 
 def render_pdf(summary: dict[str, Any], output: Path) -> None:
     output = Path(output)
     temporary: str | None = None
-    styles = getSampleStyleSheet()
-    url_style = styles["BodyText"].clone("ClimateDeliveryURL")
-    url_style.wordWrap = "CJK"
-    story = [
-        Paragraph(_safe(summary["report"]["title"]), styles["Title"]),
-        Paragraph(f"Report date: {_safe(summary['report']['date'])}", styles["Normal"]),
-        Spacer(1, 0.2 * inch),
-        Paragraph("Executive Summary", styles["Heading2"]),
+    styles = _styles()
+    cover_content = [
+        Paragraph("IAA WEEKLY CLIMATE NEWSLETTER", styles["cover_kicker"]),
+        Paragraph(_safe(summary["report"]["title"]), styles["cover_title"]),
+        Paragraph(
+            f"Report week of {_safe(summary['report']['date'])} - {_safe(_scope_line(summary))}",
+            styles["cover_meta"],
+        ),
     ]
+    cover = Table([[cover_content]], colWidths=[FRAME_WIDTH], hAlign="LEFT")
+    cover.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+                ("LEFTPADDING", (0, 0), (-1, -1), 16),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+                ("TOPPADDING", (0, 0), (-1, -1), 14),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+            ]
+        )
+    )
+    accent = Table([[""]], colWidths=[FRAME_WIDTH], rowHeights=[4], hAlign="LEFT")
+    accent.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), TEAL)]))
+    story = [cover, accent, Spacer(1, 7 * mm), *_section_header("Executive Summary", styles)]
     for item in summary["executive_summary"]:
-        story.append(Paragraph(f"* {_safe(item)}", styles["BodyText"]))
-    story.extend([Spacer(1, 0.15 * inch), Paragraph("Highlights", styles["Heading2"])])
-    for item in summary["highlights"]:
-        highlight = [Paragraph(f"Pillar {_safe(item['pillar'])}: {_safe(item['title'])}", styles["Heading3"])]
-        if item["summary"]:
-            highlight.append(Paragraph(_safe(item["summary"]), styles["BodyText"]))
-        highlight.extend([Paragraph(_safe(item["url"]), url_style), Spacer(1, 0.08 * inch)])
-        story.append(KeepTogether(highlight))
+        story.append(Paragraph(f"* {_safe(item)}", styles["body"]))
+    story.append(Spacer(1, 3 * mm))
+
+    for pillar in ("A", "B"):
+        highlights = [item for item in summary["highlights"] if item["pillar"] == pillar]
+        if not highlights:
+            continue
+        story.extend(_section_header(f"Pillar {pillar}", styles))
+        story.extend(_highlight_card(item, styles) for item in highlights)
+
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
         os.close(descriptor)
-        document = SimpleDocTemplate(temporary, pagesize=LETTER, title=ascii_display_text(summary["report"]["title"]))
+        document = SimpleDocTemplate(
+            temporary,
+            pagesize=A4,
+            leftMargin=MARGIN,
+            rightMargin=MARGIN,
+            topMargin=MARGIN,
+            bottomMargin=MARGIN,
+            title=ascii_display_text(summary["report"]["title"]),
+            author="IAA Weekly Climate Newsletter",
+        )
 
         def deterministic_canvas(*args, **kwargs):
             kwargs["invariant"] = 1
