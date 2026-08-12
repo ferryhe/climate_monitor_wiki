@@ -37,8 +37,11 @@ layouts with exit code 2. The report must:
   consistent; and
 - contain at least one linked highlight and one original HTTP(S) link.
 
-Extraction is deterministic. The module does not invent prose or enrich the
-report with network or model calls.
+Extraction is deterministic. The content executive summary contains three or
+four sentences derived from report counts, representative report titles, and a
+fixed set of climate/actuarial theme-keyword categories. Process bullets from
+the source Executive Summary are kept separately as monitoring notes. The
+module does not enrich the report with network or model calls.
 
 ## Server-only configuration
 
@@ -60,8 +63,12 @@ recommended display name is `IAA Weekly Climate Newsletter`.
 
 The generated email has a plain-text body, an escaped, table-based HTML
 alternative, and a PDF attachment. The email features up to the first three
-report-ordered highlights from each pillar; the attachment contains every
-highlight. One independent MIME message is built and sent per recipient.
+report-ordered, per-pillar numbered highlights from each pillar. Each featured
+title is the source hyperlink and is followed by the report's supporting
+summary. The attachment contains every highlight, numbered independently in
+Pillar A and Pillar B, plus a content executive summary and a separate
+monitoring snapshot. One independent MIME message is built and sent per
+recipient.
 No `List-Unsubscribe` header is emitted because v1 has no real unsubscribe
 endpoint.
 
@@ -162,4 +169,5 @@ changing them.
 PDF display strings use a deterministic ASCII-safe conversion: unsupported
 emoji are removed and common dashes, arrows, bullets, quotes, and ellipses are
 mapped to ASCII. This prevents the standard ReportLab font from rendering
-unsupported glyphs as black squares; long URLs use forced wrapping.
+unsupported glyphs as black squares. Source URLs are attached to the numbered
+highlight titles instead of being printed as long raw strings.

@@ -61,6 +61,12 @@ def test_weekly_report_is_strictly_validated_and_summary_is_deterministic(tmp_pa
     assert first["schema_version"] == 1
     assert first["report"]["date"] == "2026-08-10"
     assert first["report"]["sites"] == {"checked": 3, "succeeded": 2, "failed": 1}
+    assert first["executive_summary"] == [
+        "This week's report contains 2 climate and actuarial updates: 1 newly detected site change and 1 wider intelligence item.",
+        "New monitored-site developments include First finding.",
+        "The wider intelligence set includes Second finding.",
+    ]
+    assert first["monitoring_notes"] == ["One deterministic observation."]
     assert [item["pillar"] for item in first["highlights"]] == ["A", "B"]
     assert first["highlights"][0]["url"] == "https://example.test/first"
     assert first["original_links"] == ["https://example.test/first", "https://example.test/second"]
@@ -78,6 +84,17 @@ def test_original_links_allows_explanatory_bullets_and_http_markdown_links(tmp_p
     )
     report = parse_weekly_report(report_file(tmp_path, text=text))
     assert report.original_links == ("https://example.test/first", "https://example.test/second")
+
+
+def test_content_executive_summary_stays_three_to_four_sentences_when_a_pillar_is_empty(tmp_path):
+    text = REPORT.replace(
+        "- **First finding**\n  - First supporting sentence.\n  🔗 https://example.test/first",
+        "No qualifying site change was reported.",
+    )
+    summary = build_summary(parse_weekly_report(report_file(tmp_path, text=text)))
+
+    assert len(summary["executive_summary"]) == 3
+    assert "No newly detected site change" in summary["executive_summary"][1]
 
 
 @pytest.mark.parametrize(
@@ -157,7 +174,7 @@ def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_pat
     render_pdf(summary, output)
 
     reader = PdfReader(str(output))
-    assert len(reader.pages) == 6
+    assert len(reader.pages) == 5
     assert reader.metadata.author == "IAA Weekly Climate Newsletter"
     first_page = reader.pages[0]
     assert float(first_page.mediabox.width) == pytest.approx(A4[0], abs=0.1)
@@ -171,8 +188,18 @@ def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_pat
 
     assert "57 sites checked - 57 succeeded - 0 failed" in normalized_pages[0]
     assert "Executive Summary" in normalized_pages[0]
+    assert "Monitoring Snapshot" in normalized_pages[0]
+    assert "Pillar A updates 9" in normalized_pages[0]
+    assert "Pillar B updates 21" in normalized_pages[0]
     assert "Pillar A" in " ".join(normalized_pages)
     assert "Pillar B" in " ".join(normalized_pages)
+    first_b_title = "1. " + ascii_display_text(next(item["title"] for item in summary["highlights"] if item["pillar"] == "B"))
+    first_b_page = next(page for page in normalized_pages if first_b_title in page)
+    assert "Pillar B" in first_b_page
+
+    assert len(summary["executive_summary"]) in {3, 4}
+    assert not any("sites checked" in item.casefold() for item in summary["executive_summary"])
+    assert "climate disclosure and reporting" in summary["executive_summary"][0]
 
     linked_urls = {
         annotation.get_object().get("/A", {}).get("/URI")
@@ -182,15 +209,16 @@ def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_pat
     }
     assert linked_urls == {item["url"] for item in summary["highlights"]}
 
+    pillar_numbers = {"A": 0, "B": 0}
     for item in summary["highlights"]:
+        pillar_numbers[item["pillar"]] += 1
         title = ascii_display_text(item["title"])
+        numbered_title = f"{pillar_numbers[item['pillar']]}. {title}"
         body = ascii_display_text(item["summary"])
-        url = ascii_display_text(item["url"])
-        matching_pages = [index for index, page in enumerate(normalized_pages) if title in page]
+        matching_pages = [index for index, page in enumerate(normalized_pages) if numbered_title in page]
         assert len(matching_pages) == 1, title
         index = matching_pages[0]
         page = normalized_pages[index]
         assert body in page, title
-        assert "".join(url.split()) in compact_pages[index], title
-        assert page.index(title) < page.index(body), title
-        assert compact_pages[index].index("".join(body.split())) < compact_pages[index].index("".join(url.split())), title
+        assert page.index(numbered_title) < page.index(body), title
+        assert "".join(ascii_display_text(item["url"]).split()) not in "".join(compact_pages), title

@@ -42,6 +42,9 @@ def _validate_summary(summary: dict[str, Any]) -> None:
         raise InputError("summary content is incomplete")
     if not all(isinstance(item, str) for item in summary["executive_summary"]):
         raise InputError("summary executive items must be strings")
+    monitoring_notes = summary.get("monitoring_notes", [])
+    if not isinstance(monitoring_notes, list) or not all(isinstance(item, str) for item in monitoring_notes):
+        raise InputError("summary monitoring notes must be strings")
     for item in summary["highlights"]:
         if not isinstance(item, dict) or set(item) != {"pillar", "title", "summary", "url"}:
             raise InputError("summary highlight schema is invalid")
@@ -72,10 +75,10 @@ def load_summary(path: Path) -> dict[str, Any]:
     return load_summary_with_sha256(path)[0]
 
 
-def _featured_highlights(summary: dict[str, Any]) -> list[dict[str, str]]:
-    selected: list[dict[str, str]] = []
+def _featured_highlights(summary: dict[str, Any]) -> list[tuple[int, dict[str, str]]]:
+    selected: list[tuple[int, dict[str, str]]] = []
     for pillar in ("A", "B"):
-        selected.extend([item for item in summary["highlights"] if item["pillar"] == pillar][:3])
+        selected.extend(enumerate([item for item in summary["highlights"] if item["pillar"] == pillar][:3], start=1))
     return selected
 
 
@@ -91,8 +94,13 @@ def _plain_body(summary: dict[str, Any]) -> str:
     ]
     lines.extend(f"- {item}" for item in summary["executive_summary"])
     lines.extend(["", "Highlights this week"])
-    for item in featured:
-        lines.extend([f"- Pillar {item['pillar']}: {item['title']}", f"  {item['summary']}", f"  {item['url']}"])
+    for pillar in ("A", "B"):
+        pillar_items = [(number, item) for number, item in featured if item["pillar"] == pillar]
+        if not pillar_items:
+            continue
+        lines.append(f"Pillar {pillar}")
+        for number, item in pillar_items:
+            lines.extend([f"{number}. {item['title']}", f"   {item['summary']}", f"   {item['url']}"])
     lines.extend(
         [
             "",
@@ -106,7 +114,9 @@ def _plain_body(summary: dict[str, Any]) -> str:
 def _html_body(summary: dict[str, Any]) -> str:
     report = summary["report"]
     executive = "".join(
-        '<li style="margin:0 0 8px 0;">{}</li>'.format(html.escape(item))
+        '<p style="margin:0 0 10px 0;font-size:14px;line-height:21px;color:#33414f;">{}</p>'.format(
+            html.escape(item)
+        )
         for item in summary["executive_summary"]
     )
     highlights = "".join(
@@ -114,18 +124,20 @@ def _html_body(summary: dict[str, Any]) -> str:
         'style="margin:0 0 14px 0;background:#f4f7f9;border-left:4px solid #1f6f8b;">'
         '<tr><td style="padding:16px 18px;">'
         '<p style="margin:0 0 6px 0;font-size:11px;line-height:16px;font-weight:700;'
-        'letter-spacing:.06em;text-transform:uppercase;color:#1f6f8b;">Pillar {pillar}</p>'
-        '<h3 style="margin:0 0 8px 0;font-size:15px;line-height:21px;color:#0b3d62;">{title}</h3>'
+        'letter-spacing:.06em;text-transform:uppercase;color:#1f6f8b;">Pillar {pillar} &bull; Update {number}</p>'
+        '<h3 style="margin:0 0 8px 0;font-size:15px;line-height:21px;color:#0b3d62;">'
+        '<a href="{url}" style="color:#1a73e8;text-decoration:none;">{number}. {title}</a></h3>'
         '<p style="margin:0 0 10px 0;font-size:14px;line-height:21px;color:#33414f;">{body}</p>'
-        '<p style="margin:0;font-size:13px;line-height:19px;">'
-        '<a href="{url}" style="color:#1a73e8;text-decoration:none;">View original source</a>'
+        '<p style="margin:0;font-size:12px;line-height:18px;color:#617181;">'
+        "Hyperlinked title opens the original source."
         "</p></td></tr></table>".format(
+            number=number,
             pillar=html.escape(item["pillar"]),
             title=html.escape(item["title"]),
             body=html.escape(item["summary"]),
             url=html.escape(item["url"], quote=True),
         )
-        for item in _featured_highlights(summary)
+        for number, item in _featured_highlights(summary)
     )
     title = html.escape(report["title"])
     report_date = html.escape(report["date"])
@@ -156,7 +168,7 @@ def _html_body(summary: dict[str, Any]) -> str:
         'style="margin:0 0 24px 0;background:#f0f4f7;border-radius:8px;">'
         '<tr><td style="padding:18px 20px;">'
         '<h2 style="margin:0 0 10px 0;font-size:17px;line-height:23px;color:#0b3d62;">Executive Summary</h2>'
-        f'<ul style="margin:0;padding-left:20px;font-size:14px;line-height:21px;color:#33414f;">{executive}</ul>'
+        f"{executive}"
         "</td></tr></table>"
         '<h2 style="margin:0 0 16px 0;padding-left:12px;border-left:4px solid #1f6f8b;'
         'font-size:18px;line-height:24px;color:#0b3d62;">Highlights this week</h2>'

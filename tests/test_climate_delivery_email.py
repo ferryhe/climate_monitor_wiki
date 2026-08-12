@@ -92,6 +92,9 @@ def test_mime_is_plain_plus_escaped_html_with_pdf_and_no_fake_unsubscribe(config
     assert "Climate <Monitor>" in plain
     assert "Climate &lt;Monitor&gt;" in html
     assert "Evidence &amp; interpretation" in html
+    assert "1. A &lt;finding&gt;" in html
+    assert '<a href="https://example.test/a"' in html
+    assert "1. A <finding>" in plain
     assert 'role="presentation"' in html
     assert "max-width:640px" in html
     assert "Highlights this week" in html
@@ -122,8 +125,8 @@ def test_email_features_three_items_per_pillar_in_report_order(configured, tmp_p
 
     for pillar in ("A", "B"):
         for number in range(1, 4):
-            assert f"{pillar} finding {number}" in plain
-            assert f"{pillar} finding {number}" in html
+            assert f"{number}. {pillar} finding {number}" in plain
+            assert f"{number}. {pillar} finding {number}" in html
         assert f"{pillar} finding 4" not in plain
         assert f"{pillar} finding 4" not in html
     assert "The attached PDF contains all 8 report highlights." in plain
