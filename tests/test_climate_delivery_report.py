@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import A4
 from climate_delivery.errors import InputError
 from climate_delivery.pdf import ascii_display_text, render_pdf
 from climate_delivery.report import parse_weekly_report
-from climate_delivery.summary import build_summary, write_summary
+from climate_delivery.summary import build_summary, format_scope_line, write_summary
 
 
 REPORT = """# Weekly Climate Monitor
@@ -37,6 +37,13 @@ REPORT = """# Weekly Climate Monitor
 - https://example.test/first
 - https://example.test/second
 """
+
+
+def test_scope_line_uses_shared_site_counts_with_safe_fallback():
+    assert format_scope_line({"report": {"sites": {"checked": 3, "succeeded": 2, "failed": 1}}}) == (
+        "3 sites checked - 2 succeeded - 1 failed"
+    )
+    assert format_scope_line({"report": {}}) == "Weekly report"
 
 
 def report_file(tmp_path: Path, text: str = REPORT, name: str = "climate-monitor-2026-08-10.md") -> Path:

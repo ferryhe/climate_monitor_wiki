@@ -5,6 +5,16 @@ from .io import atomic_write_json
 from .report import WeeklyReport
 
 
+def format_scope_line(summary: dict[str, Any]) -> str:
+    sites = summary["report"].get("sites", {})
+    if all(isinstance(sites.get(key), int) for key in ("checked", "succeeded", "failed")):
+        return (
+            f"{sites['checked']} sites checked - "
+            f"{sites['succeeded']} succeeded - {sites['failed']} failed"
+        )
+    return "Weekly report"
+
+
 def build_summary(report: WeeklyReport) -> dict[str, Any]:
     return {
         "schema_version": 1,

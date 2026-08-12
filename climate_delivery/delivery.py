@@ -15,6 +15,7 @@ from typing import Any, Callable
 from .config import DeliveryConfig
 from .errors import DeliveryError, InputError, LockStateError
 from .io import atomic_write_json, exclusive_lock
+from .summary import format_scope_line
 
 
 class _AttemptFailure(Exception):
@@ -78,23 +79,13 @@ def _featured_highlights(summary: dict[str, Any]) -> list[dict[str, str]]:
     return selected
 
 
-def _scope_line(summary: dict[str, Any]) -> str:
-    sites = summary["report"].get("sites", {})
-    if all(isinstance(sites.get(key), int) for key in ("checked", "succeeded", "failed")):
-        return (
-            f"{sites['checked']} sites checked - "
-            f"{sites['succeeded']} succeeded - {sites['failed']} failed"
-        )
-    return "Weekly report"
-
-
 def _plain_body(summary: dict[str, Any]) -> str:
     report = summary["report"]
     featured = _featured_highlights(summary)
     lines = [
         report["title"],
         f"Report week of {report['date']}",
-        _scope_line(summary),
+        format_scope_line(summary),
         "",
         "Executive Summary",
     ]
@@ -138,7 +129,7 @@ def _html_body(summary: dict[str, Any]) -> str:
     )
     title = html.escape(report["title"])
     report_date = html.escape(report["date"])
-    scope = html.escape(_scope_line(summary))
+    scope = html.escape(format_scope_line(summary))
     total = len(summary["highlights"])
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'

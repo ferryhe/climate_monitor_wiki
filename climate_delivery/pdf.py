@@ -15,6 +15,7 @@ from reportlab.platypus import HRFlowable, KeepTogether, Paragraph, SimpleDocTem
 
 from .errors import GenerationError
 from .io import atomic_replace
+from .summary import format_scope_line
 
 
 NAVY = colors.HexColor("#0b3d62")
@@ -56,16 +57,6 @@ def ascii_display_text(value: str) -> str:
 
 def _safe(value: str) -> str:
     return html.escape(ascii_display_text(value))
-
-
-def _scope_line(summary: dict[str, Any]) -> str:
-    sites = summary["report"].get("sites", {})
-    if all(isinstance(sites.get(key), int) for key in ("checked", "succeeded", "failed")):
-        return (
-            f"{sites['checked']} sites checked - "
-            f"{sites['succeeded']} succeeded - {sites['failed']} failed"
-        )
-    return "Weekly report"
 
 
 def _page_footer(pdf_canvas, document) -> None:
@@ -208,7 +199,7 @@ def render_pdf(summary: dict[str, Any], output: Path) -> None:
         Paragraph("IAA WEEKLY CLIMATE NEWSLETTER", styles["cover_kicker"]),
         Paragraph(_safe(summary["report"]["title"]), styles["cover_title"]),
         Paragraph(
-            f"Report week of {_safe(summary['report']['date'])} - {_safe(_scope_line(summary))}",
+            f"Report week of {_safe(summary['report']['date'])} - {_safe(format_scope_line(summary))}",
             styles["cover_meta"],
         ),
     ]
