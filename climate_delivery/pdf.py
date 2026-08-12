@@ -208,7 +208,10 @@ def _monitoring_snapshot(summary: dict[str, Any], styles) -> Table:
         ("Pillar B updates", sum(item["pillar"] == "B" for item in summary["highlights"])),
     ]
     table = Table(
-        [[Paragraph(_safe(label), styles["snapshot_label"]), Paragraph(_safe(value), styles["snapshot_value"])] for label, value in rows],
+        [
+            [Paragraph(_safe(label), styles["snapshot_label"]), Paragraph(_safe(str(value)), styles["snapshot_value"])]
+            for label, value in rows
+        ],
         colWidths=[FRAME_WIDTH * 0.42, FRAME_WIDTH * 0.58],
         hAlign="LEFT",
     )

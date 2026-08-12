@@ -78,8 +78,9 @@ def _content_executive_summary(report: WeeklyReport) -> list[str]:
     leading = scored[:3]
 
     if leading:
+        update_label = "update" if total == 1 else "updates"
         first = (
-            f"Across {total} updates, this week's evidence concentrated on "
+            f"Across {total} {update_label}, this week's evidence concentrated on "
             f"{_joined([item[2] for item in leading])}."
         )
     else:

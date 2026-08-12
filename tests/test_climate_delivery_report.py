@@ -97,6 +97,18 @@ def test_content_executive_summary_stays_three_to_four_sentences_when_a_pillar_i
     assert "No newly detected site change" in summary["executive_summary"][1]
 
 
+def test_content_executive_summary_uses_singular_update_for_one_themed_highlight(tmp_path):
+    text = REPORT.replace("First finding", "Climate reporting finding").replace(
+        "- **Second finding** (web)\n  - Second supporting sentence.\n  🔗 https://example.test/second",
+        "No qualifying wider-intelligence item was reported.",
+    )
+    summary = build_summary(parse_weekly_report(report_file(tmp_path, text=text)))
+
+    assert summary["executive_summary"][0].startswith(
+        "Across 1 update, this week's evidence concentrated on climate disclosure and reporting."
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "text", "message"),
     [
