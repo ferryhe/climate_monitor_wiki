@@ -188,6 +188,35 @@ def _read_pdf(pdf_path: Path, *, existing_state: bool = False) -> bytes:
         raise InputError("PDF attachment does not exist or is unreadable") from exc
 
 
+def _message_material(
+    summary: dict[str, Any], pdf_data: bytes, config: DeliveryConfig
+) -> tuple[str, str, str, str, dict[str, str]]:
+    subject = f"Weekly Climate Monitor — {summary['report']['date']}"
+    plain_body = _plain_body(summary)
+    html_body = _html_body(summary)
+    attachment_filename = f"climate-monitor-{summary['report']['date']}.pdf"
+    shared = {
+        "report_sha256": summary["report"]["sha256"],
+        "subject": subject,
+        "from_name": config.smtp.from_name,
+        "from_address": config.smtp.from_address.strip().casefold(),
+        "plain_body": plain_body,
+        "html_body": html_body,
+        "attachment_filename": attachment_filename,
+        "pdf_sha256": hashlib.sha256(pdf_data).hexdigest(),
+    }
+    fingerprints: dict[str, str] = {}
+    for recipient in config.recipients:
+        payload = {
+            **shared,
+            "recipient_id": recipient.id,
+            "recipient_address": recipient.address.strip().casefold(),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        fingerprints[recipient.id] = hashlib.sha256(encoded).hexdigest()
+    return subject, plain_body, html_body, attachment_filename, fingerprints
+
+
 def prepare_messages(
     summary: dict[str, Any],
     pdf_path: Path,
@@ -203,23 +232,27 @@ def prepare_messages(
     if now.tzinfo is None or now.utcoffset() is None:
         raise InputError("message clock must return a timezone-aware datetime")
     now = now.astimezone(timezone.utc)
+    subject, plain_body, html_body, attachment_filename, fingerprints = _message_material(
+        summary, pdf_data, config
+    )
     output: list[tuple[str, bytes]] = []
     for recipient in config.recipients:
         message = EmailMessage()
-        message["Subject"] = f"Weekly Climate Monitor — {summary['report']['date']}"
+        message["Subject"] = subject
         message["From"] = formataddr((config.smtp.from_name, config.smtp.from_address))
         message["To"] = recipient.address
         message["Date"] = format_datetime(now, usegmt=True)
         message["Message-ID"] = (
-            f"<climate-delivery.{summary['report']['sha256']}.{recipient.id}@climate.aiinforsearch.com>"
+            f"<climate-delivery.{summary['report']['sha256']}.{recipient.id}."
+            f"{fingerprints[recipient.id][:24]}@climate.aiinforsearch.com>"
         )
-        message.set_content(_plain_body(summary))
-        message.add_alternative(_html_body(summary), subtype="html")
+        message.set_content(plain_body)
+        message.add_alternative(html_body, subtype="html")
         message.add_attachment(
             pdf_data,
             maintype="application",
             subtype="pdf",
-            filename=f"climate-monitor-{summary['report']['date']}.pdf",
+            filename=attachment_filename,
         )
         output.append((recipient.id, message.as_bytes(policy=SMTP)))
     return output
@@ -231,13 +264,18 @@ def _initial_state(
     *,
     summary_sha256: str,
     pdf_sha256: str,
+    message_fingerprints: dict[str, str],
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "report_sha256": summary["report"]["sha256"],
         "artifacts": {"summary_sha256": summary_sha256, "pdf_sha256": pdf_sha256},
         "recipients": {
-            item.id: {"address_fingerprint": _address_fingerprint(item.address), "status": "pending"}
+            item.id: {
+                "address_fingerprint": _address_fingerprint(item.address),
+                "message_fingerprint": message_fingerprints[item.id],
+                "status": "pending",
+            }
             for item in config.recipients
         },
     }
@@ -250,6 +288,7 @@ def _read_state(
     *,
     summary_sha256: str,
     pdf_sha256: str,
+    message_fingerprints: dict[str, str],
 ) -> dict[str, Any]:
     if not path.exists():
         return _initial_state(
@@ -257,13 +296,14 @@ def _read_state(
             config,
             summary_sha256=summary_sha256,
             pdf_sha256=pdf_sha256,
+            message_fingerprints=message_fingerprints,
         )
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise LockStateError("delivery state is unreadable; manual reconciliation required") from exc
     expected_ids = {item.id for item in config.recipients}
-    if not isinstance(state, dict) or state.get("schema_version") != 1 or not isinstance(state.get("recipients"), dict):
+    if not isinstance(state, dict) or state.get("schema_version") != 2 or not isinstance(state.get("recipients"), dict):
         raise LockStateError("delivery state is invalid; manual reconciliation required")
     if state.get("report_sha256") != summary["report"]["sha256"] or set(state["recipients"]) != expected_ids:
         raise LockStateError("delivery state does not match config; manual reconciliation required")
@@ -276,6 +316,8 @@ def _read_state(
     for recipient in config.recipients:
         if state["recipients"][recipient.id].get("address_fingerprint") != _address_fingerprint(recipient.address):
             raise LockStateError("delivery recipient binding changed; manual reconciliation required")
+        if state["recipients"][recipient.id].get("message_fingerprint") != message_fingerprints[recipient.id]:
+            raise LockStateError("delivery payload binding changed; manual reconciliation required")
     return state
 
 
@@ -359,6 +401,7 @@ def deliver(
 
         def dry_execute() -> dict[str, Any]:
             pdf_data = _read_pdf(pdf_path, existing_state=state_path.exists())
+            message_fingerprints = _message_material(summary, pdf_data, config)[-1]
             if state_path.exists():
                 state = _read_state(
                     state_path,
@@ -366,6 +409,7 @@ def deliver(
                     config,
                     summary_sha256=summary_hash,
                     pdf_sha256=hashlib.sha256(pdf_data).hexdigest(),
+                    message_fingerprints=message_fingerprints,
                 )
                 if any(value["status"] in {"sending", "unknown"} for value in state["recipients"].values()):
                     raise LockStateError("ambiguous sending/unknown state; manual reconciliation required")
@@ -391,12 +435,14 @@ def deliver(
         state_path = state_dir / f"{digest}.json"
         pdf_data = _read_pdf(pdf_path, existing_state=state_path.exists())
         pdf_hash = hashlib.sha256(pdf_data).hexdigest()
+        message_fingerprints = _message_material(summary, pdf_data, config)[-1]
         state = _read_state(
             state_path,
             summary,
             config,
             summary_sha256=summary_hash,
             pdf_sha256=pdf_hash,
+            message_fingerprints=message_fingerprints,
         )
         ambiguous = [key for key, value in state["recipients"].items() if value["status"] in {"sending", "unknown"}]
         if ambiguous:

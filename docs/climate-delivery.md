@@ -133,19 +133,25 @@ trusted. The manifest reports such outcomes as `ambiguous`, while known
 rejections are `failed`.
 
 Each MIME message includes a UTC `Date` and a deterministic Message-ID based on
-the report SHA and recipient ID. The ID is stable across retries and contains
-no recipient address.
+the report SHA, recipient ID, and an opaque fingerprint of the actual delivery
+payload. The fingerprint binds the subject, sender identity, recipient,
+plain-text and HTML bodies, attachment filename, and PDF hash. The ID is stable
+across retries of identical content, changes when the rendered message changes,
+and contains no recipient address.
 
 The state directory also holds an exclusive per-report lock. V1 intentionally
 has no `--force` option. Never delete a lock or rewrite state merely to make a
 job run; first establish whether mail was accepted by the SMTP provider.
 
-State is bound to the exact summary JSON hash, PDF hash, recipient IDs, and a
-SHA-256 fingerprint of each normalized recipient address. That fingerprint is
-server-only delivery state: neither it nor the address may appear in the
-manifest, CLI stdout, or error JSON. Changing any bound artifact or address
-after a partial delivery fails closed before SMTP is instantiated; already-sent
-recipients remain protected from duplicate delivery.
+State schema v2 is bound to the exact summary JSON hash, PDF hash, recipient
+IDs, a SHA-256 fingerprint of each normalized recipient address, and the full
+message-payload fingerprint used for Message-ID identity. Those fingerprints
+are server-only delivery state: neither they nor an address may appear in the
+manifest, CLI stdout, or error JSON. Changing any bound artifact, address,
+sender, body template, or attachment after a partial delivery fails closed
+before SMTP is instantiated; already-sent recipients remain protected from
+duplicate delivery. Legacy schema-v1 state lacks the payload binding and
+therefore requires manual reconciliation rather than automatic migration.
 
 `--dry-run` still validates configuration, generates summary/PDF artifacts,
 and constructs every MIME message. It never instantiates or connects to SMTP
