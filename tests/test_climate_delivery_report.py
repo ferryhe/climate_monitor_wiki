@@ -3,11 +3,12 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfReader
+from reportlab.lib.pagesizes import A4
 
 from climate_delivery.errors import InputError
 from climate_delivery.pdf import ascii_display_text, render_pdf
 from climate_delivery.report import parse_weekly_report
-from climate_delivery.summary import build_summary, write_summary
+from climate_delivery.summary import build_summary, format_scope_line, write_summary
 
 
 REPORT = """# Weekly Climate Monitor
@@ -36,6 +37,13 @@ REPORT = """# Weekly Climate Monitor
 - https://example.test/first
 - https://example.test/second
 """
+
+
+def test_scope_line_uses_shared_site_counts_with_safe_fallback():
+    assert format_scope_line({"report": {"sites": {"checked": 3, "succeeded": 2, "failed": 1}}}) == (
+        "3 sites checked - 2 succeeded - 1 failed"
+    )
+    assert format_scope_line({"report": {}}) == "Weekly report"
 
 
 def report_file(tmp_path: Path, text: str = REPORT, name: str = "climate-monitor-2026-08-10.md") -> Path:
@@ -148,11 +156,31 @@ def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_pat
     output = tmp_path / "real-report.pdf"
     render_pdf(summary, output)
 
-    pages = [page.extract_text() or "" for page in PdfReader(str(output)).pages]
+    reader = PdfReader(str(output))
+    assert len(reader.pages) == 6
+    assert reader.metadata.author == "IAA Weekly Climate Newsletter"
+    first_page = reader.pages[0]
+    assert float(first_page.mediabox.width) == pytest.approx(A4[0], abs=0.1)
+    assert float(first_page.mediabox.height) == pytest.approx(A4[1], abs=0.1)
+    pages = [page.extract_text() or "" for page in reader.pages]
     normalized_pages = [" ".join(page.split()) for page in pages]
     compact_pages = ["".join(page.split()) for page in pages]
     for page_number, page in enumerate(normalized_pages, start=1):
         assert f"Page {page_number}" in page
+        assert "Weekly Climate & Actuarial Monitor - Supranational Organizations" in page
+
+    assert "57 sites checked - 57 succeeded - 0 failed" in normalized_pages[0]
+    assert "Executive Summary" in normalized_pages[0]
+    assert "Pillar A" in " ".join(normalized_pages)
+    assert "Pillar B" in " ".join(normalized_pages)
+
+    linked_urls = {
+        annotation.get_object().get("/A", {}).get("/URI")
+        for page in reader.pages
+        for annotation in page.get("/Annots", [])
+        if annotation.get_object().get("/Subtype") == "/Link"
+    }
+    assert linked_urls == {item["url"] for item in summary["highlights"]}
 
     for item in summary["highlights"]:
         title = ascii_display_text(item["title"])

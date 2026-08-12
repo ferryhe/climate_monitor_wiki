@@ -8,13 +8,14 @@ from datetime import date, datetime, timezone
 from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import SMTP
-from email.utils import format_datetime
+from email.utils import format_datetime, formataddr
 from pathlib import Path
 from typing import Any, Callable
 
 from .config import DeliveryConfig
 from .errors import DeliveryError, InputError, LockStateError
 from .io import atomic_write_json, exclusive_lock
+from .summary import format_scope_line
 
 
 class _AttemptFailure(Exception):
@@ -71,36 +72,100 @@ def load_summary(path: Path) -> dict[str, Any]:
     return load_summary_with_sha256(path)[0]
 
 
+def _featured_highlights(summary: dict[str, Any]) -> list[dict[str, str]]:
+    selected: list[dict[str, str]] = []
+    for pillar in ("A", "B"):
+        selected.extend([item for item in summary["highlights"] if item["pillar"] == pillar][:3])
+    return selected
+
+
 def _plain_body(summary: dict[str, Any]) -> str:
     report = summary["report"]
-    lines = [report["title"], f"Report date: {report['date']}", "", "Executive Summary"]
+    featured = _featured_highlights(summary)
+    lines = [
+        report["title"],
+        f"Report week of {report['date']}",
+        format_scope_line(summary),
+        "",
+        "Executive Summary",
+    ]
     lines.extend(f"- {item}" for item in summary["executive_summary"])
-    lines.extend(["", "Highlights"])
-    for item in summary["highlights"]:
+    lines.extend(["", "Highlights this week"])
+    for item in featured:
         lines.extend([f"- Pillar {item['pillar']}: {item['title']}", f"  {item['summary']}", f"  {item['url']}"])
+    lines.extend(
+        [
+            "",
+            f"The attached PDF contains all {len(summary['highlights'])} report highlights.",
+            "This is a deterministic summary of the canonical weekly report.",
+        ]
+    )
     return "\n".join(lines).strip() + "\n"
 
 
 def _html_body(summary: dict[str, Any]) -> str:
     report = summary["report"]
-    executive = "".join(f"<li>{html.escape(item)}</li>" for item in summary["executive_summary"])
+    executive = "".join(
+        '<li style="margin:0 0 8px 0;">{}</li>'.format(html.escape(item))
+        for item in summary["executive_summary"]
+    )
     highlights = "".join(
-        "<li><strong>Pillar {pillar}: {title}</strong><br>{body}<br>"
-        '<a href="{url}">{url}</a></li>'.format(
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="margin:0 0 14px 0;background:#f4f7f9;border-left:4px solid #1f6f8b;">'
+        '<tr><td style="padding:16px 18px;">'
+        '<p style="margin:0 0 6px 0;font-size:11px;line-height:16px;font-weight:700;'
+        'letter-spacing:.06em;text-transform:uppercase;color:#1f6f8b;">Pillar {pillar}</p>'
+        '<h3 style="margin:0 0 8px 0;font-size:15px;line-height:21px;color:#0b3d62;">{title}</h3>'
+        '<p style="margin:0 0 10px 0;font-size:14px;line-height:21px;color:#33414f;">{body}</p>'
+        '<p style="margin:0;font-size:13px;line-height:19px;">'
+        '<a href="{url}" style="color:#1a73e8;text-decoration:none;">View original source</a>'
+        "</p></td></tr></table>".format(
             pillar=html.escape(item["pillar"]),
             title=html.escape(item["title"]),
             body=html.escape(item["summary"]),
             url=html.escape(item["url"], quote=True),
         )
-        for item in summary["highlights"]
+        for item in _featured_highlights(summary)
     )
+    title = html.escape(report["title"])
+    report_date = html.escape(report["date"])
+    scope = html.escape(format_scope_line(summary))
+    total = len(summary["highlights"])
     return (
-        "<!doctype html><html><body>"
-        f"<h1>{html.escape(report['title'])}</h1>"
-        f"<p>Report date: {html.escape(report['date'])}</p>"
-        f"<h2>Executive Summary</h2><ul>{executive}</ul>"
-        f"<h2>Highlights</h2><ul>{highlights}</ul>"
-        "</body></html>"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;padding:0;background:#f4f6f8;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="width:100%;background:#f4f6f8;"><tr><td align="center" style="padding:24px 12px;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="width:100%;max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden;'
+        'box-shadow:0 4px 18px rgba(11,61,98,.10);font-family:-apple-system,BlinkMacSystemFont,'
+        'Segoe UI,Roboto,Helvetica,Arial,sans-serif;">'
+        '<tr><td style="padding:28px 32px;background:#0b3d62;'
+        'background-image:linear-gradient(135deg,#0b3d62,#1f6f8b);">'
+        '<p style="margin:0 0 8px 0;font-size:11px;line-height:16px;font-weight:700;'
+        'letter-spacing:.12em;text-transform:uppercase;color:#a9d6e5;">IAA Weekly Climate Newsletter</p>'
+        f'<h1 style="margin:0 0 10px 0;font-size:22px;line-height:29px;color:#ffffff;">{title}</h1>'
+        f'<p style="margin:0;font-size:13px;line-height:20px;color:#cfe6ee;">Report week of {report_date}'
+        f" &bull; {scope}</p></td></tr>"
+        '<tr><td style="padding:26px 32px 8px 32px;color:#33414f;">'
+        '<p style="margin:0 0 16px 0;font-size:14px;line-height:22px;">'
+        "This weekly briefing connects current climate developments to actuarial monitoring. "
+        "The attached PDF contains the complete set of report highlights and source links.</p>"
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="margin:0 0 24px 0;background:#f0f4f7;border-radius:8px;">'
+        '<tr><td style="padding:18px 20px;">'
+        '<h2 style="margin:0 0 10px 0;font-size:17px;line-height:23px;color:#0b3d62;">Executive Summary</h2>'
+        f'<ul style="margin:0;padding-left:20px;font-size:14px;line-height:21px;color:#33414f;">{executive}</ul>'
+        "</td></tr></table>"
+        '<h2 style="margin:0 0 16px 0;padding-left:12px;border-left:4px solid #1f6f8b;'
+        'font-size:18px;line-height:24px;color:#0b3d62;">Highlights this week</h2>'
+        f"{highlights}</td></tr>"
+        '<tr><td style="padding:18px 32px;background:#f0f4f7;">'
+        f'<p style="margin:0;font-size:12px;line-height:18px;color:#617181;">Automated, deterministic summary '
+        f"of the canonical weekly report. The attached PDF contains all {total} report highlights. "
+        "Links point to the original sources recorded in the report.</p></td></tr>"
+        "</table></td></tr></table></body></html>"
     )
 
 
@@ -142,7 +207,7 @@ def prepare_messages(
     for recipient in config.recipients:
         message = EmailMessage()
         message["Subject"] = f"Weekly Climate Monitor — {summary['report']['date']}"
-        message["From"] = config.smtp.from_address
+        message["From"] = formataddr((config.smtp.from_name, config.smtp.from_address))
         message["To"] = recipient.address
         message["Date"] = format_datetime(now, usegmt=True)
         message["Message-ID"] = (

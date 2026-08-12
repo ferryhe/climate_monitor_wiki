@@ -42,6 +42,7 @@ smtp:
   username_env: TEST_SMTP_USER
   password_env: TEST_SMTP_PASSWORD
   from_address_env: TEST_FROM_ADDRESS
+  from_name: IAA Weekly Climate Newsletter
   security: starttls
 recipients:
   - id: alpha
@@ -82,15 +83,70 @@ def test_mime_is_plain_plus_escaped_html_with_pdf_and_no_fake_unsubscribe(config
     parsed = BytesParser(policy=policy.default).parsebytes(raw)
     assert recipient_id == "alpha"
     assert parsed["To"] == "alpha@example.test"
+    assert parsed["From"].addresses[0].display_name == "IAA Weekly Climate Newsletter"
+    assert parsed["From"].addresses[0].addr_spec == "sender@example.test"
     assert parsed["List-Unsubscribe"] is None
     plain = parsed.get_body(preferencelist=("plain",)).get_content()
     html = parsed.get_body(preferencelist=("html",)).get_content()
     assert "Climate <Monitor>" in plain
     assert "Climate &lt;Monitor&gt;" in html
     assert "Evidence &amp; interpretation" in html
+    assert 'role="presentation"' in html
+    assert "max-width:640px" in html
+    assert "Highlights this week" in html
+    assert "3 sites checked" in html
     attachment = next(parsed.iter_attachments())
     assert attachment.get_filename() == "climate-monitor-2026-08-10.pdf"
     assert attachment.get_content() == b"%PDF-test"
+
+
+def test_email_features_three_items_per_pillar_in_report_order(configured, tmp_path):
+    summary = json.loads(json.dumps(SUMMARY))
+    summary["highlights"] = [
+        {
+            "pillar": pillar,
+            "title": f"{pillar} finding {number}",
+            "summary": f"{pillar} summary {number}",
+            "url": f"https://example.test/{pillar.lower()}/{number}",
+        }
+        for pillar in ("A", "B")
+        for number in range(1, 5)
+    ]
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-test")
+
+    parsed = BytesParser(policy=policy.default).parsebytes(prepare_messages(summary, pdf, configured)[0][1])
+    plain = parsed.get_body(preferencelist=("plain",)).get_content()
+    html = parsed.get_body(preferencelist=("html",)).get_content()
+
+    for pillar in ("A", "B"):
+        for number in range(1, 4):
+            assert f"{pillar} finding {number}" in plain
+            assert f"{pillar} finding {number}" in html
+        assert f"{pillar} finding 4" not in plain
+        assert f"{pillar} finding 4" not in html
+    assert "The attached PDF contains all 8 report highlights." in plain
+
+
+@pytest.mark.parametrize("from_name", ["", "   ", "Bad\nName", "Bad\rName", "Bad\x00Name"])
+def test_sender_display_name_must_be_nonempty_and_header_safe(monkeypatch, tmp_path, from_name):
+    for key, value in {
+        "TEST_SMTP_HOST": "smtp.example.test",
+        "TEST_SMTP_PORT": "587",
+        "TEST_SMTP_USER": "sender-user",
+        "TEST_SMTP_PASSWORD": "not-a-real-password",
+        "TEST_FROM_ADDRESS": "sender@example.test",
+    }.items():
+        monkeypatch.setenv(key, value)
+    path = config_file(tmp_path)
+    text = path.read_text(encoding="utf-8").replace(
+        "from_name: IAA Weekly Climate Newsletter",
+        f"from_name: {json.dumps(from_name)}",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(InputError, match="from_name"):
+        load_delivery_config(path)
 
 
 def test_mime_has_utc_date_and_stable_unique_address_free_message_ids(configured, tmp_path):
