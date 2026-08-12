@@ -11,7 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import CondPageBreak, HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .errors import GenerationError
 from .io import atomic_replace
@@ -23,7 +23,6 @@ TEAL = colors.HexColor("#1f6f8b")
 LIGHT = colors.HexColor("#f4f7f9")
 RULE = colors.HexColor("#d7dee4")
 GREY = colors.HexColor("#47535f")
-LINK = colors.HexColor("#1a73e8")
 WHITE = colors.white
 MARGIN = 18 * mm
 FRAME_WIDTH = A4[0] - (2 * MARGIN)
@@ -120,15 +119,6 @@ def _styles():
             textColor=GREY,
             spaceAfter=5,
         ),
-        "card_label": ParagraphStyle(
-            "ClimateCardLabel",
-            parent=base["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=7.5,
-            leading=10,
-            textColor=TEAL,
-            spaceAfter=3,
-        ),
         "card_title": ParagraphStyle(
             "ClimateCardTitle",
             parent=base["Heading3"],
@@ -147,14 +137,29 @@ def _styles():
             textColor=GREY,
             spaceAfter=5,
         ),
-        "url": ParagraphStyle(
-            "ClimateCardURL",
+        "source_note": ParagraphStyle(
+            "ClimateCardSourceNote",
             parent=base["BodyText"],
             fontName="Helvetica",
             fontSize=7.5,
             leading=10,
-            textColor=LINK,
-            wordWrap="CJK",
+            textColor=GREY,
+        ),
+        "snapshot_label": ParagraphStyle(
+            "ClimateSnapshotLabel",
+            parent=base["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=11,
+            textColor=NAVY,
+        ),
+        "snapshot_value": ParagraphStyle(
+            "ClimateSnapshotValue",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=11,
+            textColor=GREY,
         ),
     }
 
@@ -166,15 +171,17 @@ def _section_header(title: str, styles) -> list:
     ]
 
 
-def _highlight_card(item: dict[str, str], styles) -> KeepTogether:
+def _highlight_card(item: dict[str, str], number: int, styles) -> KeepTogether:
     url = _safe(item["url"])
     content = [
-        Paragraph(f"PILLAR {_safe(item['pillar'])}", styles["card_label"]),
-        Paragraph(_safe(item["title"]), styles["card_title"]),
+        Paragraph(
+            f'<link href="{url}" color="#1a73e8">{number}. {_safe(item["title"])}</link>',
+            styles["card_title"],
+        ),
     ]
     if item["summary"]:
         content.append(Paragraph(_safe(item["summary"]), styles["card_body"]))
-    content.append(Paragraph(f'<b>Source:</b> <link href="{url}" color="#1a73e8">{url}</link>', styles["url"]))
+    content.append(Paragraph("Hyperlinked title opens the original source.", styles["source_note"]))
     card = Table([[content]], colWidths=[FRAME_WIDTH], hAlign="LEFT")
     card.setStyle(
         TableStyle(
@@ -189,6 +196,38 @@ def _highlight_card(item: dict[str, str], styles) -> KeepTogether:
         )
     )
     return KeepTogether([card, Spacer(1, 2 * mm)])
+
+
+def _monitoring_snapshot(summary: dict[str, Any], styles) -> Table:
+    sites = summary["report"].get("sites", {})
+    rows = [
+        ("Sites checked", sites.get("checked", "-")),
+        ("Succeeded", sites.get("succeeded", "-")),
+        ("Failed", sites.get("failed", "-")),
+        ("Pillar A updates", sum(item["pillar"] == "A" for item in summary["highlights"])),
+        ("Pillar B updates", sum(item["pillar"] == "B" for item in summary["highlights"])),
+    ]
+    table = Table(
+        [
+            [Paragraph(_safe(label), styles["snapshot_label"]), Paragraph(_safe(str(value)), styles["snapshot_value"])]
+            for label, value in rows
+        ],
+        colWidths=[FRAME_WIDTH * 0.42, FRAME_WIDTH * 0.58],
+        hAlign="LEFT",
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+                ("GRID", (0, 0), (-1, -1), 0.5, RULE),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return table
 
 
 def render_pdf(summary: dict[str, Any], output: Path) -> None:
@@ -219,15 +258,23 @@ def render_pdf(summary: dict[str, Any], output: Path) -> None:
     accent.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), TEAL)]))
     story = [cover, accent, Spacer(1, 7 * mm), *_section_header("Executive Summary", styles)]
     for item in summary["executive_summary"]:
-        story.append(Paragraph(f"* {_safe(item)}", styles["body"]))
+        story.append(Paragraph(_safe(item), styles["body"]))
     story.append(Spacer(1, 3 * mm))
+    story.extend(_section_header("Monitoring Snapshot", styles))
+    story.extend([_monitoring_snapshot(summary, styles), Spacer(1, 3 * mm)])
+    for item in summary.get("monitoring_notes", []):
+        story.append(Paragraph(f"* {_safe(item)}", styles["body"]))
+    if summary.get("monitoring_notes"):
+        story.append(Spacer(1, 2 * mm))
 
     for pillar in ("A", "B"):
         highlights = [item for item in summary["highlights"] if item["pillar"] == pillar]
         if not highlights:
             continue
+        cards = [_highlight_card(item, number, styles) for number, item in enumerate(highlights, start=1)]
+        story.append(CondPageBreak(50 * mm))
         story.extend(_section_header(f"Pillar {pillar}", styles))
-        story.extend(_highlight_card(item, styles) for item in highlights)
+        story.extend(cards)
 
     try:
         output.parent.mkdir(parents=True, exist_ok=True)

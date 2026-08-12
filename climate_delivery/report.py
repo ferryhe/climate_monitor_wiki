@@ -38,7 +38,7 @@ class WeeklyReport:
     checked: int
     succeeded: int
     failed: int
-    executive_summary: tuple[str, ...]
+    monitoring_notes: tuple[str, ...]
     highlights: tuple[Highlight, ...]
     original_links: tuple[str, ...]
 
@@ -180,7 +180,7 @@ def parse_weekly_report(path: Path) -> WeeklyReport:
         checked=checked,
         succeeded=succeeded,
         failed=failed,
-        executive_summary=_bullets(executive),
+        monitoring_notes=_bullets(executive),
         highlights=highlights,
         original_links=links,
     )
