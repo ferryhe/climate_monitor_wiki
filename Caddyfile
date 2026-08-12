@@ -1,22 +1,22 @@
-# Climate Monitor Wiki — local HTTPS via Caddy's internal CA.
+# Climate Monitor Wiki — public HTTPS plus private-IP TLS.
 #
-# Serves on the host's LAN IP with a Caddy-signed certificate. Browsers show a
-# trust warning until the Caddy root CA is imported (see docs/deployment.md);
-# the connection itself is real TLS.
+# The public hostname uses Caddy's automatic public-CA certificate management.
+# The private host IP remains available with a Caddy internal-CA certificate
+# for host-local health checks (see docs/deployment.md).
 #
 # default_sni is REQUIRED here: clients connecting to a bare IP literal send no
 # SNI (RFC 6066 forbids IP addresses in SNI), so without it Caddy cannot match
 # a site block and aborts the handshake with "tlsv1 alert internal error".
 {
 	auto_https disable_redirects
-	local_certs
 	default_sni {$SITE_HOST:172.31.10.77}
 }
 
-https://{$SITE_HOST:172.31.10.77} {
+# Shared site body: same reverse proxy + file logger for every hostname.
+# Imported by the public and internal site blocks so application logic lives
+# in exactly one place.
+(climate-wiki-site) {
 	encode gzip zstd
-
-	tls internal
 
 	reverse_proxy wiki:8501 {
 		health_uri /api/config
@@ -30,7 +30,23 @@ https://{$SITE_HOST:172.31.10.77} {
 	}
 }
 
-# Plain HTTP redirects to HTTPS so http://<ip> still lands on the app.
+# Public site — served over automatic (public-CA) HTTPS at the real hostname.
+https://climate.aiinforsearch.com {
+	import climate-wiki-site
+}
+
+# Internal site — private VPC IP, used by the host's own health-check loop.
+# Kept on Caddy's internal CA; do not point external users here.
+https://{$SITE_HOST:172.31.10.77} {
+	tls internal
+	import climate-wiki-site
+}
+
+# Plain HTTP redirects to HTTPS so http://<host> still lands on the app.
+http://climate.aiinforsearch.com {
+	redir https://{host}{uri} permanent
+}
+
 http://{$SITE_HOST:172.31.10.77} {
 	redir https://{host}{uri} permanent
 }
