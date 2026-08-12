@@ -137,14 +137,6 @@ def _styles():
             textColor=GREY,
             spaceAfter=5,
         ),
-        "source_note": ParagraphStyle(
-            "ClimateCardSourceNote",
-            parent=base["BodyText"],
-            fontName="Helvetica",
-            fontSize=7.5,
-            leading=10,
-            textColor=GREY,
-        ),
         "snapshot_label": ParagraphStyle(
             "ClimateSnapshotLabel",
             parent=base["BodyText"],
@@ -181,7 +173,6 @@ def _highlight_card(item: dict[str, str], number: int, styles) -> KeepTogether:
     ]
     if item["summary"]:
         content.append(Paragraph(_safe(item["summary"]), styles["card_body"]))
-    content.append(Paragraph("Hyperlinked title opens the original source.", styles["source_note"]))
     card = Table([[content]], colWidths=[FRAME_WIDTH], hAlign="LEFT")
     card.setStyle(
         TableStyle(
