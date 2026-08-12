@@ -91,6 +91,26 @@ def test_builds_fresh_database_duplicate_audit_and_weekly_manifests(tmp_path):
         (manifest["articles"][0]["article_id"],),
     ).fetchone() == (3,)
     assert len(duplicate_report["content_versions"][0]["version_ids"]) == 3
+    current_version = connection.execute(
+        "SELECT current_version_id FROM articles WHERE article_id = ?",
+        (manifest["articles"][0]["article_id"],),
+    ).fetchone()[0]
+    selected_version = connection.execute(
+        """
+        SELECT d.version_id FROM discoveries d JOIN reports r ON r.report_id = d.report_id
+        WHERE d.article_id = ? AND r.report_date = '2026-08-10' AND d.selected = 1
+        """,
+        (manifest["articles"][0]["article_id"],),
+    ).fetchone()[0]
+    duplicate_version = connection.execute(
+        """
+        SELECT d.version_id FROM discoveries d JOIN reports r ON r.report_id = d.report_id
+        WHERE d.article_id = ? AND r.report_date = '2026-08-10' AND d.selected = 0
+        """,
+        (manifest["articles"][0]["article_id"],),
+    ).fetchone()[0]
+    assert current_version == selected_version
+    assert current_version != duplicate_version
 
     second_database = tmp_path / "registry-second.sqlite3"
     second_output = tmp_path / "audit-second"

@@ -99,6 +99,8 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
 def apply_migrations(connection: sqlite3.Connection) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""
 
+    if connection.in_transaction:
+        raise sqlite3.ProgrammingError("cannot apply migrations inside an active transaction")
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(
         """

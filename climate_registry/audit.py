@@ -104,8 +104,7 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(article_id) DO UPDATE SET
                 first_seen = MIN(first_seen, excluded.first_seen),
-                last_seen = MAX(last_seen, excluded.last_seen),
-                current_version_id = excluded.current_version_id
+                last_seen = MAX(last_seen, excluded.last_seen)
             """,
             (article_id, normalized_url, source_id, report.report_date, report.report_date, version_id),
         )
@@ -165,6 +164,15 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
         )
         if duplicate_of is not None:
             continue
+
+        connection.execute(
+            """
+            UPDATE articles
+            SET current_version_id = ?
+            WHERE article_id = ? AND last_seen <= ?
+            """,
+            (version_id, article_id, report.report_date),
+        )
 
         previous_versions = seen_versions.setdefault(
             article_id,

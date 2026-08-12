@@ -47,3 +47,20 @@ def test_migration_enforces_report_article_uniqueness():
         connection.execute(
             "INSERT INTO report_appearances VALUES ('r', 'a', 'v', 'd1', 'pillar-b', 'B', 2, 'previously-seen')"
         )
+
+
+def test_migrations_refuse_to_commit_callers_active_transaction():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE caller_state(value TEXT)")
+    connection.commit()
+    connection.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+
+    with __import__("pytest").raises(sqlite3.ProgrammingError, match="active transaction"):
+        apply_migrations(connection)
+
+    assert connection.in_transaction
+    connection.rollback()
+    assert connection.execute("SELECT * FROM caller_state").fetchall() == []
+    assert connection.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone() == (0,)
