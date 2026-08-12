@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import smtplib
 import ssl
 from dataclasses import replace
@@ -149,13 +150,13 @@ def test_sender_display_name_must_be_nonempty_and_header_safe(monkeypatch, tmp_p
         load_delivery_config(path)
 
 
-def test_mime_has_utc_date_and_stable_unique_address_free_message_ids(configured, tmp_path):
+def test_mime_has_utc_date_and_payload_bound_stable_unique_address_free_message_ids(configured, tmp_path):
     pdf = tmp_path / "report.pdf"
     pdf.write_bytes(b"%PDF-test")
     now = datetime(2026, 8, 12, 3, 4, 5, tzinfo=timezone.utc)
 
     first = prepare_messages(SUMMARY, pdf, configured, clock=lambda: now)
-    second = prepare_messages(SUMMARY, pdf, configured, clock=lambda: now)
+    second = prepare_messages(SUMMARY, pdf, configured, clock=lambda: now.replace(hour=4))
     parsed_first = [BytesParser(policy=policy.default).parsebytes(raw) for _recipient_id, raw in first]
     parsed_second = [BytesParser(policy=policy.default).parsebytes(raw) for _recipient_id, raw in second]
 
@@ -166,10 +167,97 @@ def test_mime_has_utc_date_and_stable_unique_address_free_message_ids(configured
         parsed_date = parsedate_to_datetime(str(message["Date"]))
         assert parsed_date == now
         assert parsed_date.tzinfo == timezone.utc
-        assert message["Message-ID"] == (
-            f"<climate-delivery.{'a' * 64}.{recipient.id}@climate.aiinforsearch.com>"
+        assert re.fullmatch(
+            rf"<climate-delivery\.{'a' * 64}\.{recipient.id}\.[0-9a-f]{{24}}@climate\.aiinforsearch\.com>",
+            str(message["Message-ID"]),
         )
         assert recipient.address not in str(message["Message-ID"])
+
+
+def test_message_id_changes_when_rendered_payload_or_envelope_changes(configured, tmp_path, monkeypatch):
+    import climate_delivery.delivery as delivery_module
+
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-test")
+
+    def first_id(summary=SUMMARY, config=configured):
+        raw = prepare_messages(summary, pdf, config)[0][1]
+        return str(BytesParser(policy=policy.default).parsebytes(raw)["Message-ID"])
+
+    baseline = first_id()
+
+    changed_summary = json.loads(json.dumps(SUMMARY))
+    changed_summary["executive_summary"].append("New evidence")
+    assert first_id(changed_summary) != baseline
+
+    pdf.write_bytes(b"%PDF-changed")
+    assert first_id() != baseline
+
+    pdf.write_bytes(b"%PDF-test")
+
+    changed_sender = replace(configured, smtp=replace(configured.smtp, from_name="Changed sender"))
+    assert first_id(config=changed_sender) != baseline
+
+    changed_recipient = replace(
+        configured,
+        recipients=(replace(configured.recipients[0], address="changed@example.test"), *configured.recipients[1:]),
+    )
+    assert first_id(config=changed_recipient) != baseline
+
+    original_html = delivery_module._html_body
+    monkeypatch.setattr(delivery_module, "_html_body", lambda summary: original_html(summary) + "<!-- template-v2 -->")
+    assert first_id() != baseline
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_deliver_renders_message_material_once(configured, tmp_path, monkeypatch, dry_run):
+    import climate_delivery.delivery as delivery_module
+
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-test")
+    counts = {"plain": 0, "html": 0}
+    original_plain = delivery_module._plain_body
+    original_html = delivery_module._html_body
+
+    def counted_plain(summary):
+        counts["plain"] += 1
+        return original_plain(summary)
+
+    def counted_html(summary):
+        counts["html"] += 1
+        return original_html(summary)
+
+    monkeypatch.setattr(delivery_module, "_plain_body", counted_plain)
+    monkeypatch.setattr(delivery_module, "_html_body", counted_html)
+
+    class SMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, context=None):
+            return None
+
+        def login(self, username, password):
+            return None
+
+        def send_message(self, message):
+            return {}
+
+    deliver(
+        SUMMARY,
+        pdf,
+        configured,
+        tmp_path / "state",
+        dry_run=dry_run,
+        smtp_factory=SMTP if not dry_run else lambda *args, **kwargs: pytest.fail("SMTP used in dry-run"),
+    )
+    assert counts == {"plain": 1, "html": 1}
 
 
 @pytest.mark.parametrize(
@@ -355,8 +443,10 @@ def test_returned_recipient_refusal_is_a_known_failure(configured, tmp_path):
     assert state["recipients"]["alpha"]["status"] == "failed"
 
 
-@pytest.mark.parametrize("mutation", ["summary", "summary-bytes", "pdf", "address"])
-def test_partial_delivery_state_binds_summary_pdf_and_recipient_addresses(configured, tmp_path, mutation):
+@pytest.mark.parametrize("mutation", ["summary", "summary-bytes", "pdf", "address", "from-name", "html-template"])
+def test_partial_delivery_state_binds_artifacts_recipients_and_message_payload(
+    configured, tmp_path, monkeypatch, mutation
+):
     pdf = tmp_path / "report.pdf"
     pdf.write_bytes(b"%PDF-test")
     state_dir = tmp_path / "state"
@@ -398,11 +488,18 @@ def test_partial_delivery_state_binds_summary_pdf_and_recipient_addresses(config
         changed_summary["executive_summary"].append("changed")
     elif mutation == "pdf":
         pdf.write_bytes(b"%PDF-changed")
-    else:
+    elif mutation == "address":
         recipients = (replace(configured.recipients[0], address="changed@example.test"), *configured.recipients[1:])
         changed_config = replace(configured, recipients=recipients)
+    elif mutation == "from-name":
+        changed_config = replace(configured, smtp=replace(configured.smtp, from_name="Changed sender"))
+    elif mutation == "html-template":
+        import climate_delivery.delivery as delivery_module
 
-    with pytest.raises(LockStateError, match="artifact|recipient|state"):
+        original_html = delivery_module._html_body
+        monkeypatch.setattr(delivery_module, "_html_body", lambda summary: original_html(summary) + "<!-- changed -->")
+
+    with pytest.raises(LockStateError, match="artifact|recipient|payload|state"):
         deliver(
             changed_summary,
             pdf,
@@ -414,9 +511,39 @@ def test_partial_delivery_state_binds_summary_pdf_and_recipient_addresses(config
         )
 
     state = json.loads(next(state_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert state["schema_version"] == 2
     assert set(state["artifacts"]) == {"summary_sha256", "pdf_sha256"}
     assert all(len(value["address_fingerprint"]) == 64 for value in state["recipients"].values())
+    assert all(len(value["message_fingerprint"]) == 64 for value in state["recipients"].values())
     assert "example.test" not in json.dumps(state)
+
+
+def test_legacy_state_without_payload_binding_fails_closed(configured, tmp_path):
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-test")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    legacy = {
+        "schema_version": 1,
+        "report_sha256": "a" * 64,
+        "artifacts": {
+            "summary_sha256": hashlib.sha256(
+                json.dumps(SUMMARY, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+            ).hexdigest(),
+            "pdf_sha256": hashlib.sha256(b"%PDF-test").hexdigest(),
+        },
+        "recipients": {
+            recipient.id: {
+                "address_fingerprint": hashlib.sha256(recipient.address.casefold().encode()).hexdigest(),
+                "status": "pending",
+            }
+            for recipient in configured.recipients
+        },
+    }
+    (state_dir / f"{'a' * 64}.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    with pytest.raises(LockStateError, match="legacy.*schema.*manual reconciliation"):
+        deliver(SUMMARY, pdf, configured, state_dir, smtp_factory=lambda *args, **kwargs: pytest.fail("SMTP used"))
 
 
 def test_ambiguous_smtp_failure_is_recorded_unknown_and_fails_closed(configured, tmp_path):
