@@ -123,14 +123,45 @@ def test_existing_content_addressed_artifacts_are_never_overwritten(tmp_path, mo
 
 def test_pipeline_requires_external_absolute_non_nested_paths(tmp_path, monkeypatch):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
-    config = config_file(tmp_path)
+    valid_inputs = tmp_path / "valid-inputs"
+    valid_inputs.mkdir()
+    report = report_file(valid_inputs)
+    config = config_file(valid_inputs)
     with pytest.raises(InputError, match="nested|separate"):
         run_delivery(report, tmp_path / "work", tmp_path / "work" / "state", config, dry_run=True)
 
     repo_report = Path(__file__).parents[1] / "sources" / "climate-monitor-2026-08-10.md"
     with pytest.raises(InputError, match="repository"):
         run_delivery(repo_report, tmp_path / "output", tmp_path / "state", config, dry_run=True)
+
+
+@pytest.mark.parametrize("conflict", ["output", "state"])
+def test_pipeline_rejects_existing_file_where_directory_root_is_required(tmp_path, monkeypatch, conflict):
+    configure_env(monkeypatch)
+    valid_cli_inputs = tmp_path / "valid-cli-inputs"
+    valid_cli_inputs.mkdir()
+    report = report_file(valid_cli_inputs)
+    config = config_file(valid_cli_inputs)
+    output = tmp_path / "output"
+    state = tmp_path / "state"
+    selected = output if conflict == "output" else state
+    selected.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(InputError, match=f"{conflict}.*directory"):
+        run_delivery(report, output, state, config, dry_run=True)
+
+
+@pytest.mark.parametrize("argument", ["report", "config"])
+def test_pipeline_rejects_existing_directory_where_file_is_required(tmp_path, monkeypatch, argument):
+    configure_env(monkeypatch)
+    report = report_file(tmp_path)
+    config = config_file(tmp_path)
+    selected = report if argument == "report" else config
+    selected.unlink()
+    selected.mkdir()
+
+    with pytest.raises(InputError, match=f"{argument}.*file"):
+        run_delivery(report, tmp_path / "output", tmp_path / "state", config, dry_run=True)
 
 
 def test_pipeline_preserves_original_error_when_failure_manifest_cannot_be_written(tmp_path, monkeypatch):
@@ -204,6 +235,46 @@ def test_cli_rejects_repo_internal_and_relative_operation_paths(tmp_path, capsys
     repo_report = Path(__file__).parents[1] / "sources" / "climate-monitor-2026-08-10.md"
     assert main(["summarize", "--report", str(repo_report), "--output", str(tmp_path / "summary.json")]) == 2
     assert json.loads(capsys.readouterr().out)["kind"] == "input"
+
+
+def test_cli_returns_exit2_for_path_type_conflicts(tmp_path, capsys):
+    report_dir = tmp_path / "climate-monitor-2026-08-10.md"
+    report_dir.mkdir()
+    output = tmp_path / "summary.json"
+    assert main(["summarize", "--report", str(report_dir), "--output", str(output)]) == 2
+    assert json.loads(capsys.readouterr().out)["kind"] == "input"
+
+    summary = tmp_path / "external-summary.json"
+    summary.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "pdf-output"
+    output_dir.mkdir()
+    assert main(["render-pdf", "--summary", str(summary), "--output", str(output_dir)]) == 2
+    assert json.loads(capsys.readouterr().out)["kind"] == "input"
+
+    cli_inputs = tmp_path / "cli-run-inputs"
+    cli_inputs.mkdir()
+    report = report_file(cli_inputs)
+    config = config_file(cli_inputs)
+    for conflict in ("output", "state"):
+        output_root = tmp_path / f"{conflict}-output-root"
+        state_root = tmp_path / f"{conflict}-state-root"
+        selected = output_root if conflict == "output" else state_root
+        selected.write_text("not a directory", encoding="utf-8")
+        assert main(
+            [
+                "run",
+                "--report",
+                str(report),
+                "--output-dir",
+                str(output_root),
+                "--state-dir",
+                str(state_root),
+                "--config",
+                str(config),
+                "--dry-run",
+            ]
+        ) == 2
+        assert json.loads(capsys.readouterr().out)["kind"] == "input"
     assert main(["send-email", "--summary", "relative.json", "--pdf", "relative.pdf", "--config", "config.yaml", "--state-dir", "state"]) == 2
     assert json.loads(capsys.readouterr().out)["kind"] == "input"
 

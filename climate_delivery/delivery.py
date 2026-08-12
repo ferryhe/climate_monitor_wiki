@@ -317,7 +317,7 @@ def deliver(
                 ],
             }
 
-        if state_path.exists() and acquire_lock:
+        if acquire_lock:
             with exclusive_lock(state_dir, digest):
                 return dry_execute()
         return dry_execute()

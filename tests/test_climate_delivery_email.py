@@ -161,7 +161,28 @@ def test_dry_run_builds_mime_without_instantiating_smtp_or_changing_state(config
 
     assert result["status"] == "dry-run"
     assert result["messages"] == 4
-    assert not state_dir.exists()
+    assert not list(state_dir.glob("*.json"))
+    assert not list(state_dir.rglob("*.lock"))
+
+
+def test_dry_run_honors_existing_lock_even_without_delivery_state(configured, tmp_path):
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-test")
+    state_dir = tmp_path / "state"
+    locks = state_dir / "locks"
+    locks.mkdir(parents=True)
+    (locks / f"{'a' * 64}.lock").write_text("crashed process", encoding="ascii")
+
+    with pytest.raises(LockStateError, match="locked"):
+        deliver(
+            SUMMARY,
+            pdf,
+            configured,
+            state_dir,
+            dry_run=True,
+            smtp_factory=lambda *args, **kwargs: pytest.fail("SMTP instantiated after lock conflict"),
+        )
+    assert not (state_dir / f"{'a' * 64}.json").exists()
 
 
 def test_default_smtp_ssl_uses_verifying_context(monkeypatch, configured, tmp_path):

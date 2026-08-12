@@ -19,6 +19,20 @@ def external_absolute_path(path: Path, label: str) -> Path:
     return resolved
 
 
+def external_file_path(path: Path, label: str) -> Path:
+    resolved = external_absolute_path(path, label)
+    if resolved.exists() and not resolved.is_file():
+        raise InputError(f"{label} path must be a file, not a directory")
+    return resolved
+
+
+def external_directory_root(path: Path, label: str) -> Path:
+    resolved = external_absolute_path(path, label)
+    if resolved.exists() and not resolved.is_dir():
+        raise InputError(f"{label} must be a directory root, not a file")
+    return resolved
+
+
 def require_distinct_files(first: Path, second: Path, first_label: str, second_label: str) -> None:
     if first == second:
         raise InputError(f"{first_label} and {second_label} paths must be separate")
@@ -35,9 +49,9 @@ def validate_run_paths(
     state_dir: Path,
     config_path: Path,
 ) -> tuple[Path, Path, Path, Path]:
-    report = external_absolute_path(report_path, "report")
-    output = external_absolute_path(output_dir, "output-dir")
-    state = external_absolute_path(state_dir, "state-dir")
-    config = external_absolute_path(config_path, "config")
+    report = external_file_path(report_path, "report")
+    output = external_directory_root(output_dir, "output-dir")
+    state = external_directory_root(state_dir, "state-dir")
+    config = external_file_path(config_path, "config")
     require_separate_trees(output, state, "output-dir", "state-dir")
     return report, output, state, config

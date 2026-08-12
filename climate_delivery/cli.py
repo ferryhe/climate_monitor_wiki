@@ -9,7 +9,7 @@ from .delivery import deliver, load_summary, load_summary_with_sha256
 from .errors import DeliveryError, GenerationError, InputError, LockStateError
 from .pdf import render_pdf
 from .pipeline import run_delivery
-from .paths import external_absolute_path, require_distinct_files, validate_run_paths
+from .paths import external_directory_root, external_file_path, require_distinct_files, validate_run_paths
 from .report import parse_weekly_report
 from .summary import build_summary, write_summary
 
@@ -55,15 +55,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
         if args.command == "summarize":
-            report_path = external_absolute_path(args.report, "report")
-            output_path = external_absolute_path(args.output, "output")
+            report_path = external_file_path(args.report, "report")
+            output_path = external_file_path(args.output, "output")
             require_distinct_files(report_path, output_path, "report", "output")
             report = parse_weekly_report(report_path)
             write_summary(build_summary(report), output_path)
             result = {"status": "success", "report_date": report.report_date, "report_sha256": report.sha256}
         elif args.command == "render-pdf":
-            summary_path = external_absolute_path(args.summary, "summary")
-            output_path = external_absolute_path(args.output, "output")
+            summary_path = external_file_path(args.summary, "summary")
+            output_path = external_file_path(args.output, "output")
             require_distinct_files(summary_path, output_path, "summary", "output")
             summary = load_summary(summary_path)
             render_pdf(summary, output_path)
@@ -73,10 +73,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "report_sha256": summary["report"]["sha256"],
             }
         elif args.command == "send-email":
-            summary_path = external_absolute_path(args.summary, "summary")
-            pdf_path = external_absolute_path(args.pdf, "pdf")
-            config_path = external_absolute_path(args.config, "config")
-            state_dir = external_absolute_path(args.state_dir, "state-dir")
+            summary_path = external_file_path(args.summary, "summary")
+            pdf_path = external_file_path(args.pdf, "pdf")
+            config_path = external_file_path(args.config, "config")
+            state_dir = external_directory_root(args.state_dir, "state-dir")
             require_distinct_files(summary_path, pdf_path, "summary", "pdf")
             summary, summary_sha256 = load_summary_with_sha256(summary_path)
             result = deliver(
