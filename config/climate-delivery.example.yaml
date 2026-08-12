@@ -1,0 +1,18 @@
+version: 1
+
+# This checked-in example contains placeholder addresses and environment-
+# variable names only. Keep the real server config and credentials outside
+# the repository with file mode 600.
+smtp:
+  host_env: CLIMATE_DELIVERY_SMTP_HOST
+  port_env: CLIMATE_DELIVERY_SMTP_PORT
+  username_env: CLIMATE_DELIVERY_SMTP_USERNAME
+  password_env: CLIMATE_DELIVERY_SMTP_PASSWORD
+  from_address_env: CLIMATE_DELIVERY_FROM_ADDRESS
+  security: starttls
+
+recipients:
+  - id: subscriber-one
+    address: subscriber-one@example.invalid
+  - id: subscriber-two
+    address: subscriber-two@example.invalid
