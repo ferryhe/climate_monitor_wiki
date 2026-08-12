@@ -186,7 +186,7 @@ def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_pat
     render_pdf(summary, output)
 
     reader = PdfReader(str(output))
-    assert len(reader.pages) == 5
+    assert len(reader.pages) == 4
     assert reader.metadata.author == "IAA Weekly Climate Newsletter"
     first_page = reader.pages[0]
     assert float(first_page.mediabox.width) == pytest.approx(A4[0], abs=0.1)
@@ -194,6 +194,7 @@ def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_pat
     pages = [page.extract_text() or "" for page in reader.pages]
     normalized_pages = [" ".join(page.split()) for page in pages]
     compact_pages = ["".join(page.split()) for page in pages]
+    assert "Hyperlinked title opens the original source" not in " ".join(normalized_pages)
     for page_number, page in enumerate(normalized_pages, start=1):
         assert f"Page {page_number}" in page
         assert "Weekly Climate & Actuarial Monitor - Supranational Organizations" in page

@@ -127,10 +127,8 @@ def _html_body(summary: dict[str, Any]) -> str:
         'letter-spacing:.06em;text-transform:uppercase;color:#1f6f8b;">Pillar {pillar} &bull; Update {number}</p>'
         '<h3 style="margin:0 0 8px 0;font-size:15px;line-height:21px;color:#0b3d62;">'
         '<a href="{url}" style="color:#1a73e8;text-decoration:none;">{number}. {title}</a></h3>'
-        '<p style="margin:0 0 10px 0;font-size:14px;line-height:21px;color:#33414f;">{body}</p>'
-        '<p style="margin:0;font-size:12px;line-height:18px;color:#617181;">'
-        "Hyperlinked title opens the original source."
-        "</p></td></tr></table>".format(
+        '<p style="margin:0;font-size:14px;line-height:21px;color:#33414f;">{body}</p>'
+        "</td></tr></table>".format(
             number=number,
             pillar=html.escape(item["pillar"]),
             title=html.escape(item["title"]),

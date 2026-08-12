@@ -92,8 +92,8 @@ def test_mime_is_plain_plus_escaped_html_with_pdf_and_no_fake_unsubscribe(config
     assert "Climate <Monitor>" in plain
     assert "Climate &lt;Monitor&gt;" in html
     assert "Evidence &amp; interpretation" in html
-    assert "1. A &lt;finding&gt;" in html
-    assert '<a href="https://example.test/a"' in html
+    assert '<a href="https://example.test/a" style="color:#1a73e8;text-decoration:none;">1. A &lt;finding&gt;</a>' in html
+    assert "Hyperlinked title opens the original source" not in html
     assert "1. A <finding>" in plain
     assert 'role="presentation"' in html
     assert "max-width:640px" in html
