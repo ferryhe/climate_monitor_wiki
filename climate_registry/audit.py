@@ -11,11 +11,12 @@ from urllib.parse import urlparse
 
 from climate_monitor.dedupe import canonical_title, canonical_url
 
+from .classification import classify_document
 from .errors import RegistryBuildError, RegistryInputError
 from .reports import ParsedReport, parse_report_directory
 from .schema import apply_migrations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _stable_id(prefix: str, value: str) -> str:
@@ -87,6 +88,7 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
         fingerprint = _content_fingerprint(item.title, item.summary)
         version_id = _stable_id("version", f"{article_id}\n{fingerprint}")
         discovery_id = _stable_id("discovery", f"{report_id}\n{ordinal}\n{item.url}")
+        policy = classify_document(normalized_url)
 
         connection.execute(
             """
@@ -100,13 +102,28 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
         )
         connection.execute(
             """
-            INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen, current_version_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO articles(
+                article_id, canonical_url, source_id, first_seen, last_seen, current_version_id,
+                document_kind, publication_eligible, exclusion_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(article_id) DO UPDATE SET
                 first_seen = MIN(first_seen, excluded.first_seen),
-                last_seen = MAX(last_seen, excluded.last_seen)
+                last_seen = MAX(last_seen, excluded.last_seen),
+                document_kind = excluded.document_kind,
+                publication_eligible = excluded.publication_eligible,
+                exclusion_reason = excluded.exclusion_reason
             """,
-            (article_id, normalized_url, source_id, report.report_date, report.report_date, version_id),
+            (
+                article_id,
+                normalized_url,
+                source_id,
+                report.report_date,
+                report.report_date,
+                version_id,
+                policy.document_kind,
+                int(policy.publication_eligible),
+                policy.exclusion_reason,
+            ),
         )
         connection.execute(
             """
@@ -189,17 +206,30 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
             },
         )
         if not previous_versions:
-            disposition = "new"
+            disposition, observation_status = "new", "new_article"
         elif version_id in previous_versions:
-            disposition = "previously-seen"
+            disposition, observation_status = "previously-seen", "previously_seen"
         else:
-            disposition = "updated"
+            disposition, observation_status = "updated", "new_report_representation"
         previous_versions.add(version_id)
         connection.execute(
             """
-            INSERT INTO report_appearances VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO report_appearances(
+                report_id, article_id, version_id, discovery_id, section, pillar, ordinal,
+                disposition, observation_status, external_content_change
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown')
             """,
-            (report_id, article_id, version_id, discovery_id, item.section, item.pillar, ordinal, disposition),
+            (
+                report_id,
+                article_id,
+                version_id,
+                discovery_id,
+                item.section,
+                item.pillar,
+                ordinal,
+                disposition,
+                observation_status,
+            ),
         )
         selected_in_report[article_id] = discovery_id
 
@@ -208,7 +238,9 @@ def _appearance_rows(connection: sqlite3.Connection, where: str = "", params: tu
     query = f"""
         SELECT r.report_date, r.filename, a.article_id, a.canonical_url,
                v.version_id, d.raw_url, d.observed_title, d.observed_summary,
-               d.section, d.pillar, d.ordinal, ra.disposition
+               d.section, d.pillar, d.ordinal, ra.disposition, ra.observation_status,
+               ra.external_content_change, a.document_kind, a.publication_eligible,
+               a.exclusion_reason
         FROM report_appearances ra
         JOIN reports r ON r.report_id = ra.report_id
         JOIN articles a ON a.article_id = ra.article_id
@@ -230,8 +262,16 @@ def _appearance_rows(connection: sqlite3.Connection, where: str = "", params: tu
         "pillar",
         "ordinal",
         "disposition",
+        "observation_status",
+        "external_content_change",
+        "document_kind",
+        "publication_eligible",
+        "exclusion_reason",
     )
-    return [dict(zip(keys, row, strict=True)) for row in connection.execute(query, params)]
+    output = [dict(zip(keys, row, strict=True)) for row in connection.execute(query, params)]
+    for item in output:
+        item["publication_eligible"] = bool(item["publication_eligible"])
+    return output
 
 
 def _duplicate_report(connection: sqlite3.Connection) -> dict:
@@ -378,7 +418,9 @@ def _weekly_manifest(connection: sqlite3.Connection, report_date: str) -> dict:
     ).fetchone()
     if report is None:
         raise RegistryBuildError(f"report missing while writing manifest: {report_date}")
-    articles = _appearance_rows(connection, "WHERE r.report_date = ?", (report_date,))
+    all_articles = _appearance_rows(connection, "WHERE r.report_date = ?", (report_date,))
+    articles = [article for article in all_articles if article["publication_eligible"]]
+    excluded_articles = [article for article in all_articles if not article["publication_eligible"]]
     dispositions = {name: 0 for name in ("new", "updated", "previously-seen")}
     for article in articles:
         dispositions[article["disposition"]] += 1
@@ -404,6 +446,8 @@ def _weekly_manifest(connection: sqlite3.Connection, report_date: str) -> dict:
         },
         "counts": {
             "articles": len(articles),
+            "eligible_articles": len(articles),
+            "excluded_articles": len(excluded_articles),
             "new": dispositions["new"],
             "updated": dispositions["updated"],
             "previously_seen": dispositions["previously-seen"],
@@ -412,7 +456,22 @@ def _weekly_manifest(connection: sqlite3.Connection, report_date: str) -> dict:
             "pillar_b": sum(article["pillar"] == "B" for article in articles),
         },
         "articles": articles,
+        "excluded_articles": excluded_articles,
     }
+
+
+def refresh_article_policy(connection: sqlite3.Connection) -> None:
+    articles = connection.execute("SELECT article_id, canonical_url FROM articles").fetchall()
+    for article_id, url in articles:
+        policy = classify_document(url)
+        connection.execute(
+            """
+            UPDATE articles
+            SET document_kind = ?, publication_eligible = ?, exclusion_reason = ?
+            WHERE article_id = ?
+            """,
+            (policy.document_kind, int(policy.publication_eligible), policy.exclusion_reason, article_id),
+        )
 
 
 def _populate(connection: sqlite3.Connection, reports: tuple[ParsedReport, ...]) -> None:
@@ -439,6 +498,7 @@ def build_audit_registry(source_dir: Path, database: Path, output_dir: Path) -> 
         connection = sqlite3.connect(temp_database)
         try:
             apply_migrations(connection)
+            refresh_article_policy(connection)
             _populate(connection, reports)
             connection.execute("PRAGMA optimize")
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]

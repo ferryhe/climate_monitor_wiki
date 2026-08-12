@@ -1,21 +1,23 @@
-# Article Registry: audit-only foundation
+# Article Registry
 
-This module builds a new SQLite registry from the Markdown reports already in
-`sources/`. It is deliberately **audit-only**: it does not change the 08:00
-Hermes monitor, canonical Markdown, the publisher, the website, or any existing
-database.
+This module builds and incrementally updates a SQLite registry from the Markdown
+reports already in `sources/`. It remains operationally isolated: it does not
+change the 08:00 Hermes monitor, canonical Markdown, the publisher, the website,
+or any scheduled job.
 
 ## Boundaries
 
 - Code, migrations, tests, and this contract live in Git.
 - Runtime SQLite files, WAL/SHM companions, and generated audit output do not.
-- The audit command refuses to open an existing database or overwrite an
-  existing output directory. Every run therefore starts with new destinations.
+- `audit-history` refuses to open an existing database or overwrite an existing
+  output directory. Every audit snapshot therefore starts with new destinations.
+- Persistent updates are explicit CLI operations. Nothing in this repository
+  schedules or automatically invokes them.
 - Source Markdown is read-only. The command never rewrites, renames, or deletes
   a report.
-- A future server deployment should place the database outside the checkout,
+- A server deployment should place the database outside the checkout,
   for example `/home/ubuntu/climate_monitor_data/registry/article_registry.sqlite3`.
-  This PR does not create or migrate that production path.
+  The repository does not create that path by default.
 
 ## Run an isolated audit
 
@@ -41,6 +43,46 @@ The 21 legacy daily reports are backfilled into SQLite for history and duplicate
 analysis. Weekly manifests are emitted only for the current weekly format; this
 avoids representing legacy reports as if they satisfied the newer contract.
 
+## Plan and apply a persistent update
+
+`plan-update` opens an existing registry read-only. It reports pending schema
+migrations, new reports, unchanged reports, and conflicts without creating a
+lock, backup, journal, or output artifact:
+
+```bash
+python -m climate_registry plan-update \
+  --source-dir /path/to/climate_monitor_wiki/sources \
+  --database /external/path/article-registry.sqlite3
+```
+
+`update` is a separate, explicit mutation. It takes an exclusive sidecar lock,
+recomputes the plan, fails closed on conflicts, creates a recoverable backup via
+SQLite's backup API, updates a candidate database, validates it, and atomically
+installs the candidate:
+
+```bash
+python -m climate_registry update \
+  --source-dir /path/to/climate_monitor_wiki/sources \
+  --database /external/path/article-registry.sqlite3 \
+  --backup-dir /external/path/backups
+```
+
+The update contract is append-only:
+
+- an already imported report with the same filename and SHA-256 is a no-op;
+- the same report date with a different filename or hash is a conflict;
+- a report present in the registry but missing from `sources/` is a conflict;
+- a newly discovered report older than the registry's latest report is a
+  conflict rather than a silent historical rewrite;
+- new persistent imports must use the current weekly format and a Monday report
+  date; legacy backfill remains an explicit fresh audit/rebuild operation;
+- an update with no new report and no pending migration creates no backup;
+- a failed candidate build leaves the live database byte-for-byte unchanged;
+- active `-wal`, `-shm`, or rollback-journal sidecars cause the update to stop;
+  replacing a main database while stale sidecars exist is unsafe.
+- the live database fingerprint is checked again immediately before atomic
+  replacement; a non-cooperating writer therefore aborts the install.
+
 ## Schema and identity
 
 Migration 1 creates:
@@ -53,6 +95,23 @@ Migration 1 creates:
 - `discoveries`: every parsed occurrence, including duplicates in one report;
 - `report_appearances`: one selected appearance per article per report;
 - `schema_migrations`: applied migration versions.
+
+Migration 2 adds deterministic publication policy and unambiguous observation
+semantics:
+
+- `document_kind`: `article`, `report`, `topic_index`, or `landing_page`;
+- `publication_eligible` and `exclusion_reason`;
+- `observation_status`: `new_article`, `new_report_representation`, or
+  `previously_seen`;
+- `external_content_change`, which is deliberately `unknown` because the
+  registry has not fetched and versioned the external page body.
+
+Classification uses conservative URL-only rules. Root URLs are landing pages
+and are not publication-eligible. PDF URLs are reports. URLs under explicit
+`topic`, `topics`, or `activities-topics` paths are topic indexes and are not
+publication-eligible. Other URLs remain articles. This policy does not delete
+or hide audit history; excluded appearances remain queryable in SQLite and in
+the audit manifest's `excluded_articles` list.
 
 URL identity reuses the monitor's established canonicalization (case-normalized
 scheme/host, removed fragments/trailing slash, and removed common tracking
@@ -67,8 +126,13 @@ rules.
 
 ## Migration and backup policy
 
-`apply_migrations()` is transactional and idempotent. A later production
-adoption should have one writer, enable foreign keys, keep the database and its
-WAL/SHM files on the same host filesystem, and use SQLite's backup API rather
-than copying a live database file. Those operational changes are outside this
-audit-only PR.
+`apply_migrations()` is transactional and idempotent. It refuses to run inside a
+caller's active transaction. Persistent updates use one writer, keep the
+candidate database on the live database filesystem for atomic replacement, and
+use SQLite's backup API rather than copying a live database file. A retained
+lock file means the previous process did not complete cleanly and requires
+manual reconciliation; it must not be deleted automatically.
+
+The first operational adoption still requires a separate owner-approved server
+procedure. This module is not wired into Hermes, the publisher, containers, or
+the website.
