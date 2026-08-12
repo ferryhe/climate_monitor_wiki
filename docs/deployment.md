@@ -35,10 +35,10 @@ sudo docker compose ps      # both containers should be Up, app "(healthy)"
 Verify:
 
 ```bash
-curl -s  -o /dev/null -w '%{http_code} %{redirect_url}\n' http://climate.aiinforsearch.com/  # 301 -> HTTPS
-curl -s  -o /dev/null -w '%{http_code}\n' https://climate.aiinforsearch.com/api/config  # 200
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://climate.aiinforsearch.com/  # 301 -> HTTPS
+curl -s -o /dev/null -w '%{http_code}\n' https://climate.aiinforsearch.com/api/config  # 200
 curl -sk -o /dev/null -w '%{http_code}\n' https://172.31.10.77/api/config   # 200
-curl -s  -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
 ```
 
 ## Certificate trust
