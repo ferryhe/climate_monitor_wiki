@@ -221,9 +221,10 @@ class RegistryReader:
             """
             SELECT 1
             FROM articles a
-            JOIN article_content_versions cv
+            LEFT JOIN article_content_versions cv
               ON cv.content_version_id = a.current_content_version_id
-            WHERE cv.article_id IS NOT a.article_id
+            WHERE a.current_content_version_id IS NOT NULL
+              AND (cv.content_version_id IS NULL OR cv.article_id IS NOT a.article_id)
             LIMIT 1
             """
         ).fetchone()

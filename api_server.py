@@ -92,6 +92,12 @@ def _registry_query(callable_):
         raise HTTPException(status_code=503, detail="Article registry is unavailable.") from exc
 
 
+def _parse_registry_decimal(value: str) -> int:
+    if not value or len(value) > 7 or not value.isascii() or not value.isdecimal():
+        raise HTTPException(status_code=400, detail="Invalid registry query parameters.")
+    return int(value)
+
+
 @app.get("/api/registry/status")
 def registry_status() -> dict:
     configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
@@ -109,10 +115,7 @@ def registry_status() -> dict:
 
 @app.get("/api/registry/reports")
 def registry_reports(page: str = "1", page_size: str = "20") -> dict:
-    try:
-        parsed_page, parsed_size = int(page), int(page_size)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid registry query parameters.") from exc
+    parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     return _registry_query(lambda: _registry_reader().reports(page=parsed_page, page_size=parsed_size))
 
 
@@ -130,10 +133,7 @@ def registry_articles(
     pillar: str = "",
     report_date: str = "",
 ) -> dict:
-    try:
-        parsed_page, parsed_size = int(page), int(page_size)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid registry query parameters.") from exc
+    parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     return _registry_query(
         lambda: _registry_reader().articles(
             page=parsed_page,

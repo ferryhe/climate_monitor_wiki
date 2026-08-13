@@ -440,6 +440,68 @@ def test_status_classifies_missing_discovery_coherence_columns_as_invalid_schema
     assert response.json() == {"available": False, "reason": "invalid_schema"}
 
 
+@pytest.mark.parametrize("corruption", ("dangling", "cross_owned"))
+def test_status_rejects_invalid_non_null_current_content_pointer(
+    tmp_path, monkeypatch, corruption
+):
+    database = _registry(tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DROP TRIGGER articles_current_content_matches_article_update")
+    target = "missing-content" if corruption == "dangling" else "content-meta"
+    connection.execute(
+        "UPDATE articles SET current_content_version_id = ? WHERE article_id = 'article-full'",
+        (target,),
+    )
+    connection.commit()
+    connection.close()
+
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    response = TestClient(app).get("/api/registry/status")
+    assert response.status_code == 200
+    assert response.json() == {"available": False, "reason": "invalid_schema"}
+
+
+def test_null_current_content_pointer_remains_valid(tmp_path):
+    database = _registry(tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "UPDATE articles SET current_content_version_id = NULL WHERE article_id = 'article-full'"
+    )
+    connection.commit()
+    connection.close()
+    reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
+    assert reader.status()["available"] is True
+
+
+def test_contract_ownership_query_itself_rejects_dangling_current_content(tmp_path):
+    """Prove the LEFT JOIN guard works independently of SQLite FK checking."""
+
+    database = _registry(tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DROP TRIGGER articles_current_content_matches_article_update")
+    connection.execute(
+        "UPDATE articles SET current_content_version_id = 'missing-content' WHERE article_id = 'article-full'"
+    )
+    connection.commit()
+
+    class _NoRows:
+        @staticmethod
+        def fetchone():
+            return None
+
+    class _ForeignKeyBlindConnection:
+        def execute(self, statement, parameters=()):
+            if statement.strip() == "PRAGMA foreign_key_check":
+                return _NoRows()
+            return connection.execute(statement, parameters)
+
+    with pytest.raises(RegistryContractError, match="content ownership"):
+        RegistryReader._validate_contract(_ForeignKeyBlindConnection())
+    connection.close()
+
+
 @pytest.mark.parametrize(
     "corruption",
     (
@@ -507,6 +569,26 @@ def test_unavailable_registry_routes_return_503_without_paths(tmp_path, monkeypa
         assert response.status_code == 503
         assert response.json() == {"detail": "Article registry is unavailable."}
         assert str(tmp_path) not in response.text
+
+
+@pytest.mark.parametrize("endpoint", ("reports", "articles"))
+@pytest.mark.parametrize("value", ("9" * 10_000, "", "+1", "-1", " 1", "1 ", "１"))
+def test_pagination_rejects_unbounded_or_non_ascii_decimal_values(
+    registry_client, endpoint, value
+):
+    client, _ = registry_client
+    response = client.get(f"/api/registry/{endpoint}", params={"page": value})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid registry query parameters."}
+
+
+@pytest.mark.parametrize("endpoint", ("reports", "articles"))
+def test_bounded_leading_zero_pagination_is_deliberately_accepted(registry_client, endpoint):
+    client, _ = registry_client
+    response = client.get(f"/api/registry/{endpoint}?page=0001&page_size=002")
+    assert response.status_code == 200
+    assert response.json()["pagination"]["page"] == 1
+    assert response.json()["pagination"]["page_size"] == 2
 
 
 def test_registry_has_no_write_routes():
