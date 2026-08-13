@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -446,6 +447,53 @@ def test_start_app_removes_detached_container_when_startup_fails(monkeypatch):
         container_smoke.start_app()
 
     assert calls[-1] == ("rm", "--force", "container-id")
+
+
+def test_container_request_supports_html_and_json_success_and_json_http_error(monkeypatch):
+    class FakeResponse:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self._body
+
+    responses = iter(
+        [
+            FakeResponse(200, b"<html><body>Wiki</body></html>"),
+            FakeResponse(200, b'{"available":true}'),
+        ]
+    )
+    monkeypatch.setattr(container_smoke.urllib.request, "urlopen", lambda *args, **kwargs: next(responses))
+
+    assert container_smoke.request("http://example.test/", parse_json=False) == (200, None)
+    assert container_smoke.request("http://example.test/api/registry/status") == (
+        200,
+        {"available": True},
+    )
+
+    error = urllib.error.HTTPError(
+        "http://example.test/api/registry/status",
+        503,
+        "unavailable",
+        {},
+        FakeResponse(503, b'{"available":false,"reason":"not_configured"}'),
+    )
+    monkeypatch.setattr(
+        container_smoke.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+    assert container_smoke.request("http://example.test/api/registry/status") == (
+        503,
+        {"available": False, "reason": "not_configured"},
+    )
 
 
 def test_reusable_container_and_browser_smoke_scripts_are_present():

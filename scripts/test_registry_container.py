@@ -80,7 +80,12 @@ def assert_no_sidecars(directory: Path) -> None:
     )
 
 
-def request(url: str, *, data: dict | None = None) -> tuple[int, dict | None]:
+def request(
+    url: str,
+    *,
+    data: dict | None = None,
+    parse_json: bool = True,
+) -> tuple[int, dict | None]:
     body = json.dumps(data).encode() if data is not None else None
     headers = {"Content-Type": "application/json"} if body else {}
     try:
@@ -88,9 +93,12 @@ def request(url: str, *, data: dict | None = None) -> tuple[int, dict | None]:
             urllib.request.Request(url, data=body, headers=headers), timeout=20
         ) as response:
             raw = response.read()
-            return response.status, json.loads(raw) if raw else None
+            payload = json.loads(raw) if parse_json and raw else None
+            return response.status, payload
     except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read())
+        raw = exc.read()
+        payload = json.loads(raw) if parse_json and raw else None
+        return exc.code, payload
 
 
 def wait_for_health(port: int) -> None:
@@ -124,7 +132,7 @@ def start_app(registry_dir: Path | None = None) -> tuple[str, int]:
 
 def assert_core_app(port: int) -> None:
     assert request(f"http://127.0.0.1:{port}/api/health")[0] == 200
-    assert request(f"http://127.0.0.1:{port}/")[0] == 200
+    assert request(f"http://127.0.0.1:{port}/", parse_json=False)[0] == 200
     chat_code, chat = request(
         f"http://127.0.0.1:{port}/api/chat",
         data={"message": "Summarize the latest report", "answerMode": "brief"},
