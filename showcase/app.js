@@ -103,6 +103,15 @@ const state = {
   graphFrame: 0,
   graphData: { notes: null, keywords: null },
   promptStarters: DEFAULT_PROMPT_STARTERS,
+  registry: {
+    loaded: false,
+    available: false,
+    mode: "reports",
+    reportPage: 1,
+    articlePage: 1,
+    reportPagination: null,
+    articlePagination: null,
+  },
 };
 
 const els = {
@@ -138,6 +147,36 @@ const els = {
   graphHint: document.getElementById("graphHint"),
   chatView: document.getElementById("chatView"),
   obsidianView: document.getElementById("obsidianView"),
+  registryView: document.getElementById("registryView"),
+  registryStatus: document.getElementById("registryStatus"),
+  registryReportsPanel: document.getElementById("registryReportsPanel"),
+  registryArticlesPanel: document.getElementById("registryArticlesPanel"),
+  registryReports: document.getElementById("registryReports"),
+  registryReportDetail: document.getElementById("registryReportDetail"),
+  registryReportTitle: document.getElementById("registryReportTitle"),
+  registryReportMeta: document.getElementById("registryReportMeta"),
+  registryReportArticles: document.getElementById("registryReportArticles"),
+  reportsPrevious: document.getElementById("reportsPrevious"),
+  reportsNext: document.getElementById("reportsNext"),
+  reportsPage: document.getElementById("reportsPage"),
+  registryArticles: document.getElementById("registryArticles"),
+  registryArticleDetail: document.getElementById("registryArticleDetail"),
+  registrySearchForm: document.getElementById("registrySearchForm"),
+  registrySearch: document.getElementById("registrySearch"),
+  registrySourceFilter: document.getElementById("registrySourceFilter"),
+  registryPillarFilter: document.getElementById("registryPillarFilter"),
+  articlesPrevious: document.getElementById("articlesPrevious"),
+  articlesNext: document.getElementById("articlesNext"),
+  articlesPage: document.getElementById("articlesPage"),
+  registryArticleTitle: document.getElementById("registryArticleTitle"),
+  registryOriginalLink: document.getElementById("registryOriginalLink"),
+  registryArticleMeta: document.getElementById("registryArticleMeta"),
+  registryEnrichment: document.getElementById("registryEnrichment"),
+  registryAppearances: document.getElementById("registryAppearances"),
+  registryContentSection: document.getElementById("registryContentSection"),
+  registryContentTitle: document.getElementById("registryContentTitle"),
+  registryMarkdown: document.getElementById("registryMarkdown"),
+  registryModeButtons: Array.from(document.querySelectorAll("[data-registry-mode]")),
   answerModeButtons: Array.from(document.querySelectorAll("[data-answer-mode]")),
   graphModeButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   workspaceTabs: Array.from(document.querySelectorAll(".tabbar__tab")),
@@ -554,11 +593,17 @@ function setWorkspaceView(viewId) {
   if (els.obsidianView) {
     els.obsidianView.hidden = viewId !== "obsidianView";
   }
+  if (els.registryView) {
+    els.registryView.hidden = viewId !== "registryView";
+  }
   els.workspaceTabs.forEach((button) => {
     const active = button.dataset.view === viewId;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
   });
+  if (viewId === "registryView" && !state.registry.loaded) {
+    void loadRegistry();
+  }
 }
 
 function messageToApi(item) {
@@ -1284,6 +1329,309 @@ async function loadConfig() {
   }
 }
 
+function registryElement(tag, className = "", text = "") {
+  const element = document.createElement(tag);
+  if (className) {
+    element.className = className;
+  }
+  if (text !== "") {
+    element.textContent = String(text);
+  }
+  return element;
+}
+
+function registryErrorMessage(error) {
+  if (error && error.status === 503) {
+    return "The archive is not connected yet. Chat and the wiki remain available.";
+  }
+  return "The archive could not be loaded. Please try again later.";
+}
+
+async function registryFetch(path) {
+  const response = await fetch(path, { headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    const error = new Error(`Registry request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
+function renderRegistryNotice(container, message) {
+  if (!container) {
+    return;
+  }
+  container.replaceChildren(registryElement("p", "registry-notice", message));
+}
+
+function updateRegistryPagination(kind, pagination) {
+  const previous = kind === "reports" ? els.reportsPrevious : els.articlesPrevious;
+  const next = kind === "reports" ? els.reportsNext : els.articlesNext;
+  const label = kind === "reports" ? els.reportsPage : els.articlesPage;
+  if (!pagination) {
+    previous.disabled = true;
+    next.disabled = true;
+    label.textContent = "Page —";
+    return;
+  }
+  previous.disabled = pagination.page <= 1;
+  next.disabled = pagination.page >= pagination.pages;
+  label.textContent = pagination.pages
+    ? `Page ${pagination.page} of ${pagination.pages}`
+    : "No results";
+}
+
+function registryMetric(label, value) {
+  const wrapper = registryElement("div");
+  wrapper.append(registryElement("dt", "", label), registryElement("dd", "", value ?? "—"));
+  return wrapper;
+}
+
+function safeSourceUrl(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function setRegistryMode(mode) {
+  state.registry.mode = mode === "articles" ? "articles" : "reports";
+  els.registryReportsPanel.hidden = state.registry.mode !== "reports";
+  els.registryArticlesPanel.hidden = state.registry.mode !== "articles";
+  els.registryModeButtons.forEach((button) => {
+    const active = button.dataset.registryMode === state.registry.mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  if (state.registry.available && state.registry.mode === "articles" && !state.registry.articlePagination) {
+    void loadRegistryArticles();
+  }
+}
+
+async function loadRegistry() {
+  renderRegistryNotice(els.registryReports, "Checking the historical archive…");
+  try {
+    const status = await registryFetch("/api/registry/status");
+    state.registry.loaded = true;
+    state.registry.available = Boolean(status.available);
+    if (!status.available) {
+      els.registryStatus.textContent = "Registry: unavailable";
+      renderRegistryNotice(
+        els.registryReports,
+        "The archive is not connected yet. Chat and the Obsidian explorer remain available.",
+      );
+      renderRegistryNotice(els.registryArticles, "Article history will appear when the registry is connected.");
+      updateRegistryPagination("reports", null);
+      updateRegistryPagination("articles", null);
+      return;
+    }
+    els.registryStatus.textContent = `${status.reports} reports · ${status.articles} articles`;
+    await loadRegistryReports();
+  } catch (error) {
+    state.registry.loaded = false;
+    state.registry.available = false;
+    els.registryStatus.textContent = "Registry: unavailable";
+    renderRegistryNotice(els.registryReports, registryErrorMessage(error));
+  }
+}
+
+async function loadRegistryReports() {
+  renderRegistryNotice(els.registryReports, "Loading reports…");
+  try {
+    const payload = await registryFetch(
+      `/api/registry/reports?page=${state.registry.reportPage}&page_size=12`,
+    );
+    state.registry.reportPagination = payload.pagination;
+    els.registryReports.replaceChildren();
+    if (!payload.items.length) {
+      renderRegistryNotice(els.registryReports, "No historical reports are available.");
+    }
+    payload.items.forEach((report) => {
+      const button = registryElement("button", "registry-card");
+      button.type = "button";
+      button.dataset.reportDate = report.report_date;
+      const heading = registryElement("strong", "registry-card__title", report.report_title);
+      const metadata = registryElement(
+        "span",
+        "registry-card__meta",
+        `${report.report_date} · ${report.article_count} articles · ${report.monitoring_status.replaceAll("_", " ")}`,
+      );
+      button.append(heading, metadata);
+      els.registryReports.append(button);
+    });
+    updateRegistryPagination("reports", payload.pagination);
+  } catch (error) {
+    renderRegistryNotice(els.registryReports, registryErrorMessage(error));
+    updateRegistryPagination("reports", null);
+  }
+}
+
+async function loadRegistryReport(reportDate) {
+  els.registryReportDetail.setAttribute("aria-busy", "true");
+  els.registryReportTitle.textContent = "Loading report…";
+  els.registryReportArticles.replaceChildren();
+  try {
+    const report = await registryFetch(`/api/registry/reports/${encodeURIComponent(reportDate)}`);
+    els.registryReportTitle.textContent = report.report_title;
+    const monitoring = report.monitoring || {};
+    els.registryReportMeta.textContent = [
+      report.report_date,
+      `${monitoring.sites_succeeded ?? "—"}/${monitoring.sites_checked ?? "—"} sites succeeded`,
+      `${monitoring.sites_failed ?? "—"} failed`,
+    ].join(" · ");
+    report.articles.forEach((article) => {
+      const item = registryElement("li", "registry-appearance");
+      const button = registryElement("button", "registry-article-link", article.title);
+      button.type = "button";
+      button.dataset.articleId = article.article_id;
+      const meta = registryElement(
+        "span",
+        "registry-card__meta",
+        `${article.pillar ? `Pillar ${article.pillar}` : article.section} · ${article.publisher}`,
+      );
+      item.append(button, meta);
+      els.registryReportArticles.append(item);
+    });
+    if (!report.articles.length) {
+      els.registryReportArticles.append(
+        registryElement("li", "registry-notice", "No source articles are recorded for this report."),
+      );
+    }
+  } catch (error) {
+    els.registryReportTitle.textContent = "Report unavailable";
+    els.registryReportMeta.textContent = registryErrorMessage(error);
+  } finally {
+    els.registryReportDetail.setAttribute("aria-busy", "false");
+  }
+}
+
+async function loadRegistryArticles() {
+  renderRegistryNotice(els.registryArticles, "Loading articles…");
+  const params = new URLSearchParams({
+    page: String(state.registry.articlePage),
+    page_size: "20",
+  });
+  if (els.registrySearch.value.trim()) params.set("query", els.registrySearch.value.trim());
+  if (els.registrySourceFilter.value.trim()) params.set("source", els.registrySourceFilter.value.trim());
+  if (els.registryPillarFilter.value) params.set("pillar", els.registryPillarFilter.value);
+  try {
+    const payload = await registryFetch(`/api/registry/articles?${params.toString()}`);
+    state.registry.articlePagination = payload.pagination;
+    els.registryArticles.replaceChildren();
+    if (!payload.items.length) {
+      renderRegistryNotice(els.registryArticles, "No articles match these filters.");
+    }
+    payload.items.forEach((article) => {
+      const button = registryElement("button", "registry-card");
+      button.type = "button";
+      button.dataset.articleId = article.article_id;
+      button.append(
+        registryElement("strong", "registry-card__title", article.title),
+        registryElement(
+          "span",
+          "registry-card__meta",
+          `${article.publisher} · last seen ${article.last_seen}`,
+        ),
+        registryElement("span", "registry-card__summary", article.report_summary),
+      );
+      els.registryArticles.append(button);
+    });
+    updateRegistryPagination("articles", payload.pagination);
+  } catch (error) {
+    renderRegistryNotice(els.registryArticles, registryErrorMessage(error));
+    updateRegistryPagination("articles", null);
+  }
+}
+
+function appendRegistryTags(container, label, values) {
+  const block = registryElement("div", "registry-tag-block");
+  block.append(registryElement("h4", "", label));
+  const tags = registryElement("div", "registry-tags");
+  if (values && values.length) {
+    values.forEach((value) => tags.append(registryElement("span", "registry-tag", value)));
+  } else {
+    tags.append(registryElement("span", "muted", "Not available"));
+  }
+  block.append(tags);
+  container.append(block);
+}
+
+async function loadRegistryArticle(articleId) {
+  els.registryArticleDetail.setAttribute("aria-busy", "true");
+  els.registryArticleTitle.textContent = "Loading article…";
+  els.registryArticleMeta.replaceChildren();
+  els.registryEnrichment.replaceChildren();
+  els.registryAppearances.replaceChildren();
+  els.registryContentSection.hidden = true;
+  els.registryOriginalLink.hidden = true;
+  try {
+    const article = await registryFetch(`/api/registry/articles/${encodeURIComponent(articleId)}`);
+    els.registryArticleTitle.textContent = article.title;
+    const sourceUrl = safeSourceUrl(article.original_url || article.canonical_url);
+    if (sourceUrl) {
+      els.registryOriginalLink.href = sourceUrl;
+      els.registryOriginalLink.hidden = false;
+    }
+    els.registryArticleMeta.append(
+      registryMetric("Publisher", article.publisher),
+      registryMetric("Source", article.source),
+      registryMetric("First seen", article.first_seen),
+      registryMetric("Last seen", article.last_seen),
+      registryMetric("Display", article.display_policy.replaceAll("_", " ")),
+      registryMetric("Latest fetch", article.latest_fetch?.fetch_status || "Not captured"),
+      registryMetric("Content type", article.content?.content_type || "Not captured"),
+      registryMetric("Extraction", article.content?.extraction_method || "Not captured"),
+      registryMetric("Captured", article.content?.fetched_at || "Not captured"),
+    );
+    const summary = article.enrichment?.summary || article.report_summary;
+    const summaryBlock = registryElement("div", "registry-summary");
+    summaryBlock.append(registryElement("h4", "", "Summary"), registryElement("p", "", summary));
+    els.registryEnrichment.append(summaryBlock);
+    appendRegistryTags(els.registryEnrichment, "Categories", article.enrichment?.categories || []);
+    appendRegistryTags(els.registryEnrichment, "Keywords", article.enrichment?.keywords || []);
+    const provenance = article.enrichment?.generator;
+    els.registryEnrichment.append(
+      registryElement(
+        "p",
+        "muted registry-provenance",
+        provenance
+          ? `${article.enrichment.language || "unknown"} · ${provenance.kind} · ${provenance.name} ${provenance.version} · ${provenance.generated_at}`
+          : "No enrichment provenance available.",
+      ),
+    );
+    article.appearances.forEach((appearance) => {
+      const item = registryElement("li", "registry-appearance");
+      item.append(
+        registryElement("strong", "", appearance.report_title),
+        registryElement(
+          "span",
+          "registry-card__meta",
+          `${appearance.report_date} · ${appearance.pillar ? `Pillar ${appearance.pillar}` : appearance.section}`,
+        ),
+      );
+      els.registryAppearances.append(item);
+    });
+    if (!article.appearances.length) {
+      els.registryAppearances.append(
+        registryElement("li", "registry-notice", "No report appearances are recorded for this article."),
+      );
+    }
+    const displayText = article.content?.markdown || article.content?.supporting_excerpt || "";
+    if (displayText) {
+      els.registryContentSection.hidden = false;
+      els.registryContentTitle.textContent = article.content.markdown ? "Original Markdown" : "Supporting excerpt";
+      els.registryMarkdown.textContent = displayText;
+    }
+  } catch (error) {
+    els.registryArticleTitle.textContent = "Article unavailable";
+    els.registryEnrichment.append(registryElement("p", "registry-notice", registryErrorMessage(error)));
+  } finally {
+    els.registryArticleDetail.setAttribute("aria-busy", "false");
+  }
+}
+
 function attachEvents() {
   if (els.form) {
     els.form.addEventListener("submit", (event) => {
@@ -1294,6 +1642,37 @@ function attachEvents() {
       }
       els.input.value = "";
       sendMessage(message);
+    });
+  }
+
+  els.registryModeButtons.forEach((button) => {
+    button.addEventListener("click", () => setRegistryMode(button.dataset.registryMode));
+  });
+
+  if (els.registrySearchForm) {
+    els.registrySearchForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      state.registry.articlePage = 1;
+      void loadRegistryArticles();
+    });
+  }
+
+  if (els.reportsPrevious) {
+    els.reportsPrevious.addEventListener("click", () => {
+      state.registry.reportPage = Math.max(1, state.registry.reportPage - 1);
+      void loadRegistryReports();
+    });
+    els.reportsNext.addEventListener("click", () => {
+      state.registry.reportPage += 1;
+      void loadRegistryReports();
+    });
+    els.articlesPrevious.addEventListener("click", () => {
+      state.registry.articlePage = Math.max(1, state.registry.articlePage - 1);
+      void loadRegistryArticles();
+    });
+    els.articlesNext.addEventListener("click", () => {
+      state.registry.articlePage += 1;
+      void loadRegistryArticles();
     });
   }
 
@@ -1367,6 +1746,19 @@ function attachEvents() {
     const tab = target.closest(".tabbar__tab");
     if (tab) {
       setWorkspaceView(tab.dataset.view);
+      return;
+    }
+
+    const reportCard = target.closest("[data-report-date]");
+    if (reportCard) {
+      void loadRegistryReport(reportCard.dataset.reportDate);
+      return;
+    }
+
+    const articleCard = target.closest("[data-article-id]");
+    if (articleCard) {
+      setRegistryMode("articles");
+      void loadRegistryArticle(articleCard.dataset.articleId);
       return;
     }
 
