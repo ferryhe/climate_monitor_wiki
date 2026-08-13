@@ -286,6 +286,44 @@ use SQLite's backup API rather than copying a live database file. A retained
 lock file means the previous process did not complete cleanly and requires
 manual reconciliation; it must not be deleted automatically.
 
+## Read-only website access
+
+The website includes a read-only Archive workspace with Historical Reports,
+Article Archive, and Article Detail views. It is deliberately independent from
+the update and capture commands. Configure one absolute, external database path:
+
+```bash
+CLIMATE_REGISTRY_DB=/external/path/article-registry.sqlite3
+```
+
+The path must resolve outside the repository. If it is absent, unavailable, or
+not at schema version 3, the Registry endpoints fail closed while Chat, the
+Wiki, and `/api/health` remain available. The application never creates,
+migrates, replaces, or repairs this database. Every request opens a fresh
+SQLite URI connection using `mode=ro&immutable=1` and `query_only`, so an atomic
+replacement made by the standalone capture/update workflow is observed by the
+next request without sharing a long-lived connection.
+
+The public contract is GET-only:
+
+- `/api/registry/status` reports availability and non-sensitive counts;
+- `/api/registry/reports` and `/api/registry/reports/{report_date}` provide
+  newest-first weekly history and ordered source appearances;
+- `/api/registry/articles` provides bounded pagination, literal title/summary
+  search, and source/pillar/report-date filters;
+- `/api/registry/articles/{article_id}` provides metadata, source links,
+  appearances, fetch status, and permitted enrichment/content.
+
+Article Detail enforces `display_policy`. Enrichment summary, categories,
+keywords, language, and generator provenance remain display metadata for all
+policies. `metadata_only` exposes no stored body or excerpt.
+`summary_excerpt` adds a bounded supporting excerpt, never full Markdown.
+`full_markdown` may expose the retained Markdown. Internal paths, content
+hashes, detailed capture errors, and SQLite exceptions are not returned.
+There are no Registry write endpoints or website controls for capture,
+classification, editing, deletion, model use, or scheduling.
+
 The first operational adoption still requires a separate owner-approved server
-procedure. This module is not wired into Hermes, the publisher, containers, or
-the website.
+procedure to install a production database and make it readable at the
+configured external path. This module is not wired into Hermes, the publisher,
+containers, or any scheduled job.

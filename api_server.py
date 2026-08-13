@@ -13,6 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agentic_wiki import AgenticWikiResponder
+from climate_registry.read_api import (
+    RegistryContractError,
+    RegistryLocationError,
+    RegistryNotFoundError,
+    RegistryQueryError,
+    RegistryReader,
+    RegistryUnavailableError,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -64,6 +72,83 @@ def robots() -> str:
 @app.get("/api/config")
 def config() -> dict:
     return responder.config()
+
+
+def _registry_reader() -> RegistryReader:
+    configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+    if not configured:
+        raise RegistryUnavailableError("registry is not configured")
+    return RegistryReader(configured, repository_root=ROOT)
+
+
+def _registry_query(callable_):
+    try:
+        return callable_()
+    except RegistryQueryError as exc:
+        raise HTTPException(status_code=400, detail="Invalid registry query parameters.") from exc
+    except RegistryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Registry record not found.") from exc
+    except (RegistryUnavailableError, RegistryContractError) as exc:
+        raise HTTPException(status_code=503, detail="Article registry is unavailable.") from exc
+
+
+@app.get("/api/registry/status")
+def registry_status() -> dict:
+    configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+    if not configured:
+        return {"available": False, "reason": "not_configured"}
+    try:
+        return RegistryReader(configured, repository_root=ROOT).status()
+    except RegistryLocationError:
+        return {"available": False, "reason": "invalid_location"}
+    except RegistryContractError:
+        return {"available": False, "reason": "invalid_schema"}
+    except RegistryUnavailableError:
+        return {"available": False, "reason": "database_unavailable"}
+
+
+@app.get("/api/registry/reports")
+def registry_reports(page: str = "1", page_size: str = "20") -> dict:
+    try:
+        parsed_page, parsed_size = int(page), int(page_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid registry query parameters.") from exc
+    return _registry_query(lambda: _registry_reader().reports(page=parsed_page, page_size=parsed_size))
+
+
+@app.get("/api/registry/reports/{report_date}")
+def registry_report(report_date: str) -> dict:
+    return _registry_query(lambda: _registry_reader().report(report_date))
+
+
+@app.get("/api/registry/articles")
+def registry_articles(
+    page: str = "1",
+    page_size: str = "20",
+    query: str = "",
+    source: str = "",
+    pillar: str = "",
+    report_date: str = "",
+) -> dict:
+    try:
+        parsed_page, parsed_size = int(page), int(page_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid registry query parameters.") from exc
+    return _registry_query(
+        lambda: _registry_reader().articles(
+            page=parsed_page,
+            page_size=parsed_size,
+            query=query,
+            source=source,
+            pillar=pillar,
+            report_date=report_date,
+        )
+    )
+
+
+@app.get("/api/registry/articles/{article_id}")
+def registry_article(article_id: str) -> dict:
+    return _registry_query(lambda: _registry_reader().article(article_id))
 
 
 @app.post("/api/reload")

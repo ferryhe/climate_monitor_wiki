@@ -36,6 +36,17 @@
             Chat
           </button>
           <button
+            id="registryTab"
+            class="tabbar__tab"
+            role="tab"
+            type="button"
+            data-view="registryView"
+            aria-controls="registryView"
+            aria-selected="false"
+          >
+            Archive
+          </button>
+          <button
             id="obsidianTab"
             class="tabbar__tab"
             role="tab"
@@ -145,6 +156,104 @@
                 </form>
               </div>
             </footer>
+          </div>
+        </section>
+
+        <section
+          id="registryView"
+          class="view-panel"
+          role="tabpanel"
+          aria-labelledby="registryTab"
+          hidden
+        >
+          <div class="registry-shell">
+            <header class="registry-hero">
+              <div>
+                <p class="panel__eyebrow">Source-backed history</p>
+                <h2>Climate Monitor Archive</h2>
+                <p class="registry-hero__subtitle">
+                  Browse historical reports and the source articles recorded across each week.
+                </p>
+              </div>
+              <span id="registryStatus" class="metric-chip">Registry: checking</span>
+            </header>
+
+            <div class="registry-switch" role="group" aria-label="Archive sections">
+              <button class="registry-switch__button is-active" type="button" data-registry-mode="reports" aria-pressed="true">
+                Historical Reports
+              </button>
+              <button class="registry-switch__button" type="button" data-registry-mode="articles" aria-pressed="false">
+                Article Archive
+              </button>
+            </div>
+
+            <section id="registryReportsPanel" class="registry-grid">
+              <section class="panel registry-list-panel">
+                <div class="panel__head">
+                  <div>
+                    <p class="panel__eyebrow">Newest first</p>
+                    <h3>Historical Reports</h3>
+                  </div>
+                </div>
+                <div id="registryReports" class="registry-list" aria-live="polite"></div>
+                <div class="registry-pagination">
+                  <button id="reportsPrevious" class="ghost-button" type="button">Previous</button>
+                  <span id="reportsPage" class="muted">Page —</span>
+                  <button id="reportsNext" class="ghost-button" type="button">Next</button>
+                </div>
+              </section>
+              <aside id="registryReportDetail" class="panel registry-detail-panel" aria-live="polite" aria-busy="false">
+                <p class="panel__eyebrow">Weekly report</p>
+                <h3 id="registryReportTitle">Select a report</h3>
+                <div id="registryReportMeta" class="registry-meta muted">Choose a week to see monitoring coverage and its ordered source articles.</div>
+                <ol id="registryReportArticles" class="registry-appearance-list"></ol>
+              </aside>
+            </section>
+
+            <section id="registryArticlesPanel" class="registry-grid" hidden>
+              <section class="panel registry-list-panel">
+                <div class="panel__head registry-filter-head">
+                  <div>
+                    <p class="panel__eyebrow">Search and filter</p>
+                    <h3>Article Archive</h3>
+                  </div>
+                  <form id="registrySearchForm" class="registry-filters">
+                    <label class="sr-only" for="registrySearch">Search articles</label>
+                    <input id="registrySearch" class="search-input" type="search" placeholder="Search title or summary" autocomplete="off" />
+                    <label class="sr-only" for="registrySourceFilter">Publisher hostname</label>
+                    <input id="registrySourceFilter" class="search-input" type="text" placeholder="Publisher hostname" autocomplete="off" />
+                    <label class="sr-only" for="registryPillarFilter">Pillar</label>
+                    <select id="registryPillarFilter" class="search-input">
+                      <option value="">All pillars</option>
+                      <option value="A">Pillar A</option>
+                      <option value="B">Pillar B</option>
+                    </select>
+                    <button class="ghost-button" type="submit">Apply</button>
+                  </form>
+                </div>
+                <div id="registryArticles" class="registry-list" aria-live="polite"></div>
+                <div class="registry-pagination">
+                  <button id="articlesPrevious" class="ghost-button" type="button">Previous</button>
+                  <span id="articlesPage" class="muted">Page —</span>
+                  <button id="articlesNext" class="ghost-button" type="button">Next</button>
+                </div>
+              </section>
+              <aside id="registryArticleDetail" class="panel registry-detail-panel" aria-live="polite" aria-busy="false">
+                <p class="panel__eyebrow">Article detail</p>
+                <h3 id="registryArticleTitle">Select an article</h3>
+                <a id="registryOriginalLink" class="registry-source-link" target="_blank" rel="noopener noreferrer" hidden>Open original source</a>
+                <dl id="registryArticleMeta" class="detail-meta"></dl>
+                <section id="registryEnrichment" class="registry-detail-section"></section>
+                <section class="registry-detail-section">
+                  <h4>Report appearances</h4>
+                  <ol id="registryAppearances" class="registry-appearance-list"></ol>
+                </section>
+                <section id="registryContentSection" class="registry-detail-section" hidden>
+                  <h4 id="registryContentTitle">Stored content</h4>
+                  <pre id="registryMarkdown" class="md-preview"></pre>
+                </section>
+              </aside>
+            </section>
           </div>
         </section>
 
