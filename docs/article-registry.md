@@ -16,7 +16,7 @@ or any scheduled job.
 - Source Markdown is read-only. The command never rewrites, renames, or deletes
   a report.
 - A server deployment should place the database outside the checkout,
-  for example `/home/ubuntu/climate_monitor_data/registry/article_registry.sqlite3`.
+  for example `/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3`.
   The repository does not create that path by default.
 
 ## Run an isolated audit
@@ -297,8 +297,9 @@ CLIMATE_REGISTRY_DB=/external/path/article-registry.sqlite3
 ```
 
 The path must resolve outside the repository. If it is absent, unavailable, or
-not at schema version 3, the Registry endpoints fail closed while Chat, the
-Wiki, and `/api/health` remain available. The application never creates,
+not at schema version 3, `/api/registry/status` returns HTTP 503 with a stable
+machine reason while Chat, the Wiki, and `/api/health` remain available. A valid
+schema-v3 database, including an empty one, returns HTTP 200. The application never creates,
 migrates, replaces, or repairs this database. Every request opens a fresh
 SQLite URI connection using `mode=ro&immutable=1` and `query_only`, so an atomic
 replacement made by the standalone capture/update workflow is observed by the
@@ -322,6 +323,15 @@ policies. `metadata_only` exposes no stored body or excerpt.
 hashes, detailed capture errors, and SQLite exceptions are not returned.
 There are no Registry write endpoints or website controls for capture,
 classification, editing, deletion, model use, or scheduling.
+
+For the container, use `docker-compose.registry.yml` with
+`CLIMATE_REGISTRY_HOST_DIR` pointing to the external directory. The override
+sets `CLIMATE_REGISTRY_DB=/registry/article-registry.sqlite3` and
+mounts the directory read-only. The mounted main database must be self-contained
+and validated at schema v3; checkpoint/reconcile it before deployment so the
+reader never depends on WAL, SHM, or journal sidecars. See
+[`deployment.md`](deployment.md#optional-read-only-article-registry) for the
+status matrix, permissions, smoke tests, and rollback procedure.
 
 The first operational adoption still requires a separate owner-approved server
 procedure to install a production database and make it readable at the

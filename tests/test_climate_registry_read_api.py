@@ -178,20 +178,24 @@ def test_status_is_safe_when_registry_is_missing_invalid_or_inside_repo(tmp_path
     client = TestClient(app)
     monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
     assert client.get("/api/health").json() == {"status": "ok"}
-    assert client.get("/api/registry/status").json() == {
+    status = client.get("/api/registry/status")
+    assert status.status_code == 503
+    assert status.json() == {
         "available": False,
         "reason": "not_configured",
     }
 
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(tmp_path / "missing.sqlite3"))
     response = client.get("/api/registry/status")
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {"available": False, "reason": "database_unavailable"}
     assert str(tmp_path) not in response.text
 
     inside_repo = Path(__file__).resolve().parents[1] / "never-create.sqlite3"
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(inside_repo))
-    assert client.get("/api/registry/status").json() == {
+    inside = client.get("/api/registry/status")
+    assert inside.status_code == 503
+    assert inside.json() == {
         "available": False,
         "reason": "invalid_location",
     }
@@ -436,7 +440,7 @@ def test_status_classifies_missing_discovery_coherence_columns_as_invalid_schema
 
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     response = TestClient(app).get("/api/registry/status")
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {"available": False, "reason": "invalid_schema"}
 
 
@@ -458,7 +462,7 @@ def test_status_rejects_invalid_non_null_current_content_pointer(
 
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     response = TestClient(app).get("/api/registry/status")
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {"available": False, "reason": "invalid_schema"}
 
 
@@ -480,10 +484,15 @@ def test_contract_ownership_query_itself_rejects_dangling_current_content(tmp_pa
     database = _registry(tmp_path)
     connection = sqlite3.connect(database)
     connection.execute("PRAGMA foreign_keys = OFF")
+    trigger_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        ("articles_current_content_matches_article_update",),
+    ).fetchone()[0]
     connection.execute("DROP TRIGGER articles_current_content_matches_article_update")
     connection.execute(
         "UPDATE articles SET current_content_version_id = 'missing-content' WHERE article_id = 'article-full'"
     )
+    connection.execute(trigger_sql)
     connection.commit()
 
     class _NoRows:
@@ -556,7 +565,7 @@ def test_contract_rejects_cross_owned_article_and_appearance_links(tmp_path, cor
 def test_relative_registry_status_is_invalid_location(monkeypatch):
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", "relative.sqlite3")
     response = TestClient(app).get("/api/registry/status")
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {"available": False, "reason": "invalid_location"}
 
 

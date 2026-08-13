@@ -8,65 +8,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Iterator
 
+from .contract import SCHEMA_VERSION, SchemaContractError, validate_v3_contract
 
-EXPECTED_SCHEMA_VERSION = 3
-REQUIRED_TABLES = frozenset(
-    {
-        "sources",
-        "reports",
-        "articles",
-        "article_versions",
-        "discoveries",
-        "report_appearances",
-        "article_content_versions",
-        "article_fetches",
-        "article_enrichments",
-    }
-)
-REQUIRED_COLUMNS = {
-    "sources": {"source_id", "hostname", "display_name"},
-    "reports": {
-        "report_id", "report_date", "report_title", "cadence", "report_format",
-        "sites_checked", "sites_succeeded", "sites_failed", "parse_warnings_json",
-    },
-    "articles": {
-        "article_id", "canonical_url", "source_id", "first_seen", "last_seen",
-        "current_version_id", "current_content_version_id", "document_kind",
-        "publication_eligible", "display_policy",
-    },
-    "article_versions": {
-        "version_id", "article_id", "observed_title", "observed_summary",
-    },
-    "discoveries": {
-        "discovery_id", "report_id", "article_id", "version_id", "raw_url",
-        "ordinal", "section", "pillar",
-    },
-    "report_appearances": {
-        "report_id", "article_id", "version_id", "discovery_id", "section", "pillar",
-        "ordinal", "observation_status",
-    },
-    "article_content_versions": {
-        "content_version_id", "article_id", "markdown_content", "content_type",
-        "source_bytes", "extraction_method", "extraction_version", "first_fetched_at",
-    },
-    "article_fetches": {
-        "fetch_id", "article_id", "fetch_status", "fetched_at", "http_status",
-        "content_type", "content_version_id",
-    },
-    "article_enrichments": {
-        "enrichment_id",
-        "content_version_id",
-        "status",
-        "summary",
-        "categories_json",
-        "keywords_json",
-        "language",
-        "generator_kind",
-        "generator_name",
-        "generator_version",
-        "generated_at",
-    },
-}
+EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION
 
 
 class RegistryError(RuntimeError):
@@ -191,19 +135,10 @@ class RegistryReader:
 
     @staticmethod
     def _validate_contract(connection: sqlite3.Connection) -> None:
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version != EXPECTED_SCHEMA_VERSION:
-            raise RegistryContractError("unsupported registry schema")
-        tables = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        if not REQUIRED_TABLES <= tables:
-            raise RegistryContractError("incomplete registry schema")
-        for table, expected_columns in REQUIRED_COLUMNS.items():
-            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-            if not expected_columns <= columns:
-                raise RegistryContractError("incomplete registry schema")
+        try:
+            validate_v3_contract(connection)
+        except SchemaContractError as exc:
+            raise RegistryContractError(str(exc)) from exc
         if connection.execute("PRAGMA foreign_key_check").fetchone():
             raise RegistryContractError("invalid registry relationships")
         invalid_current_version = connection.execute(
@@ -217,19 +152,6 @@ class RegistryReader:
         ).fetchone()
         if invalid_current_version:
             raise RegistryContractError("invalid article version ownership")
-        invalid_current_content = connection.execute(
-            """
-            SELECT 1
-            FROM articles a
-            LEFT JOIN article_content_versions cv
-              ON cv.content_version_id = a.current_content_version_id
-            WHERE a.current_content_version_id IS NOT NULL
-              AND (cv.content_version_id IS NULL OR cv.article_id IS NOT a.article_id)
-            LIMIT 1
-            """
-        ).fetchone()
-        if invalid_current_content:
-            raise RegistryContractError("invalid article content ownership")
         invalid_appearance = connection.execute(
             """
             SELECT 1

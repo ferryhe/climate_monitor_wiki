@@ -8,7 +8,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -98,19 +98,31 @@ def _parse_registry_decimal(value: str) -> int:
     return int(value)
 
 
-@app.get("/api/registry/status")
-def registry_status() -> dict:
+@app.get("/api/registry/status", response_model=None)
+def registry_status():
     configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     if not configured:
-        return {"available": False, "reason": "not_configured"}
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "not_configured"},
+        )
     try:
         return RegistryReader(configured, repository_root=ROOT).status()
     except RegistryLocationError:
-        return {"available": False, "reason": "invalid_location"}
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "invalid_location"},
+        )
     except RegistryContractError:
-        return {"available": False, "reason": "invalid_schema"}
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "invalid_schema"},
+        )
     except RegistryUnavailableError:
-        return {"available": False, "reason": "database_unavailable"}
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "database_unavailable"},
+        )
 
 
 @app.get("/api/registry/reports")
