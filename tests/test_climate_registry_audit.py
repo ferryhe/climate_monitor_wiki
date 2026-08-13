@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from climate_registry import schema as registry_schema
 from climate_registry.audit import build_audit_registry
 from climate_registry.errors import RegistryBuildError, RegistryInputError
 
@@ -72,6 +73,8 @@ def test_builds_fresh_database_duplicate_audit_and_weekly_manifests(tmp_path):
     )
     assert manifest["counts"] == {
         "articles": 2,
+        "eligible_articles": 2,
+        "excluded_articles": 0,
         "new": 1,
         "pillar_a": 1,
         "pillar_b": 1,
@@ -83,7 +86,7 @@ def test_builds_fresh_database_duplicate_audit_and_weekly_manifests(tmp_path):
 
     connection = sqlite3.connect(database)
     assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-    assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (1,)
+    assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (2,)
     assert connection.execute("SELECT COUNT(*) FROM discoveries").fetchone() == (5,)
     assert connection.execute("SELECT COUNT(*) FROM url_aliases").fetchone() == (4,)
     assert connection.execute(
@@ -173,3 +176,74 @@ def test_parse_failure_creates_no_database_or_output(tmp_path):
         build_audit_registry(source_dir, database, output)
     assert not database.exists()
     assert not output.exists()
+
+
+def test_weekly_manifest_separates_ineligible_landing_and_topic_pages(tmp_path):
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-08-10.md").write_text(
+        _weekly(
+            "2026-08-10",
+            _item("Article", "Article summary.", "https://example.com/news/article"),
+            _item("Home", "Home summary.", "https://www.worldbank.org/")
+            + _item("Topic", "Topic summary.", "https://www.iais.org/activities-topics/climate-risk/"),
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "audit"
+    build_audit_registry(source_dir, tmp_path / "registry.sqlite3", output)
+    manifest = json.loads(
+        (output / "weekly-manifests" / "weekly-manifest-2026-08-10.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["counts"]["eligible_articles"] == 1
+    assert manifest["counts"]["excluded_articles"] == 2
+    assert [item["document_kind"] for item in manifest["articles"]] == ["article"]
+    assert {item["document_kind"] for item in manifest["excluded_articles"]} == {
+        "landing_page",
+        "topic_index",
+    }
+    assert all(item["publication_eligible"] is False for item in manifest["excluded_articles"])
+
+
+def test_audit_schema_metadata_tracks_latest_migration(tmp_path, monkeypatch):
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-08-10.md").write_text(
+        _weekly("2026-08-10", _item("A", "Summary.", "https://example.com/a"), ""),
+        encoding="utf-8",
+    )
+    future_version = registry_schema.MIGRATIONS[-1][0] + 1
+    monkeypatch.setattr(
+        registry_schema,
+        "MIGRATIONS",
+        (
+            *registry_schema.MIGRATIONS,
+            (
+                future_version,
+                "test_future_migration",
+                "CREATE INDEX idx_test_reports_cadence ON reports(cadence);",
+            ),
+        ),
+    )
+    database = tmp_path / "registry.sqlite3"
+    output = tmp_path / "audit"
+    build_audit_registry(source_dir, database, output)
+
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone() == (future_version,)
+        assert connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone() == (future_version,)
+    finally:
+        connection.close()
+    duplicate_report = json.loads((output / "duplicate-report.json").read_text(encoding="utf-8"))
+    weekly_manifest = json.loads(
+        (output / "weekly-manifests" / "weekly-manifest-2026-08-10.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert duplicate_report["schema_version"] == future_version
+    assert weekly_manifest["schema_version"] == future_version

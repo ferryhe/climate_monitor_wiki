@@ -93,14 +93,46 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         CREATE INDEX idx_appearances_article ON report_appearances(article_id, report_id);
         """,
     ),
+    (
+        2,
+        "persistent_registry_policy",
+        """
+        ALTER TABLE articles ADD COLUMN document_kind TEXT NOT NULL DEFAULT 'article'
+            CHECK (document_kind IN ('article', 'report', 'topic_index', 'landing_page'));
+        ALTER TABLE articles ADD COLUMN publication_eligible INTEGER NOT NULL DEFAULT 1
+            CHECK (publication_eligible IN (0, 1));
+        ALTER TABLE articles ADD COLUMN exclusion_reason TEXT;
+
+        ALTER TABLE report_appearances ADD COLUMN observation_status TEXT NOT NULL DEFAULT 'previously_seen'
+            CHECK (observation_status IN ('new_article', 'new_report_representation', 'previously_seen'));
+        ALTER TABLE report_appearances ADD COLUMN external_content_change TEXT NOT NULL DEFAULT 'unknown'
+            CHECK (external_content_change = 'unknown');
+
+        UPDATE report_appearances
+        SET observation_status = CASE disposition
+            WHEN 'new' THEN 'new_article'
+            WHEN 'updated' THEN 'new_report_representation'
+            ELSE 'previously_seen'
+        END;
+        """,
+    ),
 )
 
 
-def apply_migrations(connection: sqlite3.Connection) -> list[int]:
+def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""
 
     if connection.in_transaction:
         raise sqlite3.ProgrammingError("cannot apply migrations inside an active transaction")
+    latest_version = MIGRATIONS[-1][0]
+    target_version = latest_version if target_version is None else target_version
+    if target_version < 1 or target_version > latest_version:
+        raise ValueError(f"unsupported migration target: {target_version}")
+    current_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if current_version > target_version:
+        raise ValueError(
+            f"refusing to migrate backward from version {current_version} to {target_version}"
+        )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(
         """
@@ -114,6 +146,8 @@ def apply_migrations(connection: sqlite3.Connection) -> list[int]:
     applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
     installed: list[int] = []
     for version, name, sql in MIGRATIONS:
+        if version > target_version:
+            break
         if version in applied:
             continue
         escaped_name = name.replace("'", "''")
