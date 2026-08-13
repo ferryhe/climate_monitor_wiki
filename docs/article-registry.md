@@ -150,10 +150,11 @@ Migration 3 defines that later pipeline's storage contract without running it:
   `summary_excerpt`, or `full_markdown`, and defaults conservatively to
   `summary_excerpt`.
 
-The future server-side capture/enrichment process is responsible for populating
-these fields. Source response headers provide fetch metadata; the extractor
-provides Markdown and extraction provenance; deterministic rules or an approved
-model provide summary, categories, keywords, language, and generator provenance.
+The standalone server-side capture/enrichment CLI is responsible for populating
+these fields when explicitly invoked. Source response headers provide fetch
+metadata; the extractor provides Markdown and extraction provenance;
+deterministic rules provide summary, categories, keywords, language, and
+generator provenance. This command never invokes a model.
 The website will be a read-only consumer and must apply `display_policy`. In
 particular, retained Markdown is not automatically licensed for public display:
 copyright, publisher terms, and document type may require metadata or a summary
@@ -167,10 +168,114 @@ and column order of the required history-query indexes. It also rejects an
 article whose current body pointer belongs to a different article, even if a
 writer bypassed the normal update trigger.
 
-Migration 3 is schema and contract only. It performs no network request, invokes
-no model, creates no capture CLI or public API, and changes no Hermes job. Runtime
-databases and generated content remain outside the repository. A later reviewed
-change must implement capture/enrichment and its operational adoption.
+Migration 3 is populated by the separately invoked capture/enrichment command:
+
+```bash
+python -m climate_registry capture-enrich \
+  --database /external/path/article-registry.sqlite3 \
+  --backup-dir /external/path/backups \
+  --limit 25
+```
+
+Both paths are required and runtime databases, backups, and extracted content
+remain outside the repository. By default the command selects, by database
+`article_id`, publication-eligible articles without a current captured body.
+Repeated `--article-id` options select an exact eligible set; an unknown or
+excluded ID fails closed. `--refresh` includes already captured eligible
+articles so conditional HTTP validation can check for changes. `--limit` is
+restricted to 1–100. Omitting it still applies a default limit of 100, and more
+than 100 explicit IDs fail rather than being silently truncated.
+Automatic selection orders never-attempted articles first, then articles by
+oldest most-recent fetch attempt and stable article ID. Repeated bounded refresh
+runs therefore advance through the eligible registry instead of repeatedly
+selecting the same first 100 records.
+
+The command accepts no arbitrary URL input. It reads canonical URLs from the
+registry and permits only HTTP/HTTPS on ports 80/443 without user information.
+Every initial and redirect hostname is resolved and rejected if any answer is
+loopback, private, link-local, multicast, reserved, or unspecified. The
+registry also rejects IPv4-mapped IPv6, 6to4, and Teredo transition addresses
+instead of attempting to infer whether their embedded endpoints are safe. A
+mixed DNS answer is rejected when any returned address is prohibited. The
+approved IP addresses are passed directly to the connection layer to prevent a
+second DNS lookup; HTTPS still verifies the original hostname with normal SNI
+and certificate checks. Redirects, time, and response bytes are bounded. TLS is
+never downgraded: after any HTTPS hop, a redirect to HTTP is rejected, including
+an HTTP-to-HTTPS-to-HTTP chain. Certificate verification cannot be disabled by
+the CLI. The monotonic total deadline strictly covers the redirect loop and body
+processing. Each outer body-read iteration reapplies the remaining socket
+timeout. This also applies to HTTP/1.0 or `Connection: close` bodies where the
+active socket is owned by the response object rather than the connection.
+After connection establishment, a per-hop absolute-deadline watchdog shuts down
+the current active socket at expiry. This interrupts response-header reads,
+ordinary bodies, and `http.client` internal multi-receive operations such as
+chunk framing when they cross the deadline—even if a peer drips partial
+chunk-size lines often enough to avoid a per-operation timeout. Every path
+cancels and joins the watchdog, closes the response before the connection, and
+never reuses the socket. Connect and TLS operations receive the remaining
+socket timeout.
+Standard-library DNS resolution cannot be interrupted portably;
+its elapsed time is checked against the same deadline immediately after it
+returns. Tests inject deterministic resolvers and clocks without network access.
+
+HTML is converted to structural Markdown using the standard-library parser;
+scripts and styles are discarded, relative links are resolved against the final
+response URL, and a declared valid HTTP charset is honored. Unknown or invalid
+declared charsets fail with a stable error code. PDFs are text-extracted with
+`pypdf` and have fixed page-count and extracted-character limits. PDF parsing is
+in-process and does not claim a separately enforceable wall-clock timeout; the
+page, text, response-byte, and overall processing limits are the current
+fail-closed controls. HTML parsing and every final extracted Markdown value use
+the same character ceiling, including text added by resolving relative links.
+Raw response bodies are not retained. Unsupported,
+invalid, empty, or oversized
+documents create a failed fetch audit row with a stable error code and a short
+sanitized message. Successful bodies store raw-byte and Markdown SHA-256 values.
+The most recent non-empty ETag and Last-Modified validators associated with the
+current body version are sent on later attempts. HTTP 304 is accepted only when
+the actual request hop carried at least one validator; validators are removed on
+cross-origin redirects, preventing an unrelated target from claiming a cached
+body. A valid 304 reuses the current body version, and a 200 response with an
+existing raw hash also reuses it.
+
+Deterministic enrichment version 1 copies a short factual summary from the
+extracted text, assigns only categories from a fixed climate/actuarial taxonomy,
+extracts 8–12 source-present keywords, and records `en`, `zh`, `mixed`, or
+`unknown`. Content too sparse for those conservative rules receives an
+append-only failed enrichment rather than invented text. A content version and
+generator name/version pair is idempotent; changing the rules requires a new
+generator version.
+
+Exit codes are:
+
+- `0`: all selected articles captured/not-modified, or no eligible work;
+- `2`: unsafe/invalid input or registry contract;
+- `3`: candidate build or validation failure;
+- `4`: lock/fingerprint concurrency failure;
+- `5`: the atomic batch was installed but one or more articles recorded a
+  failed fetch or enrichment, including an HTTP 304 whose existing enrichment
+  is failed.
+
+Output is one compact JSON line containing article IDs, per-article statuses,
+stable error codes, counts, and backup path. It never includes response bodies,
+Markdown, full URLs, or detailed server errors.
+Argument errors use the same one-line JSON contract and do not emit argparse
+usage text to stderr.
+
+Capture uses the same fail-closed lock, SQLite backup API, candidate validation,
+live fingerprint/sidecar check, atomic replacement, and parent-directory fsync
+as persistent report updates. The backup is the rollback source. Retained locks
+or SQLite sidecars require manual reconciliation and are never auto-removed.
+Failed candidate construction leaves the live database unchanged; ordinary
+per-article failures are intentionally saved as audit records and reported with
+exit code 5.
+
+Operational adoption remains separate: this command does not create or change
+a Hermes job, call a model, expose a write API, modify canonical Markdown, or
+restart a service. Operators must review publisher terms, robots/access policy,
+copyright display policy, and internal retention needs before first production
+capture. Retaining Markdown for audit does not authorize public full-text
+display; the future read-only website must enforce `display_policy`.
 
 ## Migration and backup policy
 
