@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from climate_registry.schema import apply_migrations
 
 
@@ -54,7 +56,7 @@ def test_migration_enforces_report_article_uniqueness():
             """
         )
 
-    with __import__("pytest").raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
             """
             INSERT INTO report_appearances(
@@ -96,7 +98,7 @@ def test_migrations_refuse_to_commit_callers_active_transaction():
     connection.commit()
     connection.execute("INSERT INTO caller_state VALUES ('uncommitted')")
 
-    with __import__("pytest").raises(sqlite3.ProgrammingError, match="active transaction"):
+    with pytest.raises(sqlite3.ProgrammingError, match="active transaction"):
         apply_migrations(connection)
 
     assert connection.in_transaction
@@ -105,3 +107,25 @@ def test_migrations_refuse_to_commit_callers_active_transaction():
     assert connection.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
     ).fetchone() == (0,)
+
+
+def test_migrations_refuse_downgrade_without_changing_database_or_connection_state():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE caller_state(value TEXT)")
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    schema_before = connection.execute(
+        "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    total_changes_before = connection.total_changes
+
+    with pytest.raises(ValueError, match="backward"):
+        apply_migrations(connection, target_version=1)
+
+    assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+    assert connection.execute("PRAGMA foreign_keys").fetchone() == (0,)
+    assert connection.execute(
+        "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall() == schema_before
+    assert connection.total_changes == total_changes_before
+    assert not connection.in_transaction

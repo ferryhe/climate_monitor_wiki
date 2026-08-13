@@ -124,6 +124,15 @@ def apply_migrations(connection: sqlite3.Connection, *, target_version: int | No
 
     if connection.in_transaction:
         raise sqlite3.ProgrammingError("cannot apply migrations inside an active transaction")
+    latest_version = MIGRATIONS[-1][0]
+    target_version = latest_version if target_version is None else target_version
+    if target_version < 1 or target_version > latest_version:
+        raise ValueError(f"unsupported migration target: {target_version}")
+    current_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if current_version > target_version:
+        raise ValueError(
+            f"refusing to migrate backward from version {current_version} to {target_version}"
+        )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(
         """
@@ -136,10 +145,6 @@ def apply_migrations(connection: sqlite3.Connection, *, target_version: int | No
     )
     applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
     installed: list[int] = []
-    latest_version = MIGRATIONS[-1][0]
-    target_version = latest_version if target_version is None else target_version
-    if target_version < 1 or target_version > latest_version:
-        raise ValueError(f"unsupported migration target: {target_version}")
     for version, name, sql in MIGRATIONS:
         if version > target_version:
             break

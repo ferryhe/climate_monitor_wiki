@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from climate_registry import schema as registry_schema
 from climate_registry.audit import build_audit_registry
 from climate_registry.errors import RegistryBuildError, RegistryInputError
 
@@ -204,3 +205,45 @@ def test_weekly_manifest_separates_ineligible_landing_and_topic_pages(tmp_path):
         "topic_index",
     }
     assert all(item["publication_eligible"] is False for item in manifest["excluded_articles"])
+
+
+def test_audit_schema_metadata_tracks_latest_migration(tmp_path, monkeypatch):
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-08-10.md").write_text(
+        _weekly("2026-08-10", _item("A", "Summary.", "https://example.com/a"), ""),
+        encoding="utf-8",
+    )
+    future_version = registry_schema.MIGRATIONS[-1][0] + 1
+    monkeypatch.setattr(
+        registry_schema,
+        "MIGRATIONS",
+        (
+            *registry_schema.MIGRATIONS,
+            (
+                future_version,
+                "test_future_migration",
+                "CREATE INDEX idx_test_reports_cadence ON reports(cadence);",
+            ),
+        ),
+    )
+    database = tmp_path / "registry.sqlite3"
+    output = tmp_path / "audit"
+    build_audit_registry(source_dir, database, output)
+
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone() == (future_version,)
+        assert connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone() == (future_version,)
+    finally:
+        connection.close()
+    duplicate_report = json.loads((output / "duplicate-report.json").read_text(encoding="utf-8"))
+    weekly_manifest = json.loads(
+        (output / "weekly-manifests" / "weekly-manifest-2026-08-10.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert duplicate_report["schema_version"] == future_version
+    assert weekly_manifest["schema_version"] == future_version

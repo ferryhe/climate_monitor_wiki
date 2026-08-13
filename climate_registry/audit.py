@@ -11,12 +11,10 @@ from urllib.parse import urlparse
 
 from climate_monitor.dedupe import canonical_title, canonical_url
 
+from . import schema
 from .classification import classify_document
 from .errors import RegistryBuildError, RegistryInputError
 from .reports import ParsedReport, parse_report_directory
-from .schema import apply_migrations
-
-SCHEMA_VERSION = 2
 
 
 def _stable_id(prefix: str, value: str) -> str:
@@ -386,7 +384,7 @@ def _duplicate_report(connection: sqlite3.Connection) -> dict:
     article_count = connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
     discovery_count = connection.execute("SELECT COUNT(*) FROM discoveries").fetchone()[0]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema.MIGRATIONS[-1][0],
         "content_version_basis": "normalized title and summary observed in each canonical Markdown report; not external page content",
         "counts": {
             "reports": report_count,
@@ -432,7 +430,7 @@ def _weekly_manifest(connection: sqlite3.Connection, report_date: str) -> dict:
         (report_date,),
     ).fetchone()[0]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema.MIGRATIONS[-1][0],
         "content_version_basis": "normalized title and summary observed in this canonical Markdown report",
         "report": {
             "date": report[0],
@@ -497,7 +495,7 @@ def build_audit_registry(source_dir: Path, database: Path, output_dir: Path) -> 
     try:
         connection = sqlite3.connect(temp_database)
         try:
-            apply_migrations(connection)
+            schema.apply_migrations(connection)
             refresh_article_policy(connection)
             _populate(connection, reports)
             connection.execute("PRAGMA optimize")
