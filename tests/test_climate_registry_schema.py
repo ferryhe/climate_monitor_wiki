@@ -527,6 +527,8 @@ def test_content_versions_are_immutable_and_require_sha256_values():
         ("complete", None, None, None, None, None, None),
         ("failed", "summary", "[]", "[]", "en", "failure", "details"),
         ("failed", None, None, None, None, None, None),
+        ("failed", None, None, None, None, "", "details"),
+        ("failed", None, None, None, None, "   ", "details"),
     ),
 )
 def test_enrichment_status_rejects_incomplete_or_misleading_rows(values):
@@ -607,6 +609,39 @@ def test_fetches_and_enrichments_are_append_only_audit_records():
     assert connection.execute(
         "SELECT generated_at FROM article_enrichments WHERE enrichment_id = 'e1'"
     ).fetchone() == ("2026-08-13T12:01:00Z",)
+
+
+def test_failed_enrichment_accepts_a_real_error_code_without_display_content():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection)
+    _insert_article(connection)
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO article_content_versions(
+                content_version_id, article_id, content_sha256, markdown_content,
+                markdown_sha256, content_type, extraction_method, extraction_version, first_fetched_at
+            ) VALUES ('cv1', 'a', ?, '# A', ?, 'text/html', 'fixture', '1',
+                      '2026-08-13T12:00:00Z')
+            """,
+            ("a" * 64, "b" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO article_enrichments(
+                enrichment_id, content_version_id, status, generator_kind,
+                generator_name, generator_version, generated_at, error_code, error_message
+            ) VALUES ('failed', 'cv1', 'failed', 'deterministic', 'fixture', '1',
+                      '2026-08-13T12:01:00Z', 'summary-error', 'could not summarize')
+            """
+        )
+
+    assert connection.execute(
+        """
+        SELECT summary, categories_json, keywords_json, language, error_code, error_message
+        FROM article_enrichments WHERE enrichment_id = 'failed'
+        """
+    ).fetchone() == (None, None, None, None, "summary-error", "could not summarize")
 
 
 def test_v3_indexes_support_article_history_queries():

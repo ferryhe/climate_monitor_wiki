@@ -215,7 +215,8 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
                     AND categories_json IS NULL
                     AND keywords_json IS NULL
                     AND language IS NULL
-                    AND error_code IS NOT NULL)
+                    AND error_code IS NOT NULL
+                    AND length(trim(error_code)) > 0)
             )
         );
 
