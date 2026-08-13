@@ -124,6 +124,54 @@ external webpage or PDF. External page-body versioning requires a later,
 separately reviewed capture pipeline with copyright, retention, and fetch-failure
 rules.
 
+Migration 3 defines that later pipeline's storage contract without running it:
+
+- `article_fetches` is the immutable attempt log. It records the requested and
+  final URLs, fetch time and status, optional HTTP metadata, and sanitized error
+  details. `success` requires a 2xx response and a body version. `not_modified`
+  requires HTTP 304 and identifies the previously known body version. Both also
+  require the final URL and prohibit error fields. `failed` attempts never point
+  at or create a body version and require an error code. Their HTTP status may
+  be absent or any valid response status: a 2xx transfer can still fail content
+  validation because of a bot challenge, unsupported type, empty or oversized
+  body, or extraction failure.
+- `article_content_versions` stores immutable extracted Markdown plus hashes of
+  the fetched content and Markdown, the response content type and optional byte
+  count, and the extractor name/version. A content hash is unique within an
+  article. These rows describe the external document body, unlike the existing
+  report-derived `article_versions` rows.
+- `article_enrichments` stores a versioned summary, category list, keyword list,
+  language, and generator provenance for one body version. A failed enrichment
+  stores error metadata instead of partial display content. `categories_json`
+  and `keywords_json` are UTF-8 JSON encoded as `TEXT`; the schema deliberately
+  does not require SQLite's optional JSON1 extension.
+- `articles.current_content_version_id` selects the current external body while
+  preserving every prior version. `display_policy` is one of `metadata_only`,
+  `summary_excerpt`, or `full_markdown`, and defaults conservatively to
+  `summary_excerpt`.
+
+The future server-side capture/enrichment process is responsible for populating
+these fields. Source response headers provide fetch metadata; the extractor
+provides Markdown and extraction provenance; deterministic rules or an approved
+model provide summary, categories, keywords, language, and generator provenance.
+The website will be a read-only consumer and must apply `display_policy`. In
+particular, retained Markdown is not automatically licensed for public display:
+copyright, publisher terms, and document type may require metadata or a summary
+and short excerpt even when the full extraction is retained internally.
+
+Fetch attempts, body versions, and enrichment results are append-only audit
+records: UPDATE and DELETE are rejected by schema triggers. Corrections and
+retries create new stable IDs rather than rewriting history. Persistent database
+validation checks those triggers, critical foreign-key ownership, and the table
+and column order of the required history-query indexes. It also rejects an
+article whose current body pointer belongs to a different article, even if a
+writer bypassed the normal update trigger.
+
+Migration 3 is schema and contract only. It performs no network request, invokes
+no model, creates no capture CLI or public API, and changes no Hermes job. Runtime
+databases and generated content remain outside the repository. A later reviewed
+change must implement capture/enrichment and its operational adoption.
+
 ## Migration and backup policy
 
 `apply_migrations()` is transactional and idempotent. It refuses to run inside a

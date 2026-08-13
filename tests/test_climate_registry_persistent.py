@@ -86,7 +86,7 @@ def test_plan_is_read_only_and_update_is_backed_up_incremental_and_idempotent(tm
     }
 
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (3,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
     assert connection.execute(
         """
@@ -133,15 +133,15 @@ def test_update_migrates_v1_registry_and_imports_a_new_report(tmp_path):
     _write_report(source_dir, "2026-08-10", _item("New", "New summary.", "https://example.com/new"))
 
     plan = persistent.plan_registry_update(source_dir, database)
-    assert plan["pending_migrations"] == [2]
+    assert plan["pending_migrations"] == [2, 3]
     assert [item["date"] for item in plan["new_reports"]] == ["2026-08-10"]
 
     result = persistent.update_registry(source_dir, database, tmp_path / "backups")
     assert result["status"] == "updated"
-    assert result["applied_migrations"] == [2]
+    assert result["applied_migrations"] == [2, 3]
     assert result["imported_reports"] == ["2026-08-10"]
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (3,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
 
 
@@ -216,11 +216,136 @@ def test_plan_rejects_inconsistent_migration_metadata(tmp_path):
     database = tmp_path / "registry.sqlite3"
     _build_current_registry(source_dir, database, tmp_path)
     connection = sqlite3.connect(database)
-    connection.execute("DELETE FROM schema_migrations WHERE version = 2")
+    connection.execute("DELETE FROM schema_migrations WHERE version = 3")
     connection.commit()
     connection.close()
 
     with pytest.raises(RegistryInputError, match="do not agree"):
+        persistent.plan_registry_update(source_dir, database)
+
+
+def test_v2_registry_can_be_planned_and_migrated_without_changing_existing_rows(tmp_path):
+    source_dir = tmp_path / "sources"
+    report = _write_report(
+        source_dir,
+        "2026-08-03",
+        _item("Title", "Summary.", "https://example.com/item"),
+    )
+    database = tmp_path / "registry.sqlite3"
+    connection = sqlite3.connect(database)
+    apply_migrations(connection, target_version=2)
+    connection.execute(
+        """
+        INSERT INTO reports VALUES (?, '2026-08-03', ?, 'Weekly', ?, 'weekly',
+                                    'weekly-pillars-v1', 2, 2, 0, '[]')
+        """,
+        ("report-2026-08-03", report.name, hashlib.sha256(report.read_bytes()).hexdigest()),
+    )
+    connection.commit()
+    counts_before = {
+        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("reports", "discoveries", "articles")
+    }
+    connection.close()
+
+    plan = persistent.plan_registry_update(source_dir, database)
+
+    assert plan["database_schema_version"] == 2
+    assert plan["target_schema_version"] == 3
+    assert plan["pending_migrations"] == [3]
+    result = persistent.update_registry(source_dir, database, tmp_path / "backups")
+    assert result["applied_migrations"] == [3]
+    connection = sqlite3.connect(database)
+    assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+    assert counts_before == {
+        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in counts_before
+    }
+
+
+def test_plan_rejects_v3_database_with_missing_contract_table(tmp_path):
+    source_dir = tmp_path / "sources"
+    _write_report(source_dir, "2026-08-03", _item("Title", "Summary.", "https://example.com/item"))
+    database = tmp_path / "registry.sqlite3"
+    _build_current_registry(source_dir, database, tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute("DROP TABLE article_enrichments")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RegistryInputError, match="article_enrichments"):
+        persistent.plan_registry_update(source_dir, database)
+
+
+def test_plan_rejects_v3_database_with_missing_append_only_trigger(tmp_path):
+    source_dir = tmp_path / "sources"
+    _write_report(source_dir, "2026-08-03", _item("Title", "Summary.", "https://example.com/item"))
+    database = tmp_path / "registry.sqlite3"
+    _build_current_registry(source_dir, database, tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute("DROP TRIGGER article_fetches_are_append_only_update")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RegistryInputError, match="triggers"):
+        persistent.plan_registry_update(source_dir, database)
+
+
+def test_plan_rejects_v3_database_with_wrong_index_columns(tmp_path):
+    source_dir = tmp_path / "sources"
+    _write_report(source_dir, "2026-08-03", _item("Title", "Summary.", "https://example.com/item"))
+    database = tmp_path / "registry.sqlite3"
+    _build_current_registry(source_dir, database, tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute("DROP INDEX idx_article_fetches_article_fetched")
+    connection.execute(
+        "CREATE INDEX idx_article_fetches_article_fetched ON article_fetches(fetched_at, article_id)"
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RegistryInputError, match="index"):
+        persistent.plan_registry_update(source_dir, database)
+
+
+def test_plan_rejects_current_content_pointer_owned_by_another_article(tmp_path):
+    source_dir = tmp_path / "sources"
+    _write_report(
+        source_dir,
+        "2026-08-03",
+        _item("First", "Summary.", "https://example.com/first")
+        + _item("Second", "Summary.", "https://example.com/second"),
+    )
+    database = tmp_path / "registry.sqlite3"
+    _build_current_registry(source_dir, database, tmp_path)
+    connection = sqlite3.connect(database)
+    first_article, second_article = connection.execute(
+        "SELECT article_id FROM articles ORDER BY canonical_url"
+    ).fetchall()
+    connection.execute(
+        """
+        INSERT INTO article_content_versions(
+            content_version_id, article_id, content_sha256, markdown_content,
+            markdown_sha256, content_type, extraction_method, extraction_version, first_fetched_at
+        ) VALUES ('cv-second', ?, ?, '# Second', ?, 'text/html', 'fixture', '1',
+                  '2026-08-13T12:00:00Z')
+        """,
+        (second_article[0], "a" * 64, "b" * 64),
+    )
+    trigger_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        ("articles_current_content_matches_article_update",),
+    ).fetchone()[0]
+    connection.execute("DROP TRIGGER articles_current_content_matches_article_update")
+    connection.execute(
+        "UPDATE articles SET current_content_version_id = 'cv-second' WHERE article_id = ?",
+        (first_article[0],),
+    )
+    connection.execute(trigger_sql)
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RegistryInputError, match="current content version"):
         persistent.plan_registry_update(source_dir, database)
 
 

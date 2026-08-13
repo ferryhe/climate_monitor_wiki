@@ -50,6 +50,25 @@ def _read_only_connection(database: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
 
 
+def _foreign_key_contracts(
+    connection: sqlite3.Connection, table: str
+) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    grouped: dict[int, tuple[str, list[tuple[int, str]], list[tuple[int, str]]]] = {}
+    for row in connection.execute(f"PRAGMA foreign_key_list({table})"):
+        identifier, sequence, target_table, source_column, target_column = row[:5]
+        contract = grouped.setdefault(identifier, (target_table, [], []))
+        contract[1].append((sequence, source_column))
+        contract[2].append((sequence, target_column))
+    return {
+        (
+            contract[0],
+            tuple(column for _, column in sorted(contract[1])),
+            tuple(column for _, column in sorted(contract[2])),
+        )
+        for contract in grouped.values()
+    }
+
+
 def _validate_database(connection: sqlite3.Connection) -> int:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version < 1 or version > LATEST_SCHEMA_VERSION:
@@ -69,6 +88,145 @@ def _validate_database(connection: sqlite3.Connection) -> int:
             "external_content_change",
         } <= appearance_columns:
             raise RegistryInputError("registry schema 2 columns are incomplete")
+    if version >= 3:
+        required_columns = {
+            "articles": {"current_content_version_id", "display_policy"},
+            "article_content_versions": {
+                "content_version_id",
+                "article_id",
+                "content_sha256",
+                "markdown_content",
+                "markdown_sha256",
+                "content_type",
+                "source_bytes",
+                "extraction_method",
+                "extraction_version",
+                "first_fetched_at",
+            },
+            "article_fetches": {
+                "fetch_id",
+                "article_id",
+                "requested_url",
+                "final_url",
+                "fetched_at",
+                "fetch_status",
+                "http_status",
+                "content_type",
+                "etag",
+                "last_modified",
+                "error_code",
+                "error_message",
+                "content_version_id",
+            },
+            "article_enrichments": {
+                "enrichment_id",
+                "content_version_id",
+                "status",
+                "summary",
+                "categories_json",
+                "keywords_json",
+                "language",
+                "generator_kind",
+                "generator_name",
+                "generator_version",
+                "generated_at",
+                "error_code",
+                "error_message",
+            },
+        }
+        for table, expected_columns in required_columns.items():
+            actual_columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if not expected_columns <= actual_columns:
+                raise RegistryInputError(f"registry schema 3 table is incomplete: {table}")
+        required_foreign_keys = {
+            "articles": {
+                (
+                    "article_content_versions",
+                    ("current_content_version_id",),
+                    ("content_version_id",),
+                ),
+            },
+            "article_content_versions": {
+                ("articles", ("article_id",), ("article_id",)),
+            },
+            "article_fetches": {
+                ("articles", ("article_id",), ("article_id",)),
+                ("article_content_versions", ("content_version_id",), ("content_version_id",)),
+                (
+                    "article_content_versions",
+                    ("article_id", "content_version_id"),
+                    ("article_id", "content_version_id"),
+                ),
+            },
+            "article_enrichments": {
+                ("article_content_versions", ("content_version_id",), ("content_version_id",)),
+            },
+        }
+        for table, expected_foreign_keys in required_foreign_keys.items():
+            if not expected_foreign_keys <= _foreign_key_contracts(connection, table):
+                raise RegistryInputError(f"registry schema 3 foreign keys are incomplete: {table}")
+        required_triggers = {
+            "articles_current_content_matches_article_insert",
+            "articles_current_content_matches_article_update",
+            "article_content_versions_are_immutable_update",
+            "article_content_versions_are_immutable_delete",
+            "article_fetches_are_append_only_update",
+            "article_fetches_are_append_only_delete",
+            "article_enrichments_are_append_only_update",
+            "article_enrichments_are_append_only_delete",
+        }
+        actual_triggers = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+        }
+        if not required_triggers <= actual_triggers:
+            raise RegistryInputError("registry schema 3 triggers are incomplete")
+        required_indexes = {
+            "idx_article_fetches_article_fetched": (
+                "article_fetches",
+                ("article_id", "fetched_at"),
+            ),
+            "idx_article_fetches_content_version": (
+                "article_fetches",
+                ("content_version_id",),
+            ),
+            "idx_content_versions_article_fetched": (
+                "article_content_versions",
+                ("article_id", "first_fetched_at"),
+            ),
+            "idx_enrichments_content_generated": (
+                "article_enrichments",
+                ("content_version_id", "generated_at"),
+            ),
+        }
+        for index_name, (expected_table, expected_columns) in required_indexes.items():
+            index_row = connection.execute(
+                "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?",
+                (index_name,),
+            ).fetchone()
+            actual_columns = tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+                    (index_name,),
+                )
+            )
+            if index_row != (expected_table,) or actual_columns != expected_columns:
+                raise RegistryInputError(f"registry schema 3 index is incomplete: {index_name}")
+        invalid_pointer = connection.execute(
+            """
+            SELECT a.article_id
+            FROM articles a
+            LEFT JOIN article_content_versions c
+              ON c.content_version_id = a.current_content_version_id
+             AND c.article_id = a.article_id
+            WHERE a.current_content_version_id IS NOT NULL
+              AND c.content_version_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if invalid_pointer is not None:
+            raise RegistryInputError("registry article current content version has invalid ownership")
     if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
         raise RegistryBuildError("registry database failed SQLite integrity_check")
     connection.execute("PRAGMA foreign_keys = ON")
