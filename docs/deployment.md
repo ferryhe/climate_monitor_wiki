@@ -103,3 +103,101 @@ deployment actions are intentionally separate from weekly generation.
 
 Flow: **Hermes generate → rolling PR → human merge → server deploy**. See
 [weekly-cadence.md](weekly-cadence.md).
+
+## Optional read-only Article Registry
+
+The base Compose file remains valid without a Registry. In that state the app,
+Chat, and Wiki start normally; `/api/registry/status` returns HTTP 503 with
+`{"available":false,"reason":"not_configured"}` and the Archive shows a clear
+unavailable state.
+
+Registry adoption uses the separate `docker-compose.registry.yml` override.
+It mounts one operator-managed directory read-only at `/registry` (outside the
+application root `/app`) and
+sets the fixed in-container database path. The host directory is configuration,
+not repository content:
+
+```bash
+export CLIMATE_REGISTRY_HOST_DIR=/home/ubuntu/climate_monitor_data/registry
+
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.registry.yml config --quiet
+```
+
+Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
+It must be a complete schema-v3 main database with no dependency on WAL, SHM,
+or rollback-journal sidecars. Perform the publisher/copyright review first and
+set articles without public full-text rights to `metadata_only` in the offline
+candidate database. The deterministic preflight rejects relative, missing, or
+in-repository directories, invalid schemas, corrupt databases, failed SQLite
+checks, and any sidecar without creating or changing a database:
+
+```bash
+.venv/bin/python -m scripts.preflight_registry --host-dir "$CLIMATE_REGISTRY_HOST_DIR"
+
+find "$CLIMATE_REGISTRY_HOST_DIR" -maxdepth 1 -type f \
+  \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) -print
+chmod 0750 "$CLIMATE_REGISTRY_HOST_DIR"
+chmod 0640 "$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
+```
+
+Expected results are user version `3`, `ok` from both checks, no rows from
+`foreign_key_check`, and no sidecar files. Keep the host directory and file
+owner-writable by the approved standalone update/capture operator; align the
+group/read bits with the container's read identity and do not make them public.
+The directory read-only bind is the web application's enforced boundary; the
+API additionally uses fresh short-lived SQLite `mode=ro&immutable=1`
+connections with `query_only` and never migrates, repairs, or writes the
+Registry.
+
+Before building, retain the currently deployed app image under a unique rollback
+tag. Then deploy or roll forward only the app container; Caddy and scheduled
+jobs do not change:
+
+```bash
+ROLLBACK_TAG="climate-monitor-wiki:pre-registry-$(date -u +%Y%m%dT%H%M%SZ)"
+docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
+
+docker compose -f docker-compose.yml -f docker-compose.registry.yml \
+  up -d --build --no-deps wiki
+
+curl --fail-with-body -sS https://climate.aiinforsearch.com/api/registry/status \
+  | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("available") is True; print(data)'
+```
+
+Status contract:
+
+| Condition | HTTP | Safe reason |
+|---|---:|---|
+| Valid schema v3, including an empty Registry | 200 | `available: true` |
+| No Registry configured | 503 | `not_configured` |
+| Missing, unreadable, or corrupt main database | 503 | `database_unavailable` |
+| Path inside the checkout or not absolute | 503 | `invalid_location` |
+| Wrong/incomplete schema or invalid relationships | 503 | `invalid_schema` |
+
+Responses never contain host paths, SQL, or exception text. `/api/health`, the
+home page, and offline Chat remain available when Registry status is 503.
+
+Rollback is app-only. Retag the saved image as the Compose image and recreate
+only `wiki`; omit the Registry override if the rollback version predates this
+wiring:
+
+```bash
+docker image tag "$ROLLBACK_TAG" climate-monitor-wiki:local
+docker compose -f docker-compose.yml -f docker-compose.registry.yml \
+  up -d --no-build --no-deps --force-recreate wiki
+# For a pre-Registry image, use only: docker compose up -d --no-build --no-deps --force-recreate wiki
+```
+
+Do not delete or modify the external database during application rollback. This
+wiring adds no Hermes job and does not schedule `update` or `capture-enrich`;
+those remain explicit, separately reviewed server operations.
+
+For local verification, `.venv/bin/python scripts/test_registry_container.py` builds the real
+Dockerfile without a source checkout mount and exercises unconfigured, empty,
+seeded, missing, corrupt, wrong-schema, read-only, and offline-chat cases.
+`.venv/bin/python scripts/test_registry_browser.py` runs deterministic Archive UI states
+in a real local Chrome/Chromium. The browser smoke intentionally avoids a
+general frontend project: it needs the optional `playwright==1.62.1` Python
+package installed into that environment and `SYSTEM_CHROME` when Chrome is not
+in a documented default path.
