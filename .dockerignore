@@ -27,7 +27,6 @@ external/
 tests/
 docs/
 monitoring/
-climate_monitor/
 
 # Miscellaneous host artifacts
 *.log

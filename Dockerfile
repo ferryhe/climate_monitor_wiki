@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY api_server.py ./
 COPY agentic_wiki ./agentic_wiki
+COPY climate_delivery ./climate_delivery
+COPY climate_monitor ./climate_monitor
 COPY climate_registry ./climate_registry
 COPY scripts ./scripts
 COPY showcase ./showcase

@@ -68,7 +68,21 @@ def _rewrite_table_sql(database: Path, table: str, old: str, new: str) -> None:
 def test_dockerfile_packages_registry_without_changing_entrypoint():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY climate_registry ./climate_registry" in dockerfile
+    assert "COPY climate_monitor ./climate_monitor" in dockerfile
+    assert "COPY climate_delivery ./climate_delivery" in dockerfile
+
     assert 'CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501"]' in dockerfile
+
+
+def test_docker_build_context_includes_registry_runtime_dependencies():
+    required_packages = {"climate_registry", "climate_monitor", "climate_delivery"}
+
+    dockerignore_entries = {
+        line.strip().removesuffix("/")
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert required_packages.isdisjoint(dockerignore_entries)
 
 
 def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only_bind():
