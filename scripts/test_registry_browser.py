@@ -4,12 +4,6 @@ import os
 import sys
 from pathlib import Path
 
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    print("registry browser smoke requires: pip install playwright==1.62.1", file=sys.stderr)
-    raise SystemExit(2)
-
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = (ROOT / "showcase" / "index.html").read_text(encoding="utf-8")
@@ -149,6 +143,12 @@ def _assert_network_isolation(page, audit) -> None:
 
 
 def main() -> int:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("registry browser smoke requires: pip install playwright==1.62.1", file=sys.stderr)
+        return 2
+
     chrome = next((candidate for candidate in CHROME_CANDIDATES if candidate.is_file()), None)
     if chrome is None:
         print("registry browser smoke requires SYSTEM_CHROME or local Chrome/Chromium", file=sys.stderr)
