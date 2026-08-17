@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
-import shutil
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +27,15 @@ def _report(path: Path, day: str, body: str = "Weekly summary.") -> Path:
     path.write_bytes(
         (
             f"# Weekly Climate & Actuarial Monitor\n\n**Report Date:** {day}\n\n"
-            f"## Executive Summary\n\n{body}\n"
+            f"## Executive Summary\n\n{body}\n\n"
+            "- Sites checked: **1**, succeeded: **1**, failed: **0**\n\n"
+            "## Pillar A — Site Changes\n\n"
+            f"- **Weekly item {day}** (web)\n"
+            "  - Source-backed summary.\n"
+            f"  🔗 https://example.com/reports/{day}\n\n"
+            "## Pillar B — Intelligence\n\n"
+            "## Original Links\n\n"
+            f"- https://example.com/reports/{day}\n"
         ).encode("utf-8")
     )
     return path
@@ -176,6 +185,25 @@ def _publish(production: Path, reports: Path, runner: FakeGhRunner):
     )
 
 
+def test_direct_script_entrypoint_bootstraps_repository_imports(tmp_path):
+    script = Path(publisher.__file__).resolve()
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--registry-database" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
 def test_ingest_has_no_git_operations_or_git_flags(monkeypatch, tmp_path):
     source = Path(ingest.__file__).read_text(encoding="utf-8")
     assert "import subprocess" not in source
@@ -234,6 +262,339 @@ def test_existing_main_report_is_noop(local_remote, tmp_path):
     _report(reports / "climate-monitor-2026-08-03.md", "2026-08-03")
     result = _publish(production, reports, FakeGhRunner())
     assert result.status == "no-op"
+
+
+def _candidate_report(path: Path, day: str, *, a: list[tuple[str, str]], b: list[tuple[str, str]]) -> Path:
+    def render(items):
+        return "".join(
+            f"- **{title}** (web)\n  - Summary.\n  🔗 {url}\n"
+            for title, url in items
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""# Weekly Climate & Actuarial Monitor
+
+**Report Date:** {day}
+
+## Executive Summary
+
+- Sites checked: **1**, succeeded: **1**, failed: **0**
+
+## Pillar A — Site Changes
+
+{render(a)}
+## Pillar B — Intelligence
+
+{render(b)}
+## Original Links
+
+- https://example.com/source
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "reason"),
+    [
+        (
+            [("A owner", "https://example.com/story")],
+            [("B copy", "https://EXAMPLE.com/story/?utm_source=x#part")],
+            "cross_pillar_canonical_url",
+        ),
+        (
+            [("Same title", "https://example.com/a")],
+            [(" same  title ", "https://example.com/b")],
+            "same_run_canonical_title",
+        ),
+        (
+            [("First", "https://example.com/story")],
+            [("Topic", "https://iais.org/activities-topics/climate-risk")],
+            "publication_ineligible",
+        ),
+    ],
+)
+def test_pending_report_gate_rejects_same_run_and_policy_violations(tmp_path, a, b, reason):
+    report = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-10.md", "2026-08-10", a=a, b=b
+    )
+
+    with pytest.raises(publisher.PublishError, match=reason):
+        publisher.validate_pending_reports([report], source_dir=tmp_path)
+
+
+def test_pending_report_gate_uses_registry_history_but_not_historical_titles(tmp_path):
+    from climate_registry.audit import build_audit_registry
+
+    sources = tmp_path / "sources"
+    _candidate_report(
+        sources / "climate-monitor-2026-08-03.md",
+        "2026-08-03",
+        a=[("Historical title", "https://example.com/history")],
+        b=[],
+    )
+    database = tmp_path / "registry.sqlite3"
+    build_audit_registry(sources, database, tmp_path / "audit")
+
+    repeated = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Rewritten title", "https://example.com/history")],
+        b=[],
+    )
+    with pytest.raises(publisher.PublishError, match="historical_url_seen"):
+        publisher.validate_pending_reports(
+            [repeated], source_dir=sources, registry_database=database
+        )
+
+    distinct = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-17.md",
+        "2026-08-17",
+        a=[("Historical title", "https://example.com/new-location")],
+        b=[],
+    )
+    publisher.validate_pending_reports(
+        [distinct], source_dir=sources, registry_database=database
+    )
+
+
+def test_multiple_pending_reports_use_an_in_memory_history_overlay(tmp_path):
+    first = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("First", "https://example.com/repeated")],
+        b=[],
+    )
+    second = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-17.md",
+        "2026-08-17",
+        a=[("Reworded", "https://example.com/repeated")],
+        b=[],
+    )
+
+    with pytest.raises(publisher.PublishError, match="historical_url_seen"):
+        publisher.validate_pending_reports([second, first], source_dir=tmp_path)
+
+
+def test_zero_pending_reports_do_not_open_an_optional_registry(tmp_path):
+    publisher.validate_pending_reports(
+        [],
+        source_dir=tmp_path / "missing-sources",
+        registry_database=tmp_path / "missing-registry.sqlite3",
+    )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "",  # recognized title without a source marker
+        "  🔗 https://example.com/one\n  🔗 https://example.com/two\n",
+        "  🔗 https://example.com:bad/story\n",
+        "  🔗 https://example.com/a b\n",
+        "  🔗 https://example.com/%ZZ\n",
+    ],
+)
+def test_pending_report_gate_rejects_missing_ambiguous_or_malformed_source_links(
+    tmp_path, replacement
+):
+    report = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Item", "https://example.com/original")],
+        b=[],
+    )
+    text = report.read_text(encoding="utf-8")
+    report.write_text(
+        text.replace("  🔗 https://example.com/original\n", replacement, 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(publisher.PublishError, match="source link|valid weekly"):
+        publisher.validate_pending_reports([report], source_dir=tmp_path)
+
+
+def test_pending_report_gate_rejects_orphan_source_link(tmp_path):
+    report = _candidate_report(
+        tmp_path / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Item", "https://example.com/item")],
+        b=[],
+    )
+    text = report.read_text(encoding="utf-8")
+    report.write_text(
+        text.replace(
+            "## Pillar A — Site Changes\n\n",
+            "## Pillar A — Site Changes\n\n  🔗 https://example.com/orphan\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(publisher.PublishError, match="orphan source link"):
+        publisher.validate_pending_reports([report], source_dir=tmp_path)
+
+
+def test_invalid_pending_report_fails_before_copy_or_remote_mutation(
+    local_remote, tmp_path, monkeypatch
+):
+    remote, production = local_remote
+    reports = tmp_path / "reports"
+    _candidate_report(
+        reports / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Owner", "https://example.com/repeated")],
+        b=[("Duplicate", "https://example.com/repeated")],
+    )
+
+    monkeypatch.setattr(
+        publisher.shutil,
+        "copyfile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("copy attempted")),
+    )
+    with pytest.raises(publisher.PublishError, match="cross_pillar_canonical_url"):
+        _publish(production, reports, FakeGhRunner())
+    assert _remote_ref_missing(remote, publisher.BRANCH)
+
+
+def test_structurally_invalid_pending_report_fails_before_copy_or_remote_mutation(
+    local_remote, tmp_path, monkeypatch
+):
+    remote, production = local_remote
+    reports = tmp_path / "reports"
+    report = _candidate_report(
+        reports / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Missing link", "https://example.com/item")],
+        b=[],
+    )
+    report.write_text(
+        report.read_text(encoding="utf-8").replace(
+            "  🔗 https://example.com/item\n", "", 1
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        publisher.shutil,
+        "copyfile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("copy attempted")),
+    )
+
+    with pytest.raises(publisher.PublishError, match="valid weekly|source link"):
+        _publish(production, reports, FakeGhRunner())
+    assert _remote_ref_missing(remote, publisher.BRANCH)
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "https://example.com/%2fstory",
+        "https://example.com/%41",
+        "https://example.com:/story",
+        "https://example.com:443/story",
+        "https://example.com/a/../b",
+        "https://example.com./story",
+        "https://empty..example/story",
+        "https://under_score.example/story",
+        f"https://{'a' * 64}.example/story",
+        "https://xn--a.example/story",
+        "https://[fe80::1%25eth0]/story",
+        "https://[2001:DB8::1]/story",
+        "https://[v1.]/story",
+        "https://127.1/story",
+        "https://2130706433/story",
+        "https://127.0.0.01/story",
+        "https://example.com:08443/story",
+        "https://[2001:db8::1]:08443/story",
+        "https://xn--ab-0ea.example/story",
+        "https://xn--ab-j1t.example/story",
+    ],
+)
+def test_noncanonical_pending_url_fails_before_copy_or_remote_mutation(
+    local_remote, tmp_path, monkeypatch, unsafe_url
+):
+    remote, production = local_remote
+    reports = tmp_path / "reports"
+    _candidate_report(
+        reports / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Unsafe", unsafe_url)],
+        b=[],
+    )
+    monkeypatch.setattr(
+        publisher.shutil,
+        "copyfile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("copy attempted")
+        ),
+    )
+
+    with pytest.raises(publisher.PublishError, match="candidate URL is invalid"):
+        _publish(production, reports, FakeGhRunner())
+    assert _remote_ref_missing(remote, publisher.BRANCH)
+
+
+def test_same_run_noncanonical_alias_fails_before_copy_or_remote_mutation(
+    local_remote, tmp_path, monkeypatch
+):
+    remote, production = local_remote
+    reports = tmp_path / "reports"
+    _candidate_report(
+        reports / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Owner", "https://example.com/~user")],
+        b=[("Alias", "https://example.com/%7Euser")],
+    )
+    monkeypatch.setattr(
+        publisher.shutil,
+        "copyfile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("copy attempted")
+        ),
+    )
+
+    with pytest.raises(publisher.PublishError, match="candidate URL is invalid"):
+        _publish(production, reports, FakeGhRunner())
+    assert _remote_ref_missing(remote, publisher.BRANCH)
+
+
+def test_authoritative_report_change_after_gate_fails_before_remote_mutation(
+    local_remote, tmp_path, monkeypatch
+):
+    remote, production = local_remote
+    reports = tmp_path / "reports"
+    _candidate_report(
+        reports / "climate-monitor-2026-08-10.md",
+        "2026-08-10",
+        a=[("Validated", "https://example.com/validated")],
+        b=[],
+    )
+    real_copy = shutil.copyfile
+
+    def mutate_then_copy(source, destination):
+        Path(source).write_text(
+            Path(source).read_text(encoding="utf-8").replace("Validated", "Changed"),
+            encoding="utf-8",
+        )
+        return real_copy(source, destination)
+
+    monkeypatch.setattr(publisher.shutil, "copyfile", mutate_then_copy)
+
+    with pytest.raises(publisher.PublishError, match="changed after selection validation"):
+        _publish(production, reports, FakeGhRunner())
+    assert _remote_ref_missing(remote, publisher.BRANCH)
+
+
+def test_weekly_wrapper_passes_only_explicit_nonempty_registry_database():
+    script = Path(publisher.__file__).with_name("weekly_wiki_refresh.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]' in script
+    assert 'ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")' in script
+    assert "source .env" not in script
+    assert "CLIMATE_REGISTRY_DB" not in script
 
 
 def test_first_publish_creates_fixed_branch_and_pr_without_touching_production(

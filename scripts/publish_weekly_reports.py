@@ -9,6 +9,7 @@ never accepted as command-line arguments.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import secrets
@@ -23,6 +24,19 @@ from typing import Callable, Sequence
 from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from climate_monitor.dedupe import canonical_url  # noqa: E402
+from climate_registry.errors import RegistryBuildError, RegistryInputError  # noqa: E402
+from climate_registry.selection import (  # noqa: E402
+    SelectionCandidate,
+    candidate_payload,
+    load_registry_selection_snapshot,
+    parse_strict_weekly_report,
+    plan_selection,
+)
+
 DEFAULT_REPORT_DIR = Path("/home/ubuntu/web_listening/data/reports")
 BRANCH = "codex/hermes-weekly-monitor"
 BASE_BRANCH = "main"
@@ -120,6 +134,67 @@ def discover_reports(report_dir: Path, *, today: date) -> list[Path]:
         validate_report(path)
         reports.append(path)
     return reports
+
+
+def validate_pending_reports(
+    reports: Sequence[Path],
+    *,
+    source_dir: Path,
+    registry_database: Path | None = None,
+) -> dict[Path, str]:
+    """Fail closed on newly introduced report candidates before any copy or push."""
+
+    if not reports:
+        return {}
+    historical_urls: set[str] = set()
+    if registry_database is not None:
+        try:
+            snapshot = load_registry_selection_snapshot(registry_database, source_dir)
+        except (RegistryInputError, RegistryBuildError) as exc:
+            raise PublishError(f"registry selection baseline is invalid: {exc}") from exc
+        historical_urls.update(snapshot.canonical_urls)
+
+    parsed_reports = []
+    for path in reports:
+        try:
+            report = parse_strict_weekly_report(path)
+        except RegistryInputError as exc:
+            raise PublishError(f"pending report is not valid weekly Markdown: {exc}") from exc
+        if report.cadence != "weekly" or any(article.pillar not in {"A", "B"} for article in report.articles):
+            raise PublishError(f"pending report is not a Pillar A/B weekly report: {path.name}")
+        parsed_reports.append(report)
+
+    for report in sorted(parsed_reports, key=lambda item: item.report_date):
+        candidates = tuple(
+            SelectionCandidate(
+                candidate_id=f"item-{index:03d}",
+                pillar=article.pillar or "",
+                title=article.title,
+                summary=article.summary,
+                url=article.url,
+            )
+            for index, article in enumerate(report.articles, 1)
+        )
+        try:
+            plan = plan_selection(
+                candidate_payload(report.report_date, candidates),
+                historical_urls=historical_urls,
+            )
+        except RegistryInputError as exc:
+            raise PublishError(f"pending report candidate contract is invalid: {report.path.name}") from exc
+        rejected = [
+            decision
+            for decision in plan["decisions"]
+            if decision["disposition"] == "rejected"
+        ]
+        if rejected:
+            first = rejected[0]
+            raise PublishError(
+                "pending report selection rejected "
+                f"{report.path.name} {first['candidate_id']}: {first['reason']}"
+            )
+        historical_urls.update(canonical_url(candidate.url) for candidate in candidates)
+    return {report.path: report.sha256 for report in parsed_reports}
 
 
 def _changed_paths(
@@ -678,6 +753,7 @@ def _publish_attempt(
     runner: CommandRunner,
     verifier: Verifier,
     candidate_branch: str,
+    registry_database: Path | None,
 ) -> PublishResult:
     with tempfile.TemporaryDirectory(prefix="climate-weekly-publish-") as tmp:
         checkout = Path(tmp) / "repo"
@@ -705,12 +781,27 @@ def _publish_attempt(
                 today=today,
             )
 
+        discovered = discover_reports(report_dir, today=today)
+        pending = [
+            report
+            for report in discovered
+            if not (checkout / "sources" / report.name).exists()
+        ]
+        validated_reports = validate_pending_reports(
+            pending,
+            source_dir=checkout / "sources",
+            registry_database=registry_database,
+        )
+
         imported: list[str] = []
-        for report in discover_reports(report_dir, today=today):
+        for report in pending:
             destination = checkout / "sources" / report.name
-            if destination.exists():
-                continue
             shutil.copyfile(report, destination)
+            copied_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+            if copied_sha != validated_reports[report]:
+                raise PublishError(
+                    f"authoritative report changed after selection validation: {report.name}"
+                )
             imported.append(validate_report(destination))
 
         runner(
@@ -828,6 +919,7 @@ def publish(
     today: date | None = None,
     runner: CommandRunner = run_command,
     verifier: Verifier = verify_checkout,
+    registry_database: Path | None = None,
 ) -> PublishResult:
     production_repo = production_repo.resolve()
     before_head = _output(runner, ["git", "rev-parse", "HEAD"], production_repo)
@@ -849,6 +941,7 @@ def publish(
                     runner=runner,
                     verifier=verifier,
                     candidate_branch=candidate_branch,
+                    registry_database=registry_database,
                 )
             except _MainChanged as exc:
                 if attempt == MAX_BASE_ATTEMPTS:
@@ -888,8 +981,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--production-repo", type=Path, default=REPO_ROOT)
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
+    parser.add_argument("--registry-database", type=Path)
     args = parser.parse_args()
-    result = publish(production_repo=args.production_repo, report_dir=args.report_dir)
+    result = publish(
+        production_repo=args.production_repo,
+        report_dir=args.report_dir,
+        registry_database=args.registry_database,
+    )
     print(
         f"publisher: status={result.status} base={result.base_sha} "
         f"published={result.published_sha or '-'} reports={len(result.reports)} "
