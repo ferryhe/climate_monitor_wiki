@@ -13,6 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agentic_wiki import AgenticWikiResponder
+from climate_monitor.job_status import (
+    JobStatusInvalidSnapshotError,
+    JobStatusLocationError,
+    JobStatusSnapshotReader,
+    JobStatusUnavailableError,
+)
 from climate_monitor.run_ledger import (
     LedgerContractError,
     LedgerLocationError,
@@ -104,6 +110,33 @@ def update_status():
         return JSONResponse(
             status_code=503,
             content={"available": False, "reason": "ledger_unavailable"},
+        )
+
+
+@app.get("/api/job-status", response_model=None)
+def job_status():
+    configured = os.getenv("CLIMATE_JOB_STATUS_DIR", "").strip()
+    if not configured:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "not_configured"},
+        )
+    try:
+        return JobStatusSnapshotReader(configured, repository_root=ROOT).status()
+    except JobStatusLocationError:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "invalid_location"},
+        )
+    except JobStatusUnavailableError:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "snapshot_unavailable"},
+        )
+    except JobStatusInvalidSnapshotError:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "invalid_snapshot"},
         )
 
 
