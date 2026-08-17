@@ -13,6 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agentic_wiki import AgenticWikiResponder
+from climate_monitor.run_ledger import (
+    LedgerContractError,
+    LedgerLocationError,
+    LedgerUnavailableError,
+    RunLedgerReader,
+)
 from climate_registry.read_api import (
     RegistryContractError,
     RegistryLocationError,
@@ -72,6 +78,33 @@ def robots() -> str:
 @app.get("/api/config")
 def config() -> dict:
     return responder.config()
+
+
+@app.get("/api/update-status", response_model=None)
+def update_status():
+    configured = os.getenv("CLIMATE_UPDATE_STATUS_DIR", "").strip()
+    if not configured:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "not_configured"},
+        )
+    try:
+        return RunLedgerReader(configured, repository_root=ROOT).status()
+    except LedgerLocationError:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "invalid_location"},
+        )
+    except LedgerContractError:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "invalid_ledger"},
+        )
+    except LedgerUnavailableError:
+        return JSONResponse(
+            status_code=503,
+            content={"available": False, "reason": "ledger_unavailable"},
+        )
 
 
 def _registry_reader() -> RegistryReader:
