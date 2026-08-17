@@ -49,7 +49,9 @@ def test_job_status_has_stable_success_and_unavailable_responses(tmp_path, monke
     client = TestClient(api_server.app)
 
     monkeypatch.delenv("CLIMATE_JOB_STATUS_DIR", raising=False)
-    assert client.get("/api/job-status").json() == {
+    response = client.get("/api/job-status")
+    assert response.status_code == 503
+    assert response.json() == {
         "available": False,
         "reason": "not_configured",
     }
