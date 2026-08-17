@@ -9,6 +9,7 @@ from .audit import build_audit_registry
 from .capture import MAX_BATCH, capture_enrich_registry
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from .persistent import plan_registry_update, update_registry
+from .selection import load_selection_input, plan_registry_selection
 
 
 class _RegistryArgumentParser(argparse.ArgumentParser):
@@ -43,6 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument("--database", required=True, type=Path)
     update.add_argument("--backup-dir", required=True, type=Path)
 
+    selection = subcommands.add_parser("plan-selection")
+    selection.add_argument("--database", required=True, type=Path)
+    selection.add_argument("--source-dir", required=True, type=Path)
+    selection.add_argument("--input", required=True, type=Path)
+
     capture = subcommands.add_parser("capture-enrich")
     capture.add_argument("--database", required=True, type=Path)
     capture.add_argument("--backup-dir", required=True, type=Path)
@@ -61,6 +67,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = plan_registry_update(args.source_dir, args.database)
         elif args.command == "update":
             result = update_registry(args.source_dir, args.database, args.backup_dir)
+        elif args.command == "plan-selection":
+            payload = load_selection_input(args.input)
+            result = plan_registry_selection(args.database, args.source_dir, payload)
         else:
             if args.limit is not None and not 1 <= args.limit <= MAX_BATCH:
                 raise RegistryInputError(f"limit must be between 1 and {MAX_BATCH}")

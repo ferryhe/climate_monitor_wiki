@@ -1,9 +1,10 @@
 # Article Registry
 
 This module builds and incrementally updates a SQLite registry from the Markdown
-reports already in `sources/`. It remains operationally isolated: it does not
-change the 08:00 Hermes monitor, canonical Markdown, the publisher, the website,
-or any scheduled job.
+reports already in `sources/`. It also provides a deterministic read-only
+candidate-selection plan and a Publisher safety gate. This repository still
+does not change the 08:00 Hermes monitor, rewrite canonical Markdown, or create
+or modify any scheduled job.
 
 ## Boundaries
 
@@ -13,6 +14,8 @@ or any scheduled job.
   output directory. Every audit snapshot therefore starts with new destinations.
 - Persistent updates are explicit CLI operations. Nothing in this repository
   schedules or automatically invokes them.
+- Candidate planning and Publisher checks are readers only. They never create,
+  migrate, repair, checkpoint, vacuum, or update a Registry database.
 - Source Markdown is read-only. The command never rewrites, renames, or deletes
   a report.
 - A server deployment should place the database outside the checkout,
@@ -82,6 +85,110 @@ The update contract is append-only:
   replacing a main database while stale sidecars exist is unsafe.
 - the live database fingerprint is checked again immediately before atomic
   replacement; a non-cooperating writer therefore aborts the install.
+
+## Read-only candidate planning and Publisher gate
+
+`plan-selection` evaluates a bounded producer candidate document against an
+exact, synchronized schema-v3 Registry snapshot:
+
+```bash
+python -m climate_registry plan-selection \
+  --database /external/path/article-registry.sqlite3 \
+  --source-dir /path/to/climate_monitor_wiki/sources \
+  --input /temporary/path/selection-input.json
+```
+
+The input contract is `registry-selection-input.v1`: one Monday `report_date`
+and at most 500 candidates, each with a unique safe `candidate_id`, Pillar `A`
+or `B`, bounded title and summary, and an HTTP(S) URL. The entire JSON document
+is limited to 1 MiB; duplicate JSON keys, unknown fields, non-finite values,
+unsafe identifiers, and malformed URLs fail closed. Output is one compact JSON
+line containing only candidate IDs, pillars, dispositions, stable reasons, and
+counts. It does not echo URLs, summaries, database paths, SQL, or environment
+values.
+
+Candidate URLs use an ASCII HTTP(S) URI contract. Producers must IDNA-encode
+Unicode hostnames and percent-encode Unicode path/query/fragment data before
+planning. Percent triplets use uppercase hexadecimal and must not encode ASCII
+RFC 3986 unreserved characters; uppercase UTF-8 and reserved-byte triplets are
+accepted. Port tokens use canonical decimal without leading zeroes; empty ports
+and explicit scheme-default ports are rejected. Exact `.`/`..` path segments,
+raw non-ASCII, whitespace, controls, unsafe URI characters, malformed percent
+escapes, and raw square brackets in path, query, or fragment are also rejected.
+
+DNS/reg-name authorities use nonempty LDH labels within DNS length limits,
+have no trailing dot, and validate every `xn--` A-label by a strict IDNA 2008
+round-trip. Numeric-looking one-to-four-component hosts are accepted only as
+canonical dotted-decimal IPv4; legacy short, integer, leading-zero, octal, and
+hexadecimal aliases are rejected. Numeric labels in an otherwise ordinary
+name, such as `1.2.3.example`, remain valid. Ordinary hostname case is accepted
+and the existing canonical URL logic lowercases authority identity. A
+bracketed IP-literal is either a lowercase RFC 5952 compressed IPv6 address
+without a zone ID or an RFC 3986 IPvFuture literal with lowercase `v`;
+IPvFuture version/suffix letter case is accepted and likewise becomes lowercase
+authority identity.
+
+This lexical policy deliberately does not normalize internal duplicate path
+slashes, path case, path percent-encoded reserved bytes versus their literal
+form, HTTP versus HTTPS, `www`, or non-default ports. Those remain distinct;
+the planner does not invent fuzzy equivalence. Query identity inherits the
+existing `canonical_url` parse/re-encode behavior: ordering remains distinct,
+while equivalent forms such as `%2F` versus `/`, `%20` versus `+`, and an empty
+value written as `?flag` versus `?flag=` become the same canonical query.
+
+The planner validates every candidate first, then processes all Pillar A
+candidates before Pillar B while retaining input order within each pillar.
+Publication policy is applied before duplicate history, so a root or topic
+index is reported as `publication_ineligible` even when its URL is already
+known. Same-pillar canonical URL repeats, cross-pillar canonical URL repeats,
+and exact normalized-title repeats are rejected. Pillar A owns its URL and
+title even when that A candidate is itself rejected, preventing the same item
+from falling through into B. A canonical URL already present in the Registry is
+`historical_url_seen`; a historical exact title on a different URL is audit
+evidence only and is not rejected.
+
+The Registry is opened afresh with SQLite `mode=ro&immutable=1` and
+`query_only`. Schema version, the complete v3 contract, integrity, foreign
+keys, and every stored report filename/SHA are checked against `sources/`.
+The canonical URL set derived from every parsed source article must also equal
+the Registry `articles` URL set in both directions; matching report rows with a
+hollow or injected article graph is not accepted.
+Missing, corrupt, future/older-schema, contract-broken, sidecar-dependent, or
+out-of-sync databases fail closed. A report-derived title/summary fingerprint
+is only a representation of canonical Markdown; it is never evidence that the
+external article body changed. Historical canonical URLs therefore remain
+rejected regardless of a rewritten report title or summary.
+
+The weekly Publisher always applies the same-run URL/title and publication
+policy gate to authoritative reports not yet present in `main`, before copying,
+staging, committing, pushing, or operating a PR. It does not rewrite a report.
+Every recognized Pillar item must have exactly one associated explicit valid
+HTTP(S) source-link marker; missing, orphaned, multiple, or ambiguous links fail
+closed. The validated report SHA is checked again after the temporary-clone
+copy, preventing changed source bytes from bypassing the gate.
+Multiple pending reports are processed by date with an in-memory URL overlay,
+so a later pending report cannot repeat an earlier one. Existing historical
+files are not revalidated, preserving clean no-op publication.
+
+When the Publisher process is explicitly given `--registry-database`, it also
+requires the database to match the temporary clone's `sources/` exactly and
+rejects historical URLs. `scripts/weekly_wiki_refresh.sh` passes this option
+only when the separate `CLIMATE_PUBLISH_REGISTRY_DB` environment variable is
+non-empty. It never reads `.env`, guesses a host path, or reuses the web
+container's `CLIMATE_REGISTRY_DB` name.
+
+This creates a deliberate pre-read/post-write sequence:
+
+1. a producer may later call `plan-selection` before writing a report;
+2. the Publisher independently blocks invalid generated Markdown;
+3. after the content PR is reviewed, merged, and deployed, an operator runs the
+   existing Registry `plan-update`/`update` procedure.
+
+The external `web_listening` producer is not changed by this PR. Connecting its
+candidate generation to `plan-selection`, setting the Publisher environment,
+and updating the post-merge database are later, separately approved server
+operations. No production database, server configuration, email, capture run,
+or Hermes Job is created or changed here.
 
 ## Schema and identity
 
@@ -335,5 +442,6 @@ status matrix, permissions, smoke tests, and rollback procedure.
 
 The first operational adoption still requires a separate owner-approved server
 procedure to install a production database and make it readable at the
-configured external path. This module is not wired into Hermes, the publisher,
-containers, or any scheduled job.
+configured external path. The website and Publisher can read an explicitly
+configured snapshot, but this module does not set host configuration, change a
+Hermes prompt, create a scheduled job, or run an update/capture operation.

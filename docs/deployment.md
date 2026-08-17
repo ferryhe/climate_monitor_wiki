@@ -96,6 +96,52 @@ the weekly wiki, runs the full checks, and updates the fixed
 `codex/hermes-weekly-monitor` pull request. It never changes the production
 checkout, reads `.env`, reloads the API, or restarts a container.
 
+Every newly introduced authoritative report is parsed before it is copied.
+Each recognized Pillar item must have exactly one attached explicit HTTP(S)
+source-link marker; missing, orphaned, multiple, malformed, or ambiguous link
+forms fail closed. The copied bytes must retain the SHA validated by that gate.
+Candidate and report source URLs must be ASCII HTTP(S) URIs: producers
+IDNA-encode Unicode hostnames and percent-encode Unicode path/query/fragment
+data with uppercase triplets and no encoded ASCII unreserved characters. Port
+tokens use canonical decimal without leading zeroes. Empty or scheme-default
+ports, dot segments, noncanonical IPv4/DNS/IDNA 2008 labels, and noncanonical
+bracketed IP-literals fail closed. Raw square brackets are reserved for a
+canonical IPv6 or valid IPvFuture authority rather than path, query, or
+fragment text. The gate deliberately preserves internal path slashes, path
+case, path reserved-encoding, transport, `www`, and non-default-port
+distinctions. Query ordering remains distinct, but the inherited query
+parse/re-encode treats `%2F` and `/`, `%20` and `+`, and `?flag` and `?flag=`
+as equivalent.
+The Publisher rejects same-pillar or cross-pillar canonical URL duplicates,
+exact normalized-title duplicates, and publication-ineligible root/topic
+pages. Multiple pending reports share an in-memory history overlay. Existing
+reports already in `main` are not revalidated, so a clean no-op remains a
+clean no-op.
+
+Registry-backed history checks are opt-in and use a separate host-process
+variable (not the web container variable):
+
+```bash
+export CLIMATE_PUBLISH_REGISTRY_DB=/external/path/article-registry.sqlite3
+bash scripts/weekly_wiki_refresh.sh
+```
+
+The wrapper passes `--registry-database` only when that value is non-empty. It
+does not source `.env`, guess or print the path, or use `CLIMATE_REGISTRY_DB`.
+The configured schema-v3 database must be an immutable, sidecar-free snapshot
+whose report filename/SHA identities exactly match `origin/main`'s `sources/`.
+It is opened with SQLite read-only URI and `query_only`; a missing, corrupt,
+wrong-schema, contract-broken, or out-of-sync snapshot stops publication before
+copy, commit, push, or PR mutation.
+
+This application release does not set that host variable or edit the Hermes
+prompt. Server integration remains a separate owner-approved change. The
+intended operational order is: read the current Registry while selecting and
+publishing candidates, merge/deploy the accepted report, then run the existing
+`plan-update`/`update` procedure to atomically advance the Registry. A changed
+report title or summary is not treated as proof that an external article body
+changed; only separately captured external content supports that conclusion.
+
 After human review and merge, the server deployment process may fast-forward a
 clean production checkout to `origin/main` and reload content. Code or
 dependency changes require rebuilding only the application container. Those

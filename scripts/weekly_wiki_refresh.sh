@@ -10,7 +10,14 @@ PY="${PYTHON:-$REPO/.venv/bin/python}"
 REPORT_DIR="${REPORT_DIR:-/home/ubuntu/web_listening/data/reports}"
 LOCK_FILE="${CLIMATE_PUBLISH_LOCK:-/tmp/climate-monitor-weekly-publisher.lock}"
 
+ARGS=(
+  --production-repo "$REPO"
+  --report-dir "$REPORT_DIR"
+)
+if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]; then
+  ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")
+fi
+
 exec flock --nonblock "$LOCK_FILE" \
   "$PY" "$REPO/scripts/publish_weekly_reports.py" \
-  --production-repo "$REPO" \
-  --report-dir "$REPORT_DIR"
+  "${ARGS[@]}"
