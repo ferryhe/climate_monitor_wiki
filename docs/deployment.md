@@ -201,3 +201,31 @@ in a real local Chrome/Chromium. The browser smoke intentionally avoids a
 general frontend project: it needs the optional `playwright==1.62.1` Python
 package installed into that environment and `SYSTEM_CHROME` when Chrome is not
 in a documented default path.
+
+## Optional read-only weekly run status
+
+The weekly run ledger and `/api/update-status` are independent of the Article
+Registry. They require a separate external directory and optional Compose
+override:
+
+```bash
+export CLIMATE_UPDATE_STATUS_HOST_DIR=/external/weekly-run-ledger
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.update-status.yml \
+  config --quiet
+```
+
+Add `-f docker-compose.registry.yml` when the separately configured Article
+Registry is enabled; neither override depends on the other.
+
+The override mounts the parent directory read-only at `/update-status` with
+implicit host-path creation disabled. The app reads fresh immutable JSON files
+only; it does not update the ledger. See
+[`update-status.md`](update-status.md) for the attempt contract, permissions,
+failure reasons, resource limits, writer verification, and app-only rollback.
+
+Enabling this override does not create or change a Monitor, Email, Publisher,
+Registry updater, or Registry capture job. This phase does not change Caddy,
+Fail2Ban, the firewall, or any scheduled workflow. Live Hermes recording needs
+a separate approved job adaptation and is not part of this deployment.
