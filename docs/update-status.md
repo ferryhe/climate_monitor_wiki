@@ -128,7 +128,10 @@ Homepage, health, Chat, static files, and Article Registry routes remain
 independent.
 
 The response separates `stages.monitor` and `stages.publisher`. Each has its
-own `last_attempt`, `last_success`, incomplete-attempt flag, and stale result.
+own `last_attempt`, `last_success`, `has_newer_unsuccessful_attempt` flag, and
+stale result. The flag is true when the latest finished attempt is `failed` or
+`partial`; the ledger does not claim visibility into attempts that never finish
+or never invoke the writer.
 The top-level `stale` is explicitly copied from the monitor stage and includes
 `stale_source: "monitor"`; publisher freshness remains visible only under its
 own stage. The deterministic stale threshold is 192 hours (one weekly cadence

@@ -747,7 +747,7 @@ class RunLedgerReader:
             "attempt_count": len(attempts),
             "last_attempt": _public_attempt(latest) if latest else None,
             "last_success": _public_attempt(last_success) if last_success else None,
-            "has_newer_incomplete_attempt": bool(
+            "has_newer_unsuccessful_attempt": bool(
                 latest and latest["status"] in {"failed", "partial"}
             ),
             "stale": {

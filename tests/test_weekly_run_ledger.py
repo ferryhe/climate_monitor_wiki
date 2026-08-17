@@ -165,11 +165,38 @@ def test_retries_are_preserved_and_ordered_by_finished_time_then_attempt_id(tmp_
     assert status["attempt_count"] == 2
     assert publisher["last_attempt"]["attempt_id"].endswith("02")
     assert publisher["last_success"]["attempt_id"].endswith("01")
+    assert publisher["has_newer_unsuccessful_attempt"] is True
     assert publisher["stale"] == {
         "is_stale": True,
         "reason": "latest_attempt_failed",
         "max_age_hours": 192,
     }
+
+
+@pytest.mark.parametrize(
+    ("attempt_status", "expected"),
+    [
+        ("success", False),
+        ("no_change", False),
+        ("partial", True),
+        ("failed", True),
+    ],
+)
+def test_unsuccessful_attempt_flag_public_contract(tmp_path, attempt_status, expected):
+    ledger = tmp_path / "ledger"
+    append_attempt(
+        ledger,
+        _attempt(status=attempt_status, include_sources=False),
+        repository_root=ROOT,
+    )
+
+    monitor = RunLedgerReader(ledger, repository_root=ROOT).status(
+        now=datetime(2026, 8, 10, 9, tzinfo=timezone.utc)
+    )["stages"]["monitor"]
+
+    assert monitor["has_newer_unsuccessful_attempt"] is expected
+    legacy_key = "has_newer_" + "incomplete_attempt"
+    assert legacy_key not in monitor
 
 
 @pytest.mark.parametrize(
@@ -328,6 +355,7 @@ def test_staleness_is_stage_specific_and_no_change_is_a_success(tmp_path):
     )
 
     assert current["stages"]["monitor"]["last_success"]["status"] == "no_change"
+    assert current["stages"]["monitor"]["has_newer_unsuccessful_attempt"] is False
     assert current["stages"]["monitor"]["stale"]["is_stale"] is False
     assert expired["stages"]["monitor"]["stale"]["reason"] == "last_success_expired"
     assert expired["stale"] == expired["stages"]["monitor"]["stale"]
