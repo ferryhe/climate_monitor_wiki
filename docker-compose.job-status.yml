@@ -1,0 +1,11 @@
+services:
+  wiki:
+    environment:
+      CLIMATE_JOB_STATUS_DIR: /job-status
+    volumes:
+      - type: bind
+        source: ${CLIMATE_JOB_STATUS_HOST_DIR:?set CLIMATE_JOB_STATUS_HOST_DIR to the external job-status directory}
+        target: /job-status
+        read_only: true
+        bind:
+          create_host_path: false

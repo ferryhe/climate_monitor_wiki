@@ -229,3 +229,26 @@ Enabling this override does not create or change a Monitor, Email, Publisher,
 Registry updater, or Registry capture job. This phase does not change Caddy,
 Fail2Ban, the firewall, or any scheduled workflow. Live Hermes recording needs
 a separate approved job adaptation and is not part of this deployment.
+
+## Optional sanitized scheduler status
+
+`/api/job-status` is a separate read-only projection of scheduler liveness. It
+does not read the Hermes database and does not replace `/api/update-status`.
+Enable its independent directory mount with:
+
+```bash
+export CLIMATE_JOB_STATUS_HOST_DIR=/external/sanitized-job-status
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.job-status.yml \
+  config --quiet
+```
+
+The override mounts the external parent at `/job-status` read-only with host
+path creation disabled. It composes independently with the Registry and update
+status overrides. See [`job-status.md`](job-status.md) for the strict snapshot
+contract, API responses, atomic replacement procedure, and security boundary.
+
+This application phase creates no exporter, systemd timer, Hermes job, or
+snapshot. App-only deployment or rollback rebuilds/recreates only Wiki; it does
+not restart Caddy or alter the 08:00/09:00/10:00 jobs.
