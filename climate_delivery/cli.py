@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Sequence
 
+from .backfill import backfill_reports
 from .config import load_delivery_config
 from .delivery import deliver, load_summary, load_summary_with_sha256
 from .errors import DeliveryError, GenerationError, InputError, LockStateError
@@ -44,6 +45,16 @@ def _parser() -> Parser:
     run.add_argument("--state-dir", type=Path, required=True)
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--dry-run", action="store_true")
+
+    backfill = subcommands.add_parser("backfill")
+    selector = backfill.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--date")
+    selector.add_argument("--all-missing", action="store_true")
+    backfill.add_argument("--sources-dir", type=Path, required=True)
+    backfill.add_argument("--registry-db", type=Path, required=True)
+    backfill.add_argument("--article-artifacts-dir", type=Path, required=True)
+    backfill.add_argument("--output-dir", type=Path, required=True)
+    backfill.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -87,7 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 summary_artifact_sha256=summary_sha256,
             )
-        else:
+        elif args.command == "run":
             report_path, output_dir, state_dir, config_path = validate_run_paths(
                 args.report,
                 args.output_dir,
@@ -101,6 +112,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_path,
                 dry_run=args.dry_run,
             )
+        elif args.command == "backfill":
+            result = backfill_reports(
+                sources_dir=args.sources_dir,
+                registry_db=args.registry_db,
+                article_artifacts_dir=args.article_artifacts_dir,
+                output_dir=args.output_dir,
+                report_date=args.date,
+                all_missing=args.all_missing,
+                dry_run=args.dry_run,
+            )
+        else:
+            raise InputError("unsupported climate-delivery command")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except InputError as exc:
