@@ -117,6 +117,50 @@ def test_render_report_groups_website_updates_and_research_items():
     assert "- warning text" in text
 
 
+def test_render_report_omits_empty_metadata_fields():
+    keyword_only = CandidateItem(
+        title="General insurance update",
+        url="https://example.com/keyword-only",
+        summary="Keyword-only summary.",
+        source_name="Example",
+        lane="website",
+        climate_related=False,
+        actuarial_related=False,
+        keywords=("insurance",),
+    )
+    empty_metadata = CandidateItem(
+        title="General market update",
+        url="https://example.com/no-metadata",
+        summary="No metadata summary.",
+        source_name="Example",
+        lane="website",
+        climate_related=False,
+        actuarial_related=False,
+    )
+
+    keyword_text = render_report(
+        report_date=date(2026, 5, 14),
+        title="Daily Climate & Actuarial Monitor",
+        items=[keyword_only],
+        dedup_notes=[],
+        sites_monitored=1,
+        warnings=[],
+    )
+    empty_text = render_report(
+        report_date=date(2026, 5, 14),
+        title="Daily Climate & Actuarial Monitor",
+        items=[empty_metadata],
+        dedup_notes=[],
+        sites_monitored=1,
+        warnings=[],
+    )
+
+    assert "**Categories:**" not in keyword_text
+    assert "**Keywords:** insurance" in keyword_text
+    assert "**Categories:**" not in empty_text
+    assert "**Keywords:**" not in empty_text
+
+
 def test_render_report_places_document_files_between_website_updates_and_research_with_metadata():
     website_item = CandidateItem(
         title="Climate supervision update",

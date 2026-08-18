@@ -104,17 +104,23 @@ def _render_item(index: int, item: Any) -> str:
         f"**Title:** {title} <br>",
         f"**Source:** {_item_value(item, 'source_name')} <br>",
         f"**Summary:** {_item_value(item, 'summary')} <br>",
-        f"**Categories:** {category_text} <br>",
-        f"**Keywords:** {keyword_text} <br>",
-        f"**URL:** {_item_value(item, 'url')} <br>",
-        f"**Published:** {published} <br>",
-        f"**Actuarial relevance:** {actuarial} <br>",
-        f"**Climate signal:** {_item_value(item, 'climate_signal', 'general')} <br>",
-        f"**Actuarial signal:** {_item_value(item, 'actuarial_signal', 'none')} <br>",
-        f"**Confidence:** {confidence} <br>",
-        f"**Relevance reason:** {relevance_reason} <br>",
-        f"**Evidence:** {evidence_snippet} <br>",
     ]
+    if category_text:
+        lines.append(f"**Categories:** {category_text} <br>")
+    if keyword_text:
+        lines.append(f"**Keywords:** {keyword_text} <br>")
+    lines.extend(
+        [
+            f"**URL:** {_item_value(item, 'url')} <br>",
+            f"**Published:** {published} <br>",
+            f"**Actuarial relevance:** {actuarial} <br>",
+            f"**Climate signal:** {_item_value(item, 'climate_signal', 'general')} <br>",
+            f"**Actuarial signal:** {_item_value(item, 'actuarial_signal', 'none')} <br>",
+            f"**Confidence:** {confidence} <br>",
+            f"**Relevance reason:** {relevance_reason} <br>",
+            f"**Evidence:** {evidence_snippet} <br>",
+        ]
+    )
     lines.extend(_document_metadata_lines(item))
     lines.extend(
         [
