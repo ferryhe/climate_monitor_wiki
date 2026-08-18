@@ -466,6 +466,38 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
     assert pdf.content.startswith(b"%PDF-")
 
 
+def test_sha_binding_rejects_noncanonical_registry_filename_before_read(
+    weekly_fixture, monkeypatch
+):
+    result = weekly.weekly_sync(**weekly_fixture.arguments())
+    connection = sqlite3.connect(weekly_fixture.database)
+    with connection:
+        connection.execute(
+            "UPDATE reports SET filename = '../outside.md' WHERE report_date = ?",
+            (TARGET,),
+        )
+    connection.close()
+    altered_result = {
+        **result,
+        "database_sha256_after": refresh._stream_sha256(weekly_fixture.database),
+    }
+
+    def unexpected_read(_path):
+        pytest.fail("noncanonical Registry filename reached the source reader")
+
+    monkeypatch.setattr(refresh, "parse_historical_report", unexpected_read)
+    with pytest.raises(refresh._JobError, match="sha_verification_failed"):
+        refresh._verify_sha_binding(
+            SimpleNamespace(
+                date=TARGET,
+                source_dir=weekly_fixture.source_dir,
+                database=weekly_fixture.database,
+                artifact_root=weekly_fixture.artifact_root,
+            ),
+            altered_result,
+        )
+
+
 @pytest.mark.parametrize("status", ["partial", "failed"])
 def test_latest_publisher_attempt_must_be_success_or_no_change(weekly_fixture, status):
     append_attempt(
@@ -558,6 +590,25 @@ def test_source_date_and_non_target_update_plan_fail_closed(weekly_fixture):
     _run("git", "commit", "-qm", "extra report", cwd=weekly_fixture.repository)
     with pytest.raises(weekly.WeeklyPreflightError, match="another report date"):
         weekly.weekly_sync(**weekly_fixture.arguments(dry_run=True))
+
+
+def test_artifact_root_inside_checkout_fails_closed(weekly_fixture):
+    (weekly_fixture.repository / ".git" / "info" / "exclude").write_text(
+        "ignored-artifacts/\n", encoding="utf-8"
+    )
+    checkout_artifacts = weekly_fixture.repository / "ignored-artifacts"
+    shutil.copytree(weekly_fixture.artifact_root, checkout_artifacts)
+
+    with pytest.raises(
+        weekly.WeeklyPreflightError,
+        match="artifact root must be outside the repository",
+    ):
+        weekly.weekly_sync(
+            **weekly_fixture.arguments(
+                artifact_root=checkout_artifacts,
+                dry_run=True,
+            )
+        )
 
 
 def test_database_symlink_sidecars_and_nonstandard_lock_fail_before_writes(

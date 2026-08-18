@@ -617,6 +617,7 @@ def _preflight(
         raise RegistryLockError("weekly registry sync is already locked")
 
     artifact_root_path = _absolute_path(artifact_root, label="artifact root")
+    _outside_repository(artifact_root_path, repository_root, label="artifact root")
     ledger_path = _absolute_path(publisher_ledger_dir, label="publisher ledger")
     _outside_repository(ledger_path, repository_root, label="publisher ledger")
 
