@@ -346,10 +346,6 @@ function renderMarkdownFull(markdown) {
   return out.join("\n").replace(/<\/ul>\n<ul>/g, "").replace(/<\/ol>\n<ol>/g, "");
 }
 
-function titleFromPath(path) {
-  return path.split("/").pop().replace(/\.md$/i, "");
-}
-
 function sourceLinkForRow(row) {
   if (!row) {
     return { href: "", label: "-" };

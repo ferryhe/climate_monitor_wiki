@@ -7,20 +7,24 @@ a model, search the internet, update the Wiki, modify Git, or deploy anything.
 The intended separation is:
 
 1. The Monday 08:00 monitor generates the canonical Markdown report.
-2. The Monday 09:00 job invokes this module to create a deterministic summary,
-   render a PDF, and send one message to each of the four configured recipients.
+2. The retained Monday 09:00 Weekly Climate Email (PDF highlights) job invokes
+   this module to create a deterministic summary, render a PDF, and send one
+   message to each of the existing four recipients.
 3. The Monday 10:00 publisher independently turns the canonical Markdown into
    a rolling Wiki pull request.
 4. The website can later consume `summary.json` and `manifest.json`; it does not
    own SMTP delivery.
 
-The 09:00 Weekly Climate Email (PDF highlights) job is enabled and is intended
-to keep running. It is the sole delivery-artifact producer and deliberately
-continues email delivery to the existing four recipients. Registry automation
-is a separate 10:30 concern: it consumes the already validated artifact but
-does not create or send mail, change recipients, or mutate delivery state. This
-module does not modify Hermes, the running website, containers, cron jobs, or
-host configuration.
+The existing 09:00 Hermes job is **enabled and intentionally retained**. It is
+the only production automation authorized to create delivery artifacts, and it
+also owns delivery of the PDF highlights email to the existing four recipients.
+The tested Registry sync implementation is a separate 10:30 concern: it
+consumes the already validated artifact read-only and does not create or send
+mail, change recipients, or mutate delivery state. Its Hermes job is not yet
+configured or verified, so the project must not be described as
+`PRODUCTION COMPLETE` until that task completes a normal weekly run. The
+application code does not modify Hermes, the running website, containers, cron
+jobs, or host configuration.
 
 ## Input contract
 

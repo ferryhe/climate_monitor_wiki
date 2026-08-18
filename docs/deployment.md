@@ -325,7 +325,9 @@ contract, API responses, atomic replacement procedure, and security boundary.
 
 This application phase creates no exporter, systemd timer, Hermes job, or
 snapshot. App-only deployment or rollback rebuilds/recreates only Wiki; it does
-not restart Caddy or alter the 08:00/09:00/10:00 jobs.
+not restart Caddy or alter the confirmed 08:00/09:00/10:00 jobs. It also does
+not create or verify the 10:30 Weekly Registry Sync job, which remains a
+separate production-completion gate.
 
 ## Future weekly Registry sync
 

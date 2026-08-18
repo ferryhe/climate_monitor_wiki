@@ -10,6 +10,9 @@ python -m pytest
 node --check showcase/app.js
 ```
 
+The 2026-08-18 Registry-automation run collected 913 tests and completed with
+899 passed and 14 environment-specific skips on Windows.
+
 Current automated coverage includes:
 
 - wiki loading and chunk generation
@@ -19,9 +22,22 @@ Current automated coverage includes:
 - rolling weekly-report summaries such as `past 4 weeks`
 - monthly/date-range prompts such as `this month` and explicit ISO date ranges
 - `/api/config` payload fields required by graph/dataview, prompt starters, and precomputed graph payloads
-- showcase root HTML containing both `Chat` and `Obsidian` workspaces
+- showcase root HTML containing `Historical Reports`, `Chat`, and `Obsidian` workspaces
+- exact-date weekly Registry dry-run, candidate promotion, rollback/restore,
+  DB-first metadata precedence, and the disabled 10:30 runner contract
 
 ## Manual QA
+
+### Historical Reports
+
+1. Open `/` and confirm `Historical Reports` is the default tab.
+2. Select each available weekly report and confirm the narrative `Executive Summary`,
+   `Monitoring Snapshot`, article list, and PDF download are present where an
+   artifact exists.
+3. Switch reports and confirm the detail pane follows the selected date.
+4. Switch to `Article Database`, exercise search and publisher/pillar filters,
+   and open an article detail.
+5. Repeat at a mobile viewport and confirm list/detail navigation remains usable.
 
 ### Chat
 
@@ -60,5 +76,5 @@ Current automated coverage includes:
 ## Gaps Worth Filling Later
 
 - browser-level interaction tests for graph selection and source-card routing
-- visual regression coverage for the two-tab workspace
+- visual regression coverage for the three-tab workspace
 - dedicated frontend unit tests if the showcase grows beyond a static JS surface

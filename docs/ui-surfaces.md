@@ -2,13 +2,38 @@
 
 ## Overview
 
-The local demo now has two complementary tabs:
+The web application has three complementary operator tabs:
 
+- `Historical Reports`: the default operational archive for weekly briefings,
+  PDFs, source articles, and article-level provenance.
 - `Chat`: a minimal single-column conversation surface with inline evidence drawers inside assistant messages.
 - `Obsidian`: a restored browsing workspace with `Graph View`, `Dataview`, and `Note Detail`.
 
-Both tabs share one piece of state: `activeContextPath`.
+The three tabs share one piece of state: `activeContextPath`.
 The chat tab also shares one response-control state: `answerMode`, with `brief`, `detailed`, and `executive`.
+
+## Historical Reports Tab
+
+The application opens on `Historical Reports`. Operators use it to validate the
+published weekly output without reading server files:
+
+- choose a report date from the newest-first list;
+- read the narrative `Executive Summary` and `Monitoring Snapshot`;
+- download the report PDF;
+- inspect the articles that appeared in that report; and
+- switch to `Article Database` to search and filter the full article history by
+  publisher, pillar, or report date.
+
+Selecting an article opens its metadata, captured content, classification, and
+report appearances in the detail pane. If the optional Registry or delivery
+artifact mount is unavailable, this tab reports that state without affecting
+Chat or the Obsidian explorer.
+
+For Article Detail metadata, a complete current-content Registry enrichment is
+the primary atomic `summary`/`categories`/`keywords` bundle. The existing
+per-article JSON annotations remain a compatibility fallback, including
+reviewed source-annotation fields; the browser payload and ordering are
+unchanged.
 
 ## Chat Tab
 
@@ -80,3 +105,8 @@ The web workspace depends on `GET /api/config` returning:
 - `wiki.source_documents`
 
 Those fields are enough to hydrate the precomputed graphs, Dataview table, prompt starters, and active-note routing before individual Markdown files are fetched for preview.
+
+The Historical Reports tab additionally consumes the read-only
+`/api/registry/*` routes. Narrative briefings and PDF links are projected from
+the optional `CLIMATE_DELIVERY_OUTPUT_DIR` artifact mount by the report-detail
+endpoint; the browser never reads delivery state or recipient metadata.

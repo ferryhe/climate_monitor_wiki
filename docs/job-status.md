@@ -8,6 +8,14 @@ This phase defines only the application-side read contract. It does not create
 an exporter, systemd timer, Hermes hook, scheduled job, or production snapshot.
 The observer/exporter remains a separately reviewed server operation.
 
+Operationally, the 09:00 Weekly Climate Email job is enabled and retained as the
+only delivery-artifact producer and the intentional email path for four current
+recipients. Version 1 observes only the existing 08:00, 09:00, and 10:00 aliases;
+it does not include or prove the proposed 10:30 Weekly Registry Sync. The
+application implementation and tested runner exist, but the Hermes task remains
+unconfigured and must be deployed, added, and verified before the project can
+be described as `PRODUCTION COMPLETE`.
+
 ## Contract
 
 The fixed filename is `scheduler-status.json`. The strict
@@ -127,4 +135,5 @@ These failures do not change `/api/health`, the homepage, Chat, Registry, or
 Deployment and rollback are app-only: add or remove
 `docker-compose.job-status.yml` and rebuild/recreate only the Wiki app. Do not
 restart or reload Caddy. Do not modify the 08:00 Monitor, 09:00 Email, or 10:00
-Publisher jobs. This phase creates neither a job nor an exporter.
+Publisher jobs. This phase creates neither a job nor an exporter, and it does
+not create or observe the pending 10:30 Weekly Registry Sync task.

@@ -4,15 +4,19 @@ A structured, interlinked knowledge base on climate risk, natural catastrophe in
 
 ## Web + Obsidian Surfaces
 
-This repo now exposes the same wiki through three aligned surfaces:
+This repo exposes the monitoring corpus through three web tabs plus an Obsidian plugin:
 
-- `showcase/` serves a two-tab web workspace.
+- `Historical Reports` is the default operator archive for weekly narrative
+  briefings, monitoring snapshots, PDFs, and their source articles.
 - `Chat` uses a minimal single-column conversation layout inspired by `ferryhe/c-ross-2`, but recolored to match the Obsidian workspace.
 - `Obsidian` restores the earlier browsing workspace with `Dataview`, `Note Detail`, and `Graph View` for selecting the active retrieval context.
   The page order is now `Dataview + Note Detail` first, then `Graph View`.
   The graph supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
   Both graph modes are precomputed by the API so the workspace can render quickly without rebuilding the graph client-side.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
+
+See [docs/project-closeout.md](docs/project-closeout.md) for the operator guide,
+module map, API/CLI audit, scheduled-job boundaries, and closeout record.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
 Chat now also exposes three answer modes:
@@ -25,6 +29,10 @@ Chat now also exposes three answer modes:
 
 - `api_server.py` serves the Codespaces demo and the `/api/*` API routes.
 - `agentic_wiki/` loads both `wiki/*.md` and `sources/*.md`, chunks notes and raw reports, plans retrieval, ranks evidence, and synthesizes cited answers.
+- `climate_registry/` owns the historical SQLite Registry, DB-first Article
+  Detail enrichment, weekly candidate transaction, and exact restore.
+- `climate_delivery/` owns the retained 09:00 summary/PDF/manifest and email
+  delivery pipeline.
 - `showcase/` is a static frontend with the shared chat and wiki workspace.
 
 Range-style weekly-report questions such as `Summarize the past 4 weeks`, `Give me an executive report for the past 12 weeks`, or `Summarize reports from 2026-07-27 to 2026-08-10` are anchored to the latest available corpus date. Chat covers the real reports found inside that calendar window and does not treat intervening non-report days as missing updates.
@@ -100,7 +108,14 @@ The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/sou
 
 ## Automated Climate Monitor
 
-The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. Two hours later, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
+The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. At 09:00 UTC, the retained Weekly Climate Email (PDF highlights) job is the only delivery-artifact producer and sends the result to the existing four recipients. At 10:00 UTC, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
+
+The application now includes a tested Monday 10:30 Weekly Registry Sync runner,
+DB-first Article Detail enrichment, and exact backup/restore. The Hermes task is
+still unconfigured and unverified. The tracked `article_metadata/` JSON remains
+a compatibility fallback rather than a weekly generated artifact. The system
+must not be called `PRODUCTION COMPLETE` until current `main` is deployed and
+the 10:30 task has completed a normal weekly run.
 
 The production checkout is never used as a generation workspace. Publication is deliberately split into **generate → rolling PR → human merge → server deploy** so production `main` stays clean and can be fast-forwarded safely.
 
@@ -213,20 +228,23 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ```text
 .
-├── sources/           # Raw daily monitoring reports (immutable, one .md per date)
-├── wiki/              # Curated topic + daily report pages and Obsidian vault content
-├── showcase/          # Static web workspace (chat + graph/dataview explorer)
+├── sources/           # Canonical daily/weekly reports; append-mostly source of truth
+├── wiki/              # Derived report pages, topics, and Obsidian vault content
+├── showcase/          # Three-tab static operator workspace
 ├── agentic_wiki/      # Mixed-corpus retrieval over wiki + raw sources
-├── tests/             # API and retrieval regression tests
+├── climate_registry/  # Historical Registry, enrichment, weekly sync and restore
+├── climate_delivery/  # Summary/PDF/manifest and retained email delivery
+├── scripts/           # Monitor, publisher, reload, Registry and QA entrypoints
+├── tests/             # API, transaction, browser, and regression tests
 └── .obsidian/         # Vault config + local plugin
 ```
 
-## Daily Reports
+## Reports
 
-25 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-25**.
-Source files in `sources/` contain the original report content.
-
-Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
+25 source-backed report pages are present: 20 legacy daily reports from April,
+one June report, and four weekly reports from **2026-07-27 through 2026-08-17**.
+Source files in `sources/` contain the original report content. Weekly rendering
+shows only dates with a real source report and never manufactures gap pages.
 
 ## Key Topics
 
@@ -242,6 +260,8 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 ## Data Sources
 
-Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
+Monitoring reports are sourced from 14 high-priority organizations such as
+IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations
+per run via automated monitoring.
 
-_Last updated: 2026-04-25_
+_Last updated: 2026-08-17_
