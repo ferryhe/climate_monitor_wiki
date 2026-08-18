@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -41,6 +42,14 @@ class RegistryNotFoundError(RegistryError):
 
 class RegistryQueryError(RegistryError):
     """A query or identifier is invalid."""
+
+
+@dataclass(frozen=True)
+class RegistryReportIdentity:
+    report_date: str
+    filename: str
+    report_title: str
+    report_sha256: str
 
 
 def validate_page(page: int, page_size: int) -> tuple[int, int]:
@@ -312,6 +321,12 @@ class RegistryReader:
         }
 
     def report(self, report_date: str) -> dict[str, Any]:
+        payload, _identity = self.report_with_identity(report_date)
+        return payload
+
+    def report_with_identity(
+        self, report_date: str
+    ) -> tuple[dict[str, Any], RegistryReportIdentity]:
         validate_report_date(report_date)
         with self.connect() as connection:
             report = connection.execute(
@@ -429,7 +444,7 @@ class RegistryReader:
                 else None
             )
             articles.append(item)
-        return {
+        payload = {
             "report_date": report["report_date"],
             "report_title": report["report_title"],
             "cadence": report["cadence"],
@@ -444,6 +459,32 @@ class RegistryReader:
             },
             "articles": articles,
         }
+        identity = RegistryReportIdentity(
+            report_date=report["report_date"],
+            filename=report["filename"],
+            report_title=report["report_title"],
+            report_sha256=report["report_sha256"],
+        )
+        return payload, identity
+
+    def report_identity(self, report_date: str) -> RegistryReportIdentity:
+        validate_report_date(report_date)
+        with self.connect() as connection:
+            report = connection.execute(
+                """
+                SELECT report_date, filename, report_title, report_sha256
+                FROM reports WHERE report_date = ?
+                """,
+                (report_date,),
+            ).fetchone()
+        if report is None:
+            raise RegistryNotFoundError("report not found")
+        return RegistryReportIdentity(
+            report_date=report["report_date"],
+            filename=report["filename"],
+            report_title=report["report_title"],
+            report_sha256=report["report_sha256"],
+        )
 
     def articles(
         self,

@@ -8,11 +8,12 @@ from typing import Literal
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agentic_wiki import AgenticWikiResponder
+from climate_delivery.artifacts import load_report_artifact
 from climate_monitor.job_status import (
     JobStatusInvalidSnapshotError,
     JobStatusLocationError,
@@ -205,7 +206,54 @@ def registry_reports(page: str = "1", page_size: str = "20") -> dict:
 
 @app.get("/api/registry/reports/{report_date}")
 def registry_report(report_date: str) -> dict:
-    return _registry_query(lambda: _registry_reader().report(report_date))
+    def read_report() -> dict:
+        report, identity = _registry_reader().report_with_identity(report_date)
+        artifact = load_report_artifact(
+            os.getenv("CLIMATE_DELIVERY_OUTPUT_DIR", "").strip(),
+            report_date=identity.report_date,
+            report_filename=identity.filename,
+            report_title=identity.report_title,
+            report_sha256=identity.report_sha256,
+            include_pdf_bytes=False,
+        )
+        report["report_briefing"] = artifact.briefing if artifact else None
+        report["report_pdf"] = (
+            {
+                "filename": artifact.pdf_filename,
+                "download_url": f"/api/registry/reports/{identity.report_date}/pdf",
+            }
+            if artifact
+            else None
+        )
+        return report
+
+    return _registry_query(read_report)
+
+
+@app.get("/api/registry/reports/{report_date}/pdf", response_class=Response)
+def registry_report_pdf(report_date: str) -> Response:
+    def read_pdf() -> Response:
+        identity = _registry_reader().report_identity(report_date)
+        artifact = load_report_artifact(
+            os.getenv("CLIMATE_DELIVERY_OUTPUT_DIR", "").strip(),
+            report_date=identity.report_date,
+            report_filename=identity.filename,
+            report_title=identity.report_title,
+            report_sha256=identity.report_sha256,
+            include_pdf_bytes=True,
+        )
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Report PDF not found.")
+        return Response(
+            content=artifact.pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{artifact.pdf_filename}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    return _registry_query(read_pdf)
 
 
 @app.get("/api/registry/publishers")

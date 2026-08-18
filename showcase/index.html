@@ -205,9 +205,16 @@
                 <p class="panel__eyebrow">Weekly report</p>
                 <h3 id="registryReportTitle">Select a report</h3>
                 <div id="registryReportMeta" class="registry-meta muted">Choose a week to see monitoring coverage and its ordered source articles.</div>
+                <a id="registryReportPdf" class="ghost-button registry-report-pdf" hidden>Download report PDF</a>
                 <section id="registryExecutiveSummary" class="registry-executive-summary" hidden>
                   <h4>Executive Summary</h4>
-                  <ol id="registryExecutiveSummaryItems"></ol>
+                  <div id="registryBriefingExecutiveSummaryItems" class="registry-briefing-summary__items" hidden></div>
+                  <ol id="registryExecutiveSummaryItems" hidden></ol>
+                </section>
+                <section id="registryMonitoringSnapshot" class="registry-monitoring-snapshot" hidden>
+                  <h4>Monitoring Snapshot</h4>
+                  <dl id="registrySnapshotMetrics" class="registry-snapshot-metrics"></dl>
+                  <ul id="registrySnapshotNotes" class="registry-snapshot-notes"></ul>
                 </section>
                 <h4 id="registryReportArticlesTitle" class="registry-report-articles-title" hidden>Articles</h4>
                 <ol id="registryReportArticles" class="registry-appearance-list"></ol>
