@@ -142,6 +142,10 @@ version and `graphify-out/GRAPH_REPORT.md` is its audit report. The directory is
 intentionally ignored because it is a reproducible analysis artifact, not
 runtime application state.
 
+The graph refreshed against the merged PR #48 tree contains 1,933 nodes, 5,349
+edges, and 106 communities. Integrity diagnostics report no dangling or missing
+endpoints, self-loops, duplicate endpoint collapse, or unverified code nodes.
+
 ## 4. Module map
 
 | Path | Responsibility | Normal production role |
@@ -174,6 +178,7 @@ runtime application state.
 | Route | Consumer and purpose | Closeout result |
 |---|---|---|
 | `GET /` | Loads the three-tab web application | Active and tested |
+| `GET /robots.txt` | Public crawler policy for the website | Active; intentionally omitted from OpenAPI |
 | `GET /api/health` | Lightweight liveness check and alternate-host health contract | Active and tested |
 | `GET /api/config` | Chat/Obsidian bootstrap plus the container's deeper readiness check | Active and tested |
 | `POST /api/chat` | Web and Obsidian-plugin retrieval/answering | Active and tested |
