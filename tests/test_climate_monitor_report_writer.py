@@ -32,6 +32,8 @@ class CandidateItem:
     asset_checksum_algorithm: str = ""
     asset_checksum_value: str = ""
     topics: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 def test_render_report_matches_existing_source_shape():
@@ -45,6 +47,8 @@ def test_render_report_matches_existing_source_shape():
         climate_related=True,
         actuarial_related=True,
         topics=("solvency", "climate risk"),
+        categories=("Climate Risk", "Capital & Solvency"),
+        keywords=("climate risk", "solvency"),
         relevance_reason="Climate signal `general_climate` from terms: climate",
         climate_signal="general_climate",
         actuarial_signal="capital_solvency",
@@ -68,6 +72,8 @@ def test_render_report_matches_existing_source_shape():
     assert "## New Research" in text
     assert "**Title:** Climate solvency report" in text
     assert "**URL:** https://example.com/report.pdf" in text
+    assert "**Categories:** Climate Risk, Capital & Solvency" in text
+    assert "**Keywords:** climate risk, solvency" in text
     assert "**Climate signal:** general_climate" in text
     assert "**Actuarial signal:** capital_solvency" in text
     assert "**Relevance reason:** Climate signal `general_climate` from terms: climate" in text
@@ -109,6 +115,50 @@ def test_render_report_groups_website_updates_and_research_items():
     assert text.index("## New Research") < text.index("Climate insurance capital research")
     assert "## Warnings" in text
     assert "- warning text" in text
+
+
+def test_render_report_omits_empty_metadata_fields():
+    keyword_only = CandidateItem(
+        title="General insurance update",
+        url="https://example.com/keyword-only",
+        summary="Keyword-only summary.",
+        source_name="Example",
+        lane="website",
+        climate_related=False,
+        actuarial_related=False,
+        keywords=("insurance",),
+    )
+    empty_metadata = CandidateItem(
+        title="General market update",
+        url="https://example.com/no-metadata",
+        summary="No metadata summary.",
+        source_name="Example",
+        lane="website",
+        climate_related=False,
+        actuarial_related=False,
+    )
+
+    keyword_text = render_report(
+        report_date=date(2026, 5, 14),
+        title="Daily Climate & Actuarial Monitor",
+        items=[keyword_only],
+        dedup_notes=[],
+        sites_monitored=1,
+        warnings=[],
+    )
+    empty_text = render_report(
+        report_date=date(2026, 5, 14),
+        title="Daily Climate & Actuarial Monitor",
+        items=[empty_metadata],
+        dedup_notes=[],
+        sites_monitored=1,
+        warnings=[],
+    )
+
+    assert "**Categories:**" not in keyword_text
+    assert "**Keywords:** insurance" in keyword_text
+    assert "**Categories:**" not in empty_text
+    assert "**Keywords:**" not in empty_text
 
 
 def test_render_report_places_document_files_between_website_updates_and_research_with_metadata():

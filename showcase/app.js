@@ -92,11 +92,11 @@ const state = {
   rows: [],
   filteredRows: [],
   edges: [],
-  graphMode: "notes",
+  graphMode: "keywords",
   answerMode: "detailed",
   activeContextPath: null,
   isSending: false,
-  activeView: "chatView",
+  activeView: "registryView",
   markdownByPath: {},
   markdownRequests: {},
   graph: null,
@@ -111,6 +111,8 @@ const state = {
     articlePage: 1,
     reportPagination: null,
     articlePagination: null,
+    selectedReportDate: null,
+    loadPromise: null,
   },
 };
 
@@ -121,7 +123,7 @@ const els = {
   send: document.getElementById("sendButton"),
   clearChat: document.getElementById("clearChatButton"),
   clearContext: document.getElementById("clearContextButton"),
-  jumpToWiki: document.getElementById("jumpToWikiButton"),
+  jumpToReports: document.getElementById("jumpToReportsButton"),
   useInChat: document.getElementById("useInChatButton"),
   clearSelection: document.getElementById("clearSelectionButton"),
   status: document.getElementById("connectionStatus"),
@@ -155,6 +157,9 @@ const els = {
   registryReportDetail: document.getElementById("registryReportDetail"),
   registryReportTitle: document.getElementById("registryReportTitle"),
   registryReportMeta: document.getElementById("registryReportMeta"),
+  registryExecutiveSummary: document.getElementById("registryExecutiveSummary"),
+  registryExecutiveSummaryItems: document.getElementById("registryExecutiveSummaryItems"),
+  registryReportArticlesTitle: document.getElementById("registryReportArticlesTitle"),
   registryReportArticles: document.getElementById("registryReportArticles"),
   reportsPrevious: document.getElementById("reportsPrevious"),
   reportsNext: document.getElementById("reportsNext"),
@@ -163,8 +168,8 @@ const els = {
   registryArticleDetail: document.getElementById("registryArticleDetail"),
   registrySearchForm: document.getElementById("registrySearchForm"),
   registrySearch: document.getElementById("registrySearch"),
-  registrySourceFilter: document.getElementById("registrySourceFilter"),
-  registryPillarFilter: document.getElementById("registryPillarFilter"),
+  registryPublisherFilter: document.getElementById("registryPublisherFilter"),
+  registryPublisherCustom: document.getElementById("registryPublisherCustom"),
   articlesPrevious: document.getElementById("articlesPrevious"),
   articlesNext: document.getElementById("articlesNext"),
   articlesPage: document.getElementById("articlesPage"),
@@ -344,11 +349,34 @@ function sourceLinkForRow(row) {
     return { href: "", label: "-" };
   }
 
-  if (row.type === "daily" && row.source_url && row.source_path) {
-    return { href: row.source_url, label: row.source_path };
+  if (row.type === "daily" && row.date) {
+    return {
+      href: `#historical-report=${encodeURIComponent(row.date)}`,
+      label: `Historical report · ${row.date}`,
+      reportDate: row.date,
+    };
   }
 
   return { href: `/${row.path}`, label: row.path };
+}
+
+function historicalReportDateFromHash() {
+  const match = /^#historical-report=(\d{4}-\d{2}-\d{2})$/.exec(window.location.hash);
+  return match ? match[1] : "";
+}
+
+function openHistoricalReport(reportDate, { updateHash = true } = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate || "")) {
+    return;
+  }
+  const nextHash = `#historical-report=${encodeURIComponent(reportDate)}`;
+  if (updateHash && window.location.hash !== nextHash) {
+    window.history.pushState(null, "", nextHash);
+  }
+  state.registry.selectedReportDate = reportDate;
+  setRegistryMode("reports");
+  setWorkspaceView("registryView");
+  void loadRegistryReport(reportDate);
 }
 
 function normalizeSearchText(value) {
@@ -463,7 +491,7 @@ function buildKeywordGraph(rows) {
     legendHtml: GRAPH_COPY.keywords.legendHtml,
     nodes,
     links,
-    staticLayout: true,
+    staticLayout: false,
   };
 }
 
@@ -510,10 +538,11 @@ function setGraphMode(mode) {
 }
 
 function getNodeRadius(node) {
+  const importance = Math.max(1, Number(node.importance || node.degree || node.weight || 1));
   if (node.kind === "keyword") {
-    return Math.min(11, 6 + Math.max(0, (node.weight || 1) - 1));
+    return Math.min(22, 7 + Math.sqrt(importance) * 2.4);
   }
-  return node.type === "index" ? 8 : 6;
+  return Math.min(12, (node.type === "index" ? 7 : 5) + Math.sqrt(importance));
 }
 
 function projectGridPosition(index, count, minX, maxX, minY, maxY) {
@@ -527,11 +556,23 @@ function projectGridPosition(index, count, minX, maxX, minY, maxY) {
   };
 }
 
+function projectRadialPosition(rank, count, centerX, centerY, maxRadius) {
+  if (rank === 0 || count <= 1) {
+    return { x: centerX, y: centerY };
+  }
+  const angle = rank * 2.399963229728653;
+  const radius = 48 + Math.sqrt(rank / Math.max(1, count - 1)) * (maxRadius - 48);
+  return {
+    x: centerX + Math.cos(angle) * radius,
+    y: centerY + Math.sin(angle) * radius * 0.78,
+  };
+}
+
 function setConnectionStatus(agentMode, model) {
   if (!els.status) {
     return;
   }
-  els.status.textContent = agentMode === "openai" ? `OpenAI: ${model}` : "Offline demo";
+  els.status.textContent = agentMode === "openai" ? `AI synthesis · ${model}` : "Source-only mode";
   els.status.classList.toggle("status-pill--offline", agentMode !== "openai");
 }
 
@@ -582,6 +623,13 @@ function clearThread() {
   renderMessages();
 }
 
+function stopGraphAnimation() {
+  if (state.graphFrame) {
+    cancelAnimationFrame(state.graphFrame);
+    state.graphFrame = 0;
+  }
+}
+
 function setWorkspaceView(viewId) {
   if (!viewId) {
     return;
@@ -603,6 +651,11 @@ function setWorkspaceView(viewId) {
   });
   if (viewId === "registryView" && !state.registry.loaded) {
     void loadRegistry();
+  }
+  if (viewId === "obsidianView") {
+    renderCurrentGraph();
+  } else {
+    stopGraphAnimation();
   }
 }
 
@@ -796,11 +849,11 @@ function renderChatContext() {
   const doc = state.rows.find((item) => item.path === state.activeContextPath);
 
   if (!doc) {
-    els.activeContextBadge.textContent = "No active note";
-    els.activeContextBadge.classList.add("is-empty");
-    els.activeContext.textContent = "No active note selected for chat.";
+    els.activeContextBadge.hidden = true;
+    els.activeContext.hidden = true;
     if (els.clearContext) {
       els.clearContext.disabled = true;
+      els.clearContext.hidden = true;
     }
     if (els.useInChat) {
       els.useInChat.disabled = true;
@@ -811,11 +864,14 @@ function renderChatContext() {
     return;
   }
 
-  els.activeContextBadge.textContent = `Active note: ${doc.title}`;
-  els.activeContextBadge.classList.remove("is-empty");
-  els.activeContext.textContent = `${doc.title} is the active note prioritized during chat retrieval.`;
+  const contextKind = doc.type === "daily" ? "report" : "note";
+  els.activeContextBadge.textContent = `Focused ${contextKind}: ${doc.title}`;
+  els.activeContextBadge.hidden = false;
+  els.activeContext.textContent = `${doc.title} is the focused ${contextKind} prioritized during chat retrieval.`;
+  els.activeContext.hidden = false;
   if (els.clearContext) {
     els.clearContext.disabled = false;
+    els.clearContext.hidden = false;
   }
   if (els.useInChat) {
     els.useInChat.disabled = false;
@@ -924,7 +980,10 @@ function renderDetail(path) {
   els.detailInlinks.textContent = String(row.inlinks);
   els.detailStatus.textContent = row.status;
   const sourceLink = sourceLinkForRow(row);
-  els.detailFile.innerHTML = `<a href="${escapeHtml(sourceLink.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceLink.label)}</a>`;
+  const reportDateAttribute = sourceLink.reportDate
+    ? ` data-historical-report-date="${escapeHtml(sourceLink.reportDate)}"`
+    : ` target="_blank" rel="noopener noreferrer"`;
+  els.detailFile.innerHTML = `<a href="${escapeHtml(sourceLink.href)}"${reportDateAttribute}>${escapeHtml(sourceLink.label)}</a>`;
 
   const markdown = state.markdownByPath[path];
   els.detailMarkdown.textContent = markdown || "Loading markdown preview…";
@@ -968,10 +1027,7 @@ function renderGraph(graphData) {
     return;
   }
 
-  if (state.graphFrame) {
-    cancelAnimationFrame(state.graphFrame);
-    state.graphFrame = 0;
-  }
+  stopGraphAnimation();
 
   const svg = els.graphSvg;
   const NS = "http://www.w3.org/2000/svg";
@@ -992,24 +1048,44 @@ function renderGraph(graphData) {
     return;
   }
 
+  const degreeById = new Map(graphData.nodes.map((node) => [node.id, 0]));
+  graphData.links.forEach((edge) => {
+    degreeById.set(edge.source, (degreeById.get(edge.source) || 0) + 1);
+    degreeById.set(edge.target, (degreeById.get(edge.target) || 0) + 1);
+  });
+  const importanceFor = (node) =>
+    Math.max(Number(node.weight || 0), degreeById.get(node.id) || 0, 1);
+  const centralRank = new Map(
+    [...graphData.nodes]
+      .sort((left, right) => importanceFor(right) - importanceFor(left) || left.label.localeCompare(right.label))
+      .map((node, index) => [node.id, index]),
+  );
   const noteCount = graphData.nodes.filter((node) => node.kind !== "keyword").length;
-  const keywordCount = graphData.nodes.filter((node) => node.kind === "keyword").length;
   let noteIndex = 0;
-  let keywordIndex = 0;
 
   const nodes = graphData.nodes.map((node) => {
+    const importance = importanceFor(node);
+    const radialPosition = projectRadialPosition(
+      centralRank.get(node.id) || 0,
+      graphData.nodes.length,
+      width / 2,
+      height / 2,
+      Math.min(width, height) * 0.42,
+    );
     const position =
-      Number.isFinite(node.x) && Number.isFinite(node.y)
+      graphData.mode === "keywords"
+        ? radialPosition
+        : Number.isFinite(node.x) && Number.isFinite(node.y)
         ? { x: node.x, y: node.y }
-        : graphData.mode === "keywords" && node.kind === "keyword"
-          ? projectGridPosition(keywordIndex++, keywordCount, width * 0.68, width - 80, 90, height - 90)
-          : graphData.mode === "keywords"
-            ? projectGridPosition(noteIndex++, noteCount, 70, width * 0.58, 70, height - 70)
-            : projectGridPosition(noteIndex++, noteCount, 70, width - 70, 70, height - 70);
+        : projectGridPosition(noteIndex++, noteCount, 70, width - 70, 70, height - 70);
 
     return {
       ...node,
       ...position,
+      degree: degreeById.get(node.id) || 0,
+      importance,
+      targetX: radialPosition.x,
+      targetY: radialPosition.y,
       vx: 0,
       vy: 0,
       pinned: false,
@@ -1021,6 +1097,7 @@ function renderGraph(graphData) {
     .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
     .filter((edge) => edge.source && edge.target);
   const staticLayout = Boolean(graphData.staticLayout);
+  let ticksRemaining = 0;
 
   const linkGroup = document.createElementNS(NS, "g");
   const nodeGroup = document.createElementNS(NS, "g");
@@ -1041,6 +1118,12 @@ function renderGraph(graphData) {
   const nodeEls = nodes.map((node) => {
     const group = document.createElementNS(NS, "g");
     group.setAttribute("class", `graph-node graph-node--${node.kind || "note"}`);
+    group.setAttribute("role", "button");
+    group.setAttribute("tabindex", "0");
+    group.setAttribute(
+      "aria-label",
+      node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`,
+    );
 
     const circle = document.createElementNS(NS, "circle");
     circle.setAttribute("r", String(getNodeRadius(node)));
@@ -1057,7 +1140,7 @@ function renderGraph(graphData) {
     group.appendChild(label);
     nodeGroup.appendChild(group);
 
-    group.addEventListener("click", () => {
+    const activateNode = () => {
       if (node.kind === "keyword") {
         if (els.wikiSearch) {
           els.wikiSearch.value = node.label;
@@ -1066,12 +1149,21 @@ function renderGraph(graphData) {
         return;
       }
       setActiveContext(node.refPath || node.id);
+    };
+
+    group.addEventListener("click", activateNode);
+    group.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activateNode();
+      }
     });
 
     let dragging = false;
     group.addEventListener("pointerdown", (event) => {
       dragging = true;
       node.pinned = true;
+      startAnimation(90);
       group.setPointerCapture(event.pointerId);
     });
 
@@ -1110,6 +1202,10 @@ function renderGraph(graphData) {
   }
 
   function tick() {
+    state.graphFrame = 0;
+    if (document.hidden || state.activeView !== "obsidianView" || ticksRemaining <= 0) {
+      return;
+    }
     for (const node of nodes) {
       node.vx *= 0.86;
       node.vy *= 0.86;
@@ -1139,7 +1235,7 @@ function renderGraph(graphData) {
     for (const edge of links) {
       const dx = edge.target.x - edge.source.x;
       const dy = edge.target.y - edge.source.y;
-      const pull = graphData.mode === "keywords" ? 0.0013 : 0.0009;
+      const pull = graphData.mode === "keywords" ? 0.0024 : 0.0009;
       if (!edge.source.pinned) {
         edge.source.vx += dx * pull;
         edge.source.vy += dy * pull;
@@ -1154,14 +1250,35 @@ function renderGraph(graphData) {
       if (node.pinned) {
         continue;
       }
+      if (graphData.mode === "keywords") {
+        node.vx += (node.targetX - node.x) * 0.006;
+        node.vy += (node.targetY - node.y) * 0.006;
+      } else {
+        node.vx += (width / 2 - node.x) * 0.00035;
+        node.vy += (height / 2 - node.y) * 0.00035;
+      }
       node.x += node.vx;
       node.y += node.vy;
-      node.x = Math.max(18, Math.min(width - 18, node.x));
-      node.y = Math.max(18, Math.min(height - 18, node.y));
+      const margin = getNodeRadius(node) + 28;
+      node.x = Math.max(margin, Math.min(width - margin, node.x));
+      node.y = Math.max(margin, Math.min(height - margin, node.y));
     }
 
     draw();
-    state.graphFrame = requestAnimationFrame(tick);
+    ticksRemaining -= 1;
+    if (ticksRemaining > 0) {
+      state.graphFrame = requestAnimationFrame(tick);
+    }
+  }
+
+  function startAnimation(frameLimit = 180) {
+    if (staticLayout || document.hidden || state.activeView !== "obsidianView") {
+      return;
+    }
+    ticksRemaining = Math.max(ticksRemaining, frameLimit);
+    if (!state.graphFrame) {
+      state.graphFrame = requestAnimationFrame(tick);
+    }
   }
 
   state.graph = { nodes, nodeEls };
@@ -1170,7 +1287,7 @@ function renderGraph(graphData) {
   if (staticLayout) {
     return;
   }
-  state.graphFrame = requestAnimationFrame(tick);
+  startAnimation();
 }
 
 async function fetchMarkdown(path) {
@@ -1410,7 +1527,52 @@ function setRegistryMode(mode) {
   }
 }
 
+async function loadRegistryPublishers() {
+  if (!els.registryPublisherFilter) {
+    return;
+  }
+  const currentValue = els.registryPublisherFilter.value;
+  const allPublishers = registryElement("option", "", "All publishers");
+  allPublishers.value = "";
+  try {
+    const payload = await registryFetch("/api/registry/publishers");
+    const options = (payload.items || []).map((publisher) => {
+      const option = registryElement("option", "", publisher.label || publisher.hostname);
+      option.value = publisher.hostname;
+      return option;
+    });
+    els.registryPublisherFilter.replaceChildren(allPublishers, ...options);
+    if (els.registryPublisherCustom) {
+      els.registryPublisherCustom.hidden = !payload.truncated;
+      if (!payload.truncated) {
+        els.registryPublisherCustom.value = "";
+      }
+    }
+    if (options.some((option) => option.value === currentValue)) {
+      els.registryPublisherFilter.value = currentValue;
+    }
+  } catch {
+    els.registryPublisherFilter.replaceChildren(allPublishers);
+    if (els.registryPublisherCustom) {
+      els.registryPublisherCustom.hidden = true;
+      els.registryPublisherCustom.value = "";
+    }
+  }
+}
+
 async function loadRegistry() {
+  if (state.registry.loadPromise) {
+    return state.registry.loadPromise;
+  }
+  state.registry.loadPromise = loadRegistryOnce();
+  try {
+    return await state.registry.loadPromise;
+  } finally {
+    state.registry.loadPromise = null;
+  }
+}
+
+async function loadRegistryOnce() {
   renderRegistryNotice(els.registryReports, "Checking the historical archive…");
   try {
     const status = await registryFetch("/api/registry/status");
@@ -1428,6 +1590,7 @@ async function loadRegistry() {
       return;
     }
     els.registryStatus.textContent = `${status.reports} reports · ${status.articles} articles`;
+    await loadRegistryPublishers();
     await loadRegistryReports();
   } catch (error) {
     state.registry.loaded = false;
@@ -1468,12 +1631,30 @@ async function loadRegistryReports() {
   }
 }
 
+function resetHistoricalReportDetail() {
+  state.registry.selectedReportDate = null;
+  els.registryReportDetail.setAttribute("aria-busy", "false");
+  els.registryReportTitle.textContent = "Select a report";
+  els.registryReportMeta.textContent = "Choose a week to see monitoring coverage and its ordered source articles.";
+  els.registryExecutiveSummary.hidden = true;
+  els.registryExecutiveSummaryItems.replaceChildren();
+  els.registryReportArticlesTitle.hidden = true;
+  els.registryReportArticles.replaceChildren();
+}
+
 async function loadRegistryReport(reportDate) {
+  state.registry.selectedReportDate = reportDate;
   els.registryReportDetail.setAttribute("aria-busy", "true");
   els.registryReportTitle.textContent = "Loading report…";
+  els.registryExecutiveSummary.hidden = true;
+  els.registryExecutiveSummaryItems.replaceChildren();
+  els.registryReportArticlesTitle.hidden = true;
   els.registryReportArticles.replaceChildren();
   try {
     const report = await registryFetch(`/api/registry/reports/${encodeURIComponent(reportDate)}`);
+    if (state.registry.selectedReportDate !== reportDate) {
+      return;
+    }
     els.registryReportTitle.textContent = report.report_title;
     const monitoring = report.monitoring || {};
     els.registryReportMeta.textContent = [
@@ -1481,17 +1662,52 @@ async function loadRegistryReport(reportDate) {
       `${monitoring.sites_succeeded ?? "—"}/${monitoring.sites_checked ?? "—"} sites succeeded`,
       `${monitoring.sites_failed ?? "—"} failed`,
     ].join(" · ");
+    const executiveSummary = Array.isArray(report.executive_summary)
+      ? report.executive_summary.filter(Boolean)
+      : [];
+    executiveSummary.forEach((summary) => {
+      els.registryExecutiveSummaryItems.append(registryElement("li", "", summary));
+    });
+    els.registryExecutiveSummary.hidden = executiveSummary.length === 0;
+    els.registryReportArticlesTitle.hidden = false;
     report.articles.forEach((article) => {
       const item = registryElement("li", "registry-appearance");
       const button = registryElement("button", "registry-article-link", article.title);
       button.type = "button";
       button.dataset.articleId = article.article_id;
+      const summarySourceLabels = {
+          content_enrichment: "Captured content",
+          original_content_annotation: "Original source",
+          official_replacement_annotation: "Official replacement",
+          publisher_excerpt_annotation: "Publisher excerpt",
+          report_fallback_annotation: "Report fallback",
+          source_report: "Historical report",
+        };
+      const legacySourceLabels = {
+        original_content: "Original source",
+        official_replacement: "Official replacement",
+        publisher_excerpt: "Publisher excerpt",
+        report_fallback: "Report fallback",
+      };
+      const summarySourceLabel =
+        article.summary_provenance == null
+          ? legacySourceLabels[article.source_annotation?.source_basis] || ""
+          : summarySourceLabels[article.summary_provenance] || "";
       const meta = registryElement(
         "span",
         "registry-card__meta",
-        `${article.pillar ? `Pillar ${article.pillar}` : article.section} · ${article.publisher}`,
+        [
+          article.pillar ? `Pillar ${article.pillar}` : article.section,
+          article.publisher,
+          summarySourceLabel,
+        ]
+          .filter(Boolean)
+          .join(" · "),
       );
       item.append(button, meta);
+      if (article.summary) {
+        item.append(registryElement("p", "registry-card__summary", article.summary));
+      }
       els.registryReportArticles.append(item);
     });
     if (!report.articles.length) {
@@ -1500,10 +1716,14 @@ async function loadRegistryReport(reportDate) {
       );
     }
   } catch (error) {
-    els.registryReportTitle.textContent = "Report unavailable";
-    els.registryReportMeta.textContent = registryErrorMessage(error);
+    if (state.registry.selectedReportDate === reportDate) {
+      els.registryReportTitle.textContent = "Report unavailable";
+      els.registryReportMeta.textContent = registryErrorMessage(error);
+    }
   } finally {
-    els.registryReportDetail.setAttribute("aria-busy", "false");
+    if (state.registry.selectedReportDate === reportDate) {
+      els.registryReportDetail.setAttribute("aria-busy", "false");
+    }
   }
 }
 
@@ -1514,8 +1734,8 @@ async function loadRegistryArticles() {
     page_size: "20",
   });
   if (els.registrySearch.value.trim()) params.set("query", els.registrySearch.value.trim());
-  if (els.registrySourceFilter.value.trim()) params.set("source", els.registrySourceFilter.value.trim());
-  if (els.registryPillarFilter.value) params.set("pillar", els.registryPillarFilter.value);
+  const publisher = els.registryPublisherCustom?.value.trim() || els.registryPublisherFilter.value;
+  if (publisher) params.set("source", publisher);
   try {
     const payload = await registryFetch(`/api/registry/articles?${params.toString()}`);
     state.registry.articlePagination = payload.pagination;
@@ -1546,14 +1766,13 @@ async function loadRegistryArticles() {
 }
 
 function appendRegistryTags(container, label, values) {
+  if (!values || !values.length) {
+    return;
+  }
   const block = registryElement("div", "registry-tag-block");
   block.append(registryElement("h4", "", label));
   const tags = registryElement("div", "registry-tags");
-  if (values && values.length) {
-    values.forEach((value) => tags.append(registryElement("span", "registry-tag", value)));
-  } else {
-    tags.append(registryElement("span", "muted", "Not available"));
-  }
+  values.forEach((value) => tags.append(registryElement("span", "registry-tag", value)));
   block.append(tags);
   container.append(block);
 }
@@ -1563,44 +1782,91 @@ async function loadRegistryArticle(articleId) {
   els.registryArticleTitle.textContent = "Loading article…";
   els.registryArticleMeta.replaceChildren();
   els.registryEnrichment.replaceChildren();
+  els.registryEnrichment.hidden = true;
   els.registryAppearances.replaceChildren();
   els.registryContentSection.hidden = true;
   els.registryOriginalLink.hidden = true;
   try {
     const article = await registryFetch(`/api/registry/articles/${encodeURIComponent(articleId)}`);
     els.registryArticleTitle.textContent = article.title;
-    const sourceUrl = safeSourceUrl(article.original_url || article.canonical_url);
+    const annotationBasis = article.source_annotation?.source_basis;
+    const usesAlternatePublisherPage =
+      annotationBasis === "official_replacement" || annotationBasis === "publisher_excerpt";
+    const sourceUrl = safeSourceUrl(
+      (usesAlternatePublisherPage && article.source_annotation?.source_url) ||
+        article.original_url ||
+        article.canonical_url,
+    );
     if (sourceUrl) {
       els.registryOriginalLink.href = sourceUrl;
+      els.registryOriginalLink.textContent =
+        annotationBasis === "official_replacement"
+          ? "Open official replacement"
+          : annotationBasis === "publisher_excerpt"
+            ? "Open publisher page"
+            : "Open original source";
       els.registryOriginalLink.hidden = false;
     }
-    els.registryArticleMeta.append(
+    const metrics = [
       registryMetric("Publisher", article.publisher),
-      registryMetric("Source", article.source),
       registryMetric("First seen", article.first_seen),
       registryMetric("Last seen", article.last_seen),
-      registryMetric("Display", article.display_policy.replaceAll("_", " ")),
-      registryMetric("Latest fetch", article.latest_fetch?.fetch_status || "Not captured"),
-      registryMetric("Content type", article.content?.content_type || "Not captured"),
-      registryMetric("Extraction", article.content?.extraction_method || "Not captured"),
-      registryMetric("Captured", article.content?.fetched_at || "Not captured"),
+    ];
+    if (article.latest_fetch?.fetch_status) {
+      metrics.push(registryMetric("Latest fetch", article.latest_fetch.fetch_status));
+    }
+    if (article.content?.fetched_at) {
+      metrics.push(registryMetric("Captured", article.content.fetched_at));
+    }
+    els.registryArticleMeta.append(...metrics);
+    const summary = article.summary || article.enrichment?.summary || article.report_summary;
+    if (summary) {
+      const summaryBlock = registryElement("div", "registry-summary");
+      summaryBlock.append(registryElement("h4", "", "Summary"), registryElement("p", "", summary));
+      els.registryEnrichment.append(summaryBlock);
+    }
+    appendRegistryTags(
+      els.registryEnrichment,
+      "Categories",
+      article.categories?.length ? article.categories : article.enrichment?.categories || [],
     );
-    const summary = article.enrichment?.summary || article.report_summary;
-    const summaryBlock = registryElement("div", "registry-summary");
-    summaryBlock.append(registryElement("h4", "", "Summary"), registryElement("p", "", summary));
-    els.registryEnrichment.append(summaryBlock);
-    appendRegistryTags(els.registryEnrichment, "Categories", article.enrichment?.categories || []);
-    appendRegistryTags(els.registryEnrichment, "Keywords", article.enrichment?.keywords || []);
-    const provenance = article.enrichment?.generator;
-    els.registryEnrichment.append(
-      registryElement(
-        "p",
-        "muted registry-provenance",
-        provenance
-          ? `${article.enrichment.language || "unknown"} · ${provenance.kind} · ${provenance.name} ${provenance.version} · ${provenance.generated_at}`
-          : "No enrichment provenance available.",
-      ),
+    appendRegistryTags(
+      els.registryEnrichment,
+      "Keywords",
+      article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
     );
+    const summaryProvenance =
+      article.summary_provenance ||
+      (article.enrichment?.summary
+        ? "content_enrichment"
+        : article.source_annotation
+          ? `${article.source_annotation.source_basis}_annotation`
+          : summary
+            ? "source_report"
+            : null);
+    const provenanceCopy = {
+      content_enrichment: "Summary generated from captured article content",
+      original_content_annotation: "Summary based on the linked original content",
+      official_replacement_annotation: "Summary based on an official replacement page",
+      publisher_excerpt_annotation: "Summary based on the publisher's available excerpt",
+      report_fallback_annotation:
+        "Summary based on historical report text because the original source was unavailable",
+      source_report: "Summary from the historical report",
+    }[summaryProvenance];
+    if (provenanceCopy) {
+      const reviewed =
+        summaryProvenance.endsWith("_annotation") && article.source_annotation?.generated_on
+          ? ` · reviewed ${article.source_annotation.generated_on}`
+          : "";
+      els.registryEnrichment.append(
+        registryElement(
+          "p",
+          "muted registry-provenance",
+          `${provenanceCopy}${reviewed}`,
+        ),
+      );
+    }
+    els.registryEnrichment.hidden = els.registryEnrichment.childElementCount === 0;
     article.appearances.forEach((appearance) => {
       const item = registryElement("li", "registry-appearance");
       item.append(
@@ -1627,6 +1893,7 @@ async function loadRegistryArticle(articleId) {
   } catch (error) {
     els.registryArticleTitle.textContent = "Article unavailable";
     els.registryEnrichment.append(registryElement("p", "registry-notice", registryErrorMessage(error)));
+    els.registryEnrichment.hidden = false;
   } finally {
     els.registryArticleDetail.setAttribute("aria-busy", "false");
   }
@@ -1654,6 +1921,22 @@ function attachEvents() {
       event.preventDefault();
       state.registry.articlePage = 1;
       void loadRegistryArticles();
+    });
+  }
+
+  if (els.registryPublisherFilter) {
+    els.registryPublisherFilter.addEventListener("change", () => {
+      if (els.registryPublisherCustom && els.registryPublisherFilter.value) {
+        els.registryPublisherCustom.value = "";
+      }
+    });
+  }
+
+  if (els.registryPublisherCustom) {
+    els.registryPublisherCustom.addEventListener("input", () => {
+      if (els.registryPublisherCustom.value.trim()) {
+        els.registryPublisherFilter.value = "";
+      }
     });
   }
 
@@ -1690,10 +1973,10 @@ function attachEvents() {
     });
   }
 
-  if (els.jumpToWiki) {
-    els.jumpToWiki.addEventListener("click", () => {
-      setWorkspaceView("obsidianView");
-      scrollSelectedRowIntoView();
+  if (els.jumpToReports) {
+    els.jumpToReports.addEventListener("click", () => {
+      setRegistryMode("reports");
+      setWorkspaceView("registryView");
     });
   }
 
@@ -1733,7 +2016,7 @@ function attachEvents() {
 
   els.graphModeButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      setGraphMode(button.dataset.graphMode || "notes");
+      setGraphMode(button.dataset.graphMode || "keywords");
     });
   });
 
@@ -1749,9 +2032,19 @@ function attachEvents() {
       return;
     }
 
+    const historicalReportLink = target.closest("[data-historical-report-date]");
+    if (historicalReportLink) {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      openHistoricalReport(historicalReportLink.dataset.historicalReportDate);
+      return;
+    }
+
     const reportCard = target.closest("[data-report-date]");
     if (reportCard) {
-      void loadRegistryReport(reportCard.dataset.reportDate);
+      openHistoricalReport(reportCard.dataset.reportDate);
       return;
     }
 
@@ -1783,6 +2076,23 @@ function attachEvents() {
       }
     }
   });
+
+  window.addEventListener("hashchange", () => {
+    const reportDate = historicalReportDateFromHash();
+    if (reportDate) {
+      openHistoricalReport(reportDate, { updateHash: false });
+    } else {
+      resetHistoricalReportDetail();
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopGraphAnimation();
+    } else if (state.activeView === "obsidianView") {
+      renderCurrentGraph();
+    }
+  });
 }
 
 async function main() {
@@ -1792,12 +2102,16 @@ async function main() {
   setWorkspaceView(state.activeView);
   renderMessages();
   attachEvents();
+  const linkedReportDate = historicalReportDateFromHash();
+  if (linkedReportDate) {
+    openHistoricalReport(linkedReportDate, { updateHash: false });
+  }
 
   try {
     await loadConfig();
     void hydrateDocumentsInBackground();
   } catch (error) {
-    els.status.textContent = "API offline";
+    els.status.textContent = "Service unavailable";
     els.status.classList.add("status-pill--offline");
     if (els.graphHint) {
       els.graphHint.textContent = `Load failed: ${error.message}`;

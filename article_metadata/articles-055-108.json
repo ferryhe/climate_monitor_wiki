@@ -1,0 +1,1069 @@
+{
+  "schema_version": 1,
+  "annotation_method": "subagent-original-content-v1",
+  "source_scope": "linked-original-content-with-report-fallback",
+  "generated_on": "2026-08-17",
+  "articles": [
+    {
+      "canonical_url": "https://www.dawgen.global/auditing-climate-risk-scope-1-2-3-emissions-under-ifrs-s2",
+      "source_url": "https://www.dawgen.global/auditing-climate-risk-scope-1-2-3-emissions-under-ifrs-s2",
+      "title": "Auditing Climate Risk: Scope 1, 2 and 3 Emissions under IFRS S2",
+      "source_basis": "original_content",
+      "summary": "Dawgen Global provides internal-audit procedures for IFRS S2 across climate governance, scenario analysis, Scope 1, 2 and 3 emissions, and climate metrics and targets. It explains evidence and control checks for emissions boundaries, factors, data quality and target credibility, with examples for Caribbean physical and transition risks.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "IFRS S2",
+        "Scope 1 emissions",
+        "Scope 2 emissions",
+        "Scope 3 emissions",
+        "climate audit",
+        "scenario analysis",
+        "GHG verification",
+        "Caribbean"
+      ]
+    },
+    {
+      "canonical_url": "https://www.deloitte.com/content/dam/assets-shared/docs/about/2026/deloitte-global-bridging-the-climate-finance-gap.pdf",
+      "source_url": "https://www.deloitte.com/content/dam/assets-shared/docs/about/2026/deloitte-global-bridging-the-climate-finance-gap.pdf",
+      "title": "Bridging the Climate Finance Gap: Reaching US$1.3 Trillion Annually by 2035",
+      "source_basis": "original_content",
+      "summary": "Deloitte examines the mix of public, private, multilateral, carbon-market and philanthropic finance that could support emerging markets and developing economies. It finds that reaching the aspirational US$1.3 trillion annual target by 2035 depends on stronger enabling conditions and greater capital mobilisation.",
+      "categories": [
+        "Transition Risk",
+        "Adaptation & Resilience"
+      ],
+      "keywords": [
+        "climate finance",
+        "emerging markets",
+        "adaptation finance",
+        "multilateral development banks",
+        "carbon markets",
+        "private capital"
+      ]
+    },
+    {
+      "canonical_url": "https://www.deloitte.com/content/dam/assets-zone3/us/en/docs/services/consulting/2026/us-deloitte-national-and-state-climate-resiliency-efforts-march-2026.pdf",
+      "source_url": "https://www.deloitte.com/content/dam/assets-zone3/us/en/docs/services/consulting/2026/us-deloitte-national-and-state-climate-resiliency-efforts-march-2026.pdf",
+      "title": "Natural Catastrophe and Weather Resiliency: National and State Insurance Efforts",
+      "source_basis": "original_content",
+      "summary": "Deloitte surveys US national and state initiatives that connect catastrophe mitigation, insurance regulation, risk modelling, resilience grants and premium incentives. The paper frames pre-disaster investment and stronger property standards as tools for reducing losses and supporting insurance affordability.",
+      "categories": [
+        "Physical Risk",
+        "Adaptation & Resilience",
+        "Insurance Risk"
+      ],
+      "keywords": [
+        "natural catastrophe",
+        "pre-disaster mitigation",
+        "risk modelling",
+        "resilience grants",
+        "premium incentives",
+        "insurance affordability"
+      ]
+    },
+    {
+      "canonical_url": "https://www.deloitte.com/us/en/industries/financial-services/articles/climate-risks-to-the-insurance-sector.html",
+      "source_url": "https://www.deloitte.com/us/en/industries/financial-services/articles/climate-risks-to-the-insurance-sector.html",
+      "title": "Preparing for Climate-Related Disclosure in the Insurance Sector",
+      "source_basis": "original_content",
+      "summary": "Deloitte outlines seven considerations for insurers preparing for climate-related disclosure, including governance, stakeholder skills, data controls, risk identification and assurance readiness. The article links the proposed SEC framework to TCFD and the GHG Protocol and stresses integration with insurers' existing financial and risk-control processes.",
+      "categories": [
+        "Climate Risk",
+        "Insurance Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "SEC disclosure",
+        "greenhouse gas emissions",
+        "TCFD",
+        "data controls",
+        "climate governance",
+        "insurers"
+      ]
+    },
+    {
+      "canonical_url": "https://www.domain-b.com/economy/world-economy/climate-risk-insurance-financial-stability-msci-2026",
+      "source_url": "https://www.domain-b.com/economy/world-economy/climate-risk-insurance-financial-stability-msci-2026",
+      "title": "Climate Risks Shift from an Insurance Challenge to a Financial Stability Concern",
+      "source_basis": "original_content",
+      "summary": "The article describes physical climate risk as an issue that can move beyond insurance balance sheets into broader financial stability. It highlights rising catastrophe losses, protection gaps and the importance of insurance availability to financing and economic resilience.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Capital & Solvency"
+      ],
+      "keywords": [
+        "systemic risk",
+        "financial stability",
+        "protection gap",
+        "secondary perils",
+        "infrastructure finance",
+        "parametric insurance"
+      ]
+    },
+    {
+      "canonical_url": "https://www.eiopa.europa.eu/eiopa-and-esm-staff-propose-mechanism-better-manage-fallout-outsized-natural-catastrophes-2026-04-09_en",
+      "source_url": "https://www.eiopa.europa.eu/eiopa-and-esm-staff-propose-mechanism-better-manage-fallout-outsized-natural-catastrophes-2026-04-09_en",
+      "title": "EIOPA and ESM Staff Propose a European Mechanism for Outsized Natural Catastrophes",
+      "source_basis": "original_content",
+      "summary": "EIOPA and European Stability Mechanism staff propose a European mechanism to complement national schemes and private insurance when exceptionally large natural catastrophes exceed available capacity. The proposal aims to improve risk sharing, preserve fiscal and financial stability, and narrow Europe's catastrophe protection gap.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Capital & Solvency"
+      ],
+      "keywords": [
+        "European catastrophe pool",
+        "EIOPA",
+        "European Stability Mechanism",
+        "risk sharing",
+        "protection gap",
+        "fiscal resilience"
+      ]
+    },
+    {
+      "canonical_url": "https://www.eiopa.europa.eu/insurance-protection-gaps-changing-climate-2026-04-16_en",
+      "source_url": "https://www.eiopa.europa.eu/insurance-protection-gaps-changing-climate-2026-04-16_en",
+      "title": "Insurance Protection Gaps in a Changing Climate",
+      "source_basis": "original_content",
+      "summary": "EIOPA explains why climate-driven natural catastrophes are widening the gap between economic and insured losses in Europe. It discusses household risk perception, affordability and market capacity alongside public-private approaches that could sustain coverage and strengthen resilience.",
+      "categories": [
+        "Physical Risk",
+        "Adaptation & Resilience",
+        "Insurance Risk"
+      ],
+      "keywords": [
+        "protection gap",
+        "natural catastrophes",
+        "insurance affordability",
+        "risk awareness",
+        "public-private mechanisms",
+        "European insurance"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ey.com/content/dam/ey-unified-site/ey-com/en-gl/technical/ifrs-technical-resources/documents/ey-gl-sustainability-devel-11-ifrs-s2-amendments-on-ghg-v3.pdf",
+      "source_url": "https://www.ey.com/content/dam/ey-unified-site/ey-com/en-gl/technical/ifrs-technical-resources/documents/ey-gl-sustainability-devel-11-ifrs-s2-amendments-on-ghg-v3.pdf",
+      "title": "Applying the Targeted IFRS S2 Amendments on Greenhouse Gas Emissions",
+      "source_basis": "original_content",
+      "summary": "EY explains the targeted IFRS S2 amendments affecting greenhouse-gas disclosures, including relief concerning Scope 3 Category 15 financed emissions for financial institutions. The paper describes the measurement and disclosure implications for entities applying the amended standard.",
+      "categories": [
+        "Transition Risk",
+        "Insurance Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "IFRS S2",
+        "greenhouse gas emissions",
+        "Scope 3 Category 15",
+        "financed emissions",
+        "measurement relief",
+        "financial institutions"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ey.com/en_gl/technical/ifrs-technical-resources/issb-climate-related-disclosure-checklist-issued-at-31-august",
+      "source_url": "https://www.ey.com/en_gl/technical/ifrs-technical-resources/issb-climate-related-disclosure-checklist-issued-at-31-august",
+      "title": "ISSB Climate-Related Disclosure Checklist",
+      "source_basis": "original_content",
+      "summary": "EY provides a structured checklist for assessing climate-related disclosures against IFRS S2 and related ISSB requirements. It is designed as an implementation and completeness aid for preparers and reviewers, including the amended greenhouse-gas provisions.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "ISSB checklist",
+        "IFRS S2",
+        "climate disclosure",
+        "compliance controls",
+        "greenhouse gas measurement",
+        "disclosure completeness"
+      ]
+    },
+    {
+      "canonical_url": "https://www.forbes.com/sites/monicasanders/2026/03/31/billion-dollar-disasterswhy-your-insurance-is-getting-more-expensive",
+      "source_url": "https://www.forbes.com/sites/monicasanders/2026/03/31/billion-dollar-disasterswhy-your-insurance-is-getting-more-expensive",
+      "title": "Billion Dollar Disasters: Why Your Insurance Is Getting More Expensive",
+      "source_basis": "original_content",
+      "summary": "Forbes links the rising cost of insurance to climate impacts, aging infrastructure and a 2025 natural-catastrophe loss baseline dominated by wildfires, severe convective storms and floods. It describes higher premiums, deductibles and exclusions alongside greater use of forward-looking models, parametric insurance and resilience investment.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Adaptation & Resilience"
+      ],
+      "keywords": [
+        "natural catastrophe losses",
+        "secondary perils",
+        "insurance premiums",
+        "protection gap",
+        "parametric insurance",
+        "forward-looking models",
+        "resilience investment"
+      ]
+    },
+    {
+      "canonical_url": "https://www.fsb-tcfd.org/",
+      "source_url": "https://www.fsb-tcfd.org/",
+      "title": "Task Force on Climate-related Financial Disclosures",
+      "source_basis": "original_content",
+      "summary": "TCFD developed a framework for organisations to disclose climate-related risks and opportunities through governance, strategy, risk management, and metrics and targets. The task force disbanded after its 2023 status report, and the Financial Stability Board asked the IFRS Foundation to monitor companies' climate-related disclosures.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "TCFD",
+        "climate-related disclosure",
+        "governance",
+        "strategy",
+        "risk management",
+        "metrics and targets",
+        "IFRS Foundation"
+      ]
+    },
+    {
+      "canonical_url": "https://www.globalbankingandfinance.com/swiss-re-sees-claims-natural-catastrophes-rising-2026",
+      "source_url": "https://www.globalbankingandfinance.com/swiss-re-sees-claims-natural-catastrophes-rising-2026",
+      "title": "Swiss Re Sees Natural-Catastrophe Claims Rising in 2026",
+      "source_basis": "original_content",
+      "summary": "The article cites Swiss Re's estimate that insured natural-catastrophe losses could rise to about US$148 billion in 2026, with a severe scenario reaching US$320 billion. Swiss Re characterises the lower 2025 outcome as favourable variability rather than an easing of underlying catastrophe risk.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Capital & Solvency"
+      ],
+      "keywords": [
+        "insured losses",
+        "natural catastrophes",
+        "Swiss Re",
+        "peak-loss scenario",
+        "catastrophe claims",
+        "loss volatility"
+      ]
+    },
+    {
+      "canonical_url": "https://www.globalpolicyjournal.com/articles/climate-change-energy-and-sustainability/measuring-climate-change-actuarial-perspective",
+      "source_url": "https://www.globalpolicyjournal.com/articles/climate-change-energy-and-sustainability/measuring-climate-change-actuarial-perspective",
+      "title": "Measuring Climate Change from an Actuarial Perspective",
+      "source_basis": "original_content",
+      "summary": "The article surveys actuarial applications of composite climate indices, including measures derived from weather and climate extremes. It considers how such indices can support analysis of insurance exposure, balance-sheet effects and business sustainability.",
+      "categories": [
+        "Climate Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "Actuaries Climate Index",
+        "extreme weather",
+        "insurance applications",
+        "climate indicators",
+        "balance-sheet exposure",
+        "risk measurement"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iais.org/2025/11/iais-report-examines-financial-stability-implications-from-natural-catastrophe-insurance-protection-gaps",
+      "source_url": "https://www.iais.org/2025/11/iais-report-examines-financial-stability-implications-from-natural-catastrophe-insurance-protection-gaps",
+      "title": "Financial Stability Implications of Natural-Catastrophe Insurance Protection Gaps",
+      "source_basis": "original_content",
+      "summary": "The IAIS examines how gaps between catastrophe losses and insurance coverage can amplify economic disruption and create financial-stability concerns. It positions insurance availability, risk reduction and coordinated public-private action as important elements of resilience.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Capital & Solvency"
+      ],
+      "keywords": [
+        "IAIS",
+        "natural catastrophes",
+        "protection gap",
+        "financial stability",
+        "systemic risk",
+        "risk reduction"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iais.org/activities-topics/climate-risk",
+      "source_url": "https://www.iais.org/activities-topics/climate-risk",
+      "title": "IAIS Climate-Risk Supervisory Work",
+      "source_basis": "original_content",
+      "summary": "The IAIS climate-risk topic page brings together its supervisory priorities, market monitoring, guidance and capacity-building work for the insurance sector. It covers the management of physical, transition and liability risks and connects climate issues with prudential supervision and financial stability.",
+      "categories": [
+        "Climate Risk",
+        "Insurance Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "IAIS",
+        "insurance supervision",
+        "physical risk",
+        "transition risk",
+        "liability risk",
+        "supervisory guidance"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iais.org/activities-topics/financial-stability/holistic-framework",
+      "source_url": "https://www.iais.org/activities-topics/financial-stability/holistic-framework",
+      "title": "IAIS Holistic Framework for Systemic Risk in the Insurance Sector",
+      "source_basis": "original_content",
+      "summary": "The IAIS Holistic Framework sets out a sector-wide approach to assessing and mitigating systemic risk in insurance. It combines supervisory policy measures, global monitoring and implementation assessment rather than relying only on a fixed list of systemically important insurers.",
+      "categories": [
+        "Insurance Risk",
+        "Capital & Solvency",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "Holistic Framework",
+        "systemic risk",
+        "insurance supervision",
+        "global monitoring",
+        "macroprudential policy",
+        "financial stability"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iea.org/energy-system/carbon-capture-utilisation-and-storage",
+      "source_url": "https://www.iea.org/energy-system/carbon-capture-utilisation-and-storage",
+      "title": "Carbon Capture, Utilisation and Storage",
+      "source_basis": "original_content",
+      "summary": "The IEA describes carbon capture, utilisation and storage as a group of technologies for capturing carbon dioxide from industrial and energy sources, transporting it and either using it or storing it permanently. The page tracks deployment and the technology's role in emissions-reduction pathways.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "carbon capture",
+        "carbon dioxide transport",
+        "geological storage",
+        "carbon utilisation",
+        "industrial emissions",
+        "net zero"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iea.org/energy-system/carbon-capture-utilisation-and-storage/bioenergy-with-carbon-capture-and-storage",
+      "source_url": "https://www.iea.org/articles/unlocking-the-potential-of-bioenergy-with-carbon-capture-and-utilisation-or-storage-beccus",
+      "title": "Unlocking the Potential of Bioenergy with Carbon Capture and Utilisation or Storage",
+      "source_basis": "official_replacement",
+      "summary": "The IEA describes BECCUS as capturing carbon dioxide from biomass-based energy and either storing it or using it in products, thereby combining renewable-energy production with atmospheric carbon removal. The project analyses supply-chain carbon accounting and obstacles to sustainable deployment, including policy frameworks, business models and carbon-transport infrastructure.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "BECCUS",
+        "bioenergy",
+        "carbon capture",
+        "carbon dioxide removal",
+        "carbon accounting",
+        "biomass",
+        "CO2 storage"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iea.org/energy-system/electricity/renewable-integration",
+      "source_url": "https://www.iea.org/reports/integrating-solar-and-wind",
+      "title": "Integrating Solar and Wind: Global Experience and Emerging Challenges",
+      "source_basis": "official_replacement",
+      "summary": "The IEA reports that solar and wind capacity more than doubled between 2018 and 2023, making timely integration important for 2030 decarbonisation goals. Its stocktake of 50 power systems identifies integration measures and highlights increasingly complex stability, flexibility, planning and financing challenges at high levels of variable renewable penetration.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "solar PV",
+        "wind power",
+        "variable renewable energy",
+        "grid integration",
+        "power-system stability",
+        "flexibility",
+        "decarbonisation"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iea.org/energy-system/low-emissions-fuels",
+      "source_url": "https://www.iea.org/energy-system/low-emissions-fuels",
+      "title": "Renewables and Low-Emissions Fuels",
+      "source_basis": "original_content",
+      "summary": "The IEA's current page groups renewable power and low-emissions energy technologies including bioenergy, hydrogen, nuclear power and carbon capture. It presents technology indicators and partnerships used to track progress in the energy transition.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "renewable capacity",
+        "hydrogen",
+        "bioenergy",
+        "low-emissions fuels",
+        "energy transition",
+        "technology indicators"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iea.org/topics/fossil-fuel-subsidies",
+      "source_url": "https://www.iea.org/topics/fossil-fuel-subsidies",
+      "title": "Tracking the Impact of Fossil-Fuel Subsidies",
+      "source_basis": "original_content",
+      "summary": "The IEA tracks the scale and characteristics of fossil-fuel consumption subsidies and explains how they distort energy prices, fiscal balances and incentives for cleaner energy. The page also provides country and fuel-level data using the IEA's price-gap methodology.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "fossil-fuel subsidies",
+        "energy affordability",
+        "price-gap methodology",
+        "fiscal exposure",
+        "clean energy",
+        "consumer support"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifac.org/knowledge-gateway/discussion/commitment-action-six-practical-steps-government-climate-disclosure",
+      "source_url": "https://www.ifac.org/knowledge-gateway/discussion/commitment-action-six-practical-steps-government-climate-disclosure",
+      "title": "From Commitment to Action: Six Practical Steps for Government Climate Disclosure",
+      "source_basis": "original_content",
+      "summary": "IFAC presents a six-step implementation path for governments developing climate-related disclosures. It frames public-sector disclosure as a process requiring institutional ownership, suitable standards, reliable data, professional capacity and credible publication.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "government disclosure",
+        "public sector",
+        "sustainability standards",
+        "data governance",
+        "professional capacity",
+        "implementation"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/content/dam/ifrs/meetings/2026/february/issb/ap6d-draft-issb-ratification-ed-sasb-standards-ifrs-s2.pdf",
+      "source_url": "https://www.ifrs.org/content/dam/ifrs/meetings/2026/february/issb/ap6d-draft-issb-ratification-ed-sasb-standards-ifrs-s2.pdf",
+      "title": "Exposure Draft of Proposed Amendments to the SASB Standards",
+      "source_basis": "original_content",
+      "summary": "The ISSB paper presents an exposure draft of proposed amendments to the SASB Standards, including climate-related industry content used with IFRS S2 guidance. It documents the proposed text and the board's due-process basis for consultation and ratification.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "SASB Standards",
+        "IFRS S2",
+        "industry guidance",
+        "exposure draft",
+        "climate disclosure",
+        "ISSB"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/content/dam/ifrs/meetings/2026/march/tig/ap2-biogenic-emissions-applying-ifrs-s2.pdf",
+      "source_url": "https://www.ifrs.org/content/dam/ifrs/meetings/2026/march/tig/ap2-biogenic-emissions-applying-ifrs-s2.pdf",
+      "title": "Biogenic Emissions: Applying IFRS S2",
+      "source_basis": "original_content",
+      "summary": "This ISSB implementation paper examines how IFRS S2 greenhouse-gas requirements apply to biogenic emissions. It considers the treatment and presentation of those emissions within Scope 2 and Scope 3 disclosures and the interaction with referenced measurement methods.",
+      "categories": [
+        "Transition Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "biogenic emissions",
+        "IFRS S2",
+        "Scope 2",
+        "Scope 3",
+        "carbon accounting",
+        "greenhouse gas measurement"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/content/ifrs/home/issued-standards/ifrs-sustainability-standards-navigator.html",
+      "source_url": "https://www.ifrs.org/content/ifrs/home/issued-standards/ifrs-sustainability-standards-navigator.html",
+      "title": "IFRS Sustainability Standards Navigator",
+      "source_basis": "original_content",
+      "summary": "The IFRS Sustainability Standards Navigator is the Foundation's structured access point for IFRS S1, IFRS S2 and related requirements and implementation materials. It helps users navigate authoritative sustainability-disclosure content by standard and topic.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "IFRS S1",
+        "IFRS S2",
+        "standards navigator",
+        "sustainability disclosure",
+        "implementation materials",
+        "ISSB"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/content/ifrs/home/news-and-events/updates.html",
+      "source_url": "https://www.ifrs.org/content/ifrs/home/news-and-events/updates.html",
+      "title": "IFRS Foundation Updates and Podcasts",
+      "source_basis": "original_content",
+      "summary": "This IFRS Foundation page is the central chronological index for IASB and ISSB board updates and accompanying podcasts. It directs users to summaries of decisions and work-plan developments, including sustainability and climate-disclosure matters.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "ISSB",
+        "board decisions",
+        "work plan",
+        "podcasts",
+        "sustainability disclosure"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/groups/international-sustainability-standards-board",
+      "source_url": "https://www.ifrs.org/groups/international-sustainability-standards-board",
+      "title": "International Sustainability Standards Board",
+      "source_basis": "original_content",
+      "summary": "The IFRS Foundation page describes the ISSB and provides access to its membership, meetings, projects and standard-setting work. The board develops investor-focused sustainability-disclosure standards, including the climate requirements in IFRS S2.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "ISSB",
+        "sustainability standards",
+        "investor information",
+        "IFRS S2",
+        "standard setting",
+        "board governance"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/issued-standards/ifrs-sustainability-standards-navigator/ifrs-s2-climate-related-disclosures",
+      "source_url": "https://www.ifrs.org/issued-standards/ifrs-sustainability-standards-navigator/ifrs-s2-climate-related-disclosures",
+      "title": "IFRS S2 Climate-Related Disclosures",
+      "source_basis": "original_content",
+      "summary": "IFRS S2 requires entities to disclose decision-useful information about climate-related risks and opportunities that could affect cash flows, access to finance or cost of capital. Its core content covers governance, strategy, risk management, and metrics and targets.",
+      "categories": [
+        "Climate Risk",
+        "Transition Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "IFRS S2",
+        "climate disclosure",
+        "governance",
+        "strategy",
+        "risk management",
+        "metrics and targets"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/news-and-events/news/2026/03/march-2026-issb-update-and-podcast-now-available",
+      "source_url": "https://www.ifrs.org/news-and-events/news/2026/03/march-2026-issb-update-and-podcast-now-available",
+      "title": "March 2026 ISSB Update and Podcast",
+      "source_basis": "original_content",
+      "summary": "The IFRS Foundation publishes the ISSB's March 2026 board update and podcast and directs users to decisions and materials from that month's meetings. The material covers ongoing sustainability-standard setting and implementation work, including climate-related disclosure.",
+      "categories": [
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "ISSB work plan",
+        "board decisions",
+        "podcast",
+        "sustainability standards",
+        "climate disclosure"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ifrs.org/supporting-implementation/supporting-materials-for-ifrs-sustainability-disclosure-standards/ifrs-s2/webcast-climate-resilience-scenario-analysis",
+      "source_url": "https://www.ifrs.org/supporting-implementation/supporting-materials-for-ifrs-sustainability-disclosure-standards/ifrs-s2/webcast-climate-resilience-scenario-analysis",
+      "title": "Climate Resilience and Scenario Analysis Requirements in IFRS S2",
+      "source_basis": "original_content",
+      "summary": "The IFRS Foundation webcast explains the IFRS S2 requirement to disclose an assessment of climate resilience informed by climate-related scenario analysis. It also describes proportionality mechanisms that let an entity choose an approach commensurate with its circumstances.",
+      "categories": [
+        "Climate Risk",
+        "Actuarial Modelling",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "climate resilience",
+        "scenario analysis",
+        "IFRS S2",
+        "proportionality",
+        "business model",
+        "disclosure"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ilo.org/resource/article/powering-moldova%E2%80%99s-green-future-how-skills-training-opened-new-doors-young",
+      "source_url": "https://www.ilo.org/resource/article/powering-moldova%E2%80%99s-green-future-how-skills-training-opened-new-doors-young",
+      "title": "Powering Moldova's Green Future through Skills Training",
+      "source_basis": "original_content",
+      "summary": "The ILO profiles a young woman in Moldova who turns vocational skills training into a career in renewable energy. The project, funded by Liechtenstein and Austria, supports modernised vocational education and prepares workers for Moldova's green transition.",
+      "categories": [
+        "Transition Risk",
+        "Adaptation & Resilience"
+      ],
+      "keywords": [
+        "renewable energy",
+        "vocational education",
+        "green skills",
+        "Moldova",
+        "youth employment",
+        "just transition"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ilo.org/resource/article/young-indonesian-looks-beyond-coal-towards-greener-south-sumatra",
+      "source_url": "https://www.ilo.org/resource/article/young-indonesian-looks-beyond-coal-towards-greener-south-sumatra",
+      "title": "A Young Indonesian Looks Beyond Coal toward a Greener South Sumatra",
+      "source_basis": "original_content",
+      "summary": "The ILO describes an initiative that encourages a university student in South Sumatra to consider a future beyond the province's coal economy. The story illustrates youth participation, green skills and the employment dimension of a just transition.",
+      "categories": [
+        "Transition Risk",
+        "Adaptation & Resilience"
+      ],
+      "keywords": [
+        "coal transition",
+        "South Sumatra",
+        "youth",
+        "green jobs",
+        "just transition",
+        "economic diversification"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo",
+      "source_url": "https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo",
+      "title": "High Temperatures Linked to Increased Worker Mortality in Colombia",
+      "source_basis": "original_content",
+      "summary": "An ILO working paper finds that high temperatures are associated with greater mortality risk among workers in Colombia. Agricultural workers, assemblers, and health and teaching professionals are among the occupational groups identified as facing elevated exposure.",
+      "categories": [
+        "Physical Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "heat mortality",
+        "occupational exposure",
+        "worker health",
+        "Colombia",
+        "temperature risk",
+        "mortality analysis"
+      ]
+    },
+    {
+      "canonical_url": "https://www.imf.org/-/media/files/publications/tnm/2026/english/tnmea2026001.pdf",
+      "source_url": "https://www.imf.org/-/media/files/publications/tnm/2026/english/tnmea2026001.pdf",
+      "title": "Climate Risks: The Role of Financial Regulators and Supervisors",
+      "source_basis": "original_content",
+      "summary": "The IMF technical note sets out how financial regulators and supervisors can address climate-related risks within their mandates. It covers governance, risk assessment, scenario analysis and supervisory tools for integrating climate considerations into prudential oversight.",
+      "categories": [
+        "Climate Risk",
+        "Capital & Solvency",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "financial supervision",
+        "prudential regulation",
+        "scenario analysis",
+        "risk governance",
+        "supervisory tools",
+        "financial stability"
+      ]
+    },
+    {
+      "canonical_url": "https://www.industryresearch.biz/market-reports/parametric-insurance-market-106046",
+      "source_url": "https://www.industryresearch.biz/market-reports/parametric-insurance-market-106046",
+      "title": "Parametric Insurance Market Size and Growth Forecast",
+      "source_basis": "original_content",
+      "summary": "The commercial market study describes parametric insurance and forecasts growth across natural-catastrophe, agriculture and other trigger-based applications. It segments the market by product, peril, customer and geography and attributes demand to faster payouts and expanding climate exposure.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk"
+      ],
+      "keywords": [
+        "parametric insurance",
+        "market forecast",
+        "natural catastrophe",
+        "trigger-based coverage",
+        "agriculture insurance",
+        "basis risk"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurance.ca.gov/0250-insurers/0300-insurers/0100-applications/ClimateSurvey/index.cfm",
+      "source_url": "https://www.insurance.ca.gov/0250-insurers/0300-insurers/0100-applications/ClimateSurvey/index.cfm",
+      "title": "Climate Risk Disclosure Survey",
+      "source_basis": "original_content",
+      "summary": "The California Department of Insurance page provides instructions and materials for insurers subject to the NAIC Climate Risk Disclosure Survey. It identifies the applicable reporting cycle, filing process and compliance dates for participating insurance companies.",
+      "categories": [
+        "Climate Risk",
+        "Insurance Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "NAIC survey",
+        "California DOI",
+        "insurer disclosure",
+        "climate governance",
+        "risk metrics",
+        "compliance filing"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancebusinessmag.com/reinsurance/news/breaking-news/natural-disaster-insured-losses-top-100-billion-for-second-straight-year--munich-re-561743.aspx",
+      "source_url": "https://www.insurancebusinessmag.com/reinsurance/news/breaking-news/natural-disaster-insured-losses-top-100-billion-for-second-straight-year--munich-re-561743.aspx",
+      "title": "Natural-Disaster Insured Losses Exceed US$100 Billion for a Second Year",
+      "source_basis": "original_content",
+      "summary": "The article relays Munich Re's finding that global insured losses from natural disasters exceeded US$100 billion for a second consecutive year. It underscores that severe loss totals can persist even without a major US hurricane landfall, reflecting a broad catastrophe-loss burden.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Capital & Solvency"
+      ],
+      "keywords": [
+        "insured losses",
+        "natural disasters",
+        "catastrophe claims",
+        "Munich Re",
+        "loss trend",
+        "reinsurance"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancebusinessmag.com/us/news/catastrophe/fewer-storms-expected-in-2026--but-insurers-still-face-losses-571329.aspx",
+      "source_url": "https://www.insurancebusinessmag.com/us/news/catastrophe/fewer-storms-expected-in-2026--but-insurers-still-face-losses-571329.aspx",
+      "title": "Fewer Storms Expected in 2026, but Insurers Still Face Losses",
+      "source_basis": "original_content",
+      "summary": "The article contrasts a below-average Atlantic hurricane-season outlook with the continuing potential for a single landfalling storm to cause severe insured losses. It cautions insurers against treating seasonal storm counts as a substitute for exposure-based catastrophe pricing and reserving.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "hurricane season",
+        "catastrophe exposure",
+        "landfall risk",
+        "pricing load",
+        "reserves",
+        "seasonal outlook"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancebusinessmag.com/us/news/risk-management/nat-cat-risks-in-2026--uncertainty-amidst-escalating-loss-trends-560094.aspx",
+      "source_url": "https://www.insurancebusinessmag.com/us/news/risk-management/nat-cat-risks-in-2026--uncertainty-amidst-escalating-loss-trends-560094.aspx",
+      "title": "Natural-Catastrophe Risks in 2026: Uncertainty amid Escalating Loss Trends",
+      "source_basis": "original_content",
+      "summary": "The article presents HDI Global's view that natural-catastrophe losses are likely to remain above average while individual-event outcomes stay highly volatile. It stresses the interaction of hazard, exposure and vulnerability and the need for disciplined risk management despite uncertain annual results.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "natural catastrophes",
+        "loss volatility",
+        "hazard exposure",
+        "risk modelling",
+        "underwriting",
+        "HDI Global"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insuranceerm.com/analysis/2026/04/09/eiopa-makes-a-splash-in-eu-natcat-risk-pool-debate",
+      "source_url": "https://www.insuranceerm.com/analysis/eiopa-makes-a-splash-in-eu-natcat-risk-pool-debate.html",
+      "title": "EIOPA Makes a Splash in the EU NatCat Risk Pool Debate",
+      "source_basis": "publisher_excerpt",
+      "summary": "InsuranceERM's archive says EIOPA and the European Stability Mechanism published proposals for a European natural-catastrophe risk pool. Industry views are divided and policymakers have not decided the way forward, making implementation challenging.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "EIOPA",
+        "European Stability Mechanism",
+        "natural-catastrophe risk pool",
+        "European insurance",
+        "industry views",
+        "policymakers"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insuranceerm.com/analysis/2026/04/14/the-talent-gap-in-insurance-has-become-a-strategic-risk",
+      "source_url": "https://www.insuranceerm.com/analysis/the-talent-gap-in-insurance-has-become-a-strategic-risk.html",
+      "title": "The Talent Gap in Insurance Has Become a Strategic Risk",
+      "source_basis": "publisher_excerpt",
+      "summary": "InsuranceERM's archive says the insurance industry's talent gap is longstanding but is beginning to affect revenue and warrants greater attention. The excerpt attributes this assessment to Louisa Blain, Aon's head of insurance for human capital.",
+      "categories": [
+        "Insurance Risk"
+      ],
+      "keywords": [
+        "insurance talent gap",
+        "strategic risk",
+        "human capital",
+        "Aon",
+        "Louisa Blain",
+        "revenue impact"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancejournal.com/news/international/2026/04/14/865792.htm",
+      "source_url": "https://www.insurancejournal.com/news/international/2026/04/14/865792.htm",
+      "title": "Canadian Insurers Push Owners to Fortify Homes against Climate Risks",
+      "source_basis": "original_content",
+      "summary": "Canadian property and casualty insurers are encouraging flood- and wildfire-resilient home improvements as climate-related claims and premiums rise. The article describes insurer investment in mitigation, risk modelling and customer incentives and calls for stronger building codes and limits on construction in high-risk areas.",
+      "categories": [
+        "Physical Risk",
+        "Adaptation & Resilience",
+        "Insurance Risk"
+      ],
+      "keywords": [
+        "wildfires",
+        "floods",
+        "resilient homes",
+        "building codes",
+        "Canada",
+        "premium pressure",
+        "mitigation incentives"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancejournal.com/news/national/2026/03/05/860516.htm",
+      "source_url": "https://www.insurancejournal.com/news/national/2026/03/05/860516.htm",
+      "title": "Business Interruption Insurance Must Catch Up with Climate Volatility",
+      "source_basis": "original_content",
+      "summary": "The viewpoint argues that conventional business-interruption policies often leave small and medium-sized businesses exposed when extreme weather forces closures without producing covered physical damage. It calls for clearer terms and product innovation suited to increasingly volatile climate hazards.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk"
+      ],
+      "keywords": [
+        "business interruption",
+        "climate volatility",
+        "small businesses",
+        "coverage gap",
+        "policy terms",
+        "extreme weather"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancejournal.com/news/national/2026/03/23/864830.htm",
+      "source_url": "https://www.insurancejournal.com/news/national/2026/03/23/863087.htm",
+      "title": "Wildfires, Storms, Floods Account for Record 92% of Global Insured Losses: Swiss Re",
+      "source_basis": "official_replacement",
+      "summary": "Insurance Journal reports that secondary perils generated a record 92% of the US$107 billion in global insured natural-catastrophe losses in 2025, led by wildfires, severe convective storms and floods. Swiss Re projects US$148 billion of 2026 losses at the long-term trend and about US$320 billion in its modelled peak-loss scenario.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "secondary perils",
+        "wildfires",
+        "severe convective storms",
+        "floods",
+        "insured losses",
+        "Swiss Re",
+        "peak-loss scenario"
+      ]
+    },
+    {
+      "canonical_url": "https://www.insurancejournal.com/news/national/2026/04/13/865440.htm",
+      "source_url": "https://www.insurancejournal.com/news/national/2026/04/13/865440.htm",
+      "title": "Worsening Ocean Heatwaves Are Supercharging Hurricane Damage",
+      "source_basis": "original_content",
+      "summary": "The article covers research linking marine heatwaves with faster intensification and greater damage from landfalling tropical cyclones. It notes that warmer ocean conditions are increasingly occurring near coastlines, creating a material variable for catastrophe modelling and coastal insurance exposure.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "marine heatwaves",
+        "hurricanes",
+        "rapid intensification",
+        "catastrophe models",
+        "coastal risk",
+        "insured damage"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/",
+      "source_url": "https://www.ipcc.ch/",
+      "title": "Intergovernmental Panel on Climate Change",
+      "source_basis": "original_content",
+      "summary": "The IPCC is the United Nations body for assessing climate-change science. Its site provides access to assessment cycles, working groups, special and methodology publications, data and current activities, including the Seventh Assessment Report programme.",
+      "categories": [
+        "Climate Risk",
+        "Physical Risk",
+        "Adaptation & Resilience"
+      ],
+      "keywords": [
+        "IPCC",
+        "AR7",
+        "climate science",
+        "climate impacts",
+        "adaptation",
+        "mitigation",
+        "methodology"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/2026/08/11/prtficdrlam2",
+      "source_url": "https://www.ipcc.ch/2026/08/11/prtficdrlam2",
+      "title": "IPCC Authors Advance the 2027 CDR and CCUS Methodology Draft",
+      "source_basis": "original_content",
+      "summary": "More than 120 IPCC authors met in Mexico City from 11 to 14 August 2026 to advance the first-order draft of the 2027 methodology on carbon dioxide removal and carbon capture, utilisation and storage. The Task Force on National Greenhouse Gas Inventories is preparing the document for publication in 2027.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "carbon dioxide removal",
+        "CCUS",
+        "greenhouse gas inventories",
+        "IPCC methodology",
+        "Mexico City",
+        "first-order draft"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/2026/08/13/prslcfsod",
+      "source_url": "https://www.ipcc.ch/2026/08/13/prslcfsod",
+      "title": "IPCC Opens Review of the 2027 Short-Lived Climate Forcers Methodology",
+      "source_basis": "original_content",
+      "summary": "The IPCC opened registration for expert reviewers of the second-order draft of its 2027 methodology for inventories of short-lived climate forcers. The guidance will address estimation and disclosure of national annual anthropogenic emissions, including substances such as nitrogen oxides and carbon monoxide.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "short-lived climate forcers",
+        "emissions inventories",
+        "expert review",
+        "nitrogen oxides",
+        "carbon monoxide",
+        "IPCC methodology"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/event/ipcc-workshop-on-engaging-diverse-knowledge-systems-and-ipcc-workshop-on-methods-of-assessment",
+      "source_url": "https://www.ipcc.ch/event/ipcc-workshop-on-engaging-diverse-knowledge-systems-and-ipcc-workshop-on-methods-of-assessment",
+      "title": "IPCC Workshops on Diverse Knowledge Systems and Methods of Assessment",
+      "source_basis": "original_content",
+      "summary": "The event page covers IPCC workshops on engaging diverse knowledge systems and on methods of assessment. The activities concern how climate assessments gather, evaluate and combine evidence from different forms of knowledge.",
+      "categories": [
+        "Climate Risk",
+        "Adaptation & Resilience"
+      ],
+      "keywords": [
+        "knowledge systems",
+        "assessment methods",
+        "IPCC workshops",
+        "evidence synthesis",
+        "climate assessment"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/event/lam2-2027-mr_cdr",
+      "source_url": "https://www.ipcc.ch/event/lam2-2027-mr_cdr",
+      "title": "Second Lead Author Meeting for the 2027 CDR and CCUS Methodology",
+      "source_basis": "original_content",
+      "summary": "The IPCC convened more than 120 authors in Mexico City from 11 to 14 August 2026 for the second lead-author meeting on its carbon-removal and CCUS methodology. Participants worked to develop and consolidate the first-order draft for the Task Force on National Greenhouse Gas Inventories.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "lead author meeting",
+        "carbon dioxide removal",
+        "CCUS",
+        "greenhouse gas inventories",
+        "first-order draft",
+        "IPCC"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/event/lam3srcities",
+      "source_url": "https://www.ipcc.ch/event/lam3srcities",
+      "title": "Third Lead Author Meeting for the Special Report on Climate Change and Cities",
+      "source_basis": "original_content",
+      "summary": "More than 100 scientists from 56 countries met in Oslo in January 2026 to advance the second-order draft of the IPCC Special Report on Climate Change and Cities. The planned 2027 assessment covers urban climate impacts and risks as well as adaptation and mitigation options.",
+      "categories": [
+        "Physical Risk",
+        "Adaptation & Resilience",
+        "Climate Risk"
+      ],
+      "keywords": [
+        "climate change and cities",
+        "urban risk",
+        "adaptation options",
+        "mitigation options",
+        "second-order draft",
+        "IPCC"
+      ]
+    },
+    {
+      "canonical_url": "https://www.ipcc.ch/report/2027-ipcc-methodology-report-on-carbon-dioxide-removal-technologies-carbon-capture-utilization-and-storage-for-national-greenhouse-gas-inventories-additional-guidance",
+      "source_url": "https://www.ipcc.ch/report/2027-ipcc-methodology-report-on-carbon-dioxide-removal-technologies-carbon-capture-utilization-and-storage-for-national-greenhouse-gas-inventories-additional-guidance",
+      "title": "2027 IPCC Methodology for Carbon Dioxide Removal and CCUS Inventories",
+      "source_basis": "original_content",
+      "summary": "The IPCC methodology project will provide additional guidance for national greenhouse-gas inventories covering carbon dioxide removal and carbon capture, utilisation and storage. Its agreed structure follows the 2006 IPCC Guidelines, with an overview and six volumes designed for use by inventory compilers.",
+      "categories": [
+        "Transition Risk",
+        "Climate Risk",
+        "Supervision & Disclosure"
+      ],
+      "keywords": [
+        "carbon dioxide removal",
+        "CCUS",
+        "national inventories",
+        "2006 IPCC Guidelines",
+        "inventory compilers",
+        "emissions accounting"
+      ]
+    },
+    {
+      "canonical_url": "https://www.iso.org/standard/72159.html",
+      "source_url": "https://www.iso.org/standard/68508.html",
+      "title": "ISO 14091:2021 — Adaptation to Climate Change: Guidelines on Vulnerability, Impacts and Risk Assessment",
+      "source_basis": "official_replacement",
+      "summary": "ISO 14091 gives guidelines for assessing risks from the potential impacts of climate change, understanding vulnerability, and developing sound assessments of present and future risks. These assessments support adaptation planning, implementation, monitoring and evaluation for organisations of any size or type.",
+      "categories": [
+        "Physical Risk",
+        "Adaptation & Resilience",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "ISO 14091",
+        "climate adaptation",
+        "vulnerability",
+        "climate impacts",
+        "risk assessment",
+        "monitoring and evaluation"
+      ]
+    },
+    {
+      "canonical_url": "https://www.mapfre.com/en/insights/innovation/parametric-insurance-trends-2026-mapfre",
+      "source_url": "https://www.mapfre.com/en/insights/innovation/parametric-insurance-trends-2026-mapfre",
+      "title": "Parametric Insurance: Key Trends and Mapfre's Vision",
+      "source_basis": "original_content",
+      "summary": "Mapfre explains how objective thresholds such as rainfall, wind speed or earthquake magnitude can trigger fast parametric payouts without a conventional on-site loss assessment. It links growth in these products to climate hazards, high-resolution and satellite data, predictive analytics and efforts to expand protection in underinsured markets.",
+      "categories": [
+        "Physical Risk",
+        "Insurance Risk",
+        "Actuarial Modelling"
+      ],
+      "keywords": [
+        "parametric insurance",
+        "trigger thresholds",
+        "satellite data",
+        "predictive analytics",
+        "climate hazards",
+        "protection gap",
+        "Latin America"
+      ]
+    }
+  ]
+}

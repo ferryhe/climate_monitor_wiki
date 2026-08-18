@@ -86,6 +86,8 @@ class CandidateItem:
     asset_checksum_value: str = ""
     asset_metadata: dict[str, Any] | None = None
     topics: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,8 @@ def _candidate_item_to_dict(item: CandidateItem) -> dict[str, Any]:
             "signal": item.actuarial_signal,
         },
         "topics": list(item.topics),
+        "categories": list(item.categories),
+        "keywords": list(item.keywords),
     }
     if item.lane == "document":
         payload.update(_document_metadata(item))

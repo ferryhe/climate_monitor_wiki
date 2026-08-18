@@ -3,8 +3,23 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from .ai_filter import CATEGORY_LABELS
+
 
 _MAX_WARNING_LINES = 20
+
+
+def _metadata_values(item: Any, name: str, fallback: tuple[str, ...] = ()) -> tuple[str, ...]:
+    raw = tuple(_item_value(item, name, ()) or fallback)
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        cleaned = " ".join(str(value).split()).strip(" ,;")
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            output.append(cleaned)
+            seen.add(key)
+    return tuple(output)
 
 
 def _item_value(item: Any, name: str, default: Any = "") -> Any:
@@ -57,8 +72,29 @@ def _document_metadata_lines(item: Any) -> list[str]:
 def _render_item(index: int, item: Any) -> str:
     title = str(_item_value(item, "title"))
     published = str(_item_value(item, "published") or _item_value(item, "detected_at") or "Unknown")
-    topics = tuple(_item_value(item, "topics", ()) or ())
-    topic_text = ", ".join(str(topic) for topic in topics) if topics else "climate risk"
+    categories = _metadata_values(item, "categories")
+    if not categories:
+        categories = tuple(
+            CATEGORY_LABELS.get(signal, fallback)
+            for signal, fallback, related in (
+                (
+                    _item_value(item, "climate_signal"),
+                    "Climate Risk",
+                    _item_value(item, "climate_related", False),
+                ),
+                (
+                    _item_value(item, "actuarial_signal"),
+                    "Actuarial",
+                    _item_value(item, "actuarial_related", False),
+                ),
+            )
+            if (signal and signal != "none") or related
+        )
+    keywords = _metadata_values(item, "keywords", tuple(_item_value(item, "topics", ()) or ()))
+    if not keywords:
+        keywords = tuple(label.casefold() for label in categories)
+    category_text = ", ".join(categories)
+    keyword_text = ", ".join(keywords)
     actuarial = "Yes" if bool(_item_value(item, "actuarial_related", False)) else "No"
     relevance_reason = str(_item_value(item, "relevance_reason", "") or "Matched monitor criteria.")
     evidence_snippet = str(_item_value(item, "evidence_snippet", "") or "")
@@ -68,19 +104,26 @@ def _render_item(index: int, item: Any) -> str:
         f"**Title:** {title} <br>",
         f"**Source:** {_item_value(item, 'source_name')} <br>",
         f"**Summary:** {_item_value(item, 'summary')} <br>",
-        f"**URL:** {_item_value(item, 'url')} <br>",
-        f"**Published:** {published} <br>",
-        f"**Actuarial relevance:** {actuarial} <br>",
-        f"**Climate signal:** {_item_value(item, 'climate_signal', 'general')} <br>",
-        f"**Actuarial signal:** {_item_value(item, 'actuarial_signal', 'none')} <br>",
-        f"**Confidence:** {confidence} <br>",
-        f"**Relevance reason:** {relevance_reason} <br>",
-        f"**Evidence:** {evidence_snippet} <br>",
     ]
+    if category_text:
+        lines.append(f"**Categories:** {category_text} <br>")
+    if keyword_text:
+        lines.append(f"**Keywords:** {keyword_text} <br>")
+    lines.extend(
+        [
+            f"**URL:** {_item_value(item, 'url')} <br>",
+            f"**Published:** {published} <br>",
+            f"**Actuarial relevance:** {actuarial} <br>",
+            f"**Climate signal:** {_item_value(item, 'climate_signal', 'general')} <br>",
+            f"**Actuarial signal:** {_item_value(item, 'actuarial_signal', 'none')} <br>",
+            f"**Confidence:** {confidence} <br>",
+            f"**Relevance reason:** {relevance_reason} <br>",
+            f"**Evidence:** {evidence_snippet} <br>",
+        ]
+    )
     lines.extend(_document_metadata_lines(item))
     lines.extend(
         [
-            f"**Topics:** {topic_text}",
             "",
             "---",
         ]

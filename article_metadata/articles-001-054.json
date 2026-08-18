@@ -1,0 +1,494 @@
+{
+  "schema_version": 1,
+  "annotation_method": "subagent-original-content-v1",
+  "source_scope": "linked-original-content-with-report-fallback",
+  "generated_on": "2026-08-17",
+  "articles": [
+    {
+      "canonical_url": "http://paper.ce.cn/pc/content/202604/07/content_330710.html",
+      "source_url": "http://paper.ce.cn/pc/content/202604/07/content_330710.html",
+      "title": "Climate Finance Transparency and Effectiveness Urgently Need Improvement",
+      "source_basis": "original_content",
+      "summary": "An Economic Daily article describes UNCTAD findings that climate-finance accounting lacks transparency, common definitions and comparable impact measures. It highlights double counting with official development assistance, the growing use of non-concessional loans and the need for affordable instruments and governance reform.",
+      "categories": ["Climate Risk", "Supervision & Disclosure"],
+      "keywords": ["UNCTAD", "climate finance", "official development assistance", "double counting", "non-concessional loans", "multilateral development banks"]
+    },
+    {
+      "canonical_url": "http://www.ce.cn/xwzx/gnsz/gdxw/202604/t20260414_2904076.shtml",
+      "source_url": "http://www.ce.cn/xwzx/gnsz/gdxw/202604/t20260414_2904076.shtml",
+      "title": "UN Report Calls for Stronger Financing for Sustainable Development",
+      "source_basis": "original_content",
+      "summary": "The article summarizes the UN Financing for Sustainable Development Report 2026 and its call to implement the Sevilla Commitment through international coordination and financing reform. It discusses the multi-trillion-dollar financing gap, debt constraints, private-capital mobilization, green finance and stronger data transparency.",
+      "categories": ["Transition Risk", "Supervision & Disclosure"],
+      "keywords": ["Sevilla Commitment", "sustainable development finance", "green bonds", "debt sustainability", "private capital", "data transparency"]
+    },
+    {
+      "canonical_url": "https://actuaries.org.nz/content/uploads/2026/04/CLIMATE-DISCLOSURES-Working-Group-2026-Anticipated-Financial-Impacts.pdf",
+      "source_url": "https://actuaries.org.nz/content/uploads/2026/04/CLIMATE-DISCLOSURES-Working-Group-2026-Anticipated-Financial-Impacts.pdf",
+      "title": "Identifying and Quantifying Anticipated Financial Impacts of Climate-Related Risks and Opportunities",
+      "source_basis": "original_content",
+      "summary": "This New Zealand Society of Actuaries white paper explains how entities can identify and quantify anticipated financial impacts from climate-related risks and opportunities. It covers the path from risk identification to financial impacts, modelling considerations and New Zealand disclosure requirements.",
+      "categories": ["Supervision & Disclosure", "Actuarial Modelling", "Climate Risk"],
+      "keywords": ["anticipated financial impacts", "climate disclosures", "New Zealand Society of Actuaries", "financial modelling", "scenario analysis", "climate opportunities"]
+    },
+    {
+      "canonical_url": "https://actuaries.org/event/ifrs-s2-climate-related-disclosures",
+      "source_url": "https://actuaries.org/event/ifrs-s2-climate-related-disclosures/",
+      "title": "IFRS S2 Climate-Related Disclosures",
+      "source_basis": "original_content",
+      "summary": "The IAA webinar explains how actuaries can support the identification, modelling and disclosure of climate risks and opportunities under IFRS S2. It also introduces the IAA's work on ISAP 8 and IAN 200 to guide actuarial services and practical application of IFRS sustainability standards.",
+      "categories": ["Supervision & Disclosure", "Actuarial Modelling"],
+      "keywords": ["IFRS S2", "IFRS S1", "ISSB", "ISAP 8", "IAN 200", "sustainability reporting", "actuarial practice"]
+    },
+    {
+      "canonical_url": "https://actuaries.org/news-post/news-brief-august-05-2026",
+      "source_url": "https://actuaries.org/news-post/news-brief-august-05-2026",
+      "title": "IAA News Brief — August 5, 2026",
+      "source_basis": "original_content",
+      "summary": "The IAA member brief lists international actuarial events and professional activities, including an International Actuaries Day discussion, a joint colloquium call for abstracts and an Open IRM webinar on Solvency II methods. It serves as a professional calendar and coordination bulletin rather than a focused climate publication.",
+      "categories": ["Actuarial Modelling", "Capital & Solvency"],
+      "keywords": ["International Actuarial Association", "Open IRM", "Solvency II", "actuarial methods", "professional collaboration"]
+    },
+    {
+      "canonical_url": "https://actuariesclimateindex.org/data/data-disclosure",
+      "source_url": "https://actuariesclimateindex.org/data/data-disclosure/",
+      "title": "Data Disclosure for the Actuaries Climate Index",
+      "source_basis": "original_content",
+      "summary": "The disclosure documents the public datasets and methodology used to calculate the Actuaries Climate Index and its six components. It identifies NOAA, CLIMDEX and sea-level records as sources and explains limitations from missing observations and gridded climate data.",
+      "categories": ["Actuarial Modelling", "Physical Risk", "Supervision & Disclosure"],
+      "keywords": ["Actuaries Climate Index", "NOAA", "CLIMDEX", "sea level", "extreme weather", "climate data", "missing observations"]
+    },
+    {
+      "canonical_url": "https://actuariesclimateindex.org/home",
+      "source_url": "https://actuariesclimateindex.org/home/",
+      "title": "Actuaries Climate Index",
+      "source_basis": "original_content",
+      "summary": "The Actuaries Climate Index is an educational monitoring tool that measures observed changes in extreme weather and sea levels across the United States and Canada. The site publishes quarterly index releases as new seasonal meteorological data becomes available.",
+      "categories": ["Physical Risk", "Actuarial Modelling"],
+      "keywords": ["Actuaries Climate Index", "extreme weather", "sea level", "North America", "meteorological data", "climate trends"]
+    },
+    {
+      "canonical_url": "https://actuary.info/insights/pc-market-cycle-2026-actuarial-analysis",
+      "source_url": "https://actuary.info/insights/pc-market-cycle-2026-actuarial-analysis",
+      "title": "The P&C Market Cycle in 2026: From Hard Market to Segmented Softening",
+      "source_basis": "original_content",
+      "summary": "The analysis describes a segmented U.S. property and casualty market in which property pricing is easing while casualty lines remain pressured by social inflation. It also examines catastrophe reinsurance capacity, climate-driven losses, reserve adequacy and the implications for pricing and capital teams.",
+      "categories": ["Insurance Risk", "Capital & Solvency", "Physical Risk"],
+      "keywords": ["property and casualty", "market cycle", "social inflation", "catastrophe reinsurance", "reserve adequacy", "pricing", "wildfire"]
+    },
+    {
+      "canonical_url": "https://actuary.org/academy_committee/climate-change-joint-committee",
+      "source_url": "https://actuary.org/academy_committee/climate-change-joint-committee/",
+      "title": "Climate Change Joint Committee",
+      "source_basis": "original_content",
+      "summary": "The American Academy of Actuaries committee analyzes climate disclosures, climate impacts and broader climate concerns. It also collaborates with federal agencies through comment letters and other climate-related communications.",
+      "categories": ["Climate Risk", "Supervision & Disclosure"],
+      "keywords": ["American Academy of Actuaries", "Climate Change Joint Committee", "climate disclosures", "federal agencies", "public policy"]
+    },
+    {
+      "canonical_url": "https://actuary.org/article/agile-and-ready-for-whats-next",
+      "source_url": "https://actuary.org/article/agile-and-ready-for-whats-next/",
+      "title": "Agile and Ready for What's Next",
+      "source_basis": "original_content",
+      "summary": "The article outlines the American Academy of Actuaries' 2026 practice-council priorities amid climate volatility, artificial intelligence, demographic change and policy uncertainty. Its casualty discussion focuses on homeowners affordability, market withdrawals and climate-related pressures on insurance access.",
+      "categories": ["Insurance Risk", "Climate Risk", "Supervision & Disclosure"],
+      "keywords": ["insurance affordability", "homeowners insurance", "climate volatility", "practice councils", "market withdrawal", "public policy"]
+    },
+    {
+      "canonical_url": "https://actuary.org/resources/determining-the-impact-of-climate-change-on-insurance-risk-and-the-global-community",
+      "source_url": "https://actuary.org/resources/determining-the-impact-of-climate-change-on-insurance-risk-and-the-global-community/",
+      "title": "Determining the Impact of Climate Change on Insurance Risk and the Global Community",
+      "source_basis": "original_content",
+      "summary": "This Phase I policy paper was commissioned by four North American actuarial organizations to examine the emerging risk of climate change. It frames a collaborative research agenda for assessing climate impacts and their risk-management implications for the insurance industry.",
+      "categories": ["Climate Risk", "Insurance Risk", "Actuarial Modelling"],
+      "keywords": ["climate change", "insurance risk", "Solterra Solutions", "Casualty Actuarial Society", "risk management", "actuarial research"]
+    },
+    {
+      "canonical_url": "https://actuary.org/wp-content/uploads/2026/07/Climate-Scenario-Considerations-for-US-ORSA.pdf",
+      "source_url": "https://actuary.org/wp-content/uploads/2026/07/Climate-Scenario-Considerations-for-US-ORSA.pdf",
+      "title": "Climate Scenario Considerations for U.S. ORSA",
+      "source_basis": "original_content",
+      "summary": "The American Academy of Actuaries paper provides non-binding considerations for incorporating climate scenarios into an insurer's Own Risk and Solvency Assessment. It is designed for actuarial and risk professionals evaluating forward-looking climate stresses within enterprise risk management.",
+      "categories": ["Capital & Solvency", "Actuarial Modelling", "Climate Risk"],
+      "keywords": ["ORSA", "climate scenarios", "enterprise risk management", "insurer solvency", "stress testing", "American Academy of Actuaries"]
+    },
+    {
+      "canonical_url": "https://blogs.worldbank.org/en/voices/grow-food--create-jobs--africa-s-agribusiness-moment-is-now-",
+      "source_url": "https://blogs.worldbank.org/en/voices/grow-food--create-jobs--africa-s-agribusiness-moment-is-now-",
+      "title": "Grow Food, Create Jobs: Africa's Agribusiness Moment Is Now",
+      "source_basis": "original_content",
+      "summary": "The World Bank article argues that agribusiness can generate jobs, private investment and regional trade across Eastern and Southern Africa. It highlights productivity, food imports, value-chain development and deeper intra-African agrifood trade as central economic opportunities.",
+      "categories": ["Adaptation & Resilience"],
+      "keywords": ["Africa", "agribusiness", "food security", "agricultural productivity", "regional trade", "AgriConnect"]
+    },
+    {
+      "canonical_url": "https://briefglance.com/articles/groupamas-world-first-cat-bond-a-120m-bet-against-hailstorms",
+      "source_url": "https://briefglance.com/articles/groupamas-world-first-cat-bond-a-120m-bet-against-hailstorms",
+      "title": "Groupama's World-First Hail Catastrophe Bond",
+      "source_basis": "original_content",
+      "summary": "The article describes Groupama's €120 million Quercus II Re catastrophe bond, structured as aggregate indemnity protection for hail losses affecting property and motor portfolios in metropolitan France. The bond responds above an annual hail-loss threshold and transfers severe convective-storm risk to capital-market investors.",
+      "categories": ["Insurance Risk", "Capital & Solvency", "Physical Risk"],
+      "keywords": ["Groupama", "catastrophe bond", "hail", "Quercus II Re", "insurance-linked securities", "severe convective storms", "aggregate indemnity"]
+    },
+    {
+      "canonical_url": "https://cetex.org/wp-content/uploads/2026/06/Parametric-Insurance-in-India.pdf",
+      "source_url": "https://cetex.org/wp-content/uploads/2026/06/Parametric-Insurance-in-India.pdf",
+      "title": "Leveraging Parametric Insurance for Climate Adaptation and Resilience in India",
+      "source_basis": "original_content",
+      "summary": "The policy brief examines how parametric insurance could support climate adaptation and social protection in India amid floods, heat, monsoon variability and a large natural-catastrophe protection gap. It explains automatic threshold-based payouts while also addressing affordability and the challenges of scaling coverage.",
+      "categories": ["Adaptation & Resilience", "Insurance Risk", "Physical Risk"],
+      "keywords": ["India", "parametric insurance", "protection gap", "heat stress", "flood", "monsoon", "basis risk"]
+    },
+    {
+      "canonical_url": "https://climate.copernicus.eu/",
+      "source_url": "https://climate.copernicus.eu/",
+      "title": "Copernicus Climate Change Service",
+      "source_basis": "original_content",
+      "summary": "The Copernicus Climate Change Service homepage provides access to climate intelligence, the Climate Data Store, atlases and analyses of European and global climate conditions. Its current materials include the European State of the Climate, extreme-weather observations and projects that translate climate data into local applications.",
+      "categories": ["Physical Risk", "Climate Risk", "Actuarial Modelling"],
+      "keywords": ["Copernicus", "C3S", "Climate Data Store", "Earth observation", "European climate", "extreme weather"]
+    },
+    {
+      "canonical_url": "https://climate.copernicus.eu/exceptionally-hot-and-dry-conditions-fuel-wildfires-europe-ocean-surface-temperatures-reach-record",
+      "source_url": "https://climate.copernicus.eu/exceptionally-hot-and-dry-conditions-fuel-wildfires-europe-ocean-surface-temperatures-reach-record",
+      "title": "Exceptionally Hot and Dry Conditions Fuel European Wildfires as Ocean Temperatures Reach July Records",
+      "source_basis": "original_content",
+      "summary": "Copernicus reports that prolonged hot and dry conditions produced western Europe's hottest June–July period in its record and favored extreme wildfires. It also records the highest July sea-surface temperatures across the extra-polar oceans and notes developing El Niño conditions.",
+      "categories": ["Physical Risk", "Climate Risk"],
+      "keywords": ["European wildfires", "heat", "drought", "sea-surface temperature", "El Niño", "ERA5", "Copernicus"]
+    },
+    {
+      "canonical_url": "https://climate.copernicus.eu/precipitation-relative-humidity-soil-moisture-and-river-flow-july-2026",
+      "source_url": "https://climate.copernicus.eu/precipitation-relative-humidity-soil-moisture-and-river-flow-july-2026",
+      "title": "Precipitation, Relative Humidity, Soil Moisture and River Flow for July 2026",
+      "source_basis": "original_content",
+      "summary": "The Copernicus hydrological bulletin maps July 2026 precipitation, humidity, soil-moisture and river-flow anomalies. It identifies persistent dry conditions and very low river flows across large parts of western, central and eastern Europe while explaining limitations in ERA5 hydrological data.",
+      "categories": ["Physical Risk", "Actuarial Modelling"],
+      "keywords": ["precipitation", "soil moisture", "river flow", "drought", "ERA5-Land", "hydrology", "Europe"]
+    },
+    {
+      "canonical_url": "https://content.naic.org/natural-catastrophe-risk-resilience-resource-center",
+      "source_url": "https://content.naic.org/natural-catastrophe-risk-resilience-resource-center",
+      "title": "Natural Catastrophe Risk and Resilience Resource Center",
+      "source_basis": "original_content",
+      "summary": "The NAIC resource center houses the work of the Natural Catastrophe Risk and Resilience Task Force created in 2026 and preserves earlier Climate and Resiliency Task Force materials. It covers policyholder mitigation, regulatory issues, property coverage and science on severe convective storms and wildfire.",
+      "categories": ["Supervision & Disclosure", "Insurance Risk", "Adaptation & Resilience"],
+      "keywords": ["NAIC", "natural catastrophe", "risk mitigation", "wildfire", "severe convective storms", "property insurance", "state regulation"]
+    },
+    {
+      "canonical_url": "https://desapublications.un.org/publications/financing-sustainable-development-report-2026",
+      "source_url": "https://desapublications.un.org/publications/financing-sustainable-development-report-2026",
+      "title": "Financing for Sustainable Development Report 2026: Implementing the Sevilla Commitment",
+      "source_basis": "original_content",
+      "summary": "The UN DESA publication says sustainable-development progress is being reversed by global fragmentation and a financing squeeze in developing countries. It centers implementation of the Sevilla Commitment and reforms intended to move financing toward country priorities.",
+      "categories": ["Transition Risk", "Capital & Solvency"],
+      "keywords": ["UN DESA", "Sevilla Commitment", "development finance", "financing squeeze", "developing countries", "SDG finance"]
+    },
+    {
+      "canonical_url": "https://descartesunderwriting.com/white-papers/parametric-climate-stress-insurance-data-centers",
+      "source_url": "https://descartesunderwriting.com/white-papers/parametric-climate-stress-insurance-data-centers",
+      "title": "Parametric Climate Stress Insurance for Data Centers",
+      "source_basis": "original_content",
+      "summary": "Descartes describes global parametric cover for data centers triggered by daily maximum or minimum temperatures, with limits up to $80 million per contract. The product targets business interruption, non-damage business interruption and extra expenses arising from extreme heat or cold.",
+      "categories": ["Insurance Risk", "Physical Risk", "Adaptation & Resilience"],
+      "keywords": ["data centers", "parametric insurance", "extreme heat", "extreme cold", "business interruption", "temperature index", "non-damage business interruption"]
+    },
+    {
+      "canonical_url": "https://electrictruckworld.com/climate-change-and-actuarial-science-pricing-for-extreme-weather-events",
+      "source_url": "https://electrictruckworld.com/climate-change-and-actuarial-science-pricing-for-extreme-weather-events/",
+      "title": "Climate Change and Actuarial Science: Pricing Extreme Weather Risk",
+      "source_basis": "original_content",
+      "summary": "The article explains why historical experience alone is increasingly inadequate for pricing wildfire, flood and hurricane exposures under climate change. It discusses non-stationarity, non-linear damage and the use of climate projections in actuarial pricing models.",
+      "categories": ["Actuarial Modelling", "Physical Risk", "Insurance Risk"],
+      "keywords": ["non-stationarity", "extreme weather", "insurance pricing", "wildfire", "flood", "hurricane", "climate projections"]
+    },
+    {
+      "canonical_url": "https://finance.sina.cn/esg/2026-04-13/detail-inhukeeu5508499.d.html",
+      "source_url": "https://finance.sina.cn/esg/2026-04-13/detail-inhukeeu5508499.d.html",
+      "title": "Six Opportunities for Global Sustainable Finance in 2026",
+      "source_basis": "original_content",
+      "summary": "This Chinese-language article, sourced from the World Resources Institute, identifies six opportunities to shift capital toward low-carbon development in emerging and developing economies. It discusses the $1.3 trillion climate-finance goal, private capital, blended finance, adaptation, common taxonomies and closing insurance protection gaps.",
+      "categories": ["Transition Risk", "Adaptation & Resilience", "Insurance Risk"],
+      "keywords": ["sustainable finance", "emerging markets", "blended finance", "climate adaptation", "green taxonomy", "protection gap", "COP31"]
+    },
+    {
+      "canonical_url": "https://indonesia.un.org/en/313435-indonesia-and-united-nations-launch-joint-programme-scale-climate-finance-and-resilience",
+      "source_url": "https://indonesia.un.org/en/313435-indonesia-and-united-nations-launch-joint-programme-scale-climate-finance-and-resilience",
+      "title": "Indonesia and United Nations Launch Programme to Scale Climate Finance and Smallholder Resilience",
+      "source_basis": "original_content",
+      "summary": "Indonesia and UN agencies launched a programme in East Java and Lampung to expand smallholders' access to finance and climate-smart agricultural practices. The programme aims to train at least 15,000 farmers, with emphasis on drought-resilient crops and stronger food-system resilience.",
+      "categories": ["Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["Indonesia", "smallholder farmers", "climate-smart agriculture", "drought-resilient crops", "food systems", "East Java", "Lampung"]
+    },
+    {
+      "canonical_url": "https://informedclearly.com/en/environment/48757/cop31-climate-finance-implementation-challenge-2026",
+      "source_url": "https://informedclearly.com/en/environment/48757/cop31-climate-finance-implementation-challenge-2026",
+      "title": "COP31 2026: The $1.3 Trillion Climate Finance Implementation Challenge",
+      "source_basis": "original_content",
+      "summary": "The article frames COP31 in Antalya as a shift from target-setting toward implementing a pathway from roughly $190 billion to $1.3 trillion in annual climate finance for developing countries. It focuses on public-private capital mobilization, climate justice and translating commitments into investable pipelines.",
+      "categories": ["Transition Risk", "Adaptation & Resilience"],
+      "keywords": ["COP31", "climate finance", "Antalya", "developing countries", "public-private capital", "climate justice", "investment pipelines"]
+    },
+    {
+      "canonical_url": "https://inrisklabs.com/",
+      "source_url": "https://inrisklabs.com/",
+      "title": "InRisk Parametric Insurance Innovation",
+      "source_basis": "original_content",
+      "summary": "InRisk presents data-driven parametric insurance products for governments, development agencies, reinsurers and intermediaries. Its offerings use objective triggers for crop, livestock, market-price and agricultural-input risks, including rainfall, flood, drought, hail and heat stress.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["InRisk", "parametric insurance", "crop insurance", "livestock", "drought", "flood", "heat stress", "index insurance"]
+    },
+    {
+      "canonical_url": "https://irff.undp.org/projects/data-climate-resilience-and-development",
+      "source_url": "https://irff.undp.org/projects/data-climate-resilience-and-development",
+      "title": "Data for Climate Resilience and Development",
+      "source_basis": "original_content",
+      "summary": "UNDP and Jupiter Intelligence are supplying governments with climate-risk data on heat, precipitation, flood and drought to support development priorities. The project links analytics to disaster-risk finance, social protection, national adaptation plans and decisions about insurance for people and infrastructure.",
+      "categories": ["Adaptation & Resilience", "Climate Risk", "Actuarial Modelling"],
+      "keywords": ["UNDP", "Jupiter Intelligence", "climate analytics", "disaster risk finance", "social protection", "National Adaptation Plans", "flood", "drought"]
+    },
+    {
+      "canonical_url": "https://irff.undp.org/projects/global-actuarial-initiative",
+      "source_url": "https://irff.undp.org/projects/global-actuarial-initiative",
+      "title": "Global Actuarial Initiative",
+      "source_basis": "original_content",
+      "summary": "The UNDP–Milliman Global Actuarial Initiative builds actuarial capacity and insurance-market expertise in developing countries. It combines training, policy road maps, regulatory support, mentorship and pro bono consulting to help local institutions quantify, price and manage evolving risks.",
+      "categories": ["Actuarial Modelling", "Insurance Risk", "Adaptation & Resilience"],
+      "keywords": ["UNDP", "Milliman", "actuarial capacity", "developing countries", "insurance markets", "risk pricing", "regulatory capacity"]
+    },
+    {
+      "canonical_url": "https://iri.columbia.edu/our-expertise/climate/forecasts/enso/current",
+      "source_url": "https://iri.columbia.edu/our-expertise/climate/forecasts/enso/current/",
+      "title": "IRI ENSO Forecast — July 2026 Quick Look",
+      "source_basis": "original_content",
+      "summary": "IRI's July 2026 assessment says El Niño conditions are strengthening, with Niño 3.4 sea-surface temperature anomalies rising through June and mid-July. The page compares official forecaster probabilities with model-based forecasts and explains why the two can diverge.",
+      "categories": ["Physical Risk", "Actuarial Modelling"],
+      "keywords": ["ENSO", "El Niño", "Niño 3.4", "sea-surface temperature", "IRI", "climate forecast", "Pacific Ocean"]
+    },
+    {
+      "canonical_url": "https://news.climate.columbia.edu/tag/climate-finance",
+      "source_url": "https://news.climate.columbia.edu/tag/climate-finance/",
+      "title": "Climate Finance — State of the Planet",
+      "source_basis": "original_content",
+      "summary": "Columbia Climate School's topic page defines climate finance as public and private investment supporting emissions reduction, clean energy and climate-risk management. It highlights tools such as green bonds, carbon markets and climate-risk disclosure and links to current stories and events.",
+      "categories": ["Transition Risk", "Supervision & Disclosure"],
+      "keywords": ["climate finance", "green bonds", "carbon markets", "clean energy", "climate-risk disclosure", "Columbia Climate School"]
+    },
+    {
+      "canonical_url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6947598",
+      "source_url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6947598",
+      "title": "Parametric Insurance Without Windfalls",
+      "source_basis": "original_content",
+      "summary": "The paper proposes forecast-based and restricted-use parametric insurance designs that can advance climate adaptation while fitting insurance law's indemnity framework. It also addresses implementation mechanisms and policyholder protections for parametric shortfalls.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Supervision & Disclosure"],
+      "keywords": ["parametric insurance", "forecast-based coverage", "restricted-use coverage", "indemnity", "insurable interest", "climate protection gap", "policyholder protection"]
+    },
+    {
+      "canonical_url": "https://research.reading.ac.uk/climate-and-finance/2026-climate-and-finance-conference-insurance-for-climate-risk-indemnity-parametric-and-hybrid-solutions",
+      "source_url": "https://research.reading.ac.uk/climate-and-finance/2026-climate-and-finance-conference-insurance-for-climate-risk-indemnity-parametric-and-hybrid-solutions/",
+      "title": "Insurance for Climate Risk: Indemnity, Parametric and Hybrid Solutions",
+      "source_basis": "original_content",
+      "summary": "The University of Reading conference examines how changing hazards, exposure concentrations and repair and reinsurance costs are reshaping insurability. It compares indemnity, parametric and hybrid structures, including liquidity benefits, basis risk, data quality, model uncertainty, pricing and consumer fairness.",
+      "categories": ["Insurance Risk", "Actuarial Modelling", "Climate Risk"],
+      "keywords": ["indemnity insurance", "parametric insurance", "hybrid insurance", "basis risk", "insurability", "model uncertainty", "consumer protection"]
+    },
+    {
+      "canonical_url": "https://riskpublishing.com/issb-ifrs-s1-and-s2-implementation-guide-for-us",
+      "source_url": "https://riskpublishing.com/issb-ifrs-s1-and-s2-implementation-guide-for-us/",
+      "title": "ISSB IFRS S1 and S2 Implementation Guide for U.S. Companies",
+      "source_basis": "original_content",
+      "summary": "The guide explains the governance, strategy, risk-management, and metrics-and-targets structure of IFRS S1 and IFRS S2 for U.S. companies. It covers jurisdictional adoption, targeted IFRS S2 amendments, California disclosure laws, financial materiality and transitional relief.",
+      "categories": ["Supervision & Disclosure", "Transition Risk"],
+      "keywords": ["IFRS S1", "IFRS S2", "ISSB", "California SB 253", "California SB 261", "Scope 3", "financial materiality"]
+    },
+    {
+      "canonical_url": "https://sdgfinance.undp.org/news-events/undp-advance-country-led-financing-reform-2026-financing-development-forum",
+      "source_url": "https://sdgfinance.undp.org/news-events/undp-advance-country-led-financing-reform-2026-financing-development-forum",
+      "title": "UNDP to Advance Country-Led Financing Reform at the 2026 Financing for Development Forum",
+      "source_basis": "original_content",
+      "summary": "UNDP describes a financing environment marked by falling development assistance, high debt-service costs and a $4.3 trillion annual SDG financing gap. The forum focuses on stronger country financing systems, clearer investment pipelines and alignment between public finance, private investment and national priorities.",
+      "categories": ["Transition Risk", "Capital & Solvency"],
+      "keywords": ["UNDP", "Financing for Development Forum", "SDG financing gap", "debt service", "public finance", "private investment", "investment pipelines"]
+    },
+    {
+      "canonical_url": "https://tnfd.global/",
+      "source_url": "https://tnfd.global/",
+      "title": "Taskforce on Nature-related Financial Disclosures",
+      "source_basis": "original_content",
+      "summary": "TNFD provides recommendations and guidance for organizations to assess and disclose nature-related dependencies, impacts, risks and opportunities. Its framework uses four disclosure pillars aligned with TCFD and ISSB and aims to shift financial flows toward nature-positive outcomes.",
+      "categories": ["Supervision & Disclosure", "Climate Risk"],
+      "keywords": ["TNFD", "nature-related risk", "biodiversity", "disclosure framework", "TCFD", "ISSB", "financial flows"]
+    },
+    {
+      "canonical_url": "https://unctad.org/",
+      "source_url": "https://unctad.org/",
+      "title": "UN Trade and Development",
+      "source_basis": "original_content",
+      "summary": "UNCTAD's homepage provides research and data on trade, investment, commodities and development. Current featured material includes critical minerals, the World Investment Report 2026, energy-transition activity in ports and the exposure of vulnerable economies to oil and food-price shocks.",
+      "categories": ["Transition Risk", "Climate Risk"],
+      "keywords": ["UNCTAD", "critical minerals", "international investment", "energy transition", "commodity dependence", "vulnerable economies", "trade"]
+    },
+    {
+      "canonical_url": "https://viewpoint.pwc.com/dt/gx/en/pwc-ifrs-talks/PwC-IFRS-talks/february-2026.html",
+      "source_url": "https://viewpoint.pwc.com/dt/gx/en/pwc-ifrs-talks/PwC-IFRS-talks/february-2026.html",
+      "title": "February 2026: Sustainability Reporting Update",
+      "source_basis": "original_content",
+      "summary": "PwC's IFRS Talks episode covers recent ISSB developments, including IFRS S2 amendments and the BEES project. It also gives shorter updates on the Greenhouse Gas Protocol and revised European Sustainability Reporting Standards.",
+      "categories": ["Supervision & Disclosure", "Transition Risk"],
+      "keywords": ["PwC", "IFRS S2", "ISSB", "BEES project", "GHG Protocol", "ESRS", "sustainability reporting"]
+    },
+    {
+      "canonical_url": "https://www.actuaries.org.uk/",
+      "source_url": "https://www.actuaries.org.uk/",
+      "title": "Institute and Faculty of Actuaries",
+      "source_basis": "original_content",
+      "summary": "The IFoA homepage presents the U.K. chartered professional body's education, regulation, research and member activities. Current featured items include professional consultations, insurance standards, conferences and actuarial work across financial services, health and longevity.",
+      "categories": ["Actuarial Modelling", "Supervision & Disclosure"],
+      "keywords": ["Institute and Faculty of Actuaries", "actuarial profession", "professional standards", "actuarial education", "insurance standards", "United Kingdom"]
+    },
+    {
+      "canonical_url": "https://www.actuariesclimateindex.org/",
+      "source_url": "https://www.actuariesclimateindex.org/",
+      "title": "Actuaries Climate Index",
+      "source_basis": "original_content",
+      "summary": "The Actuaries Climate Index provides an objective quarterly measure of observed changes in extreme weather and sea levels across the United States and Canada. It is intended to help actuaries, policymakers and the public monitor changing climate conditions.",
+      "categories": ["Physical Risk", "Actuarial Modelling"],
+      "keywords": ["Actuaries Climate Index", "extreme weather", "sea level", "United States", "Canada", "quarterly index", "climate monitoring"]
+    },
+    {
+      "canonical_url": "https://www.adaptation-fund.org/",
+      "source_url": "https://www.adaptation-fund.org/",
+      "title": "Adaptation Fund",
+      "source_basis": "original_content",
+      "summary": "The Adaptation Fund finances locally owned projects that help vulnerable communities in developing countries adapt to climate change. Its site reports $1.6 billion allocated across 226 projects serving 90 million beneficiaries and emphasizes action, innovation, learning, monitoring and transparency.",
+      "categories": ["Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["Adaptation Fund", "developing countries", "locally led adaptation", "climate finance", "vulnerable communities", "resilience projects"]
+    },
+    {
+      "canonical_url": "https://www.adaptation-undp.org/news",
+      "source_url": "https://www.adaptation-undp.org/news",
+      "title": "UNDP Climate Change Adaptation — News and Stories",
+      "source_basis": "original_content",
+      "summary": "The UNDP portal indexes climate-adaptation projects and stories across planning, livelihoods, food security, ecosystems, water, early-warning systems, cities, health and infrastructure. It also describes UNDP support for accessing multilateral adaptation funds and catalyzing private finance.",
+      "categories": ["Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["UNDP", "climate adaptation", "early warning systems", "water security", "food security", "adaptation finance", "resilient infrastructure"]
+    },
+    {
+      "canonical_url": "https://www.adaptation-undp.org/news?page=32",
+      "source_url": "https://www.adaptation-undp.org/news?page=32",
+      "title": "UNDP Climate Change Adaptation — News and Stories Archive",
+      "source_basis": "original_content",
+      "summary": "This paginated UNDP adaptation index presents the same thematic portal for projects and stories spanning livelihoods, ecosystems, water, early warning, urban resilience, health and infrastructure. The portal explains how UNDP helps countries secure public adaptation finance and leverage private capital.",
+      "categories": ["Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["UNDP", "adaptation portfolio", "ecosystem-based adaptation", "climate information", "urban resilience", "public finance", "private finance"]
+    },
+    {
+      "canonical_url": "https://www.ajg.com/gallagherre/-/media/files/gallagher/gallagherre/news-and-insights/2026/april/natural-catastrophe-and-climate-report-q1-2026.pdf",
+      "source_url": "https://www.ajg.com/gallagherre/-/media/files/gallagher/gallagherre/news-and-insights/2026/april/natural-catastrophe-and-climate-report-q1-2026.pdf",
+      "title": "Natural Catastrophe and Climate Report — Q1 2026",
+      "source_basis": "original_content",
+      "summary": "Gallagher Re estimates first-quarter 2026 natural-catastrophe economic losses at $58 billion and insured losses at $20 billion, both below their ten-year first-quarter averages. The publication notes no single insurer loss above $10 billion, significant uninsured flood costs and ample catastrophe budgets entering historically costlier quarters.",
+      "categories": ["Insurance Risk", "Physical Risk", "Capital & Solvency"],
+      "keywords": ["Gallagher Re", "natural catastrophe", "economic loss", "insured loss", "reinsurance", "catastrophe budget", "flood"]
+    },
+    {
+      "canonical_url": "https://www.aon.com/",
+      "source_url": "https://www.aon.com/",
+      "title": "Aon — Risk Capital and Human Capital",
+      "source_basis": "original_content",
+      "summary": "Aon's corporate homepage describes advisory and analytics capabilities across Risk Capital and Human Capital. Its risk business combines market access, geographic reach and financial instruments to help organizations manage interconnected risks and allocate capital.",
+      "categories": ["Insurance Risk", "Capital & Solvency"],
+      "keywords": ["Aon", "risk capital", "human capital", "risk analytics", "capital allocation", "risk advisory"]
+    },
+    {
+      "canonical_url": "https://www.aon.com/en/insights/articles/using-parametric-insurance-to-match-capital-to-climate-risk",
+      "source_url": "https://www.aon.com/en/insights/articles/using-parametric-insurance-to-match-capital-to-climate-risk",
+      "title": "Using Parametric Insurance to Match Capital to Climate Risk",
+      "source_basis": "original_content",
+      "summary": "Aon explains how event-triggered parametric insurance can complement traditional indemnity property programs and address broader financial effects such as business interruption and income loss. The article discusses climate-driven catastrophe pressure, fast payout structures, basis risk and capital efficiency for events including windstorm, hail, earthquake and wildfire.",
+      "categories": ["Insurance Risk", "Capital & Solvency", "Physical Risk"],
+      "keywords": ["Aon", "parametric insurance", "basis risk", "business interruption", "natural catastrophe", "capital efficiency", "property insurance"]
+    },
+    {
+      "canonical_url": "https://www.artemis.bm/news/munich-re-pegs-global-insured-catastrophe-losses-at-44bn-for-h1-2026",
+      "source_url": "https://www.artemis.bm/news/munich-re-pegs-global-insured-catastrophe-losses-at-44bn-for-h1-2026/",
+      "title": "Munich Re Estimates Global Insured Catastrophe Losses at $44 Billion for H1 2026",
+      "source_basis": "original_content",
+      "summary": "Artemis summarizes Munich Re's estimate of $44 billion in insured and nearly $112 billion in economic natural-catastrophe losses for the first half of 2026, implying a 60% insurance gap. The United States dominated insured losses, including a major April severe-thunderstorm and tornado outbreak.",
+      "categories": ["Insurance Risk", "Physical Risk", "Capital & Solvency"],
+      "keywords": ["Munich Re", "insured catastrophe loss", "economic loss", "protection gap", "severe thunderstorm", "tornado", "United States"]
+    },
+    {
+      "canonical_url": "https://www.artemis.bm/news/topic/parametric-insurance",
+      "source_url": "https://www.artemis.bm/news/topic/parametric-insurance/",
+      "title": "Parametric Insurance",
+      "source_basis": "original_content",
+      "summary": "Artemis's topic page explains parametric insurance as risk transfer whose payout is defined by an event parameter such as wind speed or earthquake intensity. The current index spans sovereign catastrophe swaps, cloud-outage insurance, regional catastrophe bonds and other trigger-based structures.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience"],
+      "keywords": ["parametric insurance", "parametric trigger", "catastrophe swap", "catastrophe bond", "sovereign risk", "wind speed", "earthquake intensity"]
+    },
+    {
+      "canonical_url": "https://www.axa.com.hk/en/article/axa-launches-pioneering-heatwave-parametric-insurance",
+      "source_url": "https://www.axa.com.hk/en/article/axa-launches-pioneering-heatwave-parametric-insurance",
+      "title": "AXA Launches Heatwave Parametric Insurance",
+      "source_basis": "original_content",
+      "summary": "AXA Hong Kong describes a parametric product for outdoor workers that pays HKD100 or provides an equivalent heat-protection kit when temperatures exceed 36°C for three consecutive days during the insured period. The product responds automatically to monitored temperature conditions without traditional loss assessment.",
+      "categories": ["Insurance Risk", "Physical Risk", "Adaptation & Resilience"],
+      "keywords": ["AXA Hong Kong", "heatwave", "parametric insurance", "outdoor workers", "temperature trigger", "heat stress", "automatic payout"]
+    },
+    {
+      "canonical_url": "https://www.casact.org/article/cas-research-examines-climate-driven-impact-typhoon-risk-and-insurance-losses",
+      "source_url": "https://www.casact.org/article/cas-research-examines-climate-driven-impact-typhoon-risk-and-insurance-losses",
+      "title": "CAS Research Examines Climate-Driven Impacts on Typhoon Risk and Insurance Losses",
+      "source_basis": "original_content",
+      "summary": "CAS introduces a quantitative study of how climate change may alter typhoon behavior and insured losses in the western North Pacific. The research integrates climate projections with catastrophe models to support pricing, risk management and preparation for evolving typhoon exposure.",
+      "categories": ["Actuarial Modelling", "Physical Risk", "Insurance Risk"],
+      "keywords": ["Casualty Actuarial Society", "typhoon", "western North Pacific", "catastrophe modelling", "climate projections", "insured loss", "pricing"]
+    },
+    {
+      "canonical_url": "https://www.casact.org/article/request-proposals-developing-actuarial-frameworks-quantify-and-manage-climate-risk",
+      "source_url": "https://www.casact.org/article/request-proposals-developing-actuarial-frameworks-quantify-and-manage-climate-risk",
+      "title": "Developing Actuarial Frameworks to Quantify and Manage Climate Risk",
+      "source_basis": "original_content",
+      "summary": "The CAS Climate and Sustainability Working Group solicits research on innovative actuarial approaches to define, measure and manage climate risks facing insurers. The request covers new data, methods and practical tools across multiple perils, geographies and time horizons, with grants of up to $75,000.",
+      "categories": ["Actuarial Modelling", "Climate Risk", "Insurance Risk"],
+      "keywords": ["Casualty Actuarial Society", "climate risk framework", "research funding", "multi-peril", "actuarial methods", "insurance solutions", "risk quantification"]
+    },
+    {
+      "canonical_url": "https://www.casact.org/event/webinar-climate-change-scenario-analysis-financial-institutions-practitioners-guide-best",
+      "source_url": "https://www.casact.org/event/webinar-climate-change-scenario-analysis-financial-institutions-practitioners-guide-best",
+      "title": "Climate Change Scenario Analysis for Financial Institutions: Practitioners' Guide and Best Practices",
+      "source_basis": "original_content",
+      "summary": "The CAS webinar covers emerging climate-risk disclosure expectations and the mechanics of qualitative and quantitative scenario analysis for financial institutions. It addresses both physical and transition risks and links scenarios to solvency, profitability and other performance measures.",
+      "categories": ["Actuarial Modelling", "Capital & Solvency", "Supervision & Disclosure"],
+      "keywords": ["climate scenario analysis", "financial institutions", "physical risk", "transition risk", "solvency", "profitability", "regulatory disclosure"]
+    },
+    {
+      "canonical_url": "https://www.cdp.net/en/insights/scaling-the-standard-2026",
+      "source_url": "https://www.cdp.net/en/insights/scaling-the-standard-2026",
+      "title": "Scaling the Standard 2026",
+      "source_basis": "original_content",
+      "summary": "CDP analyzes 10,413 corporate disclosures against IFRS S2-aligned questions, showing broad coverage of governance and risk-identification topics but larger gaps in climate metrics. The page positions CDP's structured dataset as a source of globally comparable climate information for investors and decision-makers.",
+      "categories": ["Supervision & Disclosure", "Transition Risk"],
+      "keywords": ["CDP", "IFRS S2", "ISSB", "corporate disclosure", "climate metrics", "governance", "market capitalization"]
+    },
+    {
+      "canonical_url": "https://www.ceres.org/resources/reports/the-2026-progress-report-climate-risk-reporting-in-the-insurance-sector",
+      "source_url": "https://www.ceres.org/resources/reports/the-2026-progress-report-climate-risk-reporting-in-the-insurance-sector",
+      "title": "The 2026 Progress Report: Climate Risk Reporting in the Insurance Sector",
+      "source_basis": "original_content",
+      "summary": "Ceres reviews TCFD-aligned climate disclosures from 537 U.S. insurance groups and finds that reporting is widespread but quality remains uneven. It argues that robust, comparable information is needed for risk pricing, capital alignment, underwriting, investment strategy and long-term resilience.",
+      "categories": ["Supervision & Disclosure", "Insurance Risk", "Capital & Solvency"],
+      "keywords": ["Ceres", "insurance disclosure", "TCFD", "climate risk reporting", "underwriting", "capital alignment", "investment strategy"]
+    },
+    {
+      "canonical_url": "https://www.climatepolicyinitiative.org/wp-content/uploads/2026/01/Parametric-Insurance.pdf",
+      "source_url": "https://www.climatepolicyinitiative.org/wp-content/uploads/2026/01/Parametric-Insurance.pdf",
+      "title": "Parametric Insurance",
+      "source_basis": "original_content",
+      "summary": "Climate Policy Initiative explains parametric insurance as predetermined payouts triggered by measurable event parameters rather than assessed losses. It describes rapid disaster liquidity, fiscal and credit benefits, basis risk and applications in agriculture, renewable energy and infrastructure, while emphasizing that parametric cover complements rather than replaces indemnity insurance.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Capital & Solvency"],
+      "keywords": ["Climate Policy Initiative", "parametric insurance", "basis risk", "disaster liquidity", "fiscal space", "agriculture", "infrastructure", "indemnity insurance"]
+    }
+  ]
+}

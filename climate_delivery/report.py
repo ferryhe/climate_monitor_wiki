@@ -18,6 +18,10 @@ URL = re.compile(r"https?://[^\s)>]+")
 LINK_MARKER = "🔗"
 MARKDOWN_LINK_ENTRY = re.compile(r"^\s*[-*]\s+\[[^\]]+\]\((.+)\)\s*$")
 BARE_LINK_ENTRY = re.compile(r"^\s*[-*]\s+<?([A-Za-z][A-Za-z0-9+.-]*:[^\s>]+)>?\s*$")
+ITEM_METADATA = re.compile(
+    r"^\s*[-*]\s+\*\*(Categories|Keywords):\*\*\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,8 @@ class Highlight:
     title: str
     summary: str
     url: str
+    categories: tuple[str, ...]
+    keywords: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,18 @@ def _bullets(section: str) -> tuple[str, ...]:
     return tuple(_clean_markdown(match.group(1)) for match in re.finditer(r"^\s*-\s+(.+?)\s*$", section, re.MULTILINE))
 
 
+def _metadata_values(value: str) -> tuple[str, ...]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[,;]", value):
+        cleaned = _clean_markdown(raw)
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            output.append(cleaned)
+            seen.add(key)
+    return tuple(output)
+
+
 def _highlights(section: str, pillar: str) -> list[Highlight]:
     lines = section.splitlines()
     output: list[Highlight] = []
@@ -81,9 +99,20 @@ def _highlights(section: str, pillar: str) -> list[Highlight]:
         title = _clean_markdown(title_match.group(1))
         summary = ""
         item_url = ""
+        categories: tuple[str, ...] = ()
+        keywords: tuple[str, ...] = ()
         cursor = index + 1
         while cursor < len(lines):
             if re.match(r"^\s*-\s+\*\*(.+?)\*\*", lines[cursor]):
+                metadata = ITEM_METADATA.match(lines[cursor])
+                if metadata:
+                    values = _metadata_values(metadata.group(2))
+                    if metadata.group(1).casefold() == "categories":
+                        categories = values
+                    else:
+                        keywords = values
+                    cursor += 1
+                    continue
                 break
             url_match = URL.search(lines[cursor])
             if url_match:
@@ -92,7 +121,16 @@ def _highlights(section: str, pillar: str) -> list[Highlight]:
                 summary = _clean_markdown(re.sub(r"^\s+-\s+", "", lines[cursor]))
             cursor += 1
         if item_url:
-            output.append(Highlight(pillar=pillar, title=title, summary=summary, url=item_url))
+            output.append(
+                Highlight(
+                    pillar=pillar,
+                    title=title,
+                    summary=summary,
+                    url=item_url,
+                    categories=categories,
+                    keywords=keywords,
+                )
+            )
         index = max(cursor, index + 1)
     return output
 
@@ -120,7 +158,7 @@ def _validate_original_link_entries(section: str) -> None:
             raise InputError("Original Links entries must use HTTP(S) URLs")
 
 
-def parse_weekly_report(path: Path) -> WeeklyReport:
+def parse_weekly_report(path: Path, *, raw: bytes | None = None) -> WeeklyReport:
     path = Path(path)
     if not path.is_file():
         raise InputError("report file does not exist")
@@ -128,7 +166,8 @@ def parse_weekly_report(path: Path) -> WeeklyReport:
     if not name_match:
         raise InputError("report filename must be climate-monitor-YYYY-MM-DD.md")
     try:
-        raw = path.read_bytes()
+        if raw is None:
+            raw = path.read_bytes()
         text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise InputError("report must be a readable UTF-8 file") from exc

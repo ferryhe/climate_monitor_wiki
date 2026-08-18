@@ -14,6 +14,7 @@ COPY scripts ./scripts
 COPY showcase ./showcase
 COPY wiki ./wiki
 COPY sources ./sources
+COPY article_metadata ./article_metadata
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8501

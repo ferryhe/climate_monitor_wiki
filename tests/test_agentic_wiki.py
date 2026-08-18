@@ -109,7 +109,7 @@ def test_api_config_exposes_graph_and_dataview_fields():
     )
 
 
-def test_showcase_root_contains_chat_and_obsidian_workspace():
+def test_showcase_root_defaults_to_historical_reports_and_contains_workspaces():
     client = TestClient(app)
 
     response = client.get("/")
@@ -117,14 +117,22 @@ def test_showcase_root_contains_chat_and_obsidian_workspace():
     assert response.status_code == 200
     body = response.text
     assert 'id="chatView"' in body
+    assert 'id="registryView"' in body
     assert 'id="obsidianView"' in body
     assert 'id="messageInput"' in body
     assert 'id="graphSvg"' in body
     assert 'id="rows"' in body
     assert 'data-answer-mode="detailed"' in body
     assert 'id="answerModeHint"' in body
+    assert 'id="registryPublisherCustom"' in body
     assert 'data-graph-mode="keywords"' in body
-    assert body.index("Page Index") < body.index("Graph View")
+    assert body.index('id="registryTab"') < body.index('id="chatTab"')
+    registry_opening_tag = body[body.index('id="registryView"') : body.index(">", body.index('id="registryView"'))]
+    assert "hidden" not in registry_opening_tag
+    assert 'id="chatView" class="view-panel" role="tabpanel" aria-labelledby="chatTab" hidden' in body
+    assert body.index("Graph View") < body.index("Page Index")
+    keyword_button = body.index('data-graph-mode="keywords"')
+    assert 'is-active' in body[keyword_button - 120 : keyword_button]
 
 
 def test_robots_txt_disallows_crawling():

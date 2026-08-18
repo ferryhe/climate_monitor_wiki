@@ -503,6 +503,8 @@ def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
                 "signal": "insurance_risk",
             },
             "topics": ["climate", "insurance"],
+            "categories": [],
+            "keywords": [],
         }
     ]
     assert "asset_id" not in payload["items"][0]
