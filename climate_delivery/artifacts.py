@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 from .config import RECIPIENT_ID
 from .delivery import _validate_summary
@@ -41,6 +41,10 @@ class _InvalidArtifact(ValueError):
 class ValidatedReportArtifact:
     briefing: dict[str, Any]
     pdf_filename: str
+
+
+@dataclass(frozen=True)
+class ValidatedReportArtifactDownload(ValidatedReportArtifact):
     pdf_bytes: bytes = field(repr=False)
 
 
@@ -52,6 +56,33 @@ def _read_limited(path: Path, limit: int) -> bytes:
     if len(data) > limit:
         raise _InvalidArtifact("artifact exceeds size limit")
     return data
+
+
+def _validate_pdf_bytes(pdf_bytes: bytes, expected_sha256: str) -> None:
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise _InvalidArtifact("invalid PDF content")
+    if hashlib.sha256(pdf_bytes).hexdigest() != expected_sha256:
+        raise _InvalidArtifact("PDF hash mismatch")
+
+
+def _validate_pdf_streaming(path: Path, expected_sha256: str) -> None:
+    digest = hashlib.sha256()
+    total = 0
+    first_chunk = True
+    with path.open("rb") as handle:
+        while chunk := handle.read(64 * 1024):
+            total += len(chunk)
+            if total > MAX_PDF_BYTES:
+                raise _InvalidArtifact("artifact exceeds size limit")
+            if first_chunk:
+                if not chunk.startswith(b"%PDF-"):
+                    raise _InvalidArtifact("invalid PDF content")
+                first_chunk = False
+            digest.update(chunk)
+    if first_chunk:
+        raise _InvalidArtifact("invalid PDF content")
+    if digest.hexdigest() != expected_sha256:
+        raise _InvalidArtifact("PDF hash mismatch")
 
 
 def _contained_file(root: Path, candidate: Path) -> Path:
@@ -108,7 +139,8 @@ def _load_validated(
     report_filename: str,
     report_title: str,
     report_sha256: str,
-) -> ValidatedReportArtifact:
+    include_pdf_bytes: bool,
+) -> ValidatedReportArtifact | ValidatedReportArtifactDownload:
     configured_root = Path(root_value)
     if not configured_root.is_absolute():
         raise _InvalidArtifact("artifact root must be absolute")
@@ -211,27 +243,51 @@ def _load_validated(
     highlights = summary["highlights"]
 
     pdf_path = _contained_file(root, artifact_dir / pdf_name)
-    pdf_bytes = _read_limited(pdf_path, MAX_PDF_BYTES)
-    if hashlib.sha256(pdf_bytes).hexdigest() != expected_pdf_sha256:
-        raise _InvalidArtifact("PDF hash mismatch")
-    if not pdf_bytes.startswith(b"%PDF-"):
-        raise _InvalidArtifact("invalid PDF content")
-
-    return ValidatedReportArtifact(
-        briefing={
-            "executive_summary": list(narratives),
-            "monitoring_snapshot": {
-                "sites_checked": checked,
-                "sites_succeeded": succeeded,
-                "sites_failed": failed,
-                "pillar_a_updates": sum(item["pillar"] == "A" for item in highlights),
-                "pillar_b_updates": sum(item["pillar"] == "B" for item in highlights),
-                "notes": list(notes),
-            },
+    briefing = {
+        "executive_summary": list(narratives),
+        "monitoring_snapshot": {
+            "sites_checked": checked,
+            "sites_succeeded": succeeded,
+            "sites_failed": failed,
+            "pillar_a_updates": sum(item["pillar"] == "A" for item in highlights),
+            "pillar_b_updates": sum(item["pillar"] == "B" for item in highlights),
+            "notes": list(notes),
         },
-        pdf_filename=pdf_filename,
-        pdf_bytes=pdf_bytes,
-    )
+    }
+    if include_pdf_bytes:
+        pdf_bytes = _read_limited(pdf_path, MAX_PDF_BYTES)
+        _validate_pdf_bytes(pdf_bytes, expected_pdf_sha256)
+        return ValidatedReportArtifactDownload(
+            briefing=briefing,
+            pdf_filename=pdf_filename,
+            pdf_bytes=pdf_bytes,
+        )
+    _validate_pdf_streaming(pdf_path, expected_pdf_sha256)
+    return ValidatedReportArtifact(briefing=briefing, pdf_filename=pdf_filename)
+
+
+@overload
+def load_report_artifact(
+    output_dir: str | Path | None,
+    *,
+    report_date: str,
+    report_filename: str,
+    report_title: str,
+    report_sha256: str,
+    include_pdf_bytes: Literal[False],
+) -> ValidatedReportArtifact | None: ...
+
+
+@overload
+def load_report_artifact(
+    output_dir: str | Path | None,
+    *,
+    report_date: str,
+    report_filename: str,
+    report_title: str,
+    report_sha256: str,
+    include_pdf_bytes: Literal[True],
+) -> ValidatedReportArtifactDownload | None: ...
 
 
 def load_report_artifact(
@@ -241,7 +297,8 @@ def load_report_artifact(
     report_filename: str,
     report_title: str,
     report_sha256: str,
-) -> ValidatedReportArtifact | None:
+    include_pdf_bytes: bool,
+) -> ValidatedReportArtifact | ValidatedReportArtifactDownload | None:
     """Load one exact content-addressed delivery artifact, failing closed."""
     if output_dir is None or not str(output_dir).strip():
         return None
@@ -252,6 +309,7 @@ def load_report_artifact(
             report_filename=report_filename,
             report_title=report_title,
             report_sha256=report_sha256,
+            include_pdf_bytes=include_pdf_bytes,
         )
     except (
         InputError,

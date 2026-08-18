@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import climate_delivery.artifacts as artifact_module
 from climate_delivery.artifacts import ARTIFACT_ONLY_DELIVERY_STATUS, load_report_artifact
 from report_artifact_fixtures import (
     CANONICAL_REPORT_SHA256,
@@ -81,13 +82,14 @@ def _write_artifact(root: Path) -> tuple[Path, dict, bytes]:
     return artifact_dir, manifest, pdf_bytes
 
 
-def _load(root: Path | str | None):
+def _load(root: Path | str | None, *, include_pdf_bytes: bool = True):
     return load_report_artifact(
         root,
         report_date=REPORT_DATE,
         report_filename=REPORT_FILENAME,
         report_title=REPORT_TITLE,
         report_sha256=REPORT_SHA256,
+        include_pdf_bytes=include_pdf_bytes,
     )
 
 
@@ -118,6 +120,31 @@ def test_valid_artifact_projects_only_briefing_and_pdf_bytes(tmp_path):
     assert str(artifact_dir) not in repr(artifact)
 
 
+def test_metadata_mode_streams_pdf_validation_without_retaining_bytes(
+    tmp_path, monkeypatch
+):
+    artifact_dir, manifest, _pdf = _write_artifact(tmp_path)
+    pdf_path = artifact_dir / PDF_FILENAME
+    pdf_bytes = b"%PDF-1.4\n" + (b"0" * (2 * 1024 * 1024)) + b"\n%%EOF\n"
+    pdf_path.write_bytes(pdf_bytes)
+    manifest["artifacts"]["pdf"]["sha256"] = hashlib.sha256(pdf_bytes).hexdigest()
+    _rewrite_manifest(artifact_dir, manifest)
+    original_read_limited = artifact_module._read_limited
+
+    def reject_full_pdf_read(path, limit):
+        if path.suffix == ".pdf":
+            raise AssertionError("metadata mode must stream PDF validation")
+        return original_read_limited(path, limit)
+
+    monkeypatch.setattr("climate_delivery.artifacts._read_limited", reject_full_pdf_read)
+
+    artifact = _load(tmp_path.resolve(), include_pdf_bytes=False)
+
+    assert artifact is not None
+    assert not hasattr(artifact, "pdf_bytes")
+    assert artifact.pdf_filename == PDF_FILENAME
+
+
 def test_canonical_2026_08_17_artifact_is_readable_end_to_end(tmp_path):
     canonical_raw = canonical_report_bytes()
     fixture = write_canonical_artifact(tmp_path)
@@ -136,6 +163,7 @@ def test_canonical_2026_08_17_artifact_is_readable_end_to_end(tmp_path):
         report_filename=fixture.report.filename,
         report_title=fixture.report.title,
         report_sha256=fixture.report.sha256,
+        include_pdf_bytes=True,
     )
 
     assert artifact is not None

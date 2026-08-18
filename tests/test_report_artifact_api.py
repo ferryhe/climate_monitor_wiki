@@ -93,6 +93,14 @@ def test_report_endpoint_projects_valid_artifact_without_sensitive_manifest_data
     fixture = write_canonical_artifact(output)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setenv("CLIMATE_DELIVERY_OUTPUT_DIR", str(output.resolve()))
+    artifact_modes = []
+    real_loader = api_server.load_report_artifact
+
+    def tracked_loader(*args, **kwargs):
+        artifact_modes.append(kwargs["include_pdf_bytes"])
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(api_server, "load_report_artifact", tracked_loader)
 
     response = TestClient(app).get(f"/api/registry/reports/{REPORT_DATE}")
 
@@ -125,6 +133,7 @@ def test_report_endpoint_projects_valid_artifact_without_sensitive_manifest_data
     assert REPORT_SHA256 not in response.text
     assert "artifact-only" not in response.text
     assert str(fixture.artifact_dir) not in response.text
+    assert artifact_modes == [False]
 
 
 def test_pdf_download_revalidates_and_sets_safe_headers(tmp_path, monkeypatch):
@@ -133,6 +142,14 @@ def test_pdf_download_revalidates_and_sets_safe_headers(tmp_path, monkeypatch):
     fixture = write_canonical_artifact(output)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setenv("CLIMATE_DELIVERY_OUTPUT_DIR", str(output.resolve()))
+    artifact_modes = []
+    real_loader = api_server.load_report_artifact
+
+    def tracked_loader(*args, **kwargs):
+        artifact_modes.append(kwargs["include_pdf_bytes"])
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(api_server, "load_report_artifact", tracked_loader)
 
     response = TestClient(app).get(f"/api/registry/reports/{REPORT_DATE}/pdf")
 
@@ -152,6 +169,7 @@ def test_pdf_download_revalidates_and_sets_safe_headers(tmp_path, monkeypatch):
     assert fallback.status_code == 200
     assert fallback.json()["report_briefing"] is None
     assert fallback.json()["report_pdf"] is None
+    assert artifact_modes == [True, True, False]
 
 
 def test_pdf_download_preserves_registry_query_and_unavailable_semantics(tmp_path, monkeypatch):
