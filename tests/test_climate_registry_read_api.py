@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -10,7 +11,11 @@ from fastapi.testclient import TestClient
 
 import api_server
 from api_server import app
+from climate_monitor.dedupe import canonical_url
+from climate_registry.annotations import load_article_annotations
+from climate_registry.audit import build_audit_registry
 from climate_registry.read_api import RegistryContractError, RegistryReader
+from climate_registry.reports import parse_report_directory
 from climate_registry.schema import apply_migrations
 
 
@@ -528,6 +533,158 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
     }
 
 
+def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
+    registry_client, tmp_path, monkeypatch, caplog
+):
+    client, database = registry_client
+    metadata_dir = tmp_path / "article_metadata"
+    metadata_dir.mkdir()
+    (metadata_dir / "articles-001-001.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "annotation_method": "subagent-original-content-v1",
+                "source_scope": "linked-original-content-with-report-fallback",
+                "generated_on": "2026-08-17",
+                "articles": [
+                    {
+                        "canonical_url": "https://example.com/full",
+                        "source_url": "https://example.com/full",
+                        "title": "Compatibility annotation title",
+                        "source_basis": "original_content",
+                        "summary": "JSON annotation summary must not replace the DB bundle.",
+                        "categories": ["Transition Risk"],
+                        "keywords": ["climate", "transition", "scenarios"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO article_enrichments(
+                enrichment_id, content_version_id, status, summary, categories_json,
+                keywords_json, language, generator_kind, generator_name,
+                generator_version, generated_at
+            ) VALUES (
+                'enrichment-full-new', 'content-full', 'complete',
+                'Current DB bundle summary.', 'not-json', '[]', 'en',
+                'deterministic', 'registry-rules', '2', '2026-08-18T12:01:00Z'
+            )
+            """
+        )
+    connection.close()
+    monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", metadata_dir)
+
+    with caplog.at_level(logging.DEBUG, logger="climate_registry.read_api"):
+        report = client.get("/api/registry/reports/2026-08-10").json()
+        detail = client.get("/api/registry/articles/article-full").json()
+
+    report_article = report["articles"][0]
+    assert [item["article_id"] for item in report["articles"]] == [
+        "article-full",
+        "article-excerpt",
+        "article-meta",
+    ]
+    assert report_article["pillar"] == "A"
+    assert report_article["summary"] == "Current DB bundle summary."
+    assert report_article["categories"] == []
+    assert report_article["keywords"] == []
+    assert report_article["summary_provenance"] == "content_enrichment"
+    assert report_article["metadata_provenance"] == {
+        "categories": "content_enrichment",
+        "keywords": "content_enrichment",
+    }
+    assert report_article["title"] == "Compatibility annotation title"
+    assert report_article["source_annotation"] == {
+        "source_basis": "original_content",
+        "source_url": "https://example.com/full",
+        "generated_on": "2026-08-17",
+    }
+
+    assert detail["original_url"] == "https://example.com/full"
+    assert detail["summary"] == "Current DB bundle summary."
+    assert detail["categories"] == []
+    assert detail["keywords"] == []
+    assert detail["summary_provenance"] == "content_enrichment"
+    assert detail["metadata_provenance"] == {
+        "categories": "content_enrichment",
+        "keywords": "content_enrichment",
+    }
+    assert detail["title"] == "Compatibility annotation title"
+    assert [item["report_date"] for item in detail["appearances"]] == [
+        "2026-08-10",
+        "2026-08-03",
+    ]
+    assert [item["pillar"] for item in detail["appearances"]] == ["A", "A"]
+    assert "content_enrichment_id" not in report_article
+    assert "content_enrichment_id" not in detail
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages
+    assert all(record.levelno == logging.DEBUG for record in caplog.records)
+    assert all("overlap_fields=summary,categories,keywords" in message for message in messages)
+    assert all("conflict_fields=summary,categories,keywords" in message for message in messages)
+    rendered_logs = "\n".join(messages)
+    for secret in (
+        "https://example.com/full",
+        "Current DB bundle summary.",
+        "JSON annotation summary",
+        str(metadata_dir),
+    ):
+        assert secret not in rendered_logs
+
+
+def test_bundled_161_annotations_preserve_existing_report_api_payloads(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    database = tmp_path / "historical-registry.sqlite3"
+    build_audit_registry(root / "sources", database, tmp_path / "audit")
+    annotations = load_article_annotations(root / "article_metadata")
+    reader = RegistryReader(
+        database,
+        repository_root=root,
+        source_dir=root / "sources",
+        metadata_dir=root / "article_metadata",
+    )
+
+    observed = {}
+    reports = sorted(
+        parse_report_directory(root / "sources"),
+        key=lambda item: item.report_date,
+        reverse=True,
+    )
+    for report in reports:
+        payload = reader.report(report.report_date)
+        for article in payload["articles"]:
+            url = canonical_url(article["canonical_url"])
+            if url in annotations:
+                observed.setdefault(url, article)
+        if len(observed) == len(annotations):
+            break
+
+    assert len(annotations) == 161
+    assert set(observed) == set(annotations)
+    for url, annotation in annotations.items():
+        article = observed[url]
+        assert article["title"] == annotation.title
+        assert article["summary"] == annotation.summary
+        assert article["categories"] == list(annotation.categories)
+        assert article["keywords"] == list(annotation.keywords)
+        assert article["summary_provenance"] == annotation.provenance
+        assert article["metadata_provenance"] == {
+            "categories": annotation.provenance,
+            "keywords": annotation.provenance,
+        }
+        assert article["source_annotation"] == {
+            "source_basis": annotation.source_basis,
+            "source_url": annotation.source_url,
+            "generated_on": annotation.generated_on,
+        }
+
+
 @pytest.mark.parametrize("query", ["100%", "[2026]", "' OR 1=1 --", "_"])
 def test_article_search_is_parameterized_and_treats_sql_wildcards_literally(registry_client, query):
     client, _ = registry_client
@@ -638,6 +795,12 @@ def test_invalid_enrichment_json_fails_closed_to_empty_lists(registry_client):
     payload = client.get("/api/registry/articles/article-excerpt").json()
     assert payload["enrichment"]["categories"] == []
     assert payload["enrichment"]["keywords"] == ["risk", "insurance"]
+    assert payload["categories"] == []
+    assert payload["keywords"] == ["risk", "insurance"]
+    assert payload["metadata_provenance"] == {
+        "categories": "content_enrichment",
+        "keywords": "content_enrichment",
+    }
 
 
 def test_reader_is_immutable_read_only_and_observes_atomic_replacement(tmp_path):

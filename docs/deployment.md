@@ -326,3 +326,14 @@ contract, API responses, atomic replacement procedure, and security boundary.
 This application phase creates no exporter, systemd timer, Hermes job, or
 snapshot. App-only deployment or rollback rebuilds/recreates only Wiki; it does
 not restart Caddy or alter the 08:00/09:00/10:00 jobs.
+
+## Future weekly Registry sync
+
+The application now contains a supported exact-date Registry candidate
+transaction and a tested 10:30 operations runner, but no scheduler entry is
+created or enabled by this repository. See
+[`weekly-registry-automation.md`](weekly-registry-automation.md) for the DB/JSON
+precedence decision, explicit paths, dry-run, exit codes, exact backup/restore
+boundary, API verification, and the disabled Hermes job draft. Deployment must
+keep the enabled 09:00 Email/PDF producer and its four existing recipients
+unchanged; the Registry runner never sends mail.

@@ -7,17 +7,20 @@ a model, search the internet, update the Wiki, modify Git, or deploy anything.
 The intended separation is:
 
 1. The Monday 08:00 monitor generates the canonical Markdown report.
-2. A separate Monday 09:00 job may invoke this module to create a deterministic
-   summary, render a PDF, and send one message per subscriber.
+2. The Monday 09:00 job invokes this module to create a deterministic summary,
+   render a PDF, and send one message to each of the four configured recipients.
 3. The Monday 10:00 publisher independently turns the canonical Markdown into
    a rolling Wiki pull request.
 4. The website can later consume `summary.json` and `manifest.json`; it does not
    own SMTP delivery.
 
-The existing 09:00 Hermes Email/PDF job must remain **paused** until this code
-has been reviewed, merged, deployed, configured on the server, and successfully
-validated with an owner-authorized test. This module does not modify Hermes,
-the running website, containers, cron jobs, or host configuration.
+The 09:00 Weekly Climate Email (PDF highlights) job is enabled and is intended
+to keep running. It is the sole delivery-artifact producer and deliberately
+continues email delivery to the existing four recipients. Registry automation
+is a separate 10:30 concern: it consumes the already validated artifact but
+does not create or send mail, change recipients, or mutate delivery state. This
+module does not modify Hermes, the running website, containers, cron jobs, or
+host configuration.
 
 ## Input contract
 
