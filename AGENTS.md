@@ -42,9 +42,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # if absent
 .venv/bin/python -m pytest -q
 ```
 
-**Branch from current `origin/main`.** The verified application baseline is
-`6a4b359`; final production completion is still gated on the unconfigured 10:30
-Registry/`article_metadata` weekly task. PR #24 (`0587228`) and the old
+**Branch from current `origin/main`.** The weekly Registry implementation was
+merged at `14904db`; the last separately verified production deployment remains
+`6a4b359`. Final production completion is still gated on deploying the current
+application and configuring/observing the disabled 10:30 Weekly Registry Sync
+draft. PR #24 (`0587228`) and the old
 `feat/weekly-cadence-and-https-deployment` branch are historical and must not be
 used as branch bases.
 
@@ -73,6 +75,8 @@ endpoint → Caddy fronts it over HTTPS.
 |---|---|
 | `climate_monitor/` | Report generation: research, dedupe, report writer |
 | `agentic_wiki/` | RAG retrieval and answer synthesis (`wiki_agent.py` is the core) |
+| `climate_registry/` | Historical Registry, DB-first enrichment, weekly candidate sync and exact restore |
+| `climate_delivery/` | 09:00 summary/PDF/manifest production and retained email delivery |
 | `api_server.py` | FastAPI: `/api/chat`, `/api/config`, `/api/reload` |
 | `scripts/` | Operational entrypoints (see below) |
 | `showcase/` | Frontend (vanilla JS, no build step) |
@@ -89,6 +93,7 @@ scripts/publish_weekly_reports.py  # isolated-clone rolling-PR publisher
 scripts/sync_source_wiki.py        # regenerate wiki/ pages + index
 scripts/weekly_wiki_refresh.sh     # locked Hermes wrapper around the publisher
 scripts/reload_and_smoke_test.py   # post-deploy verification
+scripts/weekly_registry_refresh.py # tested 10:30 draft; not scheduled
 ```
 
 `weekly_wiki_refresh.sh` is the one the weekly Hermes job runs. It does not
@@ -150,8 +155,8 @@ before touching cadence logic.
 node --check showcase/app.js           # frontend has no build step
 ```
 
-Closeout verification on 2026-08-18 collected 872 tests and completed with
-859 passed / 13 environment-specific skips on Windows.
+Registry-automation verification on 2026-08-18 collected 913 tests and
+completed with 899 passed / 14 environment-specific skips on Windows.
 
 For anything touching the running service:
 
@@ -221,7 +226,7 @@ See `docs/deployment.md`.
 | Weekly Climate & Actuarial Monitor | `f5259a8ec2d9` | Mon 08:00 | Confirmed |
 | Weekly Climate Email (PDF highlights) | Not recorded here | Mon 09:00 | Enabled and retained |
 | Weekly Climate Wiki Publisher | `dccb79cd69bc` | Mon 10:00 | Confirmed |
-| Registry/`article_metadata` weekly task | Not configured | Mon 10:30 | Pending confirmation/configuration |
+| Weekly Registry Sync | Not configured | Mon 10:30 | Implementation and disabled runner merged; scheduling/deployment pending |
 
 The publisher runs 2h after the monitor so the report exists before ingest. If
 you change one schedule, preserve that gap. It updates one rolling PR; it does
@@ -234,10 +239,13 @@ The 09:00 job is the only delivery-artifact producer. Its email delivery is also
 intentionally retained for the existing four recipients. Do not confuse the
 historical backfill's no-email guarantee with the normal scheduled email path.
 
-The distinct 10:30 Registry/`article_metadata` weekly automation is not yet
-configured or verified. Do not claim `PRODUCTION COMPLETE` until that task has
-been created and observed completing a normal weekly run. Do not invent its job
-ID or treat the current `/api/job-status` v1 contract as proof that it exists.
+The distinct 10:30 Weekly Registry Sync implementation is present, but its
+Hermes job is not configured or verified. It updates the external Registry DB;
+DB-first Article Detail no longer requires a weekly `article_metadata` JSON
+producer, and the tracked JSON remains a compatibility fallback. Do not claim
+`PRODUCTION COMPLETE` until the current application is deployed and the 10:30
+task has been created and observed completing a normal weekly run. Do not
+invent its job ID or treat `/api/job-status` v1 as proof that it exists.
 
 ### No GitHub report generator
 
@@ -265,6 +273,9 @@ Already landed — do **not** redo:
 - **Weekly Chat coverage and prompt starters** (`Phase 5`) — rolling windows
   report only real corpus dates, and the API/frontend presets use 4-week,
   12-week, insurer-implication, and latest-report wording.
+- **Weekly Registry implementation** — `weekly-sync`, DB-first Article Detail,
+  exact backup/restore, and the tested 10:30 runner draft are merged. Only
+  deployment, scheduler configuration, and a normal observed run remain.
 
 Deliberately **not** done: renaming the `"daily"` document type — it is
 load-bearing across ranking, `app.js`, CSS, and the Obsidian plugin contract, so

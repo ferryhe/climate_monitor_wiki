@@ -10,8 +10,8 @@ python -m pytest
 node --check showcase/app.js
 ```
 
-The 2026-08-18 closeout run collected 872 tests and completed with 859 passed
-and 13 environment-specific skips on Windows.
+The 2026-08-18 Registry-automation run collected 913 tests and completed with
+899 passed and 14 environment-specific skips on Windows.
 
 Current automated coverage includes:
 
@@ -23,6 +23,8 @@ Current automated coverage includes:
 - monthly/date-range prompts such as `this month` and explicit ISO date ranges
 - `/api/config` payload fields required by graph/dataview, prompt starters, and precomputed graph payloads
 - showcase root HTML containing `Historical Reports`, `Chat`, and `Obsidian` workspaces
+- exact-date weekly Registry dry-run, candidate promotion, rollback/restore,
+  DB-first metadata precedence, and the disabled 10:30 runner contract
 
 ## Manual QA
 

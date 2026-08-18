@@ -29,6 +29,12 @@ report appearances in the detail pane. If the optional Registry or delivery
 artifact mount is unavailable, this tab reports that state without affecting
 Chat or the Obsidian explorer.
 
+For Article Detail metadata, a complete current-content Registry enrichment is
+the primary atomic `summary`/`categories`/`keywords` bundle. The existing
+per-article JSON annotations remain a compatibility fallback, including
+reviewed source-annotation fields; the browser payload and ordering are
+unchanged.
+
 ## Chat Tab
 
 The chat surface is intentionally sparse:

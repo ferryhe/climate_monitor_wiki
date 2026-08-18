@@ -18,13 +18,13 @@ The intended separation is:
 The existing 09:00 Hermes job is **enabled and intentionally retained**. It is
 the only production automation authorized to create delivery artifacts, and it
 also owns delivery of the PDF highlights email to the existing four recipients.
-The application code still does not modify Hermes, the running website,
-containers, cron jobs, or host configuration.
-
-This confirmed 09:00 operation is independent of the required Monday 10:30
-Registry/`article_metadata` weekly task, which is not yet configured or verified.
-The project must not be described as `PRODUCTION COMPLETE` until the 10:30 task
-exists and completes a normal weekly run.
+The tested Registry sync implementation is a separate 10:30 concern: it
+consumes the already validated artifact read-only and does not create or send
+mail, change recipients, or mutate delivery state. Its Hermes job is not yet
+configured or verified, so the project must not be described as
+`PRODUCTION COMPLETE` until that task completes a normal weekly run. The
+application code does not modify Hermes, the running website, containers, cron
+jobs, or host configuration.
 
 ## Input contract
 

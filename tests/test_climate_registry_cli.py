@@ -8,8 +8,18 @@ from pathlib import Path
 import pytest
 
 from climate_registry.audit import build_audit_registry
-from climate_registry.cli import main
-from climate_registry.errors import RegistryBuildError, RegistryInputError
+from climate_registry.cli import (
+    WEEKLY_NO_OP_EXIT,
+    WEEKLY_PREFLIGHT_EXIT,
+    WEEKLY_VALIDATION_EXIT,
+    main,
+)
+from climate_registry.errors import RegistryBuildError, RegistryInputError, RegistryLockError
+from climate_registry.weekly import (
+    WeeklyPartialError,
+    WeeklyPreflightError,
+    WeeklyValidationError,
+)
 import climate_registry.cli as registry_cli
 
 
@@ -515,6 +525,171 @@ def test_capture_cli_reports_invalid_limit_as_one_json_line(tmp_path, capsys):
     assert code == 2
     assert output.count("\n") == 1
     assert json.loads(output)["kind"] == "input"
+
+
+def _weekly_argv(tmp_path):
+    database = tmp_path / "registry.sqlite3"
+    return [
+        "weekly-sync",
+        "--date",
+        "2026-08-17",
+        "--source-dir",
+        str(tmp_path / "sources"),
+        "--database",
+        str(database),
+        "--artifact-root",
+        str(tmp_path / "artifacts"),
+        "--backup-dir",
+        str(tmp_path / "backups"),
+        "--lock-file",
+        str(database.with_name(f"{database.name}.lock")),
+        "--publisher-ledger-dir",
+        str(tmp_path / "ledger"),
+        "--timeout",
+        "12.5",
+        "--dry-run",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_code"),
+    [("ok", 0), ("no-op", WEEKLY_NO_OP_EXIT)],
+)
+def test_weekly_sync_cli_passes_explicit_inputs_and_distinguishes_no_op(
+    tmp_path, capsys, monkeypatch, status, expected_code
+):
+    def fake_weekly_sync(**kwargs):
+        assert kwargs == {
+            "target_date": "2026-08-17",
+            "source_dir": tmp_path / "sources",
+            "database": tmp_path / "registry.sqlite3",
+            "artifact_root": tmp_path / "artifacts",
+            "backup_dir": tmp_path / "backups",
+            "lock_file": tmp_path / "registry.sqlite3.lock",
+            "publisher_ledger_dir": tmp_path / "ledger",
+            "expected_report_sha256": None,
+            "timeout": 12.5,
+            "dry_run": True,
+        }
+        return {"status": status, "date": "2026-08-17"}
+
+    monkeypatch.setattr(registry_cli, "weekly_sync", fake_weekly_sync)
+    code = main(_weekly_argv(tmp_path))
+
+    assert code == expected_code
+    assert json.loads(capsys.readouterr().out)["status"] == status
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code", "kind", "status"),
+    [
+        (
+            WeeklyPreflightError("weekly preflight blocked"),
+            WEEKLY_PREFLIGHT_EXIT,
+            "preflight",
+            "failed",
+        ),
+        (
+            WeeklyValidationError("weekly validation failed"),
+            WEEKLY_VALIDATION_EXIT,
+            "validation",
+            "failed",
+        ),
+        (RegistryLockError("weekly lock conflict"), 4, "lock", "failed"),
+    ],
+)
+def test_weekly_sync_cli_has_distinct_structured_failure_codes(
+    tmp_path, capsys, monkeypatch, failure, expected_code, kind, status
+):
+    def fail(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(registry_cli, "weekly_sync", fail)
+    code = main(_weekly_argv(tmp_path))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == expected_code
+    assert payload["status"] == status
+    assert payload["kind"] == kind
+    assert payload["date"] == "2026-08-17"
+    assert payload["promotion"] == "blocked"
+    assert payload["reload_required"] is False
+
+
+def test_weekly_sync_cli_preserves_sanitized_partial_result(
+    tmp_path, capsys, monkeypatch
+):
+    partial = {
+        "status": "partial",
+        "date": "2026-08-17",
+        "report_sha256": "a" * 64,
+        "articles_failed": 1,
+        "promotion": "blocked",
+        "reload_required": False,
+        "capture": {
+            "succeeded_article_ids": [],
+            "failures": [
+                {
+                    "article_id": "article-safe",
+                    "status": "failed",
+                    "error_code": "timeout",
+                }
+            ],
+            "skipped_article_ids": [],
+        },
+    }
+
+    def fail(**_kwargs):
+        raise WeeklyPartialError("weekly capture partial", result=partial)
+
+    monkeypatch.setattr(registry_cli, "weekly_sync", fail)
+    code = main(_weekly_argv(tmp_path))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 5
+    assert payload["status"] == "partial"
+    assert payload["kind"] == "partial"
+    assert payload["capture"]["failures"][0]["error_code"] == "timeout"
+
+
+def test_restore_backup_cli_uses_explicit_verified_inputs(tmp_path, capsys, monkeypatch):
+    database = tmp_path / "registry.sqlite3"
+    backup = tmp_path / "registry-old.bak"
+
+    def fake_restore(**kwargs):
+        assert kwargs == {
+            "database": database,
+            "backup": backup,
+            "expected_sha256": "a" * 64,
+            "backup_dir": tmp_path / "restore-backups",
+            "lock_file": tmp_path / "registry.sqlite3.lock",
+        }
+        return {
+            "status": "ok",
+            "promotion": "performed",
+            "reload_required": True,
+            "restored_database_sha256": "a" * 64,
+        }
+
+    monkeypatch.setattr(registry_cli, "restore_registry_backup", fake_restore)
+    code = main(
+        [
+            "restore-backup",
+            "--database",
+            str(database),
+            "--backup",
+            str(backup),
+            "--expected-sha256",
+            "a" * 64,
+            "--backup-dir",
+            str(tmp_path / "restore-backups"),
+            "--lock-file",
+            str(tmp_path / "registry.sqlite3.lock"),
+        ]
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["reload_required"] is True
 
 
 @pytest.mark.parametrize(
