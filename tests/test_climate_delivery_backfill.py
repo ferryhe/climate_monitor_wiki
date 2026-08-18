@@ -243,7 +243,7 @@ def test_generates_complete_validated_artifact_from_annotations(tmp_path):
     assert artifact.pdf_bytes == pdf_raw
 
 
-def test_generated_artifact_is_projected_and_downloaded_by_pr1_api(
+def test_generated_artifact_is_projected_and_downloaded_by_registry_api(
     tmp_path, monkeypatch
 ):
     sources, database, metadata, _reports = _environment(tmp_path)
@@ -548,6 +548,23 @@ def test_repository_read_only_input_mounts_are_allowed(tmp_path):
     assert metadata == (repository / "article_metadata").resolve()
     assert registry == database.resolve()
     assert output == (tmp_path / "output").resolve()
+
+
+def test_registry_database_file_symlink_is_rejected(tmp_path):
+    sources, database, metadata, _reports = _environment(tmp_path)
+    registry_link = tmp_path / "registry-link.sqlite3"
+    try:
+        registry_link.symlink_to(database)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    with pytest.raises(InputError, match="symbolic link"):
+        _run(
+            sources,
+            registry_link,
+            metadata,
+            tmp_path / "output",
+        )
 
 
 def test_repeated_clean_generation_is_byte_deterministic(tmp_path):

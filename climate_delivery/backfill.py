@@ -82,6 +82,8 @@ def _validate_paths(
     output_dir: Path,
 ) -> tuple[Path, Path, Path, Path]:
     sources = _absolute_input_directory(sources_dir, "sources-dir")
+    if Path(registry_db).is_symlink():
+        raise InputError("registry-db must not be a symbolic link")
     registry = external_file_path(registry_db, "registry-db")
     article_artifacts = _absolute_input_directory(
         article_artifacts_dir, "article-artifacts-dir"

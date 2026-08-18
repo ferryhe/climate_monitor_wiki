@@ -112,7 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_path,
                 dry_run=args.dry_run,
             )
-        else:
+        elif args.command == "backfill":
             result = backfill_reports(
                 sources_dir=args.sources_dir,
                 registry_db=args.registry_db,
@@ -122,6 +122,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 all_missing=args.all_missing,
                 dry_run=args.dry_run,
             )
+        else:
+            raise InputError("unsupported climate-delivery command")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except InputError as exc:
