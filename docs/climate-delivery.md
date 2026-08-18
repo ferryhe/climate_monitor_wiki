@@ -98,6 +98,70 @@ python -m climate_delivery run \
   --dry-run
 ```
 
+### Historical artifact-only backfill
+
+The independent `backfill` subcommand can reconstruct complete Historical
+Reports artifacts from existing, immutable inputs. It does not collect data,
+call a model, load delivery configuration or recipient state, or send email.
+Run a read-only audit first:
+
+```bash
+python -m climate_delivery backfill \
+  --all-missing \
+  --sources-dir /srv/climate-sources \
+  --registry-db /var/lib/climate-registry/registry.sqlite3 \
+  --article-artifacts-dir /srv/climate-article-metadata \
+  --output-dir /var/lib/climate-delivery/output \
+  --dry-run
+```
+
+Replace `--all-missing` with `--date 2026-07-20` to audit or generate one
+date. Exactly one selector is required. Every path is explicit and absolute.
+The source and article-artifact inputs may be the application's existing
+read-only repository mounts. The Registry database and output root remain
+external to the application checkout; the output tree must be separate from
+both read-only directory inputs and must not contain the Registry database.
+
+Eligibility is fail-closed. A report is generated only when all of these bind
+exactly:
+
+- the canonical weekly Markdown filename, date, title, raw-byte SHA-256, site
+  statistics, article order, and Pillar A/B sections;
+- the Registry v3 report identity and every historical `report_appearances`
+  row, including canonical URL, ordinal, pillar, and the report-time article
+  title and summary; and
+- one unambiguous, schema-valid `article_metadata/articles-*.json` annotation
+  for every Registry canonical URL.
+
+The annotation supplies the canonical article title and summary. It never
+changes historical report membership, ordering, pillar assignment, monitoring
+facts, or source SHA. Legacy reports without complete monitoring statistics or
+Pillar A/B membership, duplicate mappings, missing inputs, and conflicting
+inputs are reported as `skipped`; no partial artifact is created.
+
+For an eligible report, the command reuses the delivery summary builder, PDF
+renderer, manifest writer, and web artifact validator. It stages all three
+files on the output filesystem, validates the complete staged artifact, and
+then atomically publishes `<date>/<source-sha>/`. Its manifest uses delivery
+status `artifact-only` with an empty recipient list. A valid existing artifact
+is `already_valid` and is never rewritten. An invalid existing destination is
+`failed` and is also left untouched. Thus the validated 2026-08-17 delivery
+artifact remains byte-for-byte unchanged. That date is explicitly protected:
+if its valid delivery artifact is unavailable, backfill reports a skip and
+does not create a replacement from historical annotations.
+
+One deterministic JSON audit object is printed with `generated`, `skipped`,
+`already_valid`, and `failed` lists plus their counts. In `--dry-run`, eligible
+entries have action `would_generate`; validation and deterministic rendering
+still run in temporary storage, but the configured output directory is not
+created or modified. A non-dry run performs only artifact generation. Running
+the same inputs again reports `already_valid` and preserves every artifact.
+
+This repository task does not authorize running the production backfill. A
+server operator must separately mount the reviewed inputs read-only, run the
+dry-run, inspect representative summaries/PDFs and the audit reasons, and only
+then obtain authorization for the final artifact-only run.
+
 `run` writes the content-addressed directory
 `<output-dir>/<date>/<report-sha256>/` containing `summary.json`,
 `climate-monitor-<date>.pdf`, and `manifest.json`. Files are atomically
