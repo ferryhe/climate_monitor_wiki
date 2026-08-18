@@ -1,0 +1,11 @@
+services:
+  wiki:
+    environment:
+      CLIMATE_DELIVERY_OUTPUT_DIR: /delivery-output
+    volumes:
+      - type: bind
+        source: ${CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR:?set CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR to the external delivery artifact directory}
+        target: /delivery-output
+        read_only: true
+        bind:
+          create_host_path: false

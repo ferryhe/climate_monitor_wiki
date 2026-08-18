@@ -240,6 +240,33 @@ Do not delete or modify the external database during application rollback. This
 wiring adds no Hermes job and does not schedule `update` or `capture-enrich`;
 those remain explicit, separately reviewed server operations.
 
+## Optional read-only delivery artifacts
+
+Historical Reports can consume an operator-managed delivery artifact tree with
+the independent `docker-compose.delivery.yml` override. Set the host path
+explicitly; Compose will fail instead of creating a missing directory:
+
+```bash
+export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.registry.yml \
+  -f docker-compose.delivery.yml \
+  config --quiet
+```
+
+The web container sees only the artifact output at `/delivery-output`, mounted
+read-only. Do not mount the delivery config, recipient list, SMTP environment,
+or email state. Omit this override to disable the feature; the app continues to
+start and Historical Reports keeps its Markdown fallback. Enabling the mount
+does not run delivery, backfill, email, reload, deployment, or any scheduled job.
+
+Roll forward or back by recreating only the application container with the same
+set of approved overrides. For a rollback image that predates artifact support,
+omit `docker-compose.delivery.yml`; never delete or rewrite the external
+artifact tree as part of application rollback.
+
 For local verification, `.venv/bin/python scripts/test_registry_container.py` builds the real
 Dockerfile without a source checkout mount and exercises unconfigured, empty,
 seeded, missing, corrupt, wrong-schema, read-only, and offline-chat cases.

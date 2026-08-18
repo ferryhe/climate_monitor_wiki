@@ -105,6 +105,41 @@ replaced. The manifest records relative artifact paths and SHA-256 hashes for
 the summary and PDF. It contains recipient IDs and states but no address,
 credential, or absolute repository path.
 
+## Optional Historical Reports integration
+
+The web app can read complete delivery artifacts without using delivery
+configuration, recipient data, SMTP, or delivery state. For a directly launched
+app, set `CLIMATE_DELIVERY_OUTPUT_DIR` to an absolute, readable artifact root.
+For Compose, use the independent read-only override:
+
+```bash
+export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.delivery.yml \
+  config --quiet
+```
+
+The override binds that directory read-only at `/delivery-output`, disables
+implicit host-directory creation, and sets the fixed container path. The base
+Compose stack has no delivery-artifact dependency. Do not mount delivery config,
+recipient, or state directories into the web container.
+
+For each Registry report, the app uses only the canonical Registry date,
+filename, title, and report SHA to open the exact
+`<root>/<date>/<report-sha>/manifest.json`; it never scans for a latest
+directory. The reader validates containment, symlink resolution, the v1
+manifest and summary contracts, report identity, monitoring arithmetic, and
+summary/PDF hashes. A missing, unreadable, oversized, mismatched, or incomplete
+artifact is ignored as a whole, leaving the existing Markdown-based report UI
+available.
+
+When the artifact is valid, `GET /api/registry/reports/{date}` adds
+`report_briefing` and `report_pdf`. Otherwise both fields are `null`. The
+controlled `GET /api/registry/reports/{date}/pdf` endpoint revalidates Registry
+identity and every artifact before returning validated bytes as an attachment;
+the artifact root is never exposed as a static directory.
+
 An existing content-addressed summary or PDF is immutable. A run first renders
 both candidates in a temporary directory, hashes them, then takes the report
 lock. Existing artifacts must have the exact candidate hashes; a renderer or

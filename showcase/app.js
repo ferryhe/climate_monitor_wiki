@@ -112,6 +112,7 @@ const state = {
     reportPagination: null,
     articlePagination: null,
     selectedReportDate: null,
+    reportRequestSequence: 0,
     loadPromise: null,
   },
 };
@@ -157,8 +158,13 @@ const els = {
   registryReportDetail: document.getElementById("registryReportDetail"),
   registryReportTitle: document.getElementById("registryReportTitle"),
   registryReportMeta: document.getElementById("registryReportMeta"),
+  registryReportPdf: document.getElementById("registryReportPdf"),
   registryExecutiveSummary: document.getElementById("registryExecutiveSummary"),
+  registryBriefingExecutiveSummaryItems: document.getElementById("registryBriefingExecutiveSummaryItems"),
   registryExecutiveSummaryItems: document.getElementById("registryExecutiveSummaryItems"),
+  registryMonitoringSnapshot: document.getElementById("registryMonitoringSnapshot"),
+  registrySnapshotMetrics: document.getElementById("registrySnapshotMetrics"),
+  registrySnapshotNotes: document.getElementById("registrySnapshotNotes"),
   registryReportArticlesTitle: document.getElementById("registryReportArticlesTitle"),
   registryReportArticles: document.getElementById("registryReportArticles"),
   reportsPrevious: document.getElementById("reportsPrevious"),
@@ -1631,28 +1637,44 @@ async function loadRegistryReports() {
   }
 }
 
-function resetHistoricalReportDetail() {
-  state.registry.selectedReportDate = null;
-  els.registryReportDetail.setAttribute("aria-busy", "false");
-  els.registryReportTitle.textContent = "Select a report";
-  els.registryReportMeta.textContent = "Choose a week to see monitoring coverage and its ordered source articles.";
+function clearHistoricalReportContent() {
+  els.registryReportPdf.hidden = true;
+  els.registryReportPdf.removeAttribute("href");
+  els.registryReportPdf.removeAttribute("download");
   els.registryExecutiveSummary.hidden = true;
+  els.registryBriefingExecutiveSummaryItems.hidden = true;
+  els.registryBriefingExecutiveSummaryItems.replaceChildren();
+  els.registryExecutiveSummaryItems.hidden = true;
   els.registryExecutiveSummaryItems.replaceChildren();
+  els.registryMonitoringSnapshot.hidden = true;
+  els.registrySnapshotMetrics.replaceChildren();
+  els.registrySnapshotNotes.replaceChildren();
   els.registryReportArticlesTitle.hidden = true;
   els.registryReportArticles.replaceChildren();
 }
 
+function resetHistoricalReportDetail() {
+  state.registry.reportRequestSequence += 1;
+  state.registry.selectedReportDate = null;
+  els.registryReportDetail.setAttribute("aria-busy", "false");
+  els.registryReportTitle.textContent = "Select a report";
+  els.registryReportMeta.textContent = "Choose a week to see monitoring coverage and its ordered source articles.";
+  clearHistoricalReportContent();
+}
+
 async function loadRegistryReport(reportDate) {
+  const requestToken = ++state.registry.reportRequestSequence;
+  const isCurrentRequest = () =>
+    state.registry.selectedReportDate === reportDate &&
+    state.registry.reportRequestSequence === requestToken;
   state.registry.selectedReportDate = reportDate;
   els.registryReportDetail.setAttribute("aria-busy", "true");
   els.registryReportTitle.textContent = "Loading report…";
-  els.registryExecutiveSummary.hidden = true;
-  els.registryExecutiveSummaryItems.replaceChildren();
-  els.registryReportArticlesTitle.hidden = true;
-  els.registryReportArticles.replaceChildren();
+  els.registryReportMeta.textContent = "Loading report details…";
+  clearHistoricalReportContent();
   try {
     const report = await registryFetch(`/api/registry/reports/${encodeURIComponent(reportDate)}`);
-    if (state.registry.selectedReportDate !== reportDate) {
+    if (!isCurrentRequest()) {
       return;
     }
     els.registryReportTitle.textContent = report.report_title;
@@ -1662,13 +1684,92 @@ async function loadRegistryReport(reportDate) {
       `${monitoring.sites_succeeded ?? "—"}/${monitoring.sites_checked ?? "—"} sites succeeded`,
       `${monitoring.sites_failed ?? "—"} failed`,
     ].join(" · ");
-    const executiveSummary = Array.isArray(report.executive_summary)
-      ? report.executive_summary.filter(Boolean)
+    const briefing = report.report_briefing;
+    const snapshot = briefing?.monitoring_snapshot;
+    const snapshotKeys = [
+      "sites_checked",
+      "sites_succeeded",
+      "sites_failed",
+      "pillar_a_updates",
+      "pillar_b_updates",
+    ];
+    const briefingSummary = Array.isArray(briefing?.executive_summary)
+      ? briefing.executive_summary.filter((item) => typeof item === "string" && item.trim())
       : [];
+    const snapshotNotes = Array.isArray(snapshot?.notes)
+      ? snapshot.notes.filter((item) => typeof item === "string" && item.trim())
+      : [];
+    const hasBriefing =
+      Array.isArray(briefing?.executive_summary) &&
+      briefingSummary.length > 0 &&
+      briefingSummary.length === briefing.executive_summary.length &&
+      snapshotKeys.every((key) => Number.isInteger(snapshot?.[key]) && snapshot[key] >= 0) &&
+      Array.isArray(snapshot?.notes) &&
+      snapshotNotes.length === snapshot.notes.length;
+    const executiveSummary = hasBriefing
+      ? briefingSummary
+      : Array.isArray(report.executive_summary)
+        ? report.executive_summary.filter((item) => typeof item === "string" && item.trim())
+        : [];
+    const summaryContainer = hasBriefing
+      ? els.registryBriefingExecutiveSummaryItems
+      : els.registryExecutiveSummaryItems;
+    const summaryElement = hasBriefing ? "p" : "li";
     executiveSummary.forEach((summary) => {
-      els.registryExecutiveSummaryItems.append(registryElement("li", "", summary));
+      summaryContainer.append(registryElement(summaryElement, "", summary));
     });
+    summaryContainer.hidden = executiveSummary.length === 0;
     els.registryExecutiveSummary.hidden = executiveSummary.length === 0;
+    if (hasBriefing) {
+      const snapshotLabels = [
+        ["Sites checked", "sites_checked"],
+        ["Succeeded", "sites_succeeded"],
+        ["Failed", "sites_failed"],
+        ["Pillar A updates", "pillar_a_updates"],
+        ["Pillar B updates", "pillar_b_updates"],
+      ];
+      els.registrySnapshotMetrics.append(
+        ...snapshotLabels.map(([label, key]) => registryMetric(label, snapshot[key])),
+      );
+      els.registrySnapshotNotes.append(
+        ...snapshotNotes.map((note) => registryElement("li", "", note)),
+      );
+      els.registrySnapshotNotes.hidden = snapshotNotes.length === 0;
+      els.registryMonitoringSnapshot.hidden = false;
+    }
+    const reportPdf = report.report_pdf;
+    const pdfFilename = typeof reportPdf?.filename === "string" ? reportPdf.filename.trim() : "";
+    const pdfDownloadUrl =
+      typeof reportPdf?.download_url === "string" ? reportPdf.download_url.trim() : "";
+    const expectedPdfFilename = `climate-monitor-${reportDate}.pdf`;
+    const expectedPdfPath = `/api/registry/reports/${encodeURIComponent(reportDate)}/pdf`;
+    let hasValidPdf = false;
+    if (
+      hasBriefing &&
+      pdfFilename === reportPdf?.filename &&
+      pdfFilename === expectedPdfFilename &&
+      pdfDownloadUrl === reportPdf?.download_url
+    ) {
+      try {
+        const parsedPdfUrl = new URL(pdfDownloadUrl, window.location.origin);
+        const absoluteExpectedPdfUrl = new URL(expectedPdfPath, window.location.origin).href;
+        hasValidPdf =
+          (pdfDownloadUrl === expectedPdfPath || pdfDownloadUrl === absoluteExpectedPdfUrl) &&
+          parsedPdfUrl.origin === window.location.origin &&
+          parsedPdfUrl.pathname === expectedPdfPath &&
+          parsedPdfUrl.search === "" &&
+          parsedPdfUrl.hash === "" &&
+          parsedPdfUrl.username === "" &&
+          parsedPdfUrl.password === "";
+      } catch {
+        hasValidPdf = false;
+      }
+    }
+    if (hasValidPdf) {
+      els.registryReportPdf.href = reportPdf.download_url;
+      els.registryReportPdf.download = reportPdf.filename;
+      els.registryReportPdf.hidden = false;
+    }
     els.registryReportArticlesTitle.hidden = false;
     report.articles.forEach((article) => {
       const item = registryElement("li", "registry-appearance");
@@ -1716,12 +1817,13 @@ async function loadRegistryReport(reportDate) {
       );
     }
   } catch (error) {
-    if (state.registry.selectedReportDate === reportDate) {
+    if (isCurrentRequest()) {
+      clearHistoricalReportContent();
       els.registryReportTitle.textContent = "Report unavailable";
       els.registryReportMeta.textContent = registryErrorMessage(error);
     }
   } finally {
-    if (state.registry.selectedReportDate === reportDate) {
+    if (isCurrentRequest()) {
       els.registryReportDetail.setAttribute("aria-busy", "false");
     }
   }

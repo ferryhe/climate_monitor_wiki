@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -13,18 +14,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _attempt() -> dict:
+    now = datetime.now(timezone.utc)
+    report_day = now.date() - timedelta(days=now.weekday())
+    scheduled = datetime.combine(report_day, time(hour=8), tzinfo=timezone.utc)
+    finished = scheduled + timedelta(minutes=30)
+    if finished > now:
+        scheduled -= timedelta(days=7)
+        finished -= timedelta(days=7)
+        report_day -= timedelta(days=7)
+    report_date = report_day.isoformat()
     return {
         "schema_version": "weekly-run-attempt.v1",
-        "attempt_id": "20260810t080000z-attempt-01",
+        "attempt_id": f"{scheduled:%Y%m%dt%H%M%Sz}-attempt-01",
         "stage": "monitor",
-        "report_date": "2026-08-10",
-        "scheduled_for": "2026-08-10T08:00:00Z",
-        "finished_at": "2026-08-10T08:30:00Z",
+        "report_date": report_date,
+        "scheduled_for": scheduled.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "finished_at": finished.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "status": "success",
         "result_code": "report_written",
         "report": {
-            "report_id": "climate-monitor-2026-08-10",
-            "report_date": "2026-08-10",
+            "report_id": f"climate-monitor-{report_date}",
+            "report_date": report_date,
             "sha256": "a" * 64,
         },
     }
@@ -64,17 +74,18 @@ def test_valid_empty_and_populated_ledgers_are_distinct(tmp_path, monkeypatch):
     ledger.mkdir()
     monkeypatch.setenv("CLIMATE_UPDATE_STATUS_DIR", str(ledger))
     client = TestClient(api_server.app)
+    attempt = _attempt()
 
     empty = client.get("/api/update-status")
     assert empty.status_code == 200
     assert empty.json()["state"] == "empty"
     assert empty.json()["attempt_count"] == 0
 
-    append_attempt(ledger, _attempt(), repository_root=ROOT)
+    append_attempt(ledger, attempt, repository_root=ROOT)
     populated = client.get("/api/update-status")
     assert populated.status_code == 200
     assert populated.json()["state"] == "current"
-    assert populated.json()["stages"]["monitor"]["last_attempt"]["attempt_id"] == _attempt()[
+    assert populated.json()["stages"]["monitor"]["last_attempt"]["attempt_id"] == attempt[
         "attempt_id"
     ]
 

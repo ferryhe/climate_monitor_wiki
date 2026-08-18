@@ -26,9 +26,22 @@ window.__registryRequests = [];
 window.__registryScenario = "loading";
 window.__missingArticle = false;
 window.__publisherTruncated = false;
+window.__deferNextReport = null;
+window.__pendingReportResponses = [];
 const registryResponse = (status, data) => Promise.resolve(new Response(
   JSON.stringify(data), {status, headers: {"Content-Type": "application/json"}}
 ));
+const reportResponse = (date, data) => {
+  const deferred = window.__deferNextReport;
+  if (!deferred || deferred.date !== date) return registryResponse(200, data);
+  window.__deferNextReport = null;
+  return new Promise((resolve) => {
+    window.__pendingReportResponses.push(() => resolve(new Response(
+      JSON.stringify(deferred.status >= 400 ? {detail: "Deferred report error."} : data),
+      {status: deferred.status, headers: {"Content-Type": "application/json"}}
+    )));
+  });
+};
 window.fetch = (input, options = {}) => {
   const url = new URL(input, window.location.href);
   window.__registryRequests.push({method: options.method || "GET", path: url.pathname + url.search});
@@ -73,7 +86,7 @@ window.fetch = (input, options = {}) => {
     }
     const page = Number(url.searchParams.get("page"));
     return registryResponse(200, {items: [{report_date: page === 1 ? "2026-08-10" : "2026-08-03",
-      report_title: `Report page ${page}`, article_count: 1, monitoring_status: "complete"}],
+      report_title: `Report page ${page}`, article_count: page === 1 ? 2 : 1, monitoring_status: "complete"}],
       pagination: {page, page_size: 12, total: 2, pages: 2}});
   }
   if (url.pathname === "/api/registry/publishers") {
@@ -81,16 +94,60 @@ window.fetch = (input, options = {}) => {
       truncated: window.__publisherTruncated});
   }
   if (url.pathname === "/api/registry/reports/2026-08-10") {
-    return registryResponse(200, {report_date: "2026-08-10", report_title: "Report detail",
+    const defaultBriefing = {
+      executive_summary: [
+        "Pricing pressure increased across exposed markets.",
+        "Insurers adjusted exposure as climate signals intensified."
+      ],
+      monitoring_snapshot: {
+        sites_checked: 57, sites_succeeded: 57, sites_failed: 0,
+        pillar_a_updates: 9, pillar_b_updates: 17,
+        notes: ["All monitored sites completed successfully.", "Evidence was checked against source articles."]
+      }
+    };
+    const defaultPdf = {
+      filename: "climate-monitor-2026-08-10.pdf",
+      download_url: "/api/registry/reports/2026-08-10/pdf"
+    };
+    return reportResponse("2026-08-10", {report_date: "2026-08-10",
+      report_title: window.__reportTitle ?? "Report detail",
       monitoring: {sites_succeeded: 57, sites_checked: 57, sites_failed: 0},
-      executive_summary: ["Pricing pressure increased.", "Insurers adjusted exposure."], articles: [
+      executive_summary: ["Old operational summary must not be repeated."],
+      report_briefing: Object.hasOwn(window, "__reportBriefingOverride")
+        ? window.__reportBriefingOverride : defaultBriefing,
+      report_pdf: Object.hasOwn(window, "__reportPdfOverride")
+        ? window.__reportPdfOverride : defaultPdf,
+      articles: [
         {article_id: "article-1", title: "Climate pricing", pillar: "B",
           section: "Pillar B", publisher: "Example", summary: "Weekly article summary",
           summary_provenance: window.__reportSummaryProvenance ?? "content_enrichment",
           categories: ["Insurance"], keywords: ["pricing"],
           source_annotation: {source_basis: window.__reportSourceBasis ?? "original_content", source_url: "https://example.com/article",
+            generated_on: "2026-08-17"}},
+        {article_id: "article-2", title: "Flood regulation", pillar: "A",
+          section: "Pillar A", publisher: "Policy Example", summary: "Second weekly article summary",
+          summary_provenance: "publisher_excerpt_annotation",
+          categories: ["Regulation"], keywords: ["flood"],
+          source_annotation: {source_basis: "publisher_excerpt", source_url: "https://policy.example/flood",
             generated_on: "2026-08-17"}}
       ]});
+  }
+  if (url.pathname === "/api/registry/reports/2026-08-03") {
+    return reportResponse("2026-08-03", {report_date: "2026-08-03", report_title: "Fallback report",
+      monitoring: {sites_succeeded: 41, sites_checked: 43, sites_failed: 2},
+      executive_summary: ["Markdown operational summary remains available."],
+      report_briefing: null, report_pdf: null,
+      articles: [{article_id: "article-1", title: "Climate pricing", pillar: "B",
+        section: "Pillar B", publisher: "Example", summary: "Fallback weekly article summary",
+        summary_provenance: "content_enrichment",
+        source_annotation: {source_basis: "original_content", source_url: "https://example.com/article",
+          generated_on: "2026-08-17"}}]});
+  }
+  if (url.pathname === "/api/registry/reports/2026-07-27") {
+    return registryResponse(404, {detail: "Registry report not found."});
+  }
+  if (url.pathname === "/api/registry/reports/2026-07-20") {
+    return registryResponse(500, {detail: "Internal error"});
   }
   if (url.pathname === "/api/registry/articles") {
     if (window.__registryScenario === "empty") {
@@ -215,10 +272,218 @@ def main() -> int:
         page.get_by_role("button", name="Report page 1", exact=False).click()
         page.get_by_role("heading", name="Report detail").wait_for()
         _visible(page, "Executive Summary")
-        _visible(page, "Pricing pressure increased.")
+        _visible(page, "Pricing pressure increased across exposed markets.")
+        _visible(page, "Insurers adjusted exposure as climate signals intensified.")
+        assert page.get_by_text("Old operational summary must not be repeated.", exact=True).count() == 0
+        briefing_summary = page.locator("#registryBriefingExecutiveSummaryItems")
+        assert briefing_summary.locator("p").count() == 2
+        assert page.locator("#registryExecutiveSummaryItems").is_hidden()
+        assert page.locator("#registryExecutiveSummaryItems li").count() == 0
+        snapshot = page.locator("#registryMonitoringSnapshot")
+        snapshot.get_by_role("heading", name="Monitoring Snapshot").wait_for()
+        assert snapshot.locator("dl").count() == 1
+        assert page.viewport_size["width"] >= 1080
+        assert page.locator("#registrySnapshotMetrics").evaluate(
+            "node => getComputedStyle(node).gridTemplateColumns.split(' ').length"
+        ) == 3
+        assert snapshot.locator("dt").all_text_contents() == [
+            "Sites checked", "Succeeded", "Failed", "Pillar A updates", "Pillar B updates"
+        ]
+        assert snapshot.locator("dd").all_text_contents() == ["57", "57", "0", "9", "17"]
+        _visible(page, "All monitored sites completed successfully.")
+        _visible(page, "Evidence was checked against source articles.")
+        assert page.evaluate(
+            "document.querySelector('#registrySnapshotMetrics').compareDocumentPosition("
+            "document.querySelector('#registrySnapshotNotes')) & Node.DOCUMENT_POSITION_FOLLOWING"
+        )
+        pdf_link = page.get_by_role("link", name="Download report PDF")
+        pdf_link.wait_for()
+        assert pdf_link.get_attribute("href") == "/api/registry/reports/2026-08-10/pdf"
+        assert pdf_link.get_attribute("download") == "climate-monitor-2026-08-10.pdf"
+        assert page.locator("#registryReports a").count() == 0
+        assert page.evaluate(
+            "['registryReportTitle', 'registryReportMeta', 'registryReportPdf', "
+            "'registryExecutiveSummary', 'registryMonitoringSnapshot', 'registryReportArticlesTitle']"
+            ".map(id => document.getElementById(id)).every((node, index, nodes) => "
+            "index === 0 || Boolean(nodes[index - 1].compareDocumentPosition(node) & "
+            "Node.DOCUMENT_POSITION_FOLLOWING))"
+        )
         _visible(page, "Weekly article summary")
+        _visible(page, "Second weekly article summary")
+        assert page.locator("#registryReportArticles .registry-article-link").all_text_contents() == [
+            "Climate pricing", "Flood regulation"
+        ]
+        assert page.locator("#registryReportArticles .registry-card__summary").all_text_contents() == [
+            "Weekly article summary", "Second weekly article summary"
+        ]
+        assert page.locator("#registryReportArticles .registry-card__meta").all_text_contents() == [
+            "Pillar B · Example · Captured content",
+            "Pillar A · Policy Example · Publisher excerpt",
+        ]
         _visible(page, "Pillar B · Example · Captured content")
         assert page.get_by_text("Pillar B · Example · Original source", exact=True).count() == 0
+
+        page.evaluate(
+            "window.__deferNextReport = {date: '2026-08-10', status: 200}; "
+            "void loadRegistryReport('2026-08-10')"
+        )
+        page.get_by_role("heading", name="Loading report…").wait_for()
+        assert page.locator("#registryExecutiveSummary").is_hidden()
+        assert page.locator("#registryMonitoringSnapshot").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+        assert page.locator("#registryReportPdf").get_attribute("href") is None
+        assert page.locator("#registryReportPdf").get_attribute("download") is None
+        assert page.locator("#registryExecutiveSummaryItems").text_content() == ""
+        assert page.locator("#registrySnapshotMetrics").text_content() == ""
+        assert page.locator("#registrySnapshotNotes").text_content() == ""
+        page.evaluate("loadRegistryReport('2026-08-03')")
+        page.get_by_role("heading", name="Fallback report").wait_for()
+        _visible(page, "Markdown operational summary remains available.")
+        assert page.locator("#registryBriefingExecutiveSummaryItems").is_hidden()
+        assert page.locator("#registryExecutiveSummaryItems").is_visible()
+        assert page.locator("#registryExecutiveSummaryItems li").all_text_contents() == [
+            "Markdown operational summary remains available."
+        ]
+        assert page.locator("#registryMonitoringSnapshot").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+        assert page.locator("#registryReportPdf").get_attribute("href") is None
+        page.evaluate("window.__pendingReportResponses.shift()()")
+        page.wait_for_timeout(50)
+        assert page.get_by_role("heading", name="Fallback report").is_visible()
+        assert page.get_by_text("Markdown operational summary remains available.", exact=True).is_visible()
+        assert page.get_by_text("Pricing pressure increased across exposed markets.", exact=True).count() == 0
+        assert page.locator("#registryMonitoringSnapshot").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+
+        page.evaluate(
+            "window.__reportTitle = 'Older same-date success'; "
+            "window.__deferNextReport = {date: '2026-08-10', status: 200}; "
+            "void loadRegistryReport('2026-08-10')"
+        )
+        page.evaluate(
+            "window.__reportTitle = 'Fresh same-date success'; loadRegistryReport('2026-08-10')"
+        )
+        page.get_by_role("heading", name="Fresh same-date success").wait_for()
+        page.evaluate("window.__pendingReportResponses.shift()()")
+        page.wait_for_timeout(50)
+        assert page.get_by_role("heading", name="Fresh same-date success").is_visible()
+        assert page.get_by_text("Pricing pressure increased across exposed markets.", exact=True).is_visible()
+        assert page.get_by_role("link", name="Download report PDF").is_visible()
+
+        page.evaluate(
+            "window.__reportTitle = 'Older same-date error'; "
+            "window.__deferNextReport = {date: '2026-08-10', status: 500}; "
+            "void loadRegistryReport('2026-08-10')"
+        )
+        page.evaluate(
+            "window.__reportTitle = 'Fresh after late error'; "
+            "window.__deferNextReport = {date: '2026-08-10', status: 200}; "
+            "void loadRegistryReport('2026-08-10')"
+        )
+        page.get_by_role("heading", name="Loading report…").wait_for()
+        assert page.locator("#registryReportDetail").get_attribute("aria-busy") == "true"
+        page.evaluate("window.__pendingReportResponses.shift()()")
+        page.wait_for_timeout(50)
+        assert page.get_by_role("heading", name="Loading report…").is_visible()
+        assert page.locator("#registryReportDetail").get_attribute("aria-busy") == "true"
+        assert page.locator("#registryExecutiveSummary").is_hidden()
+        page.evaluate("window.__pendingReportResponses.shift()()")
+        page.get_by_role("heading", name="Fresh after late error").wait_for()
+        assert page.locator("#registryReportDetail").get_attribute("aria-busy") == "false"
+        assert page.get_by_role("link", name="Download report PDF").is_visible()
+        page.evaluate("delete window.__reportTitle")
+
+        page.evaluate(
+            "window.__deferNextReport = {date: '2026-08-10', status: 200}; "
+            "void loadRegistryReport('2026-08-10'); resetHistoricalReportDetail()"
+        )
+        page.get_by_role("heading", name="Select a report").wait_for()
+        page.evaluate("window.__pendingReportResponses.shift()()")
+        page.wait_for_timeout(50)
+        assert page.get_by_role("heading", name="Select a report").is_visible()
+        assert page.locator("#registryReportDetail").get_attribute("aria-busy") == "false"
+        assert page.locator("#registryExecutiveSummary").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+
+        page.evaluate("loadRegistryReport('2026-07-27')")
+        page.get_by_role("heading", name="Report unavailable").wait_for()
+        assert page.locator("#registryExecutiveSummary").is_hidden()
+        assert page.locator("#registryMonitoringSnapshot").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+        assert page.locator("#registryReportPdf").get_attribute("href") is None
+        assert page.locator("#registryReportArticles").text_content() == ""
+        page.evaluate("loadRegistryReport('2026-07-20')")
+        page.get_by_role("heading", name="Report unavailable").wait_for()
+        assert page.locator("#registryExecutiveSummary").is_hidden()
+        assert page.locator("#registryMonitoringSnapshot").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+        page.evaluate("loadRegistryReport('2026-08-10')")
+        page.get_by_role("heading", name="Report detail").wait_for()
+        _visible(page, "Weekly article summary")
+
+        valid_snapshot = {
+            "sites_checked": 57,
+            "sites_succeeded": 57,
+            "sites_failed": 0,
+            "pillar_a_updates": 9,
+            "pillar_b_updates": 17,
+            "notes": ["A valid note."],
+        }
+        malformed_briefings = [
+            {"executive_summary": ["Valid narrative.", "   "], "monitoring_snapshot": valid_snapshot},
+            {"executive_summary": "Not an array.", "monitoring_snapshot": valid_snapshot},
+            {
+                "executive_summary": ["Valid narrative."],
+                "monitoring_snapshot": {**valid_snapshot, "notes": ["Valid note.", ""]},
+            },
+        ]
+        for malformed_briefing in malformed_briefings:
+            page.evaluate(
+                "briefing => { window.__reportBriefingOverride = briefing; "
+                "return loadRegistryReport('2026-08-10'); }",
+                malformed_briefing,
+            )
+            _visible(page, "Old operational summary must not be repeated.")
+            assert page.locator("#registryExecutiveSummaryItems li").all_text_contents() == [
+                "Old operational summary must not be repeated."
+            ]
+            assert page.locator("#registryBriefingExecutiveSummaryItems").is_hidden()
+            assert page.locator("#registryMonitoringSnapshot").is_hidden()
+            assert page.locator("#registryReportPdf").is_hidden()
+
+        page.evaluate("delete window.__reportBriefingOverride")
+        invalid_pdfs = [
+            {"filename": " climate-monitor-2026-08-10.pdf", "download_url": "/api/registry/reports/2026-08-10/pdf"},
+            {"filename": "wrong.pdf", "download_url": "/api/registry/reports/2026-08-10/pdf"},
+            {"filename": "climate-monitor-2026-08-10.pdf", "download_url": " /api/registry/reports/2026-08-10/pdf"},
+            {"filename": "climate-monitor-2026-08-10.pdf", "download_url": "javascript:alert(1)"},
+            {"filename": "climate-monitor-2026-08-10.pdf", "download_url": "https://foreign.example/report.pdf"},
+            {"filename": "climate-monitor-2026-08-10.pdf", "download_url": "/api/registry/reports/2026-08-03/pdf"},
+            {"filename": "climate-monitor-2026-08-10.pdf", "download_url": "/api/registry/reports/2026-08-10/pdf?raw=1"},
+        ]
+        for invalid_pdf in invalid_pdfs:
+            page.evaluate(
+                "pdf => { window.__reportPdfOverride = pdf; return loadRegistryReport('2026-08-10'); }",
+                invalid_pdf,
+            )
+            _visible(page, "Pricing pressure increased across exposed markets.")
+            assert page.locator("#registryReportPdf").is_hidden()
+            assert page.locator("#registryReportPdf").get_attribute("href") is None
+            assert page.locator("#registryReportPdf").get_attribute("download") is None
+
+        page.evaluate(
+            "window.__reportPdfOverride = {filename: 'climate-monitor-2026-08-10.pdf', "
+            "download_url: window.location.origin + '/api/registry/reports/2026-08-10/pdf'}; "
+            "loadRegistryReport('2026-08-10')"
+        )
+        absolute_pdf_link = page.get_by_role("link", name="Download report PDF")
+        absolute_pdf_link.wait_for()
+        assert absolute_pdf_link.get_attribute("href") == (
+            "http://archive.test/api/registry/reports/2026-08-10/pdf"
+        )
+        page.evaluate("delete window.__reportPdfOverride; loadRegistryReport('2026-08-10')")
+        page.get_by_role("heading", name="Report detail").wait_for()
+
         page.evaluate(
             "window.__reportSummaryProvenance = 'official_replacement_annotation'; "
             "window.__reportSourceBasis = 'official_replacement'; "
@@ -306,6 +571,11 @@ def main() -> int:
         page.go_back()
         page.get_by_role("heading", name="Select a report").wait_for()
         assert page.url == "http://archive.test/"
+        assert page.locator("#registryExecutiveSummary").is_hidden()
+        assert page.locator("#registryMonitoringSnapshot").is_hidden()
+        assert page.locator("#registryReportPdf").is_hidden()
+        assert page.locator("#registryReportPdf").get_attribute("href") is None
+        assert page.locator("#registryReportPdf").get_attribute("download") is None
         page.go_forward()
         page.get_by_role("heading", name="Report detail").wait_for()
         page.get_by_role("tab", name="Obsidian").click()
@@ -316,13 +586,34 @@ def main() -> int:
         _assert_network_isolation(page, audit)
         page.close()
 
+        page, audit = _new_page(browser, "populated")
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.get_by_role("button", name="Report page 1", exact=False).click()
+        page.get_by_role("heading", name="Report detail").wait_for()
+        mobile_detail = page.locator("#registryReportDetail").bounding_box()
+        mobile_pdf = page.get_by_role("link", name="Download report PDF").bounding_box()
+        mobile_snapshot = page.locator("#registryMonitoringSnapshot").bounding_box()
+        assert mobile_detail and mobile_detail["x"] >= 0
+        assert mobile_detail["x"] + mobile_detail["width"] <= 390
+        assert mobile_pdf and mobile_pdf["x"] + mobile_pdf["width"] <= 390
+        assert mobile_snapshot and mobile_snapshot["x"] + mobile_snapshot["width"] <= 390
+        assert page.locator("#registrySnapshotMetrics").evaluate(
+            "node => getComputedStyle(node).gridTemplateColumns.split(' ').length"
+        ) == 1
+        _visible(page, "Weekly article summary")
+        page.get_by_role("button", name="Climate pricing").click()
+        page.get_by_role("heading", name="Climate pricing", exact=True).wait_for()
+        _visible(page, "Enriched summary")
+        _assert_network_isolation(page, audit)
+        page.close()
+
         page, audit = _new_page(browser, "service_unavailable")
         _visible(page, "Service unavailable")
         _assert_network_isolation(page, audit)
         page.close()
 
         browser.close()
-    print("registry browser smoke: 4 scenarios passed")
+    print("registry browser smoke: 5 scenarios passed")
     return 0
 
 
