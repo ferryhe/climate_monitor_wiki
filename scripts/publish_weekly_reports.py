@@ -444,13 +444,6 @@ def close_pr_if_open(runner: CommandRunner, checkout: Path) -> str | None:
     return existing
 
 
-def _remote_main_sha(runner: CommandRunner, checkout: Path) -> str:
-    sha = _remote_ref_sha(runner, checkout, BASE_BRANCH)
-    if not sha:
-        raise PublishError("origin/main disappeared during publication")
-    return sha
-
-
 def _push_ref_exact(
     runner: CommandRunner,
     checkout: Path,

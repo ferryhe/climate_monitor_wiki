@@ -42,20 +42,20 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # if absent
 .venv/bin/python -m pytest -q
 ```
 
-**Branch from `main`.** PR #24 (weekly cadence + Docker/Caddy HTTPS) was
-squash-merged into `main` as `0587228`, so `main` is now the complete, current
-state. The old `feat/weekly-cadence-and-https-deployment` branch is superseded —
-do not branch from it.
+**Branch from current `origin/main`.** The production-complete closeout baseline
+is `6a4b359`. PR #24 (`0587228`) and the old
+`feat/weekly-cadence-and-https-deployment` branch are historical and must not be
+used as branch bases.
 
 `.env` (gitignored, `chmod 600`, repo root) holds `RELOAD_TOKEN`,
 `OPENAI_API_KEY`, and `SITE_HOST` — the host address used in the health-check
 URLs below. Read it from there rather than hardcoding an IP.
 
-> **`OPENAI_API_KEY` is currently empty**, so the service runs in offline
-> extractive mode (`/api/config` reports `agent_mode: "offline"`,
-> `model: "offline-extractive"`). Answers are real and cited but not
-> LLM-synthesised. This is expected, not a bug — set the key and re-run
-> `docker compose up -d` to enable synthesis.
+If **`OPENAI_API_KEY` is empty**, the service runs in offline extractive mode
+(`/api/config` reports `agent_mode: "offline"`,
+`model: "offline-extractive"`). Answers remain real and cited but are not
+LLM-synthesised. This is expected, not a bug. Never infer the current production
+mode from this document; check the sanitized `/api/config` response.
 
 ---
 
@@ -145,9 +145,12 @@ before touching cadence logic.
 ## Verification — required before claiming done
 
 ```bash
-.venv/bin/python -m pytest -q          # expect: 120 passed
+.venv/bin/python -m pytest -q          # expect all applicable tests to pass
 node --check showcase/app.js           # frontend has no build step
 ```
+
+Closeout verification on 2026-08-18 collected 872 tests and completed with
+859 passed / 13 environment-specific skips on Windows.
 
 For anything touching the running service:
 
@@ -223,6 +226,11 @@ not deploy or write to the production checkout.
 
 These are **Hermes cron jobs** (this host's scheduler), not GitHub Actions.
 Inspect with the Hermes `cronjob` tool: `cronjob action=list`.
+
+The delivery module also supports a separately controlled Monday 09:00
+Email/PDF step. It is not one of the two active jobs listed above and must remain
+paused unless the owner separately authorizes it. Project closeout sent no
+email.
 
 ### No GitHub report generator
 

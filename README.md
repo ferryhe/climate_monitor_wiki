@@ -4,15 +4,19 @@ A structured, interlinked knowledge base on climate risk, natural catastrophe in
 
 ## Web + Obsidian Surfaces
 
-This repo now exposes the same wiki through three aligned surfaces:
+This repo exposes the monitoring corpus through three web tabs plus an Obsidian plugin:
 
-- `showcase/` serves a two-tab web workspace.
+- `Historical Reports` is the default operator archive for weekly narrative
+  briefings, monitoring snapshots, PDFs, and their source articles.
 - `Chat` uses a minimal single-column conversation layout inspired by `ferryhe/c-ross-2`, but recolored to match the Obsidian workspace.
 - `Obsidian` restores the earlier browsing workspace with `Dataview`, `Note Detail`, and `Graph View` for selecting the active retrieval context.
   The page order is now `Dataview + Note Detail` first, then `Graph View`.
   The graph supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
   Both graph modes are precomputed by the API so the workspace can render quickly without rebuilding the graph client-side.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
+
+See [docs/project-closeout.md](docs/project-closeout.md) for the operator guide,
+module map, API/CLI audit, scheduled-job boundaries, and closeout record.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
 Chat now also exposes three answer modes:
@@ -221,12 +225,12 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 └── .obsidian/         # Vault config + local plugin
 ```
 
-## Daily Reports
+## Reports
 
-25 daily report pages in `wiki/` covering **2026-04-01 through 2026-04-25**.
-Source files in `sources/` contain the original report content.
-
-Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
+25 source-backed report pages are present: 20 legacy daily reports from April,
+one June report, and four weekly reports from **2026-07-27 through 2026-08-17**.
+Source files in `sources/` contain the original report content. Weekly rendering
+shows only dates with a real source report and never manufactures gap pages.
 
 ## Key Topics
 
@@ -242,6 +246,8 @@ Missing dates: `04-11`, `04-12`, `04-13`, `04-15`, `04-19`
 
 ## Data Sources
 
-Daily reports are sourced from 14 high-priority organizations such as IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations via automated monitoring.
+Monitoring reports are sourced from 14 high-priority organizations such as
+IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations
+per run via automated monitoring.
 
-_Last updated: 2026-04-25_
+_Last updated: 2026-08-17_
