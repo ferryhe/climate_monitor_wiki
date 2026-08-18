@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,10 @@ import pytest
 from scripts import ingest_weekly_reports as ingest
 from scripts import publish_weekly_reports as publisher
 from scripts.sync_source_wiki import sync_source_wiki
+from climate_monitor.run_ledger import RunLedgerReader, build_report_identity
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -146,6 +151,7 @@ def local_remote(tmp_path):
     _git(seed, "init", "-b", "main")
     _git(seed, "config", "user.name", "Test")
     _git(seed, "config", "user.email", "test@example.test")
+    (seed / ".gitattributes").write_text("*.md text eol=lf\n", encoding="ascii")
     _report(seed / "sources" / "climate-monitor-2026-08-03.md", "2026-08-03")
     (seed / "scripts").mkdir()
     shutil.copyfile(
@@ -201,7 +207,46 @@ def test_direct_script_entrypoint_bootstraps_repository_imports(tmp_path):
 
     assert result.returncode == 0
     assert "--registry-database" in result.stdout
+    assert "--ledger-dir" in result.stdout
     assert "Traceback" not in result.stderr
+
+
+def test_publisher_result_ledger_binds_raw_report_identity(tmp_path):
+    raw_lf = b"canonical\nweekly\nreport\n"
+    raw_crlf = raw_lf.replace(b"\n", b"\r\n")
+    identity = build_report_identity(
+        report_date="2026-08-17",
+        filename="climate-monitor-2026-08-17.md",
+        sha256=hashlib.sha256(raw_lf).hexdigest(),
+    )
+    ledger = tmp_path / "ledger"
+    result = publisher.PublishResult(
+        status="published", base_sha="a" * 40, report=identity
+    )
+    assert publisher._append_publisher_result(
+        ledger,
+        result=result,
+        report_date="2026-08-17",
+        repository_root=ROOT,
+    ) == "created"
+    attempt = RunLedgerReader(ledger, repository_root=ROOT)._load()[-1]
+    assert attempt["status"] == "success"
+    assert attempt["report"] == identity.as_record()
+    assert attempt["report"]["sha256"] != hashlib.sha256(raw_crlf).hexdigest()
+
+
+def test_publisher_failure_records_no_false_success_identity(tmp_path):
+    ledger = tmp_path / "ledger"
+    publisher._append_publisher_result(
+        ledger,
+        result=None,
+        report_date="2026-08-17",
+        repository_root=ROOT,
+    )
+    attempt = RunLedgerReader(ledger, repository_root=ROOT)._load()[-1]
+    assert attempt["status"] == "failed"
+    assert attempt["result_code"] == "publish_failed"
+    assert "report" not in attempt
 
 
 def test_ingest_has_no_git_operations_or_git_flags(monkeypatch, tmp_path):
@@ -602,13 +647,18 @@ def test_first_publish_creates_fixed_branch_and_pr_without_touching_production(
 ):
     remote, production = local_remote
     reports = tmp_path / "reports"
-    _report(reports / "climate-monitor-2026-08-10.md", "2026-08-10")
+    authority = _report(
+        reports / "climate-monitor-2026-08-10.md", "2026-08-10"
+    )
     before = (_git(production, "rev-parse", "HEAD"), _git(production, "status", "--porcelain"))
     gh = FakeGhRunner()
 
     result = _publish(production, reports, gh)
 
     assert result.status == "published"
+    assert result.report is not None
+    assert result.report.filename == authority.name
+    assert result.report.sha256 == hashlib.sha256(authority.read_bytes()).hexdigest()
     assert result.pr_url == "https://example.test/pull/1"
     assert gh.create_calls == 1
     assert _git(remote, "rev-parse", f"refs/heads/{publisher.BRANCH}") == result.published_sha
@@ -953,9 +1003,79 @@ def test_forged_wiki_after_source_reaches_main_cleans_rolling_and_pr(
     )
 
     assert result.status == "cleaned"
+    assert result.report is not None
+    assert result.report.sha256 == hashlib.sha256(authority.read_bytes()).hexdigest()
     assert _remote_ref_missing(remote, publisher.BRANCH)
     assert gh.close_calls == 1
     assert gh.pr_url is None
+
+    repeated = publisher.publish(
+        production_repo=production,
+        report_dir=reports,
+        today=date(2026, 8, 10),
+        runner=gh,
+        verifier=lambda _checkout, _runner: None,
+    )
+    assert repeated.status == "no-op"
+    assert repeated.report is not None
+    assert repeated.report.sha256 == hashlib.sha256(authority.read_bytes()).hexdigest()
+
+
+def test_final_identity_rejects_clean_filter_or_line_ending_drift(tmp_path):
+    checkout = tmp_path / "checkout"
+    source_dir = checkout / "sources"
+    report_dir = tmp_path / "reports"
+    source = _report(
+        source_dir / "climate-monitor-2026-08-10.md", "2026-08-10"
+    )
+    authority = report_dir / source.name
+    authority.parent.mkdir()
+    authority.write_bytes(source.read_bytes())
+    _git(checkout, "init", "-b", "main")
+    _git(checkout, "config", "user.name", "Test")
+    _git(checkout, "config", "user.email", "test@example.test")
+    _git(checkout, "config", "core.autocrlf", "false")
+    _git(checkout, "add", "sources")
+    _git(checkout, "commit", "-m", "report")
+
+    crlf = source.read_bytes().replace(b"\n", b"\r\n")
+    source.write_bytes(crlf)
+    authority.write_bytes(crlf)
+    with pytest.raises(publisher.PublishError, match="raw bytes differ from HEAD"):
+        publisher._final_report_identity(
+            checkout, report_dir, today=date(2026, 8, 10)
+        )
+
+
+def test_main_records_only_failure_when_publish_raises(monkeypatch, tmp_path):
+    ledger = tmp_path / "ledger"
+    monkeypatch.setattr(
+        publisher,
+        "publish",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            publisher.PublishError("post-publication integrity failure")
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publish_weekly_reports.py",
+            "--production-repo",
+            str(ROOT),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--ledger-dir",
+            str(ledger),
+        ],
+    )
+
+    with pytest.raises(publisher.PublishError, match="integrity failure"):
+        publisher.main()
+    attempts = RunLedgerReader(ledger, repository_root=ROOT)._load()
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "failed"
+    assert "report" not in attempts[0]
 
 
 def test_stale_main_index_is_reconciled_without_new_import(local_remote, tmp_path):

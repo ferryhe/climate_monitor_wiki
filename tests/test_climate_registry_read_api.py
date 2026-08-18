@@ -19,6 +19,15 @@ from climate_registry.reports import parse_report_directory
 from climate_registry.schema import apply_migrations
 
 
+ROOT = Path(__file__).resolve().parents[1]
+CURRENT_HISTORICAL_DATES = (
+    "2026-07-27",
+    "2026-08-03",
+    "2026-08-10",
+    "2026-08-17",
+)
+
+
 def _registry(tmp_path: Path) -> Path:
     database = tmp_path / "article-registry.sqlite3"
     connection = sqlite3.connect(database)
@@ -236,6 +245,25 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert detail.json()["monitoring"]["sites_failed"] == 1
     assert detail.json()["monitoring"]["warning_count"] == 1
     assert "one warning" not in detail.text
+
+
+def test_current_four_historical_report_details_are_api_readable(
+    tmp_path, monkeypatch
+):
+    database = tmp_path / "article-registry.sqlite3"
+    build_audit_registry(ROOT / "sources", database, tmp_path / "audit")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "SOURCE_DIR", ROOT / "sources")
+    client = TestClient(app)
+
+    listing = client.get("/api/registry/reports?page=1&page_size=100")
+    assert listing.status_code == 200
+    listed_dates = {item["report_date"] for item in listing.json()["items"]}
+    assert set(CURRENT_HISTORICAL_DATES) <= listed_dates
+    for report_date in CURRENT_HISTORICAL_DATES:
+        detail = client.get(f"/api/registry/reports/{report_date}")
+        assert detail.status_code == 200
+        assert detail.json()["report_date"] == report_date
 
 
 def test_publishers_are_bounded_deterministic_read_only_choices(registry_client):

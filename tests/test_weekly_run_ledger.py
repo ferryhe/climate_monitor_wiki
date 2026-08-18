@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import climate_monitor.run_ledger as run_ledger
 
 from climate_monitor.run_ledger import (
     MAX_ATTEMPT_BYTES,
@@ -18,9 +20,12 @@ from climate_monitor.run_ledger import (
     RunLedgerReader,
     _assert_directory_contained,
     append_attempt,
+    append_attempt_repair,
+    build_report_identity,
     canonical_attempt_bytes,
     decode_attempt_json,
     read_bounded_file,
+    validate_report_identity,
 )
 
 
@@ -119,6 +124,259 @@ def test_append_is_atomic_append_only_and_idempotent(tmp_path):
         append_attempt(ledger, conflict, repository_root=ROOT)
     assert files[0].read_bytes() == canonical_attempt_bytes(payload)
 
+
+def test_shared_report_identity_binds_date_filename_id_and_raw_sha():
+    raw_lf = b"line one\nline two\n"
+    raw_crlf = b"line one\r\nline two\r\n"
+    identity = build_report_identity(
+        report_date="2026-08-10",
+        filename="climate-monitor-2026-08-10.md",
+        sha256=hashlib.sha256(raw_lf).hexdigest(),
+    )
+    assert identity.report_id == "climate-monitor-2026-08-10"
+    assert identity.sha256 != hashlib.sha256(raw_crlf).hexdigest()
+    assert validate_report_identity(identity.as_record()) == identity
+    with pytest.raises(LedgerContractError, match="filename"):
+        build_report_identity(
+            report_date="2026-08-10",
+            filename="climate-monitor-2026-08-03.md",
+            sha256=identity.sha256,
+        )
+    with pytest.raises(LedgerContractError, match="filename"):
+        validate_report_identity(
+            {**identity.as_record(), "report_id": "climate-monitor-2026-08-03"}
+        )
+
+
+def test_repair_overlay_is_raw_bound_append_only_and_publicly_transparent(tmp_path):
+    ledger = tmp_path / "ledger"
+    attempt = _attempt(
+        attempt_id="20260810t100000z-publisher-legacy",
+        stage="publisher",
+        status="no_change",
+        result_code="no-op",
+        scheduled_for="2026-08-10T10:00:00Z",
+        finished_at="2026-08-10T10:05:00Z",
+        include_sources=False,
+    )
+    attempt.pop("report")
+    append_attempt(ledger, attempt, repository_root=ROOT)
+    original = ledger / "attempts" / "publisher" / "2026-08-10" / f"{attempt['attempt_id']}.json"
+    claim = ledger / ".attempt-identities" / f"{attempt['attempt_id']}.claim"
+    original_raw = original.read_bytes()
+    original_stat = os.stat(original)
+    claim_stat = os.stat(claim)
+    repair = {
+        "schema_version": "weekly-run-attempt-repair.v1",
+        "attempt_id": attempt["attempt_id"],
+        "original_sha256": hashlib.sha256(original_raw).hexdigest(),
+        "report": {
+            "report_id": "climate-monitor-2026-08-10",
+            "report_date": "2026-08-10",
+            "sha256": "a" * 64,
+        },
+    }
+    assert append_attempt_repair(ledger, repair, repository_root=ROOT) == "created"
+    assert append_attempt_repair(ledger, repair, repository_root=ROOT) == "already_exists"
+    loaded = RunLedgerReader(ledger, repository_root=ROOT)._load()
+    assert loaded[-1]["report"] == repair["report"]
+    assert original.read_bytes() == original_raw == claim.read_bytes()
+    assert (os.stat(original).st_dev, os.stat(original).st_ino) == (
+        original_stat.st_dev,
+        original_stat.st_ino,
+    )
+    assert (os.stat(claim).st_dev, os.stat(claim).st_ino) == (
+        claim_stat.st_dev,
+        claim_stat.st_ino,
+    )
+    public = RunLedgerReader(ledger, repository_root=ROOT).status(
+        now=datetime(2026, 8, 10, 11, tzinfo=timezone.utc)
+    )
+    assert public["stages"]["publisher"]["last_success"]["report"] == repair["report"]
+    assert ".attempt-repairs" not in json.dumps(public)
+
+
+def test_repair_overlay_conflict_and_wrong_raw_binding_fail_closed(tmp_path):
+    ledger = tmp_path / "ledger"
+    attempt = _attempt(
+        attempt_id="20260810t100000z-publisher-legacy",
+        stage="publisher",
+        status="success",
+        scheduled_for="2026-08-10T10:00:00Z",
+        finished_at="2026-08-10T10:05:00Z",
+        include_sources=False,
+    )
+    attempt.pop("report")
+    append_attempt(ledger, attempt, repository_root=ROOT)
+    repair = {
+        "schema_version": "weekly-run-attempt-repair.v1",
+        "attempt_id": attempt["attempt_id"],
+        "original_sha256": "b" * 64,
+        "report": {
+            "report_id": "climate-monitor-2026-08-10",
+            "report_date": "2026-08-10",
+            "sha256": "a" * 64,
+        },
+    }
+    append_attempt_repair(ledger, repair, repository_root=ROOT)
+    with pytest.raises(LedgerContractError, match="target is invalid"):
+        RunLedgerReader(ledger, repository_root=ROOT)._load()
+    with pytest.raises(LedgerConflictError):
+        append_attempt_repair(
+            ledger,
+            {**repair, "original_sha256": "c" * 64},
+            repository_root=ROOT,
+        )
+
+
+def test_generic_v1_report_id_remains_backward_compatible(tmp_path):
+    ledger = tmp_path / "ledger"
+    attempt = _attempt(include_sources=False)
+    attempt["report"]["report_id"] = "legacy-monitor-report"
+    append_attempt(ledger, attempt, repository_root=ROOT)
+
+    loaded = RunLedgerReader(ledger, repository_root=ROOT)._load()
+    assert loaded[0]["report"]["report_id"] == "legacy-monitor-report"
+
+
+@pytest.mark.parametrize("new_status", ["success", "failed"])
+def test_repair_overlay_survives_later_same_date_attempt(tmp_path, new_status):
+    ledger = tmp_path / "ledger"
+    legacy = _attempt(
+        attempt_id="20260810t100000z-publisher-legacy",
+        stage="publisher",
+        status="no_change",
+        result_code="no-op",
+        scheduled_for="2026-08-10T10:00:00Z",
+        finished_at="2026-08-10T10:05:00Z",
+        include_sources=False,
+    )
+    legacy.pop("report")
+    append_attempt(ledger, legacy, repository_root=ROOT)
+    original = next((ledger / "attempts" / "publisher" / "2026-08-10").glob("*.json"))
+    report = {
+        "report_id": "climate-monitor-2026-08-10",
+        "report_date": "2026-08-10",
+        "sha256": "a" * 64,
+    }
+    append_attempt_repair(
+        ledger,
+        {
+            "schema_version": "weekly-run-attempt-repair.v1",
+            "attempt_id": legacy["attempt_id"],
+            "original_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+            "report": report,
+        },
+        repository_root=ROOT,
+    )
+    newer = _attempt(
+        attempt_id=f"20260810t101000z-publisher-{new_status}",
+        stage="publisher",
+        status=new_status,
+        result_code="retry",
+        scheduled_for="2026-08-10T10:00:00Z",
+        finished_at="2026-08-10T10:10:00Z",
+        include_sources=False,
+    )
+    if new_status == "failed":
+        newer.pop("report")
+    append_attempt(ledger, newer, repository_root=ROOT)
+
+    loaded = RunLedgerReader(ledger, repository_root=ROOT)._load()
+    assert loaded[0]["report"] == report
+    assert loaded[-1]["attempt_id"] == newer["attempt_id"]
+    assert loaded[-1]["status"] == new_status
+
+
+def test_interrupted_repair_temp_is_outside_reader_namespace(tmp_path):
+    ledger = tmp_path / "ledger"
+    append_attempt(ledger, _attempt(), repository_root=ROOT)
+    temp_dir = ledger / ".attempt-repair-tmp"
+    temp_dir.mkdir()
+    (temp_dir / ".interrupted.tmp").write_bytes(b"partial")
+
+    assert len(RunLedgerReader(ledger, repository_root=ROOT)._load()) == 1
+
+
+def test_repair_link_failure_leaves_original_and_claim_unchanged(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger"
+    attempt = _attempt(
+        attempt_id="20260810t100000z-publisher-legacy",
+        stage="publisher",
+        status="success",
+        scheduled_for="2026-08-10T10:00:00Z",
+        finished_at="2026-08-10T10:05:00Z",
+        include_sources=False,
+    )
+    attempt.pop("report")
+    append_attempt(ledger, attempt, repository_root=ROOT)
+    original = next((ledger / "attempts" / "publisher" / "2026-08-10").glob("*.json"))
+    claim = ledger / ".attempt-identities" / f"{attempt['attempt_id']}.claim"
+    original_raw = original.read_bytes()
+    original_identity = (os.stat(original).st_dev, os.stat(original).st_ino)
+    claim_identity = (os.stat(claim).st_dev, os.stat(claim).st_ino)
+    monkeypatch.setattr(os, "link", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected")))
+
+    with pytest.raises(LedgerUnavailableError):
+        append_attempt_repair(
+            ledger,
+            {
+                "schema_version": "weekly-run-attempt-repair.v1",
+                "attempt_id": attempt["attempt_id"],
+                "original_sha256": hashlib.sha256(original_raw).hexdigest(),
+                "report": {
+                    "report_id": "climate-monitor-2026-08-10",
+                    "report_date": "2026-08-10",
+                    "sha256": "a" * 64,
+                },
+            },
+            repository_root=ROOT,
+        )
+    assert original.read_bytes() == claim.read_bytes() == original_raw
+    assert (os.stat(original).st_dev, os.stat(original).st_ino) == original_identity
+    assert (os.stat(claim).st_dev, os.stat(claim).st_ino) == claim_identity
+    assert not list((ledger / ".attempt-repairs").rglob("*.json"))
+    assert not list((ledger / ".attempt-repair-tmp").glob("*.tmp"))
+
+
+def test_repair_fsync_failure_leaves_no_overlay_or_temp(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger"
+    attempt = _attempt(
+        attempt_id="20260810t100000z-publisher-legacy",
+        stage="publisher",
+        status="success",
+        scheduled_for="2026-08-10T10:00:00Z",
+        finished_at="2026-08-10T10:05:00Z",
+        include_sources=False,
+    )
+    attempt.pop("report")
+    append_attempt(ledger, attempt, repository_root=ROOT)
+    original = next((ledger / "attempts" / "publisher" / "2026-08-10").glob("*.json"))
+    original_raw = original.read_bytes()
+    monkeypatch.setattr(
+        run_ledger.os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("injected fsync")),
+    )
+
+    with pytest.raises(LedgerUnavailableError):
+        append_attempt_repair(
+            ledger,
+            {
+                "schema_version": "weekly-run-attempt-repair.v1",
+                "attempt_id": attempt["attempt_id"],
+                "original_sha256": hashlib.sha256(original_raw).hexdigest(),
+                "report": {
+                    "report_id": "climate-monitor-2026-08-10",
+                    "report_date": "2026-08-10",
+                    "sha256": "a" * 64,
+                },
+            },
+            repository_root=ROOT,
+        )
+    assert original.read_bytes() == original_raw
+    assert not list((ledger / ".attempt-repairs").rglob("*.json"))
+    assert not list((ledger / ".attempt-repair-tmp").glob("*.tmp"))
 
 def test_concurrent_identical_writers_create_exactly_one_attempt(tmp_path):
     ledger = tmp_path / "ledger"
