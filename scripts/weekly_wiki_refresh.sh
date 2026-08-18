@@ -9,10 +9,12 @@ REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 PY="${PYTHON:-$REPO/.venv/bin/python}"
 REPORT_DIR="${REPORT_DIR:-/home/ubuntu/web_listening/data/reports}"
 LOCK_FILE="${CLIMATE_PUBLISH_LOCK:-/tmp/climate-monitor-weekly-publisher.lock}"
+LEDGER_DIR="${CLIMATE_RUN_LEDGER_DIR:-/var/lib/climate-monitor/weekly-run-ledger}"
 
 ARGS=(
   --production-repo "$REPO"
   --report-dir "$REPORT_DIR"
+  --ledger-dir "$LEDGER_DIR"
 )
 if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]; then
   ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")

@@ -4,11 +4,12 @@ The weekly run ledger is a small public operational contract. It records that a
 monitor or publisher attempt finished; it is not a scheduler, alerting system,
 content database, or replacement for the Article Registry.
 
-This repository deliberately does **not** connect the ledger to Hermes. The
-production monitor runs in the separate `web_listening` workspace, so this
-application cannot truthfully reconstruct its 57-source results or registry
-revision from the generated Markdown. Enabling live records requires a separate
-reviewed job change after deployment.
+The repo-owned 10:00 Publisher wrapper records its own outcome after the rolling
+PR transaction and production-checkout integrity check have completed. The
+production monitor still runs in the separate `web_listening` workspace, so
+this application cannot truthfully reconstruct its 57-source results or
+registry revision from generated Markdown; Monitor producer wiring remains a
+separate concern.
 
 ## Attempt contract
 
@@ -69,6 +70,10 @@ Rules:
 - `report` and `registry_revision` are optional evidence. A producer must not
   invent them. In particular, the app's 34-source YAML is not a substitute for
   the upstream 57-site registry revision.
+- For a Publisher success, `report` is mandatory. `report_id` must equal
+  `climate-monitor-<report_date>` and therefore derives the one canonical
+  filename `climate-monitor-<report_date>.md`; `sha256` is computed over that
+  final source file's raw bytes with no newline or Unicode normalization.
 
 `no_change` is a successful operational completion, so it refreshes run
 freshness. It does not by itself claim a new report revision.
@@ -105,6 +110,14 @@ The API never scans or exposes those claims.
 
 There is no tracked `latest.json`. The API derives latest state from immutable
 attempts, so a publisher `no-op` cannot create Git or rolling-PR churn.
+
+An authorized legacy repair also does not overwrite an attempt. It creates one
+strict raw-hash-bound projection under
+`.attempt-repairs/publisher/<date>/<attempt-id>.json`; the original attempt and
+its `.attempt-identities` hard-link claim remain byte-for-byte unchanged. The
+reader accepts the overlay only when it adds the exact canonical report identity
+to an otherwise identical legacy Publisher success. Removing that exact overlay
+is the audited rollback.
 
 ## Read-only API
 
@@ -186,15 +199,14 @@ Compose invocation (and remove the environment setting if separately set),
 then recreate only the Wiki app. Existing append-only attempts may be retained.
 Caddy, the Article Registry, reports, Chat, and Hermes jobs do not need changes.
 
-## Deferred producer integration
+## Producer integration
 
-No producer is wired in this PR.
-
-A later, separately approved Hermes adaptation may map publisher outcomes as
-follows: `published`/`cleaned` to `success`, and `unchanged`/`no-op` to
-`no_change`. The wrapper must create one stable ID before execution and record
-ordinary exit failures with sanitized codes. The upstream monitor must supply
-its own source evidence and revision; this repo must not infer them from report
+The Publisher maps `published` to `success` and
+`cleaned`/`unchanged`/`no-op` to `no_change`, and constructs the attempt identity
+and outcome when appending. Ordinary failures use sanitized codes. Success is appended only
+after `publish()` returns, so a failed remote/PR/checkout-integrity condition
+cannot be mislabeled as successful. The upstream monitor must still supply its
+own source evidence and revision; this repo does not infer them from report
 prose.
 
 No recorder can report a scheduler, interpreter, host, or process crash that

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
 import re
 import secrets
 import stat
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 
 SCHEMA_VERSION = "weekly-run-attempt.v1"
+REPAIR_SCHEMA_VERSION = "weekly-run-attempt-repair.v1"
 STAGES = frozenset({"monitor", "publisher"})
 STATUSES = frozenset({"success", "partial", "failed", "no_change"})
 SUCCESS_STATUSES = frozenset({"success", "no_change"})
@@ -21,6 +25,7 @@ MAX_ATTEMPT_COUNT = 20_000
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_VISITED_ENTRIES = 20_000
 MAX_VISITED_DIRS = 6_000
+MAX_REPAIR_BYTES = 32 * 1024
 
 _TOKEN = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 _ATTEMPT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -76,6 +81,21 @@ class LedgerConflictError(LedgerError):
     """An attempt identity already exists with different content."""
 
 
+@dataclass(frozen=True)
+class ReportIdentity:
+    report_id: str
+    report_date: str
+    filename: str
+    sha256: str
+
+    def as_record(self) -> dict[str, str]:
+        return {
+            "report_id": self.report_id,
+            "report_date": self.report_date,
+            "sha256": self.sha256,
+        }
+
+
 def _exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -128,17 +148,71 @@ def _nonnegative_int(value: Any, *, field: str) -> int:
     return value
 
 
-def _validate_report(raw: Any, *, report_date: str) -> dict[str, str]:
+def canonical_report_filename(report_date: str) -> str:
+    parsed = _strict_date(report_date, field="report report_date")
+    if parsed.weekday() != 0:
+        raise LedgerContractError("report report_date must be Monday")
+    return f"climate-monitor-{report_date}.md"
+
+
+def build_report_identity(
+    *, report_date: str, filename: str, sha256: str
+) -> ReportIdentity:
+    expected_filename = canonical_report_filename(report_date)
+    if filename != expected_filename:
+        raise LedgerContractError("report filename does not match report_date")
+    if not isinstance(sha256, str) or not _SHA256.fullmatch(sha256):
+        raise LedgerContractError("invalid report sha256")
+    return ReportIdentity(
+        report_id=expected_filename.removesuffix(".md"),
+        report_date=report_date,
+        filename=expected_filename,
+        sha256=sha256,
+    )
+
+
+def validate_report_identity(
+    raw: Any,
+    *,
+    expected_report_date: str | None = None,
+    expected_filename: str | None = None,
+    expected_sha256: str | None = None,
+) -> ReportIdentity:
     expected = frozenset({"report_id", "report_date", "sha256"})
     _exact_fields(raw, expected=expected, label="report")
     report_id = _safe_token(raw["report_id"], field="report_id", attempt_id=True)
-    parsed_date = _strict_date(raw["report_date"], field="report report_date")
-    if parsed_date.isoformat() != report_date:
+    identity = build_report_identity(
+        report_date=raw["report_date"],
+        filename=f"{report_id}.md",
+        sha256=raw["sha256"],
+    )
+    if expected_report_date is not None and identity.report_date != expected_report_date:
         raise LedgerContractError("report report_date does not match attempt report_date")
-    digest = raw["sha256"]
-    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+    if expected_filename is not None and identity.filename != expected_filename:
+        raise LedgerContractError("report filename does not match expected filename")
+    if expected_sha256 is not None and identity.sha256 != expected_sha256:
+        raise LedgerContractError("report sha256 does not match expected sha256")
+    return identity
+
+
+def _validate_report(raw: Any, *, report_date: str) -> dict[str, str]:
+    # Keep the published v1 wire contract backward compatible. Historically,
+    # report_id was any safe token; Publisher-specific consumers opt into the
+    # stricter canonical filename relationship via validate_report_identity().
+    expected = frozenset({"report_id", "report_date", "sha256"})
+    _exact_fields(raw, expected=expected, label="report")
+    report_id = _safe_token(raw["report_id"], field="report_id", attempt_id=True)
+    nested_date = _strict_date(raw["report_date"], field="report report_date")
+    if nested_date.isoformat() != report_date:
+        raise LedgerContractError("report report_date does not match attempt report_date")
+    sha256 = raw["sha256"]
+    if not isinstance(sha256, str) or not _SHA256.fullmatch(sha256):
         raise LedgerContractError("invalid report sha256")
-    return {"report_id": report_id, "report_date": report_date, "sha256": digest}
+    return {
+        "report_id": report_id,
+        "report_date": nested_date.isoformat(),
+        "sha256": sha256,
+    }
 
 
 def _validate_revision(raw: Any) -> dict[str, str]:
@@ -273,6 +347,49 @@ def canonical_attempt_bytes(payload: Any) -> bytes:
     ).encode("ascii")
 
 
+def validate_attempt_repair(payload: Any) -> dict[str, Any]:
+    expected = frozenset(
+        {"schema_version", "attempt_id", "original_sha256", "report"}
+    )
+    _exact_fields(payload, expected=expected, label="attempt repair")
+    if payload["schema_version"] != REPAIR_SCHEMA_VERSION:
+        raise LedgerContractError("unsupported repair schema_version")
+    attempt_id = _safe_token(
+        payload["attempt_id"], field="attempt_id", attempt_id=True
+    )
+    original_sha256 = payload["original_sha256"]
+    if not isinstance(original_sha256, str) or not _SHA256.fullmatch(original_sha256):
+        raise LedgerContractError("invalid original attempt sha256")
+    report = validate_report_identity(payload["report"])
+    return {
+        "schema_version": REPAIR_SCHEMA_VERSION,
+        "attempt_id": attempt_id,
+        "original_sha256": original_sha256,
+        "report": report.as_record(),
+    }
+
+
+def canonical_attempt_repair_bytes(payload: Any) -> bytes:
+    normalized = validate_attempt_repair(payload)
+    return (
+        json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        + "\n"
+    ).encode("ascii")
+
+
+def decode_attempt_repair_json(raw: str | bytes) -> dict[str, Any]:
+    raw_size = len(raw.encode("utf-8")) if isinstance(raw, str) else len(raw)
+    if raw_size > MAX_REPAIR_BYTES:
+        raise LedgerContractError("attempt repair exceeds file size limit")
+    try:
+        payload = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except LedgerContractError:
+        raise
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise LedgerContractError("attempt repair contains invalid JSON") from exc
+    return validate_attempt_repair(payload)
+
+
 def decode_attempt_json(raw: str | bytes) -> dict[str, Any]:
     raw_size = len(raw.encode("utf-8")) if isinstance(raw, str) else len(raw)
     if raw_size > MAX_ATTEMPT_BYTES:
@@ -369,11 +486,20 @@ def _external_directory(
 def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
         raise LedgerContractError("invalid file size limit")
+    parent_descriptor: int | None = None
     try:
-        before_path = os.lstat(path)
+        if os.name == "posix":
+            parent_descriptor = _open_directory_chain(path.parent)
+            before_path = os.stat(
+                path.name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+        else:
+            before_path = os.lstat(path)
     except OSError as exc:
         raise LedgerUnavailableError("ledger is unavailable") from exc
-    if _is_link_or_reparse(path) or not stat.S_ISREG(before_path.st_mode):
+    if _metadata_is_link_or_reparse(before_path) or not stat.S_ISREG(before_path.st_mode):
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
         raise LedgerContractError("attempt must be a regular file")
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -381,7 +507,10 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
         flags |= os.O_NONBLOCK
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, flags)
+        if parent_descriptor is not None:
+            descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+        else:
+            descriptor = os.open(path, flags)
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise LedgerContractError("attempt must be a regular file")
@@ -402,7 +531,12 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
 
         after = os.fstat(descriptor)
         try:
-            after_path = os.lstat(path)
+            if parent_descriptor is not None:
+                after_path = os.stat(
+                    path.name, dir_fd=parent_descriptor, follow_symlinks=False
+                )
+            else:
+                after_path = os.lstat(path)
         except OSError as exc:
             raise LedgerContractError("attempt changed while reading") from exc
         identities = (
@@ -422,7 +556,7 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
         )
         if len(set(identities)) != 1 or before_change != after_change:
             raise LedgerContractError("attempt changed while reading")
-        if after.st_size != len(raw) or _is_link_or_reparse(path):
+        if after.st_size != len(raw) or _metadata_is_link_or_reparse(after_path):
             raise LedgerContractError("attempt changed while reading")
         return raw
     except LedgerError:
@@ -432,6 +566,9 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
 
 
 def _read_existing(path: Path, expected: bytes) -> str:
@@ -560,6 +697,367 @@ def append_attempt(
             os.close(descriptor)
         try:
             temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _open_directory_chain(path: Path) -> int:
+    """Open an absolute directory without following descendant links."""
+    if os.name != "posix":
+        raise LedgerUnavailableError("directory handles are unavailable")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path.anchor, flags)
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise LedgerContractError("ledger directory is unsafe")
+        return descriptor
+    except LedgerError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise LedgerUnavailableError("ledger is unavailable") from exc
+
+
+def _strict_fsync(descriptor: int) -> None:
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise LedgerUnavailableError("ledger repair durability failed") from exc
+
+
+def _secure_directory_metadata(
+    metadata: os.stat_result, *, root_metadata: os.stat_result
+) -> None:
+    if not stat.S_ISDIR(metadata.st_mode) or _metadata_is_link_or_reparse(metadata):
+        raise LedgerContractError("ledger repair directory is unsafe")
+    if os.name == "posix" and (
+        metadata.st_uid != root_metadata.st_uid
+        or metadata.st_gid != root_metadata.st_gid
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise LedgerContractError("ledger repair directory permissions are unsafe")
+
+
+def _open_repair_child(
+    parent_descriptor: int,
+    name: str,
+    *,
+    root_metadata: os.stat_result,
+    create: bool,
+) -> int:
+    if create:
+        try:
+            os.mkdir(name, 0o750, dir_fd=parent_descriptor)
+        except FileExistsError:
+            pass
+        else:
+            _strict_fsync(parent_descriptor)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    try:
+        _secure_directory_metadata(
+            os.fstat(descriptor), root_metadata=root_metadata
+        )
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _append_attempt_repair_posix(
+    root: Path,
+    normalized: dict[str, Any],
+    encoded: bytes,
+) -> str:
+    root_descriptor = _open_directory_chain(root)
+    descriptors = [root_descriptor]
+    temporary_descriptor: int | None = None
+    temporary_name = f".{normalized['attempt_id']}.{secrets.token_hex(8)}.tmp"
+    destination_name = f"{normalized['attempt_id']}.json"
+    destination_created = False
+    try:
+        root_metadata = os.fstat(root_descriptor)
+        _secure_directory_metadata(root_metadata, root_metadata=root_metadata)
+        repair_descriptor = _open_repair_child(
+            root_descriptor,
+            ".attempt-repairs",
+            root_metadata=root_metadata,
+            create=True,
+        )
+        descriptors.append(repair_descriptor)
+        stage_descriptor = _open_repair_child(
+            repair_descriptor,
+            "publisher",
+            root_metadata=root_metadata,
+            create=True,
+        )
+        descriptors.append(stage_descriptor)
+        date_descriptor = _open_repair_child(
+            stage_descriptor,
+            normalized["report"]["report_date"],
+            root_metadata=root_metadata,
+            create=True,
+        )
+        descriptors.append(date_descriptor)
+        temp_directory = _open_repair_child(
+            root_descriptor,
+            ".attempt-repair-tmp",
+            root_metadata=root_metadata,
+            create=True,
+        )
+        descriptors.append(temp_directory)
+
+        destination = (
+            root
+            / ".attempt-repairs"
+            / "publisher"
+            / normalized["report"]["report_date"]
+            / destination_name
+        )
+        try:
+            os.stat(destination_name, dir_fd=date_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            return _read_existing(destination, encoded)
+
+        temporary_descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o640,
+            dir_fd=temp_directory,
+        )
+        os.fchmod(temporary_descriptor, 0o640)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(temporary_descriptor, view)
+            if written <= 0:
+                raise OSError("short write")
+            view = view[written:]
+        _strict_fsync(temporary_descriptor)
+        os.close(temporary_descriptor)
+        temporary_descriptor = None
+        try:
+            os.link(
+                temporary_name,
+                destination_name,
+                src_dir_fd=temp_directory,
+                dst_dir_fd=date_descriptor,
+                follow_symlinks=False,
+            )
+            destination_created = True
+        except FileExistsError:
+            return _read_existing(destination, encoded)
+        _strict_fsync(date_descriptor)
+        os.unlink(temporary_name, dir_fd=temp_directory)
+        _strict_fsync(temp_directory)
+        return "created"
+    except LedgerError:
+        if destination_created:
+            try:
+                os.unlink(destination_name, dir_fd=descriptors[-2])
+                _strict_fsync(descriptors[-2])
+            except (OSError, LedgerError) as rollback_error:
+                raise LedgerUnavailableError(
+                    "ledger repair rollback requires manual recovery"
+                ) from rollback_error
+        raise
+    except OSError as exc:
+        if destination_created:
+            try:
+                os.unlink(destination_name, dir_fd=descriptors[-2])
+                _strict_fsync(descriptors[-2])
+            except (OSError, LedgerError) as rollback_error:
+                raise LedgerUnavailableError(
+                    "ledger repair rollback requires manual recovery"
+                ) from rollback_error
+        raise LedgerUnavailableError("ledger is unavailable") from exc
+    finally:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        if len(descriptors) == 5:
+            try:
+                os.unlink(temporary_name, dir_fd=descriptors[-1])
+                _strict_fsync(descriptors[-1])
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _append_attempt_repair_portable(
+    root: Path,
+    normalized: dict[str, Any],
+    encoded: bytes,
+) -> str:
+    repair_root = root / ".attempt-repairs"
+    stage_dir = repair_root / "publisher"
+    parent = stage_dir / normalized["report"]["report_date"]
+    temp_directory = root / ".attempt-repair-tmp"
+    destination = parent / f"{normalized['attempt_id']}.json"
+    for directory in (repair_root, stage_dir, parent, temp_directory):
+        _ensure_ledger_directory(directory, root=root)
+    if destination.exists() or destination.is_symlink():
+        return _read_existing(destination, encoded)
+    temporary = temp_directory / f".{normalized['attempt_id']}.{secrets.token_hex(8)}.tmp"
+    descriptor: int | None = None
+    destination_created = False
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o640,
+        )
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short write")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.link(temporary, destination)
+        destination_created = True
+        _assert_no_link_components(parent, contract_error=True)
+        return "created"
+    except FileExistsError:
+        return _read_existing(destination, encoded)
+    except LedgerError:
+        if destination_created:
+            destination.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        if destination_created:
+            destination.unlink(missing_ok=True)
+        raise LedgerUnavailableError("ledger is unavailable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def append_attempt_repair(
+    ledger_dir: str | Path,
+    payload: Any,
+    *,
+    repository_root: str | Path,
+) -> str:
+    normalized = validate_attempt_repair(payload)
+    encoded = canonical_attempt_repair_bytes(normalized)
+    root = _external_directory(ledger_dir, repository_root=repository_root)
+    _assert_no_link_components(root, contract_error=False)
+    try:
+        root_metadata = os.lstat(root)
+    except OSError as exc:
+        raise LedgerUnavailableError("ledger is unavailable") from exc
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise LedgerContractError("ledger path must be a directory")
+    if os.name == "posix":
+        return _append_attempt_repair_posix(root, normalized, encoded)
+    return _append_attempt_repair_portable(root, normalized, encoded)
+
+
+def remove_attempt_repair(
+    ledger_dir: str | Path,
+    payload: Any,
+    *,
+    repository_root: str | Path,
+) -> None:
+    """Remove only an exact overlay created by the current repair operation."""
+    normalized = validate_attempt_repair(payload)
+    encoded = canonical_attempt_repair_bytes(normalized)
+    root = _external_directory(ledger_dir, repository_root=repository_root)
+    destination = (
+        root
+        / ".attempt-repairs"
+        / "publisher"
+        / normalized["report"]["report_date"]
+        / f"{normalized['attempt_id']}.json"
+    )
+    if _read_existing(destination, encoded) != "already_exists":
+        raise LedgerConflictError("attempt repair identity conflict")
+    if os.name == "posix":
+        root_descriptor = _open_directory_chain(root)
+        descriptors = [root_descriptor]
+        try:
+            root_metadata = os.fstat(root_descriptor)
+            _secure_directory_metadata(root_metadata, root_metadata=root_metadata)
+            current = root_descriptor
+            for name in (
+                ".attempt-repairs",
+                "publisher",
+                normalized["report"]["report_date"],
+            ):
+                current = _open_repair_child(
+                    current,
+                    name,
+                    root_metadata=root_metadata,
+                    create=False,
+                )
+                descriptors.append(current)
+            metadata = os.stat(
+                destination.name,
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISREG(metadata.st_mode) or _metadata_is_link_or_reparse(metadata):
+                raise LedgerConflictError("attempt repair identity conflict")
+            os.unlink(destination.name, dir_fd=current)
+            _strict_fsync(current)
+            cleanup = (
+                (descriptors[2], normalized["report"]["report_date"]),
+                (descriptors[1], "publisher"),
+                (descriptors[0], ".attempt-repairs"),
+                (descriptors[0], ".attempt-repair-tmp"),
+            )
+            for parent_descriptor, name in cleanup:
+                try:
+                    os.rmdir(name, dir_fd=parent_descriptor)
+                    _strict_fsync(parent_descriptor)
+                except OSError as exc:
+                    if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+                        raise
+        except LedgerError:
+            raise
+        except OSError as exc:
+            raise LedgerUnavailableError("ledger repair rollback failed") from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+        return
+    _assert_no_link_components(destination.parent, contract_error=True)
+    destination.unlink()
+    for directory in (
+        destination.parent,
+        destination.parent.parent,
+        destination.parent.parent.parent,
+        root / ".attempt-repair-tmp",
+    ):
+        try:
+            directory.rmdir()
         except OSError:
             pass
 
@@ -695,9 +1193,95 @@ class RunLedgerReader:
             except OSError as exc:
                 raise LedgerUnavailableError("ledger is unavailable") from exc
 
+    def _repair_files(self) -> Iterator[Path]:
+        repair_root = self.root / ".attempt-repairs"
+        if _is_link_or_reparse(repair_root):
+            raise LedgerContractError("ledger contains a symbolic link or reparse point")
+        try:
+            root_metadata = os.lstat(repair_root)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise LedgerUnavailableError("ledger is unavailable") from exc
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise LedgerContractError("attempt repairs path must be a directory")
+
+        visited_entries = 0
+        repair_count = 0
+        try:
+            with os.scandir(repair_root) as stages:
+                for stage_entry in stages:
+                    visited_entries += 1
+                    if visited_entries > self.max_visited_entries:
+                        raise LedgerContractError("ledger exceeds visited entry limit")
+                    metadata = stage_entry.stat(follow_symlinks=False)
+                    if (
+                        stage_entry.name != "publisher"
+                        or _metadata_is_link_or_reparse(metadata)
+                        or not stat.S_ISDIR(metadata.st_mode)
+                    ):
+                        raise LedgerContractError("invalid attempt repair layout")
+                    stage_path = Path(stage_entry.path)
+                    _assert_directory_contained(stage_path, root=repair_root)
+                    with os.scandir(stage_path) as dates:
+                        for date_entry in dates:
+                            visited_entries += 1
+                            if visited_entries > self.max_visited_entries:
+                                raise LedgerContractError(
+                                    "ledger exceeds visited entry limit"
+                                )
+                            metadata = date_entry.stat(follow_symlinks=False)
+                            try:
+                                canonical_report_filename(date_entry.name)
+                            except LedgerContractError as exc:
+                                raise LedgerContractError(
+                                    "invalid attempt repair layout"
+                                ) from exc
+                            if _metadata_is_link_or_reparse(
+                                metadata
+                            ) or not stat.S_ISDIR(metadata.st_mode):
+                                raise LedgerContractError(
+                                    "invalid attempt repair layout"
+                                )
+                            date_path = Path(date_entry.path)
+                            _assert_directory_contained(date_path, root=repair_root)
+                            with os.scandir(date_path) as repairs:
+                                for repair_entry in repairs:
+                                    visited_entries += 1
+                                    if visited_entries > self.max_visited_entries:
+                                        raise LedgerContractError(
+                                            "ledger exceeds visited entry limit"
+                                        )
+                                    metadata = repair_entry.stat(
+                                        follow_symlinks=False
+                                    )
+                                    if (
+                                        _metadata_is_link_or_reparse(metadata)
+                                        or not stat.S_ISREG(metadata.st_mode)
+                                        or not repair_entry.name.endswith(".json")
+                                    ):
+                                        raise LedgerContractError(
+                                            "invalid attempt repair layout"
+                                        )
+                                    repair_count += 1
+                                    if repair_count > self.max_attempt_count:
+                                        raise LedgerContractError(
+                                            "ledger exceeds attempt repair count limit"
+                                        )
+                                    path = Path(repair_entry.path)
+                                    _assert_directory_contained(
+                                        path, root=repair_root
+                                    )
+                                    yield path
+        except LedgerError:
+            raise
+        except OSError as exc:
+            raise LedgerUnavailableError("ledger is unavailable") from exc
+
     def _load(self) -> list[dict[str, Any]]:
         attempts: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
+        raw_sha256_by_id: dict[str, str] = {}
         total_bytes = 0
         for path in self._files():
             raw = read_bounded_file(path, max_bytes=self.max_file_bytes)
@@ -717,8 +1301,50 @@ class RunLedgerReader:
             if attempt["attempt_id"] in seen_ids:
                 raise LedgerContractError("duplicate attempt identity")
             seen_ids.add(attempt["attempt_id"])
+            raw_sha256_by_id[attempt["attempt_id"]] = hashlib.sha256(raw).hexdigest()
             attempts.append(attempt)
         attempts.sort(key=lambda item: (item["finished_at"], item["attempt_id"]))
+
+        repairs: list[dict[str, Any]] = []
+        seen_repair_ids: set[str] = set()
+        for path in self._repair_files():
+            raw = read_bounded_file(path, max_bytes=MAX_REPAIR_BYTES)
+            total_bytes += len(raw)
+            if total_bytes > self.max_total_bytes:
+                raise LedgerContractError("ledger exceeds total byte limit")
+            repair = decode_attempt_repair_json(raw)
+            expected = Path(
+                ".attempt-repairs",
+                "publisher",
+                repair["report"]["report_date"],
+                f"{repair['attempt_id']}.json",
+            )
+            if path.relative_to(self.root) != expected:
+                raise LedgerContractError("attempt repair path does not match identity")
+            if repair["attempt_id"] in seen_repair_ids:
+                raise LedgerContractError("duplicate attempt repair identity")
+            seen_repair_ids.add(repair["attempt_id"])
+            repairs.append(repair)
+
+        attempts_by_id = {attempt["attempt_id"]: attempt for attempt in attempts}
+        for repair in repairs:
+            original = attempts_by_id.get(repair["attempt_id"])
+            if original is None:
+                raise LedgerContractError("attempt repair target is missing")
+            if (
+                original["stage"] != "publisher"
+                or original["status"] not in SUCCESS_STATUSES
+                or "report" in original
+                or repair["report"]["report_date"] != original["report_date"]
+                or raw_sha256_by_id[repair["attempt_id"]]
+                != repair["original_sha256"]
+            ):
+                raise LedgerContractError("attempt repair target is invalid")
+            repaired = validate_attempt({**original, "report": repair["report"]})
+            if {key: value for key, value in repaired.items() if key != "report"} != original:
+                raise LedgerContractError("attempt repair changes original fields")
+            original.clear()
+            original.update(repaired)
         return attempts
 
     def _stage_status(

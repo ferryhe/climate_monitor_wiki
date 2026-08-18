@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 
 import api_server
 import climate_registry.weekly as weekly
+import climate_monitor.ledger_repair as ledger_repair
 import scripts.weekly_registry_refresh as refresh
 from api_server import app
 from climate_delivery.artifacts import ARTIFACT_ONLY_DELIVERY_STATUS
@@ -25,7 +27,13 @@ from climate_delivery.pdf import render_pdf
 from climate_delivery.pipeline import _manifest
 from climate_delivery.report import parse_weekly_report
 from climate_delivery.summary import build_summary, write_summary
-from climate_monitor.run_ledger import append_attempt
+from climate_monitor.run_ledger import (
+    LedgerContractError,
+    RunLedgerReader,
+    append_attempt,
+    remove_attempt_repair,
+)
+from climate_monitor.ledger_repair import publisher_lock, repair_publisher_ledger
 from climate_registry.audit import build_audit_registry
 from climate_registry.capture import capture_enrich_registry
 from climate_registry.errors import RegistryLockError
@@ -36,6 +44,8 @@ from climate_registry.persistent import update_registry
 TARGET = "2026-08-17"
 PREVIOUS = "2026-08-10"
 NOW = datetime(2026, 8, 17, 11, 0, tzinfo=timezone.utc)
+ROOT = Path(__file__).resolve().parents[1]
+REPAIR_SCRIPT = ROOT / "scripts" / "repair_publisher_ledger.py"
 
 
 def _item(title: str, url: str) -> str:
@@ -186,6 +196,7 @@ def weekly_fixture(tmp_path) -> WeeklyFixture:
     _run("git", "init", "-q", cwd=repository)
     _run("git", "config", "user.email", "test@example.com", cwd=repository)
     _run("git", "config", "user.name", "Test", cwd=repository)
+    _run("git", "config", "core.autocrlf", "false", cwd=repository)
     _run("git", "add", "sources", cwd=repository)
     _run("git", "commit", "-qm", "previous report", cwd=repository)
 
@@ -231,6 +242,399 @@ def _counts(database: Path) -> tuple[int, int, int]:
         )
     finally:
         connection.close()
+
+
+def test_legacy_publisher_repair_dry_apply_and_idempotent(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger = tmp_path / "legacy-ledger"
+    legacy = _publisher_attempt(
+        hashlib.sha256(weekly_fixture.source.read_bytes()).hexdigest()
+    )
+    legacy.pop("report")
+    append_attempt(ledger, legacy, repository_root=weekly_fixture.repository)
+    original = next((ledger / "attempts" / "publisher" / TARGET).glob("*.json"))
+    claim = ledger / ".attempt-identities" / f"{legacy['attempt_id']}.claim"
+    original_raw = original.read_bytes()
+    original_mode = stat.S_IMODE(os.stat(original).st_mode)
+    original_inode = (os.stat(original).st_dev, os.stat(original).st_ino)
+    claim_inode = (os.stat(claim).st_dev, os.stat(claim).st_ino)
+    original_owner = (os.stat(original).st_uid, os.stat(original).st_gid)
+    claim_owner = (os.stat(claim).st_uid, os.stat(claim).st_gid)
+    publisher_lock = tmp_path / "publisher.lock"
+    publisher_lock.write_bytes(b"publisher-lock\n")
+    lock_raw = publisher_lock.read_bytes()
+    monkeypatch.setenv("CLIMATE_PUBLISH_LOCK", str(publisher_lock))
+    arguments = {
+        "target_date": TARGET,
+        "source_dir": weekly_fixture.source_dir,
+        "database": weekly_fixture.database,
+        "artifact_root": weekly_fixture.artifact_root,
+        "ledger_dir": ledger,
+        "lock_file": publisher_lock,
+    }
+
+    dry = repair_publisher_ledger(**arguments, apply=False)
+    assert dry["status"] == "would_repair"
+    assert publisher_lock.read_bytes() == lock_raw
+    assert not (ledger / ".attempt-repairs").exists()
+    applied = repair_publisher_ledger(**arguments, apply=True)
+    assert applied["status"] == "repaired"
+    assert repair_publisher_ledger(**arguments, apply=True)["status"] == "already_valid"
+    assert original.read_bytes() == claim.read_bytes() == original_raw
+    assert stat.S_IMODE(os.stat(original).st_mode) == original_mode
+    assert (os.stat(original).st_dev, os.stat(original).st_ino) == original_inode
+    assert (os.stat(claim).st_dev, os.stat(claim).st_ino) == claim_inode
+    assert (os.stat(original).st_uid, os.stat(original).st_gid) == original_owner
+    assert (os.stat(claim).st_uid, os.stat(claim).st_gid) == claim_owner
+    assert os.stat(original).st_nlink == os.stat(claim).st_nlink == 2
+
+    result = weekly.weekly_sync(
+        **weekly_fixture.arguments(publisher_ledger_dir=ledger, dry_run=True)
+    )
+    assert result["status"] == "ok"
+
+    overlay = next((ledger / ".attempt-repairs").rglob("*.json"))
+    overlay_payload = json.loads(overlay.read_text(encoding="ascii"))
+    remove_attempt_repair(
+        ledger,
+        overlay_payload,
+        repository_root=weekly_fixture.repository,
+    )
+    assert not overlay.exists()
+    assert original.read_bytes() == claim.read_bytes() == original_raw
+    restored = RunLedgerReader(
+        ledger, repository_root=weekly_fixture.repository
+    )._load()
+    assert "report" not in restored[-1]
+
+
+def _legacy_cli_arguments(weekly_fixture, tmp_path):
+    ledger = tmp_path / "cli-ledger"
+    legacy = _publisher_attempt(
+        hashlib.sha256(weekly_fixture.source.read_bytes()).hexdigest()
+    )
+    legacy.pop("report")
+    append_attempt(ledger, legacy, repository_root=weekly_fixture.repository)
+    lock_file = tmp_path / "publisher.lock"
+    lock_file.write_bytes(b"publisher-lock\n")
+    command = [
+        sys.executable,
+        str(REPAIR_SCRIPT),
+        "--date",
+        TARGET,
+        "--ledger-dir",
+        str(ledger),
+        "--source-dir",
+        str(weekly_fixture.source_dir),
+        "--registry-database",
+        str(weekly_fixture.database),
+        "--artifact-root",
+        str(weekly_fixture.artifact_root),
+        "--lock-file",
+        str(lock_file),
+    ]
+    environment = {**os.environ, "CLIMATE_PUBLISH_LOCK": str(lock_file)}
+    return ledger, lock_file, command, environment
+
+
+def _run_repair_cli(command, environment):
+    return subprocess.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_repair_cli_help_and_exact_date_surface(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(REPAIR_SCRIPT), "--help"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "--date" in result.stdout
+    assert "--apply" in result.stdout
+    assert "dry-run" in result.stdout
+    assert "--all" not in result.stdout
+    assert "--latest" not in result.stdout
+    assert "--sha" not in result.stdout
+
+
+def test_repair_cli_dry_apply_and_repeat_statuses(weekly_fixture, tmp_path):
+    ledger, lock_file, command, environment = _legacy_cli_arguments(
+        weekly_fixture, tmp_path
+    )
+    lock_raw = lock_file.read_bytes()
+
+    dry = _run_repair_cli(command, environment)
+    assert dry.returncode == 0
+    dry_payload = json.loads(dry.stdout)
+    assert dry_payload["status"] == "would_repair"
+    expected_sha = hashlib.sha256(weekly_fixture.source.read_bytes()).hexdigest()
+    assert dry_payload["source_report_sha256"] == expected_sha
+    assert dry_payload["artifact_report_sha256"] == expected_sha
+    assert dry_payload["registry_report_sha256"] is None
+    assert Path(dry_payload["artifact_directory"]).name == expected_sha
+    assert lock_file.read_bytes() == lock_raw
+    assert not (ledger / ".attempt-repairs").exists()
+    assert not (ledger / ".attempt-repair-tmp").exists()
+
+    applied = _run_repair_cli([*command, "--apply"], environment)
+    assert applied.returncode == 0
+    assert json.loads(applied.stdout)["status"] == "repaired"
+    repeated = _run_repair_cli([*command, "--apply"], environment)
+    assert repeated.returncode == 0
+    assert json.loads(repeated.stdout)["status"] == "already_valid"
+    assert len(list((ledger / ".attempt-repairs").rglob("*.json"))) == 1
+    assert not list((ledger / ".attempt-repair-tmp").glob("*.tmp"))
+
+
+def test_repair_cli_stable_failure_exits(weekly_fixture, tmp_path, monkeypatch):
+    _ledger, lock_file, command, environment = _legacy_cli_arguments(
+        weekly_fixture, tmp_path
+    )
+    monkeypatch.setenv("CLIMATE_PUBLISH_LOCK", str(lock_file))
+    offcycle = command.copy()
+    offcycle[offcycle.index(TARGET)] = "2026-08-18"
+    preflight = _run_repair_cli(offcycle, environment)
+    assert preflight.returncode == 7
+    assert json.loads(preflight.stdout)["status"] == "preflight_failed"
+
+    manifest_path = next(weekly_fixture.artifact_root.rglob("manifest.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["report"]["sha256"] = "c" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    invalid = _run_repair_cli(command, environment)
+    assert invalid.returncode == 8
+    assert json.loads(invalid.stdout)["status"] == "validation_failed"
+
+    manifest["report"]["sha256"] = hashlib.sha256(
+        weekly_fixture.source.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with publisher_lock(lock_file):
+        conflict = _run_repair_cli(command, environment)
+    assert conflict.returncode == 4
+    assert json.loads(conflict.stdout)["status"] == "lock_conflict"
+
+
+def test_repair_cli_rejects_missing_or_mistyped_publisher_lock(
+    weekly_fixture, tmp_path
+):
+    _ledger, lock_file, command, environment = _legacy_cli_arguments(
+        weekly_fixture, tmp_path
+    )
+    lock_file.unlink()
+    missing = _run_repair_cli(command, environment)
+    assert missing.returncode == 7
+    assert json.loads(missing.stdout)["status"] == "preflight_failed"
+    assert not lock_file.exists()
+    missing_apply = _run_repair_cli([*command, "--apply"], environment)
+    assert missing_apply.returncode == 7
+    assert not lock_file.exists()
+
+    configured = tmp_path / "configured.lock"
+    configured.write_bytes(b"configured\n")
+    supplied = tmp_path / "mistyped.lock"
+    supplied.write_bytes(b"mistyped\n")
+    environment["CLIMATE_PUBLISH_LOCK"] = str(configured)
+    mistyped = command.copy()
+    mistyped[mistyped.index(str(lock_file))] = str(supplied)
+    wrong = _run_repair_cli([*mistyped, "--apply"], environment)
+    assert wrong.returncode == 7
+    assert supplied.read_bytes() == b"mistyped\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="util-linux flock is POSIX-only")
+def test_repair_cli_interoperates_with_wrapper_flock(weekly_fixture, tmp_path):
+    flock_binary = shutil.which("flock")
+    if flock_binary is None:
+        pytest.skip("util-linux flock is unavailable")
+    _ledger, lock_file, command, environment = _legacy_cli_arguments(
+        weekly_fixture, tmp_path
+    )
+    holder = subprocess.Popen(
+        [
+            flock_binary,
+            "-n",
+            str(lock_file),
+            sys.executable,
+            "-c",
+            "import time; print('locked', flush=True); time.sleep(30)",
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "locked"
+        result = _run_repair_cli(command, environment)
+        assert result.returncode == 4
+        assert json.loads(result.stdout)["status"] == "lock_conflict"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_repair_does_not_depend_on_delivery_or_mail_configuration():
+    source = Path(ledger_repair.__file__).read_text(encoding="utf-8")
+    assert "climate_delivery.email" not in source
+    assert "smtplib" not in source
+    assert "recipient" not in source.lower()
+    assert "delivery_state" not in source
+
+
+def _library_repair_arguments(weekly_fixture, tmp_path, monkeypatch):
+    ledger, lock_file, _command, _environment = _legacy_cli_arguments(
+        weekly_fixture, tmp_path
+    )
+    monkeypatch.setenv("CLIMATE_PUBLISH_LOCK", str(lock_file))
+    return ledger, {
+        "target_date": TARGET,
+        "source_dir": weekly_fixture.source_dir,
+        "database": weekly_fixture.database,
+        "artifact_root": weekly_fixture.artifact_root,
+        "ledger_dir": ledger,
+        "lock_file": lock_file,
+    }
+
+
+def test_repair_rejects_registry_identity_mismatch(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger, arguments = _library_repair_arguments(
+        weekly_fixture, tmp_path, monkeypatch
+    )
+    update_registry(
+        weekly_fixture.source_dir,
+        weekly_fixture.database,
+        tmp_path / "registry-update-backups",
+    )
+    connection = sqlite3.connect(weekly_fixture.database)
+    with connection:
+        connection.execute(
+            "UPDATE reports SET report_sha256 = ? WHERE report_date = ?",
+            ("d" * 64, TARGET),
+        )
+    connection.close()
+
+    with pytest.raises(ledger_repair.RepairValidationError, match="Registry"):
+        repair_publisher_ledger(**arguments, apply=False)
+    assert not (ledger / ".attempt-repairs").exists()
+
+
+def test_repair_rejects_source_race_against_head(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger, arguments = _library_repair_arguments(
+        weekly_fixture, tmp_path, monkeypatch
+    )
+    real_git_text = ledger_repair._git_text
+    raced = False
+
+    def race_after_clean(repository_root, *args):
+        nonlocal raced
+        result = real_git_text(repository_root, *args)
+        if not raced and args[:2] == ("status", "--porcelain=v1"):
+            raced = True
+            raw = weekly_fixture.source.read_bytes()
+            weekly_fixture.source.write_bytes(raw.replace(b"Target", b"Raced!", 1))
+        return result
+
+    monkeypatch.setattr(ledger_repair, "_git_text", race_after_clean)
+    with pytest.raises(
+        ledger_repair.RepairPreflightError, match="does not match HEAD raw bytes"
+    ):
+        repair_publisher_ledger(**arguments, apply=False)
+    assert not (ledger / ".attempt-repairs").exists()
+
+
+def test_repair_rejects_symlinked_artifact_root(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger, arguments = _library_repair_arguments(
+        weekly_fixture, tmp_path, monkeypatch
+    )
+    linked = tmp_path / "linked-artifacts"
+    try:
+        linked.symlink_to(weekly_fixture.artifact_root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
+    arguments["artifact_root"] = linked
+
+    with pytest.raises(ledger_repair.RepairPreflightError, match="canonical"):
+        repair_publisher_ledger(**arguments, apply=False)
+    assert not (ledger / ".attempt-repairs").exists()
+
+
+def test_repair_rejects_extra_hardlink_to_private_attempt(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger, arguments = _library_repair_arguments(
+        weekly_fixture, tmp_path, monkeypatch
+    )
+    original = next((ledger / "attempts" / "publisher" / TARGET).glob("*.json"))
+    extra = tmp_path / "extra-attempt-link"
+    try:
+        os.link(original, extra)
+    except OSError:
+        pytest.skip("hard links are unavailable")
+
+    with pytest.raises(
+        ledger_repair.RepairValidationError, match="link topology"
+    ):
+        repair_publisher_ledger(**arguments, apply=False)
+    assert not (ledger / ".attempt-repairs").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode contract")
+def test_repair_rejects_group_writable_private_attempt(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger, arguments = _library_repair_arguments(
+        weekly_fixture, tmp_path, monkeypatch
+    )
+    original = next((ledger / "attempts" / "publisher" / TARGET).glob("*.json"))
+    os.chmod(original, 0o660)
+
+    with pytest.raises(
+        ledger_repair.RepairValidationError, match="permissions are unsafe"
+    ):
+        repair_publisher_ledger(**arguments, apply=False)
+    assert not (ledger / ".attempt-repairs").exists()
+
+
+def test_repair_rolls_back_overlay_when_post_commit_validation_fails(
+    weekly_fixture, tmp_path, monkeypatch
+):
+    ledger, arguments = _library_repair_arguments(
+        weekly_fixture, tmp_path, monkeypatch
+    )
+    original = next((ledger / "attempts" / "publisher" / TARGET).glob("*.json"))
+    original_raw = original.read_bytes()
+    real_load = RunLedgerReader._load
+    calls = 0
+
+    def fail_third_load(reader):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise LedgerContractError("injected post-commit validation failure")
+        return real_load(reader)
+
+    monkeypatch.setattr(RunLedgerReader, "_load", fail_third_load)
+    with pytest.raises(ledger_repair.RepairValidationError, match="repair failed"):
+        repair_publisher_ledger(**arguments, apply=True)
+    assert original.read_bytes() == original_raw
+    assert not list((ledger / ".attempt-repairs").rglob("*.json"))
 
 
 def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
@@ -536,6 +940,67 @@ def test_latest_publisher_success_must_include_exact_report_identity(weekly_fixt
 
     with pytest.raises(weekly.WeeklyPreflightError, match="report identity"):
         weekly.weekly_sync(**weekly_fixture.arguments(dry_run=True))
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_message"),
+    [
+        ("wrong_report_id", "report identity"),
+        ("wrong_date", "ledger is invalid"),
+        ("wrong_sha", "report identity"),
+        ("malformed_sha", "ledger is invalid"),
+    ],
+)
+def test_publisher_identity_mismatch_fails_before_network_or_writes(
+    weekly_fixture, case, expected_message
+):
+    attempt = _publisher_attempt(
+        hashlib.sha256(weekly_fixture.source.read_bytes()).hexdigest()
+    )
+    attempt.update(
+        attempt_id=f"20260817t100100z-publisher-{case}",
+        finished_at="2026-08-17T10:06:00Z",
+    )
+    if case == "wrong_report_id":
+        attempt["report"]["report_id"] = f"other-{TARGET}"
+    elif case == "wrong_date":
+        attempt["report"]["report_date"] = PREVIOUS
+    elif case == "wrong_sha":
+        attempt["report"]["sha256"] = "b" * 64
+    else:
+        attempt["report"]["sha256"] = "NOT-A-SHA"
+    destination = (
+        weekly_fixture.ledger_dir
+        / "attempts"
+        / "publisher"
+        / TARGET
+        / f"{attempt['attempt_id']}.json"
+    )
+    destination.write_text(
+        json.dumps(attempt, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="ascii",
+    )
+
+    class UnexpectedTransport:
+        def request(self, *_args, **_kwargs):
+            pytest.fail("network capture started before identity preflight")
+
+    def unexpected_resolver(*_args):
+        pytest.fail("DNS resolution started before identity preflight")
+
+    before = weekly_fixture.database.read_bytes()
+    with pytest.raises(weekly.WeeklyPreflightError, match=expected_message):
+        weekly.weekly_sync(
+            **weekly_fixture.arguments(
+                dry_run=False,
+                transport=UnexpectedTransport(),
+                resolver=unexpected_resolver,
+            )
+        )
+    assert weekly_fixture.database.read_bytes() == before
+    assert not weekly_fixture.backup_dir.exists()
+    assert not weekly_fixture.lock_file.exists()
+    assert not list(weekly_fixture.database.parent.glob("*.weekly-candidate"))
 
 
 def test_source_must_be_committed_clean_and_artifact_sha_must_match(weekly_fixture):

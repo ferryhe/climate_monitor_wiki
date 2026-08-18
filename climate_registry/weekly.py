@@ -17,9 +17,12 @@ from typing import Any
 from climate_delivery.artifacts import load_report_artifact
 from climate_monitor.dedupe import canonical_url
 from climate_monitor.run_ledger import (
+    LedgerContractError,
     LedgerError,
     RunLedgerReader,
     SUCCESS_STATUSES,
+    canonical_report_filename,
+    validate_report_identity,
 )
 
 from .audit import _stable_id
@@ -389,12 +392,14 @@ def _latest_publisher_attempt(
         raise WeeklyPreflightError(
             "weekly registry preflight failed: latest publisher attempt is not successful"
         )
-    ledger_report = latest.get("report")
-    if (
-        not isinstance(ledger_report, dict)
-        or ledger_report.get("report_date") != target_date
-        or ledger_report.get("sha256") != report_sha256
-    ):
+    try:
+        validate_report_identity(
+            latest.get("report"),
+            expected_report_date=target_date,
+            expected_filename=canonical_report_filename(target_date),
+            expected_sha256=report_sha256,
+        )
+    except LedgerContractError:
         raise WeeklyPreflightError(
             "weekly registry preflight failed: publisher report identity does not match"
         )

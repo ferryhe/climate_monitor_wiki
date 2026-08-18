@@ -446,8 +446,9 @@ configured external path. The website and Publisher can read an explicitly
 configured snapshot, but this module does not set host configuration, change a
 Hermes prompt, create a scheduled job, or run an update/capture operation.
 
-The supported DB-first candidate transaction for a future exact-date weekly
+The deployed DB-first candidate transaction for a future exact-date weekly
 update is documented in
 [`weekly-registry-automation.md`](weekly-registry-automation.md). That feature
-adds `weekly-sync` and a tested, disabled 10:30 runner draft; it does not create
-the Hermes job or change production data.
+adds `weekly-sync` and a tested, disabled 10:30 runner draft; the Hermes job is
+still not created, and the current production gate is the Publisher ledger
+identity repair/validation described there.

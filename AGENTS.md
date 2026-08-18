@@ -42,11 +42,14 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # if absent
 .venv/bin/python -m pytest -q
 ```
 
-**Branch from current `origin/main`.** The weekly Registry implementation was
-merged at `14904db`; the last separately verified production deployment remains
-`6a4b359`. Final production completion is still gated on deploying the current
-application and configuring/observing the disabled 10:30 Weekly Registry Sync
-draft. PR #24 (`0587228`) and the old
+**Branch from current `origin/main`.** GitHub `main` includes the weekly Registry
+implementation from PR #49 (`14904db`) and the later PR #48 closeout merge
+(`2ba7b619`). The separately verified production deployment is `14904db`; PR
+#48 is not deployed. Registry/article enrichment is therefore live, but the
+10:00 Publisher's legacy ledger record lacks the structured canonical report
+identity required by `weekly-sync`. Final production completion is gated on the
+ledger-contract rollout and repair/validation sequence, then configuring and
+observing the 10:30 Weekly Registry Sync. PR #24 (`0587228`) and the old
 `feat/weekly-cadence-and-https-deployment` branch are historical and must not be
 used as branch bases.
 
@@ -226,7 +229,7 @@ See `docs/deployment.md`.
 | Weekly Climate & Actuarial Monitor | `f5259a8ec2d9` | Mon 08:00 | Confirmed |
 | Weekly Climate Email (PDF highlights) | Not recorded here | Mon 09:00 | Enabled and retained |
 | Weekly Climate Wiki Publisher | `dccb79cd69bc` | Mon 10:00 | Confirmed |
-| Weekly Registry Sync | Not configured | Mon 10:30 | Implementation and disabled runner merged; scheduling/deployment pending |
+| Weekly Registry Sync | Not configured | Mon 10:30 | Implementation deployed; blocked on Publisher ledger identity repair and validation |
 
 The publisher runs 2h after the monitor so the report exists before ingest. If
 you change one schedule, preserve that gap. It updates one rolling PR; it does
@@ -239,12 +242,15 @@ The 09:00 job is the only delivery-artifact producer. Its email delivery is also
 intentionally retained for the existing four recipients. Do not confuse the
 historical backfill's no-email guarantee with the normal scheduled email path.
 
-The distinct 10:30 Weekly Registry Sync implementation is present, but its
-Hermes job is not configured or verified. It updates the external Registry DB;
+The distinct 10:30 Weekly Registry Sync implementation is deployed, but its
+Hermes job is not configured or verified. Its current production preflight is
+blocked because the legacy 2026-08-17 Publisher record has no structured
+canonical report identity. It updates the external Registry DB;
 DB-first Article Detail no longer requires a weekly `article_metadata` JSON
 producer, and the tracked JSON remains a compatibility fallback. Do not claim
-`PRODUCTION COMPLETE` until the current application is deployed and the 10:30
-task has been created and observed completing a normal weekly run. Do not
+`PRODUCTION COMPLETE` until the ledger contract is deployed, the exact legacy
+record is repaired and weekly-sync validated, and the 10:30 task has been
+created and observed completing a normal weekly run. Do not
 invent its job ID or treat `/api/job-status` v1 as proof that it exists.
 
 ### No GitHub report generator
@@ -274,8 +280,10 @@ Already landed — do **not** redo:
   report only real corpus dates, and the API/frontend presets use 4-week,
   12-week, insurer-implication, and latest-report wording.
 - **Weekly Registry implementation** — `weekly-sync`, DB-first Article Detail,
-  exact backup/restore, and the tested 10:30 runner draft are merged. Only
-  deployment, scheduler configuration, and a normal observed run remain.
+  exact backup/restore, and the tested 10:30 runner draft are merged and the
+  Registry code is deployed. Publisher ledger contract rollout, exact-date
+  legacy repair, weekly-sync validation, scheduler configuration, and a normal
+  observed run remain.
 
 Deliberately **not** done: renaming the `"daily"` document type — it is
 load-bearing across ranking, `app.js`, CSS, and the Obsidian plugin contract, so

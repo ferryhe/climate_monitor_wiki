@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Sequence
 from urllib.parse import urlsplit
@@ -28,6 +28,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from climate_monitor.dedupe import canonical_url  # noqa: E402
+from climate_monitor.run_ledger import (  # noqa: E402
+    LedgerError,
+    ReportIdentity,
+    SCHEMA_VERSION,
+    append_attempt,
+    build_report_identity,
+)
 from climate_registry.errors import RegistryBuildError, RegistryInputError  # noqa: E402
 from climate_registry.selection import (  # noqa: E402
     SelectionCandidate,
@@ -66,6 +73,7 @@ class PublishResult:
     published_sha: str | None = None
     reports: tuple[str, ...] = ()
     pr_url: str | None = None
+    report: ReportIdentity | None = None
 
 
 def run_command(
@@ -134,6 +142,53 @@ def discover_reports(report_dir: Path, *, today: date) -> list[Path]:
         validate_report(path)
         reports.append(path)
     return reports
+
+
+def _final_report_identity(
+    checkout: Path, report_dir: Path, *, today: date
+) -> ReportIdentity:
+    report_date = _current_monday(today).isoformat()
+    filename = f"climate-monitor-{report_date}.md"
+    authoritative = report_dir / filename
+    final_source = checkout / "sources" / filename
+    authoritative_exists = authoritative.is_file()
+    final_exists = final_source.is_file()
+    if not authoritative_exists and not final_exists:
+        raise PublishError(f"current Monday report is unavailable: {filename}")
+    if not authoritative_exists:
+        raise PublishError(f"current Monday report is unavailable: {filename}")
+    if not final_exists:
+        raise PublishError(f"final canonical report is unavailable: {filename}")
+    validate_report(authoritative)
+    validate_report(final_source)
+    authoritative_raw = authoritative.read_bytes()
+    final_source_raw = final_source.read_bytes()
+    if authoritative_raw != final_source_raw:
+        raise PublishError(
+            f"authoritative and final canonical report differ: {filename}"
+        )
+    relative = final_source.relative_to(checkout).as_posix()
+    final_result = subprocess.run(
+        ["git", "show", f"HEAD:{relative}"],
+        cwd=checkout,
+        capture_output=True,
+        check=False,
+    )
+    if final_result.returncode:
+        raise PublishError(f"final canonical report is not tracked: {filename}")
+    tracked_raw = final_result.stdout
+    if final_source_raw != tracked_raw:
+        raise PublishError(
+            f"final canonical report raw bytes differ from HEAD: {filename}"
+        )
+    try:
+        return build_report_identity(
+            report_date=report_date,
+            filename=filename,
+            sha256=hashlib.sha256(final_source_raw).hexdigest(),
+        )
+    except LedgerError as exc:
+        raise PublishError("final canonical report identity is invalid") from exc
 
 
 def validate_pending_reports(
@@ -849,6 +904,7 @@ def _publish_attempt(
             base_sha=base_sha,
             branch_sha=remote_branch_sha,
         )
+        report_identity = _final_report_identity(checkout, report_dir, today=today)
         remote_tree = None
         if remote_branch_sha:
             remote_tree = _output(
@@ -859,7 +915,9 @@ def _publish_attempt(
 
         if not changes:
             if not remote_branch_sha:
-                return PublishResult(status="no-op", base_sha=base_sha)
+                return PublishResult(
+                    status="no-op", base_sha=base_sha, report=report_identity
+                )
             _delete_ref_exact(
                 runner,
                 checkout,
@@ -875,6 +933,7 @@ def _publish_attempt(
                 base_sha=base_sha,
                 reports=tuple(imported),
                 pr_url=closed_pr,
+                report=report_identity,
             )
 
         if remote_tree == published_tree:
@@ -885,6 +944,7 @@ def _publish_attempt(
                 published_sha=remote_branch_sha,
                 reports=tuple(imported),
                 pr_url=pr_url,
+                report=report_identity,
             )
 
         _promote_via_candidate(
@@ -902,6 +962,7 @@ def _publish_attempt(
             published_sha=published_sha,
             reports=tuple(imported),
             pr_url=pr_url,
+            report=report_identity,
         )
 
 
@@ -970,21 +1031,117 @@ def publish(
     raise AssertionError("publication retry loop exited unexpectedly")
 
 
+def _publisher_attempt(
+    *,
+    report_date: str,
+    status: str,
+    result_code: str,
+    finished_at: datetime,
+    report: ReportIdentity | None = None,
+) -> dict[str, object]:
+    scheduled = datetime.fromisoformat(f"{report_date}T10:00:00+00:00")
+    if finished_at < scheduled:
+        scheduled = datetime.fromisoformat(f"{report_date}T00:00:00+00:00")
+    attempt: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "attempt_id": (
+            f"{finished_at:%Y%m%dt%H%M%Sz}-publisher-{secrets.token_hex(4)}"
+        ),
+        "stage": "publisher",
+        "report_date": report_date,
+        "scheduled_for": scheduled.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": status,
+        "result_code": result_code,
+    }
+    if report is not None:
+        attempt["report"] = report.as_record()
+    return attempt
+
+
+def _append_publisher_result(
+    ledger_dir: Path,
+    *,
+    result: PublishResult | None,
+    report_date: str,
+    repository_root: Path,
+) -> str:
+    finished_at = datetime.now(timezone.utc).replace(microsecond=0)
+    if result is None:
+        attempt = _publisher_attempt(
+            report_date=report_date,
+            status="failed",
+            result_code="publish_failed",
+            finished_at=finished_at,
+        )
+    else:
+        if result.report is None:
+            raise PublishError("publisher result is missing canonical report identity")
+        ledger_status = "success" if result.status == "published" else "no_change"
+        attempt = _publisher_attempt(
+            report_date=result.report.report_date,
+            status=ledger_status,
+            result_code=result.status,
+            finished_at=finished_at,
+            report=result.report,
+        )
+    try:
+        return append_attempt(
+            ledger_dir, attempt, repository_root=repository_root
+        )
+    except LedgerError as exc:
+        raise PublishError("publisher ledger append failed") from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--production-repo", type=Path, default=REPO_ROOT)
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--registry-database", type=Path)
+    parser.add_argument("--ledger-dir", type=Path, required=True)
     args = parser.parse_args()
-    result = publish(
-        production_repo=args.production_repo,
-        report_dir=args.report_dir,
-        registry_database=args.registry_database,
-    )
+    run_today = date.today()
+    report_date = _current_monday(run_today).isoformat()
+    try:
+        result = publish(
+            production_repo=args.production_repo,
+            report_dir=args.report_dir,
+            today=run_today,
+            registry_database=args.registry_database,
+        )
+    except Exception as exc:
+        try:
+            _append_publisher_result(
+                args.ledger_dir,
+                result=None,
+                report_date=report_date,
+                repository_root=args.production_repo.resolve(),
+            )
+        except PublishError as ledger_error:
+            raise PublishError(f"{exc}; {ledger_error}") from exc
+        raise
+    try:
+        ledger_status = _append_publisher_result(
+            args.ledger_dir,
+            result=result,
+            report_date=report_date,
+            repository_root=args.production_repo.resolve(),
+        )
+    except PublishError as exc:
+        try:
+            _append_publisher_result(
+                args.ledger_dir,
+                result=None,
+                report_date=report_date,
+                repository_root=args.production_repo.resolve(),
+            )
+        except PublishError as failure_error:
+            raise PublishError(f"{exc}; {failure_error}") from exc
+        raise
     print(
         f"publisher: status={result.status} base={result.base_sha} "
         f"published={result.published_sha or '-'} reports={len(result.reports)} "
-        f"pr={result.pr_url or '-'}"
+        f"pr={result.pr_url or '-'} ledger={ledger_status}"
     )
     return 0
 

@@ -18,6 +18,12 @@ This repo exposes the monitoring corpus through three web tabs plus an Obsidian 
 See [docs/project-closeout.md](docs/project-closeout.md) for the operator guide,
 module map, API/CLI audit, scheduled-job boundaries, and closeout record.
 
+GitHub `main` includes PR #49 (`14904db`) and the later PR #48 closeout merge
+(`2ba7b619`). Production is currently deployed at `14904db`; PR #48 has not
+been deployed. The deployed Registry and Article Detail code is healthy, but
+Registry weekly automation remains blocked because the legacy Publisher ledger
+record has no structured canonical report identity.
+
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
 Chat now also exposes three answer modes:
 
@@ -110,12 +116,16 @@ The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/sou
 
 The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. At 09:00 UTC, the retained Weekly Climate Email (PDF highlights) job is the only delivery-artifact producer and sends the result to the existing four recipients. At 10:00 UTC, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
 
-The application now includes a tested Monday 10:30 Weekly Registry Sync runner,
-DB-first Article Detail enrichment, and exact backup/restore. The Hermes task is
-still unconfigured and unverified. The tracked `article_metadata/` JSON remains
-a compatibility fallback rather than a weekly generated artifact. The system
-must not be called `PRODUCTION COMPLETE` until current `main` is deployed and
-the 10:30 task has completed a normal weekly run.
+The deployed application includes a tested Monday 10:30 Weekly Registry Sync
+runner, DB-first Article Detail enrichment, and exact backup/restore. The Hermes
+task is still unconfigured and unverified. Before it may be created, the
+Publisher ledger contract must be merged and deployed, the exact 2026-08-17
+legacy record must pass a zero-write repair dry-run and separately authorized
+repair, and `weekly-sync` must pass its exact-date dry-run/no-op validation. The
+tracked `article_metadata/` JSON remains a compatibility fallback rather than a
+weekly generated artifact. The system must not be called `PRODUCTION COMPLETE`
+until the disabled 10:30 task is separately validated and enabled and at least
+one normal Monday cycle has been observed.
 
 The production checkout is never used as a generation workspace. Publication is deliberately split into **generate → rolling PR → human merge → server deploy** so production `main` stays clean and can be fast-forwarded safely.
 
