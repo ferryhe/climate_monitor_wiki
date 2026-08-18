@@ -32,6 +32,8 @@ class CandidateItem:
     asset_checksum_algorithm: str = ""
     asset_checksum_value: str = ""
     topics: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 def test_render_report_matches_existing_source_shape():
@@ -45,6 +47,8 @@ def test_render_report_matches_existing_source_shape():
         climate_related=True,
         actuarial_related=True,
         topics=("solvency", "climate risk"),
+        categories=("Climate Risk", "Capital & Solvency"),
+        keywords=("climate risk", "solvency"),
         relevance_reason="Climate signal `general_climate` from terms: climate",
         climate_signal="general_climate",
         actuarial_signal="capital_solvency",
@@ -68,6 +72,8 @@ def test_render_report_matches_existing_source_shape():
     assert "## New Research" in text
     assert "**Title:** Climate solvency report" in text
     assert "**URL:** https://example.com/report.pdf" in text
+    assert "**Categories:** Climate Risk, Capital & Solvency" in text
+    assert "**Keywords:** climate risk, solvency" in text
     assert "**Climate signal:** general_climate" in text
     assert "**Actuarial signal:** capital_solvency" in text
     assert "**Relevance reason:** Climate signal `general_climate` from terms: climate" in text

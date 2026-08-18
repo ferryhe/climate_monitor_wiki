@@ -86,6 +86,22 @@ def test_original_links_allows_explanatory_bullets_and_http_markdown_links(tmp_p
     assert report.original_links == ("https://example.test/first", "https://example.test/second")
 
 
+def test_weekly_highlights_parse_explicit_semantic_metadata(tmp_path):
+    text = REPORT.replace(
+        "  - First supporting sentence.\n  🔗 https://example.test/first",
+        "  - First supporting sentence.\n"
+        "  - **Categories:** Physical Risk, Insurance Risk\n"
+        "  - **Keywords:** flood; pricing; Flood\n"
+        "  🔗 https://example.test/first",
+    )
+    report = parse_weekly_report(report_file(tmp_path, text=text))
+
+    assert report.highlights[0].categories == ("Physical Risk", "Insurance Risk")
+    assert report.highlights[0].keywords == ("flood", "pricing")
+    assert report.highlights[1].categories == ()
+    assert report.highlights[1].keywords == ()
+
+
 def test_content_executive_summary_stays_three_to_four_sentences_when_a_pillar_is_empty(tmp_path):
     text = REPORT.replace(
         "- **First finding**\n  - First supporting sentence.\n  🔗 https://example.test/first",

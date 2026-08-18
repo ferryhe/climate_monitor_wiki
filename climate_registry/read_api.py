@@ -6,11 +6,16 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
+
+from climate_delivery.errors import ClimateDeliveryError
+from climate_monitor.dedupe import canonical_url
 
 from .contract import SCHEMA_VERSION, SchemaContractError, validate_v3_contract
+from .reports import ParsedArticle, ParsedReport, parse_historical_report
 
 EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION
+MAX_PUBLISHER_CHOICES = 500
 
 
 class RegistryError(RuntimeError):
@@ -92,8 +97,44 @@ def _like_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _ordered_unique(values: Iterable[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.casefold()
+        if value and key not in seen:
+            output.append(value)
+            seen.add(key)
+    return output
+
+
+def _publisher_label(hostname: str, display_name: str) -> str:
+    host = hostname.casefold().removeprefix("www.")
+    display = " ".join(display_name.split()).strip()
+    if display and display.casefold().removeprefix("www.") != host:
+        return display[:80]
+    labels = host.split(".")
+    if len(labels) == 1:
+        return labels[0][:80]
+    if labels[-1] == "gov" and len(labels) >= 3:
+        agency = labels[-3].replace("-", " ")
+        jurisdiction = labels[-2].upper()
+        return f"{jurisdiction} {agency}"[:80]
+    if len(labels[-1]) == 2 and len(labels) >= 3 and labels[-2] in {
+        "ac", "co", "com", "edu", "gov", "net", "org",
+    }:
+        return labels[-3][:80]
+    return labels[-2][:80]
+
+
 class RegistryReader:
-    def __init__(self, database: str | Path, *, repository_root: str | Path):
+    def __init__(
+        self,
+        database: str | Path,
+        *,
+        repository_root: str | Path,
+        source_dir: str | Path | None = None,
+    ):
         configured = Path(database).expanduser()
         if not configured.is_absolute():
             raise RegistryLocationError("registry path must be absolute and external")
@@ -109,6 +150,34 @@ class RegistryReader:
         else:
             raise RegistryLocationError("registry must be outside the application repository")
         self.database = resolved
+        self.source_dir = Path(source_dir).resolve(strict=False) if source_dir is not None else None
+
+    def _source_report(
+        self, report_date: str, filename: str, expected_sha256: str
+    ) -> ParsedReport | None:
+        if self.source_dir is None or filename != f"climate-monitor-{report_date}.md":
+            return None
+        path = self.source_dir / filename
+        try:
+            report = parse_historical_report(path)
+        except (ClimateDeliveryError, OSError, UnicodeError, ValueError):
+            return None
+        if report.report_date != report_date or report.sha256 != expected_sha256:
+            return None
+        return report
+
+    @staticmethod
+    def _source_article(
+        report: ParsedReport | None, ordinal: int, url: str
+    ) -> ParsedArticle | None:
+        if report is None or ordinal < 1 or ordinal > len(report.articles):
+            return None
+        article = report.articles[ordinal - 1]
+        try:
+            matches = canonical_url(article.url) == canonical_url(url)
+        except (TypeError, UnicodeError, ValueError):
+            return None
+        return article if matches else None
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -206,13 +275,38 @@ class RegistryReader:
             items.append(item)
         return {"items": items, "pagination": _pagination(page, page_size, total)}
 
+    def publishers(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            total = connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+            rows = connection.execute(
+                """
+                SELECT hostname, display_name
+                FROM sources
+                ORDER BY hostname COLLATE NOCASE, source_id
+                LIMIT ?
+                """,
+                (MAX_PUBLISHER_CHOICES,),
+            ).fetchall()
+        return {
+            "items": [
+                {
+                    "hostname": row["hostname"],
+                    "label": _publisher_label(row["hostname"], row["display_name"]),
+                }
+                for row in rows
+            ],
+            "total": total,
+            "truncated": total > MAX_PUBLISHER_CHOICES,
+        }
+
     def report(self, report_date: str) -> dict[str, Any]:
         validate_report_date(report_date)
         with self.connect() as connection:
             report = connection.execute(
                 """
-                SELECT report_id, report_date, report_title, cadence, report_format,
-                       sites_checked, sites_succeeded, sites_failed, parse_warnings_json
+                SELECT report_id, report_date, filename, report_title, report_sha256,
+                       cadence, report_format, sites_checked, sites_succeeded,
+                       sites_failed, parse_warnings_json
                 FROM reports WHERE report_date = ?
                 """,
                 (report_date,),
@@ -234,11 +328,24 @@ class RegistryReader:
                 """,
                 (report["report_id"],),
             ).fetchall()
+        source_report = self._source_report(
+            report["report_date"], report["filename"], report["report_sha256"]
+        )
+        articles = []
+        for row in appearances:
+            item = dict(row)
+            source_article = self._source_article(
+                source_report, item["ordinal"], item["canonical_url"]
+            )
+            item["categories"] = list(source_article.categories) if source_article else []
+            item["keywords"] = list(source_article.keywords) if source_article else []
+            articles.append(item)
         return {
             "report_date": report["report_date"],
             "report_title": report["report_title"],
             "cadence": report["cadence"],
             "report_format": report["report_format"],
+            "executive_summary": list(source_report.executive_summary) if source_report else [],
             "monitoring": {
                 "status": _monitoring_status(report),
                 "sites_checked": report["sites_checked"],
@@ -246,7 +353,7 @@ class RegistryReader:
                 "sites_failed": report["sites_failed"],
                 "warning_count": len(_json_string_list(report["parse_warnings_json"])),
             },
-            "articles": [dict(row) for row in appearances],
+            "articles": articles,
         }
 
     def articles(
@@ -330,7 +437,9 @@ class RegistryReader:
                 raise RegistryNotFoundError("article not found")
             appearances = connection.execute(
                 """
-                SELECT r.report_date, r.report_title, ra.section, ra.pillar, ra.ordinal,
+                SELECT r.report_date, r.filename AS source_filename,
+                       r.report_sha256 AS source_sha256, r.report_title,
+                       ra.section, ra.pillar, ra.ordinal,
                        ra.observation_status, av.observed_title AS title,
                        av.observed_summary AS summary, d.raw_url AS original_url
                 FROM report_appearances ra
@@ -372,6 +481,25 @@ class RegistryReader:
                     """,
                     (article["current_content_version_id"],),
                 ).fetchone()
+        appearance_payload = []
+        report_categories: list[str] = []
+        report_keywords: list[str] = []
+        for row in appearances:
+            item = dict(row)
+            source_report = self._source_report(
+                item["report_date"], item.pop("source_filename"), item.pop("source_sha256")
+            )
+            source_article = self._source_article(
+                source_report, item["ordinal"], item["original_url"]
+            )
+            categories = list(source_article.categories) if source_article else []
+            keywords = list(source_article.keywords) if source_article else []
+            item["categories"] = categories
+            item["keywords"] = keywords
+            report_categories.extend(categories)
+            report_keywords.extend(keywords)
+            appearance_payload.append(item)
+
         policy = article["display_policy"]
         content_payload: dict[str, Any] = {}
         if content:
@@ -405,7 +533,25 @@ class RegistryReader:
                 else None
             ),
         }
-        original_url = appearances[0]["original_url"] if appearances else article["canonical_url"]
+        report_metadata = {
+            "categories": _ordered_unique(report_categories),
+            "keywords": _ordered_unique(report_keywords),
+        }
+        categories = enrichment_payload["categories"] or report_metadata["categories"]
+        keywords = enrichment_payload["keywords"] or report_metadata["keywords"]
+        metadata_provenance = {
+            "categories": (
+                "content_enrichment"
+                if enrichment_payload["categories"]
+                else "source_report" if report_metadata["categories"] else None
+            ),
+            "keywords": (
+                "content_enrichment"
+                if enrichment_payload["keywords"]
+                else "source_report" if report_metadata["keywords"] else None
+            ),
+        }
+        original_url = appearance_payload[0]["original_url"] if appearance_payload else article["canonical_url"]
         return {
             "article_id": article["article_id"],
             "title": article["title"],
@@ -419,8 +565,12 @@ class RegistryReader:
             "document_kind": article["document_kind"],
             "publication_eligible": bool(article["publication_eligible"]),
             "display_policy": policy,
-            "appearances": [dict(row) for row in appearances],
+            "appearances": appearance_payload,
             "latest_fetch": dict(fetch) if fetch else None,
             "content": content_payload,
             "enrichment": enrichment_payload,
+            "report_metadata": report_metadata,
+            "categories": categories,
+            "keywords": keywords,
+            "metadata_provenance": metadata_provenance,
         }

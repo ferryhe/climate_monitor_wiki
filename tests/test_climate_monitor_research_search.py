@@ -915,6 +915,8 @@ def test_classify_candidate_sets_climate_and_actuarial_flags():
     assert classified.climate_related is True
     assert classified.actuarial_related is True
     assert classified.topics == ("capital", "climate", "insurance", "supervision")
+    assert classified.categories == ("Climate Risk", "Insurance Risk")
+    assert classified.keywords == ("capital", "climate", "insurance", "supervision")
     assert classified.climate_signal == "general_climate"
     assert classified.actuarial_signal == "insurance_risk"
     assert classified.confidence > 0.0

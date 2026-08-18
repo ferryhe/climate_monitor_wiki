@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import api_server
 from api_server import app
 from climate_registry.read_api import RegistryContractError, RegistryReader
 from climate_registry.schema import apply_migrations
@@ -23,6 +24,7 @@ def _registry(tmp_path: Path) -> Path:
             (
                 ("source-a", "example.com", "Example Institute", "2026-08-03", "2026-08-10"),
                 ("source-b", "insurer.test", "Insurer Research", "2026-08-03", "2026-08-10"),
+                ("source-soa", "soa.org", "soa.org", "2026-08-03", "2026-08-10"),
             ),
         )
         connection.executemany(
@@ -231,6 +233,170 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert "one warning" not in detail.text
 
 
+def test_publishers_are_bounded_deterministic_read_only_choices(registry_client):
+    client, _ = registry_client
+    response = client.get("/api/registry/publishers")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {"hostname": "example.com", "label": "Example Institute"},
+            {"hostname": "insurer.test", "label": "Insurer Research"},
+            {"hostname": "soa.org", "label": "soa"},
+        ],
+        "total": 3,
+        "truncated": False,
+    }
+
+
+def test_publisher_label_keeps_state_government_context(registry_client):
+    client, database = registry_client
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            (
+                "source-california-insurance",
+                "insurance.ca.gov",
+                "insurance.ca.gov",
+                "2026-08-10",
+                "2026-08-10",
+            ),
+        )
+    connection.close()
+
+    items = client.get("/api/registry/publishers").json()["items"]
+
+    assert {item["hostname"]: item["label"] for item in items}["insurance.ca.gov"] == "CA insurance"
+
+
+def test_publisher_choices_are_capped(registry_client):
+    client, database = registry_client
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.executemany(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            (
+                (
+                    f"source-extra-{index}",
+                    f"publisher-{index:03d}.example",
+                    f"publisher-{index:03d}.example",
+                    "2026-08-10",
+                    "2026-08-10",
+                )
+                for index in range(501)
+            ),
+        )
+    connection.close()
+
+    payload = client.get("/api/registry/publishers").json()
+    assert len(payload["items"]) == 500
+    assert payload["total"] == 504
+    assert payload["truncated"] is True
+    assert [item["hostname"] for item in payload["items"]] == sorted(
+        item["hostname"] for item in payload["items"]
+    )
+
+
+def test_report_and_article_metadata_are_read_from_sha_matched_source(
+    registry_client, tmp_path, monkeypatch
+):
+    client, database = registry_client
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    report_path = source_dir / "climate-monitor-2026-08-10.md"
+    report_path.write_text(
+        """# Weekly Climate Monitor
+
+**Report Date:** 2026-08-10
+
+## Executive Summary
+
+- Sites checked: **3**, succeeded: **2**, failed: **1**
+- Exact source observation in report order.
+
+## Pillar A — Site Changes
+
+- **Climate: 100% transition**
+  - Report-derived full summary.
+  - **Categories:** Transition Risk
+  - **Keywords:** transition, scenarios
+  🔗 https://example.com/full
+
+## Pillar B — Intelligence
+
+- **Flood pricing [2026]**
+  - Report-derived excerpt summary.
+  🔗 https://example.com/excerpt
+
+- **Capital & climate**
+  - Report-derived metadata summary.
+  - **Categories:** Capital & Solvency, Climate Risk
+  - **Keywords:** capital; climate
+  🔗 https://insurer.test/meta
+
+## Original Links
+
+- https://example.com/full
+- https://example.com/excerpt
+- https://insurer.test/meta
+""",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute(
+            "UPDATE reports SET report_sha256 = ? WHERE report_date = '2026-08-10'",
+            (digest,),
+        )
+        connection.execute(
+            "UPDATE articles SET current_content_version_id = NULL WHERE article_id = 'article-meta'"
+        )
+    connection.close()
+    monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
+
+    report = client.get("/api/registry/reports/2026-08-10").json()
+    assert report["executive_summary"] == [
+        "Sites checked: 3, succeeded: 2, failed: 1",
+        "Exact source observation in report order.",
+    ]
+    assert report["articles"][0]["categories"] == ["Transition Risk"]
+    assert report["articles"][0]["keywords"] == ["transition", "scenarios"]
+    assert report["articles"][1]["categories"] == []
+
+    article = client.get("/api/registry/articles/article-meta").json()
+    assert article["enrichment"]["categories"] == []
+    assert article["enrichment"]["keywords"] == []
+    assert article["report_metadata"] == {
+        "categories": ["Capital & Solvency", "Climate Risk"],
+        "keywords": ["capital", "climate"],
+    }
+    assert article["categories"] == ["Capital & Solvency", "Climate Risk"]
+    assert article["keywords"] == ["capital", "climate"]
+    assert article["metadata_provenance"] == {
+        "categories": "source_report",
+        "keywords": "source_report",
+    }
+
+
+def test_source_metadata_fails_closed_when_report_sha_does_not_match(
+    registry_client, tmp_path, monkeypatch
+):
+    client, _ = registry_client
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-08-10.md").write_text(
+        "# Weekly Climate Monitor\n\n**Report Date:** 2026-08-10\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
+
+    report = client.get("/api/registry/reports/2026-08-10").json()
+    assert report["executive_summary"] == []
+    assert all(item["categories"] == [] and item["keywords"] == [] for item in report["articles"])
+
+
 @pytest.mark.parametrize("query", ["100%", "[2026]", "' OR 1=1 --", "_"])
 def test_article_search_is_parameterized_and_treats_sql_wildcards_literally(registry_client, query):
     client, _ = registry_client
@@ -327,6 +493,13 @@ def test_article_detail_enforces_display_policy(
     assert "content_sha256" not in response.text
     assert "markdown_sha256" not in response.text
     assert "error_message" not in response.text
+    if article_id == "article-full":
+        assert payload["categories"] == ["Insurance", "Climate risk"]
+        assert payload["keywords"] == ["risk", "insurance"]
+        assert payload["metadata_provenance"] == {
+            "categories": "content_enrichment",
+            "keywords": "content_enrichment",
+        }
 
 
 def test_invalid_enrichment_json_fails_closed_to_empty_lists(registry_client):
@@ -616,13 +789,13 @@ def test_frontend_exposes_safe_registry_workspace_without_operations():
     script = (root / "showcase" / "app.js").read_text(encoding="utf-8")
     assert 'data-view="registryView"' in index
     assert "Historical Reports" in index
-    assert "Article Archive" in index
+    assert "Article Database" in index
     assert "/api/registry/reports" in script
     assert "/api/registry/articles" in script
     assert "registryMarkdown.textContent" in script
     assert not any(label in index for label in ("Refetch", "Reclassify", "Delete article", "Edit article"))
     assert "registryCard.innerHTML" not in script
-    assert 'role="group" aria-label="Archive sections"' in index
+    assert 'role="group" aria-label="Historical report sections"' in index
     assert 'data-registry-mode="reports" aria-pressed="true"' in index
     assert 'data-registry-mode="articles" aria-pressed="false"' in index
     assert 'class="registry-switch" role="tablist"' not in index

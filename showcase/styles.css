@@ -326,6 +326,10 @@ a {
   color: var(--muted);
 }
 
+.context-badge[hidden] {
+  display: none;
+}
+
 .chat-stage,
 .panel {
   border: 1px solid var(--line);
@@ -842,6 +846,16 @@ a {
   cursor: pointer;
 }
 
+.graph-node:focus-visible {
+  outline: none;
+}
+
+.graph-node:focus-visible circle {
+  stroke: var(--accent);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 8px rgba(126, 182, 150, 0.55));
+}
+
 .graph-node circle {
   transition:
     r 0.18s ease,
@@ -1039,6 +1053,28 @@ a {
   line-height: 1.65;
 }
 
+.registry-executive-summary {
+  margin: 20px 0 24px;
+  padding: 18px 20px;
+  border: 1px solid rgba(126, 182, 150, 0.22);
+  border-radius: 20px;
+  background: rgba(126, 182, 150, 0.055);
+}
+
+.registry-executive-summary h4,
+.registry-report-articles-title {
+  margin: 0 0 12px;
+}
+
+.registry-executive-summary ol {
+  margin: 0;
+  padding-left: 1.35rem;
+  display: grid;
+  gap: 10px;
+  color: #cfd7db;
+  line-height: 1.65;
+}
+
 .registry-appearance-list {
   margin: 18px 0 0;
   padding-left: 1.6rem;
@@ -1049,6 +1085,10 @@ a {
 .registry-appearance {
   padding-left: 4px;
   line-height: 1.55;
+}
+
+.registry-appearance .registry-card__summary {
+  margin: 7px 0 0;
 }
 
 .registry-article-link {
@@ -1068,7 +1108,7 @@ a {
 .registry-filters {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(180px, 1.4fr) minmax(160px, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(160px, 1fr) auto;
   gap: 8px;
 }
 

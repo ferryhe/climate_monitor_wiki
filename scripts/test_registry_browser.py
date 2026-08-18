@@ -25,14 +25,29 @@ MOCK_FETCH = r"""
 window.__registryRequests = [];
 window.__registryScenario = "loading";
 window.__missingArticle = false;
+window.__publisherTruncated = false;
 const registryResponse = (status, data) => Promise.resolve(new Response(
   JSON.stringify(data), {status, headers: {"Content-Type": "application/json"}}
 ));
 window.fetch = (input, options = {}) => {
   const url = new URL(input, window.location.href);
   window.__registryRequests.push({method: options.method || "GET", path: url.pathname + url.search});
+  if (url.pathname === "/api/config" && window.__registryScenario === "service_unavailable") {
+    return registryResponse(503, {detail: "unavailable"});
+  }
   if (url.pathname === "/api/config") return registryResponse(200, {
-    documents: [], concepts: [], graphs: {notes: null, keywords: null}, prompt_starters: [],
+    documents: [{path: "wiki/climate-monitor-2026-08-10.md", title: "climate-monitor-2026-08-10",
+      type: "daily", date: "2026-08-10", words: 120, links: [],
+      concepts: [{label: "Climate pricing"}]},
+      {path: "wiki/topics/climate-pricing.md", title: "Climate pricing topic",
+        type: "topic", date: null, words: 80, links: [], concepts: [{label: "Climate pricing"}]}],
+    concepts: [{label: "Climate pricing", document_count: 5}],
+    graphs: {notes: null, keywords: {static_layout: true, nodes: [
+      {id: "wiki/climate-monitor-2026-08-10.md", refPath: "wiki/climate-monitor-2026-08-10.md",
+        label: "2026-08-10", kind: "note", type: "daily"},
+      {id: "keyword:climate-pricing", label: "Climate pricing", kind: "keyword", type: "keyword", weight: 5}
+    ], links: [{source: "wiki/climate-monitor-2026-08-10.md", target: "keyword:climate-pricing"}]}},
+    prompt_starters: [],
     agent_mode: "offline", model: "offline-extractive", default_answer_mode: "detailed"
   });
   if (url.pathname === "/api/registry/status") {
@@ -61,11 +76,17 @@ window.fetch = (input, options = {}) => {
       report_title: `Report page ${page}`, article_count: 1, monitoring_status: "complete"}],
       pagination: {page, page_size: 12, total: 2, pages: 2}});
   }
+  if (url.pathname === "/api/registry/publishers") {
+    return registryResponse(200, {items: [{hostname: "example.com", label: "example"}],
+      truncated: window.__publisherTruncated});
+  }
   if (url.pathname === "/api/registry/reports/2026-08-10") {
     return registryResponse(200, {report_date: "2026-08-10", report_title: "Report detail",
-      monitoring: {sites_succeeded: 57, sites_checked: 57, sites_failed: 0}, articles: [
+      monitoring: {sites_succeeded: 57, sites_checked: 57, sites_failed: 0},
+      executive_summary: ["Pricing pressure increased.", "Insurers adjusted exposure."], articles: [
         {article_id: "article-1", title: "Climate pricing", pillar: "B",
-          section: "Pillar B", publisher: "Example"}
+          section: "Pillar B", publisher: "Example", summary: "Weekly article summary",
+          categories: ["Insurance"], keywords: ["pricing"]}
       ]});
   }
   if (url.pathname === "/api/registry/articles") {
@@ -85,7 +106,8 @@ window.fetch = (input, options = {}) => {
       display_policy: "summary_excerpt", latest_fetch: {fetch_status: "success"},
       content: {supporting_excerpt: "Supporting evidence", content_type: "text/html",
         extraction_method: "html-to-markdown", fetched_at: "2026-08-13"},
-      enrichment: {summary: "Enriched summary", categories: ["Insurance"], keywords: ["pricing"],
+      categories: ["Regulation"], keywords: ["premium"],
+      enrichment: {summary: "Enriched summary", categories: ["Legacy category"], keywords: ["legacy"],
         language: "en", generator: {kind: "deterministic", name: "rules", version: "1", generated_at: "2026-08-13"}},
       appearances: [{report_title: "Report detail", report_date: "2026-08-10", pillar: "B", section: "Pillar B"}]});
   }
@@ -157,39 +179,59 @@ def main() -> int:
         browser = playwright.chromium.launch(executable_path=str(chrome), headless=True)
 
         page, audit = _new_page(browser, "loading")
-        page.get_by_role("tab", name="Archive").click()
+        page.get_by_role("tab", name="Historical Reports").wait_for()
+        assert page.get_by_role("tab", name="Historical Reports").get_attribute("aria-selected") == "true"
+        _visible(page, "Source-only mode")
         _visible(page, "Checking the historical archive…")
         page.evaluate("window.__releaseRegistry()")
         _visible(page, "The archive is not connected yet. Chat and the wiki remain available.")
         page.get_by_role("tab", name="Chat").click()
         page.get_by_role("heading", name="Climate Monitor Wiki Agent").wait_for()
+        assert page.locator("#activeContextBadge").is_hidden()
+        page.get_by_role("button", name="Open Historical Reports").click()
+        page.get_by_role("heading", name="Historical Reports", exact=True).first.wait_for()
         _assert_network_isolation(page, audit)
         page.close()
 
         page, audit = _new_page(browser, "empty")
-        page.get_by_role("tab", name="Archive").click()
         _visible(page, "No historical reports are available.")
-        page.get_by_role("button", name="Article Archive").click()
+        page.get_by_role("button", name="Article Database").click()
         _visible(page, "No articles match these filters.")
         _assert_network_isolation(page, audit)
         page.close()
 
         page, audit = _new_page(browser, "populated")
-        page.get_by_role("tab", name="Archive").click()
         page.get_by_role("button", name="Report page 1", exact=False).wait_for()
         page.get_by_role("button", name="Next").first.click()
         page.get_by_role("button", name="Report page 2", exact=False).wait_for()
         page.get_by_role("button", name="Previous").first.click()
         page.get_by_role("button", name="Report page 1", exact=False).click()
         page.get_by_role("heading", name="Report detail").wait_for()
+        _visible(page, "Executive Summary")
+        _visible(page, "Pricing pressure increased.")
+        _visible(page, "Weekly article summary")
         page.get_by_role("button", name="Climate pricing").click()
         _visible(page, "Enriched summary")
         _visible(page, "Supporting evidence")
+        _visible(page, "Regulation")
+        _visible(page, "premium")
+        assert page.get_by_text("Legacy category", exact=True).count() == 0
+        assert page.get_by_text("legacy", exact=True).count() == 0
+        assert page.get_by_text("Display", exact=True).count() == 0
+        assert page.get_by_text("Content type", exact=True).count() == 0
+        assert page.get_by_text("Extraction", exact=True).count() == 0
+        assert page.get_by_text("Not captured", exact=True).count() == 0
+        _visible(page, "Latest fetch")
+        _visible(page, "Captured")
         page.get_by_label("Search articles").fill("climate 100%")
-        page.get_by_label("Publisher hostname").fill("example.com")
-        page.get_by_label("Pillar").select_option("B")
+        page.get_by_label("Publisher").select_option(label="example")
         page.get_by_role("button", name="Apply").click()
-        page.wait_for_function("window.__registryRequests.some(x => x.path.includes('query=climate+100%25') && x.path.includes('source=example.com') && x.path.includes('pillar=B'))")
+        page.wait_for_function("window.__registryRequests.some(x => x.path.includes('query=climate+100%25') && x.path.includes('source=example.com') && !x.path.includes('pillar='))")
+        page.evaluate("window.__publisherTruncated = true; loadRegistryPublishers()")
+        page.get_by_label("Other hostname").wait_for(state="visible")
+        page.get_by_label("Other hostname").fill("unlisted.example")
+        page.get_by_role("button", name="Apply").click()
+        page.wait_for_function("window.__registryRequests.some(x => x.path.includes('source=unlisted.example'))")
         page.get_by_role("button", name="Next").last.click()
         page.get_by_role("button", name="Page two article").wait_for()
         page.get_by_role("button", name="Previous").last.click()
@@ -197,12 +239,53 @@ def main() -> int:
         page.get_by_role("button", name="Apply").click()
         page.get_by_role("button", name="Missing article").click()
         page.get_by_role("heading", name="Article unavailable").wait_for()
+
+        page.get_by_role("tab", name="Obsidian").click()
+        assert page.get_by_role("button", name="Keywords").get_attribute("aria-pressed") == "true"
+        graph_box = page.locator(".panel--graph").bounding_box()
+        index_box = page.locator(".panel--table").bounding_box()
+        assert graph_box and index_box and graph_box["y"] < index_box["y"]
+        keyword_circle = page.locator("#graphSvg .graph-node--keyword circle")
+        keyword_circle.wait_for()
+        assert float(keyword_circle.get_attribute("r")) > 10
+        keyword_button = page.get_by_role("button", name="Filter Page Index by keyword Climate pricing")
+        keyword_button.focus()
+        keyword_button.press("Enter")
+        assert page.get_by_label("Search wiki pages").input_value() == "Climate pricing"
+        page.get_by_role("cell", name="Climate pricing topic", exact=True).click()
+        page.get_by_role("tab", name="Chat").click()
+        _visible(page, "Focused note: Climate pricing topic")
+        page.get_by_role("tab", name="Obsidian").click()
+        page.get_by_role("cell", name="climate-monitor-2026-08-10", exact=True).click()
+        page.get_by_role("link", name="Historical report · 2026-08-10").click()
+        page.get_by_role("heading", name="Report detail").wait_for()
+        assert page.url.endswith("#historical-report=2026-08-10")
+        page.reload()
+        page.get_by_role("heading", name="Report detail").wait_for()
+        page.wait_for_function("window.__registryRequests.some(x => x.path.startsWith('/api/registry/reports?'))")
+        assert sum(x["path"] == "/api/registry/status" for x in page.evaluate("window.__registryRequests")) == 1
+        assert sum(x["path"] == "/api/registry/publishers" for x in page.evaluate("window.__registryRequests")) == 1
+        assert sum(x["path"].startswith("/api/registry/reports?") for x in page.evaluate("window.__registryRequests")) == 1
+        page.go_back()
+        page.get_by_role("heading", name="Select a report").wait_for()
+        assert page.url == "http://archive.test/"
+        page.go_forward()
+        page.get_by_role("heading", name="Report detail").wait_for()
+        page.get_by_role("tab", name="Obsidian").click()
+        page.get_by_role("cell", name="climate-monitor-2026-08-10", exact=True).click()
+        page.get_by_role("tab", name="Chat").click()
+        _visible(page, "Focused report: climate-monitor-2026-08-10")
         assert page.evaluate("window.__registryRequests.every(x => x.method === 'GET')")
         _assert_network_isolation(page, audit)
         page.close()
 
+        page, audit = _new_page(browser, "service_unavailable")
+        _visible(page, "Service unavailable")
+        _assert_network_isolation(page, audit)
+        page.close()
+
         browser.close()
-    print("registry browser smoke: 3 scenarios passed")
+    print("registry browser smoke: 4 scenarios passed")
     return 0
 
 
