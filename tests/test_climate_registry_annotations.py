@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 from climate_monitor.dedupe import canonical_url
@@ -76,6 +77,28 @@ def test_annotation_batches_reject_duplicate_json_members(tmp_path):
     assert load_article_annotations(metadata_dir) == {}
 
 
+def test_annotation_batches_allow_distinct_official_evidence_urls_only_for_alternates(
+    tmp_path,
+):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    path = metadata_dir / "articles-001-001.json"
+
+    for source_basis in ("official_replacement", "publisher_excerpt"):
+        payload = _valid_annotation_payload()
+        payload["articles"][0]["source_basis"] = source_basis
+        payload["articles"][0]["source_url"] = "https://publisher.example/replacement"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        annotation = load_article_annotations(metadata_dir)["https://example.com/flood"]
+        assert annotation.source_url == "https://publisher.example/replacement"
+        assert annotation.provenance == f"{source_basis}_annotation"
+
+    payload = _valid_annotation_payload()
+    payload["articles"][0]["source_url"] = "https://publisher.example/replacement"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_article_annotations(metadata_dir) == {}
+
+
 def test_bundled_annotations_cover_each_unique_historical_article_once():
     root = Path(__file__).resolve().parents[1]
     reports = parse_report_directory(root / "sources")
@@ -94,4 +117,14 @@ def test_bundled_annotations_cover_each_unique_historical_article_once():
         keyword.casefold() not in DISALLOWED_KEYWORDS
         for item in annotations.values()
         for keyword in item.keywords
+    )
+    assert Counter(item.source_basis for item in annotations.values()) == {
+        "original_content": 155,
+        "official_replacement": 4,
+        "publisher_excerpt": 2,
+    }
+    assert all(
+        canonical_url(item.source_url) != item.canonical_url
+        for item in annotations.values()
+        if item.source_basis in {"official_replacement", "publisher_excerpt"}
     )

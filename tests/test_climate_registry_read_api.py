@@ -510,6 +510,23 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
         "generated_on": "2026-08-17",
     }
 
+    payload["articles"][2]["source_basis"] = "official_replacement"
+    payload["articles"][2]["source_url"] = "https://insurer.test/corrected-meta"
+    (metadata_dir / "articles-001-003.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    article = client.get("/api/registry/articles/article-meta").json()
+    assert article["summary_provenance"] == "official_replacement_annotation"
+    assert article["metadata_provenance"] == {
+        "categories": "official_replacement_annotation",
+        "keywords": "official_replacement_annotation",
+    }
+    assert article["source_annotation"] == {
+        "source_basis": "official_replacement",
+        "source_url": "https://insurer.test/corrected-meta",
+        "generated_on": "2026-08-17",
+    }
+
 
 @pytest.mark.parametrize("query", ["100%", "[2026]", "' OR 1=1 --", "_"])
 def test_article_search_is_parameterized_and_treats_sql_wildcards_literally(registry_client, query):

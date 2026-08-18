@@ -88,7 +88,7 @@ window.fetch = (input, options = {}) => {
           section: "Pillar B", publisher: "Example", summary: "Weekly article summary",
           summary_provenance: window.__reportSummaryProvenance ?? "content_enrichment",
           categories: ["Insurance"], keywords: ["pricing"],
-          source_annotation: {source_basis: "original_content", source_url: "https://example.com/article",
+          source_annotation: {source_basis: window.__reportSourceBasis ?? "original_content", source_url: "https://example.com/article",
             generated_on: "2026-08-17"}}
       ]});
   }
@@ -111,7 +111,8 @@ window.fetch = (input, options = {}) => {
         extraction_method: "html-to-markdown", fetched_at: "2026-08-13"},
       categories: ["Regulation"], keywords: ["premium"],
       summary_provenance: "content_enrichment",
-      source_annotation: {source_basis: "original_content", source_url: "https://example.com/article",
+      source_annotation: {source_basis: window.__articleSourceBasis ?? "original_content",
+        source_url: window.__articleSourceUrl ?? "https://example.com/article",
         generated_on: "2026-08-17"},
       enrichment: {summary: "Enriched summary", categories: ["Legacy category"], keywords: ["legacy"],
         language: "en", generator: {kind: "deterministic", name: "rules", version: "1", generated_at: "2026-08-13"}},
@@ -219,7 +220,15 @@ def main() -> int:
         _visible(page, "Pillar B · Example · Captured content")
         assert page.get_by_text("Pillar B · Example · Original source", exact=True).count() == 0
         page.evaluate(
+            "window.__reportSummaryProvenance = 'official_replacement_annotation'; "
+            "window.__reportSourceBasis = 'official_replacement'; "
+            "loadRegistryReport('2026-08-10')"
+        )
+        _visible(page, "Pillar B · Example · Official replacement")
+        assert page.get_by_text("Pillar B · Example · Original source", exact=True).count() == 0
+        page.evaluate(
             "window.__reportSummaryProvenance = 'future_provenance'; "
+            "window.__reportSourceBasis = 'original_content'; "
             "loadRegistryReport('2026-08-10')"
         )
         page.wait_for_function(
@@ -227,6 +236,7 @@ def main() -> int:
         )
         assert page.get_by_text("Pillar B · Example · Original source", exact=True).count() == 0
         assert page.get_by_text("Pillar B · Example · Captured content", exact=True).count() == 0
+        assert page.get_by_text("Pillar B · Example · Official replacement", exact=True).count() == 0
         page.get_by_role("button", name="Climate pricing").click()
         _visible(page, "Enriched summary")
         _visible(page, "Supporting evidence")
@@ -242,6 +252,14 @@ def main() -> int:
         assert page.get_by_text("Not captured", exact=True).count() == 0
         _visible(page, "Latest fetch")
         _visible(page, "Captured")
+        page.evaluate(
+            "window.__articleSourceBasis = 'official_replacement'; "
+            "window.__articleSourceUrl = 'https://example.com/corrected-article'; "
+            "loadRegistryArticle('article-1')"
+        )
+        corrected_link = page.get_by_role("link", name="Open official replacement")
+        corrected_link.wait_for()
+        assert corrected_link.get_attribute("href") == "https://example.com/corrected-article"
         page.get_by_label("Search articles").fill("climate 100%")
         page.get_by_label("Publisher").select_option(label="example")
         page.get_by_role("button", name="Apply").click()

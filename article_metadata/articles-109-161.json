@@ -79,11 +79,11 @@
     {
       "canonical_url": "https://www.reuters.com/sustainability/climate-energy/swiss-re-sees-claims-natural-catastrophes-rising-2026-2026-03-19",
       "source_url": "https://www.reuters.com/sustainability/climate-energy/swiss-re-sees-claims-natural-catastrophes-rising-2026-2026-03-19",
-      "title": "Swiss Re Sees Claims from Natural Catastrophes Rising in 2026",
-      "source_basis": "report_fallback",
-      "summary": "Swiss Re projects rising natural-catastrophe claims in 2026, with insured losses reaching as much as US$320 billion in a severe scenario. The scenario provides an input for capital-adequacy and ORSA stress testing.",
-      "categories": ["Physical Risk", "Insurance Risk", "Capital & Solvency"],
-      "keywords": ["Swiss Re", "natural catastrophe claims", "insured losses", "severe scenario", "capital adequacy", "ORSA"]
+      "title": "Swiss Re sees claims from natural catastrophes rising in 2026",
+      "source_basis": "original_content",
+      "summary": "Swiss Re estimates that insured losses from natural catastrophes will reach about US$148 billion in 2026, based on the long-term average, and could rise to US$320 billion in a severe scenario. It says 2025's lower losses reflected favourable variability rather than an easing of underlying risk.",
+      "categories": ["Physical Risk", "Insurance Risk", "Actuarial Modelling"],
+      "keywords": ["Swiss Re", "natural catastrophes", "insured losses", "US$148 billion", "severe scenario", "US$320 billion", "long-term average"]
     },
     {
       "canonical_url": "https://www.searca.org/news/searca-ecosecurities-uplbfi-strengthen-pcic-capacity-data-driven-corn-insurance",
@@ -169,11 +169,11 @@
     {
       "canonical_url": "https://www.spglobal.com/sustainable1/en/insights/research-reports/issb-q2-2026",
       "source_url": "https://www.spglobal.com/sustainable1/en/insights/research-reports/issb-q2-2026",
-      "title": "Where Does the World Stand on ISSB Adoption in Q2 2026?",
-      "source_basis": "report_fallback",
-      "summary": "S&P Global tracks jurisdictional adoption of IFRS S1 and IFRS S2, including targeted amendments and scenario guidance. The analysis covers requirements to disclose physical and transition risks, scenario analysis and a possible one-year Scope 3 deferral.",
+      "title": "May 2026 – Where does the world stand on ISSB adoption?",
+      "source_basis": "original_content",
+      "summary": "S&P Global reviews the global uptake of IFRS S1 and IFRS S2: as of 22 April 2026, 28 jurisdictions had adopted the standards and 12 more planned to do so. It examines jurisdiction-specific approaches to climate disclosures, including GHG emissions, physical and transition risks, Scope 3 emissions, climate-resilience assessment and scenario analysis.",
       "categories": ["Supervision & Disclosure", "Climate Risk"],
-      "keywords": ["S&P Global", "ISSB adoption", "IFRS S1", "IFRS S2", "scenario analysis", "Scope 3", "jurisdictions"]
+      "keywords": ["S&P Global Sustainable1", "ISSB adoption", "IFRS S1", "IFRS S2", "Scope 3 emissions", "climate resilience", "scenario analysis", "jurisdictional reporting"]
     },
     {
       "canonical_url": "https://www.swissre.com/",
@@ -232,56 +232,56 @@
     {
       "canonical_url": "https://www.undp.org/asia-pacific/events/unlocking-climate-finance",
       "source_url": "https://www.undp.org/asia-pacific/events/unlocking-climate-finance",
-      "title": "Unlocking Climate Finance: Adaptation Finance Strategy Guideline",
-      "source_basis": "report_fallback",
-      "summary": "UNDP's Adaptation Finance Strategy Guideline helps governments mobilize and align financing for investments identified in National Adaptation Plans and nationally determined contributions. The report notes a large gap between developing-country adaptation needs and current international public finance.",
+      "title": "Unlocking climate finance",
+      "source_basis": "original_content",
+      "summary": "UNDP presents the Adaptation Finance Strategy Guideline, a practical framework for governments to mobilize and align finance with adaptation investments in National Adaptation Plans and Nationally Determined Contributions. The guideline uses a modular approach for governments, development partners and the private sector to strengthen financing systems and scale investment around national adaptation priorities.",
       "categories": ["Adaptation & Resilience"],
-      "keywords": ["UNDP", "adaptation finance", "National Adaptation Plans", "NDCs", "developing countries", "public finance"]
+      "keywords": ["UNDP", "adaptation finance", "AFSG", "National Adaptation Plans", "NDCs", "development partners", "private sector"]
     },
     {
       "canonical_url": "https://www.undp.org/philippines/press-releases/powering-health-and-climate-security-barmm-undp-japan-and-lanao-del-sur-advance-renewable-energy-resilient-communities",
       "source_url": "https://www.undp.org/philippines/press-releases/powering-health-and-climate-security-barmm-undp-japan-and-lanao-del-sur-advance-renewable-energy-resilient-communities",
-      "title": "UNDP, Japan and Lanao del Sur Advance Renewable Energy for Resilient Communities in BARMM",
-      "source_basis": "report_fallback",
-      "summary": "The RE³ACHS project advances renewable energy and energy-efficiency solutions for health, agriculture and resilience in conflict-affected parts of BARMM in the Philippines. The project receives support from Japan's Climate Promise initiative.",
+      "title": "Powering Health and Climate Security in BARMM: UNDP, Japan, and Lanao del Sur Advance Renewable Energy for Resilient Communities",
+      "source_basis": "original_content",
+      "summary": "The RE3ACHS project installed 271 kWp of hybrid solar photovoltaic capacity across four health facilities in Lanao del Sur to strengthen reliable healthcare, energy security and climate resilience. The initiative also trained health staff and solar installers, supported local energy planning and aims to reduce diesel dependence and greenhouse gas emissions.",
       "categories": ["Adaptation & Resilience", "Transition Risk"],
-      "keywords": ["UNDP", "BARMM", "RE³ACHS", "renewable energy", "energy efficiency", "resilient communities", "Philippines"]
+      "keywords": ["RE3ACHS", "BARMM", "hybrid solar PV", "health facilities", "energy security", "climate resilience", "diesel generators", "green jobs"]
     },
     {
       "canonical_url": "https://www.undp.org/romecentre/press-releases/climate-finance-dialogues-2026-convenes-partners-rome-advance-climate-investment-opportunities-across-africa",
       "source_url": "https://www.undp.org/romecentre/press-releases/climate-finance-dialogues-2026-convenes-partners-rome-advance-climate-investment-opportunities-across-africa",
-      "title": "Climate Finance Dialogues 2026 Convene Partners in Rome to Advance Investment Opportunities Across Africa",
-      "source_basis": "report_fallback",
-      "summary": "UNDP's Climate Finance Dialogues 2026 brought partners together in Rome to advance climate investment across Africa. The forum addressed blended finance, debt-for-climate swaps and domestic resource mobilization for developing economies.",
-      "categories": ["Transition Risk"],
-      "keywords": ["UNDP", "Climate Finance Dialogues", "Africa", "blended finance", "debt-for-climate swaps", "domestic resource mobilization"]
+      "title": "Climate Finance Dialogues 2026 convenes partners in Rome to advance climate investment opportunities across Africa",
+      "source_basis": "original_content",
+      "summary": "Climate Finance Dialogues 2026 brings governments, project developers, development finance institutions and investors together to move African climate and energy projects toward bankability and implementation. Through PISTA and Energy for Growth in Africa, the programme connects project preparation with financing for renewable energy, resilient infrastructure, clean mobility, agriculture and water systems.",
+      "categories": ["Transition Risk", "Adaptation & Resilience"],
+      "keywords": ["Climate Finance Dialogues 2026", "Africa", "project bankability", "development finance institutions", "PISTA", "Energy for Growth", "renewable energy", "resilient infrastructure"]
     },
     {
       "canonical_url": "https://www.undp.org/romecentre/press-releases/undp-and-iai-convene-high-level-roundtable-rome-advance-climate-and-development-finance-partnerships",
       "source_url": "https://www.undp.org/romecentre/press-releases/undp-and-iai-convene-high-level-roundtable-rome-advance-climate-and-development-finance-partnerships",
-      "title": "UNDP and IAI Convene a High-Level Roundtable on Climate and Development Finance Partnerships",
-      "source_basis": "report_fallback",
-      "summary": "The Rome roundtable focused on climate and development-finance partnerships, private capital and moving national climate plans toward financeable projects through the PISTA platform. It also addressed infrastructure stakeholders' capacity to access climate finance.",
-      "categories": ["Transition Risk"],
-      "keywords": ["UNDP", "IAI", "climate finance", "development finance", "private capital", "PISTA", "infrastructure"]
+      "title": "UNDP and IAI convene high-level roundtable in Rome to advance climate and development finance partnerships",
+      "source_basis": "original_content",
+      "summary": "UNDP and Istituto Affari Internazionali convened public, private and financial-sector participants in Rome to strengthen coordination for climate and development finance, with a focus on Africa. The roundtable examined bankable climate-resilient project pipelines, access to public and private investment, technical assistance and institutional partnerships.",
+      "categories": ["Transition Risk", "Adaptation & Resilience"],
+      "keywords": ["Istituto Affari Internazionali", "climate finance", "development finance", "Africa", "bankable projects", "public-private investment", "technical assistance", "PISTA"]
     },
     {
       "canonical_url": "https://www.undp.org/stories/next-generation-climate-peacebuilders",
       "source_url": "https://www.undp.org/stories/next-generation-climate-peacebuilders",
-      "title": "Next Generation Climate Peacebuilders",
-      "source_basis": "report_fallback",
-      "summary": "UNDP profiles young climate peacebuilders and connects climate stress with conflict and instability. The piece highlights the social and sovereign-risk dimensions of climate impacts and associated protection gaps.",
-      "categories": ["Climate Risk"],
-      "keywords": ["UNDP", "climate peacebuilders", "youth", "conflict", "instability", "sovereign risk", "protection gaps"]
+      "title": "The next generation of climate peacebuilders",
+      "source_basis": "original_content",
+      "summary": "UNDP shows how young people in fragile and conflict-affected settings are developing responses to overlapping climate, peace and security challenges. Examples from Egypt, South Sudan, Tanzania and Lebanon cover floodwater harvesting, climate-resilient agriculture, youth peacebuilding, alternative livelihoods and climate-information integrity.",
+      "categories": ["Climate Risk", "Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["youth peacebuilding", "climate security", "fragile settings", "floodwater harvesting", "climate-resilient agriculture", "alternative livelihoods", "climate misinformation", "community resilience"]
     },
     {
       "canonical_url": "https://www.undp.org/stories/planet-crisis-our-response-must-rise-moment",
       "source_url": "https://www.undp.org/stories/planet-crisis-our-response-must-rise-moment",
-      "title": "Planet Crisis: Our Response Must Rise to the Moment",
-      "source_basis": "report_fallback",
-      "summary": "UNDP describes an escalating planetary and climate crisis and the scale of response required. The report connects this framing with physical risk, climate exposure, an adaptation-finance gap and resilience investment.",
-      "categories": ["Climate Risk", "Adaptation & Resilience", "Physical Risk"],
-      "keywords": ["UNDP", "planetary crisis", "climate crisis", "physical risk", "adaptation finance", "resilience investment"]
+      "title": "The planet is in crisis. Our response must rise to the moment.",
+      "source_basis": "original_content",
+      "summary": "UNDP presents land degradation, biodiversity decline and increasingly extreme climate conditions as interconnected environmental crises affecting food, water, livelihoods and stability. It highlights the three 2026 environmental conferences—UNCCD COP17, the UN Biodiversity Conference COP17 and UN Climate Change Conference COP31—as opportunities to advance land restoration, biodiversity protection and climate action.",
+      "categories": ["Physical Risk", "Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["land degradation", "biodiversity loss", "climate extremes", "drought resilience", "land restoration", "UNCCD COP17", "biodiversity protection", "COP31"]
     },
     {
       "canonical_url": "https://www.unep.org/topics/finance-and-economic-transformations/transforming-finance/climate-finance",
@@ -340,47 +340,47 @@
     {
       "canonical_url": "https://www.weforum.org/stories/2025/01/what-is-parametric-insurance-and-how-is-it-building-climate-resilience",
       "source_url": "https://www.weforum.org/stories/2025/01/what-is-parametric-insurance-and-how-is-it-building-climate-resilience",
-      "title": "How Parametric Insurance Is Building Climate Resilience",
-      "source_basis": "report_fallback",
-      "summary": "The World Economic Forum explains parametric insurance as trigger-based protection that can pay quickly after rainfall, wind or heat events. It notes basis risk and product sustainability as payout frequency increases.",
-      "categories": ["Insurance Risk", "Adaptation & Resilience", "Actuarial Modelling"],
-      "keywords": ["parametric insurance", "climate resilience", "trigger-based payouts", "rainfall", "wind", "heat", "basis risk"]
+      "title": "What is parametric insurance and how is it building climate resilience?",
+      "source_basis": "original_content",
+      "summary": "Parametric policies pay when measurable weather conditions cross agreed thresholds, enabling faster and more flexible payments while covering some climate risks that conventional indemnity insurance may leave unprotected. Satellite and AI-enabled products can expand coverage, but threshold-dependent design can leave losses unpaid and increasingly frequent climate events may challenge product sustainability.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["parametric insurance", "pre-defined triggers", "rainfall", "wind speed", "satellite observation", "artificial intelligence", "coverage gaps", "payout sustainability"]
     },
     {
       "canonical_url": "https://www.weforum.org/stories/2026/03/by-embracing-resilience-the-insurance-industry-can-be-part-of-the-climate-solution-96b1291a95",
       "source_url": "https://www.weforum.org/stories/2026/03/by-embracing-resilience-the-insurance-industry-can-be-part-of-the-climate-solution-96b1291a95",
-      "title": "The Insurance Industry Can Be Part of the Climate Solution",
-      "source_basis": "report_fallback",
-      "summary": "The article argues that insurers can support climate adaptation through risk-based pricing, incentives for pre-disaster resilience and parametric products. It cites US$100 billion in 2025 natural-catastrophe insured losses and the predominance of weather-related losses.",
+      "title": "The role of insurance in building resilience across the energy-water-climate nexus",
+      "source_basis": "original_content",
+      "summary": "Insurance de-risks and underwrites private investment across the energy-water-climate nexus and can move beyond post-disaster payouts to finance resilience before shocks occur. The article calls for risk reduction at source, pre-disaster investment, fair risk sharing, better data paired with public decisions and equitable risk-based pricing, illustrating these principles with peatland flood protection and parametric cover for heat and flooding.",
       "categories": ["Insurance Risk", "Adaptation & Resilience", "Physical Risk"],
-      "keywords": ["insurance industry", "climate adaptation", "risk-based pricing", "resilience incentives", "parametric products", "natural catastrophe losses"]
+      "keywords": ["energy-water-climate nexus", "natural catastrophe insured losses", "pre-disaster investment", "risk-based pricing", "public-private partnerships", "parametric insurance", "ecosystem services", "smallholder farmers"]
     },
     {
       "canonical_url": "https://www.weforum.org/stories/2026/04/systemic-risk-hidden-tax-on-growth",
       "source_url": "https://www.weforum.org/stories/2026/04/systemic-risk-hidden-tax-on-growth",
-      "title": "Systemic Risk Is a Hidden Tax on Growth. Can Insurance Help?",
-      "source_basis": "report_fallback",
-      "summary": "The World Economic Forum describes climate, cyber and geopolitical risks as systemic pressures on economic growth. It highlights insurance, advanced risk modelling, data analytics and early-warning systems as tools for resilience before shocks occur.",
-      "categories": ["Insurance Risk", "Climate Risk", "Actuarial Modelling"],
-      "keywords": ["systemic risk", "economic growth", "insurance", "climate change", "risk modelling", "data analytics", "early-warning systems"]
+      "title": "Systemic risk is the hidden tax on growth. Here's how insurance can help build economic resilience",
+      "source_basis": "original_content",
+      "summary": "Systemic risk arising from climate volatility, geopolitical fragmentation, technological disruption and public-health crises behaves like a hidden tax by raising investment costs, discouraging innovation and transmitting shocks through interconnected systems. Insurance can convert uncertainty into resilience through risk quantification, pooling and transfer, advanced modelling and early warning, adaptation investment and public-private risk sharing.",
+      "categories": ["Insurance Risk", "Climate Risk", "Adaptation & Resilience"],
+      "keywords": ["systemic risk", "hidden tax on growth", "protection gaps", "advanced risk modelling", "early warning systems", "climate-resilient infrastructure", "catastrophe risk-sharing mechanisms", "public-private partnerships"]
     },
     {
       "canonical_url": "https://www.weforum.org/stories/climate-action/avoided-emissions-unlock-low-carbon-investment",
       "source_url": "https://www.weforum.org/stories/climate-action/avoided-emissions-unlock-low-carbon-investment",
-      "title": "How Avoided Emissions Can Help Unlock Investment in Low-carbon Innovation",
-      "source_basis": "report_fallback",
-      "summary": "The article proposes avoided-emissions measures as a complement to Scope 1, 2 and 3 inventories when assessing climate-solution investments. The metric is relevant to transition-risk exposure and IFRS S2 metric selection.",
+      "title": "How avoided emissions can help unlock investment in low-carbon innovation",
+      "source_basis": "original_content",
+      "summary": "Avoided emissions compare the greenhouse-gas impact of a low-carbon solution with a scenario in which that solution is absent, capturing customer-side reductions not fully recognized by Scope 1–3 accounting. They should be reported separately from GHG inventories; broader use in investment and lending could reward low-carbon technologies, but methodologies still require clearer baselines, reference scenarios, attribution and calculation disclosure.",
       "categories": ["Transition Risk", "Supervision & Disclosure"],
-      "keywords": ["avoided emissions", "low-carbon innovation", "Scope 1", "Scope 2", "Scope 3", "climate investment", "IFRS S2"]
+      "keywords": ["avoided emissions", "low-carbon solutions", "GHG Protocol", "Scope 1–3 inventories", "separate disclosure", "reference scenarios", "attribution", "investment analysis"]
     },
     {
       "canonical_url": "https://www.weforum.org/stories/geo-economics-and-politics/how-leaders-anticipate-risks-govern-boards-avoid-crises",
       "source_url": "https://www.weforum.org/stories/geo-economics-and-politics/how-leaders-anticipate-risks-govern-boards-avoid-crises",
-      "title": "Leaders Should Plan for Colliding Risks, Not Isolated Crises",
-      "source_basis": "report_fallback",
-      "summary": "The article calls for governance and modelling of compound, correlated risks instead of isolated single-peril stresses. It links this approach to compound climate scenarios, correlated-peril aggregation, ORSA and capital modelling.",
-      "categories": ["Actuarial Modelling", "Capital & Solvency", "Climate Risk"],
-      "keywords": ["compound risks", "correlated risks", "governance", "climate scenarios", "peril aggregation", "ORSA", "capital modelling"]
+      "title": "Leaders should plan for colliding risks, not isolated crises. Here's why",
+      "source_basis": "original_content",
+      "summary": "The article warns that severe corporate disruption can emerge when geopolitical, cyber, climate and AI risks cascade, compound or collide, particularly as public debt and insurance have less capacity to absorb shocks. Boards should map convergence points and dependencies, rehearse compound shocks, assign ownership and crisis decision rights, and fund targeted alternatives that preserve room to act.",
+      "categories": ["Climate Risk", "Adaptation & Resilience", "Capital & Solvency"],
+      "keywords": ["colliding risks", "compound shocks", "critical points of convergence", "climate stress", "natural-catastrophe protection gap", "board governance", "capital allocation", "critical dependencies"]
     },
     {
       "canonical_url": "https://www.who.int/news/item/05-08-2026-who-launches-global-research-priorities-on-climate--health-and-migration",

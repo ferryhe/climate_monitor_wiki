@@ -38,7 +38,13 @@ ARTICLE_FIELDS = {
     "categories",
     "keywords",
 }
-SOURCE_BASES = {"original_content", "report_fallback"}
+SOURCE_BASES = {
+    "original_content",
+    "official_replacement",
+    "publisher_excerpt",
+    "report_fallback",
+}
+ALTERNATE_SOURCE_BASES = {"official_replacement", "publisher_excerpt"}
 DISALLOWED_KEYWORDS = {"article", "news", "report", "update"}
 
 
@@ -126,7 +132,9 @@ def _load_batch(path: Path) -> tuple[ArticleAnnotation, ...] | None:
             return None
         try:
             parsed_url = urlsplit(source_url)
-            normalized = canonical_url(source_url)
+            parsed_canonical = urlsplit(declared_canonical)
+            normalized_source = canonical_url(source_url)
+            normalized_canonical = canonical_url(declared_canonical)
         except (TypeError, UnicodeError, ValueError):
             return None
         if (
@@ -134,7 +142,11 @@ def _load_batch(path: Path) -> tuple[ArticleAnnotation, ...] | None:
             or not parsed_url.hostname
             or parsed_url.username is not None
             or parsed_url.password is not None
-            or declared_canonical != normalized
+            or parsed_canonical.scheme not in {"http", "https"}
+            or not parsed_canonical.hostname
+            or parsed_canonical.username is not None
+            or parsed_canonical.password is not None
+            or declared_canonical != normalized_canonical
             or not isinstance(title, str)
             or not title
             or title != title.strip()
@@ -150,9 +162,14 @@ def _load_batch(path: Path) -> tuple[ArticleAnnotation, ...] | None:
             or any(keyword.casefold() in DISALLOWED_KEYWORDS for keyword in keywords)
         ):
             return None
+        if (
+            source_basis not in ALTERNATE_SOURCE_BASES
+            and normalized_source != normalized_canonical
+        ):
+            return None
         output.append(
             ArticleAnnotation(
-                canonical_url=normalized,
+                canonical_url=normalized_canonical,
                 source_url=source_url,
                 title=title,
                 source_basis=source_basis,

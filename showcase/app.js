@@ -1678,16 +1678,20 @@ async function loadRegistryReport(reportDate) {
       const summarySourceLabels = {
           content_enrichment: "Captured content",
           original_content_annotation: "Original source",
+          official_replacement_annotation: "Official replacement",
+          publisher_excerpt_annotation: "Publisher excerpt",
           report_fallback_annotation: "Report fallback",
           source_report: "Historical report",
         };
+      const legacySourceLabels = {
+        original_content: "Original source",
+        official_replacement: "Official replacement",
+        publisher_excerpt: "Publisher excerpt",
+        report_fallback: "Report fallback",
+      };
       const summarySourceLabel =
         article.summary_provenance == null
-          ? article.source_annotation?.source_basis === "original_content"
-            ? "Original source"
-            : article.source_annotation?.source_basis === "report_fallback"
-              ? "Report fallback"
-              : ""
+          ? legacySourceLabels[article.source_annotation?.source_basis] || ""
           : summarySourceLabels[article.summary_provenance] || "";
       const meta = registryElement(
         "span",
@@ -1785,9 +1789,22 @@ async function loadRegistryArticle(articleId) {
   try {
     const article = await registryFetch(`/api/registry/articles/${encodeURIComponent(articleId)}`);
     els.registryArticleTitle.textContent = article.title;
-    const sourceUrl = safeSourceUrl(article.original_url || article.canonical_url);
+    const annotationBasis = article.source_annotation?.source_basis;
+    const usesAlternatePublisherPage =
+      annotationBasis === "official_replacement" || annotationBasis === "publisher_excerpt";
+    const sourceUrl = safeSourceUrl(
+      (usesAlternatePublisherPage && article.source_annotation?.source_url) ||
+        article.original_url ||
+        article.canonical_url,
+    );
     if (sourceUrl) {
       els.registryOriginalLink.href = sourceUrl;
+      els.registryOriginalLink.textContent =
+        annotationBasis === "official_replacement"
+          ? "Open official replacement"
+          : annotationBasis === "publisher_excerpt"
+            ? "Open publisher page"
+            : "Open original source";
       els.registryOriginalLink.hidden = false;
     }
     const metrics = [
@@ -1830,6 +1847,8 @@ async function loadRegistryArticle(articleId) {
     const provenanceCopy = {
       content_enrichment: "Summary generated from captured article content",
       original_content_annotation: "Summary based on the linked original content",
+      official_replacement_annotation: "Summary based on an official replacement page",
+      publisher_excerpt_annotation: "Summary based on the publisher's available excerpt",
       report_fallback_annotation:
         "Summary based on historical report text because the original source was unavailable",
       source_report: "Summary from the historical report",

@@ -278,10 +278,10 @@
       "canonical_url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6947598",
       "source_url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6947598",
       "title": "Parametric Insurance Without Windfalls",
-      "source_basis": "report_fallback",
-      "summary": "Schwarcz (2026) proposes two redesigns of parametric coverage so payouts avoid windfalls while still advancing climate adaptation. The paper bears on indemnity and insurable-interest constraints that shape parametric product pricing.",
-      "categories": ["Insurance Risk", "Adaptation & Resilience"],
-      "keywords": ["parametric insurance", "windfall payouts", "Schwarcz", "insurable interest", "indemnity", "parametric product pricing"]
+      "source_basis": "original_content",
+      "summary": "The paper proposes forecast-based and restricted-use parametric insurance designs that can advance climate adaptation while fitting insurance law's indemnity framework. It also addresses implementation mechanisms and policyholder protections for parametric shortfalls.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Supervision & Disclosure"],
+      "keywords": ["parametric insurance", "forecast-based coverage", "restricted-use coverage", "indemnity", "insurable interest", "climate protection gap", "policyholder protection"]
     },
     {
       "canonical_url": "https://research.reading.ac.uk/climate-and-finance/2026-climate-and-finance-conference-insurance-for-climate-risk-indemnity-parametric-and-hybrid-solutions",

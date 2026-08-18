@@ -17,10 +17,14 @@ blocked when a new URL has not yet received a historical annotation.
 Each annotation records a concise summary, controlled categories, keywords,
 the representative source URL, and its evidence basis. `original_content`
 means the linked page or PDF was read when the annotation was prepared.
-`report_fallback` means the original could not be retrieved and the annotation
-is limited to the title and summary already present in the historical reports.
-The API exposes that distinction as provenance; fallback content is never
-presented as though the original page was read.
+`official_replacement` means the historical URL was wrong or retired and a
+replacement page on the same publisher's site was used. `publisher_excerpt`
+means the publisher exposed a title and excerpt but kept the full article
+behind a subscription boundary. `report_fallback` means no publisher content
+could be retrieved and the annotation is limited to the historical report.
+For the two alternate-source bases, `canonical_url` remains the Registry key
+while `source_url` records the publisher page actually used. The API exposes
+each distinction as provenance.
 
 At runtime, full-content Registry enrichment takes precedence, followed by the
 unique article annotation, then explicit metadata embedded in a report. Batch
@@ -71,7 +75,8 @@ string list and adds `categories` and `keywords` to each report article.
 full-content enrichment. It also returns effective top-level `categories` and
 `keywords`, `report_metadata`, `source_annotation`, and per-field provenance.
 Possible provenance values are `content_enrichment`,
-`original_content_annotation`, `report_fallback_annotation`, `source_report`,
+`original_content_annotation`, `official_replacement_annotation`,
+`publisher_excerpt_annotation`, `report_fallback_annotation`, `source_report`,
 or `null`.
 
 `GET /api/registry/publishers` returns at most 500 deterministic publisher

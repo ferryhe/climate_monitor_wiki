@@ -187,39 +187,42 @@
     {
       "canonical_url": "https://www.forbes.com/sites/monicasanders/2026/03/31/billion-dollar-disasterswhy-your-insurance-is-getting-more-expensive",
       "source_url": "https://www.forbes.com/sites/monicasanders/2026/03/31/billion-dollar-disasterswhy-your-insurance-is-getting-more-expensive",
-      "title": "Billion-Dollar Disasters: Why Insurance Is Getting More Expensive",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage describes the article as linking rising natural-catastrophe losses and premium pressure with greater interest in parametric insurance. It presents trigger-based products as a possible option for smaller businesses facing reduced affordability in high-risk areas.",
+      "title": "Billion Dollar Disasters: Why Your Insurance Is Getting More Expensive",
+      "source_basis": "original_content",
+      "summary": "Forbes links the rising cost of insurance to climate impacts, aging infrastructure and a 2025 natural-catastrophe loss baseline dominated by wildfires, severe convective storms and floods. It describes higher premiums, deductibles and exclusions alongside greater use of forward-looking models, parametric insurance and resilience investment.",
       "categories": [
         "Physical Risk",
-        "Insurance Risk"
+        "Insurance Risk",
+        "Adaptation & Resilience"
       ],
       "keywords": [
-        "billion-dollar disasters",
+        "natural catastrophe losses",
+        "secondary perils",
+        "insurance premiums",
+        "protection gap",
         "parametric insurance",
-        "small businesses",
-        "climate hazards",
-        "premium affordability",
-        "trigger-based coverage"
+        "forward-looking models",
+        "resilience investment"
       ]
     },
     {
       "canonical_url": "https://www.fsb-tcfd.org/",
       "source_url": "https://www.fsb-tcfd.org/",
-      "title": "TCFD and TNFD Climate and Nature Risk Disclosure Frameworks",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage describes TCFD as a four-pillar framework for climate-risk disclosure and TNFD as an extension addressing nature-related dependencies, impacts, risks and opportunities. The frameworks organise disclosure around governance, strategy, risk management, and metrics and targets.",
+      "title": "Task Force on Climate-related Financial Disclosures",
+      "source_basis": "original_content",
+      "summary": "TCFD developed a framework for organisations to disclose climate-related risks and opportunities through governance, strategy, risk management, and metrics and targets. The task force disbanded after its 2023 status report, and the Financial Stability Board asked the IFRS Foundation to monitor companies' climate-related disclosures.",
       "categories": [
         "Climate Risk",
         "Supervision & Disclosure"
       ],
       "keywords": [
         "TCFD",
-        "TNFD",
-        "climate governance",
+        "climate-related disclosure",
+        "governance",
+        "strategy",
         "risk management",
         "metrics and targets",
-        "nature-related risk"
+        "IFRS Foundation"
       ]
     },
     {
@@ -342,40 +345,42 @@
     },
     {
       "canonical_url": "https://www.iea.org/energy-system/carbon-capture-utilisation-and-storage/bioenergy-with-carbon-capture-and-storage",
-      "source_url": "https://www.iea.org/energy-system/carbon-capture-utilisation-and-storage/bioenergy-with-carbon-capture-and-storage",
-      "title": "Bioenergy with Carbon Capture and Storage",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage describes BECCS as combining bioenergy production with carbon capture and storage to produce net-negative emissions. It identifies the technology as relevant to long-term carbon-removal pathways and the financing and risk assessment of bioenergy projects.",
+      "source_url": "https://www.iea.org/articles/unlocking-the-potential-of-bioenergy-with-carbon-capture-and-utilisation-or-storage-beccus",
+      "title": "Unlocking the Potential of Bioenergy with Carbon Capture and Utilisation or Storage",
+      "source_basis": "official_replacement",
+      "summary": "The IEA describes BECCUS as capturing carbon dioxide from biomass-based energy and either storing it or using it in products, thereby combining renewable-energy production with atmospheric carbon removal. The project analyses supply-chain carbon accounting and obstacles to sustainable deployment, including policy frameworks, business models and carbon-transport infrastructure.",
       "categories": [
         "Transition Risk",
         "Climate Risk"
       ],
       "keywords": [
+        "BECCUS",
         "bioenergy",
         "carbon capture",
-        "negative emissions",
-        "carbon removal",
-        "net-zero pathways",
-        "project finance"
+        "carbon dioxide removal",
+        "carbon accounting",
+        "biomass",
+        "CO2 storage"
       ]
     },
     {
       "canonical_url": "https://www.iea.org/energy-system/electricity/renewable-integration",
-      "source_url": "https://www.iea.org/energy-system/electricity/renewable-integration",
-      "title": "Renewable Integration and Grid Stability",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage identifies grid stability as a key challenge as renewable energy penetration grows. It describes the topic as relevant to energy insurance, underwriting renewable energy projects and parametric weather products.",
+      "source_url": "https://www.iea.org/reports/integrating-solar-and-wind",
+      "title": "Integrating Solar and Wind: Global Experience and Emerging Challenges",
+      "source_basis": "official_replacement",
+      "summary": "The IEA reports that solar and wind capacity more than doubled between 2018 and 2023, making timely integration important for 2030 decarbonisation goals. Its stocktake of 50 power systems identifies integration measures and highlights increasingly complex stability, flexibility, planning and financing challenges at high levels of variable renewable penetration.",
       "categories": [
         "Transition Risk",
-        "Insurance Risk"
+        "Climate Risk"
       ],
       "keywords": [
-        "renewable integration",
-        "grid stability",
-        "renewable energy",
-        "energy insurance",
-        "project underwriting",
-        "parametric weather products"
+        "solar PV",
+        "wind power",
+        "variable renewable energy",
+        "grid integration",
+        "power-system stability",
+        "flexibility",
+        "decarbonisation"
       ]
     },
     {
@@ -765,43 +770,40 @@
     },
     {
       "canonical_url": "https://www.insuranceerm.com/analysis/2026/04/09/eiopa-makes-a-splash-in-eu-natcat-risk-pool-debate",
-      "source_url": "https://www.insuranceerm.com/analysis/2026/04/09/eiopa-makes-a-splash-in-eu-natcat-risk-pool-debate",
-      "title": "EIOPA Makes a Splash in the EU Natural-Catastrophe Risk-Pool Debate",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage describes EIOPA as a significant voice in the EU debate over a pan-European natural-catastrophe risk pool. It says such a pool could help insurers manage escalating climate-related catastrophe losses and narrow the protection gap, while EIOPA's position could signal changes to regulatory capital, risk sharing, pricing and reserving.",
+      "source_url": "https://www.insuranceerm.com/analysis/eiopa-makes-a-splash-in-eu-natcat-risk-pool-debate.html",
+      "title": "EIOPA Makes a Splash in the EU NatCat Risk Pool Debate",
+      "source_basis": "publisher_excerpt",
+      "summary": "InsuranceERM's archive says EIOPA and the European Stability Mechanism published proposals for a European natural-catastrophe risk pool. Industry views are divided and policymakers have not decided the way forward, making implementation challenging.",
       "categories": [
         "Physical Risk",
         "Insurance Risk",
-        "Capital & Solvency"
+        "Supervision & Disclosure"
       ],
       "keywords": [
-        "European risk pool",
         "EIOPA",
-        "natural catastrophe",
-        "protection gap",
-        "regulatory capital",
-        "pricing",
-        "reserving"
+        "European Stability Mechanism",
+        "natural-catastrophe risk pool",
+        "European insurance",
+        "industry views",
+        "policymakers"
       ]
     },
     {
       "canonical_url": "https://www.insuranceerm.com/analysis/2026/04/14/the-talent-gap-in-insurance-has-become-a-strategic-risk",
-      "source_url": "https://www.insuranceerm.com/analysis/2026/04/14/the-talent-gap-in-insurance-has-become-a-strategic-risk",
-      "title": "The Insurance Talent Gap Has Become a Strategic Risk",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage describes insurance and reinsurance firms struggling to recruit and retain staff with actuarial, risk-management and climate-analytics expertise. It says this skills gap impairs insurers' ability to model, price and manage climate-related risks and has implications for actuarial-function resourcing and the pipeline of climate-capable professionals.",
+      "source_url": "https://www.insuranceerm.com/analysis/the-talent-gap-in-insurance-has-become-a-strategic-risk.html",
+      "title": "The Talent Gap in Insurance Has Become a Strategic Risk",
+      "source_basis": "publisher_excerpt",
+      "summary": "InsuranceERM's archive says the insurance industry's talent gap is longstanding but is beginning to affect revenue and warrants greater attention. The excerpt attributes this assessment to Louisa Blain, Aon's head of insurance for human capital.",
       "categories": [
-        "Insurance Risk",
-        "Actuarial Modelling"
+        "Insurance Risk"
       ],
       "keywords": [
-        "talent shortage",
-        "actuarial skills",
-        "climate analytics",
-        "risk management",
-        "recruitment",
-        "retention",
-        "actuarial resourcing"
+        "insurance talent gap",
+        "strategic risk",
+        "human capital",
+        "Aon",
+        "Louisa Blain",
+        "revenue impact"
       ]
     },
     {
@@ -846,10 +848,10 @@
     },
     {
       "canonical_url": "https://www.insurancejournal.com/news/national/2026/03/23/864830.htm",
-      "source_url": "https://www.insurancejournal.com/news/national/2026/03/23/864830.htm",
-      "title": "Record 92% of 2025 Natural-Catastrophe Insured Losses Driven by Secondary Perils",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage attributes a record 92% of the $107 billion in global insured natural-catastrophe losses in 2025 to secondary perils, particularly wildfires, severe convective storms and floods. It says the Los Angeles fires caused a record $40 billion and cites a 2026 forecast of $148 billion in baseline losses and $320 billion in a peak-loss scenario.",
+      "source_url": "https://www.insurancejournal.com/news/national/2026/03/23/863087.htm",
+      "title": "Wildfires, Storms, Floods Account for Record 92% of Global Insured Losses: Swiss Re",
+      "source_basis": "official_replacement",
+      "summary": "Insurance Journal reports that secondary perils generated a record 92% of the US$107 billion in global insured natural-catastrophe losses in 2025, led by wildfires, severe convective storms and floods. Swiss Re projects US$148 billion of 2026 losses at the long-term trend and about US$320 billion in its modelled peak-loss scenario.",
       "categories": [
         "Physical Risk",
         "Insurance Risk",
@@ -861,7 +863,7 @@
         "severe convective storms",
         "floods",
         "insured losses",
-        "Los Angeles fires",
+        "Swiss Re",
         "peak-loss scenario"
       ]
     },
@@ -1024,10 +1026,10 @@
     },
     {
       "canonical_url": "https://www.iso.org/standard/72159.html",
-      "source_url": "https://www.iso.org/standard/72159.html",
-      "title": "ISO 14091 Climate-Change Adaptation and Vulnerability Assessment",
-      "source_basis": "report_fallback",
-      "summary": "Historical report coverage describes ISO 14091:2021 as a structured framework for assessing the climate vulnerability of assets, systems and networks. It links vulnerability assessment with the selection of adaptation options and the analysis of physical risk in climate-exposed portfolios.",
+      "source_url": "https://www.iso.org/standard/68508.html",
+      "title": "ISO 14091:2021 — Adaptation to Climate Change: Guidelines on Vulnerability, Impacts and Risk Assessment",
+      "source_basis": "official_replacement",
+      "summary": "ISO 14091 gives guidelines for assessing risks from the potential impacts of climate change, understanding vulnerability, and developing sound assessments of present and future risks. These assessments support adaptation planning, implementation, monitoring and evaluation for organisations of any size or type.",
       "categories": [
         "Physical Risk",
         "Adaptation & Resilience",
@@ -1035,11 +1037,11 @@
       ],
       "keywords": [
         "ISO 14091",
-        "vulnerability assessment",
         "climate adaptation",
-        "physical risk",
-        "risk framework",
-        "exposed assets"
+        "vulnerability",
+        "climate impacts",
+        "risk assessment",
+        "monitoring and evaluation"
       ]
     },
     {
