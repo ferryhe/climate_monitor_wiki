@@ -12,9 +12,10 @@ Operationally, the 09:00 Weekly Climate Email job is enabled and retained as the
 only delivery-artifact producer and the intentional email path for four current
 recipients. Version 1 observes only the existing 08:00, 09:00, and 10:00 aliases;
 it does not include or prove the proposed 10:30 Weekly Registry Sync. The
-application implementation and tested runner exist, but the Hermes task remains
-unconfigured and must be deployed, added, and verified before the project can
-be described as `PRODUCTION COMPLETE`.
+application implementation and tested runner are deployed, but the Hermes task
+remains unconfigured. Publisher ledger identity repair/validation, task creation
+and enablement, and one observed normal cycle remain before the project can be
+described as `PRODUCTION COMPLETE`.
 
 ## Contract
 

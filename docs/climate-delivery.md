@@ -18,7 +18,7 @@ The intended separation is:
 The existing 09:00 Hermes job is **enabled and intentionally retained**. It is
 the only production automation authorized to create delivery artifacts, and it
 also owns delivery of the PDF highlights email to the existing four recipients.
-The tested Registry sync implementation is a separate 10:30 concern: it
+The deployed Registry sync implementation is a separate 10:30 concern: it
 consumes the already validated artifact read-only and does not create or send
 mail, change recipients, or mutate delivery state. Its Hermes job is not yet
 configured or verified, so the project must not be described as

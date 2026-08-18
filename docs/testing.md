@@ -24,7 +24,7 @@ Current automated coverage includes:
 - `/api/config` payload fields required by graph/dataview, prompt starters, and precomputed graph payloads
 - showcase root HTML containing `Historical Reports`, `Chat`, and `Obsidian` workspaces
 - exact-date weekly Registry dry-run, candidate promotion, rollback/restore,
-  DB-first metadata precedence, and the disabled 10:30 runner contract
+  DB-first metadata precedence, and the unscheduled 10:30 runner contract
 
 ## Manual QA
 

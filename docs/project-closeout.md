@@ -1,10 +1,10 @@
 # Production readiness and operator guide
 
-**Status:** `PRODUCTION READINESS PENDING — REGISTRY SYNC NOT DEPLOYED OR SCHEDULED`
+**Status:** `READY PENDING LEDGER REPAIR — REGISTRY SYNC NOT SCHEDULED`
 
-**Repository baseline:** `main` at `14904db` (weekly Registry implementation merged)
+**Repository baseline:** `main` at `2ba7b619` (PR #48 and PR #49 merged)
 
-**Verified production deployment:** `main` at `6a4b359`
+**Verified production deployment:** `14904db` (PR #49 deployed; PR #48 not deployed)
 
 **Audit date:** 2026-08-18
 
@@ -30,12 +30,14 @@ source-backed website:
    article Registry, and validated report artifacts; and
 6. Caddy provides public HTTPS in front of the application container.
 
-The Monday 10:30 Weekly Registry Sync implementation and tested runner are now
-in `main`, but they have not been deployed, configured in Hermes, or observed in
-a normal weekly run. DB-first Article Detail uses Registry enrichment; tracked
+The Monday 10:30 Weekly Registry Sync implementation and tested runner are in
+`main` and deployed, but the Hermes job has not been created or observed. Its
+exact-date production dry-run is currently blocked because the legacy Publisher
+ledger record lacks a structured canonical report identity. DB-first Article
+Detail uses Registry enrichment; tracked
 `article_metadata/*.json` remains a compatibility fallback and is not a weekly
-generated artifact. Until deployment and the first observed run complete, this
-project must not be described as `PRODUCTION COMPLETE`.
+generated artifact. Until ledger repair/validation and the first observed run
+complete, this project must not be described as `PRODUCTION COMPLETE`.
 
 The website is both a weekly-report archive and a retrieval interface. It lets
 an operator verify the published briefing/PDF, trace every report back to its
@@ -125,7 +127,7 @@ flowchart LR
     SRC --> CONFIG
     CONFIG --> OBS[Obsidian explorer]
 
-    LEDGER[(Optional weekly-run ledger)] --> UPDATE[/api/update-status]
+    PLEDGER --> UPDATE[/api/update-status]
     SNAP[(Optional sanitized scheduler snapshot)] --> JOB[/api/job-status]
 
     CADDY[Caddy HTTPS] --> API[FastAPI api_server]
@@ -153,7 +155,7 @@ endpoints, self-loops, duplicate endpoint collapse, or unverified code nodes.
 | `api_server.py` | FastAPI routes, static mounts, reload authorization, Registry/artifact projection | Application entrypoint |
 | `agentic_wiki/` | Load/chunk `wiki/` and `sources/`, plan and rank retrieval, answer with citations, precompute explorer graphs | Chat and Obsidian backend |
 | `climate_monitor/` | Monitor configuration, collection adapter, relevance filtering, dedupe, report writing | Called by the external 08:00 monitor workflow |
-| `climate_registry/` | Versioned SQLite schema, DB-first read API, source selection, capture/enrichment, exact-date candidate sync and restore | Historical report/article data layer and future 10:30 implementation |
+| `climate_registry/` | Versioned SQLite schema, DB-first read API, source selection, capture/enrichment, exact-date candidate sync and restore | Deployed historical report/article data layer and future 10:30 automation |
 | `climate_delivery/` | Parse report, build narrative summary, render PDF, email delivery, validate/backfill immutable artifacts | Sole production delivery-artifact producer in the retained 09:00 job; also sends PDF highlights to four recipients |
 | `scripts/run_climate_monitor.py` | Monitor CLI adapter | Controlled fixture/manual runs; external Hermes owns production generation |
 | `scripts/ingest_weekly_reports.py` | Validate and import Monday reports, then synchronize the wiki | Publisher sub-step |
@@ -162,8 +164,8 @@ endpoints, self-loops, duplicate endpoint collapse, or unverified code nodes.
 | `scripts/sync_source_wiki.py` | Regenerate dated wiki pages and index from `sources/` | Derived-content builder |
 | `scripts/reload_and_smoke_test.py` | Reload a deployed corpus and verify config, page, and Chat | Post-deploy operator check |
 | `scripts/preflight_registry.py` | Validate an external Registry directory before read-only mounting | Deployment preflight |
-| `scripts/weekly_registry_refresh.py` | Dry-run-gated sync, reload, SHA/membership binding, and API verification | Tested 10:30 runner draft; not scheduled |
-| `scripts/record_weekly_run.py` | Append one sanitized immutable attempt to an external ledger | Available contract; producer integration is deferred |
+| `scripts/weekly_registry_refresh.py` | Dry-run-gated sync, reload, SHA/membership binding, and API verification | Tested 10:30 runner draft; no job installed |
+| `scripts/record_weekly_run.py` | Generic/manual CLI over `climate_monitor.run_ledger.append_attempt` | Optional operator entrypoint; Publisher imports the shared writer helper directly |
 | `scripts/test_registry_container.py` | Isolated Docker Registry integration smoke | Release/manual QA |
 | `scripts/test_registry_browser.py` | Optional browser interaction smoke | Release/manual QA |
 | `showcase/` | Three-tab, build-free HTML/CSS/JavaScript frontend | Browser UI |
@@ -190,7 +192,7 @@ endpoints, self-loops, duplicate endpoint collapse, or unverified code nodes.
 | `GET /api/registry/publishers` | Article filter choices | Active and tested |
 | `GET /api/registry/articles` | Search/filter/paginate articles | Active and tested |
 | `GET /api/registry/articles/{id}` | Article content, provenance, enrichment, and appearances | Active and tested |
-| `GET /api/update-status` | Read-only sanitized attempt ledger | Contract complete; no producer is wired and no current web tab consumes it |
+| `GET /api/update-status` | Read-only sanitized attempt ledger | Contract complete; Publisher producer wiring is part of the ledger-contract rollout and no current web tab consumes it |
 | `GET /api/job-status` | Read-only sanitized scheduler observer snapshot | Contract complete; exporter is deferred and no current web tab consumes it |
 | `/wiki`, `/sources`, `/showcase` | Static content mounts | Active; `/sources` remains raw evidence |
 
@@ -227,8 +229,9 @@ invoked through their supported module/script form.
 | `python -m climate_registry` | `audit-history`, `plan-update`, `update`, `plan-selection`, `capture-enrich`, `weekly-sync`, `restore-backup` | Keep; audit, planning, capture, atomic weekly promotion, and exact restore are distinct operations |
 | `python -m climate_delivery` | `summarize`, `render-pdf`, `send-email`, `run`, `backfill` | Keep; composable operations plus one full pipeline and audited recovery |
 | `python -m scripts.preflight_registry` | Registry mount validation | Keep; deployment safety gate |
-| `python -m scripts.record_weekly_run` | Append sanitized attempt | Keep while the optional status contract remains; producer wiring is deferred |
-| `scripts/weekly_registry_refresh.py` | Run 10:30 dry-run → formal sync → reload → API verification | Keep as a tested disabled draft until separately scheduled |
+| `python -m scripts.record_weekly_run` | Append sanitized attempt | Keep as the shared generic writer; the repo Publisher now owns its producer wiring |
+| `scripts/repair_publisher_ledger.py` | Dry-run or apply one exact-date raw-hash-bound legacy repair overlay | Keep as the supported audited migration path |
+| `scripts/weekly_registry_refresh.py` | Run 10:30 dry-run → formal sync → reload → API verification | Keep as a tested runner draft; no job exists until separately authorized |
 | Registry container/browser smoke scripts | Release verification | Keep outside the normal scheduler path |
 
 `send-email` is active through the retained 09:00 Weekly Climate Email job. That
@@ -249,7 +252,7 @@ server scheduler owns dispatch, credentials, and authoritative execution state.
 | Monday 08:00 | Weekly Climate & Actuarial Monitor (`f5259a8ec2d9`) | Confirmed | Collect sources and write the canonical Monday report |
 | Monday 09:00 | Weekly Climate Email (PDF highlights) | Confirmed; retained | Be the only delivery-artifact producer and intentionally email the existing four recipients |
 | Monday 10:00 | Weekly Climate Wiki Publisher (`dccb79cd69bc`) | Confirmed | Import through an isolated clone and update the rolling PR |
-| Monday 10:30 | Weekly Registry Sync | Implementation merged; job not configured | Atomically update/enrich the external Registry, reload, and verify; deploy, schedule, and observe before claiming production completion |
+| Monday 10:30 | Weekly Registry Sync | Implementation deployed; job not configured | Repair/validate Publisher identity, then atomically update/enrich the external Registry, reload, and verify; schedule and observe before claiming production completion |
 
 These are three distinct operational facts:
 
@@ -308,10 +311,10 @@ overrides also passed `docker compose config --quiet`.
 
 ## 9. Accepted production verification record
 
-The owner-provided production verification predates the Registry implementation
-merge and records:
+The owner-provided production verification now records:
 
-- `main 6a4b359` deployed and healthy;
+- `14904db` deployed and healthy; GitHub `main` later advanced to `2ba7b619`,
+  which has not been deployed;
 - 2026-07-27, 2026-08-03, 2026-08-10, and 2026-08-17 show narrative Executive
   Summary, Monitoring Snapshot, and PDF download;
 - Articles, Detail, report switching, and mobile behavior are normal;
@@ -322,11 +325,13 @@ merge and records:
   the retained 09:00 weekly email delivery; and
 - the post-backfill dry-run reports all target dates as valid.
 
-These checks establish that the deployed website and historical artifact repair
-are healthy. Repository `main 14904db` now contains the 10:30 implementation,
-but that code has not been deployed and its Hermes task remains unconfigured.
-`PRODUCTION COMPLETE` may be claimed only after current `main` is deployed and
-the task is created, retained, and observed completing a normal weekly cycle.
+These checks establish that the deployed website, Registry/Article Detail code,
+and historical artifact repair are healthy. The 10:30 Hermes task remains
+unconfigured. Its current blocker is the identity-less legacy Publisher ledger
+record, not Registry data corruption. `PRODUCTION COMPLETE` may be claimed only
+after the ledger-contract rollout and exact-date repair/weekly-sync validation,
+then disabled-task validation, separate enablement, and one observed normal
+Monday cycle.
 
 ## 10. Remaining completion gate and operations
 
@@ -335,14 +340,21 @@ the task is created, retained, and observed completing a normal weekly cycle.
 2. After the next normal Monday run, verify that the new report automatically
    receives a narrative summary, Monitoring Snapshot, and PDF from the 09:00
    job, and that the PDF highlights email is delivered to the four recipients.
-3. Deploy current `main`, confirm the explicit external Registry/artifact/
-   ledger/backup paths and permissions, and archive a successful exact-date
-   `weekly-sync --dry-run` result.
-4. Under separate authorization, configure the Monday 10:30 Weekly Registry
-   Sync from the tested runner draft, then verify its Registry, briefing/PDF,
-   ordered article membership, and sample Article Detail after a normal run.
-   This is required before changing the status to `PRODUCTION COMPLETE`.
-5. Wait for at least one successful weekly cycle before requesting separate,
+3. Merge the ledger-contract PR, deploy the resulting latest `main`, and verify
+   health, Registry, and all four Historical Reports dates.
+4. Run the exact 2026-08-17 legacy-ledger repair in default dry-run mode. Verify
+   source, Registry, artifact-directory, and manifest report SHA are all
+   `ed19d7b8c8fbe99a5f66b333b5e2d5fbee63c3f41cf927d79d812888fc333972`.
+5. Only under separate authorization, apply that exact repair; prove the source,
+   Registry DB, delivery artifact inventory/state, and checkout did not change.
+6. Run exact-date `weekly-sync --dry-run`, followed by a formal no-op or other
+   separately controlled first sync. It must not capture, promote, reload,
+   modify the DB, or send mail when the Registry date is already complete.
+7. Create the Monday 10:30 Weekly Registry Sync disabled, validate its command
+   and configuration, and enable it only after separate authorization. Observe
+   at least one normal Monday cycle before changing the status to
+   `PRODUCTION COMPLETE`.
+8. Wait for at least one successful weekly cycle before requesting separate,
    audited authorization to remove the old quarantine. Do not perform an
    unaudited deletion.
 
@@ -354,6 +366,7 @@ The intended production chain, with the remaining gate shown explicitly, is:
       -> 09:00 PDF highlights email (confirmed, 4 recipients)
       -> read-only artifact mount -> Historical Reports
       -> 10:00 rolling Wiki PR
-      -> 10:30 Weekly Registry Sync (IMPLEMENTED / NOT DEPLOYED OR SCHEDULED)
+      -> exact-date legacy ledger repair + weekly-sync validation
+      -> 10:30 Weekly Registry Sync (IMPLEMENTED / DEPLOYED / NOT SCHEDULED)
       -> Executive Summary + Snapshot + PDF + Articles + Detail
 ```

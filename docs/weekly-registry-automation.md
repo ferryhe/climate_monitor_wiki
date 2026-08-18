@@ -1,8 +1,10 @@
 # Weekly Registry and Article Detail automation
 
 This document defines the supported application-side contract for the proposed
-Monday 10:30 Registry update. The implementation is present, but the Hermes job
-is deliberately **not installed or enabled by this repository change**. No
+Monday 10:30 Registry update. The implementation is deployed, but the Hermes
+job is deliberately **not installed or enabled**. Its exact-date production
+dry-run is currently blocked by the identity-less legacy Publisher ledger
+record; this is a writer/reader contract mismatch, not Registry data damage. No
 production database, delivery state, recipient configuration, or email job is
 modified.
 
@@ -18,7 +20,7 @@ The intended sequence is:
   -> email to the existing four recipients
 10:00 Publisher
   -> sources/ + wiki/ + successful publisher ledger
-10:30 Weekly Registry Sync (disabled draft)
+10:30 Weekly Registry Sync (intended; no job installed)
   -> candidate Registry update + target-only capture/enrichment
   -> atomic Registry promotion -> reload -> read-only API verification
 ```
@@ -93,7 +95,9 @@ Before any mutation it verifies:
 
 - the source checkout is clean and the exact source is tracked at `HEAD`;
 - the latest Publisher attempt for that date is `success` or `no_change` and
-  carries the exact report SHA;
+  carries the exact formal v1 report identity: `report_id` derives the canonical
+  `climate-monitor-<date>.md` filename, `report_date` is the explicit Monday,
+  and `sha256` is the canonical source file's raw-byte digest;
 - the delivery manifest, narrative summary, monitoring snapshot, PDF, report
   date/title/filename, and SHA form one valid artifact;
 - the live DB is a regular non-link file outside the checkout, has no SQLite
@@ -171,7 +175,7 @@ atomically replaces and revalidates the target. Its JSON result sets
 `reload_required: true`. This PR
 tests the operation but does not authorize running it against production.
 
-## Disabled 10:30 Hermes job draft
+## Proposed disabled 10:30 Hermes job (not installed)
 
 After code deployment and separate owner authorization, the proposed Monday
 10:30 UTC job command is:
@@ -208,17 +212,46 @@ This is a tested draft, not a job creation request. Do not schedule it merely
 because 10:30 has arrived: its Publisher ledger and artifact checks are the
 authorization boundary for that week's data.
 
+## Legacy Publisher ledger repair
+
+The supported upgrade entrypoint is
+`scripts/repair_publisher_ledger.py`. It requires one explicit Monday plus the
+ledger, source, Registry database, artifact, and Publisher-lock paths. It has no
+`--all`, latest selector, or caller-provided SHA. Default execution is a
+zero-write dry-run; mutation requires `--apply` and separate authorization. The
+lock path must equal `CLIMATE_PUBLISH_LOCK` (or its documented default) and the
+lock file must already exist, so a typo cannot create an unrelated lock.
+
+The command independently binds canonical source raw bytes, Registry identity
+when the date exists, the content-addressed artifact directory, manifest report
+identity, and summary/PDF hashes. Any mismatch, linked/reparse path, traversal,
+lock conflict, malformed legacy record, or competing overlay fails closed.
+Apply adds one atomic `.attempt-repairs` overlay bound to the untouched legacy
+attempt's raw hash. The original attempt and `.attempt-identities` claim remain
+the exact rollback source. Stable statuses are `would_repair`, `repaired`,
+`already_valid`, `preflight_failed`, `validation_failed`, and `lock_conflict`;
+preflight, validation, and lock failures use distinct nonzero exits.
+
+For the staged deployment, exact dry-run/apply/weekly-sync/disabled-job sequence
+and the required 2026-08-17 SHA, see
+[`deployment.md`](deployment.md#ledger-contract-rollout-and-1030-gate).
+
 ## Future adoption checklist
 
 This PR itself stops before deployment or scheduling. A separately authorized
 production adoption should:
 
-1. merge and deploy the application code from a clean `main` checkout;
+1. merge the ledger-contract PR and deploy the resulting latest `main` from a
+   clean checkout;
 2. retain the existing 08:00 Monitor, enabled 09:00 Email/PDF job and four
-   recipients, and 10:00 Publisher unchanged;
+   recipients, and the 10:00 Publisher schedule/rolling-PR behavior; deploy the
+   repo-owned Publisher ledger recorder as the sole recorder and remove or
+   disable any legacy external flat-record writer;
 3. confirm the explicit external DB/artifact/ledger/backup paths and permissions;
-4. run the exact-date dry-run and archive its JSON result;
-5. run one owner-authorized formal sync, reload, and API verification;
-6. create the 10:30 Hermes job only under separate authorization; and
+4. run and archive the exact-date legacy-ledger repair dry-run;
+5. under separate authorization apply the repair, then pass exact-date
+   weekly-sync dry-run and a safe formal no-op/controlled first sync;
+6. create the 10:30 Hermes job disabled, validate it, and enable it only under a
+   further separate authorization; and
 7. observe at least one normal Monday before calling Registry/article metadata
    weekly automation production-complete.

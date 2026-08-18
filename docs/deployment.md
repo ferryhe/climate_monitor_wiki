@@ -91,6 +91,17 @@ The Hermes schedule invokes the locked publisher wrapper:
 bash scripts/weekly_wiki_refresh.sh
 ```
 
+The wrapper writes the successful Publisher attempt to the external weekly-run
+ledger while it still holds the Publisher lock. Configure the same explicit
+ledger and lock paths used by Registry validation; do not add a second external
+flat-record writer:
+
+```bash
+export CLIMATE_RUN_LEDGER_DIR=/var/lib/climate-monitor/weekly-run-ledger
+export CLIMATE_PUBLISH_LOCK=/tmp/climate-monitor-weekly-publisher.lock
+bash scripts/weekly_wiki_refresh.sh
+```
+
 This is a publication command, not a deployment command. It validates and
 imports reports in a temporary clone of the latest `origin/main`, regenerates
 the weekly wiki, runs the full checks, and updates the fixed
@@ -299,10 +310,12 @@ only; it does not update the ledger. See
 [`update-status.md`](update-status.md) for the attempt contract, permissions,
 failure reasons, resource limits, writer verification, and app-only rollback.
 
-Enabling this override does not create or change a Monitor, Email, Publisher,
-Registry updater, or Registry capture job. This phase does not change Caddy,
-Fail2Ban, the firewall, or any scheduled workflow. Live Hermes recording needs
-a separate approved job adaptation and is not part of this deployment.
+Enabling this override does not create or change a Monitor, Email, Registry
+updater, or Registry capture job. The repo-owned Publisher wrapper is the sole
+supported Publisher ledger producer after the ledger-contract rollout; any
+older external flat-record step must be removed or disabled so it cannot append
+a newer identity-less success. This phase does not change Caddy, Fail2Ban, the
+firewall, or any scheduled workflow.
 
 ## Optional sanitized scheduler status
 
@@ -339,3 +352,95 @@ precedence decision, explicit paths, dry-run, exit codes, exact backup/restore
 boundary, API verification, and the disabled Hermes job draft. Deployment must
 keep the enabled 09:00 Email/PDF producer and its four existing recipients
 unchanged; the Registry runner never sends mail.
+
+## Ledger-contract rollout and 10:30 gate
+
+This is a server runbook only. Repository development must not execute these
+steps against production. The current verified deployment is `14904db`; GitHub
+`main` also contains the later PR #48 merge `2ba7b619`, which is not deployed.
+
+### Stage A — deploy the merged ledger contract
+
+1. Confirm the production checkout is clean, fetch `origin`, and fast-forward
+   only to the human-approved merge commit containing this ledger-contract PR.
+2. Rebuild/recreate only the app with the already approved Registry, delivery,
+   update-status, and job-status overrides. This application-deployment substep
+   does not restart Caddy or alter any Hermes job.
+3. Verify `/api/health`, `/api/config`, Registry status, Article Detail DB-first
+   and JSON-fallback behavior, and Historical Report detail/PDF responses for
+   `2026-07-27`, `2026-08-03`, `2026-08-10`, and `2026-08-17`.
+4. Before the next 10:00 run and under separate scheduler-change authorization,
+   inspect its Hermes command, deploy the repo wrapper as the sole Publisher
+   recorder, and remove or disable any external flat ledger assembler. Do not
+   create or enable the 10:30 job in this stage.
+5. From the verified production checkout, bind the runbook paths to that exact
+   checkout and the configured Publisher lock; do not copy a path from an older
+   `/srv` or `/home/ubuntu` example:
+
+   ```bash
+   CLIMATE_REPO="$(pwd -P)"
+   CLIMATE_SOURCE_DIR="$CLIMATE_REPO/sources"
+   CLIMATE_PUBLISH_LOCK="${CLIMATE_PUBLISH_LOCK:-/tmp/climate-monitor-weekly-publisher.lock}"
+   export CLIMATE_PUBLISH_LOCK
+   test -d "$CLIMATE_SOURCE_DIR" && test -f "$CLIMATE_PUBLISH_LOCK"
+   ```
+
+### Stage B — exact legacy-ledger dry-run
+
+Run the repair without `--apply`; dry-run is the default:
+
+```bash
+.venv/bin/python scripts/repair_publisher_ledger.py \
+  --date 2026-08-17 \
+  --ledger-dir /var/lib/climate-monitor/weekly-run-ledger \
+  --source-dir "$CLIMATE_SOURCE_DIR" \
+  --registry-database /var/lib/climate-registry/article-registry.sqlite3 \
+  --artifact-root /var/lib/climate-delivery/output \
+  --lock-file "$CLIMATE_PUBLISH_LOCK"
+```
+
+The expected status is `would_repair` (or `already_valid` after an authorized
+prior repair). Source raw bytes, the Registry report row, the exact artifact
+directory, and the manifest report identity must all resolve to:
+
+```text
+ed19d7b8c8fbe99a5f66b333b5e2d5fbee63c3f41cf927d79d812888fc333972
+```
+
+Dry-run must create no repair overlay, backup, temporary file, or lock. The
+pre-existing configured Publisher lock file must remain byte-for-byte unchanged;
+the command must not read delivery configuration/state or modify any input.
+
+### Stage C — separately authorized repair
+
+Before applying, record the ledger tree hash, Registry DB hash, artifact
+inventory, delivery state, and checkout status. Only after a separate owner
+authorization, repeat the exact command with `--apply`. The repair atomically
+adds one raw-hash-bound overlay under `.attempt-repairs`; it does not rewrite
+the legacy attempt or its private identity hard link. Re-record the same five
+fingerprints and prove that only the expected overlay was added. Repeating the
+command must return `already_valid` without another write.
+
+Rollback is correspondingly narrow: under separate audited authorization,
+remove only that exact repair overlay and revalidate the untouched legacy
+attempt/claim. Do not edit the attempt, source, Registry DB, artifact, or
+delivery state to roll back this projection.
+
+### Stage D — validate weekly-sync
+
+Run `python -m climate_registry weekly-sync` for exact date `2026-08-17` with
+the explicit source, Registry, artifact, backup, standard DB-lock, and Publisher
+ledger paths documented in
+[`weekly-registry-automation.md`](weekly-registry-automation.md). Dry-run must
+pass identity preflight. Because the deployed Registry date is already complete,
+the formal validation should be a safe no-op (exit `6`): no network capture,
+candidate promotion, reload, DB change, artifact change, or email.
+
+### Stage E — create disabled, then authorize enablement
+
+Only after Stages A–D pass may the server agent create `Weekly Climate Registry
+Sync` at `30 10 * * 1`. It must initially remain disabled and must not be run.
+Validate the disabled command, working directory, explicit paths, environment,
+and alerting. Enablement and the first real execution require separate owner
+authorization. Observe at least one normal Monday cycle before declaring
+`PRODUCTION COMPLETE`.
