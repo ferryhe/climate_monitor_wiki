@@ -146,7 +146,7 @@ def discover_reports(report_dir: Path, *, today: date) -> list[Path]:
 
 def _final_report_identity(
     checkout: Path, report_dir: Path, *, today: date
-) -> ReportIdentity | None:
+) -> ReportIdentity:
     report_date = _current_monday(today).isoformat()
     filename = f"climate-monitor-{report_date}.md"
     authoritative = report_dir / filename
@@ -154,7 +154,7 @@ def _final_report_identity(
     authoritative_exists = authoritative.is_file()
     final_exists = final_source.is_file()
     if not authoritative_exists and not final_exists:
-        return None
+        raise PublishError(f"current Monday report is unavailable: {filename}")
     if not authoritative_exists:
         raise PublishError(f"current Monday report is unavailable: {filename}")
     if not final_exists:

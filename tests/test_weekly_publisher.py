@@ -305,8 +305,28 @@ def test_existing_main_report_is_noop(local_remote, tmp_path):
     _, production = local_remote
     reports = tmp_path / "reports"
     _report(reports / "climate-monitor-2026-08-03.md", "2026-08-03")
-    result = _publish(production, reports, FakeGhRunner())
+    result = publisher.publish(
+        production_repo=production,
+        report_dir=reports,
+        today=date(2026, 8, 3),
+        runner=FakeGhRunner(),
+        verifier=lambda _checkout, _runner: None,
+    )
     assert result.status == "no-op"
+    assert result.report is not None
+    assert result.report.report_date == "2026-08-03"
+
+
+def test_missing_current_monday_report_fails_with_primary_error(local_remote, tmp_path):
+    _, production = local_remote
+    reports = tmp_path / "reports"
+    _report(reports / "climate-monitor-2026-08-03.md", "2026-08-03")
+
+    with pytest.raises(
+        publisher.PublishError,
+        match="current Monday report is unavailable: climate-monitor-2026-08-10.md",
+    ):
+        _publish(production, reports, FakeGhRunner())
 
 
 def _candidate_report(path: Path, day: str, *, a: list[tuple[str, str]], b: list[tuple[str, str]]) -> Path:
@@ -1081,7 +1101,7 @@ def test_main_records_only_failure_when_publish_raises(monkeypatch, tmp_path):
 def test_stale_main_index_is_reconciled_without_new_import(local_remote, tmp_path):
     remote, production = local_remote
     reports = tmp_path / "reports"
-    reports.mkdir()
+    _report(reports / "climate-monitor-2026-08-03.md", "2026-08-03")
     admin = tmp_path / "stale-index-main"
     subprocess.run(["git", "clone", str(remote), str(admin)], check=True, capture_output=True)
     _git(admin, "config", "user.name", "Test")
@@ -1095,7 +1115,7 @@ def test_stale_main_index_is_reconciled_without_new_import(local_remote, tmp_pat
     result = publisher.publish(
         production_repo=production,
         report_dir=reports,
-        today=date(2026, 8, 10),
+        today=date(2026, 8, 3),
         runner=gh,
         verifier=lambda _checkout, _runner: None,
     )
