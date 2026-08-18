@@ -104,7 +104,9 @@ The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/sou
 
 ## Automated Climate Monitor
 
-The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. Two hours later, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
+The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. At 09:00 UTC, the retained Weekly Climate Email (PDF highlights) job is the only delivery-artifact producer and sends the result to the existing four recipients. At 10:00 UTC, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
+
+The separate Monday 10:30 Registry/`article_metadata` weekly automation remains unconfigured and unverified. The system must not be called `PRODUCTION COMPLETE` until that task is installed and has completed a normal weekly run.
 
 The production checkout is never used as a generation workspace. Publication is deliberately split into **generate → rolling PR → human merge → server deploy** so production `main` stays clean and can be fast-forwarded safely.
 

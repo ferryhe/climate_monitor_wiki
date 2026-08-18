@@ -1,10 +1,10 @@
-# Project closeout and operator guide
+# Production readiness and operator guide
 
-**Status:** `PRODUCTION COMPLETE`
+**Status:** `PRODUCTION READINESS PENDING — REGISTRY AUTOMATION NOT CONFIGURED`
 
 **Production baseline:** `main` at `6a4b359`
 
-**Closeout date:** 2026-08-18
+**Audit date:** 2026-08-18
 
 This is the current handoff document for the application. Historical design
 reports remain useful background, but they are not the operating authority.
@@ -17,13 +17,20 @@ Climate Monitor Wiki turns weekly climate-risk and actuarial monitoring into a
 source-backed website:
 
 1. an external Hermes monitor produces a canonical Monday Markdown report;
-2. the isolated publisher imports the report into append-mostly `sources/`,
+2. the retained 09:00 Weekly Climate Email job is the only delivery-artifact
+   producer: it creates the summary/PDF/manifest and sends the PDF highlights
+   to the existing four recipients;
+3. the isolated publisher imports the report into append-mostly `sources/`,
    regenerates `wiki/`, and updates one rolling pull request;
-3. a human merges the reviewed content and a separate server deployment updates
+4. a human merges the reviewed content and a separate server deployment updates
    the application;
-4. FastAPI serves the web application, cited retrieval answers, the historical
+5. FastAPI serves the web application, cited retrieval answers, the historical
    article Registry, and validated report artifacts; and
-5. Caddy provides public HTTPS in front of the application container.
+6. Caddy provides public HTTPS in front of the application container.
+
+The separate Monday 10:30 Registry/`article_metadata` automation is not yet
+configured or verified. Until it exists and completes a normal weekly run, this
+project must not be described as `PRODUCTION COMPLETE`.
 
 The website is both a weekly-report archive and a retrieval interface. It lets
 an operator verify the published briefing/PDF, trace every report back to its
@@ -82,6 +89,9 @@ same Chat API; it is not a fourth web tab.
 ```mermaid
 flowchart LR
     MON[Hermes Monitor\nMon 08:00 UTC] -->|canonical Markdown| OUT[External report directory]
+    OUT --> DEL[Weekly Climate Email\nMon 09:00 UTC\nretained]
+    DEL -->|only artifact producer| ART[(Summary/PDF/manifest\nread-only artifacts)]
+    DEL -->|PDF highlights| RECIP[Existing 4 recipients]
     OUT --> PUB[Hermes Publisher\nMon 10:00 UTC]
     PUB -->|temporary clone| ING[ingest_weekly_reports]
     ING --> SRC[(sources/\nsource of truth)]
@@ -96,9 +106,11 @@ flowchart LR
     RAG --> CHAT[/api/chat]
     CHAT --> CHATUI[Chat]
 
+    REGJOB[Required Registry automation\nMon 10:30 UTC\nPENDING / NOT CONFIGURED] -.-> REG
+    REGJOB -.-> META
     REG[(External Registry DB\nread-only)] --> REGAPI[/api/registry/*]
     META[(article_metadata/)] --> REGAPI
-    ART[(Summary/PDF/manifest\nread-only artifacts)] --> REGAPI
+    ART --> REGAPI
     REGAPI --> HISTORY[Historical Reports]
 
     WIKI --> CONFIG[/api/config]
@@ -130,7 +142,7 @@ runtime application state.
 | `agentic_wiki/` | Load/chunk `wiki/` and `sources/`, plan and rank retrieval, answer with citations, precompute explorer graphs | Chat and Obsidian backend |
 | `climate_monitor/` | Monitor configuration, collection adapter, relevance filtering, dedupe, report writing | Called by the external 08:00 monitor workflow |
 | `climate_registry/` | Versioned SQLite schema, audit/update, source selection, capture/enrichment, strict read API | Historical report/article data layer |
-| `climate_delivery/` | Parse report, build narrative summary, render PDF, email delivery, validate/backfill immutable artifacts | Artifact generation; email remains separately controlled |
+| `climate_delivery/` | Parse report, build narrative summary, render PDF, email delivery, validate/backfill immutable artifacts | Sole production delivery-artifact producer in the retained 09:00 job; also sends PDF highlights to four recipients |
 | `scripts/run_climate_monitor.py` | Monitor CLI adapter | Controlled fixture/manual runs; external Hermes owns production generation |
 | `scripts/ingest_weekly_reports.py` | Validate and import Monday reports, then synchronize the wiki | Publisher sub-step |
 | `scripts/publish_weekly_reports.py` | Isolated clone, validation, exact-lease rolling-branch promotion, PR management | Core 10:00 publisher logic |
@@ -204,10 +216,11 @@ invoked through their supported module/script form.
 | `python -m scripts.record_weekly_run` | Append sanitized attempt | Keep while the optional status contract remains; producer wiring is deferred |
 | Registry container/browser smoke scripts | Release verification | Keep outside the normal scheduler path |
 
-`send-email` is implemented and tested but intentionally inactive until a
-separately authorized 09:00 job is enabled. `backfill` is no longer needed for
-the completed historical production repair, but remains the deterministic,
-dry-runnable recovery tool and must not be replaced with manual artifact edits.
+`send-email` is active through the retained 09:00 Weekly Climate Email job. That
+job is both the only delivery-artifact producer and the intentional email
+delivery path for the existing four recipients. `backfill` is no longer needed
+for the completed historical repair, but remains the deterministic, dry-runnable
+recovery tool and must not be replaced with manual artifact edits.
 
 ## 7. Server agent jobs
 
@@ -216,11 +229,21 @@ route, browser background task, GitHub Action, or container cron process. The
 application repository supplies validated entrypoints and contracts; the
 server scheduler owns dispatch, credentials, and authoritative execution state.
 
-| Time (UTC) | Job | Responsibility |
-|---|---|---|
-| Monday 08:00 | Weekly Climate & Actuarial Monitor (`f5259a8ec2d9`) | Collect sources and write the canonical Monday report |
-| Monday 09:00 | Email/PDF delivery capability | Must remain paused unless separately authorized; closeout sent no email |
-| Monday 10:00 | Weekly Climate Wiki Publisher (`dccb79cd69bc`) | Import through an isolated clone and update the rolling PR |
+| Time (UTC) | Job | Status | Responsibility |
+|---|---|---|---|
+| Monday 08:00 | Weekly Climate & Actuarial Monitor (`f5259a8ec2d9`) | Confirmed | Collect sources and write the canonical Monday report |
+| Monday 09:00 | Weekly Climate Email (PDF highlights) | Confirmed; retained | Be the only delivery-artifact producer and intentionally email the existing four recipients |
+| Monday 10:00 | Weekly Climate Wiki Publisher (`dccb79cd69bc`) | Confirmed | Import through an isolated clone and update the rolling PR |
+| Monday 10:30 | Registry/`article_metadata` weekly task | Pending; not configured | Update the external Registry and weekly article metadata; configure and verify before claiming production completion |
+
+These are three distinct operational facts:
+
+- **Delivery artifact automation:** confirmed at 09:00 and retained; no other
+  automation should produce the summary/PDF/manifest artifacts.
+- **Email delivery:** intentionally retained in that same 09:00 job for the
+  existing four recipients.
+- **Registry/`article_metadata` weekly automation:** not configured or verified;
+  the required 10:30 task is the remaining production-completion gate.
 
 The two-hour Monitor→Publisher gap is required. The application does not read
 raw Hermes state. `/api/job-status` accepts only a separately produced,
@@ -257,8 +280,9 @@ Possible later cleanups, each requiring its own decision and verification:
 - move wiki synchronization out of `scripts/` into a library module so
   `climate_monitor` no longer imports an operational script.
 
-None of those is required for production closeout, and doing them now would add
-change risk without correcting a production fault.
+None of those optional cleanups is part of the required 10:30 Registry
+automation. They should remain separate so the production-completion gate stays
+narrow and verifiable.
 
 Closeout verification ran all 872 collected tests (`859 passed`, `13` platform
 or optional-environment skips), validated `showcase/app.js` with Node, and
@@ -266,7 +290,7 @@ confirmed every supported CLI help path exits successfully. The base Compose
 file and the combined Registry, delivery-artifact, update-status, and job-status
 overrides also passed `docker compose config --quiet`.
 
-## 9. Accepted production closeout record
+## 9. Accepted production verification record
 
 The owner-provided production verification records:
 
@@ -277,28 +301,38 @@ The owner-provided production verification records:
 - the old 2026-08-10 artifact is quarantined intact, not deleted;
 - the 2026-08-17 artifact, Registry database, delivery state, source code, and
   scheduled tasks were not changed by the historical backfill;
-- no email was sent; and
+- the historical backfill itself sent no email; this does not pause or disable
+  the retained 09:00 weekly email delivery; and
 - the post-backfill dry-run reports all target dates as valid.
 
-The project is therefore closed as `PRODUCTION COMPLETE`; no further
-development, deployment, email, or backfill is authorized by this closeout.
+These checks establish that the deployed website and historical artifact repair
+are healthy. They do **not** establish end-to-end production completion because
+the Monday 10:30 Registry/`article_metadata` weekly automation remains
+unconfigured and unverified. `PRODUCTION COMPLETE` may be claimed only after
+that task is created, retained, and observed completing a normal weekly cycle.
 
-## 10. Post-closeout operations
+## 10. Remaining completion gate and operations
 
 1. Keep the old 2026-08-10 quarantine at mode `700`; an old manifest may contain
    recipient metadata.
 2. After the next normal Monday run, verify that the new report automatically
-   receives a narrative summary, Monitoring Snapshot, and PDF.
-3. Wait for at least one successful weekly cycle before requesting separate,
+   receives a narrative summary, Monitoring Snapshot, and PDF from the 09:00
+   job, and that the PDF highlights email is delivered to the four recipients.
+3. Configure the new Monday 10:30 Registry/`article_metadata` weekly task, then
+   verify its Registry and metadata results after a normal run. This is required
+   before changing the status to `PRODUCTION COMPLETE`.
+4. Wait for at least one successful weekly cycle before requesting separate,
    audited authorization to remove the old quarantine. Do not perform an
    unaudited deletion.
 
-The final production chain is:
+The intended production chain, with the remaining gate shown explicitly, is:
 
 ```text
-Weekly report -> summary/PDF/manifest artifact
-              -> read-only mount
-              -> Historical Reports
-              -> Executive Summary + Snapshot + PDF
-              -> Articles + Detail
+08:00 weekly report
+      -> 09:00 summary/PDF/manifest artifact (confirmed, only producer)
+      -> 09:00 PDF highlights email (confirmed, 4 recipients)
+      -> read-only artifact mount -> Historical Reports
+      -> 10:00 rolling Wiki PR
+      -> 10:30 Registry/article_metadata update (PENDING / NOT CONFIGURED)
+      -> Executive Summary + Snapshot + PDF + Articles + Detail
 ```

@@ -42,8 +42,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # if absent
 .venv/bin/python -m pytest -q
 ```
 
-**Branch from current `origin/main`.** The production-complete closeout baseline
-is `6a4b359`. PR #24 (`0587228`) and the old
+**Branch from current `origin/main`.** The verified application baseline is
+`6a4b359`; final production completion is still gated on the unconfigured 10:30
+Registry/`article_metadata` weekly task. PR #24 (`0587228`) and the old
 `feat/weekly-cadence-and-https-deployment` branch are historical and must not be
 used as branch bases.
 
@@ -215,10 +216,12 @@ See `docs/deployment.md`.
 
 ## Scheduled jobs
 
-| Job | ID | Schedule (UTC) |
-|---|---|---|
-| Weekly Climate & Actuarial Monitor | `f5259a8ec2d9` | Mon 08:00 |
-| Weekly Climate Wiki Publisher | `dccb79cd69bc` | Mon 10:00 |
+| Job | ID | Schedule (UTC) | Status |
+|---|---|---|---|
+| Weekly Climate & Actuarial Monitor | `f5259a8ec2d9` | Mon 08:00 | Confirmed |
+| Weekly Climate Email (PDF highlights) | Not recorded here | Mon 09:00 | Enabled and retained |
+| Weekly Climate Wiki Publisher | `dccb79cd69bc` | Mon 10:00 | Confirmed |
+| Registry/`article_metadata` weekly task | Not configured | Mon 10:30 | Pending confirmation/configuration |
 
 The publisher runs 2h after the monitor so the report exists before ingest. If
 you change one schedule, preserve that gap. It updates one rolling PR; it does
@@ -227,10 +230,14 @@ not deploy or write to the production checkout.
 These are **Hermes cron jobs** (this host's scheduler), not GitHub Actions.
 Inspect with the Hermes `cronjob` tool: `cronjob action=list`.
 
-The delivery module also supports a separately controlled Monday 09:00
-Email/PDF step. It is not one of the two active jobs listed above and must remain
-paused unless the owner separately authorizes it. Project closeout sent no
-email.
+The 09:00 job is the only delivery-artifact producer. Its email delivery is also
+intentionally retained for the existing four recipients. Do not confuse the
+historical backfill's no-email guarantee with the normal scheduled email path.
+
+The distinct 10:30 Registry/`article_metadata` weekly automation is not yet
+configured or verified. Do not claim `PRODUCTION COMPLETE` until that task has
+been created and observed completing a normal weekly run. Do not invent its job
+ID or treat the current `/api/job-status` v1 contract as proof that it exists.
 
 ### No GitHub report generator
 
