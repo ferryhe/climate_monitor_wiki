@@ -6,6 +6,27 @@ Executive Summary or article metadata only when it can parse the corresponding
 source file and its SHA-256 still matches the immutable report identity stored
 in the external registry.
 
+## Historical unique-article annotations
+
+`article_metadata/articles-*.json` stores one annotation for each unique
+canonical article URL found across the historical reports through 2026-08-17.
+These files do not rewrite `sources/` and do not duplicate an article merely
+because it appeared in more than one report. Later weekly publication is not
+blocked when a new URL has not yet received a historical annotation.
+
+Each annotation records a concise summary, controlled categories, keywords,
+the representative source URL, and its evidence basis. `original_content`
+means the linked page or PDF was read when the annotation was prepared.
+`report_fallback` means the original could not be retrieved and the annotation
+is limited to the title and summary already present in the historical reports.
+The API exposes that distinction as provenance; fallback content is never
+presented as though the original page was read.
+
+At runtime, full-content Registry enrichment takes precedence, followed by the
+unique article annotation, then explicit metadata embedded in a report. Batch
+files fail closed if their schema, canonical URLs, taxonomy, or uniqueness is
+invalid.
+
 ## Article metadata syntax
 
 New report generation writes deterministic semantic metadata immediately after
@@ -48,9 +69,10 @@ string list and adds `categories` and `keywords` to each report article.
 
 `GET /api/registry/articles/{article_id}` keeps `enrichment` reserved for
 full-content enrichment. It also returns effective top-level `categories` and
-`keywords`, `report_metadata`, and a per-field `metadata_provenance` value of
-`content_enrichment`, `source_report`, or `null`. Full-content enrichment wins
-when present; explicit source-report metadata is the fallback.
+`keywords`, `report_metadata`, `source_annotation`, and per-field provenance.
+Possible provenance values are `content_enrichment`,
+`original_content_annotation`, `report_fallback_annotation`, `source_report`,
+or `null`.
 
 `GET /api/registry/publishers` returns at most 500 deterministic publisher
 choices. Each item contains the canonical `hostname` used for filtering and a

@@ -14,9 +14,10 @@ Current host IP: **172.31.10.77**
 | `climate-wiki-app` | built from `Dockerfile` | uvicorn serving `api_server:app` on 8501 (internal only) |
 | `climate-wiki-caddy` | `caddy:2-alpine` | TLS termination on 443, HTTP→HTTPS redirect on 80, reverse proxy to the app |
 
-`wiki/` and `sources/` are bind-mounted read-only into the app container, so a
-host-side ingest is visible to the service immediately after `POST /api/reload`
-— no image rebuild required.
+`wiki/`, `sources/`, and `article_metadata/` are bind-mounted read-only into the
+app container. A host-side report ingest is visible after `POST /api/reload`;
+article annotations are read per Registry request. Neither content-only change
+requires an image rebuild.
 
 ## First run
 

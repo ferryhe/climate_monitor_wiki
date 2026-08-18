@@ -1675,10 +1675,30 @@ async function loadRegistryReport(reportDate) {
       const button = registryElement("button", "registry-article-link", article.title);
       button.type = "button";
       button.dataset.articleId = article.article_id;
+      const summarySourceLabels = {
+          content_enrichment: "Captured content",
+          original_content_annotation: "Original source",
+          report_fallback_annotation: "Report fallback",
+          source_report: "Historical report",
+        };
+      const summarySourceLabel =
+        article.summary_provenance == null
+          ? article.source_annotation?.source_basis === "original_content"
+            ? "Original source"
+            : article.source_annotation?.source_basis === "report_fallback"
+              ? "Report fallback"
+              : ""
+          : summarySourceLabels[article.summary_provenance] || "";
       const meta = registryElement(
         "span",
         "registry-card__meta",
-        `${article.pillar ? `Pillar ${article.pillar}` : article.section} · ${article.publisher}`,
+        [
+          article.pillar ? `Pillar ${article.pillar}` : article.section,
+          article.publisher,
+          summarySourceLabel,
+        ]
+          .filter(Boolean)
+          .join(" · "),
       );
       item.append(button, meta);
       if (article.summary) {
@@ -1798,6 +1818,35 @@ async function loadRegistryArticle(articleId) {
       "Keywords",
       article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
     );
+    const summaryProvenance =
+      article.summary_provenance ||
+      (article.enrichment?.summary
+        ? "content_enrichment"
+        : article.source_annotation
+          ? `${article.source_annotation.source_basis}_annotation`
+          : summary
+            ? "source_report"
+            : null);
+    const provenanceCopy = {
+      content_enrichment: "Summary generated from captured article content",
+      original_content_annotation: "Summary based on the linked original content",
+      report_fallback_annotation:
+        "Summary based on historical report text because the original source was unavailable",
+      source_report: "Summary from the historical report",
+    }[summaryProvenance];
+    if (provenanceCopy) {
+      const reviewed =
+        summaryProvenance.endsWith("_annotation") && article.source_annotation?.generated_on
+          ? ` · reviewed ${article.source_annotation.generated_on}`
+          : "";
+      els.registryEnrichment.append(
+        registryElement(
+          "p",
+          "muted registry-provenance",
+          `${provenanceCopy}${reviewed}`,
+        ),
+      );
+    }
     els.registryEnrichment.hidden = els.registryEnrichment.childElementCount === 0;
     article.appearances.forEach((appearance) => {
       const item = registryElement("li", "registry-appearance");

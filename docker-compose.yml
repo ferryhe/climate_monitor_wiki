@@ -13,6 +13,7 @@ services:
       # POST /api/reload without rebuilding the image.
       - ./wiki:/app/wiki:ro
       - ./sources:/app/sources:ro
+      - ./article_metadata:/app/article_metadata:ro
     expose:
       - "8501"
     healthcheck:

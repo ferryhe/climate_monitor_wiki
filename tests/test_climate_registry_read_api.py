@@ -361,8 +361,14 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
         "Sites checked: 3, succeeded: 2, failed: 1",
         "Exact source observation in report order.",
     ]
-    assert report["articles"][0]["categories"] == ["Transition Risk"]
-    assert report["articles"][0]["keywords"] == ["transition", "scenarios"]
+    assert report["articles"][0]["summary"] == "Enriched full summary."
+    assert report["articles"][0]["summary_provenance"] == "content_enrichment"
+    assert report["articles"][0]["categories"] == ["Insurance", "Climate risk"]
+    assert report["articles"][0]["keywords"] == ["risk", "insurance"]
+    assert report["articles"][0]["metadata_provenance"] == {
+        "categories": "content_enrichment",
+        "keywords": "content_enrichment",
+    }
     assert report["articles"][1]["categories"] == []
 
     article = client.get("/api/registry/articles/article-meta").json()
@@ -394,7 +400,115 @@ def test_source_metadata_fails_closed_when_report_sha_does_not_match(
 
     report = client.get("/api/registry/reports/2026-08-10").json()
     assert report["executive_summary"] == []
-    assert all(item["categories"] == [] and item["keywords"] == [] for item in report["articles"])
+    articles = {item["article_id"]: item for item in report["articles"]}
+    assert articles["article-full"]["categories"] == ["Insurance", "Climate risk"]
+    assert articles["article-full"]["keywords"] == ["risk", "insurance"]
+    assert articles["article-full"]["metadata_provenance"] == {
+        "categories": "content_enrichment",
+        "keywords": "content_enrichment",
+    }
+    assert articles["article-excerpt"]["categories"] == []
+    assert articles["article-meta"]["categories"] == []
+    assert all(
+        "Transition Risk" not in item["categories"]
+        and "transition" not in item["keywords"]
+        for item in report["articles"]
+    )
+
+
+def test_original_content_annotations_supply_unique_article_detail_without_rewriting_sources(
+    registry_client, tmp_path, monkeypatch
+):
+    client, database = registry_client
+    source_dir = tmp_path / "sources"
+    metadata_dir = tmp_path / "article_metadata"
+    source_dir.mkdir()
+    metadata_dir.mkdir()
+    report_path = source_dir / "climate-monitor-2026-08-10.md"
+    report_path.write_text(
+        """# Weekly Climate Monitor
+**Report Date:** 2026-08-10
+## Executive Summary
+- Sites checked: **3**, succeeded: **3**, failed: **0**
+## Pillar A — Changes
+- **Climate: 100% transition**
+  - Report-derived full summary.
+  🔗 https://example.com/full
+## Pillar B — Intelligence
+- **Flood pricing [2026]**
+  - Report-derived excerpt summary.
+  🔗 https://example.com/excerpt
+- **Capital & climate**
+  - Report-derived metadata summary.
+  🔗 https://insurer.test/meta
+## Original Links
+- https://example.com/full
+- https://example.com/excerpt
+- https://insurer.test/meta
+""",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    articles = [
+        ("https://example.com/full", "Climate: 100% transition", "Transition scenarios were reviewed.", ["Transition Risk"], ["climate", "transition", "scenarios"]),
+        ("https://example.com/excerpt", "Flood pricing [2026]", "The item covers flood pricing in 2026.", ["Physical Risk", "Insurance Risk"], ["flood", "pricing", "2026"]),
+        ("https://insurer.test/meta", "Capital & climate", "The item links capital and climate considerations.", ["Capital & Solvency", "Climate Risk"], ["capital", "climate", "solvency"]),
+    ]
+    payload = {
+        "schema_version": 1,
+        "annotation_method": "subagent-original-content-v1",
+        "source_scope": "linked-original-content-with-report-fallback",
+        "generated_on": "2026-08-17",
+        "articles": [
+            {
+                "canonical_url": url,
+                "source_url": url,
+                "title": title,
+                "source_basis": "original_content",
+                "summary": summary,
+                "categories": categories,
+                "keywords": keywords,
+            }
+            for url, title, summary, categories, keywords in articles
+        ],
+    }
+    (metadata_dir / "articles-001-003.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute(
+            "UPDATE reports SET report_sha256 = ? WHERE report_date = '2026-08-10'", (digest,)
+        )
+        connection.execute(
+            "UPDATE articles SET current_content_version_id = NULL WHERE article_id = 'article-meta'"
+        )
+    connection.close()
+    monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
+    monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", metadata_dir)
+
+    report = client.get("/api/registry/reports/2026-08-10").json()
+    assert report["articles"][0]["summary"] == "Enriched full summary."
+    assert report["articles"][0]["summary_provenance"] == "content_enrichment"
+    assert report["articles"][0]["categories"] == ["Insurance", "Climate risk"]
+    assert report["articles"][0]["keywords"] == ["risk", "insurance"]
+    assert report["articles"][2]["summary"] == "The item links capital and climate considerations."
+    assert report["articles"][2]["categories"] == ["Capital & Solvency", "Climate Risk"]
+    assert report["articles"][2]["metadata_provenance"]["categories"] == "original_content_annotation"
+
+    article = client.get("/api/registry/articles/article-meta").json()
+    assert article["summary"] == "The item links capital and climate considerations."
+    assert article["summary_provenance"] == "original_content_annotation"
+    assert article["metadata_provenance"] == {
+        "categories": "original_content_annotation",
+        "keywords": "original_content_annotation",
+    }
+    assert article["report_metadata"] == {"categories": [], "keywords": []}
+    assert article["source_annotation"] == {
+        "source_basis": "original_content",
+        "source_url": "https://insurer.test/meta",
+        "generated_on": "2026-08-17",
+    }
 
 
 @pytest.mark.parametrize("query", ["100%", "[2026]", "' OR 1=1 --", "_"])

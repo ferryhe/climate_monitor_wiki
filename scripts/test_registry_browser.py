@@ -86,7 +86,10 @@ window.fetch = (input, options = {}) => {
       executive_summary: ["Pricing pressure increased.", "Insurers adjusted exposure."], articles: [
         {article_id: "article-1", title: "Climate pricing", pillar: "B",
           section: "Pillar B", publisher: "Example", summary: "Weekly article summary",
-          categories: ["Insurance"], keywords: ["pricing"]}
+          summary_provenance: window.__reportSummaryProvenance ?? "content_enrichment",
+          categories: ["Insurance"], keywords: ["pricing"],
+          source_annotation: {source_basis: "original_content", source_url: "https://example.com/article",
+            generated_on: "2026-08-17"}}
       ]});
   }
   if (url.pathname === "/api/registry/articles") {
@@ -107,6 +110,9 @@ window.fetch = (input, options = {}) => {
       content: {supporting_excerpt: "Supporting evidence", content_type: "text/html",
         extraction_method: "html-to-markdown", fetched_at: "2026-08-13"},
       categories: ["Regulation"], keywords: ["premium"],
+      summary_provenance: "content_enrichment",
+      source_annotation: {source_basis: "original_content", source_url: "https://example.com/article",
+        generated_on: "2026-08-17"},
       enrichment: {summary: "Enriched summary", categories: ["Legacy category"], keywords: ["legacy"],
         language: "en", generator: {kind: "deterministic", name: "rules", version: "1", generated_at: "2026-08-13"}},
       appearances: [{report_title: "Report detail", report_date: "2026-08-10", pillar: "B", section: "Pillar B"}]});
@@ -210,11 +216,24 @@ def main() -> int:
         _visible(page, "Executive Summary")
         _visible(page, "Pricing pressure increased.")
         _visible(page, "Weekly article summary")
+        _visible(page, "Pillar B · Example · Captured content")
+        assert page.get_by_text("Pillar B · Example · Original source", exact=True).count() == 0
+        page.evaluate(
+            "window.__reportSummaryProvenance = 'future_provenance'; "
+            "loadRegistryReport('2026-08-10')"
+        )
+        page.wait_for_function(
+            "!document.querySelector('#registryReportArticles').textContent.includes('Captured content')"
+        )
+        assert page.get_by_text("Pillar B · Example · Original source", exact=True).count() == 0
+        assert page.get_by_text("Pillar B · Example · Captured content", exact=True).count() == 0
         page.get_by_role("button", name="Climate pricing").click()
         _visible(page, "Enriched summary")
         _visible(page, "Supporting evidence")
         _visible(page, "Regulation")
         _visible(page, "premium")
+        _visible(page, "Summary generated from captured article content")
+        assert page.get_by_text("Summary based on the linked original content", exact=False).count() == 0
         assert page.get_by_text("Legacy category", exact=True).count() == 0
         assert page.get_by_text("legacy", exact=True).count() == 0
         assert page.get_by_text("Display", exact=True).count() == 0

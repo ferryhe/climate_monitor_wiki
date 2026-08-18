@@ -11,6 +11,7 @@ from typing import Any, Iterable, Iterator
 from climate_delivery.errors import ClimateDeliveryError
 from climate_monitor.dedupe import canonical_url
 
+from .annotations import ArticleAnnotation, load_article_annotations
 from .contract import SCHEMA_VERSION, SchemaContractError, validate_v3_contract
 from .reports import ParsedArticle, ParsedReport, parse_historical_report
 
@@ -134,6 +135,7 @@ class RegistryReader:
         *,
         repository_root: str | Path,
         source_dir: str | Path | None = None,
+        metadata_dir: str | Path | None = None,
     ):
         configured = Path(database).expanduser()
         if not configured.is_absolute():
@@ -151,6 +153,7 @@ class RegistryReader:
             raise RegistryLocationError("registry must be outside the application repository")
         self.database = resolved
         self.source_dir = Path(source_dir).resolve(strict=False) if source_dir is not None else None
+        self.metadata_dir = Path(metadata_dir).resolve(strict=False) if metadata_dir is not None else None
 
     def _source_report(
         self, report_date: str, filename: str, expected_sha256: str
@@ -178,6 +181,15 @@ class RegistryReader:
         except (TypeError, UnicodeError, ValueError):
             return None
         return article if matches else None
+
+    @staticmethod
+    def _annotation_for_url(
+        annotations: dict[str, ArticleAnnotation], url: str
+    ) -> ArticleAnnotation | None:
+        try:
+            return annotations.get(canonical_url(url))
+        except (TypeError, UnicodeError, ValueError):
+            return None
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -318,7 +330,31 @@ class RegistryReader:
                 SELECT ra.ordinal, ra.section, ra.pillar, ra.observation_status,
                        a.article_id, a.canonical_url, av.observed_title AS title,
                        av.observed_summary AS summary, s.display_name AS publisher,
-                       s.hostname AS source
+                       s.hostname AS source,
+                       (
+                           SELECT ae.summary
+                           FROM article_enrichments ae
+                           WHERE ae.content_version_id = a.current_content_version_id
+                             AND ae.status = 'complete'
+                           ORDER BY ae.generated_at DESC, ae.enrichment_id DESC
+                           LIMIT 1
+                       ) AS enrichment_summary,
+                       (
+                           SELECT ae.categories_json
+                           FROM article_enrichments ae
+                           WHERE ae.content_version_id = a.current_content_version_id
+                             AND ae.status = 'complete'
+                           ORDER BY ae.generated_at DESC, ae.enrichment_id DESC
+                           LIMIT 1
+                       ) AS enrichment_categories_json,
+                       (
+                           SELECT ae.keywords_json
+                           FROM article_enrichments ae
+                           WHERE ae.content_version_id = a.current_content_version_id
+                             AND ae.status = 'complete'
+                           ORDER BY ae.generated_at DESC, ae.enrichment_id DESC
+                           LIMIT 1
+                       ) AS enrichment_keywords_json
                 FROM report_appearances ra
                 JOIN articles a ON a.article_id = ra.article_id
                 JOIN article_versions av ON av.version_id = ra.version_id
@@ -331,14 +367,67 @@ class RegistryReader:
         source_report = self._source_report(
             report["report_date"], report["filename"], report["report_sha256"]
         )
+        annotations = load_article_annotations(self.metadata_dir)
         articles = []
         for row in appearances:
             item = dict(row)
+            enrichment_summary = item.pop("enrichment_summary")
+            enrichment_categories = _json_string_list(
+                item.pop("enrichment_categories_json")
+            )
+            enrichment_keywords = _json_string_list(
+                item.pop("enrichment_keywords_json")
+            )
             source_article = self._source_article(
                 source_report, item["ordinal"], item["canonical_url"]
             )
-            item["categories"] = list(source_article.categories) if source_article else []
-            item["keywords"] = list(source_article.keywords) if source_article else []
+            annotation = self._annotation_for_url(annotations, item["canonical_url"])
+            source_categories = source_article.categories if source_article else ()
+            source_keywords = source_article.keywords if source_article else ()
+            item["title"] = annotation.title if annotation else item["title"]
+            item["summary"] = enrichment_summary or (
+                annotation.summary if annotation else item["summary"]
+            )
+            item["summary_provenance"] = (
+                "content_enrichment"
+                if enrichment_summary
+                else annotation.provenance if annotation else "source_report"
+            )
+            item["categories"] = list(
+                enrichment_categories
+                or (annotation.categories if annotation else ())
+                or source_categories
+            )
+            item["keywords"] = list(
+                enrichment_keywords
+                or (annotation.keywords if annotation else ())
+                or source_keywords
+            )
+            item["metadata_provenance"] = {
+                "categories": (
+                    "content_enrichment"
+                    if enrichment_categories
+                    else annotation.provenance
+                    if annotation
+                    else "source_report" if source_categories else None
+                ),
+                "keywords": (
+                    "content_enrichment"
+                    if enrichment_keywords
+                    else annotation.provenance
+                    if annotation
+                    else "source_report" if source_keywords else None
+                ),
+            }
+            item["source_annotation"] = (
+                {
+                    "source_basis": annotation.source_basis,
+                    "source_url": annotation.source_url,
+                    "generated_on": annotation.generated_on,
+                }
+                if annotation
+                else None
+            )
             articles.append(item)
         return {
             "report_date": report["report_date"],
@@ -484,20 +573,72 @@ class RegistryReader:
         appearance_payload = []
         report_categories: list[str] = []
         report_keywords: list[str] = []
+        effective_report_categories: list[str] = []
+        effective_report_keywords: list[str] = []
+        annotation_summary: str | None = None
+        category_provenance: str | None = None
+        keyword_provenance: str | None = None
+        contexts: dict[tuple[str, str, str], ParsedReport | None] = {}
+        annotations = load_article_annotations(self.metadata_dir)
+        source_annotation: ArticleAnnotation | None = None
         for row in appearances:
             item = dict(row)
-            source_report = self._source_report(
-                item["report_date"], item.pop("source_filename"), item.pop("source_sha256")
-            )
+            source_filename = item.pop("source_filename")
+            source_sha256 = item.pop("source_sha256")
+            context_key = (item["report_date"], source_filename, source_sha256)
+            if context_key not in contexts:
+                contexts[context_key] = self._source_report(*context_key)
+            source_report = contexts[context_key]
             source_article = self._source_article(
                 source_report, item["ordinal"], item["original_url"]
             )
-            categories = list(source_article.categories) if source_article else []
-            keywords = list(source_article.keywords) if source_article else []
+            annotation = self._annotation_for_url(annotations, item["original_url"])
+            source_annotation = source_annotation or annotation
+            source_categories = source_article.categories if source_article else ()
+            source_keywords = source_article.keywords if source_article else ()
+            categories = list((annotation.categories if annotation else ()) or source_categories)
+            keywords = list((annotation.keywords if annotation else ()) or source_keywords)
+            if annotation:
+                item["summary"] = annotation.summary
+                annotation_summary = annotation_summary or annotation.summary
+            item["summary_provenance"] = (
+                annotation.provenance if annotation else "source_report"
+            )
             item["categories"] = categories
             item["keywords"] = keywords
-            report_categories.extend(categories)
-            report_keywords.extend(keywords)
+            item["metadata_provenance"] = {
+                "categories": (
+                    annotation.provenance
+                    if annotation
+                    else "source_report" if source_categories else None
+                ),
+                "keywords": (
+                    annotation.provenance
+                    if annotation
+                    else "source_report" if source_keywords else None
+                ),
+            }
+            item["source_annotation"] = (
+                {
+                    "source_basis": annotation.source_basis,
+                    "source_url": annotation.source_url,
+                    "generated_on": annotation.generated_on,
+                }
+                if annotation
+                else None
+            )
+            if annotation:
+                category_provenance = annotation.provenance
+                keyword_provenance = annotation.provenance
+            else:
+                if source_categories and category_provenance is None:
+                    category_provenance = "source_report"
+                if source_keywords and keyword_provenance is None:
+                    keyword_provenance = "source_report"
+            report_categories.extend(source_categories)
+            report_keywords.extend(source_keywords)
+            effective_report_categories.extend(categories)
+            effective_report_keywords.extend(keywords)
             appearance_payload.append(item)
 
         policy = article["display_policy"]
@@ -537,24 +678,35 @@ class RegistryReader:
             "categories": _ordered_unique(report_categories),
             "keywords": _ordered_unique(report_keywords),
         }
-        categories = enrichment_payload["categories"] or report_metadata["categories"]
-        keywords = enrichment_payload["keywords"] or report_metadata["keywords"]
+        categories = enrichment_payload["categories"] or _ordered_unique(
+            effective_report_categories
+        )
+        keywords = enrichment_payload["keywords"] or _ordered_unique(
+            effective_report_keywords
+        )
+        summary = enrichment_payload["summary"] or annotation_summary or article["report_summary"]
         metadata_provenance = {
             "categories": (
                 "content_enrichment"
                 if enrichment_payload["categories"]
-                else "source_report" if report_metadata["categories"] else None
+                else category_provenance
             ),
             "keywords": (
                 "content_enrichment"
                 if enrichment_payload["keywords"]
-                else "source_report" if report_metadata["keywords"] else None
+                else keyword_provenance
             ),
         }
         original_url = appearance_payload[0]["original_url"] if appearance_payload else article["canonical_url"]
         return {
             "article_id": article["article_id"],
-            "title": article["title"],
+            "title": source_annotation.title if source_annotation else article["title"],
+            "summary": summary,
+            "summary_provenance": (
+                "content_enrichment"
+                if enrichment_payload["summary"]
+                else source_annotation.provenance if source_annotation else "source_report"
+            ),
             "report_summary": article["report_summary"],
             "canonical_url": article["canonical_url"],
             "original_url": original_url,
@@ -573,4 +725,13 @@ class RegistryReader:
             "categories": categories,
             "keywords": keywords,
             "metadata_provenance": metadata_provenance,
+            "source_annotation": (
+                {
+                    "source_basis": source_annotation.source_basis,
+                    "source_url": source_annotation.source_url,
+                    "generated_on": source_annotation.generated_on,
+                }
+                if source_annotation
+                else None
+            ),
         }

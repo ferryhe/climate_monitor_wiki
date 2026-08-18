@@ -1,0 +1,485 @@
+{
+  "schema_version": 1,
+  "annotation_method": "subagent-original-content-v1",
+  "source_scope": "linked-original-content-with-report-fallback",
+  "generated_on": "2026-08-17",
+  "articles": [
+    {
+      "canonical_url": "https://www.mapfre.com/en/insights/insurance/companies-cover-natural-disaster-risks-climate-change",
+      "source_url": "https://www.mapfre.com/en/insights/insurance/companies-cover-natural-disaster-risks-climate-change",
+      "title": "How Do Companies Cover Natural Disaster Risks in the Face of Climate Change?",
+      "source_basis": "original_content",
+      "summary": "MAPFRE examines how rising wildfire, flood and hurricane risk is reducing insurance availability in exposed regions. It describes insurance and public-private risk-sharing as mechanisms for compensating losses and supporting recovery from natural disasters.",
+      "categories": ["Physical Risk", "Insurance Risk", "Adaptation & Resilience"],
+      "keywords": ["natural disasters", "climate change", "wildfires", "floods", "homeowners insurance", "public-private risk sharing"]
+    },
+    {
+      "canonical_url": "https://www.mcdermottlaw.com/insights/insurers-climate-risk-disclosures-today-scenario-testing-tomorrow",
+      "source_url": "https://www.mcdermottlaw.com/insights/insurers-climate-risk-disclosures-today-scenario-testing-tomorrow",
+      "title": "Insurers: Climate Risk Disclosures Today, Scenario Testing Tomorrow",
+      "source_basis": "original_content",
+      "summary": "McDermott reviews climate-risk reporting requirements for US insurers and the move toward regulatory scenario testing. It contrasts US disclosure practice with European financial-risk analysis and describes a three-year US scenario-testing trial.",
+      "categories": ["Supervision & Disclosure", "Climate Risk", "Actuarial Modelling"],
+      "keywords": ["US insurers", "climate risk disclosure", "scenario testing", "insurance regulators", "financial risk analysis"]
+    },
+    {
+      "canonical_url": "https://www.munichre.com/en/company/media-relations/media-information-and-corporate-news/media-information/2026/natural-disaster-figures-2025.html",
+      "source_url": "https://www.munichre.com/en/company/media-relations/media-information-and-corporate-news/media-information/2026/natural-disaster-figures-2025.html",
+      "title": "Climate Change Presses On: Devastating Wildfires and Intense Thunderstorms Exacerbate Losses for Insurers",
+      "source_basis": "original_content",
+      "summary": "Munich Re reports that insured natural-disaster losses again exceeded US$100 billion in 2025. Wildfires, flooding and severe thunderstorms accounted for almost all insured losses, while 17,200 people died in natural disasters.",
+      "categories": ["Physical Risk", "Insurance Risk"],
+      "keywords": ["Munich Re", "natural disasters", "insured losses", "wildfires", "flooding", "severe thunderstorms", "NatCatSERVICE"]
+    },
+    {
+      "canonical_url": "https://www.munichre.com/en/company/media-relations/media-information-and-corporate-news/media-information/2026/natural-disaster-figures-first-half-2026.html",
+      "source_url": "https://www.munichre.com/en/company/media-relations/media-information-and-corporate-news/media-information/2026/natural-disaster-figures-first-half-2026.html",
+      "title": "Lower Losses, Growing Risks: The Natural Disaster Review for the First Half of 2026",
+      "source_basis": "original_content",
+      "summary": "Munich Re estimates first-half 2026 natural-disaster losses at nearly US$112 billion, of which US$44 billion was insured, leaving a 60% insurance gap. The review also highlights earthquakes, record heatwaves and the prospect of a strong El Niño.",
+      "categories": ["Physical Risk", "Insurance Risk", "Capital & Solvency"],
+      "keywords": ["Munich Re", "natural disasters", "insured losses", "insurance gap", "heatwaves", "El Niño"]
+    },
+    {
+      "canonical_url": "https://www.ncelenviro.org/articles/from-risk-to-resilience-how-states-are-approaching-insurance-and-climate-risk-in-2026",
+      "source_url": "https://www.ncelenviro.org/articles/from-risk-to-resilience-how-states-are-approaching-insurance-and-climate-risk-in-2026",
+      "title": "From Risk to Resilience: How States Are Approaching Insurance and Climate Risk in 2026",
+      "source_basis": "original_content",
+      "summary": "NCEL describes worsening US homeowners-insurance affordability and insurer withdrawals as climate risk rises. It presents Colorado HB25-1182 as a model that has inspired bipartisan state legislation focused on transparency and resilience.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["homeowners insurance", "insurance affordability", "insurer withdrawal", "Colorado HB25-1182", "state legislation", "climate resilience"]
+    },
+    {
+      "canonical_url": "https://www.orfonline.org/research/parametric-insurance-for-climate-change-adaptation",
+      "source_url": "https://www.orfonline.org/research/parametric-insurance-for-climate-change-adaptation",
+      "title": "Parametric Insurance for Climate Change Adaptation",
+      "source_basis": "original_content",
+      "summary": "The Observer Research Foundation examines parametric insurance as a climate-adaptation instrument that makes predefined, fixed payments when natural-resource flows reach agreed thresholds. It illustrates the mechanism with a rainfall-triggered hydropower policy and notes that payouts usually cover only part of actual losses.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Actuarial Modelling"],
+      "keywords": ["parametric insurance", "climate adaptation", "rainfall threshold", "hydropower", "fixed payout", "natural-resource flows"]
+    },
+    {
+      "canonical_url": "https://www.preventionweb.net/news/fight-against-climate-change-arc-now-covers-floods",
+      "source_url": "https://www.preventionweb.net/news/fight-against-climate-change-arc-now-covers-floods",
+      "title": "Fight Against Climate Change: ARC Now Covers Floods",
+      "source_basis": "original_content",
+      "summary": "African Risk Capacity launched Africa's first sovereign parametric flood-insurance policy, with Madagascar becoming the first subscribing country in January 2026. The product is intended to strengthen anticipatory, Africa-led climate-risk financing.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["African Risk Capacity", "Madagascar", "sovereign insurance", "parametric flood insurance", "climate risk financing"]
+    },
+    {
+      "canonical_url": "https://www.reinsurancene.ws/insured-losses-from-nat-cats-reached-44bn-in-h126-munich-re",
+      "source_url": "https://www.reinsurancene.ws/insured-losses-from-nat-cats-reached-44bn-in-h126-munich-re",
+      "title": "Insured Losses from Natural Catastrophes Reached $44 Billion in H1 2026: Munich Re",
+      "source_basis": "original_content",
+      "summary": "Reinsurance News reports Munich Re's estimate of US$44 billion in insured natural-catastrophe losses against nearly US$112 billion in total losses in the first half of 2026. The resulting 60% insurance gap remained despite losses being below recent averages.",
+      "categories": ["Physical Risk", "Insurance Risk", "Capital & Solvency"],
+      "keywords": ["Munich Re", "natural catastrophes", "insured losses", "H1 2026", "insurance gap", "reinsurance"]
+    },
+    {
+      "canonical_url": "https://www.reuters.com/sustainability/climate-energy/swiss-re-sees-claims-natural-catastrophes-rising-2026-2026-03-19",
+      "source_url": "https://www.reuters.com/sustainability/climate-energy/swiss-re-sees-claims-natural-catastrophes-rising-2026-2026-03-19",
+      "title": "Swiss Re Sees Claims from Natural Catastrophes Rising in 2026",
+      "source_basis": "report_fallback",
+      "summary": "Swiss Re projects rising natural-catastrophe claims in 2026, with insured losses reaching as much as US$320 billion in a severe scenario. The scenario provides an input for capital-adequacy and ORSA stress testing.",
+      "categories": ["Physical Risk", "Insurance Risk", "Capital & Solvency"],
+      "keywords": ["Swiss Re", "natural catastrophe claims", "insured losses", "severe scenario", "capital adequacy", "ORSA"]
+    },
+    {
+      "canonical_url": "https://www.searca.org/news/searca-ecosecurities-uplbfi-strengthen-pcic-capacity-data-driven-corn-insurance",
+      "source_url": "https://www.searca.org/news/searca-ecosecurities-uplbfi-strengthen-pcic-capacity-data-driven-corn-insurance",
+      "title": "SEARCA, EcoSecurities and UPLBFI Strengthen PCIC Capacity for Data-Driven Corn Insurance",
+      "source_basis": "original_content",
+      "summary": "SEARCA, EcoSecurities and UPLBFI held a workshop for the Philippine Crop Insurance Corporation on data-driven parametric crop insurance for corn. The training covered loss modelling, climate risk and GIS-based payout systems to support climate-resilient agricultural finance.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Actuarial Modelling"],
+      "keywords": ["SEARCA", "PCIC", "corn insurance", "parametric crop insurance", "loss modelling", "GIS-based payouts", "Philippines"]
+    },
+    {
+      "canonical_url": "https://www.soa.org/communities/general-insurance/newsletter-articles/2026/january/2026-01-gi-cappelletti2",
+      "source_url": "https://www.soa.org/communities/general-insurance/newsletter-articles/2026/january/2026-01-gi-cappelletti2",
+      "title": "The Growth of Parametric Insurance",
+      "source_basis": "original_content",
+      "summary": "The SOA article explains how parametric policies operate and how their design, pricing and reserving differ from traditional indemnity insurance. It reviews current applications, anticipated market growth and considerations for general-insurance actuaries.",
+      "categories": ["Insurance Risk", "Actuarial Modelling"],
+      "keywords": ["Society of Actuaries", "parametric insurance", "general insurance", "product design", "pricing", "reserving", "indemnity insurance"]
+    },
+    {
+      "canonical_url": "https://www.soa.org/globalassets/assets/files/resources/research-report/2026/ar208-essay-collection/2026-ar208-cohen-catastropheplanning.pdf",
+      "source_url": "https://www.soa.org/globalassets/assets/files/resources/research-report/2026/ar208-essay-collection/2026-ar208-cohen-catastropheplanning.pdf",
+      "title": "Climate Risk: Catastrophe Planning and Financial Modeling for Retirement",
+      "source_basis": "original_content",
+      "summary": "This SOA essay examines how climate catastrophes affect retirement planning, with older and disabled people particularly vulnerable during evacuation, relocation and recovery. It considers catastrophe exposure, insurance, financial modelling and household preparedness for retirees.",
+      "categories": ["Physical Risk", "Insurance Risk", "Actuarial Modelling"],
+      "keywords": ["retirement planning", "climate catastrophes", "older population", "Los Angeles wildfires", "financial modelling", "insurance"]
+    },
+    {
+      "canonical_url": "https://www.soa.org/globalassets/assets/files/resources/research-report/2026/cc233-essay-collection/2026-03-cc233-rajendran.pdf",
+      "source_url": "https://www.soa.org/globalassets/assets/files/resources/research-report/2026/cc233-essay-collection/2026-03-cc233-rajendran.pdf",
+      "title": "Beyond the Threshold: An Actuarial Perspective on Evaluating Climate Adaptation in an Age of Escalating Disasters",
+      "source_basis": "original_content",
+      "summary": "The essay argues that non-stationary, compounding climate disasters challenge actuarial reliance on historical experience and stable distributions. It calls for actuaries to evaluate adaptation interventions systematically alongside catastrophe modelling and risk pricing.",
+      "categories": ["Adaptation & Resilience", "Actuarial Modelling", "Physical Risk"],
+      "keywords": ["climate adaptation", "actuarial science", "non-stationarity", "compounding disasters", "catastrophe models", "risk pricing"]
+    },
+    {
+      "canonical_url": "https://www.soa.org/globalassets/assets/files/static-pages/research/arch/2026/arch-2026-iss-1-garrido.pdf",
+      "source_url": "https://www.soa.org/globalassets/assets/files/static-pages/research/arch/2026/arch-2026-iss-1-garrido.pdf",
+      "title": "Assessing the Applicability of the Actuaries Climate Index Within a Weather Derivatives Framework",
+      "source_basis": "original_content",
+      "summary": "The research assesses whether the Actuaries Climate Index can support a weather-derivatives framework. It studies weather-based indices and a modelling approach for transferring risk associated with climate and weather variability.",
+      "categories": ["Actuarial Modelling", "Insurance Risk", "Physical Risk"],
+      "keywords": ["Actuaries Climate Index", "weather derivatives", "weather-based indices", "risk transfer", "climate variability", "actuarial research"]
+    },
+    {
+      "canonical_url": "https://www.soa.org/research/opportunities/2026/climate-scen-act",
+      "source_url": "https://www.soa.org/research/opportunities/2026/climate-scen-act",
+      "title": "Climate Scenarios to Actuarial Assumptions: A Practitioner's Framework",
+      "source_basis": "original_content",
+      "summary": "The SOA research call seeks a practical framework for translating NGFS, IPCC and IEA scenario variables into actuarial assumptions. It targets pricing, reserving and solvency analysis under IFRS S2, ORSA and insurer climate-risk management.",
+      "categories": ["Actuarial Modelling", "Climate Risk", "Supervision & Disclosure"],
+      "keywords": ["NGFS scenarios", "actuarial assumptions", "IFRS S2", "ORSA", "pricing", "reserving", "solvency"]
+    },
+    {
+      "canonical_url": "https://www.soa.org/resources/research-reports/2026/climate-resilience-adaptation-essays",
+      "source_url": "https://www.soa.org/resources/research-reports/2026/climate-resilience-adaptation-essays",
+      "title": "Climate Change Resilience and Adaptation Initiatives and Programs: A Collection of Essays",
+      "source_basis": "original_content",
+      "summary": "The SOA collection examines programmes that build resilience, compare expected costs and savings, and measure adaptation performance. Its essays include real-option evaluation, quantitative effectiveness frameworks and uses of artificial intelligence and actuarial techniques.",
+      "categories": ["Adaptation & Resilience", "Actuarial Modelling"],
+      "keywords": ["Society of Actuaries", "climate resilience", "adaptation programmes", "real option theory", "cost-benefit analysis", "artificial intelligence"]
+    },
+    {
+      "canonical_url": "https://www.sohu.com/a/1006527431_122014422",
+      "source_url": "https://www.sohu.com/a/1006527431_122014422",
+      "title": "ISSB Developments, March 2026: Latest Progress on Nature-related Disclosures",
+      "source_basis": "original_content",
+      "summary": "The article explains the ISSB's renaming of its BEES project to Nature-related Disclosures and its broader coverage of nature-related risks and opportunities. It describes planned compatibility with IFRS S1, IFRS S2, TNFD, SASB, GRI and ESRS and progress toward an exposure draft.",
+      "categories": ["Supervision & Disclosure", "Climate Risk"],
+      "keywords": ["ISSB", "Nature-related Disclosures", "BEES", "IFRS S1", "IFRS S2", "TNFD", "ESRS"]
+    },
+    {
+      "canonical_url": "https://www.southernclimate.org/",
+      "source_url": "https://www.southernclimate.org/",
+      "title": "SCIPP: Climate Science Data for Southern US States",
+      "source_basis": "original_content",
+      "summary": "SCIPP supplies climate data, planning tools and engagement support to communities in the south-central United States. Its work helps local leaders assess weather and climate risks, reduce disaster impacts and plan with hazard information.",
+      "categories": ["Adaptation & Resilience", "Physical Risk", "Climate Risk"],
+      "keywords": ["SCIPP", "south-central United States", "climate data", "weather risk", "disaster planning", "community resilience"]
+    },
+    {
+      "canonical_url": "https://www.spglobal.com/sustainable1/en/insights/research-reports/issb-q2-2026",
+      "source_url": "https://www.spglobal.com/sustainable1/en/insights/research-reports/issb-q2-2026",
+      "title": "Where Does the World Stand on ISSB Adoption in Q2 2026?",
+      "source_basis": "report_fallback",
+      "summary": "S&P Global tracks jurisdictional adoption of IFRS S1 and IFRS S2, including targeted amendments and scenario guidance. The analysis covers requirements to disclose physical and transition risks, scenario analysis and a possible one-year Scope 3 deferral.",
+      "categories": ["Supervision & Disclosure", "Climate Risk"],
+      "keywords": ["S&P Global", "ISSB adoption", "IFRS S1", "IFRS S2", "scenario analysis", "Scope 3", "jurisdictions"]
+    },
+    {
+      "canonical_url": "https://www.swissre.com/",
+      "source_url": "https://www.swissre.com/",
+      "title": "Swiss Re Group",
+      "source_basis": "original_content",
+      "summary": "Swiss Re's corporate homepage identifies the group as a global provider of reinsurance and insurance focused on resilience. It serves as the entry point to the group's insurance, reinsurance and risk resources.",
+      "categories": ["Insurance Risk"],
+      "keywords": ["Swiss Re Group", "reinsurance", "insurance", "risk", "resilience"]
+    },
+    {
+      "canonical_url": "https://www.swissre.com/dam/jcr:a5ccd365-82f5-4257-ac39-01ae231640f0/MD2026_NatCatsigma_presentation_FINAL.pdf",
+      "source_url": "https://www.swissre.com/dam/jcr:a5ccd365-82f5-4257-ac39-01ae231640f0/MD2026_NatCatsigma_presentation_FINAL.pdf",
+      "title": "Natural Catastrophes in 2025: The Persistent Rise of Wildfire and Storm Risk",
+      "source_basis": "original_content",
+      "summary": "Swiss Re Institute reports US$107 billion of insured natural-catastrophe losses in 2025 and a continuing 5–7% long-term real growth trend. Secondary perils generated 92% of losses, while its 2026 peak-loss scenario reaches US$320 billion.",
+      "categories": ["Physical Risk", "Insurance Risk", "Actuarial Modelling"],
+      "keywords": ["Swiss Re Institute", "natural catastrophes", "wildfire", "severe convective storms", "insured losses", "peak-loss scenario"]
+    },
+    {
+      "canonical_url": "https://www.swissre.com/institute/research/sigma-research/sigma-2026-01-natcat-2025-wildfire-storm-risk.html",
+      "source_url": "https://www.swissre.com/institute/research/sigma-research/sigma-2026-01-natcat-2025-wildfire-storm-risk.html",
+      "title": "Natural Catastrophes in 2025: When Exposure Outpaces Adaptation",
+      "source_basis": "original_content",
+      "summary": "Swiss Re's sigma research examines increasing wildfire and storm risk and the insured losses recorded in 2025. It emphasizes adaptation and insurance innovation as responses when growing exposure outpaces resilience measures.",
+      "categories": ["Physical Risk", "Insurance Risk", "Adaptation & Resilience"],
+      "keywords": ["Swiss Re sigma", "natural catastrophes", "wildfire risk", "storm risk", "exposure growth", "adaptation", "insurance innovation"]
+    },
+    {
+      "canonical_url": "https://www.swissre.com/institute/research/topics-and-risk-dialogues/climate-and-natural-catastrophe-risk/first-half-2026-insured-catastrophe-losses.html",
+      "source_url": "https://www.swissre.com/institute/research/topics-and-risk-dialogues/climate-and-natural-catastrophe-risk/first-half-2026-insured-catastrophe-losses.html",
+      "title": "First-half 2026 Insured Catastrophe Losses: Below Trend, Rising Risks",
+      "source_basis": "original_content",
+      "summary": "Swiss Re Institute estimates global insured natural-catastrophe losses of US$42 billion in the first half of 2026, below the US$66 billion long-term trend. The analysis cautions that underlying catastrophe risks continue to rise despite the below-trend period.",
+      "categories": ["Physical Risk", "Insurance Risk", "Capital & Solvency"],
+      "keywords": ["Swiss Re Institute", "insured catastrophe losses", "H1 2026", "long-term trend", "natural catastrophe risk"]
+    },
+    {
+      "canonical_url": "https://www.swissre.com/institute/research/topics-and-risk-dialogues/climate-and-natural-catastrophe-risk/growing-exposure/Natcat-protection-gap.html",
+      "source_url": "https://www.swissre.com/institute/research/topics-and-risk-dialogues/climate-and-natural-catastrophe-risk/growing-exposure/Natcat-protection-gap.html",
+      "title": "Natural Catastrophes: The US$424 Billion Protection Gap and Adaptation to Counter Growing Exposure",
+      "source_basis": "original_content",
+      "summary": "Swiss Re Institute describes a US$424 billion natural-catastrophe protection gap and links it to growing exposure. The page presents adaptation as a means of reducing risk that remains uninsured.",
+      "categories": ["Physical Risk", "Insurance Risk", "Adaptation & Resilience"],
+      "keywords": ["Swiss Re Institute", "natural catastrophes", "protection gap", "uninsured risk", "growing exposure", "adaptation"]
+    },
+    {
+      "canonical_url": "https://www.un.org/en/desa-en/remarks-press-launch-financing-sustainable-development-report-2026",
+      "source_url": "https://www.un.org/en/desa-en/remarks-press-launch-financing-sustainable-development-report-2026",
+      "title": "Remarks at the Press Launch of the Financing for Sustainable Development Report 2026",
+      "source_basis": "original_content",
+      "summary": "UN DESA presents the 2026 report as a call to implement the Sevilla Commitment amid widening development-finance gaps, falling aid and rising debt-service burdens. It calls for larger, affordable and long-term investment to deliver the Sustainable Development Goals.",
+      "categories": ["Capital & Solvency"],
+      "keywords": ["UN DESA", "sustainable development finance", "Sevilla Commitment", "development aid", "debt service", "SDGs"]
+    },
+    {
+      "canonical_url": "https://www.undp.org/asia-pacific/events/unlocking-climate-finance",
+      "source_url": "https://www.undp.org/asia-pacific/events/unlocking-climate-finance",
+      "title": "Unlocking Climate Finance: Adaptation Finance Strategy Guideline",
+      "source_basis": "report_fallback",
+      "summary": "UNDP's Adaptation Finance Strategy Guideline helps governments mobilize and align financing for investments identified in National Adaptation Plans and nationally determined contributions. The report notes a large gap between developing-country adaptation needs and current international public finance.",
+      "categories": ["Adaptation & Resilience"],
+      "keywords": ["UNDP", "adaptation finance", "National Adaptation Plans", "NDCs", "developing countries", "public finance"]
+    },
+    {
+      "canonical_url": "https://www.undp.org/philippines/press-releases/powering-health-and-climate-security-barmm-undp-japan-and-lanao-del-sur-advance-renewable-energy-resilient-communities",
+      "source_url": "https://www.undp.org/philippines/press-releases/powering-health-and-climate-security-barmm-undp-japan-and-lanao-del-sur-advance-renewable-energy-resilient-communities",
+      "title": "UNDP, Japan and Lanao del Sur Advance Renewable Energy for Resilient Communities in BARMM",
+      "source_basis": "report_fallback",
+      "summary": "The RE³ACHS project advances renewable energy and energy-efficiency solutions for health, agriculture and resilience in conflict-affected parts of BARMM in the Philippines. The project receives support from Japan's Climate Promise initiative.",
+      "categories": ["Adaptation & Resilience", "Transition Risk"],
+      "keywords": ["UNDP", "BARMM", "RE³ACHS", "renewable energy", "energy efficiency", "resilient communities", "Philippines"]
+    },
+    {
+      "canonical_url": "https://www.undp.org/romecentre/press-releases/climate-finance-dialogues-2026-convenes-partners-rome-advance-climate-investment-opportunities-across-africa",
+      "source_url": "https://www.undp.org/romecentre/press-releases/climate-finance-dialogues-2026-convenes-partners-rome-advance-climate-investment-opportunities-across-africa",
+      "title": "Climate Finance Dialogues 2026 Convene Partners in Rome to Advance Investment Opportunities Across Africa",
+      "source_basis": "report_fallback",
+      "summary": "UNDP's Climate Finance Dialogues 2026 brought partners together in Rome to advance climate investment across Africa. The forum addressed blended finance, debt-for-climate swaps and domestic resource mobilization for developing economies.",
+      "categories": ["Transition Risk"],
+      "keywords": ["UNDP", "Climate Finance Dialogues", "Africa", "blended finance", "debt-for-climate swaps", "domestic resource mobilization"]
+    },
+    {
+      "canonical_url": "https://www.undp.org/romecentre/press-releases/undp-and-iai-convene-high-level-roundtable-rome-advance-climate-and-development-finance-partnerships",
+      "source_url": "https://www.undp.org/romecentre/press-releases/undp-and-iai-convene-high-level-roundtable-rome-advance-climate-and-development-finance-partnerships",
+      "title": "UNDP and IAI Convene a High-Level Roundtable on Climate and Development Finance Partnerships",
+      "source_basis": "report_fallback",
+      "summary": "The Rome roundtable focused on climate and development-finance partnerships, private capital and moving national climate plans toward financeable projects through the PISTA platform. It also addressed infrastructure stakeholders' capacity to access climate finance.",
+      "categories": ["Transition Risk"],
+      "keywords": ["UNDP", "IAI", "climate finance", "development finance", "private capital", "PISTA", "infrastructure"]
+    },
+    {
+      "canonical_url": "https://www.undp.org/stories/next-generation-climate-peacebuilders",
+      "source_url": "https://www.undp.org/stories/next-generation-climate-peacebuilders",
+      "title": "Next Generation Climate Peacebuilders",
+      "source_basis": "report_fallback",
+      "summary": "UNDP profiles young climate peacebuilders and connects climate stress with conflict and instability. The piece highlights the social and sovereign-risk dimensions of climate impacts and associated protection gaps.",
+      "categories": ["Climate Risk"],
+      "keywords": ["UNDP", "climate peacebuilders", "youth", "conflict", "instability", "sovereign risk", "protection gaps"]
+    },
+    {
+      "canonical_url": "https://www.undp.org/stories/planet-crisis-our-response-must-rise-moment",
+      "source_url": "https://www.undp.org/stories/planet-crisis-our-response-must-rise-moment",
+      "title": "Planet Crisis: Our Response Must Rise to the Moment",
+      "source_basis": "report_fallback",
+      "summary": "UNDP describes an escalating planetary and climate crisis and the scale of response required. The report connects this framing with physical risk, climate exposure, an adaptation-finance gap and resilience investment.",
+      "categories": ["Climate Risk", "Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["UNDP", "planetary crisis", "climate crisis", "physical risk", "adaptation finance", "resilience investment"]
+    },
+    {
+      "canonical_url": "https://www.unep.org/topics/finance-and-economic-transformations/transforming-finance/climate-finance",
+      "source_url": "https://www.unep.org/topics/finance-and-economic-transformations/transforming-finance/climate-finance",
+      "title": "Climate Finance",
+      "source_basis": "original_content",
+      "summary": "UNEP supports governments and financial institutions in mobilizing public and private finance for Paris Agreement mitigation and adaptation goals. Its work integrates climate risk into planning and promotes resilient, inclusive and low-carbon development.",
+      "categories": ["Transition Risk", "Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["UNEP", "climate finance", "Paris Agreement", "public investment", "private investment", "mitigation", "adaptation"]
+    },
+    {
+      "canonical_url": "https://www.unepfi.org/climate-change/net-zero-export-credit-agencies",
+      "source_url": "https://www.unepfi.org/climate-change/net-zero-export-credit-agencies",
+      "title": "Net-Zero Export Credit Agencies Alliance",
+      "source_basis": "original_content",
+      "summary": "The UN-convened alliance brings together public export-credit institutions committed to supporting the transition to net-zero economies by 2050. It focuses on aligning export finance with decarbonisation.",
+      "categories": ["Transition Risk"],
+      "keywords": ["NZECA", "export credit agencies", "public finance", "net zero", "2050", "decarbonisation"]
+    },
+    {
+      "canonical_url": "https://www.unepfi.org/climate-pathways-navigator",
+      "source_url": "https://www.unepfi.org/climate-pathways-navigator",
+      "title": "UNEP FI Climate Pathways Navigator",
+      "source_basis": "original_content",
+      "summary": "UNEP FI's tool gives financial institutions direct access to climate-scenario data for science-based decisions. It helps users navigate pathway information needed to assess climate-related risks and strategies.",
+      "categories": ["Climate Risk", "Actuarial Modelling", "Transition Risk"],
+      "keywords": ["UNEP FI", "Climate Pathways Navigator", "climate scenarios", "financial institutions", "pathway data", "science-based decisions"]
+    },
+    {
+      "canonical_url": "https://www.unepfi.org/impact/interoperability/european-sustainability-reporting-standards-esrs",
+      "source_url": "https://www.unepfi.org/impact/interoperability/european-sustainability-reporting-standards-esrs",
+      "title": "European Sustainability Reporting Standards",
+      "source_basis": "original_content",
+      "summary": "UNEP FI outlines the European Sustainability Reporting Standards in the context of the Corporate Sustainability Reporting Directive, which entered into force in January 2023. The resource addresses interoperability and companies' social and environmental reporting obligations.",
+      "categories": ["Supervision & Disclosure"],
+      "keywords": ["ESRS", "CSRD", "European Union", "sustainability reporting", "environmental information", "interoperability"]
+    },
+    {
+      "canonical_url": "https://www.unepfi.org/learning-and-development-for-finance-professionals/risk-management/climate-change-training",
+      "source_url": "https://www.unepfi.org/learning-and-development-for-finance-professionals/risk-management/climate-change-training",
+      "title": "Climate Change: Risk Management in the Banking Sector Online Course",
+      "source_basis": "original_content",
+      "summary": "UNEP FI's online course covers climate-related risks and opportunities for financial institutions. The training incorporates climate-disclosure recommendations and practical risk-management approaches for banking professionals.",
+      "categories": ["Climate Risk", "Supervision & Disclosure"],
+      "keywords": ["UNEP FI", "banking sector", "climate risk management", "online course", "financial institutions", "climate disclosure"]
+    },
+    {
+      "canonical_url": "https://www.unepfi.org/themes/climate-change/applying-taxonomies-to-scale-climate-resilient-investment-opportunities-in-asia-pacific",
+      "source_url": "https://www.unepfi.org/themes/climate-change/applying-taxonomies-to-scale-climate-resilient-investment-opportunities-in-asia-pacific",
+      "title": "Applying Taxonomies to Scale Climate-resilient Investment Opportunities in Asia-Pacific",
+      "source_basis": "original_content",
+      "summary": "The UNEP FI webinar introduces an Adaptation Finance Taxonomy Playbook for identifying, assessing and scaling adaptation finance. It addresses financial institutions seeking credible investment classifications amid rising heat, flood, drought, storm and sea-level risks in Asia-Pacific.",
+      "categories": ["Adaptation & Resilience", "Capital & Solvency", "Physical Risk"],
+      "keywords": ["UNEP FI", "adaptation finance taxonomy", "Asia-Pacific", "climate-resilient investment", "financial institutions", "physical hazards"]
+    },
+    {
+      "canonical_url": "https://www.weforum.org/stories/2025/01/what-is-parametric-insurance-and-how-is-it-building-climate-resilience",
+      "source_url": "https://www.weforum.org/stories/2025/01/what-is-parametric-insurance-and-how-is-it-building-climate-resilience",
+      "title": "How Parametric Insurance Is Building Climate Resilience",
+      "source_basis": "report_fallback",
+      "summary": "The World Economic Forum explains parametric insurance as trigger-based protection that can pay quickly after rainfall, wind or heat events. It notes basis risk and product sustainability as payout frequency increases.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Actuarial Modelling"],
+      "keywords": ["parametric insurance", "climate resilience", "trigger-based payouts", "rainfall", "wind", "heat", "basis risk"]
+    },
+    {
+      "canonical_url": "https://www.weforum.org/stories/2026/03/by-embracing-resilience-the-insurance-industry-can-be-part-of-the-climate-solution-96b1291a95",
+      "source_url": "https://www.weforum.org/stories/2026/03/by-embracing-resilience-the-insurance-industry-can-be-part-of-the-climate-solution-96b1291a95",
+      "title": "The Insurance Industry Can Be Part of the Climate Solution",
+      "source_basis": "report_fallback",
+      "summary": "The article argues that insurers can support climate adaptation through risk-based pricing, incentives for pre-disaster resilience and parametric products. It cites US$100 billion in 2025 natural-catastrophe insured losses and the predominance of weather-related losses.",
+      "categories": ["Insurance Risk", "Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["insurance industry", "climate adaptation", "risk-based pricing", "resilience incentives", "parametric products", "natural catastrophe losses"]
+    },
+    {
+      "canonical_url": "https://www.weforum.org/stories/2026/04/systemic-risk-hidden-tax-on-growth",
+      "source_url": "https://www.weforum.org/stories/2026/04/systemic-risk-hidden-tax-on-growth",
+      "title": "Systemic Risk Is a Hidden Tax on Growth. Can Insurance Help?",
+      "source_basis": "report_fallback",
+      "summary": "The World Economic Forum describes climate, cyber and geopolitical risks as systemic pressures on economic growth. It highlights insurance, advanced risk modelling, data analytics and early-warning systems as tools for resilience before shocks occur.",
+      "categories": ["Insurance Risk", "Climate Risk", "Actuarial Modelling"],
+      "keywords": ["systemic risk", "economic growth", "insurance", "climate change", "risk modelling", "data analytics", "early-warning systems"]
+    },
+    {
+      "canonical_url": "https://www.weforum.org/stories/climate-action/avoided-emissions-unlock-low-carbon-investment",
+      "source_url": "https://www.weforum.org/stories/climate-action/avoided-emissions-unlock-low-carbon-investment",
+      "title": "How Avoided Emissions Can Help Unlock Investment in Low-carbon Innovation",
+      "source_basis": "report_fallback",
+      "summary": "The article proposes avoided-emissions measures as a complement to Scope 1, 2 and 3 inventories when assessing climate-solution investments. The metric is relevant to transition-risk exposure and IFRS S2 metric selection.",
+      "categories": ["Transition Risk", "Supervision & Disclosure"],
+      "keywords": ["avoided emissions", "low-carbon innovation", "Scope 1", "Scope 2", "Scope 3", "climate investment", "IFRS S2"]
+    },
+    {
+      "canonical_url": "https://www.weforum.org/stories/geo-economics-and-politics/how-leaders-anticipate-risks-govern-boards-avoid-crises",
+      "source_url": "https://www.weforum.org/stories/geo-economics-and-politics/how-leaders-anticipate-risks-govern-boards-avoid-crises",
+      "title": "Leaders Should Plan for Colliding Risks, Not Isolated Crises",
+      "source_basis": "report_fallback",
+      "summary": "The article calls for governance and modelling of compound, correlated risks instead of isolated single-peril stresses. It links this approach to compound climate scenarios, correlated-peril aggregation, ORSA and capital modelling.",
+      "categories": ["Actuarial Modelling", "Capital & Solvency", "Climate Risk"],
+      "keywords": ["compound risks", "correlated risks", "governance", "climate scenarios", "peril aggregation", "ORSA", "capital modelling"]
+    },
+    {
+      "canonical_url": "https://www.who.int/news/item/05-08-2026-who-launches-global-research-priorities-on-climate--health-and-migration",
+      "source_url": "https://www.who.int/news/item/05-08-2026-who-launches-global-research-priorities-on-climate--health-and-migration",
+      "title": "WHO Launches Global Research Priorities on Climate, Health and Migration",
+      "source_basis": "original_content",
+      "summary": "WHO launched a global research-prioritization and action plan on health, migration and displacement in the context of climate change. The plan targets evidence gaps concerning health, well-being and access to care as climate-related mobility affects vulnerable populations.",
+      "categories": ["Physical Risk", "Climate Risk", "Actuarial Modelling"],
+      "keywords": ["WHO", "climate change", "health", "migration", "displacement", "access to care", "vulnerable populations"]
+    },
+    {
+      "canonical_url": "https://www.who.int/news/item/14-08-2026-quadripartite-collaboration-extends-the-one-health-joint-plan-of-action-to-2029",
+      "source_url": "https://www.who.int/news/item/14-08-2026-quadripartite-collaboration-extends-the-one-health-joint-plan-of-action-to-2029",
+      "title": "Quadripartite Collaboration Extends the One Health Joint Plan of Action to 2029",
+      "source_basis": "original_content",
+      "summary": "FAO, UNEP, WHO and WOAH extended the One Health Joint Plan of Action through 2029. The extension gives countries continuity for planning and scaling national One Health priorities under a shared global framework.",
+      "categories": ["Climate Risk", "Adaptation & Resilience"],
+      "keywords": ["One Health", "FAO", "UNEP", "WHO", "WOAH", "Joint Plan of Action", "2029"]
+    },
+    {
+      "canonical_url": "https://www.worldbank.org/",
+      "source_url": "https://www.worldbank.org/",
+      "title": "World Bank Group: International Development, Poverty and Sustainability",
+      "source_basis": "original_content",
+      "summary": "The World Bank Group homepage presents its partnership of 189 member countries and its work on poverty reduction and sustainable development. It provides access to development research, financing initiatives and country programmes.",
+      "categories": ["Capital & Solvency"],
+      "keywords": ["World Bank Group", "international development", "poverty", "sustainability", "member countries", "development finance"]
+    },
+    {
+      "canonical_url": "https://www.worldbank.org/en/events/2026/08/16/cambodia-seadrm2-project-early-market-engagement-eme-workshop-cambodia-southeast-a",
+      "source_url": "https://www.worldbank.org/en/events/2026/08/16/cambodia-seadrm2-project-early-market-engagement-eme-workshop-cambodia-southeast-a",
+      "title": "Cambodia SEADRM2 Project Early Market Engagement Workshop",
+      "source_basis": "original_content",
+      "summary": "The workshop informs potential bidders about procurement for the second Cambodia Southeast Asia Disaster Risk Management project. It is designed to assess market interest, gather feedback on procurement and support transparent, competitive participation.",
+      "categories": ["Adaptation & Resilience", "Capital & Solvency"],
+      "keywords": ["Cambodia", "SEADRM2", "disaster risk management", "early market engagement", "procurement", "World Bank"]
+    },
+    {
+      "canonical_url": "https://www.worldbank.org/en/news/feature/2026/08/05/nature-based-solutions-secure-guinea-s-water-at-the-source",
+      "source_url": "https://www.worldbank.org/en/news/feature/2026/08/05/nature-based-solutions-secure-guinea-s-water-at-the-source",
+      "title": "Nature-Based Solutions Secure Guinea's Water at the Source",
+      "source_basis": "original_content",
+      "summary": "The World Bank describes how nature-based solutions are improving water resources and economic conditions in Guinea. The project uses ecosystem-based measures to strengthen water security at its source.",
+      "categories": ["Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["Guinea", "nature-based solutions", "water resources", "water security", "ecosystems", "World Bank"]
+    },
+    {
+      "canonical_url": "https://www.worldbank.org/en/news/press-release/2026/03/23/samoa-set-to-strengthen-disaster-readiness-protect-livelihoods-and-create-jobs-with-new-world-bank-support",
+      "source_url": "https://www.worldbank.org/en/news/press-release/2026/03/23/samoa-set-to-strengthen-disaster-readiness-protect-livelihoods-and-create-jobs-with-new-world-bank-support",
+      "title": "Samoa Set to Strengthen Disaster Readiness, Protect Livelihoods and Create Jobs with New World Bank Support",
+      "source_basis": "original_content",
+      "summary": "World Bank financing will strengthen Samoa's ability to prepare for, withstand and recover from climate- and disaster-related events. The programme is expected to protect lives and livelihoods for about 180,000 people, or 80% of the population.",
+      "categories": ["Adaptation & Resilience", "Physical Risk", "Insurance Risk"],
+      "keywords": ["Samoa", "World Bank", "disaster readiness", "climate resilience", "livelihoods", "emergency response finance"]
+    },
+    {
+      "canonical_url": "https://www.worldbank.org/en/news/press-release/2026/04/10/world-bank-approves-500-million-to-power-morocco-s-jobs-and-green-growth-agenda",
+      "source_url": "https://www.worldbank.org/en/news/press-release/2026/04/10/world-bank-approves-500-million-to-power-morocco-s-jobs-and-green-growth-agenda",
+      "title": "World Bank Approves US$500 Million to Power Morocco's Jobs and Green Growth Agenda",
+      "source_basis": "original_content",
+      "summary": "The World Bank approved a US$500 million development-policy loan for Morocco's employment and green-growth agenda. The financing supports labour-market policy, small and medium-sized firms, clean energy, energy efficiency and export-oriented pharmaceutical industries.",
+      "categories": ["Transition Risk", "Capital & Solvency"],
+      "keywords": ["World Bank", "Morocco", "US$500 million", "green growth", "clean energy", "energy efficiency", "SMEs"]
+    },
+    {
+      "canonical_url": "https://www.worldbank.org/en/news/press-release/2026/07/31/wbg-support-to-help-philippines-expand-resilient-water-and-sanitation-services",
+      "source_url": "https://www.worldbank.org/en/news/press-release/2026/07/31/wbg-support-to-help-philippines-expand-resilient-water-and-sanitation-services",
+      "title": "World Bank Group Support to Help the Philippines Expand Resilient Water and Sanitation Services",
+      "source_basis": "original_content",
+      "summary": "A World Bank Group project will expand safe and reliable water and sanitation services in selected Philippine island provinces. The investment is intended to improve water security, local development, tourism and employment.",
+      "categories": ["Adaptation & Resilience", "Physical Risk"],
+      "keywords": ["World Bank Group", "Philippines", "water security", "sanitation services", "island provinces", "resilient infrastructure"]
+    },
+    {
+      "canonical_url": "https://www.wri.org/climate",
+      "source_url": "https://www.wri.org/climate",
+      "title": "Advancing the Systems Change Needed to Fight Climate Change",
+      "source_basis": "original_content",
+      "summary": "WRI works with policymakers, businesses and civil society to advance systems change for climate action at local, national and international levels. Its climate portal connects research, data and initiatives across policy and economic systems.",
+      "categories": ["Climate Risk", "Transition Risk", "Adaptation & Resilience"],
+      "keywords": ["World Resources Institute", "climate action", "systems change", "policymakers", "businesses", "civil society"]
+    },
+    {
+      "canonical_url": "https://www.wri.org/insights/city-climate-impacts-1-5-vs-3-c-charted",
+      "source_url": "https://www.wri.org/insights/city-climate-impacts-1-5-vs-3-c-charted",
+      "title": "How Rising Temperatures Could Affect Your City",
+      "source_basis": "original_content",
+      "summary": "WRI presents projections for how 1.5°C versus 3°C of global warming could affect nearly 1,000 of the world's largest cities. The comparison makes the local physical consequences of different warming pathways visible for urban planning.",
+      "categories": ["Physical Risk", "Adaptation & Resilience", "Climate Risk"],
+      "keywords": ["World Resources Institute", "cities", "rising temperatures", "1.5°C", "3°C", "warming projections", "urban planning"]
+    },
+    {
+      "canonical_url": "https://www.wri.org/news/statement-india-announces-new-2035-climate-commitment",
+      "source_url": "https://www.wri.org/news/statement-india-announces-new-2035-climate-commitment",
+      "title": "India Announces New 2035 Climate Commitment",
+      "source_basis": "original_content",
+      "summary": "India's new nationally determined contribution targets a 47% reduction in GDP emissions intensity from 2005 levels by 2035. It also targets a 60% non-fossil share of installed electricity capacity and up to 4 billion tonnes of additional carbon-dioxide-equivalent absorption from forest and tree cover.",
+      "categories": ["Transition Risk", "Climate Risk"],
+      "keywords": ["India", "2035 NDC", "emissions intensity", "non-fossil electricity", "forest cover", "carbon sink"]
+    }
+  ]
+}

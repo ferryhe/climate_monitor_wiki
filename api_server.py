@@ -40,6 +40,7 @@ load_dotenv(ROOT / ".env")
 SHOWCASE_DIR = ROOT / "showcase"
 WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
 SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
+ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadata")
 
 app = FastAPI(
     title="Climate Monitor Wiki Agent",
@@ -144,7 +145,12 @@ def _registry_reader() -> RegistryReader:
     configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     if not configured:
         raise RegistryUnavailableError("registry is not configured")
-    return RegistryReader(configured, repository_root=ROOT, source_dir=SOURCE_DIR)
+    return RegistryReader(
+        configured,
+        repository_root=ROOT,
+        source_dir=SOURCE_DIR,
+        metadata_dir=ARTICLE_METADATA_DIR,
+    )
 
 
 def _registry_query(callable_):
