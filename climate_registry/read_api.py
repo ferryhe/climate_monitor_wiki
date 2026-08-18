@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 from contextlib import contextmanager
@@ -18,6 +19,7 @@ from .reports import ParsedArticle, ParsedReport, parse_historical_report
 
 EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION
 MAX_PUBLISHER_CHOICES = 500
+logger = logging.getLogger(__name__)
 
 
 class RegistryError(RuntimeError):
@@ -116,6 +118,32 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
             output.append(value)
             seen.add(key)
     return output
+
+
+def _log_db_annotation_precedence(
+    summary: str,
+    categories: list[str],
+    keywords: list[str],
+    annotation: ArticleAnnotation | None,
+) -> None:
+    if annotation is None:
+        return
+    conflicts = [
+        field
+        for field, differs in (
+            ("summary", summary != annotation.summary),
+            ("categories", categories != list(annotation.categories)),
+            ("keywords", keywords != list(annotation.keywords)),
+        )
+        if differs
+    ]
+    # Keep overlap diagnostics out of API payloads and avoid logging article
+    # URLs, semantic values, metadata paths, or other source-identifying data.
+    logger.debug(
+        "Registry DB enrichment takes precedence over JSON annotation; "
+        "overlap_fields=summary,categories,keywords conflict_fields=%s",
+        ",".join(conflicts) or "none",
+    )
 
 
 def _publisher_label(hostname: str, display_name: str) -> str:
@@ -346,34 +374,22 @@ class RegistryReader:
                        a.article_id, a.canonical_url, av.observed_title AS title,
                        av.observed_summary AS summary, s.display_name AS publisher,
                        s.hostname AS source,
-                       (
-                           SELECT ae.summary
-                           FROM article_enrichments ae
-                           WHERE ae.content_version_id = a.current_content_version_id
-                             AND ae.status = 'complete'
-                           ORDER BY ae.generated_at DESC, ae.enrichment_id DESC
-                           LIMIT 1
-                       ) AS enrichment_summary,
-                       (
-                           SELECT ae.categories_json
-                           FROM article_enrichments ae
-                           WHERE ae.content_version_id = a.current_content_version_id
-                             AND ae.status = 'complete'
-                           ORDER BY ae.generated_at DESC, ae.enrichment_id DESC
-                           LIMIT 1
-                       ) AS enrichment_categories_json,
-                       (
-                           SELECT ae.keywords_json
-                           FROM article_enrichments ae
-                           WHERE ae.content_version_id = a.current_content_version_id
-                             AND ae.status = 'complete'
-                           ORDER BY ae.generated_at DESC, ae.enrichment_id DESC
-                           LIMIT 1
-                       ) AS enrichment_keywords_json
+                       ae.enrichment_id AS content_enrichment_id,
+                       ae.summary AS enrichment_summary,
+                       ae.categories_json AS enrichment_categories_json,
+                       ae.keywords_json AS enrichment_keywords_json
                 FROM report_appearances ra
                 JOIN articles a ON a.article_id = ra.article_id
                 JOIN article_versions av ON av.version_id = ra.version_id
                 JOIN sources s ON s.source_id = a.source_id
+                LEFT JOIN article_enrichments ae ON ae.enrichment_id = (
+                    SELECT candidate.enrichment_id
+                    FROM article_enrichments candidate
+                    WHERE candidate.content_version_id = a.current_content_version_id
+                      AND candidate.status = 'complete'
+                    ORDER BY candidate.generated_at DESC, candidate.enrichment_id DESC
+                    LIMIT 1
+                )
                 WHERE ra.report_id = ?
                 ORDER BY ra.ordinal, a.article_id
                 """,
@@ -386,6 +402,7 @@ class RegistryReader:
         articles = []
         for row in appearances:
             item = dict(row)
+            has_db_enrichment = item.pop("content_enrichment_id") is not None
             enrichment_summary = item.pop("enrichment_summary")
             enrichment_categories = _json_string_list(
                 item.pop("enrichment_categories_json")
@@ -400,40 +417,48 @@ class RegistryReader:
             source_categories = source_article.categories if source_article else ()
             source_keywords = source_article.keywords if source_article else ()
             item["title"] = annotation.title if annotation else item["title"]
-            item["summary"] = enrichment_summary or (
-                annotation.summary if annotation else item["summary"]
-            )
-            item["summary_provenance"] = (
-                "content_enrichment"
-                if enrichment_summary
-                else annotation.provenance if annotation else "source_report"
-            )
-            item["categories"] = list(
-                enrichment_categories
-                or (annotation.categories if annotation else ())
-                or source_categories
-            )
-            item["keywords"] = list(
-                enrichment_keywords
-                or (annotation.keywords if annotation else ())
-                or source_keywords
-            )
-            item["metadata_provenance"] = {
-                "categories": (
-                    "content_enrichment"
-                    if enrichment_categories
-                    else annotation.provenance
-                    if annotation
-                    else "source_report" if source_categories else None
-                ),
-                "keywords": (
-                    "content_enrichment"
-                    if enrichment_keywords
-                    else annotation.provenance
-                    if annotation
-                    else "source_report" if source_keywords else None
-                ),
-            }
+            if has_db_enrichment:
+                # A complete current-content enrichment is one semantic bundle.
+                # Empty or invalid lists fail closed and never splice with JSON
+                # or report metadata. JSON may still supply compatibility-only
+                # fields such as title and source_annotation.
+                item["summary"] = enrichment_summary
+                item["summary_provenance"] = "content_enrichment"
+                item["categories"] = enrichment_categories
+                item["keywords"] = enrichment_keywords
+                item["metadata_provenance"] = {
+                    "categories": "content_enrichment",
+                    "keywords": "content_enrichment",
+                }
+                _log_db_annotation_precedence(
+                    enrichment_summary,
+                    enrichment_categories,
+                    enrichment_keywords,
+                    annotation,
+                )
+            else:
+                item["summary"] = annotation.summary if annotation else item["summary"]
+                item["summary_provenance"] = (
+                    annotation.provenance if annotation else "source_report"
+                )
+                item["categories"] = list(
+                    (annotation.categories if annotation else ()) or source_categories
+                )
+                item["keywords"] = list(
+                    (annotation.keywords if annotation else ()) or source_keywords
+                )
+                item["metadata_provenance"] = {
+                    "categories": (
+                        annotation.provenance
+                        if annotation
+                        else "source_report" if source_categories else None
+                    ),
+                    "keywords": (
+                        annotation.provenance
+                        if annotation
+                        else "source_report" if source_keywords else None
+                    ),
+                }
             item["source_annotation"] = (
                 {
                     "source_basis": annotation.source_basis,
@@ -715,28 +740,38 @@ class RegistryReader:
                 else None
             ),
         }
+        has_db_enrichment = enrichment is not None
+        if has_db_enrichment:
+            _log_db_annotation_precedence(
+                enrichment_payload["summary"],
+                enrichment_payload["categories"],
+                enrichment_payload["keywords"],
+                source_annotation,
+            )
         report_metadata = {
             "categories": _ordered_unique(report_categories),
             "keywords": _ordered_unique(report_keywords),
         }
-        categories = enrichment_payload["categories"] or _ordered_unique(
-            effective_report_categories
+        # Presence of a complete row, rather than truthiness of any one field,
+        # controls DB-first precedence for the whole semantic bundle.
+        categories = (
+            enrichment_payload["categories"]
+            if has_db_enrichment
+            else _ordered_unique(effective_report_categories)
         )
-        keywords = enrichment_payload["keywords"] or _ordered_unique(
-            effective_report_keywords
+        keywords = (
+            enrichment_payload["keywords"]
+            if has_db_enrichment
+            else _ordered_unique(effective_report_keywords)
         )
-        summary = enrichment_payload["summary"] or annotation_summary or article["report_summary"]
+        summary = (
+            enrichment_payload["summary"]
+            if has_db_enrichment
+            else annotation_summary or article["report_summary"]
+        )
         metadata_provenance = {
-            "categories": (
-                "content_enrichment"
-                if enrichment_payload["categories"]
-                else category_provenance
-            ),
-            "keywords": (
-                "content_enrichment"
-                if enrichment_payload["keywords"]
-                else keyword_provenance
-            ),
+            "categories": "content_enrichment" if has_db_enrichment else category_provenance,
+            "keywords": "content_enrichment" if has_db_enrichment else keyword_provenance,
         }
         original_url = appearance_payload[0]["original_url"] if appearance_payload else article["canonical_url"]
         return {
@@ -745,7 +780,7 @@ class RegistryReader:
             "summary": summary,
             "summary_provenance": (
                 "content_enrichment"
-                if enrichment_payload["summary"]
+                if has_db_enrichment
                 else source_annotation.provenance if source_annotation else "source_report"
             ),
             "report_summary": article["report_summary"],
