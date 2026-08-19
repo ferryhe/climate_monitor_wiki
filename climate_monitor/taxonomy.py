@@ -4,7 +4,6 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +12,7 @@ import yaml
 
 TAXONOMY_SCHEMA_VERSION = "article-category-taxonomy.v1"
 DEFAULT_TAXONOMY_ID = "climate-actuarial-v1"
+DEFAULT_TAXONOMY_SHA256 = "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
 DEFAULT_TAXONOMY_PATH = (
     Path(__file__).resolve().parents[1]
     / "monitoring"
@@ -222,10 +222,13 @@ def _parse_categories(value: Any) -> tuple[ArticleCategory, ...]:
     return tuple(output)
 
 
-@lru_cache(maxsize=8)
 def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTaxonomy:
     taxonomy_path = Path(path)
-    raw = taxonomy_path.read_bytes()
+    try:
+        with taxonomy_path.open("rb") as source:
+            raw = source.read(MAX_TAXONOMY_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("taxonomy file cannot be read") from exc
     if not raw or len(raw) > MAX_TAXONOMY_BYTES:
         raise ValueError("taxonomy file is empty or exceeds its size limit")
     try:
@@ -236,12 +239,18 @@ def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTa
     if root["schema_version"] != TAXONOMY_SCHEMA_VERSION:
         raise ValueError("unsupported taxonomy schema_version")
     taxonomy_id = _normalized_string(root["taxonomy_id"], name="taxonomy_id", maximum=64)
-    if _TOKEN.fullmatch(taxonomy_id) is None:
-        raise ValueError("taxonomy_id must be a lowercase token")
+    if _TOKEN.fullmatch(taxonomy_id) is None or taxonomy_id != DEFAULT_TAXONOMY_ID:
+        raise ValueError("unsupported taxonomy_id")
+    sha256 = hashlib.sha256(raw).hexdigest()
+    if (
+        taxonomy_path.resolve() == DEFAULT_TAXONOMY_PATH.resolve()
+        and sha256 != DEFAULT_TAXONOMY_SHA256
+    ):
+        raise ValueError("default taxonomy does not match the immutable v1 SHA-256")
     return ArticleTaxonomy(
         schema_version=TAXONOMY_SCHEMA_VERSION,
         taxonomy_id=taxonomy_id,
-        sha256=hashlib.sha256(raw).hexdigest(),
+        sha256=sha256,
         categories=_parse_categories(root["categories"]),
         constraints=_parse_constraints(root["constraints"]),
     )

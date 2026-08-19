@@ -6,9 +6,13 @@ from pathlib import Path
 
 import pytest
 
+import climate_monitor.taxonomy as taxonomy_module
 from climate_monitor.ai_filter import CATEGORY_LABELS
 from climate_monitor.taxonomy import (
+    DEFAULT_TAXONOMY_ID,
     DEFAULT_TAXONOMY_PATH,
+    DEFAULT_TAXONOMY_SHA256,
+    MAX_TAXONOMY_BYTES,
     load_article_taxonomy,
     validate_semantic_bundle,
 )
@@ -41,12 +45,14 @@ EXPECTED_SIGNAL_LABELS = {
 def test_versioned_taxonomy_is_the_shared_category_authority():
     taxonomy = load_article_taxonomy()
 
-    assert taxonomy.taxonomy_id == "climate-actuarial-v1"
+    assert len(taxonomy.categories) == 8
+    assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID == "climate-actuarial-v1"
     assert taxonomy.allowed_labels == EXPECTED_LABELS
+    assert taxonomy.labels_by_signal == EXPECTED_SIGNAL_LABELS
     assert CATEGORY_LABELS == EXPECTED_SIGNAL_LABELS
     assert ALLOWED_CATEGORIES == EXPECTED_LABELS
     assert DISALLOWED_KEYWORDS == {"article", "news", "report", "update"}
-    assert taxonomy.sha256 == EXPECTED_TAXONOMY_SHA256
+    assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256 == EXPECTED_TAXONOMY_SHA256
     assert taxonomy.sha256 == hashlib.sha256(DEFAULT_TAXONOMY_PATH.read_bytes()).hexdigest()
 
 
@@ -77,10 +83,15 @@ def test_semantic_bundle_is_normalized_against_the_versioned_taxonomy():
         ("keywords", ["flood", "pricing"], "between 3 and 8"),
         ("keywords", ["flood", "pricing", "report"], "disallowed"),
         ("keywords", ["flood", "risk, pricing", "insurance"], "separators"),
+        ("keywords", ["flood", "risk; pricing", "insurance"], "separators"),
         ("keywords", ["flood", "risk\npricing", "insurance"], "normalized"),
+        ("keywords", ["flood", "risk\u0085pricing", "insurance"], "normalized"),
+        ("summary", "", "normalized"),
         ("summary", " summary ", "normalized"),
+        ("summary", "summary  metadata", "normalized"),
         ("summary", "summary\nmetadata", "normalized"),
         ("summary", "summary\tmetadata", "normalized"),
+        ("summary", "summary\x00metadata", "normalized"),
         ("summary", "not NFC: e\u0301", "normalized"),
     ],
 )
@@ -124,6 +135,49 @@ def test_taxonomy_loader_rejects_duplicate_yaml_keys(tmp_path: Path):
         load_article_taxonomy(path)
 
 
+def test_taxonomy_loader_wraps_missing_file_errors(tmp_path: Path):
+    with pytest.raises(ValueError, match="taxonomy file cannot be read"):
+        load_article_taxonomy(tmp_path / "missing.yaml")
+
+
+def test_taxonomy_loader_bounds_file_reads(tmp_path: Path):
+    path = tmp_path / "taxonomy.yaml"
+    path.write_bytes(b"x" * (MAX_TAXONOMY_BYTES + 1))
+
+    with pytest.raises(ValueError, match="exceeds its size limit"):
+        load_article_taxonomy(path)
+
+
+def test_taxonomy_loader_does_not_cache_stale_path_contents(tmp_path: Path):
+    raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
+    path = tmp_path / "taxonomy.yaml"
+    path.write_text(raw, encoding="utf-8")
+    assert load_article_taxonomy(path).allowed_labels == EXPECTED_LABELS
+
+    path.write_text(raw.replace("Transition Risk", "Physical Risk", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="labels must be unique"):
+        load_article_taxonomy(path)
+
+
+def test_taxonomy_loader_rejects_a_different_v1_identity(tmp_path: Path):
+    raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
+    path = tmp_path / "taxonomy.yaml"
+    path.write_text(raw.replace(DEFAULT_TAXONOMY_ID, "other-v1", 1), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported taxonomy_id"):
+        load_article_taxonomy(path)
+
+
+def test_default_taxonomy_sha_is_pinned_at_runtime(tmp_path: Path, monkeypatch):
+    raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
+    path = tmp_path / "article_categories_v1.yaml"
+    path.write_text(raw.replace("Acute and chronic", "Chronic and acute", 1), encoding="utf-8")
+    monkeypatch.setattr(taxonomy_module, "DEFAULT_TAXONOMY_PATH", path)
+
+    with pytest.raises(ValueError, match="immutable v1 SHA-256"):
+        load_article_taxonomy(path)
+
+
 def test_json_schema_snapshot_matches_the_yaml_authority():
     taxonomy = load_article_taxonomy()
     schema_path = DEFAULT_TAXONOMY_PATH.parents[1] / "schemas" / "article_semantic_bundle_v1.schema.json"
@@ -139,6 +193,8 @@ def test_json_schema_snapshot_matches_the_yaml_authority():
         "categories",
         "keywords",
     }
+    assert "schema alone does not express" in schema["description"]
+    assert properties["schema_version"]["const"] == "article-semantic-bundle.v1"
     assert properties["taxonomy_id"]["const"] == taxonomy.taxonomy_id
     assert properties["taxonomy_sha256"]["const"] == taxonomy.sha256
     assert properties["summary"]["minLength"] == taxonomy.constraints.summary_min_chars
@@ -148,3 +204,7 @@ def test_json_schema_snapshot_matches_the_yaml_authority():
     assert properties["keywords"]["minItems"] == taxonomy.constraints.keywords_min_items
     assert properties["keywords"]["maxItems"] == taxonomy.constraints.keywords_max_items
     assert properties["keywords"]["items"]["maxLength"] == taxonomy.constraints.keyword_max_chars
+    assert "\\u0000-\\u001f" in properties["summary"]["pattern"]
+    assert "\\u007f-\\u009f" in properties["summary"]["pattern"]
+    assert properties["categories"]["uniqueItems"] is True
+    assert properties["keywords"]["uniqueItems"] is True

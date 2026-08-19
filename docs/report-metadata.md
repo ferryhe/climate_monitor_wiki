@@ -32,13 +32,20 @@ single authority for category labels, signal mappings, count bounds, and
 disallowed generic keywords. `climate_monitor` classification and historical
 Registry annotation validation both load it. The accompanying
 `monitoring/schemas/article_semantic_bundle_v1.schema.json` documents the
-strict atomic `{summary, categories, keywords}` object that the external
-Hermes monitor will adopt in a later, separately reviewed migration. Category
-membership is intentionally validated from the YAML rather than duplicated as
-a second enum in the JSON Schema. Each bundle binds both the taxonomy ID and
-the exact taxonomy file SHA-256. Taxonomy v1 is immutable; a future label or
-meaning change must add a new versioned taxonomy instead of editing v1 in
-place.
+portable structural subset of the atomic `{summary, categories, keywords}`
+object that the external Hermes monitor will adopt in a later, separately
+reviewed migration. Schema-only validation is insufficient: the Python
+validator additionally enforces taxonomy membership and identity, NFC and
+whitespace normalization, case-insensitive uniqueness, and generic-keyword
+rejection. Category membership is intentionally validated from the YAML rather
+than duplicated as a second enum in the JSON Schema. Each bundle binds both the
+taxonomy ID and the exact taxonomy file SHA-256. Taxonomy v1 is immutable; a
+future label or meaning change must add a new versioned taxonomy instead of
+editing v1 in place.
+
+The shared consumers load the taxonomy during module import. A missing,
+unreadable, malformed, or wrong-identity default taxonomy therefore fails
+startup with a contract-level `ValueError`; there is no fallback category list.
 
 The planned external-Hermes migration keeps `web_listening` as the acquisition
 engine and extends the existing monitor rather than creating another crawler:
