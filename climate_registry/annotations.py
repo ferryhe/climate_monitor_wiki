@@ -11,20 +11,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from climate_monitor.dedupe import canonical_url
+from climate_monitor.taxonomy import load_article_taxonomy
 
 
-ALLOWED_CATEGORIES = frozenset(
-    {
-        "Physical Risk",
-        "Transition Risk",
-        "Adaptation & Resilience",
-        "Climate Risk",
-        "Insurance Risk",
-        "Capital & Solvency",
-        "Supervision & Disclosure",
-        "Actuarial Modelling",
-    }
-)
+_ARTICLE_TAXONOMY = load_article_taxonomy()
+ALLOWED_CATEGORIES = _ARTICLE_TAXONOMY.allowed_labels
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "annotation_method",
@@ -48,7 +39,7 @@ SOURCE_BASES = {
     "report_fallback",
 }
 ALTERNATE_SOURCE_BASES = {"official_replacement", "publisher_excerpt"}
-DISALLOWED_KEYWORDS = {"article", "news", "report", "update"}
+DISALLOWED_KEYWORDS = _ARTICLE_TAXONOMY.constraints.disallowed_keywords
 MAX_ANNOTATION_BYTES = 2 * 1024 * 1024
 MAX_ANNOTATION_FILES = 64
 MAX_ANNOTATION_TOTAL_BYTES = 16 * 1024 * 1024

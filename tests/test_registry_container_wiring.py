@@ -70,6 +70,7 @@ def test_dockerfile_packages_registry_without_changing_entrypoint():
     assert "COPY climate_registry ./climate_registry" in dockerfile
     assert "COPY climate_monitor ./climate_monitor" in dockerfile
     assert "COPY climate_delivery ./climate_delivery" in dockerfile
+    assert "COPY monitoring/taxonomies ./monitoring/taxonomies" in dockerfile
 
     assert 'CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501"]' in dockerfile
 
@@ -83,6 +84,8 @@ def test_docker_build_context_includes_registry_runtime_dependencies():
         if line.strip() and not line.lstrip().startswith("#")
     }
     assert required_packages.isdisjoint(dockerignore_entries)
+    assert "!monitoring/taxonomies" in dockerignore_entries
+    assert "!monitoring/taxonomies/**" in dockerignore_entries
 
 
 def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only_bind():

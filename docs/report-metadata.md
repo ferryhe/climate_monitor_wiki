@@ -26,6 +26,41 @@ For the two alternate-source bases, `canonical_url` remains the Registry key
 while `source_url` records the publisher page actually used. The API exposes
 each distinction as provenance.
 
+The controlled category taxonomy is versioned in
+`monitoring/taxonomies/article_categories_v1.yaml`. That YAML file is the
+single authority for category labels, signal mappings, count bounds, and
+disallowed generic keywords. `climate_monitor` classification and historical
+Registry annotation validation both load it. The accompanying
+`monitoring/schemas/article_semantic_bundle_v1.schema.json` documents the
+strict atomic `{summary, categories, keywords}` object that the external
+Hermes monitor will adopt in a later, separately reviewed migration. Category
+membership is intentionally validated from the YAML rather than duplicated as
+a second enum in the JSON Schema. Each bundle binds both the taxonomy ID and
+the exact taxonomy file SHA-256. Taxonomy v1 is immutable; a future label or
+meaning change must add a new versioned taxonomy instead of editing v1 in
+place.
+
+The planned external-Hermes migration keeps `web_listening` as the acquisition
+engine and extends the existing monitor rather than creating another crawler:
+
+```text
+web_listening acquisition (existing per-site HTTP/browser policy)
+  -> normalization, relevance filtering, Pillar assignment, and de-duplication
+  -> final article selection
+  -> one Hermes authoring pass produces summary + categories + keywords
+  -> deterministic validation against the versioned taxonomy/schema
+  -> canonical weekly Markdown
+  -> 09:00 summary/PDF and later Registry import
+```
+
+The three semantic fields are one atomic bundle and are generated only after
+final selection. The deterministic driver validates and renders them; it must
+not fetch an article again, call another model, or invent a missing field. The
+current production Hermes prompt and external `weekly_driver.py` have not yet
+been moved by this contract-only change. That migration requires a separate
+review of their exact dependencies and state-commit order before the 08:00 job
+is changed.
+
 At runtime, full-content Registry enrichment takes precedence, followed by the
 unique article annotation, then explicit metadata embedded in a report. Batch
 files fail closed if their schema, canonical URLs, taxonomy, or uniqueness is

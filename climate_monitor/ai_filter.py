@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .models import CandidateItem, RunConfig
+from .taxonomy import load_article_taxonomy
 
 CLIMATE_SIGNAL_TERMS = {
     "physical_risk": ("physical risk", "flood", "wildfire", "heatwave", "natural catastrophe"),
@@ -18,16 +19,7 @@ ACTUARIAL_SIGNAL_TERMS = {
     "actuarial_modeling": ("actuarial", "actuary", "catastrophe model", "mortality", "pension"),
 }
 
-CATEGORY_LABELS = {
-    "physical_risk": "Physical Risk",
-    "transition_risk": "Transition Risk",
-    "adaptation_resilience": "Adaptation & Resilience",
-    "general_climate": "Climate Risk",
-    "insurance_risk": "Insurance Risk",
-    "capital_solvency": "Capital & Solvency",
-    "supervision_disclosure": "Supervision & Disclosure",
-    "actuarial_modeling": "Actuarial Modelling",
-}
+CATEGORY_LABELS = load_article_taxonomy().labels_by_signal
 
 
 def classify_candidate(item: CandidateItem, config: RunConfig) -> CandidateItem:

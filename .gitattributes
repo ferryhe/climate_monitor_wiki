@@ -1,0 +1,2 @@
+monitoring/taxonomies/*.yaml text eol=lf
+monitoring/schemas/*.json text eol=lf
