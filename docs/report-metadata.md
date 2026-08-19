@@ -40,13 +40,21 @@ whitespace normalization, case-insensitive uniqueness, and generic-keyword
 rejection. It is intentionally stricter than the JSON Schema: every accepted
 string must be strictly UTF-8 encodable, and all Unicode format characters
 (`Cf`) are rejected, including directional controls and zero-width characters.
-Inputs fail closed rather than being stripped, replaced, or normalized on the
-caller's behalf. Category membership is intentionally validated from the YAML
-rather than duplicated as a second enum in the JSON Schema. Each bundle binds
-both the taxonomy ID and the exact taxonomy file SHA-256, independent of where
-the taxonomy file is stored. Taxonomy v1 is immutable; a future label or meaning
+It also rejects the complete `Default_Ignorable_Code_Point` property frozen from
+Unicode 17.0.0 `DerivedCoreProperties.txt`, including combining grapheme joiners,
+variation selectors, and Hangul fillers. The checked-in range table is
+deterministic and requires no runtime Unicode data download. Inputs fail closed
+rather than being stripped, replaced, or normalized on the caller's behalf.
+Category membership is intentionally validated from the YAML rather than
+duplicated as a second enum in the JSON Schema. Each bundle binds both the
+taxonomy ID and the exact taxonomy file SHA-256, independent of where the
+taxonomy file is stored. Taxonomy v1 is immutable; a future label or meaning
 change must add a new explicitly supported versioned identity instead of editing
 v1 in place.
+
+Repository tests use the declared `jsonschema>=4.23,<5` dependency to run real
+Draft 2020-12 metaschema and bundle validation. The application does not use the
+JSON Schema as a runtime substitute for the stricter Python validator.
 
 The shared consumers load the taxonomy during module import. A missing,
 unreadable, malformed, or wrong-identity default taxonomy therefore fails

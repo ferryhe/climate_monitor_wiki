@@ -118,7 +118,11 @@ def test_semantic_bundle_is_normalized_against_the_versioned_taxonomy():
         ("summary", "summary\x00metadata", "normalized"),
         ("summary", "summary\ud800metadata", "normalized"),
         ("summary", "summary\u202emetadata", "normalized"),
+        ("summary", "summary\u034fmetadata", "normalized"),
+        ("categories", ["Climate\ufe0f Risk"], "normalized"),
         ("keywords", ["climate", "re\u200bport", "pricing"], "normalized"),
+        ("keywords", ["climate", "re\u034fport", "pricing"], "normalized"),
+        ("keywords", ["climate", "re\ufe0fport", "pricing"], "normalized"),
         ("keywords", ["climate", "risk\u202e", "pricing"], "normalized"),
         ("summary", "not NFC: e\u0301", "normalized"),
     ],
@@ -165,7 +169,77 @@ def test_unicode_policy_rejects_every_format_character():
     )
     for character in format_characters:
         with pytest.raises(ValueError, match="normalized"):
+            taxonomy_module._validate_unicode_scalar_text(
+                character, name="semantic text"
+            )
+
+
+@pytest.mark.parametrize(
+    "codepoint",
+    [0x034F, 0xFE0F, 0x180B, 0x180F, 0x2060, 0x3164, 0xFFA0, 0xE0100],
+)
+def test_unicode_policy_rejects_default_ignorable_probes(codepoint):
+    assert taxonomy_module._is_default_ignorable(codepoint)
+    with pytest.raises(ValueError, match="normalized"):
+        taxonomy_module._validate_unicode_scalar_text(chr(codepoint), name="semantic text")
+
+
+def test_frozen_default_ignorable_ranges_are_complete_and_well_formed():
+    ranges = taxonomy_module._DEFAULT_IGNORABLE_RANGES
+
+    assert taxonomy_module._DEFAULT_IGNORABLE_UNICODE_VERSION == "17.0.0"
+    assert isinstance(ranges, tuple)
+    assert sum(end - start + 1 for start, end in ranges) == 4_174
+    canonical_ranges = "\n".join(
+        f"{start:06X}..{end:06X}" for start, end in ranges
+    ).encode("ascii")
+    assert hashlib.sha256(canonical_ranges).hexdigest() == (
+        "5205ae076909257d0fd58182a3a24b554abd099e1ed6340e3a7e1ad0f576bf72"
+    )
+    assert all(isinstance(item, tuple) and len(item) == 2 for item in ranges)
+    assert all(start <= end for start, end in ranges)
+    assert all(
+        left_end < right_start
+        for (_, left_end), (right_start, _) in zip(ranges, ranges[1:])
+    )
+
+    checked_neighbors = 0
+    for start, end in ranges:
+        for codepoint in {start, end}:
+            assert taxonomy_module._is_default_ignorable(codepoint)
+            with pytest.raises(ValueError, match="normalized"):
+                taxonomy_module._validate_unicode_scalar_text(
+                    chr(codepoint), name="semantic text"
+                )
+        for codepoint in (start - 1, end + 1):
+            if not 0 <= codepoint <= sys.maxunicode:
+                continue
+            character = chr(codepoint)
+            if (
+                taxonomy_module._is_default_ignorable(codepoint)
+                or unicodedata.category(character) in {"Cc", "Cf", "Cn", "Cs"}
+            ):
+                continue
             taxonomy_module._validate_unicode_scalar_text(character, name="semantic text")
+            checked_neighbors += 1
+    assert checked_neighbors > 0
+
+
+@pytest.mark.parametrize("keyword", ["report", "re\u034fport", "re\ufe0fport"])
+def test_generic_keyword_cannot_be_hidden_with_default_ignorables(keyword):
+    bundle = _valid_semantic_bundle()
+    bundle["keywords"] = ["climate", keyword, "pricing"]
+
+    with pytest.raises(ValueError):
+        validate_semantic_bundle(bundle)
+
+
+def test_taxonomy_strings_share_default_ignorable_validation():
+    raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
+    modified = raw.replace("Acute and chronic", "Acute\u034f and chronic", 1)
+
+    with pytest.raises(ValueError, match="normalized"):
+        taxonomy_module._parse_article_taxonomy_bytes(modified.encode("utf-8"))
 
 
 def test_taxonomy_loader_rejects_duplicate_labels():
@@ -307,6 +381,14 @@ def test_json_schema_snapshot_matches_the_yaml_authority():
 
 def test_json_schema_is_valid_draft_2020_12():
     Draft202012Validator.check_schema(_semantic_schema())
+
+
+def test_jsonschema_test_dependency_is_directly_declared():
+    requirements = (
+        DEFAULT_TAXONOMY_PATH.parents[2] / "requirements.txt"
+    ).read_text(encoding="utf-8").splitlines()
+
+    assert "jsonschema>=4.23,<5" in requirements
 
 
 @pytest.mark.parametrize(

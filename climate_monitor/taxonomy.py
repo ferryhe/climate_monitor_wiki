@@ -27,6 +27,39 @@ _CATEGORY_FIELDS = {"id", "label", "description", "signals"}
 _SUPPORTED_TAXONOMY_IDENTITIES = {
     (TAXONOMY_SCHEMA_VERSION, DEFAULT_TAXONOMY_ID): DEFAULT_TAXONOMY_SHA256,
 }
+# Frozen from Unicode 17.0.0 DerivedCoreProperties.txt (2025-07-30), property
+# Default_Ignorable_Code_Point. These 27 sorted ranges contain 4,174 code
+# points. Runtime validation never downloads or derives Unicode property data.
+_DEFAULT_IGNORABLE_UNICODE_VERSION = "17.0.0"
+_DEFAULT_IGNORABLE_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180D),
+    (0x180E, 0x180E),
+    (0x180F, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x2064),
+    (0x2065, 0x2065),
+    (0x2066, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0000),
+    (0xE0001, 0xE0001),
+    (0xE0002, 0xE001F),
+    (0xE0020, 0xE007F),
+    (0xE0080, 0xE00FF),
+    (0xE0100, 0xE01EF),
+    (0xE01F0, 0xE0FFF),
+)
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -122,18 +155,28 @@ def _bounded_pair(value: Any, *, name: str) -> tuple[int, int]:
     return minimum, maximum
 
 
+def _is_default_ignorable(codepoint: int) -> bool:
+    for start, end in _DEFAULT_IGNORABLE_RANGES:
+        if codepoint < start:
+            return False
+        if codepoint <= end:
+            return True
+    return False
+
+
 def _validate_unicode_scalar_text(value: str, *, name: str) -> None:
     try:
         value.encode("utf-8", errors="strict")
     except UnicodeEncodeError as exc:
         raise ValueError(f"{name} must be a non-empty normalized string") from exc
-    # V1 rejects every Unicode format character (category Cf), including
-    # directional controls, isolates, and zero-width joiners/separators. This
-    # explicit policy is intentionally stricter than the portable JSON Schema.
+    # V1 rejects C0/C1, every format character (Cf), and the complete frozen
+    # Default_Ignorable_Code_Point property above. This explicit policy is
+    # intentionally stricter than the portable JSON Schema.
     if any(
         ord(character) < 32
         or 127 <= ord(character) <= 159
         or unicodedata.category(character) == "Cf"
+        or _is_default_ignorable(ord(character))
         for character in value
     ):
         raise ValueError(f"{name} must be a non-empty normalized string")
