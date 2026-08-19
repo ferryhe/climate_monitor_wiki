@@ -896,16 +896,33 @@ def test_bounded_reader_opens_with_nonblocking_flag_on_posix(tmp_path, monkeypat
     attempt = tmp_path / "attempt.json"
     attempt.write_bytes(b"{}")
     real_open = os.open
-    observed_flags: list[int] = []
+    observed_calls: list[tuple[object, int, int, int | None]] = []
 
-    def recording_open(path, flags, *args):
-        observed_flags.append(flags)
-        return real_open(path, flags, *args)
+    def recording_open(path, flags, mode=0o777, *, dir_fd=None):
+        observed_calls.append((path, flags, mode, dir_fd))
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr("climate_monitor.run_ledger.os.open", recording_open)
     assert read_bounded_file(attempt, max_bytes=MAX_ATTEMPT_BYTES) == b"{}"
-    assert observed_flags
-    assert observed_flags[0] & os.O_NONBLOCK
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    assert observed_calls[0] == (attempt.anchor, directory_flags, 0o777, None)
+    assert all(isinstance(call[3], int) for call in observed_calls[1:])
+
+    file_path, file_flags, file_mode, file_dir_fd = observed_calls[-1]
+    assert file_path == attempt.name
+    assert file_flags == (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | os.O_NONBLOCK
+    )
+    assert file_mode == 0o777
+    assert isinstance(file_dir_fd, int)
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO is unavailable")

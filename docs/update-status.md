@@ -177,7 +177,7 @@ an individual file:
 
 ```bash
 export CLIMATE_UPDATE_STATUS_HOST_DIR=/external/weekly-run-ledger
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.update-status.yml \
   config --quiet

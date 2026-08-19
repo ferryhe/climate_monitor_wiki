@@ -92,7 +92,7 @@ to `scheduler-status.json`. Never update the live file in place.
 
 ```bash
 export CLIMATE_JOB_STATUS_HOST_DIR=/external/sanitized-job-status
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.job-status.yml \
   config --quiet

@@ -175,11 +175,20 @@ application root `/app`) and
 sets the fixed in-container database path. The host directory is configuration,
 not repository content:
 
+For every optional bind override in this section, use
+`python -m scripts.safe_compose` in place of a raw `docker compose` invocation.
+The wrapper rejects an unset, relative, missing, or non-directory host source
+before Docker runs, without printing the configured path. This preflight is
+required because some Docker Desktop engines create a missing source even when
+Compose receives `bind.create_host_path: false`. The explicit `false` remains
+in each source YAML as a second fail-closed layer on engines that honor it.
+
 ```bash
 export CLIMATE_REGISTRY_HOST_DIR=/home/ubuntu/climate_monitor_data/registry
 
 docker compose -f docker-compose.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.registry.yml config --quiet
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml -f docker-compose.registry.yml config --quiet
 ```
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
@@ -216,7 +225,8 @@ jobs do not change:
 ROLLBACK_TAG="climate-monitor-wiki:pre-registry-$(date -u +%Y%m%dT%H%M%SZ)"
 docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
-docker compose -f docker-compose.yml -f docker-compose.registry.yml \
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --build --no-deps wiki
 
 curl --fail-with-body -sS https://climate.aiinforsearch.com/api/registry/status \
@@ -242,7 +252,8 @@ wiring:
 
 ```bash
 docker image tag "$ROLLBACK_TAG" climate-monitor-wiki:local
-docker compose -f docker-compose.yml -f docker-compose.registry.yml \
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --no-build --no-deps --force-recreate wiki
 # For a pre-Registry image, use only: docker compose up -d --no-build --no-deps --force-recreate wiki
 ```
@@ -255,12 +266,13 @@ those remain explicit, separately reviewed server operations.
 
 Historical Reports can consume an operator-managed delivery artifact tree with
 the independent `docker-compose.delivery.yml` override. Set the host path
-explicitly; Compose will fail instead of creating a missing directory:
+explicitly; the safe wrapper will fail before Docker can create a missing
+directory:
 
 ```bash
 export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
 
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.registry.yml \
   -f docker-compose.delivery.yml \
@@ -295,7 +307,7 @@ override:
 
 ```bash
 export CLIMATE_UPDATE_STATUS_HOST_DIR=/external/weekly-run-ledger
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.update-status.yml \
   config --quiet
@@ -325,7 +337,7 @@ Enable its independent directory mount with:
 
 ```bash
 export CLIMATE_JOB_STATUS_HOST_DIR=/external/sanitized-job-status
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.job-status.yml \
   config --quiet

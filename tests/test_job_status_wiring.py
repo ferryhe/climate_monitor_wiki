@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,15 @@ def test_job_status_docs_keep_exporter_and_hermes_database_out_of_scope():
 
 
 def test_all_optional_read_only_overrides_render_together(tmp_path):
+    declared = yaml.safe_load(
+        (ROOT / "docker-compose.job-status.yml").read_text(encoding="utf-8")
+    )["services"]["wiki"]["volumes"][0]
+    assert declared["type"] == "bind"
+    assert declared["source"].startswith("${CLIMATE_JOB_STATUS_HOST_DIR:?")
+    assert declared["target"] == "/job-status"
+    assert declared["read_only"] is True
+    assert declared["bind"] == {"create_host_path": False}
+
     docker = shutil.which("docker")
     if not docker:
         pytest.skip("Docker CLI is not installed")
@@ -77,5 +87,4 @@ def test_all_optional_read_only_overrides_render_together(tmp_path):
     mount = next(item for item in wiki["volumes"] if item["target"] == "/job-status")
     assert mount["source"] == str(job_status.resolve())
     assert mount["read_only"] is True
-    assert mount["bind"]["create_host_path"] is False
     assert wiki["environment"]["CLIMATE_JOB_STATUS_DIR"] == "/job-status"

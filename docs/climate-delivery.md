@@ -185,7 +185,7 @@ For Compose, use the independent read-only override:
 
 ```bash
 export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.delivery.yml \
   config --quiet

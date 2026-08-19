@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts import record_weekly_run
 
@@ -138,6 +139,15 @@ def test_contract_does_not_claim_token_validation_can_detect_secrets():
 
 
 def test_base_registry_and_update_status_compose_overrides_render_together(tmp_path):
+    declared = yaml.safe_load(
+        (ROOT / "docker-compose.update-status.yml").read_text(encoding="utf-8")
+    )["services"]["wiki"]["volumes"][0]
+    assert declared["type"] == "bind"
+    assert declared["source"].startswith("${CLIMATE_UPDATE_STATUS_HOST_DIR:?")
+    assert declared["target"] == "/update-status"
+    assert declared["read_only"] is True
+    assert declared["bind"] == {"create_host_path": False}
+
     docker = shutil.which("docker")
     if not docker:
         pytest.skip("Docker CLI is not installed")
@@ -176,5 +186,4 @@ def test_base_registry_and_update_status_compose_overrides_render_together(tmp_p
     mount = next(item for item in wiki["volumes"] if item["target"] == "/update-status")
     assert mount["source"] == str(ledger.resolve())
     assert mount["read_only"] is True
-    assert mount["bind"]["create_host_path"] is False
     assert wiki["environment"]["CLIMATE_UPDATE_STATUS_DIR"] == "/update-status"
