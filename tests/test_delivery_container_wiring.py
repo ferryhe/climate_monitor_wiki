@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,15 @@ def test_delivery_override_is_required_external_read_only_bind():
 
 
 def test_base_and_delivery_override_render_independently(tmp_path):
+    declared = yaml.safe_load(
+        (ROOT / "docker-compose.delivery.yml").read_text(encoding="utf-8")
+    )["services"]["wiki"]["volumes"][0]
+    assert declared["type"] == "bind"
+    assert declared["source"].startswith("${CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR:?")
+    assert declared["target"] == "/delivery-output"
+    assert declared["read_only"] is True
+    assert declared["bind"] == {"create_host_path": False}
+
     environment = os.environ | {"OPENAI_API_KEY": "", "RELOAD_TOKEN": ""}
     base = _docker_config("docker-compose.yml", environment=environment)
     assert all(item.get("target") != "/delivery-output" for item in base["services"]["wiki"]["volumes"])
@@ -66,9 +76,9 @@ def test_base_and_delivery_override_render_independently(tmp_path):
     service = rendered["services"]["wiki"]
     assert service["environment"]["CLIMATE_DELIVERY_OUTPUT_DIR"] == "/delivery-output"
     mount = next(item for item in service["volumes"] if item["target"] == "/delivery-output")
+    assert mount["type"] == "bind"
     assert mount["source"] == str(host_output.resolve())
     assert mount["read_only"] is True
-    assert mount["bind"]["create_host_path"] is False
 
 
 def test_delivery_override_rejects_missing_host_variable():

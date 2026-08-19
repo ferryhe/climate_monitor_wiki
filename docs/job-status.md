@@ -92,11 +92,15 @@ to `scheduler-status.json`. Never update the live file in place.
 
 ```bash
 export CLIMATE_JOB_STATUS_HOST_DIR=/external/sanitized-job-status
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.job-status.yml \
   config --quiet
 ```
+
+This read-only `config` command uses Compose's normal passthrough behavior. Use
+the same wrapper and override set for a later container-creating command so its
+final resolved mount and host path receive the documented preflight checks.
 
 The override mounts the parent directory read-only at `/job-status`, disables
 implicit host-path creation, and sets `CLIMATE_JOB_STATUS_DIR=/job-status`.

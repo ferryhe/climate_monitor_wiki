@@ -614,7 +614,7 @@ def _preflight(
     database_path = _absolute_path(database, label="database")
     if _is_link_or_reparse(database_path):
         raise WeeklyPreflightError(
-            "weekly registry preflight failed: database is unsafe"
+            "weekly registry preflight failed: database path is unsafe"
         )
     try:
         database_metadata = os.lstat(database_path)

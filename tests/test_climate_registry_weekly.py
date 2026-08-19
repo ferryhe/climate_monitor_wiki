@@ -1223,7 +1223,7 @@ def test_database_symlink_sidecars_and_nonstandard_lock_fail_before_writes(
         linked.symlink_to(weekly_fixture.database)
     except OSError:
         pytest.skip("symbolic links are unavailable")
-    with pytest.raises(weekly.WeeklyPreflightError, match="database is unsafe"):
+    with pytest.raises(weekly.WeeklyPreflightError) as raised:
         weekly.weekly_sync(
             **weekly_fixture.arguments(
                 database=linked,
@@ -1231,6 +1231,9 @@ def test_database_symlink_sidecars_and_nonstandard_lock_fail_before_writes(
                 dry_run=True,
             )
         )
+    assert str(raised.value) == (
+        "weekly registry preflight failed: database path is unsafe"
+    )
 
 
 def test_stale_standard_lock_file_does_not_permanently_block(weekly_fixture):
