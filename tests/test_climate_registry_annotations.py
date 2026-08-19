@@ -1,13 +1,18 @@
 import json
+import os
 from collections import Counter
 from pathlib import Path
+
+import pytest
 
 from climate_monitor.dedupe import canonical_url
 from climate_registry.annotations import (
     ALLOWED_CATEGORIES,
     DISALLOWED_KEYWORDS,
     load_article_annotations,
+    load_article_annotations_strict,
 )
+import climate_registry.annotations as annotation_module
 from climate_registry.reports import parse_report_directory
 
 
@@ -128,3 +133,66 @@ def test_bundled_annotations_cover_each_unique_historical_article_once():
         for item in annotations.values()
         if item.source_basis in {"official_replacement", "publisher_excerpt"}
     )
+
+
+def test_annotation_loader_rejects_symlinked_batch(tmp_path):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    target = tmp_path / "target.json"
+    target.write_text(json.dumps(_valid_annotation_payload()), encoding="utf-8")
+    link = metadata_dir / "articles-001-001.json"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+    assert load_article_annotations_strict(metadata_dir) == ("invalid", {})
+
+
+def test_annotation_loader_detects_path_identity_swap(tmp_path, monkeypatch):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    path = metadata_dir / "articles-001-001.json"
+    path.write_text(json.dumps(_valid_annotation_payload()), encoding="utf-8")
+    real_lstat = annotation_module.os.lstat
+    alternate = tmp_path / "alternate.json"
+    alternate.write_text(json.dumps(_valid_annotation_payload()) + " ", encoding="utf-8")
+    calls = 0
+
+    def swapped_lstat(candidate):
+        nonlocal calls
+        result = real_lstat(candidate)
+        if Path(candidate) == path:
+            calls += 1
+            if calls > 1:
+                return real_lstat(alternate)
+        return result
+
+    monkeypatch.setattr(annotation_module.os, "lstat", swapped_lstat)
+    assert load_article_annotations_strict(metadata_dir) == ("invalid", {})
+
+
+def test_annotation_loader_enforces_single_total_file_and_article_bounds(
+    tmp_path, monkeypatch
+):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    first = json.dumps(_valid_annotation_payload()).encode("utf-8")
+    (metadata_dir / "articles-001-001.json").write_bytes(first)
+
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_BYTES", len(first) - 1)
+    assert load_article_annotations_strict(metadata_dir) == ("invalid", {})
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_BYTES", len(first) + 10)
+
+    second_payload = _valid_annotation_payload()
+    second_payload["articles"][0]["canonical_url"] = "https://example.com/second"
+    second_payload["articles"][0]["source_url"] = "https://example.com/second"
+    second = json.dumps(second_payload).encode("utf-8")
+    (metadata_dir / "articles-002-002.json").write_bytes(second)
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_FILES", 1)
+    assert load_article_annotations_strict(metadata_dir) == ("invalid", {})
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_FILES", 2)
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_TOTAL_BYTES", len(first) + len(second) - 1)
+    assert load_article_annotations_strict(metadata_dir) == ("invalid", {})
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_TOTAL_BYTES", len(first) + len(second))
+    monkeypatch.setattr(annotation_module, "MAX_ANNOTATION_ARTICLES", 1)
+    assert load_article_annotations_strict(metadata_dir) == ("invalid", {})

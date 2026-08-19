@@ -11,6 +11,12 @@ from fastapi.testclient import TestClient
 
 import api_server
 from api_server import app
+from climate_delivery.artifacts import ARTIFACT_ONLY_DELIVERY_STATUS
+from climate_delivery.io import atomic_write_json
+from climate_delivery.pdf import render_pdf
+from climate_delivery.pipeline import _manifest
+from climate_delivery.report import parse_weekly_report
+from climate_delivery.summary import build_summary, write_summary
 from climate_monitor.dedupe import canonical_url
 from climate_registry.annotations import load_article_annotations
 from climate_registry.audit import build_audit_registry
@@ -26,6 +32,34 @@ CURRENT_HISTORICAL_DATES = (
     "2026-08-10",
     "2026-08-17",
 )
+
+
+def _write_retained_artifacts(output: Path) -> dict[str, tuple[dict, bytes]]:
+    expected: dict[str, tuple[dict, bytes]] = {}
+    for report_date in CURRENT_HISTORICAL_DATES:
+        report = parse_weekly_report(
+            ROOT / "sources" / f"climate-monitor-{report_date}.md"
+        )
+        summary = build_summary(report)
+        destination = output / report.report_date / report.sha256
+        summary_path = destination / "summary.json"
+        pdf_name = f"climate-monitor-{report.report_date}.pdf"
+        pdf_path = destination / pdf_name
+        write_summary(summary, summary_path)
+        render_pdf(summary, pdf_path)
+        pdf_bytes = pdf_path.read_bytes()
+        atomic_write_json(
+            destination / "manifest.json",
+            _manifest(
+                summary,
+                {"status": ARTIFACT_ONLY_DELIVERY_STATUS, "recipients": []},
+                summary_sha256=hashlib.sha256(summary_path.read_bytes()).hexdigest(),
+                pdf_name=pdf_name,
+                pdf_sha256=hashlib.sha256(pdf_bytes).hexdigest(),
+            ),
+        )
+        expected[report_date] = (summary, pdf_bytes)
+    return expected
 
 
 def _registry(tmp_path: Path) -> Path:
@@ -223,7 +257,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 3,
+        "schema_version": 4,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -254,6 +288,9 @@ def test_current_four_historical_report_details_are_api_readable(
     build_audit_registry(ROOT / "sources", database, tmp_path / "audit")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setattr(api_server, "SOURCE_DIR", ROOT / "sources")
+    artifact_root = tmp_path / "artifacts"
+    expected_artifacts = _write_retained_artifacts(artifact_root)
+    monkeypatch.setenv("CLIMATE_DELIVERY_OUTPUT_DIR", str(artifact_root))
     client = TestClient(app)
 
     listing = client.get("/api/registry/reports?page=1&page_size=100")
@@ -263,7 +300,35 @@ def test_current_four_historical_report_details_are_api_readable(
     for report_date in CURRENT_HISTORICAL_DATES:
         detail = client.get(f"/api/registry/reports/{report_date}")
         assert detail.status_code == 200
-        assert detail.json()["report_date"] == report_date
+        payload = detail.json()
+        summary, pdf_bytes = expected_artifacts[report_date]
+        assert payload["report_date"] == summary["report"]["date"] == report_date
+        assert payload["report_title"] == summary["report"]["title"]
+        assert payload["report_briefing"] == {
+            "executive_summary": summary["executive_summary"],
+            "monitoring_snapshot": {
+                "sites_checked": summary["report"]["sites"]["checked"],
+                "sites_succeeded": summary["report"]["sites"]["succeeded"],
+                "sites_failed": summary["report"]["sites"]["failed"],
+                "pillar_a_updates": sum(
+                    item["pillar"] == "A" for item in summary["highlights"]
+                ),
+                "pillar_b_updates": sum(
+                    item["pillar"] == "B" for item in summary["highlights"]
+                ),
+                "notes": summary["monitoring_notes"],
+            },
+        }
+        assert payload["report_pdf"] == {
+            "filename": f"climate-monitor-{report_date}.pdf",
+            "download_url": f"/api/registry/reports/{report_date}/pdf",
+        }
+        download = client.get(payload["report_pdf"]["download_url"])
+        assert download.status_code == 200
+        assert download.headers["content-type"] == "application/pdf"
+        assert hashlib.sha256(download.content).hexdigest() == hashlib.sha256(
+            pdf_bytes
+        ).hexdigest()
 
 
 def test_publishers_are_bounded_deterministic_read_only_choices(registry_client):
@@ -384,7 +449,10 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
             (digest,),
         )
         connection.execute(
-            "UPDATE articles SET current_content_version_id = NULL WHERE article_id = 'article-meta'"
+            """
+            UPDATE articles SET current_content_version_id = NULL
+            WHERE article_id IN ('article-meta', 'article-excerpt')
+            """
         )
     connection.close()
     monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
@@ -403,6 +471,24 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
         "keywords": "content_enrichment",
     }
     assert report["articles"][1]["categories"] == []
+    assert report["articles"][1]["keywords"] == []
+    assert report["articles"][1]["summary"] is None
+    assert report["articles"][1]["report_summary"] == "Report-derived excerpt summary."
+    assert report["articles"][1]["metadata_provenance"] == {
+        "categories": None,
+        "keywords": None,
+    }
+    incomplete_detail = client.get("/api/registry/articles/article-excerpt").json()
+    assert incomplete_detail["report_summary"] == "Report-derived excerpt summary."
+    semantic_fields = (
+        "summary", "categories", "keywords", "summary_provenance",
+        "metadata_provenance",
+    )
+    assert {
+        name: incomplete_detail[name] for name in semantic_fields
+    } == {
+        name: report["articles"][1][name] for name in semantic_fields
+    }
 
     article = client.get("/api/registry/articles/article-meta").json()
     assert article["enrichment"]["categories"] == []
@@ -541,6 +627,14 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
         "source_basis": "original_content",
         "source_url": "https://insurer.test/meta",
         "generated_on": "2026-08-17",
+    }
+    report_article = report["articles"][2]
+    assert {
+        name: report_article[name]
+        for name in ("summary", "categories", "keywords", "metadata_provenance")
+    } == {
+        name: article[name]
+        for name in ("summary", "categories", "keywords", "metadata_provenance")
     }
 
     payload["articles"][2]["source_basis"] = "official_replacement"
@@ -865,6 +959,38 @@ def test_invalid_schema_is_rejected_without_mutation(tmp_path):
     with pytest.raises(RegistryContractError):
         reader.status()
     assert database.read_bytes() == before
+
+
+def test_exact_v3_remains_readable_during_v4_deployment_window(tmp_path):
+    database = tmp_path / "registry-v3.sqlite3"
+    connection = sqlite3.connect(database)
+    apply_migrations(connection, target_version=3)
+    connection.close()
+
+    reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
+    assert reader.status() == {
+        "available": True,
+        "schema_version": 3,
+        "reports": 0,
+        "articles": 0,
+        "discoveries": 0,
+        "latest_report_date": None,
+    }
+
+
+def test_v4_missing_resolution_immutability_trigger_is_rejected(tmp_path):
+    database = tmp_path / "registry-v4-corrupt.sqlite3"
+    connection = sqlite3.connect(database)
+    apply_migrations(connection)
+    connection.execute(
+        "DROP TRIGGER article_capture_resolutions_are_append_only_update"
+    )
+    connection.commit()
+    connection.close()
+
+    reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
+    with pytest.raises(RegistryContractError):
+        reader.status()
 
 
 def test_v3_number_without_required_columns_is_rejected(tmp_path):

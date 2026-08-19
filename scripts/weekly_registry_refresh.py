@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -41,14 +42,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--backup-dir", required=True, type=Path)
     parser.add_argument("--lock-file", required=True, type=Path)
     parser.add_argument("--publisher-ledger-dir", required=True, type=Path)
+    parser.add_argument("--metadata-dir", type=Path)
     parser.add_argument("--base-url", default=os.getenv("API_BASE_URL", "http://localhost:8501"))
+    parser.add_argument("--expected-api-host", default=os.getenv("SITE_HOST"))
     parser.add_argument("--capture-timeout", type=float, default=30.0)
     parser.add_argument("--process-timeout", type=float, default=1800.0)
     parser.add_argument("--request-timeout", type=float, default=30.0)
     return parser
 
 
-def _base_url(value: str) -> str:
+def _base_url(value: str, expected_host: str | None = None) -> str:
     try:
         parsed = parse.urlsplit(value)
     except ValueError as exc:
@@ -67,7 +70,26 @@ def _base_url(value: str) -> str:
         port = parsed.port
     except ValueError as exc:
         raise _JobError("invalid_base_url") from exc
-    authority = parsed.hostname
+    hostname = parsed.hostname.lower()
+    try:
+        is_loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        is_loopback = hostname == "localhost"
+    if not is_loopback:
+        if parsed.scheme != "https" or not expected_host:
+            raise _JobError("invalid_base_url")
+        expected = expected_host.strip().lower()
+        try:
+            expected_normalized = str(ipaddress.ip_address(expected.strip("[]")))
+            actual_normalized = str(ipaddress.ip_address(hostname))
+        except ValueError:
+            if not expected or any(character in expected for character in "/@?#:"):
+                raise _JobError("invalid_base_url")
+            expected_normalized = expected
+            actual_normalized = hostname
+        if actual_normalized != expected_normalized:
+            raise _JobError("invalid_base_url")
+    authority = hostname
     if ":" in authority and not authority.startswith("["):
         authority = f"[{authority}]"
     if port is not None:
@@ -107,6 +129,8 @@ def _sync_command(
         command.append("--dry-run")
     if expected_report_sha256 is not None:
         command.extend(("--expected-report-sha256", expected_report_sha256))
+    if args.metadata_dir is not None:
+        command.extend(("--metadata-dir", str(args.metadata_dir)))
     return command
 
 
@@ -127,8 +151,10 @@ def _validate_sync_result(
     if not isinstance(payload, dict):
         raise _JobError("invalid_sync_result")
     status = payload.get("status")
+    coverage_status = payload.get("coverage_status")
     if (
         status not in {"ok", "no-op"}
+        or coverage_status not in {"ok", "partial_with_validated_fallback"}
         or payload.get("date") != target_date
         or payload.get("dry_run") is not dry_run
         or not isinstance(payload.get("report_sha256"), str)
@@ -144,17 +170,48 @@ def _validate_sync_result(
         "articles_added",
         "articles_captured",
         "articles_failed",
+        "articles_fallback",
+        "articles_unresolved",
         "would_add_reports",
         "would_add_articles",
         "would_capture_count",
+        "would_fallback_count",
         "target_article_count",
         "target_eligible_article_count",
     ):
         _nonnegative_int(payload, name)
+    failure_classes = payload.get("fallback_failure_classes")
+    if (
+        not isinstance(failure_classes, dict)
+        or set(failure_classes) - {"http_403_publisher_bot_wall"}
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in failure_classes.values())
+        or not isinstance(payload.get("promotion_with_fallback"), bool)
+        or payload["promotion_with_fallback"]
+        != (payload["promotion"] == "performed" and payload["articles_fallback"] > 0)
+        or payload["articles_unresolved"] != 0
+        or (
+            coverage_status == "ok"
+            and any(payload[name] != 0 for name in (
+                "articles_failed", "articles_fallback", "articles_unresolved"
+            ))
+        )
+        or (
+            coverage_status == "partial_with_validated_fallback"
+            and (
+                dry_run
+                or status != "ok"
+                or payload["articles_fallback"] <= 0
+                or payload["articles_failed"] != payload["articles_fallback"]
+                or sum(failure_classes.values()) != payload["articles_fallback"]
+            )
+        )
+    ):
+        raise _JobError("invalid_sync_result")
     for name in ("database_sha256_before", "database_sha256_after"):
         if not isinstance(payload.get(name), str) or _SHA256.fullmatch(payload[name]) is None:
             raise _JobError("invalid_sync_result")
     target_article_ids = payload.get("target_article_ids")
+    fallback_article_ids = payload.get("fallback_article_ids")
     if (
         not isinstance(target_article_ids, list)
         or len(target_article_ids) != payload["target_article_count"]
@@ -165,6 +222,14 @@ def _validate_sync_result(
             or len(article_id) > 128
             for article_id in target_article_ids
         )
+    ):
+        raise _JobError("invalid_sync_result")
+    if (
+        not isinstance(fallback_article_ids, list)
+        or fallback_article_ids != sorted(fallback_article_ids)
+        or len(fallback_article_ids) != payload["articles_fallback"]
+        or len(set(fallback_article_ids)) != len(fallback_article_ids)
+        or not set(fallback_article_ids) <= set(target_article_ids)
     ):
         raise _JobError("invalid_sync_result")
     backup_name = payload.get("backup_name")
@@ -237,8 +302,13 @@ def _request_json(
     timeout: float,
 ) -> dict[str, Any]:
     outbound = request.Request(url, method=method, headers=dict(headers or {}))
+    class _RejectRedirects(request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+            return None
+
     try:
-        with request.urlopen(outbound, timeout=timeout) as response:
+        opener = request.build_opener(_RejectRedirects())
+        with opener.open(outbound, timeout=timeout) as response:
             body = response.read(2 * 1024 * 1024 + 1)
     except (error.HTTPError, error.URLError, OSError, TimeoutError) as exc:
         raise _JobError("api_request_failed") from exc
@@ -319,41 +389,72 @@ def _verify_sha_binding(
     }
 
 
-def _verify_article(detail: Mapping[str, Any], *, article_id: str, target_date: str) -> None:
+def _verify_article(
+    detail: Mapping[str, Any],
+    *,
+    article_id: str,
+    target_date: str,
+    fallback_article_ids: frozenset[str],
+) -> None:
     enrichment = detail.get("enrichment")
     provenance = detail.get("metadata_provenance")
     latest_fetch = detail.get("latest_fetch")
     appearances = detail.get("appearances")
-    if (
+    common_invalid = (
         detail.get("article_id") != article_id
         or detail.get("publication_eligible") is not True
         or not all(
             _nonempty(detail.get(name))
             for name in ("title", "summary", "canonical_url", "original_url", "source", "publisher")
         )
-        or detail.get("summary_provenance") != "content_enrichment"
         or not isinstance(detail.get("categories"), list)
         or not isinstance(detail.get("keywords"), list)
         or not isinstance(enrichment, dict)
-        or not _nonempty(enrichment.get("summary"))
-        or not isinstance(enrichment.get("categories"), list)
-        or not isinstance(enrichment.get("keywords"), list)
-        or not _nonempty(enrichment.get("language"))
-        or not isinstance(enrichment.get("generator"), dict)
-        or not all(
-            _nonempty(enrichment["generator"].get(name))
-            for name in ("kind", "name", "version", "generated_at")
-        )
-        or provenance
-        != {"categories": "content_enrichment", "keywords": "content_enrichment"}
         or not isinstance(latest_fetch, dict)
-        or latest_fetch.get("fetch_status") not in {"success", "not_modified"}
         or not isinstance(appearances, list)
         or not any(
             isinstance(item, dict) and item.get("report_date") == target_date
             for item in appearances
         )
-    ):
+    )
+    summary_provenance = detail.get("summary_provenance")
+    db_complete = (
+        summary_provenance == "content_enrichment"
+        and _nonempty(enrichment.get("summary"))
+        and isinstance(enrichment.get("categories"), list)
+        and isinstance(enrichment.get("keywords"), list)
+        and _nonempty(enrichment.get("language"))
+        and isinstance(enrichment.get("generator"), dict)
+        and all(
+            _nonempty(enrichment["generator"].get(name))
+            for name in ("kind", "name", "version", "generated_at")
+        )
+        and provenance == {"categories": "content_enrichment", "keywords": "content_enrichment"}
+        and (
+            latest_fetch.get("fetch_status") in {"success", "not_modified"}
+            or (
+                article_id in fallback_article_ids
+                and latest_fetch.get("fetch_status") == "failed"
+                and latest_fetch.get("http_status") == 403
+                and latest_fetch.get("error_code") == "http_error"
+            )
+        )
+    )
+    fallback_complete = (
+        summary_provenance in {
+            "source_report", "original_content_annotation",
+            "official_replacement_annotation", "publisher_excerpt_annotation",
+            "report_fallback_annotation",
+        }
+        and provenance == {"categories": summary_provenance, "keywords": summary_provenance}
+        and bool(detail.get("categories"))
+        and bool(detail.get("keywords"))
+        and article_id in fallback_article_ids
+        and latest_fetch.get("fetch_status") == "failed"
+        and latest_fetch.get("http_status") == 403
+        and latest_fetch.get("error_code") == "http_error"
+    )
+    if common_invalid or not (db_complete or fallback_complete):
         raise _JobError("article_detail_incomplete")
 
 
@@ -423,7 +524,8 @@ def _reload_and_verify(
     ):
         raise _JobError("report_verification_failed")
 
-    sample_id: str | None = None
+    verified_ids: list[str] = []
+    fallback_article_ids = frozenset(sync_result["fallback_article_ids"])
     for article in articles:
         if not isinstance(article, dict) or not _nonempty(article.get("article_id")):
             raise _JobError("report_verification_failed")
@@ -433,10 +535,14 @@ def _reload_and_verify(
             timeout=args.request_timeout,
         )
         if detail.get("publication_eligible") is True:
-            _verify_article(detail, article_id=candidate_id, target_date=args.date)
-            sample_id = candidate_id
-            break
-    if sample_id is None:
+            _verify_article(
+                detail,
+                article_id=candidate_id,
+                target_date=args.date,
+                fallback_article_ids=fallback_article_ids,
+            )
+            verified_ids.append(candidate_id)
+    if not verified_ids:
         raise _JobError("article_detail_incomplete")
 
     return {
@@ -448,7 +554,8 @@ def _reload_and_verify(
         "monitoring_snapshot": True,
         "pdf": True,
         "article_count": len(articles),
-        "sample_article_id": sample_id,
+        "sample_article_id": verified_ids[0],
+        "verified_eligible_article_count": len(verified_ids),
     }
 
 
@@ -463,7 +570,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             or args.request_timeout <= 0
         ):
             raise _JobError("invalid_runtime_options")
-        normalized_base = _base_url(args.base_url)
+        normalized_base = _base_url(args.base_url, args.expected_api_host)
         dry_result = _run_sync(args, dry_run=True)
         live_result = _run_sync(
             args,
@@ -473,12 +580,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if dry_result["report_sha256"] != live_result["report_sha256"]:
             raise _JobError("sync_identity_changed")
         sha_binding = _verify_sha_binding(args, live_result)
-        verification = _reload_and_verify(
-            args,
-            base_url=normalized_base,
-            sync_result=live_result,
-            sha_binding=sha_binding,
-        )
+        if live_result["promotion"] == "performed":
+            verification = _reload_and_verify(
+                args,
+                base_url=normalized_base,
+                sync_result=live_result,
+                sha_binding=sha_binding,
+            )
+            reload_status = "performed"
+        else:
+            verification = {
+                "source_registry_artifact_sha_match": True,
+                "target_article_count": sha_binding["target_article_count"],
+                "local_only": True,
+            }
+            reload_status = "not-needed"
         if _verify_sha_binding(args, live_result) != sha_binding:
             raise _JobError("sha_verification_failed")
         result = {
@@ -491,7 +607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "backup_name": live_result["backup_name"],
             "database_sha256_before": live_result["database_sha256_before"],
             "database_sha256_after": live_result["database_sha256_after"],
-            "reload": "performed",
+            "reload": reload_status,
             "verification": verification,
         }
         code = 0

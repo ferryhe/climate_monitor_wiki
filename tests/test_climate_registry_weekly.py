@@ -9,7 +9,7 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,6 +153,73 @@ class SparseTransport:
             {"content-type": "text/html; charset=utf-8"},
             b"<html><body><p>Too sparse.</p></body></html>",
         )
+
+
+class ForbiddenTransport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def request(self, target, headers, *, timeout, max_bytes):
+        self.calls += 1
+        return FetchResponse(
+            403,
+            target.url,
+            {"content-type": "text/html; charset=utf-8"},
+            b"<html><body>Publisher bot wall.</body></html>",
+        )
+
+
+def _write_target_annotation(directory: Path) -> None:
+    directory.mkdir()
+    (directory / "articles-001-001.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "annotation_method": "subagent-original-content-v1",
+                "source_scope": "linked-original-content-with-report-fallback",
+                "generated_on": TARGET,
+                "articles": [
+                    {
+                        "canonical_url": "https://example.com/target",
+                        "source_url": "https://example.com/target",
+                        "title": "Target",
+                        "source_basis": "publisher_excerpt",
+                        "summary": "Climate risk and insurance regulation changed this week.",
+                        "categories": ["Climate Risk"],
+                        "keywords": ["climate", "insurance", "regulation"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_annotations(directory: Path, urls: list[str]) -> None:
+    directory.mkdir(exist_ok=True)
+    (directory / "articles-001-025.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "annotation_method": "subagent-original-content-v1",
+                "source_scope": "linked-original-content-with-report-fallback",
+                "generated_on": TARGET,
+                "articles": [
+                    {
+                        "canonical_url": url,
+                        "source_url": url,
+                        "title": f"Target {index}",
+                        "source_basis": "publisher_excerpt",
+                        "summary": f"Validated publisher fallback for article {index}.",
+                        "categories": ["Climate Risk"],
+                        "keywords": ["climate", "insurance", f"risk-{index}"],
+                    }
+                    for index, url in enumerate(urls, start=1)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @dataclass
@@ -650,6 +717,12 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
         "articles_added": 0,
         "articles_captured": 0,
         "articles_failed": 0,
+        "articles_fallback": 0,
+        "fallback_article_ids": [],
+        "articles_unresolved": 0,
+        "fallback_failure_classes": {},
+        "promotion_with_fallback": False,
+        "coverage_status": "ok",
         "target_article_count": 1,
         "target_eligible_article_count": 1,
         "target_article_ids": result["target_article_ids"],
@@ -657,6 +730,7 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
         "would_add_articles": 1,
         "would_capture_article_ids": result["would_capture_article_ids"],
         "would_capture_count": 1,
+        "would_fallback_count": 0,
         "would_promote": True,
         "promotion": "not-needed",
         "reload_required": False,
@@ -669,6 +743,31 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
     assert not weekly_fixture.lock_file.exists()
     assert not weekly_fixture.backup_dir.exists()
     assert not list(weekly_fixture.database.parent.glob("*.weekly-candidate"))
+
+
+def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
+    connection = sqlite3.connect(weekly_fixture.database)
+    with connection:
+        connection.execute("DROP TRIGGER article_capture_resolutions_validate_insert")
+        connection.execute("DROP TRIGGER article_capture_resolutions_are_append_only_update")
+        connection.execute("DROP TRIGGER article_capture_resolutions_are_append_only_delete")
+        connection.execute("DROP TABLE article_capture_resolutions")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 4")
+        connection.execute("PRAGMA user_version = 3")
+    connection.close()
+    assert api_server.RegistryReader(
+        weekly_fixture.database, repository_root=weekly_fixture.repository
+    ).status()["schema_version"] == 3
+
+    result = weekly.weekly_sync(**weekly_fixture.arguments())
+    assert result["promotion"] == "performed"
+    assert api_server.RegistryReader(
+        weekly_fixture.database, repository_root=weekly_fixture.repository
+    ).status()["schema_version"] == 4
+    backup = weekly_fixture.backup_dir / result["backup_name"]
+    assert api_server.RegistryReader(
+        backup, repository_root=weekly_fixture.repository
+    ).status()["schema_version"] == 3
 
 
 def test_expected_dry_run_sha_blocks_changed_identity_before_writes(weekly_fixture):
@@ -718,7 +817,7 @@ def test_candidate_update_capture_backup_and_promotion_are_atomic_and_idempotent
     backups = list(weekly_fixture.backup_dir.iterdir())
     assert len(backups) == 1
     assert hashlib.sha256(backups[0].read_bytes()).hexdigest() == before_sha
-    assert not weekly_fixture.lock_file.exists()
+    assert weekly_fixture.lock_file.is_file()
     assert artifact_before == {
         path.relative_to(weekly_fixture.artifact_root): path.read_bytes()
         for path in weekly_fixture.artifact_root.rglob("*")
@@ -747,6 +846,23 @@ def test_candidate_update_capture_backup_and_promotion_are_atomic_and_idempotent
     assert repeated["reload_required"] is False
     assert weekly_fixture.database.read_bytes() == after
     assert len(list(weekly_fixture.backup_dir.iterdir())) == 1
+
+
+def test_weekly_sync_loads_annotation_catalog_once(weekly_fixture, monkeypatch):
+    real_loader = weekly.load_article_annotations_catalog
+    calls = 0
+
+    def counted_loader(path):
+        nonlocal calls
+        calls += 1
+        return real_loader(path)
+
+    monkeypatch.setattr(weekly, "load_article_annotations_catalog", counted_loader)
+    result = weekly.weekly_sync(
+        **weekly_fixture.arguments(transport=FakeTransport())
+    )
+    assert result["status"] == "ok"
+    assert calls == 1
 
 
 def test_dry_and_formal_no_op_still_validate_exact_live_membership(
@@ -1117,11 +1233,11 @@ def test_database_symlink_sidecars_and_nonstandard_lock_fail_before_writes(
         )
 
 
-def test_existing_standard_lock_uses_registry_lock_error(weekly_fixture):
+def test_stale_standard_lock_file_does_not_permanently_block(weekly_fixture):
     weekly_fixture.lock_file.write_text("other", encoding="ascii")
-    with pytest.raises(RegistryLockError, match="already locked"):
-        weekly.weekly_sync(**weekly_fixture.arguments(dry_run=True))
-    assert weekly_fixture.lock_file.read_text(encoding="ascii") == "other"
+    result = weekly.weekly_sync(**weekly_fixture.arguments(dry_run=True))
+    assert result["status"] == "ok"
+    assert weekly_fixture.lock_file.read_text(encoding="ascii").strip().isdigit()
 
 
 def test_partial_capture_never_promotes_or_creates_live_backup(weekly_fixture):
@@ -1146,7 +1262,409 @@ def test_partial_capture_never_promotes_or_creates_live_backup(weekly_fixture):
     assert result["capture"]["skipped_article_ids"] == []
     assert weekly_fixture.database.read_bytes() == before
     assert not weekly_fixture.backup_dir.exists()
-    assert not weekly_fixture.lock_file.exists()
+    assert weekly_fixture.lock_file.is_file()
+
+
+def test_enrichment_failure_counts_as_legacy_failed_and_unresolved(
+    weekly_fixture, monkeypatch
+):
+    def enrichment_failed(_database, _backup_dir, *, article_ids, **_kwargs):
+        return {
+            "status": "partial",
+            "selected": 1,
+            "counts": {"enrichment_failed": 1},
+            "articles": [
+                {
+                    "article_id": article_ids[0],
+                    "status": "enrichment_failed",
+                    "error_code": "enrichment_invalid",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(weekly, "capture_enrich_registry", enrichment_failed)
+    with pytest.raises(weekly.WeeklyPartialError) as raised:
+        weekly.weekly_sync(**weekly_fixture.arguments())
+    result = raised.value.result
+    assert result["articles_failed"] == 1
+    assert result["articles_fallback"] == 0
+    assert result["fallback_article_ids"] == []
+    assert result["articles_unresolved"] == 1
+    assert result["coverage_status"] == "blocked_unresolved"
+
+
+def test_exact_403_uses_whole_annotation_bundle_and_then_is_no_op(weekly_fixture):
+    metadata_dir = weekly_fixture.repository / "article_metadata"
+    _write_target_annotation(metadata_dir)
+    _run("git", "add", "article_metadata", cwd=weekly_fixture.repository)
+    _run("git", "commit", "-qm", "validated article metadata", cwd=weekly_fixture.repository)
+    transport = ForbiddenTransport()
+
+    result = weekly.weekly_sync(
+        **weekly_fixture.arguments(transport=transport, metadata_dir=metadata_dir)
+    )
+
+    assert result["status"] == "ok"
+    assert result["coverage_status"] == "partial_with_validated_fallback"
+    assert result["articles_captured"] == 0
+    assert result["articles_failed"] == 1
+    assert result["articles_fallback"] == 1
+    assert result["fallback_article_ids"] == result["would_capture_article_ids"]
+    assert result["articles_unresolved"] == 0
+    assert result["fallback_failure_classes"] == {
+        "http_403_publisher_bot_wall": 1
+    }
+    assert result["promotion_with_fallback"] is True
+    connection = sqlite3.connect(weekly_fixture.database)
+    connection.row_factory = sqlite3.Row
+    resolution = connection.execute(
+        "SELECT * FROM article_capture_resolutions"
+    ).fetchone()
+    latest = connection.execute(
+        "SELECT * FROM article_fetches ORDER BY fetched_at DESC, fetch_id DESC LIMIT 1"
+    ).fetchone()
+    assert resolution["fetch_id"] == latest["fetch_id"]
+    assert resolution["failure_class"] == "http_403_publisher_bot_wall"
+    assert resolution["http_status"] == 403
+    assert resolution["attempt_at"] == latest["fetched_at"]
+    assert resolution["fallback_source"] == "json_annotation"
+    assert resolution["fallback_provenance"] == "publisher_excerpt_annotation"
+    assert resolution["bundle_sha256"] == hashlib.sha256(
+        resolution["bundle_json"].encode("utf-8")
+    ).hexdigest()
+    bundle = json.loads(resolution["bundle_json"])
+    assert bundle["canonical_url"] == "https://example.com/target"
+    assert bundle["summary"] and bundle["categories"] and bundle["keywords"]
+    assert bundle["provenance"] == "publisher_excerpt_annotation"
+    assert bundle["identity"] == {
+        "annotation_method": "subagent-original-content-v1",
+        "generated_on": TARGET,
+        "schema_version": 1,
+        "source_basis": "publisher_excerpt",
+        "source_scope": "linked-original-content-with-report-fallback",
+        "source_url": "https://example.com/target",
+        "title": "Target",
+    }
+    assert resolution["validated_at"].endswith("Z")
+    assert latest["fetch_status"] == "failed"
+    assert latest["error_code"] == "http_error"
+    assert latest["http_status"] == 403
+    assert latest["content_version_id"] is None
+    assert connection.execute("SELECT COUNT(*) FROM article_content_versions").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM article_enrichments").fetchone()[0] == 0
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        connection.execute(
+            "UPDATE article_capture_resolutions SET validated_at = 'changed'"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="identity already exists"):
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO article_capture_resolutions
+            SELECT * FROM article_capture_resolutions WHERE resolution_id = ?
+            """,
+            (resolution["resolution_id"],),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="identity already exists"):
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO article_capture_resolutions
+            SELECT ?, report_id, report_date, report_sha256, article_id,
+                   canonical_url, fetch_id, failure_class, http_status,
+                   attempt_at, fallback_source, fallback_provenance,
+                   bundle_json, bundle_sha256, validated_at
+            FROM article_capture_resolutions WHERE resolution_id = ?
+            """,
+            ("resolution-" + "e" * 64, resolution["resolution_id"]),
+        )
+    connection.close()
+
+    class NoNetwork:
+        def request(self, *args, **kwargs):
+            raise AssertionError("no-op must not use the network")
+
+    before = weekly_fixture.database.read_bytes()
+    dry = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            transport=NoNetwork(), metadata_dir=metadata_dir, dry_run=True
+        )
+    )
+    assert dry["status"] == "no-op"
+    assert dry["would_capture_count"] == 0
+    assert dry["would_promote"] is False
+    repeated = weekly.weekly_sync(
+        **weekly_fixture.arguments(transport=NoNetwork(), metadata_dir=metadata_dir)
+    )
+    assert repeated["status"] == "no-op"
+    assert repeated["would_capture_count"] == 0
+    assert repeated["would_promote"] is False
+    assert weekly_fixture.database.read_bytes() == before
+
+    connection = sqlite3.connect(weekly_fixture.database)
+    article_id = result["fallback_article_ids"][0]
+    later_at = (NOW + timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
+    connection.execute(
+        """
+        INSERT INTO article_fetches(
+            fetch_id, article_id, requested_url, final_url, fetched_at,
+            fetch_status, http_status, error_code, error_message
+        ) VALUES ('fetch-later-same-bundle', ?, 'https://example.com/target',
+                  'https://redirect.example/target', ?, 'failed', 403,
+                  'http_error', 'publisher bot wall')
+        """,
+        (article_id, later_at),
+    )
+    connection.commit()
+    connection.close()
+    same_bundle_plan = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            transport=NoNetwork(), metadata_dir=metadata_dir, dry_run=True
+        )
+    )
+    assert same_bundle_plan["would_capture_count"] == 1
+    same_bundle_refresh = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            transport=ForbiddenTransport(),
+            metadata_dir=metadata_dir,
+            clock=lambda: NOW + timedelta(hours=1),
+        )
+    )
+    assert same_bundle_refresh["fallback_article_ids"] == [article_id]
+    connection = sqlite3.connect(weekly_fixture.database)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM article_capture_resolutions"
+    ).fetchone()[0] == 2
+    connection.close()
+
+    annotation_path = metadata_dir / "articles-001-001.json"
+    annotation_payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    annotation_payload["articles"][0]["summary"] += " Revised bundle."
+    annotation_path.write_text(json.dumps(annotation_payload), encoding="utf-8")
+    _run("git", "add", "article_metadata", cwd=weekly_fixture.repository)
+    _run("git", "commit", "-qm", "revise fallback bundle", cwd=weekly_fixture.repository)
+    changed_plan = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            transport=NoNetwork(), metadata_dir=metadata_dir, dry_run=True
+        )
+    )
+    assert changed_plan["status"] == "ok"
+    assert changed_plan["would_capture_count"] == 1
+    refreshed = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            transport=ForbiddenTransport(),
+            metadata_dir=metadata_dir,
+            clock=lambda: NOW + timedelta(hours=2),
+        )
+    )
+    assert refreshed["coverage_status"] == "partial_with_validated_fallback"
+    connection = sqlite3.connect(weekly_fixture.database)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM article_capture_resolutions"
+    ).fetchone()[0] == 3
+    connection.close()
+    final_no_op = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            transport=NoNetwork(), metadata_dir=metadata_dir, dry_run=True
+        )
+    )
+    assert final_no_op["status"] == "no-op"
+    assert final_no_op["would_capture_count"] == 0
+
+    connection = sqlite3.connect(weekly_fixture.database)
+    wrong_at = (NOW + timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+    connection.execute(
+        """
+        INSERT INTO article_fetches(
+            fetch_id, article_id, requested_url, final_url, fetched_at,
+            fetch_status, http_status, error_code, error_message
+        ) VALUES ('fetch-wrong-requested-url', ?, 'https://evil.example/target',
+                  'https://example.com/target', ?, 'failed', 403,
+                  'http_error', 'publisher bot wall')
+        """,
+        (article_id, wrong_at),
+    )
+    current = connection.execute(
+        "SELECT * FROM article_capture_resolutions ORDER BY validated_at DESC LIMIT 1"
+    ).fetchone()
+    with pytest.raises(sqlite3.IntegrityError, match="invalid capture fallback"):
+        connection.execute(
+            """
+            INSERT INTO article_capture_resolutions(
+                resolution_id, report_id, report_date, report_sha256, article_id,
+                canonical_url, fetch_id, failure_class, http_status, attempt_at,
+                fallback_source, fallback_provenance, bundle_json, bundle_sha256,
+                validated_at
+            ) VALUES (?, ?, ?, ?, ?, 'https://example.com/target',
+                      'fetch-wrong-requested-url', 'http_403_publisher_bot_wall',
+                      403, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "resolution-" + "f" * 64,
+                current[1], current[2], current[3], article_id, wrong_at,
+                current[10], current[11], current[12], current[13], wrong_at,
+            ),
+        )
+    connection.close()
+
+
+@pytest.mark.parametrize("fallback_count", (0, 4))
+def test_twenty_five_article_coverage_promotes_only_when_fully_resolved(
+    weekly_fixture, fallback_count
+):
+    urls = [f"https://example.com/target-{index:02d}" for index in range(1, 26)]
+    item_text = "".join(
+        _item(f"Target {index}", url) for index, url in enumerate(urls, start=1)
+    )
+    link_text = "".join(f"- {url}\n" for url in urls)
+    weekly_fixture.source.write_text(
+        f"""# Weekly Climate & Actuarial Monitor
+**Report Date:** {TARGET}
+## Executive Summary
+- Sites checked: **25**, succeeded: **21**, failed: **4**
+## Pillar A — Changes
+{item_text}
+## Pillar B — Intelligence
+## Original Links
+{link_text}
+""",
+        encoding="utf-8",
+    )
+    metadata_dir = weekly_fixture.repository / "article_metadata"
+    fallback_urls = urls[-fallback_count:] if fallback_count else []
+    if fallback_urls:
+        _write_annotations(metadata_dir, fallback_urls)
+    _run("git", "add", ".", cwd=weekly_fixture.repository)
+    _run("git", "commit", "-qm", "25 article target", cwd=weekly_fixture.repository)
+    _write_artifact(weekly_fixture.source, weekly_fixture.artifact_root)
+    ledger = weekly_fixture.database.parent / f"ledger-{fallback_count}"
+    append_attempt(
+        ledger,
+        _publisher_attempt(hashlib.sha256(weekly_fixture.source.read_bytes()).hexdigest()),
+        repository_root=weekly_fixture.repository,
+    )
+
+    class MixedTransport(FakeTransport):
+        def request(self, target, headers, *, timeout, max_bytes):
+            self.calls += 1
+            if target.url in fallback_urls:
+                return FetchResponse(
+                    403, target.url, {"content-type": "text/html"}, b"publisher bot wall"
+                )
+            body = b"""<html><body><h1>Climate insurance outlook</h1>
+            <p>Climate risk and transition risk affect insurance capital, underwriting,
+            investment portfolios, disclosure standards, catastrophe models, regulatory
+            policy, financial resilience and sustainability reporting this week.</p>
+            </body></html>"""
+            return FetchResponse(
+                200, target.url, {"content-type": "text/html; charset=utf-8"}, body
+            )
+
+    result = weekly.weekly_sync(
+        **weekly_fixture.arguments(
+            publisher_ledger_dir=ledger,
+            metadata_dir=metadata_dir,
+            transport=MixedTransport(),
+        )
+    )
+    assert result["target_eligible_article_count"] == 25
+    assert result["articles_captured"] == 25 - fallback_count
+    assert result["articles_failed"] == fallback_count
+    assert result["articles_fallback"] == fallback_count
+    assert result["fallback_article_ids"] == sorted(result["fallback_article_ids"])
+    assert len(result["fallback_article_ids"]) == fallback_count
+    assert set(result["fallback_article_ids"]) <= set(result["target_article_ids"])
+    assert result["articles_unresolved"] == 0
+    assert result["promotion"] == "performed"
+    assert result["coverage_status"] == (
+        "partial_with_validated_fallback" if fallback_count else "ok"
+    )
+
+    reader = api_server.RegistryReader(
+        weekly_fixture.database,
+        repository_root=weekly_fixture.repository,
+        source_dir=weekly_fixture.source_dir,
+        metadata_dir=metadata_dir,
+    )
+    report = reader.report(TARGET)
+    provenances = []
+    for article in report["articles"]:
+        detail = reader.article(article["article_id"])
+        assert detail["summary"] and detail["categories"] and detail["keywords"]
+        provenances.append(detail["summary_provenance"])
+        if detail["summary_provenance"] != "content_enrichment":
+            assert detail["latest_fetch"] == {
+                "fetched_at": NOW.isoformat().replace("+00:00", "Z"),
+                "fetch_status": "failed",
+                "http_status": 403,
+                "content_type": "text/html",
+                "error_code": "http_error",
+            }
+    assert provenances.count("content_enrichment") == 25 - fallback_count
+    assert provenances.count("publisher_excerpt_annotation") == fallback_count
+
+
+@pytest.mark.parametrize("failure_kind", ("http_503", "dns", "blocked_response"))
+def test_non_bot_wall_capture_failure_remains_unresolved(
+    weekly_fixture, failure_kind
+):
+    class FailureTransport:
+        def request(self, target, headers, *, timeout, max_bytes):
+            if failure_kind == "http_503":
+                return FetchResponse(503, target.url, {"content-type": "text/html"}, b"down")
+            if failure_kind == "dns":
+                raise FetchFailure("dns_error", "name lookup failed")
+            return FetchResponse(
+                200,
+                target.url,
+                {"content-type": "text/html"},
+                b"<html><body>access denied captcha challenge</body></html>",
+            )
+
+    before = weekly_fixture.database.read_bytes()
+    with pytest.raises(weekly.WeeklyPartialError) as raised:
+        weekly.weekly_sync(
+            **weekly_fixture.arguments(transport=FailureTransport())
+        )
+    result = raised.value.result
+    assert result["coverage_status"] == "blocked_unresolved"
+    assert result["articles_failed"] == 1
+    assert result["articles_fallback"] == 0
+    assert result["articles_unresolved"] == 1
+    assert weekly_fixture.database.read_bytes() == before
+    assert not weekly_fixture.backup_dir.exists()
+
+
+@pytest.mark.parametrize("fallback_problem", ("missing", "identity_mismatch", "incomplete"))
+def test_403_with_invalid_or_missing_fallback_blocks_before_backup(
+    weekly_fixture, fallback_problem
+):
+    metadata_dir = weekly_fixture.repository / "article_metadata"
+    if fallback_problem != "missing":
+        _write_target_annotation(metadata_dir)
+        path = metadata_dir / "articles-001-001.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if fallback_problem == "identity_mismatch":
+            payload["articles"][0]["canonical_url"] = "https://other.example/item"
+        else:
+            payload["articles"][0]["categories"] = []
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        _run("git", "add", "article_metadata", cwd=weekly_fixture.repository)
+        _run("git", "commit", "-qm", fallback_problem, cwd=weekly_fixture.repository)
+
+    before = weekly_fixture.database.read_bytes()
+    with pytest.raises(weekly.WeeklyPartialError) as raised:
+        weekly.weekly_sync(
+            **weekly_fixture.arguments(
+                transport=ForbiddenTransport(), metadata_dir=metadata_dir
+            )
+        )
+    result = raised.value.result
+    assert result["coverage_status"] == "blocked_unresolved"
+    assert result["articles_failed"] == 1
+    assert result["articles_fallback"] == 0
+    assert result["articles_unresolved"] == 1
+    assert result["promotion"] == "blocked"
+    assert weekly_fixture.database.read_bytes() == before
+    assert not weekly_fixture.backup_dir.exists()
 
 
 def test_upstream_is_revalidated_after_network_before_backup_and_promotion(
@@ -1176,7 +1694,34 @@ def test_upstream_is_revalidated_after_network_before_backup_and_promotion(
 
     assert weekly_fixture.database.read_bytes() == before
     assert not weekly_fixture.backup_dir.exists()
-    assert not weekly_fixture.lock_file.exists()
+    assert weekly_fixture.lock_file.is_file()
+
+
+def test_external_annotation_catalog_change_blocks_before_backup(
+    weekly_fixture, tmp_path
+):
+    metadata_dir = tmp_path / "external-article-metadata"
+    _write_target_annotation(metadata_dir)
+    annotation_path = metadata_dir / "articles-001-001.json"
+    before = weekly_fixture.database.read_bytes()
+
+    class ChangingForbiddenTransport(ForbiddenTransport):
+        def request(self, *args, **kwargs):
+            response = super().request(*args, **kwargs)
+            payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+            payload["articles"][0]["summary"] += " Changed during capture."
+            annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+            return response
+
+    with pytest.raises(RegistryLockError, match="metadata changed"):
+        weekly.weekly_sync(
+            **weekly_fixture.arguments(
+                metadata_dir=metadata_dir,
+                transport=ChangingForbiddenTransport(),
+            )
+        )
+    assert weekly_fixture.database.read_bytes() == before
+    assert not weekly_fixture.backup_dir.exists()
 
 
 def test_new_failed_publisher_attempt_during_capture_blocks_promotion(
@@ -1351,6 +1896,34 @@ def test_backup_and_promotion_failure_keep_live_database_unchanged(
     assert weekly_fixture.database.read_bytes() == before
     assert len(list(weekly_fixture.backup_dir.glob("*.bak"))) == 1
 
+
+def test_post_promotion_full_validation_failure_restores_exact_live_database(
+    weekly_fixture, monkeypatch
+):
+    before = weekly_fixture.database.read_bytes()
+    before_sha = hashlib.sha256(before).hexdigest()
+    real_validate = weekly._validate_candidate
+
+    def tamper_promoted_live(path, preflight):
+        if Path(path) == weekly_fixture.database:
+            Path(path).write_bytes(b"tampered-after-promotion")
+        return real_validate(path, preflight)
+
+    monkeypatch.setattr(weekly, "_validate_candidate", tamper_promoted_live)
+    with pytest.raises(weekly.WeeklyValidationError, match="candidate is invalid"):
+        weekly.weekly_sync(**weekly_fixture.arguments(transport=FakeTransport()))
+
+    assert weekly_fixture.database.read_bytes() == before
+    backups = list(weekly_fixture.backup_dir.iterdir())
+    assert len(backups) == 1
+    assert hashlib.sha256(backups[0].read_bytes()).hexdigest() == before_sha
+    assert not [
+        path
+        for path in weekly_fixture.database.parent.glob(
+            f".{weekly_fixture.database.name}.*"
+        )
+        if path.is_dir()
+    ]
 
 def test_upstream_is_revalidated_again_after_backup_before_promotion(
     weekly_fixture, monkeypatch

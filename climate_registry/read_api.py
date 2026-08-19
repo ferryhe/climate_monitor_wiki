@@ -14,7 +14,7 @@ from climate_delivery.errors import ClimateDeliveryError
 from climate_monitor.dedupe import canonical_url
 
 from .annotations import ArticleAnnotation, load_article_annotations
-from .contract import SCHEMA_VERSION, SchemaContractError, validate_v3_contract
+from .contract import SCHEMA_VERSION, SchemaContractError, validate_registry_contract
 from .reports import ParsedArticle, ParsedReport, parse_historical_report
 
 EXPECTED_SCHEMA_VERSION = SCHEMA_VERSION
@@ -254,7 +254,7 @@ class RegistryReader:
     @staticmethod
     def _validate_contract(connection: sqlite3.Connection) -> None:
         try:
-            validate_v3_contract(connection)
+            validate_registry_contract(connection)
         except SchemaContractError as exc:
             raise RegistryContractError(str(exc)) from exc
         if connection.execute("PRAGMA foreign_key_check").fetchone():
@@ -293,7 +293,7 @@ class RegistryReader:
         with self.connect() as connection:
             return {
                 "available": True,
-                "schema_version": EXPECTED_SCHEMA_VERSION,
+                "schema_version": connection.execute("PRAGMA user_version").fetchone()[0],
                 "reports": connection.execute("SELECT COUNT(*) FROM reports").fetchone()[0],
                 "articles": connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0],
                 "discoveries": connection.execute("SELECT COUNT(*) FROM discoveries").fetchone()[0],
@@ -416,6 +416,8 @@ class RegistryReader:
             annotation = self._annotation_for_url(annotations, item["canonical_url"])
             source_categories = source_article.categories if source_article else ()
             source_keywords = source_article.keywords if source_article else ()
+            report_summary = item["summary"]
+            item["report_summary"] = report_summary
             item["title"] = annotation.title if annotation else item["title"]
             if has_db_enrichment:
                 # A complete current-content enrichment is one semantic bundle.
@@ -436,28 +438,39 @@ class RegistryReader:
                     enrichment_keywords,
                     annotation,
                 )
-            else:
-                item["summary"] = annotation.summary if annotation else item["summary"]
-                item["summary_provenance"] = (
-                    annotation.provenance if annotation else "source_report"
-                )
-                item["categories"] = list(
-                    (annotation.categories if annotation else ()) or source_categories
-                )
-                item["keywords"] = list(
-                    (annotation.keywords if annotation else ()) or source_keywords
-                )
+            elif annotation:
+                item["summary"] = annotation.summary
+                item["summary_provenance"] = annotation.provenance
+                item["categories"] = list(annotation.categories)
+                item["keywords"] = list(annotation.keywords)
                 item["metadata_provenance"] = {
-                    "categories": (
-                        annotation.provenance
-                        if annotation
-                        else "source_report" if source_categories else None
-                    ),
-                    "keywords": (
-                        annotation.provenance
-                        if annotation
-                        else "source_report" if source_keywords else None
-                    ),
+                    "categories": annotation.provenance,
+                    "keywords": annotation.provenance,
+                }
+            elif (
+                source_article is not None
+                and source_article.summary.strip()
+                and source_categories
+                and source_keywords
+            ):
+                item["summary"] = source_article.summary
+                item["summary_provenance"] = "source_report"
+                item["categories"] = list(source_categories)
+                item["keywords"] = list(source_keywords)
+                item["metadata_provenance"] = {
+                    "categories": "source_report",
+                    "keywords": "source_report",
+                }
+            else:
+                # Preserve the observed report text separately, but do not expose
+                # a semantically partial fallback bundle.
+                item["summary"] = None
+                item["summary_provenance"] = None
+                item["categories"] = []
+                item["keywords"] = []
+                item["metadata_provenance"] = {
+                    "categories": None,
+                    "keywords": None,
                 }
             item["source_annotation"] = (
                 {
@@ -608,7 +621,7 @@ class RegistryReader:
             ).fetchall()
             fetch = connection.execute(
                 """
-                SELECT fetched_at, fetch_status, http_status, content_type
+                SELECT fetched_at, fetch_status, http_status, content_type, error_code
                 FROM article_fetches WHERE article_id = ?
                 ORDER BY fetched_at DESC, fetch_id DESC LIMIT 1
                 """,
@@ -642,6 +655,9 @@ class RegistryReader:
         effective_report_categories: list[str] = []
         effective_report_keywords: list[str] = []
         annotation_summary: str | None = None
+        fallback_categories: list[str] = []
+        fallback_keywords: list[str] = []
+        fallback_provenance: str | None = None
         category_provenance: str | None = None
         keyword_provenance: str | None = None
         contexts: dict[tuple[str, str, str], ParsedReport | None] = {}
@@ -667,6 +683,21 @@ class RegistryReader:
             if annotation:
                 item["summary"] = annotation.summary
                 annotation_summary = annotation_summary or annotation.summary
+                if fallback_provenance is None:
+                    fallback_categories = list(annotation.categories)
+                    fallback_keywords = list(annotation.keywords)
+                    fallback_provenance = annotation.provenance
+            elif (
+                fallback_provenance is None
+                and source_article is not None
+                and source_article.summary.strip()
+                and source_article.categories
+                and source_article.keywords
+            ):
+                annotation_summary = source_article.summary
+                fallback_categories = list(source_article.categories)
+                fallback_keywords = list(source_article.keywords)
+                fallback_provenance = "source_report"
             item["summary_provenance"] = (
                 annotation.provenance if annotation else "source_report"
             )
@@ -757,21 +788,21 @@ class RegistryReader:
         categories = (
             enrichment_payload["categories"]
             if has_db_enrichment
-            else _ordered_unique(effective_report_categories)
+            else fallback_categories
         )
         keywords = (
             enrichment_payload["keywords"]
             if has_db_enrichment
-            else _ordered_unique(effective_report_keywords)
+            else fallback_keywords
         )
         summary = (
             enrichment_payload["summary"]
             if has_db_enrichment
-            else annotation_summary or article["report_summary"]
+            else annotation_summary
         )
         metadata_provenance = {
-            "categories": "content_enrichment" if has_db_enrichment else category_provenance,
-            "keywords": "content_enrichment" if has_db_enrichment else keyword_provenance,
+            "categories": "content_enrichment" if has_db_enrichment else fallback_provenance,
+            "keywords": "content_enrichment" if has_db_enrichment else fallback_provenance,
         }
         original_url = appearance_payload[0]["original_url"] if appearance_payload else article["canonical_url"]
         return {
@@ -781,7 +812,7 @@ class RegistryReader:
             "summary_provenance": (
                 "content_enrichment"
                 if has_db_enrichment
-                else source_annotation.provenance if source_annotation else "source_report"
+                else fallback_provenance
             ),
             "report_summary": article["report_summary"],
             "canonical_url": article["canonical_url"],

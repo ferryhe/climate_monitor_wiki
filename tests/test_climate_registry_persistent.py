@@ -1,5 +1,10 @@
 import hashlib
+import os
+import signal
+import shutil
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,6 +13,68 @@ import climate_registry.persistent as persistent
 from climate_registry.audit import build_audit_registry
 from climate_registry.errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from climate_registry.schema import apply_migrations
+
+
+def test_database_lock_is_fd_scoped_nested_and_crash_safe(tmp_path):
+    database = tmp_path / "registry.sqlite3"
+    database.touch()
+    with persistent._exclusive_database_lock(database):
+        with pytest.raises(RegistryLockError, match="locked"):
+            with persistent._exclusive_database_lock(database):
+                pytest.fail("nested acquisition unexpectedly succeeded")
+
+    script = (
+        "import os,sys; from pathlib import Path; "
+        "from climate_registry.persistent import _exclusive_database_lock; "
+        "ctx=_exclusive_database_lock(Path(sys.argv[1])); ctx.__enter__(); os._exit(0)"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(database)],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+    )
+    assert completed.returncode == 0
+    with persistent._exclusive_database_lock(database):
+        pass
+    assert database.with_name(f"{database.name}.lock").is_file()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX flock interop")
+def test_database_lock_interoperates_with_shell_flock_both_directions(tmp_path):
+    flock = shutil.which("flock")
+    if flock is None:
+        pytest.skip("flock executable is unavailable")
+    database = tmp_path / "registry.sqlite3"
+    database.touch()
+    lock_path = database.with_name(f"{database.name}.lock")
+    holder = subprocess.Popen(
+        [
+            flock,
+            "-n",
+            str(lock_path),
+            sys.executable,
+            "-c",
+            "import time; print('ready', flush=True); time.sleep(30)",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "ready"
+        with pytest.raises(RegistryLockError, match="locked"):
+            with persistent._exclusive_database_lock(database):
+                pytest.fail("Python acquired a shell-held flock")
+    finally:
+        if holder.poll() is None:
+            os.killpg(holder.pid, signal.SIGTERM)
+        holder.wait(timeout=5)
+
+    with persistent._exclusive_database_lock(database):
+        blocked = subprocess.run(
+            [flock, "-n", str(lock_path), "true"], check=False
+        )
+        assert blocked.returncode != 0
 
 
 def _item(title: str, summary: str, url: str) -> str:
@@ -80,13 +147,13 @@ def test_plan_is_read_only_and_update_is_backed_up_incremental_and_idempotent(tm
     backup = Path(result["backup"])
     assert backup.parent == backup_dir
     assert backup.is_file()
-    assert not database.with_name(f"{database.name}.lock").exists()
+    assert database.with_name(f"{database.name}.lock").is_file()
     assert source_hashes == {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (first, second)
     }
 
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (4,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
     assert connection.execute(
         """
@@ -133,15 +200,15 @@ def test_update_migrates_v1_registry_and_imports_a_new_report(tmp_path):
     _write_report(source_dir, "2026-08-10", _item("New", "New summary.", "https://example.com/new"))
 
     plan = persistent.plan_registry_update(source_dir, database)
-    assert plan["pending_migrations"] == [2, 3]
+    assert plan["pending_migrations"] == [2, 3, 4]
     assert [item["date"] for item in plan["new_reports"]] == ["2026-08-10"]
 
     result = persistent.update_registry(source_dir, database, tmp_path / "backups")
     assert result["status"] == "updated"
-    assert result["applied_migrations"] == [2, 3]
+    assert result["applied_migrations"] == [2, 3, 4]
     assert result["imported_reports"] == ["2026-08-10"]
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (4,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
 
 
@@ -186,7 +253,7 @@ def test_plan_reports_previously_imported_source_file_as_missing(tmp_path):
     assert any(item["reason"] == "registry-report-missing-from-source" for item in plan["conflicts"])
 
 
-def test_existing_lock_blocks_update_without_backup(tmp_path):
+def test_stale_lock_file_does_not_block_update(tmp_path):
     source_dir = tmp_path / "sources"
     _write_report(source_dir, "2026-08-03", _item("Title", "Summary.", "https://example.com/item"))
     database = tmp_path / "registry.sqlite3"
@@ -194,10 +261,9 @@ def test_existing_lock_blocks_update_without_backup(tmp_path):
     lock = database.with_name(f"{database.name}.lock")
     lock.write_text("existing", encoding="ascii")
 
-    with pytest.raises(RegistryLockError, match="locked"):
-        persistent.update_registry(source_dir, database, tmp_path / "backups")
-    assert lock.read_text(encoding="ascii") == "existing"
-    assert not (tmp_path / "backups").exists()
+    result = persistent.update_registry(source_dir, database, tmp_path / "backups")
+    assert result["status"] == "no-op"
+    assert lock.read_text(encoding="ascii").strip().isdigit()
 
 
 def test_backup_directory_must_not_contain_live_database(tmp_path):
@@ -251,12 +317,12 @@ def test_v2_registry_can_be_planned_and_migrated_without_changing_existing_rows(
     plan = persistent.plan_registry_update(source_dir, database)
 
     assert plan["database_schema_version"] == 2
-    assert plan["target_schema_version"] == 3
-    assert plan["pending_migrations"] == [3]
+    assert plan["target_schema_version"] == 4
+    assert plan["pending_migrations"] == [3, 4]
     result = persistent.update_registry(source_dir, database, tmp_path / "backups")
-    assert result["applied_migrations"] == [3]
+    assert result["applied_migrations"] == [3, 4]
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (4,)
     assert counts_before == {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         for table in counts_before
@@ -364,7 +430,7 @@ def test_sqlite_sidecar_fails_closed_before_backup_or_replacement(tmp_path):
     assert database.read_bytes() == database_before
     assert wal.read_bytes() == b"unreconciled"
     assert not (tmp_path / "backups").exists()
-    assert not database.with_name(f"{database.name}.lock").exists()
+    assert database.with_name(f"{database.name}.lock").is_file()
 
 
 def test_failed_candidate_import_leaves_live_database_unchanged(tmp_path, monkeypatch):
@@ -385,7 +451,7 @@ def test_failed_candidate_import_leaves_live_database_unchanged(tmp_path, monkey
 
     assert database.read_bytes() == database_before
     assert len(list(backup_dir.iterdir())) == 1
-    assert not database.with_name(f"{database.name}.lock").exists()
+    assert database.with_name(f"{database.name}.lock").is_file()
     assert not list(database.parent.glob(f".{database.name}.*.candidate"))
 
 
@@ -405,4 +471,4 @@ def test_live_database_change_detected_before_atomic_replace(tmp_path, monkeypat
 
     assert database.read_bytes() == database_before
     assert len(list((tmp_path / "backups").iterdir())) == 1
-    assert not database.with_name(f"{database.name}.lock").exists()
+    assert database.with_name(f"{database.name}.lock").is_file()

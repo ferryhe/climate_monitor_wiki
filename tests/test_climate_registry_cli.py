@@ -15,6 +15,7 @@ from climate_registry.cli import (
     main,
 )
 from climate_registry.errors import RegistryBuildError, RegistryInputError, RegistryLockError
+from climate_registry.persistent import _exclusive_database_lock
 from climate_registry.weekly import (
     WeeklyPartialError,
     WeeklyPreflightError,
@@ -391,7 +392,7 @@ def test_plan_selection_real_cli_sanitizes_malformed_source_history(
     [
         (RegistryInputError("registry database does not exist"), 2, "input", "registry database does not exist"),
         (RegistryBuildError("registry database is unreadable or corrupt"), 3, "build", "registry database is unreadable or corrupt"),
-        (RegistryInputError("registry schema v3 contract is invalid"), 2, "input", "registry schema v3 contract is invalid"),
+        (RegistryInputError("registry schema contract is invalid"), 2, "input", "registry schema contract is invalid"),
         (RegistryInputError("registry and source history are not synchronized"), 2, "input", "registry and source history are not synchronized"),
     ],
 )
@@ -457,25 +458,24 @@ def test_plan_selection_cli_reports_real_corrupt_database_as_build_error(tmp_pat
     assert str(tmp_path) not in payload["message"]
 
 
-def test_update_cli_reports_existing_lock(tmp_path, capsys):
+def test_update_cli_reports_actively_held_lock(tmp_path, capsys):
     source_dir = tmp_path / "sources"
     source_dir.mkdir()
     (source_dir / "climate-monitor-2026-08-03.md").write_text(_weekly("2026-08-03"), encoding="utf-8")
     database = tmp_path / "registry.sqlite3"
     build_audit_registry(source_dir, database, tmp_path / "audit")
-    database.with_name(f"{database.name}.lock").write_text("existing", encoding="ascii")
-
-    code = main(
-        [
-            "update",
-            "--source-dir",
-            str(source_dir),
-            "--database",
-            str(database),
-            "--backup-dir",
-            str(tmp_path / "backups"),
-        ]
-    )
+    with _exclusive_database_lock(database):
+        code = main(
+            [
+                "update",
+                "--source-dir",
+                str(source_dir),
+                "--database",
+                str(database),
+                "--backup-dir",
+                str(tmp_path / "backups"),
+            ]
+        )
 
     assert code == 4
     assert json.loads(capsys.readouterr().out)["kind"] == "lock"
@@ -566,7 +566,8 @@ def test_weekly_sync_cli_passes_explicit_inputs_and_distinguishes_no_op(
             "artifact_root": tmp_path / "artifacts",
             "backup_dir": tmp_path / "backups",
             "lock_file": tmp_path / "registry.sqlite3.lock",
-            "publisher_ledger_dir": tmp_path / "ledger",
+                "publisher_ledger_dir": tmp_path / "ledger",
+                "metadata_dir": None,
             "expected_report_sha256": None,
             "timeout": 12.5,
             "dry_run": True,

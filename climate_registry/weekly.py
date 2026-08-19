@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -26,9 +27,14 @@ from climate_monitor.run_ledger import (
 )
 
 from .audit import _stable_id
+from .annotations import (
+    annotation_catalog_fingerprint,
+    load_article_annotations_catalog,
+)
 from .capture import MAX_BATCH, capture_enrich_registry
 from .classification import classify_document
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
+from .fallback import FallbackDecision, resolution_id, select_fallback_bundle
 from .fetch import (
     DEFAULT_TIMEOUT,
     PinnedTransport,
@@ -89,6 +95,7 @@ class _Preflight:
     backup_dir: Path
     lock_file: Path
     publisher_ledger_dir: Path
+    metadata_dir: Path | None
     report: ParsedReport
     live_sha256: str
     update_plan: dict[str, Any]
@@ -96,6 +103,8 @@ class _Preflight:
     target_eligible_ids: tuple[str, ...]
     new_article_ids: tuple[str, ...]
     missing_enrichment_ids: tuple[str, ...]
+    fallback_decisions: dict[str, FallbackDecision]
+    metadata_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,19 @@ def _clock_value(clock: Clock) -> datetime:
             "weekly registry preflight failed: invalid UTC clock"
         )
     return value.astimezone(timezone.utc)
+
+
+def _valid_utc_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return False
+    return (
+        parsed.utcoffset() == timedelta(0)
+        and parsed.isoformat().replace("+00:00", "Z") == value
+    )
 
 
 def _target_day(value: str) -> str:
@@ -450,7 +472,7 @@ def _rows_for_ids(
         batch = article_ids[offset : offset + 500]
         placeholders = ",".join("?" for _ in batch)
         rows = connection.execute(
-            "SELECT article_id, publication_eligible, current_content_version_id "
+            "SELECT article_id, canonical_url, publication_eligible, current_content_version_id "
             f"FROM articles WHERE article_id IN ({placeholders})",
             tuple(batch),
         ).fetchall()
@@ -509,6 +531,8 @@ def _dry_plan_articles(
     article_ids: tuple[str, ...],
     eligible_ids: tuple[str, ...],
     schema_version: int,
+    report: ParsedReport,
+    fallback_decisions: dict[str, FallbackDecision],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
     try:
@@ -524,6 +548,15 @@ def _dry_plan_articles(
                 continue
             if not _has_complete_current_enrichment(
                 connection, article_id, row["current_content_version_id"]
+            ) and not (
+                schema_version >= 4
+                and _has_current_resolution(
+                    connection,
+                    report=report,
+                    article_id=article_id,
+                    canonical=row["canonical_url"],
+                    decision=fallback_decisions.get(article_id),
+                )
             ):
                 missing.append(article_id)
         return new_ids, tuple(sorted(missing))
@@ -565,9 +598,12 @@ def _preflight(
     backup_dir: str | Path,
     lock_file: str | Path,
     publisher_ledger_dir: str | Path,
+    metadata_dir: str | Path | None,
     clock: Clock,
     git_runner: GitRunner,
     check_lock: bool,
+    fallback_decisions: dict[str, FallbackDecision] | None = None,
+    metadata_fingerprint: str | None = None,
 ) -> _Preflight:
     target_date = _target_day(target_date)
     source_dir_path = _absolute_path(source_dir, label="source directory")
@@ -619,7 +655,8 @@ def _preflight(
             "weekly registry preflight failed: lock file is unsafe"
         )
     if check_lock and lock_file_path.exists():
-        raise RegistryLockError("weekly registry sync is already locked")
+        with _exclusive_database_lock(database_path):
+            pass
 
     artifact_root_path = _absolute_path(artifact_root, label="artifact root")
     _outside_repository(artifact_root_path, repository_root, label="artifact root")
@@ -637,11 +674,35 @@ def _preflight(
     _validate_artifact(artifact_root_path, report)
     plan = _safe_update_plan(source_dir_path, database_path, target_date)
     article_ids, eligible_ids = _target_identities(report)
+    metadata_path = (
+        _absolute_path(metadata_dir, label="article metadata")
+        if metadata_dir is not None
+        else repository_root / "article_metadata"
+    )
+    if fallback_decisions is None:
+        annotation_status, annotations, current_metadata_fingerprint = (
+            load_article_annotations_catalog(metadata_path)
+        )
+        fallback_decisions = _target_fallback_decisions(
+            report,
+            metadata_path,
+            annotation_catalog=(annotation_status, annotations),
+        )
+        metadata_fingerprint = current_metadata_fingerprint
+    elif (
+        metadata_fingerprint is None
+        or annotation_catalog_fingerprint(metadata_path) != metadata_fingerprint
+    ):
+        raise RegistryLockError(
+            "weekly registry article metadata changed before candidate promotion"
+        )
     new_ids, missing_ids = _dry_plan_articles(
         database_path,
         article_ids=article_ids,
         eligible_ids=eligible_ids,
         schema_version=plan["database_schema_version"],
+        report=report,
+        fallback_decisions=fallback_decisions,
     )
     return _Preflight(
         target_date=target_date,
@@ -653,6 +714,7 @@ def _preflight(
         backup_dir=backup_dir_path,
         lock_file=lock_file_path,
         publisher_ledger_dir=ledger_path,
+        metadata_dir=metadata_path,
         report=report,
         live_sha256=_safe_file_sha256(database_path),
         update_plan=plan,
@@ -660,9 +722,106 @@ def _preflight(
         target_eligible_ids=eligible_ids,
         new_article_ids=new_ids,
         missing_enrichment_ids=missing_ids,
+        fallback_decisions=fallback_decisions,
+        metadata_fingerprint=metadata_fingerprint,
     )
 
 
+def _target_fallback_decisions(
+    report: ParsedReport,
+    metadata_dir: Path | None,
+    *,
+    annotation_catalog: tuple[str, dict[str, Any]] | None = None,
+) -> dict[str, FallbackDecision]:
+    output: dict[str, FallbackDecision] = {}
+    if annotation_catalog is None:
+        status, annotations, _fingerprint = load_article_annotations_catalog(metadata_dir)
+        annotation_catalog = (status, annotations)
+    for article in report.articles:
+        normalized = canonical_url(article.url)
+        if not normalized:
+            continue
+        article_id = _stable_id("article", normalized)
+        output.setdefault(
+            article_id,
+            select_fallback_bundle(
+                metadata_dir=metadata_dir,
+                report=report,
+                article=article,
+                expected_canonical_url=normalized,
+                annotation_catalog=annotation_catalog,
+            ),
+        )
+    return output
+
+
+def _has_current_resolution(
+    connection: sqlite3.Connection,
+    *,
+    report: ParsedReport,
+    article_id: str,
+    canonical: str,
+    decision: FallbackDecision | None,
+) -> bool:
+    if decision is None or decision.status != "complete" or decision.bundle is None:
+        return False
+    latest = connection.execute(
+        """
+        SELECT fetch_id, requested_url, fetch_status, error_code, http_status,
+               fetched_at, content_version_id
+        FROM article_fetches WHERE article_id = ?
+        ORDER BY fetched_at DESC, fetch_id DESC LIMIT 1
+        """,
+        (article_id,),
+    ).fetchone()
+    if (
+        latest is None
+        or latest["requested_url"] != canonical
+        or latest["fetch_status"] != "failed"
+        or latest["error_code"] != "http_error"
+        or latest["http_status"] != 403
+        or latest["content_version_id"] is not None
+        or not _valid_utc_timestamp(latest["fetched_at"])
+    ):
+        return False
+    row = connection.execute(
+        """
+        SELECT resolution_id, report_id, report_date, report_sha256, article_id,
+               canonical_url, fetch_id, failure_class, http_status, attempt_at,
+               fallback_source, fallback_provenance, bundle_json, bundle_sha256,
+               validated_at
+        FROM article_capture_resolutions
+        WHERE fetch_id = ?
+        """,
+        (latest["fetch_id"],),
+    ).fetchone()
+    if row is None:
+        return False
+    expected_id = resolution_id(
+        report_id=row["report_id"],
+        report_sha256=report.sha256,
+        article_id=article_id,
+        fetch_id=row["fetch_id"],
+        bundle_sha256=decision.bundle.bundle_sha256,
+    )
+    return bool(
+        row["resolution_id"] == expected_id
+        and row["report_id"] == f"report-{report.report_date}"
+        and row["report_date"] == report.report_date
+        and row["report_sha256"] == report.sha256
+        and row["article_id"] == article_id
+        and row["canonical_url"] == canonical
+        and row["failure_class"] == "http_403_publisher_bot_wall"
+        and row["http_status"] == 403
+        and row["attempt_at"] == latest["fetched_at"]
+        and row["fetch_id"] == latest["fetch_id"]
+        and row["fallback_source"] == decision.bundle.source
+        and row["fallback_provenance"] == decision.bundle.provenance
+        and row["bundle_json"] == decision.bundle.bundle_json
+        and row["bundle_sha256"] == decision.bundle.bundle_sha256
+        and _valid_utc_timestamp(row["attempt_at"])
+        and _valid_utc_timestamp(row["validated_at"])
+    )
 def _revalidate_upstream(
     reference: _Preflight,
     *,
@@ -677,9 +836,12 @@ def _revalidate_upstream(
         backup_dir=reference.backup_dir,
         lock_file=reference.lock_file,
         publisher_ledger_dir=reference.publisher_ledger_dir,
+        metadata_dir=reference.metadata_dir,
         clock=clock,
         git_runner=git_runner,
         check_lock=False,
+        fallback_decisions=reference.fallback_decisions,
+        metadata_fingerprint=reference.metadata_fingerprint,
     )
     if (
         current.live_sha256 != reference.live_sha256
@@ -689,6 +851,7 @@ def _revalidate_upstream(
         or current.target_eligible_ids != reference.target_eligible_ids
         or current.new_article_ids != reference.new_article_ids
         or current.missing_enrichment_ids != reference.missing_enrichment_ids
+        or current.fallback_decisions != reference.fallback_decisions
     ):
         raise RegistryLockError(
             "weekly registry inputs changed before candidate promotion"
@@ -705,6 +868,11 @@ def _result(
     articles_added: int,
     articles_captured: int,
     articles_failed: int = 0,
+    articles_fallback: int = 0,
+    fallback_article_ids: Sequence[str] = (),
+    articles_unresolved: int = 0,
+    fallback_failure_classes: dict[str, int] | None = None,
+    coverage_status: str = "ok",
     promotion: str,
     before_sha256: str,
     after_sha256: str,
@@ -713,9 +881,23 @@ def _result(
     would_add_reports = len(preflight.update_plan["new_reports"])
     would_add_articles = len(preflight.new_article_ids)
     would_capture = list(preflight.missing_enrichment_ids)
+    would_fallback = sum(
+        1
+        for article_id in would_capture
+        if preflight.fallback_decisions.get(article_id) is not None
+        and preflight.fallback_decisions[article_id].status == "complete"
+    )
     would_promote = bool(
         preflight.update_plan["mutation_required"] or preflight.missing_enrichment_ids
     )
+    stable_fallback_ids = sorted(set(fallback_article_ids))
+    if (
+        len(stable_fallback_ids) != articles_fallback
+        or not set(stable_fallback_ids) <= set(preflight.target_article_ids)
+    ):
+        raise WeeklyValidationError(
+            "weekly registry validation failed: fallback result identity is invalid"
+        )
     return {
         "status": status,
         "date": preflight.target_date,
@@ -725,6 +907,12 @@ def _result(
         "articles_added": articles_added,
         "articles_captured": articles_captured,
         "articles_failed": articles_failed,
+        "articles_fallback": articles_fallback,
+        "fallback_article_ids": stable_fallback_ids,
+        "articles_unresolved": articles_unresolved,
+        "fallback_failure_classes": fallback_failure_classes or {},
+        "promotion_with_fallback": promotion == "performed" and articles_fallback > 0,
+        "coverage_status": coverage_status,
         "target_article_count": len(preflight.target_article_ids),
         "target_eligible_article_count": len(preflight.target_eligible_ids),
         "target_article_ids": list(preflight.target_article_ids),
@@ -732,6 +920,7 @@ def _result(
         "would_add_articles": would_add_articles,
         "would_capture_article_ids": would_capture,
         "would_capture_count": len(would_capture),
+        "would_fallback_count": would_fallback,
         "would_promote": would_promote,
         "promotion": promotion,
         "reload_required": promotion == "performed",
@@ -741,20 +930,130 @@ def _result(
     }
 
 
-def _candidate_missing_ids(database: Path, target_date: str) -> tuple[str, ...]:
+def _record_fallback_resolutions(
+    database: Path,
+    preflight: _Preflight,
+    article_ids: Sequence[str],
+    *,
+    validated_at: str,
+) -> tuple[list[str], list[dict[str, str]]]:
+    fallback_ids: list[str] = []
+    unresolved: list[dict[str, str]] = []
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    try:
+        for article_id in article_ids:
+            decision = preflight.fallback_decisions.get(article_id)
+            latest = connection.execute(
+                """
+                SELECT f.fetch_id, f.fetch_status, f.error_code, f.http_status,
+                       f.fetched_at, f.content_version_id, f.requested_url,
+                       a.canonical_url
+                FROM article_fetches f
+                JOIN articles a ON a.article_id = f.article_id
+                WHERE f.article_id = ?
+                ORDER BY f.fetched_at DESC, f.fetch_id DESC LIMIT 1
+                """,
+                (article_id,),
+            ).fetchone()
+            if (
+                latest is None
+                or latest["fetch_status"] != "failed"
+                or latest["error_code"] != "http_error"
+                or latest["http_status"] != 403
+                or latest["content_version_id"] is not None
+                or latest["requested_url"] != latest["canonical_url"]
+            ):
+                unresolved.append({"article_id": article_id, "reason": "capture_failure_not_eligible"})
+                continue
+            if decision is None or decision.status != "complete" or decision.bundle is None:
+                unresolved.append(
+                    {
+                        "article_id": article_id,
+                        "reason": decision.reason if decision is not None and decision.reason else "fallback_unavailable",
+                    }
+                )
+                continue
+            bundle = decision.bundle
+            identifier = resolution_id(
+                report_id=f"report-{preflight.target_date}",
+                report_sha256=preflight.report.sha256,
+                article_id=article_id,
+                fetch_id=latest["fetch_id"],
+                bundle_sha256=bundle.bundle_sha256,
+            )
+            values = (
+                identifier, f"report-{preflight.target_date}", preflight.target_date,
+                preflight.report.sha256, article_id, latest["canonical_url"],
+                latest["fetch_id"], latest["fetched_at"], bundle.source,
+                bundle.provenance, bundle.bundle_json, bundle.bundle_sha256,
+                validated_at,
+            )
+            existing = connection.execute(
+                """
+                SELECT resolution_id, report_id, report_date, report_sha256,
+                       article_id, canonical_url, fetch_id, attempt_at,
+                       fallback_source, fallback_provenance, bundle_json,
+                       bundle_sha256, validated_at, failure_class, http_status
+                FROM article_capture_resolutions
+                WHERE resolution_id = ? OR fetch_id = ?
+                """,
+                (identifier, latest["fetch_id"]),
+            ).fetchall()
+            expected = values + ("http_403_publisher_bot_wall", 403)
+            if existing:
+                if len(existing) != 1 or tuple(existing[0]) != expected:
+                    raise WeeklyValidationError(
+                        "weekly registry validation failed: conflicting fallback resolution"
+                    )
+            else:
+                connection.execute(
+                """
+                INSERT INTO article_capture_resolutions(
+                    resolution_id, report_id, report_date, report_sha256,
+                    article_id, canonical_url, fetch_id, failure_class,
+                    http_status, attempt_at, fallback_source, fallback_provenance,
+                    bundle_json, bundle_sha256, validated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'http_403_publisher_bot_wall',
+                          403, ?, ?, ?, ?, ?, ?)
+                """,
+                    values,
+                )
+            if not _has_current_resolution(
+                connection,
+                report=preflight.report,
+                article_id=article_id,
+                canonical=latest["canonical_url"],
+                decision=decision,
+            ):
+                unresolved.append({"article_id": article_id, "reason": "resolution_validation_failed"})
+                continue
+            fallback_ids.append(article_id)
+        connection.commit()
+        return fallback_ids, unresolved
+    except sqlite3.DatabaseError as exc:
+        connection.rollback()
+        raise WeeklyValidationError(
+            "weekly registry validation failed: fallback resolution is invalid"
+        ) from exc
+    finally:
+        connection.close()
+
+
+def _candidate_missing_ids(database: Path, preflight: _Preflight) -> tuple[str, ...]:
     connection = sqlite3.connect(database)
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
             """
-            SELECT a.article_id, a.current_content_version_id
+            SELECT a.article_id, a.canonical_url, a.current_content_version_id
             FROM report_appearances ra
             JOIN reports r ON r.report_id = ra.report_id
             JOIN articles a ON a.article_id = ra.article_id
             WHERE r.report_date = ? AND a.publication_eligible = 1
             ORDER BY ra.ordinal, a.article_id
             """,
-            (target_date,),
+            (preflight.target_date,),
         ).fetchall()
         return tuple(
             sorted(
@@ -764,6 +1063,13 @@ def _candidate_missing_ids(database: Path, target_date: str) -> tuple[str, ...]:
                     connection,
                     row["article_id"],
                     row["current_content_version_id"],
+                )
+                and not _has_current_resolution(
+                    connection,
+                    report=preflight.report,
+                    article_id=row["article_id"],
+                    canonical=row["canonical_url"],
+                    decision=preflight.fallback_decisions.get(row["article_id"]),
                 )
             )
         )
@@ -873,27 +1179,32 @@ def _validate_candidate(candidate: Path, preflight: _Preflight) -> None:
                     "weekly registry validation failed: target article eligibility is invalid"
                 )
             for row in detail_rows:
-                required = (
-                    row["canonical_url"],
-                    row["current_content_version_id"],
-                    row["hostname"],
-                    row["display_name"],
-                    row["summary"],
-                    row["language"],
-                    row["generator_kind"],
-                    row["generator_name"],
-                    row["generator_version"],
-                    row["generated_at"],
+                identity_required = (
+                    row["canonical_url"], row["hostname"], row["display_name"]
+                )
+                db_required = (
+                    row["current_content_version_id"], row["summary"], row["language"],
+                    row["generator_kind"], row["generator_name"],
+                    row["generator_version"], row["generated_at"],
+                )
+                db_complete = (
+                    row["status"] != "complete"
+                ) is False and (
+                    row["latest_fetch_status"] in ("success", "not_modified")
+                    and all(isinstance(value, str) and value.strip() for value in db_required)
+                    and _validate_json_list(row["categories_json"])
+                    and _validate_json_list(row["keywords_json"])
+                )
+                resolution_complete = _has_current_resolution(
+                    connection,
+                    report=preflight.report,
+                    article_id=row["article_id"],
+                    canonical=row["canonical_url"],
+                    decision=preflight.fallback_decisions.get(row["article_id"]),
                 )
                 if (
-                    row["status"] != "complete"
-                    or row["latest_fetch_status"] not in ("success", "not_modified")
-                    or any(
-                        not isinstance(value, str) or not value.strip()
-                        for value in required
-                    )
-                    or not _validate_json_list(row["categories_json"])
-                    or not _validate_json_list(row["keywords_json"])
+                    any(not isinstance(value, str) or not value.strip() for value in identity_required)
+                    or not (db_complete or resolution_complete)
                 ):
                     raise WeeklyValidationError(
                         "weekly registry validation failed: target article detail is incomplete"
@@ -1026,6 +1337,54 @@ def _atomic_replace(source: Path, destination: Path) -> None:
     os.replace(source, destination)
 
 
+def _candidate_identity(candidate: Path) -> tuple[int, int, int, str]:
+    descriptor: int | None = None
+    try:
+        path_before = os.stat(candidate, follow_symlinks=False)
+        descriptor = os.open(
+            candidate,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or _is_link_or_reparse(candidate)
+            or (path_before.st_dev, path_before.st_ino, path_before.st_size)
+            != (opened_before.st_dev, opened_before.st_ino, opened_before.st_size)
+        ):
+            raise OSError("candidate is not a regular file")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        opened_after = os.fstat(descriptor)
+        path_after = os.stat(candidate, follow_symlinks=False)
+        stable_fields = lambda value: (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            getattr(value, "st_mtime_ns", None),
+            getattr(value, "st_ctime_ns", None),
+        )
+        if (
+            stable_fields(opened_before) != stable_fields(opened_after)
+            or stable_fields(opened_after) != stable_fields(path_after)
+        ):
+            raise OSError("candidate changed while binding identity")
+        return (
+            opened_after.st_dev,
+            opened_after.st_ino,
+            opened_after.st_size,
+            digest.hexdigest(),
+        )
+    except OSError as exc:
+        raise WeeklyValidationError(
+            "weekly registry validation failed: candidate identity changed"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _restore_if_needed(
     database: Path,
     backup: Path,
@@ -1064,7 +1423,14 @@ def _restore_if_needed(
         ) from exc
 
 
-def _promote(candidate: Path, database: Path, backup: Path, before_sha256: str) -> str:
+def _promote(
+    candidate: Path,
+    database: Path,
+    backup: Path,
+    before_sha256: str,
+    preflight: _Preflight | None = None,
+    expected_candidate_identity: tuple[int, int, int, str] | None = None,
+) -> str:
     try:
         before_metadata = os.stat(database, follow_symlinks=False)
         before_mode = stat.S_IMODE(before_metadata.st_mode)
@@ -1080,6 +1446,13 @@ def _promote(candidate: Path, database: Path, backup: Path, before_sha256: str) 
         raise WeeklyValidationError("weekly registry promotion failed") from exc
     if live_changed:
         raise RegistryLockError("live registry changed before weekly promotion")
+    if (
+        expected_candidate_identity is not None
+        and _candidate_identity(candidate) != expected_candidate_identity
+    ):
+        raise WeeklyValidationError(
+            "weekly registry validation failed: candidate identity changed before promotion"
+        )
     promoted = False
     try:
         _atomic_replace(candidate, database)
@@ -1090,11 +1463,14 @@ def _promote(candidate: Path, database: Path, backup: Path, before_sha256: str) 
             raise WeeklyValidationError(
                 "weekly registry validation failed: promotion did not change the database"
             )
-        connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
-        try:
-            _validate_database(connection)
-        finally:
-            connection.close()
+        if preflight is not None:
+            _validate_candidate(database, preflight)
+        else:
+            connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+            try:
+                _validate_database(connection)
+            finally:
+                connection.close()
         return after_sha256
     except (RegistryLockError, WeeklyValidationError):
         if promoted:
@@ -1134,6 +1510,7 @@ def weekly_sync(
     backup_dir: str | Path,
     lock_file: str | Path,
     publisher_ledger_dir: str | Path,
+    metadata_dir: str | Path | None = None,
     expected_report_sha256: str | None = None,
     dry_run: bool = False,
     resolver: Resolver = _default_resolver,
@@ -1166,6 +1543,7 @@ def weekly_sync(
         backup_dir=backup_dir,
         lock_file=lock_file,
         publisher_ledger_dir=publisher_ledger_dir,
+        metadata_dir=metadata_dir,
         clock=clock,
         git_runner=git_runner,
         check_lock=True,
@@ -1205,9 +1583,12 @@ def weekly_sync(
             backup_dir=backup_dir,
             lock_file=lock_file,
             publisher_ledger_dir=publisher_ledger_dir,
+            metadata_dir=metadata_dir,
             clock=clock,
             git_runner=git_runner,
             check_lock=False,
+            fallback_decisions=initial.fallback_decisions,
+            metadata_fingerprint=initial.metadata_fingerprint,
         )
         if (
             locked.live_sha256 != initial.live_sha256
@@ -1238,20 +1619,25 @@ def weekly_sync(
         scratch: Path | None = None
         backup_path: Path | None = None
         captured = 0
+        capture_failures = 0
+        fallback_ids: list[str] = []
+        unresolved: list[dict[str, str]] = []
+        capture_failure_details: list[dict[str, str]] = []
         try:
             try:
-                descriptor, candidate_name = tempfile.mkstemp(
-                    prefix=f".{locked.database.name}.",
-                    suffix=".weekly-candidate",
-                    dir=locked.database.parent,
-                )
-                os.close(descriptor)
-                candidate = Path(candidate_name)
                 scratch = Path(
                     tempfile.mkdtemp(
                         prefix=f".{locked.database.name}.", dir=locked.database.parent
                     )
                 )
+                os.chmod(scratch, 0o700)
+                candidate = scratch / f"{locked.database.name}.weekly-candidate"
+                descriptor = os.open(
+                    candidate,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                    0o600,
+                )
+                os.close(descriptor)
             except OSError as exc:
                 raise WeeklyValidationError(
                     "weekly registry candidate workspace could not be created"
@@ -1276,7 +1662,7 @@ def weekly_sync(
                 )
 
             try:
-                capture_ids = _candidate_missing_ids(candidate, locked.target_date)
+                capture_ids = _candidate_missing_ids(candidate, locked)
             except sqlite3.DatabaseError as exc:
                 raise WeeklyValidationError(
                     "weekly registry validation failed: candidate capture plan is invalid"
@@ -1311,7 +1697,7 @@ def weekly_sync(
                             "weekly registry validation failed: candidate capture failed"
                         ) from exc
                     counts = capture_result.get("counts", {})
-                    failed = int(counts.get("failed", 0)) + int(
+                    capture_failures += int(counts.get("failed", 0)) + int(
                         counts.get("enrichment_failed", 0)
                     )
                     candidate_articles = capture_result.get("articles", [])
@@ -1320,7 +1706,7 @@ def weekly_sync(
                         for item in candidate_articles
                         if item.get("status") not in {"failed", "enrichment_failed"}
                     ]
-                    if capture_result.get("status") == "partial" or failed:
+                    if capture_result.get("status") == "partial":
                         failures = [
                             {
                                 "article_id": item["article_id"],
@@ -1334,42 +1720,74 @@ def weekly_sync(
                             for item in candidate_articles
                             if item.get("status") in {"failed", "enrichment_failed"}
                         ]
-                        succeeded_ids.extend(batch_successes)
-                        skipped_ids = list(capture_ids[offset + len(batch) :])
-                        partial_result = _result(
+                        failed_capture_ids = [
+                            item["article_id"] for item in failures
+                            if item["status"] == "failed"
+                        ]
+                        capture_failure_details.extend(failures)
+                        accepted, rejected = _record_fallback_resolutions(
+                            candidate,
                             locked,
-                            dry_run=False,
-                            status="partial",
-                            reports_added=0,
-                            articles_added=0,
-                            articles_captured=len(succeeded_ids),
-                            articles_failed=len(failures),
-                            promotion="blocked",
-                            before_sha256=locked.live_sha256,
-                            after_sha256=locked.live_sha256,
+                            failed_capture_ids,
+                            validated_at=capture_now,
                         )
-                        partial_result["capture"] = {
-                            "succeeded_article_ids": succeeded_ids,
-                            "failures": failures,
-                            "skipped_article_ids": skipped_ids,
-                        }
-                        raise WeeklyPartialError(
-                            "weekly registry capture was partial; live registry was not changed",
-                            result=partial_result,
+                        fallback_ids.extend(accepted)
+                        unresolved.extend(rejected)
+                        unresolved.extend(
+                            {
+                                "article_id": item["article_id"],
+                                "reason": "enrichment_failed",
+                            }
+                            for item in failures
+                            if item["status"] == "enrichment_failed"
                         )
                     batch_selected = int(capture_result.get("selected", 0))
-                    if batch_selected != len(batch) or len(batch_successes) != len(batch):
+                    if batch_selected != len(batch):
                         raise WeeklyValidationError(
                             "weekly registry validation failed: capture result count is invalid"
                         )
                     succeeded_ids.extend(batch_successes)
-                    captured += batch_selected
+                    captured += len(batch_successes)
+
+                if unresolved:
+                    partial_result = _result(
+                        locked,
+                        dry_run=False,
+                        status="partial",
+                        coverage_status="blocked_unresolved",
+                        reports_added=0,
+                        articles_added=0,
+                        articles_captured=captured,
+                        articles_failed=capture_failures,
+                        articles_fallback=len(fallback_ids),
+                        fallback_article_ids=fallback_ids,
+                        articles_unresolved=len(unresolved),
+                        fallback_failure_classes=(
+                            {"http_403_publisher_bot_wall": len(fallback_ids)}
+                            if fallback_ids else {}
+                        ),
+                        promotion="blocked",
+                        before_sha256=locked.live_sha256,
+                        after_sha256=locked.live_sha256,
+                    )
+                    partial_result["capture"] = {
+                        "succeeded_article_ids": succeeded_ids,
+                        "fallback_article_ids": fallback_ids,
+                        "failures": capture_failure_details,
+                        "unresolved": unresolved,
+                        "skipped_article_ids": [],
+                    }
+                    raise WeeklyPartialError(
+                        "weekly registry capture was partial with unresolved coverage; live registry was not changed",
+                        result=partial_result,
+                    )
 
             if _sqlite_entries(candidate):
                 raise WeeklyValidationError(
                     "weekly registry validation failed: candidate has SQLite sidecars"
                 )
             _validate_candidate(candidate, locked)
+            candidate_identity = _candidate_identity(candidate)
             _revalidate_upstream(locked, clock=clock, git_runner=git_runner)
 
             try:
@@ -1394,7 +1812,12 @@ def weekly_sync(
             _validate_exact_backup(backup_path, locked.live_sha256)
             _revalidate_upstream(locked, clock=clock, git_runner=git_runner)
             after_sha256 = _promote(
-                candidate, locked.database, backup_path, locked.live_sha256
+                candidate,
+                locked.database,
+                backup_path,
+                locked.live_sha256,
+                locked,
+                candidate_identity,
             )
             return _result(
                 locked,
@@ -1403,6 +1826,17 @@ def weekly_sync(
                 reports_added=len(locked.update_plan["new_reports"]),
                 articles_added=len(locked.new_article_ids),
                 articles_captured=captured,
+                articles_failed=capture_failures,
+                articles_fallback=len(fallback_ids),
+                fallback_article_ids=fallback_ids,
+                articles_unresolved=0,
+                fallback_failure_classes=(
+                    {"http_403_publisher_bot_wall": len(fallback_ids)}
+                    if fallback_ids else {}
+                ),
+                coverage_status=(
+                    "partial_with_validated_fallback" if fallback_ids else "ok"
+                ),
                 promotion="performed",
                 before_sha256=locked.live_sha256,
                 after_sha256=after_sha256,
@@ -1479,7 +1913,8 @@ def _restore_preflight(
             "weekly registry restore preflight failed: lock file is unsafe"
         )
     if check_lock and lock_path.exists():
-        raise RegistryLockError("weekly registry restore is already locked")
+        with _exclusive_database_lock(database_path):
+            pass
     live_sha256 = _safe_file_sha256(database_path)
     live_mode = stat.S_IMODE(os.stat(database_path, follow_symlinks=False).st_mode)
     _validate_exact_backup(database_path, live_sha256)
@@ -1559,6 +1994,7 @@ def restore_registry_backup(
                     "weekly registry restore candidate could not be created"
                 ) from exc
             _validate_exact_backup(candidate, locked.expected_sha256)
+            candidate_identity = _candidate_identity(candidate)
             try:
                 locked.backup_dir.mkdir(parents=True, exist_ok=True)
                 if (
@@ -1592,6 +2028,7 @@ def restore_registry_backup(
                 locked.database,
                 rollback_backup,
                 locked.live_sha256,
+                expected_candidate_identity=candidate_identity,
             )
             if restored_sha256 != locked.expected_sha256:
                 raise WeeklyValidationError(

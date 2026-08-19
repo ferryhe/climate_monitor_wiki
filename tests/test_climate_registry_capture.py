@@ -828,11 +828,10 @@ def test_live_database_is_unchanged_for_lock_sidecar_and_candidate_failure(tmp_p
     database = _registry(tmp_path)
     before = database.read_bytes()
     lock = database.with_name(f"{database.name}.lock")
-    lock.write_text("stale", encoding="ascii")
-    with pytest.raises(RegistryLockError):
-        _run(database, tmp_path, FakeTransport(_response()))
+    with capture._exclusive_database_lock(database):
+        with pytest.raises(RegistryLockError):
+            _run(database, tmp_path, FakeTransport(_response()))
     assert database.read_bytes() == before
-    lock.unlink()
 
     sidecar = database.with_name(f"{database.name}-wal")
     sidecar.write_bytes(b"stale")
@@ -870,7 +869,7 @@ def test_live_fingerprint_race_aborts_atomic_install(tmp_path):
     with pytest.raises(RegistryLockError, match="changed"):
         _run(database, tmp_path, RacingTransport(_response()))
     assert database.read_bytes() == original + b"race"
-    assert not database.with_name(f"{database.name}.lock").exists()
+    assert database.with_name(f"{database.name}.lock").is_file()
 
 
 def test_max_body_and_timeout_failures_have_stable_codes():

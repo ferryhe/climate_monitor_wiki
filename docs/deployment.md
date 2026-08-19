@@ -140,7 +140,7 @@ bash scripts/weekly_wiki_refresh.sh
 
 The wrapper passes `--registry-database` only when that value is non-empty. It
 does not source `.env`, guess or print the path, or use `CLIMATE_REGISTRY_DB`.
-The configured schema-v3 database must be an immutable, sidecar-free snapshot
+The configured exact schema-v3 or schema-v4 database must be an immutable, sidecar-free snapshot
 whose report filename/SHA identities exactly match `origin/main`'s `sources/`.
 It is opened with SQLite read-only URI and `query_only`; a missing, corrupt,
 wrong-schema, contract-broken, or out-of-sync snapshot stops publication before
@@ -183,7 +183,7 @@ docker compose -f docker-compose.yml -f docker-compose.registry.yml config --qui
 ```
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
-It must be a complete schema-v3 main database with no dependency on WAL, SHM,
+It must be a complete exact schema-v3 or schema-v4 main database with no dependency on WAL, SHM,
 or rollback-journal sidecars. Perform the publisher/copyright review first and
 set articles without public full-text rights to `metadata_only` in the offline
 candidate database. The deterministic preflight rejects relative, missing, or
@@ -227,7 +227,7 @@ Status contract:
 
 | Condition | HTTP | Safe reason |
 |---|---:|---|
-| Valid schema v3, including an empty Registry | 200 | `available: true` |
+| Valid exact schema v3 or v4, including an empty Registry | 200 | `available: true` and actual version |
 | No Registry configured | 503 | `not_configured` |
 | Missing, unreadable, or corrupt main database | 503 | `database_unavailable` |
 | Path inside the checkout or not absolute | 503 | `invalid_location` |
@@ -312,8 +312,8 @@ failure reasons, resource limits, writer verification, and app-only rollback.
 
 Enabling this override does not create or change a Monitor, Email, Registry
 updater, or Registry capture job. The repo-owned Publisher wrapper is the sole
-supported Publisher ledger producer after the ledger-contract rollout; any
-older external flat-record step must be removed or disabled so it cannot append
+supported Publisher ledger producer. The legacy repair is complete; any older
+external flat-record step must remain disabled so it cannot append
 a newer identity-less success. This phase does not change Caddy, Fail2Ban, the
 firewall, or any scheduled workflow.
 
@@ -356,13 +356,14 @@ unchanged; the Registry runner never sends mail.
 ## Ledger-contract rollout and 10:30 gate
 
 This is a server runbook only. Repository development must not execute these
-steps against production. The current verified deployment is `14904db`; GitHub
-`main` also contains the later PR #48 merge `2ba7b619`, which is not deployed.
+steps against production. This task baseline is `origin/main` at `cf19da8`;
+confirm and record the actual deployed commit at run time.
 
-### Stage A — deploy the merged ledger contract
+### Stage A — deploy validated fallback coverage
 
 1. Confirm the production checkout is clean, fetch `origin`, and fast-forward
-   only to the human-approved merge commit containing this ledger-contract PR.
+   only to the human-approved merge commit containing Registry schema v4 and
+   validated fallback coverage.
 2. Rebuild/recreate only the app with the already approved Registry, delivery,
    update-status, and job-status overrides. This application-deployment substep
    does not restart Caddy or alter any Hermes job.
@@ -385,7 +386,11 @@ steps against production. The current verified deployment is `14904db`; GitHub
    test -d "$CLIMATE_SOURCE_DIR" && test -f "$CLIMATE_PUBLISH_LOCK"
    ```
 
-### Stage B — exact legacy-ledger dry-run
+### Stage B — completed legacy-ledger validation (historical evidence)
+
+The exact repair has already been applied and validates. Do not repeat it as a
+deployment step. Retain the following command and SHA only as the audit recipe
+for checking the completed overlay and untouched original attempt/claim.
 
 Run the repair without `--apply`; dry-run is the default:
 
@@ -399,8 +404,7 @@ Run the repair without `--apply`; dry-run is the default:
   --lock-file "$CLIMATE_PUBLISH_LOCK"
 ```
 
-The expected status is `would_repair` (or `already_valid` after an authorized
-prior repair). Source raw bytes, the Registry report row, the exact artifact
+The expected status is now `already_valid`. Source raw bytes, the Registry report row, the exact artifact
 directory, and the manifest report identity must all resolve to:
 
 ```text
@@ -411,15 +415,17 @@ Dry-run must create no repair overlay, backup, temporary file, or lock. The
 pre-existing configured Publisher lock file must remain byte-for-byte unchanged;
 the command must not read delivery configuration/state or modify any input.
 
-### Stage C — separately authorized repair
+### Stage C — completed repair invariants (do not reapply)
 
-Before applying, record the ledger tree hash, Registry DB hash, artifact
-inventory, delivery state, and checkout status. Only after a separate owner
-authorization, repeat the exact command with `--apply`. The repair atomically
-adds one raw-hash-bound overlay under `.attempt-repairs`; it does not rewrite
-the legacy attempt or its private identity hard link. Re-record the same five
-fingerprints and prove that only the expected overlay was added. Repeating the
-command must return `already_valid` without another write.
+The raw-hash-bound overlay under `.attempt-repairs` has already been created and
+validated without changing the original attempt or private claim. The steps
+below describe retained audit/rollback evidence, not pending production work.
+
+Retained evidence records the ledger tree hash, Registry DB hash, artifact
+inventory, delivery state, and checkout status from before and after the repair.
+It proves that only one raw-hash-bound overlay was added and that the legacy
+attempt and private identity hard link were unchanged. Validation must return
+`already_valid` without another write.
 
 Rollback is correspondingly narrow: under separate audited authorization,
 remove only that exact repair overlay and revalidate the untouched legacy
@@ -432,9 +438,13 @@ Run `python -m climate_registry weekly-sync` for exact date `2026-08-17` with
 the explicit source, Registry, artifact, backup, standard DB-lock, and Publisher
 ledger paths documented in
 [`weekly-registry-automation.md`](weekly-registry-automation.md). Dry-run must
-pass identity preflight. Because the deployed Registry date is already complete,
-the formal validation should be a safe no-op (exit `6`): no network capture,
-candidate promotion, reload, DB change, artifact change, or email.
+pass identity preflight. The two prior controlled candidates each observed 21
+capture successes and four deterministic publisher-wall 403 failures, then
+stopped before promotion with the live DB unchanged. With validated fallback
+deployed, expect 21 captured / 4 failed / 4 validated fallback / 0 unresolved
+and atomic promotion, or a safe no-op (exit `6`) if those exact resolutions are
+already current. Verify DB hashes, fetch/resolution audit rows, API provenance,
+Historical Report/PDF views, and absence of email or delivery-state access.
 
 ### Stage E — create disabled, then authorize enablement
 

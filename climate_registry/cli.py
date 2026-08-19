@@ -77,6 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     weekly.add_argument("--backup-dir", required=True, type=Path)
     weekly.add_argument("--lock-file", required=True, type=Path)
     weekly.add_argument("--publisher-ledger-dir", required=True, type=Path)
+    weekly.add_argument("--metadata-dir", type=Path)
     weekly.add_argument("--expected-report-sha256")
     weekly.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     weekly.add_argument("--dry-run", action="store_true")
@@ -102,10 +103,16 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
         "articles_added": 0,
         "articles_captured": 0,
         "articles_failed": 0,
+        "articles_fallback": 0,
+        "articles_unresolved": 0,
+        "fallback_failure_classes": {},
+        "promotion_with_fallback": False,
+        "coverage_status": "blocked_unresolved",
         "would_add_reports": 0,
         "would_add_articles": 0,
         "would_capture_article_ids": [],
         "would_capture_count": 0,
+        "would_fallback_count": 0,
         "would_promote": False,
         "promotion": "blocked",
         "reload_required": False,
@@ -145,6 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 backup_dir=args.backup_dir,
                 lock_file=args.lock_file,
                 publisher_ledger_dir=args.publisher_ledger_dir,
+                metadata_dir=args.metadata_dir,
                 expected_report_sha256=args.expected_report_sha256,
                 timeout=args.timeout,
                 dry_run=args.dry_run,

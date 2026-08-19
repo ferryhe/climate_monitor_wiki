@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from urllib import error
 
 import pytest
 
@@ -45,6 +46,8 @@ def _argv(tmp_path):
         str(tmp_path / "ledger"),
         "--base-url",
         "https://climate.example",
+        "--expected-api-host",
+        "climate.example",
     ]
 
 
@@ -59,6 +62,12 @@ def _sync_payload(*, dry_run: bool, status: str = "ok"):
         "articles_added": 0 if dry_run else 1,
         "articles_captured": 0 if dry_run else 1,
         "articles_failed": 0,
+        "articles_fallback": 0,
+        "fallback_article_ids": [],
+        "articles_unresolved": 0,
+        "fallback_failure_classes": {},
+        "promotion_with_fallback": False,
+        "coverage_status": "ok",
         "target_article_count": 1,
         "target_eligible_article_count": 1,
         "target_article_ids": ["article-safe"],
@@ -66,6 +75,7 @@ def _sync_payload(*, dry_run: bool, status: str = "ok"):
         "would_add_articles": 1,
         "would_capture_article_ids": ["article-safe"],
         "would_capture_count": 1,
+        "would_fallback_count": 0,
         "would_promote": True,
         "promotion": "performed" if performed else "not-needed",
         "reload_required": performed,
@@ -181,7 +191,8 @@ def test_draft_job_runs_dry_live_reload_and_complete_api_verification(
             "monitoring_snapshot": True,
             "pdf": True,
             "article_count": 1,
-            "sample_article_id": "article-safe",
+                "sample_article_id": "article-safe",
+                "verified_eligible_article_count": 1,
         },
     }
     assert output.count("\n") == 1
@@ -219,7 +230,7 @@ def test_dry_run_failure_stops_before_live_sync_and_reload(tmp_path, capsys, mon
     assert payload["reload"] == "not-performed"
 
 
-def test_no_op_is_safe_and_still_reloads_and_verifies(tmp_path, capsys, monkeypatch):
+def test_no_op_is_local_only_and_does_not_reload_or_call_api(tmp_path, capsys, monkeypatch):
     def fake_run(command, **kwargs):
         payload = _sync_payload(dry_run="--dry-run" in command, status="no-op")
         payload["would_promote"] = False
@@ -232,7 +243,11 @@ def test_no_op_is_safe_and_still_reloads_and_verifies(tmp_path, capsys, monkeypa
         )
 
     monkeypatch.setattr(refresh.subprocess, "run", fake_run)
-    monkeypatch.setattr(refresh, "_request_json", _api_payload)
+    monkeypatch.setattr(
+        refresh,
+        "_request_json",
+        lambda *_args, **_kwargs: pytest.fail("no-op must not call the API"),
+    )
     monkeypatch.setenv("RELOAD_TOKEN", "reload-secret")
 
     code = refresh.main(_argv(tmp_path))
@@ -242,6 +257,168 @@ def test_no_op_is_safe_and_still_reloads_and_verifies(tmp_path, capsys, monkeypa
     assert payload["dry_run_status"] == "no-op"
     assert payload["sync_status"] == "no-op"
     assert payload["promotion"] == "not-needed"
+    assert payload["reload"] == "not-needed"
+    assert payload["verification"]["local_only"] is True
+
+
+def test_runner_accepts_complete_api_fallback_with_real_failed_403():
+    detail = _api_payload(
+        "https://climate.example/api/registry/articles/article-safe", timeout=1
+    )
+    detail["summary_provenance"] = "publisher_excerpt_annotation"
+    detail["metadata_provenance"] = {
+        "categories": "publisher_excerpt_annotation",
+        "keywords": "publisher_excerpt_annotation",
+    }
+    detail["latest_fetch"] = {
+        "fetch_status": "failed",
+        "http_status": 403,
+        "error_code": "http_error",
+    }
+    detail["enrichment"] = {
+        "summary": None,
+        "categories": [],
+        "keywords": [],
+        "language": None,
+        "generator": None,
+    }
+    refresh._verify_article(
+        detail,
+        article_id="article-safe",
+        target_date=TARGET,
+        fallback_article_ids=frozenset({"article-safe"}),
+    )
+
+
+def test_structured_fallback_result_preserves_real_failure_count():
+    payload = _sync_payload(dry_run=False)
+    payload.update(
+        {
+            "coverage_status": "partial_with_validated_fallback",
+            "articles_captured": 21,
+            "articles_failed": 4,
+            "articles_fallback": 4,
+            "fallback_article_ids": [f"article-{index}" for index in range(4)],
+            "articles_unresolved": 0,
+            "fallback_failure_classes": {"http_403_publisher_bot_wall": 4},
+            "promotion_with_fallback": True,
+            "target_article_count": 5,
+            "target_article_ids": [
+                "article-0", "article-1", "article-2", "article-3", "article-safe"
+            ],
+        }
+    )
+    assert refresh._validate_sync_result(
+        payload, target_date=TARGET, dry_run=False, returncode=0
+    )["articles_failed"] == 4
+
+
+@pytest.mark.parametrize(
+    "fallback_ids",
+    (["article-safe", "article-safe"], ["article-unbound"], []),
+)
+def test_structured_fallback_ids_fail_closed_when_not_exact(fallback_ids):
+    payload = _sync_payload(dry_run=False)
+    payload.update(
+        {
+            "coverage_status": "partial_with_validated_fallback",
+            "articles_failed": 1,
+            "articles_fallback": 1,
+            "fallback_article_ids": fallback_ids,
+            "fallback_failure_classes": {"http_403_publisher_bot_wall": 1},
+            "promotion_with_fallback": True,
+        }
+    )
+    with pytest.raises(refresh._JobError, match="invalid_sync_result"):
+        refresh._validate_sync_result(
+            payload, target_date=TARGET, dry_run=False, returncode=0
+        )
+
+
+def test_runner_accepts_complete_db_enrichment_with_empty_metadata_lists():
+    detail = _api_payload(
+        "https://climate.example/api/registry/articles/article-safe", timeout=1
+    )
+    detail["categories"] = []
+    detail["keywords"] = []
+    detail["enrichment"]["categories"] = []
+    detail["enrichment"]["keywords"] = []
+    refresh._verify_article(
+        detail,
+        article_id="article-safe",
+        target_date=TARGET,
+        fallback_article_ids=frozenset(),
+    )
+
+
+def test_db_first_enrichment_with_later_403_requires_bound_fallback_id():
+    detail = _api_payload(
+        "https://climate.example/api/registry/articles/article-safe", timeout=1
+    )
+    detail["latest_fetch"] = {
+        "fetch_status": "failed",
+        "http_status": 403,
+        "error_code": "http_error",
+    }
+    with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+        refresh._verify_article(
+            detail,
+            article_id="article-safe",
+            target_date=TARGET,
+            fallback_article_ids=frozenset(),
+        )
+    refresh._verify_article(
+        detail,
+        article_id="article-safe",
+        target_date=TARGET,
+        fallback_article_ids=frozenset({"article-safe"}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_host"),
+    (
+        ("https://user:secret@climate.example", "climate.example"),
+        ("http://climate.example", "climate.example"),
+        ("https://climate.example", None),
+        ("https://climate.example", "other.example"),
+        ("http://localhost.example", None),
+    ),
+)
+def test_runner_rejects_userinfo_remote_http_and_unbound_hosts(value, expected_host):
+    with pytest.raises(refresh._JobError, match="invalid_base_url"):
+        refresh._base_url(value, expected_host)
+
+
+def test_runner_allows_literal_loopback_and_exact_https_host():
+    assert refresh._base_url("http://127.0.0.1:8501") == "http://127.0.0.1:8501"
+    assert refresh._base_url("http://localhost:8501") == "http://localhost:8501"
+    assert (
+        refresh._base_url("https://climate.example", "climate.example")
+        == "https://climate.example"
+    )
+
+
+@pytest.mark.parametrize("redirect", ("https://climate.example/next", "https://evil.example/next"))
+def test_runner_rejects_redirect_without_forwarding_reload_token(monkeypatch, redirect):
+    opened = []
+
+    class RedirectingOpener:
+        def open(self, outbound, *, timeout):
+            opened.append((outbound.full_url, dict(outbound.header_items()), timeout))
+            raise error.HTTPError(outbound.full_url, 302, redirect, {}, None)
+
+    monkeypatch.setattr(refresh.request, "build_opener", lambda *_handlers: RedirectingOpener())
+    with pytest.raises(refresh._JobError, match="api_request_failed"):
+        refresh._request_json(
+            "https://climate.example/api/reload",
+            method="POST",
+            headers={"x-reload-token": "top-secret"},
+            timeout=1,
+        )
+    assert len(opened) == 1
+    assert opened[0][0] == "https://climate.example/api/reload"
+    assert opened[0][1] == {"X-reload-token": "top-secret"}
 
 
 def test_incomplete_report_artifact_verification_fails_without_sensitive_output(
