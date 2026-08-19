@@ -76,6 +76,7 @@ def test_base_and_delivery_override_render_independently(tmp_path):
     service = rendered["services"]["wiki"]
     assert service["environment"]["CLIMATE_DELIVERY_OUTPUT_DIR"] == "/delivery-output"
     mount = next(item for item in service["volumes"] if item["target"] == "/delivery-output")
+    assert mount["type"] == "bind"
     assert mount["source"] == str(host_output.resolve())
     assert mount["read_only"] is True
 

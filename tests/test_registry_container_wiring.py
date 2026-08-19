@@ -148,6 +148,7 @@ def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
     rendered = json.loads(completed.stdout)
     mounts = rendered["services"]["wiki"]["volumes"]
     registry = next(item for item in mounts if item["target"] == "/registry")
+    assert registry["type"] == "bind"
     assert registry["source"] == str(tmp_path.resolve())
     assert registry["read_only"] is True
 

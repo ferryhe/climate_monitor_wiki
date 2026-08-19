@@ -184,6 +184,7 @@ def test_base_registry_and_update_status_compose_overrides_render_together(tmp_p
     rendered = json.loads(completed.stdout)
     wiki = rendered["services"]["wiki"]
     mount = next(item for item in wiki["volumes"] if item["target"] == "/update-status")
+    assert mount["type"] == "bind"
     assert mount["source"] == str(ledger.resolve())
     assert mount["read_only"] is True
     assert wiki["environment"]["CLIMATE_UPDATE_STATUS_DIR"] == "/update-status"

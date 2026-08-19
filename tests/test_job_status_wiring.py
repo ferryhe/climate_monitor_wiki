@@ -85,6 +85,7 @@ def test_all_optional_read_only_overrides_render_together(tmp_path):
     rendered = json.loads(completed.stdout)
     wiki = rendered["services"]["wiki"]
     mount = next(item for item in wiki["volumes"] if item["target"] == "/job-status")
+    assert mount["type"] == "bind"
     assert mount["source"] == str(job_status.resolve())
     assert mount["read_only"] is True
     assert wiki["environment"]["CLIMATE_JOB_STATUS_DIR"] == "/job-status"

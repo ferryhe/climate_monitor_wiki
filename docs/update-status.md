@@ -183,6 +183,10 @@ export CLIMATE_UPDATE_STATUS_HOST_DIR=/external/weekly-run-ledger
   config --quiet
 ```
 
+This read-only `config` command uses Compose's normal passthrough behavior. Use
+the same wrapper and override set for a later container-creating command so its
+final resolved mount and host path receive the documented preflight checks.
+
 When the Article Registry is also enabled, include
 `-f docker-compose.registry.yml` in the same invocation; the two overrides are
 independent and are tested together.

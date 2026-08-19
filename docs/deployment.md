@@ -176,12 +176,28 @@ sets the fixed in-container database path. The host directory is configuration,
 not repository content:
 
 For every optional bind override in this section, use
-`python -m scripts.safe_compose` in place of a raw `docker compose` invocation.
-The wrapper rejects an unset, relative, missing, or non-directory host source
-before Docker runs, without printing the configured path. This preflight is
-required because some Docker Desktop engines create a missing source even when
-Compose receives `bind.create_host_path: false`. The explicit `false` remains
-in each source YAML as a second fail-closed layer on engines that honor it.
+`python -m scripts.safe_compose` for container-creating `up`, `create`, `run`,
+or `watch` operations. The wrapper preserves the caller's working directory,
+environment, and Compose global options and first asks Docker Compose itself
+for `config --format json`. It validates every final `/registry`,
+`/delivery-output`, `/update-status`, and `/job-status` mount that appears in
+that resolved model. Each must be one unique, read-only bind from an absolute,
+existing ordinary directory. The source and every existing parent are checked
+with no-follow metadata; symlinks and Windows reparse points or junctions are
+rejected. Errors do not print the source path or environment value.
+
+This wrapper is preflight hardening, not an atomic filesystem guarantee. A
+trusted host path can still be replaced in the TOCTOU interval after validation
+and before Docker opens it, so operators must prevent hostile same-user changes.
+The check runs immediately before the requested Compose process. Every source
+YAML also keeps `bind.create_host_path: false` as a second fail-closed layer on
+engines that honor it.
+
+Recovery and inspection commands such as `down`, `stop`, `rm`, `ps`, `logs`,
+and `config` pass directly to Docker Compose and are not blocked when an
+optional source is absent. `config` therefore retains Compose's normal errors
+but does not perform the wrapper's filesystem check. An unknown or
+unrecognizable subcommand fails closed without starting Docker.
 
 ```bash
 export CLIMATE_REGISTRY_HOST_DIR=/home/ubuntu/climate_monitor_data/registry
@@ -266,8 +282,9 @@ those remain explicit, separately reviewed server operations.
 
 Historical Reports can consume an operator-managed delivery artifact tree with
 the independent `docker-compose.delivery.yml` override. Set the host path
-explicitly; the safe wrapper will fail before Docker can create a missing
-directory:
+explicitly. The command below checks the resolved Compose configuration; a
+later container-creating wrapper invocation also performs the filesystem
+preflight before Docker can create a missing directory:
 
 ```bash
 export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output

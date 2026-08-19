@@ -98,6 +98,10 @@ export CLIMATE_JOB_STATUS_HOST_DIR=/external/sanitized-job-status
   config --quiet
 ```
 
+This read-only `config` command uses Compose's normal passthrough behavior. Use
+the same wrapper and override set for a later container-creating command so its
+final resolved mount and host path receive the documented preflight checks.
+
 The override mounts the parent directory read-only at `/job-status`, disables
 implicit host-path creation, and sets `CLIMATE_JOB_STATUS_DIR=/job-status`.
 The app performs a bounded, no-follow regular-file read for every request, so
