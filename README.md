@@ -18,11 +18,14 @@ This repo exposes the monitoring corpus through three web tabs plus an Obsidian 
 See [docs/project-closeout.md](docs/project-closeout.md) for the operator guide,
 module map, API/CLI audit, scheduled-job boundaries, and closeout record.
 
-GitHub `main` includes PR #49 (`14904db`) and the later PR #48 closeout merge
-(`2ba7b619`). Production is currently deployed at `14904db`; PR #48 has not
-been deployed. The deployed Registry and Article Detail code is healthy, but
-Registry weekly automation remains blocked because the legacy Publisher ledger
-record has no structured canonical report identity.
+This task is based on `origin/main` at `cf19da8`. Do not infer the currently
+deployed commit from this document; confirm it in the controlled deployment
+runbook. The production Registry and Article Detail behavior is healthy. The
+legacy Publisher record has already been repaired and validates with its formal
+identity. Two controlled captures observed 21 successes and four deterministic
+publisher-wall 403 failures; their candidates were not promoted and the live DB
+remained byte-for-byte unchanged. The remaining gate is deployment of validated
+fallback coverage, a controlled exact sync, and creation of the disabled 10:30 job.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
 Chat now also exposes three answer modes:
@@ -118,14 +121,22 @@ The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses
 
 The deployed application includes a tested Monday 10:30 Weekly Registry Sync
 runner, DB-first Article Detail enrichment, and exact backup/restore. The Hermes
-task is still unconfigured and unverified. Before it may be created, the
-Publisher ledger contract must be merged and deployed, the exact 2026-08-17
-legacy record must pass a zero-write repair dry-run and separately authorized
-repair, and `weekly-sync` must pass its exact-date dry-run/no-op validation. The
+task is still unconfigured and unverified. The exact 2026-08-17 legacy Publisher
+record repair is complete and valid. After this validated-fallback change is
+merged and deployed, `weekly-sync` must pass an exact controlled sync and API/DB
+hash verification before the task is created disabled. The
 tracked `article_metadata/` JSON remains a compatibility fallback rather than a
 weekly generated artifact. The system must not be called `PRODUCTION COMPLETE`
 until the disabled 10:30 task is separately validated and enabled and at least
 one normal Monday cycle has been observed.
+
+The next Registry candidate uses schema v4 append-only capture resolutions for
+the narrow case of a publisher bot-wall HTTP 403. A resolution records coverage,
+not fabricated fetched content: Article Detail still uses one complete bundle
+in the order DB enrichment → JSON annotation → SHA-matched report metadata.
+Timeouts, DNS failures, 5xx responses, malformed/incomplete fallback data, and
+identity mismatches block promotion. No Browserbase/proxy/CAPTCHA-bypass path is
+part of this design.
 
 The production checkout is never used as a generation workspace. Publication is deliberately split into **generate → rolling PR → human merge → server deploy** so production `main` stays clean and can be fast-forwarded safely.
 

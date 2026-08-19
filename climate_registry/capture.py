@@ -653,7 +653,9 @@ def capture_enrich_registry(
         try:
             version = _validate_database(source_connection)
             if version != LATEST_SCHEMA_VERSION or version < 3:
-                raise RegistryInputError("capture requires the current schema version 3")
+                raise RegistryInputError(
+                    f"capture requires the current schema version {LATEST_SCHEMA_VERSION}"
+                )
             selected = _select_articles(source_connection, article_ids, refresh=refresh, limit=limit)
         finally:
             source_connection.close()

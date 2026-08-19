@@ -74,10 +74,10 @@ window.fetch = (input, options = {}) => {
       return registryResponse(503, {available: false, reason: "database_unavailable"});
     }
     if (window.__registryScenario === "empty") {
-      return registryResponse(200, {available: true, schema_version: 3, reports: 0,
+      return registryResponse(200, {available: true, schema_version: 4, reports: 0,
         articles: 0, discoveries: 0, latest_report_date: null});
     }
-    return registryResponse(200, {available: true, schema_version: 3, reports: 2,
+    return registryResponse(200, {available: true, schema_version: 4, reports: 2,
       articles: 2, discoveries: 2, latest_report_date: "2026-08-10"});
   }
   if (url.pathname === "/api/registry/reports") {

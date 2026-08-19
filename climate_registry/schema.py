@@ -295,6 +295,122 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             ON article_enrichments(content_version_id, generated_at DESC);
         """,
     ),
+    (
+        4,
+        "validated_capture_fallback_resolutions",
+        """
+        CREATE TABLE article_capture_resolutions (
+            resolution_id TEXT PRIMARY KEY CHECK (
+                length(resolution_id) = 75
+                AND resolution_id GLOB 'resolution-*'
+                AND substr(resolution_id, 12) NOT GLOB '*[^0-9a-f]*'
+            ),
+            report_id TEXT NOT NULL REFERENCES reports(report_id),
+            report_date TEXT NOT NULL,
+            report_sha256 TEXT NOT NULL CHECK (
+                length(report_sha256) = 64
+                AND report_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            article_id TEXT NOT NULL REFERENCES articles(article_id),
+            canonical_url TEXT NOT NULL,
+            fetch_id TEXT NOT NULL UNIQUE REFERENCES article_fetches(fetch_id),
+            failure_class TEXT NOT NULL CHECK (
+                failure_class = 'http_403_publisher_bot_wall'
+            ),
+            http_status INTEGER NOT NULL CHECK (http_status = 403),
+            attempt_at TEXT NOT NULL CHECK (length(trim(attempt_at)) > 0),
+            fallback_source TEXT NOT NULL CHECK (
+                fallback_source IN ('json_annotation', 'source_report')
+            ),
+            fallback_provenance TEXT NOT NULL CHECK (
+                (fallback_source = 'source_report' AND fallback_provenance = 'source_report')
+                OR
+                (fallback_source = 'json_annotation' AND fallback_provenance IN (
+                    'original_content_annotation',
+                    'official_replacement_annotation',
+                    'publisher_excerpt_annotation',
+                    'report_fallback_annotation'
+                ))
+            ),
+            bundle_json TEXT NOT NULL CHECK (length(trim(bundle_json)) > 0),
+            bundle_sha256 TEXT NOT NULL CHECK (
+                length(bundle_sha256) = 64
+                AND bundle_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            validated_at TEXT NOT NULL CHECK (length(trim(validated_at)) > 0)
+        );
+
+        CREATE TRIGGER article_capture_resolutions_reject_replace
+        BEFORE INSERT ON article_capture_resolutions
+        WHEN EXISTS (
+                SELECT 1 FROM article_capture_resolutions existing
+                WHERE existing.resolution_id = NEW.resolution_id
+                   OR existing.fetch_id = NEW.fetch_id
+             )
+        BEGIN
+            SELECT RAISE(ABORT, 'capture fallback resolution identity already exists');
+        END;
+
+        CREATE TRIGGER article_capture_resolutions_validate_insert
+        BEFORE INSERT ON article_capture_resolutions
+        WHEN NOT EXISTS (
+                SELECT 1 FROM reports r
+                WHERE r.report_id = NEW.report_id
+                  AND r.report_date = NEW.report_date
+                  AND r.report_sha256 = NEW.report_sha256
+             )
+          OR NOT EXISTS (
+                SELECT 1 FROM articles a
+                WHERE a.article_id = NEW.article_id
+                  AND a.canonical_url = NEW.canonical_url
+                  AND a.publication_eligible = 1
+             )
+          OR NOT EXISTS (
+                SELECT 1 FROM report_appearances ra
+                WHERE ra.report_id = NEW.report_id
+                  AND ra.article_id = NEW.article_id
+             )
+          OR NOT EXISTS (
+                SELECT 1 FROM article_fetches f
+                WHERE f.fetch_id = NEW.fetch_id
+                  AND f.article_id = NEW.article_id
+                  AND f.requested_url = NEW.canonical_url
+                  AND f.fetch_status = 'failed'
+                  AND f.error_code = 'http_error'
+                  AND f.http_status = 403
+                  AND f.content_version_id IS NULL
+                  AND f.fetched_at = NEW.attempt_at
+             )
+          OR EXISTS (
+                SELECT 1 FROM article_fetches later
+                WHERE later.article_id = NEW.article_id
+                  AND (
+                    later.fetched_at > NEW.attempt_at
+                    OR (later.fetched_at = NEW.attempt_at AND later.fetch_id > NEW.fetch_id)
+                  )
+             )
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid capture fallback resolution identity');
+        END;
+
+        CREATE TRIGGER article_capture_resolutions_are_append_only_update
+        BEFORE UPDATE ON article_capture_resolutions
+        BEGIN
+            SELECT RAISE(ABORT, 'capture fallback resolutions are append-only');
+        END;
+
+        CREATE TRIGGER article_capture_resolutions_are_append_only_delete
+        BEFORE DELETE ON article_capture_resolutions
+        BEGIN
+            SELECT RAISE(ABORT, 'capture fallback resolutions are append-only');
+        END;
+
+        CREATE INDEX idx_capture_resolutions_report_article
+            ON article_capture_resolutions(report_id, article_id, validated_at DESC);
+        CREATE INDEX idx_capture_resolutions_fetch
+            ON article_capture_resolutions(fetch_id);
+        """,
+    ),
 )
 
 

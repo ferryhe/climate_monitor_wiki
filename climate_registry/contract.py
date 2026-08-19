@@ -10,7 +10,7 @@ SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
 class SchemaContractError(ValueError):
-    """The database does not implement the immutable registry v3 contract."""
+    """The database does not implement an exact supported registry contract."""
 
 
 REQUIRED_TABLE_COLUMNS = {
@@ -57,7 +57,15 @@ REQUIRED_TABLE_COLUMNS = {
         "keywords_json", "language", "generator_kind", "generator_name", "generator_version",
         "generated_at", "error_code", "error_message",
     },
+    "article_capture_resolutions": {
+        "resolution_id", "report_id", "report_date", "report_sha256", "article_id",
+        "canonical_url", "fetch_id", "failure_class", "http_status", "attempt_at",
+        "fallback_source", "fallback_provenance", "bundle_json", "bundle_sha256",
+        "validated_at",
+    },
 }
+
+V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - {"article_capture_resolutions"}
 
 REQUIRED_FOREIGN_KEYS = {
     "articles": {
@@ -98,6 +106,11 @@ REQUIRED_FOREIGN_KEYS = {
     "article_enrichments": {
         ("article_content_versions", ("content_version_id",), ("content_version_id",)),
     },
+    "article_capture_resolutions": {
+        ("reports", ("report_id",), ("report_id",)),
+        ("articles", ("article_id",), ("article_id",)),
+        ("article_fetches", ("fetch_id",), ("fetch_id",)),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -110,6 +123,10 @@ REQUIRED_TRIGGERS = frozenset(
         "article_fetches_are_append_only_delete",
         "article_enrichments_are_append_only_update",
         "article_enrichments_are_append_only_delete",
+        "article_capture_resolutions_reject_replace",
+        "article_capture_resolutions_validate_insert",
+        "article_capture_resolutions_are_append_only_update",
+        "article_capture_resolutions_are_append_only_delete",
     }
 )
 
@@ -122,6 +139,8 @@ REQUIRED_INDEXES = frozenset(
         "idx_article_fetches_content_version",
         "idx_content_versions_article_fetched",
         "idx_enrichments_content_generated",
+        "idx_capture_resolutions_report_article",
+        "idx_capture_resolutions_fetch",
     }
 )
 
@@ -131,8 +150,12 @@ def _normalize_sql(sql: str) -> str:
     return re.sub(r"\s*([(),])\s*", r"\1", normalized)
 
 
-def _expected_object_sql(kind: str, names: frozenset[str]) -> dict[str, str]:
-    migration_sql = "\n".join(migration[2] for migration in MIGRATIONS)
+def _expected_object_sql(
+    kind: str, names: frozenset[str], *, version: int
+) -> dict[str, str]:
+    migration_sql = "\n".join(
+        migration[2] for migration in MIGRATIONS if migration[0] <= version
+    )
     expected: dict[str, str] = {}
     for name in names:
         start = re.search(rf"CREATE\s+{kind}\s+{re.escape(name)}\b", migration_sql, re.IGNORECASE)
@@ -144,10 +167,6 @@ def _expected_object_sql(kind: str, names: frozenset[str]) -> dict[str, str]:
             raise RuntimeError(f"schema migration has incomplete {kind.lower()}: {name}")
         expected[name] = _normalize_sql(tail[: terminator.end()])
     return expected
-
-
-EXPECTED_TRIGGER_SQL = _expected_object_sql("TRIGGER", REQUIRED_TRIGGERS)
-EXPECTED_INDEX_SQL = _expected_object_sql("INDEX", REQUIRED_INDEXES)
 
 
 def _column_contract(connection: sqlite3.Connection, table: str) -> tuple[tuple[object, ...], ...]:
@@ -174,14 +193,15 @@ def _index_contract(
     return tuple(sorted(contracts, key=repr))
 
 
-def _golden_table_contracts() -> tuple[
+def _golden_table_contracts(version: int) -> tuple[
     dict[str, str],
     dict[str, tuple[tuple[object, ...], ...]],
     dict[str, tuple[tuple[object, ...], ...]],
 ]:
     connection = sqlite3.connect(":memory:")
     try:
-        apply_migrations(connection)
+        apply_migrations(connection, target_version=version)
+        required_tables = V3_TABLES if version == 3 else frozenset(REQUIRED_TABLE_COLUMNS)
         table_sql = {
             table: _normalize_sql(
                 connection.execute(
@@ -189,24 +209,40 @@ def _golden_table_contracts() -> tuple[
                     (table,),
                 ).fetchone()[0]
             )
-            for table in REQUIRED_TABLE_COLUMNS
+            for table in required_tables
         }
         columns = {
             table: _column_contract(connection, table)
-            for table in REQUIRED_TABLE_COLUMNS
+            for table in required_tables
         }
         indexes = {
             table: _index_contract(connection, table)
-            for table in REQUIRED_TABLE_COLUMNS
+            for table in required_tables
         }
         return table_sql, columns, indexes
     finally:
         connection.close()
 
 
-EXPECTED_TABLE_SQL, EXPECTED_COLUMN_CONTRACTS, EXPECTED_TABLE_INDEX_CONTRACTS = (
-    _golden_table_contracts()
-)
+GOLDEN_CONTRACTS = {version: _golden_table_contracts(version) for version in (3, 4)}
+
+
+def _required_triggers(version: int) -> frozenset[str]:
+    if version == 3:
+        return frozenset(
+            name for name in REQUIRED_TRIGGERS
+            if not name.startswith("article_capture_resolutions_")
+        )
+    return REQUIRED_TRIGGERS
+
+
+def _required_indexes(version: int) -> frozenset[str]:
+    if version == 3:
+        return frozenset(
+            name for name in REQUIRED_INDEXES
+            if not name.startswith("idx_capture_resolutions_")
+        )
+    return REQUIRED_INDEXES
 
 
 def _foreign_key_contracts(
@@ -228,35 +264,47 @@ def _foreign_key_contracts(
     }
 
 
-def validate_v3_contract(connection: sqlite3.Connection) -> None:
-    """Validate registry v3 using read-only SQL and PRAGMA queries only."""
+def validate_registry_contract(connection: sqlite3.Connection) -> int:
+    """Validate an exact registry v3 or v4 contract using read-only queries."""
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version != SCHEMA_VERSION:
+    if version not in (3, 4):
         raise SchemaContractError("unsupported registry schema")
+
+    required_tables = V3_TABLES if version == 3 else frozenset(REQUIRED_TABLE_COLUMNS)
+    expected_table_sql, expected_columns, expected_table_indexes = GOLDEN_CONTRACTS[version]
 
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        if not row[0].startswith("sqlite_")
     }
-    for table, expected_columns in REQUIRED_TABLE_COLUMNS.items():
+    missing_tables = set(required_tables) - tables
+    if missing_tables:
+        raise SchemaContractError(
+            f"incomplete registry schema: {sorted(missing_tables)[0]}"
+        )
+    if tables - set(required_tables):
+        raise SchemaContractError("invalid registry tables contract")
+    for table in required_tables:
+        required_columns = REQUIRED_TABLE_COLUMNS[table]
         if table not in tables:
             raise SchemaContractError(f"incomplete registry schema: {table}")
         actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-        if not expected_columns <= actual:
+        if not required_columns <= actual:
             raise SchemaContractError(f"incomplete registry schema: {table}")
         actual_sql_row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
             (table,),
         ).fetchone()
-        if actual_sql_row is None or _normalize_sql(actual_sql_row[0]) != EXPECTED_TABLE_SQL[table]:
+        if actual_sql_row is None or _normalize_sql(actual_sql_row[0]) != expected_table_sql[table]:
             raise SchemaContractError(f"invalid registry table constraints: {table}")
-        if _column_contract(connection, table) != EXPECTED_COLUMN_CONTRACTS[table]:
+        if _column_contract(connection, table) != expected_columns[table]:
             raise SchemaContractError(f"invalid registry column contract: {table}")
-        expected_indexes = set(EXPECTED_TABLE_INDEX_CONTRACTS[table])
+        expected_indexes_for_table = set(expected_table_indexes[table])
         actual_indexes = set(_index_contract(connection, table))
-        if not expected_indexes <= actual_indexes:
+        if not expected_indexes_for_table <= actual_indexes:
             raise SchemaContractError(f"invalid registry unique/index contract: {table}")
-        expected_unique = {contract for contract in expected_indexes if contract[1] == 1}
+        expected_unique = {contract for contract in expected_indexes_for_table if contract[1] == 1}
         actual_unique = {contract for contract in actual_indexes if contract[1] == 1}
         if actual_unique != expected_unique:
             raise SchemaContractError(f"unexpected registry unique index: {table}")
@@ -265,11 +313,16 @@ def validate_v3_contract(connection: sqlite3.Connection) -> None:
         (row[0], row[1])
         for row in connection.execute("SELECT version, name FROM schema_migrations ORDER BY version")
     ]
-    expected_migrations = [(version, name) for version, name, _ in MIGRATIONS]
+    expected_migrations = [
+        (migration_version, name)
+        for migration_version, name, _ in MIGRATIONS
+        if migration_version <= version
+    ]
     if applied != expected_migrations:
         raise SchemaContractError("invalid migration metadata")
 
-    for table, expected_keys in REQUIRED_FOREIGN_KEYS.items():
+    for table in required_tables:
+        expected_keys = REQUIRED_FOREIGN_KEYS.get(table, set())
         if not expected_keys <= _foreign_key_contracts(connection, table):
             raise SchemaContractError("incomplete registry foreign keys")
 
@@ -279,7 +332,10 @@ def validate_v3_contract(connection: sqlite3.Connection) -> None:
             "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL"
         )
     }
-    if actual_triggers != EXPECTED_TRIGGER_SQL:
+    expected_trigger_sql = _expected_object_sql(
+        "TRIGGER", _required_triggers(version), version=version
+    )
+    if actual_triggers != expected_trigger_sql:
         raise SchemaContractError("invalid registry triggers contract")
 
     actual_indexes = {
@@ -288,8 +344,11 @@ def validate_v3_contract(connection: sqlite3.Connection) -> None:
             "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
         )
     }
-    if any(actual_indexes.get(name) != sql for name, sql in EXPECTED_INDEX_SQL.items()):
-        raise SchemaContractError("incomplete registry indexes")
+    expected_index_sql = _expected_object_sql(
+        "INDEX", _required_indexes(version), version=version
+    )
+    if not expected_index_sql.items() <= actual_indexes.items():
+        raise SchemaContractError("invalid registry indexes contract")
 
     invalid_pointer = connection.execute(
         """
@@ -305,3 +364,9 @@ def validate_v3_contract(connection: sqlite3.Connection) -> None:
     ).fetchone()
     if invalid_pointer is not None:
         raise SchemaContractError("invalid article content ownership: current content version")
+    return version
+
+
+def validate_v3_contract(connection: sqlite3.Connection) -> None:
+    """Compatibility wrapper validating either supported deployment schema."""
+    validate_registry_contract(connection)

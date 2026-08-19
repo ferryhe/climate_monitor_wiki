@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .audit import _insert_report, refresh_article_policy
-from .contract import SchemaContractError, validate_v3_contract
+from .contract import SchemaContractError, validate_registry_contract
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from .reports import ParsedReport, parse_report_directory
 from .schema import MIGRATIONS, apply_migrations
@@ -72,7 +73,7 @@ def _validate_database(connection: sqlite3.Connection) -> int:
             raise RegistryInputError("registry schema 2 columns are incomplete")
     if version >= 3:
         try:
-            validate_v3_contract(connection)
+            validate_registry_contract(connection)
         except SchemaContractError as exc:
             raise RegistryInputError(str(exc)) from exc
     if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -169,23 +170,79 @@ def plan_registry_update(source_dir: Path, database: Path) -> dict:
 @contextmanager
 def _exclusive_database_lock(database: Path) -> Iterator[None]:
     lock_path = database.with_name(f"{database.name}.lock")
+    descriptor: int | None = None
+    locked = False
     try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise RegistryLockError(f"registry update is locked: {lock_path.name}") from exc
+        try:
+            path_metadata = os.lstat(lock_path)
+        except FileNotFoundError:
+            path_metadata = None
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if path_metadata is not None and (
+            not stat.S_ISREG(path_metadata.st_mode)
+            or stat.S_ISLNK(path_metadata.st_mode)
+            or bool(getattr(path_metadata, "st_file_attributes", 0) & reparse)
+        ):
+            raise OSError("lock path is unsafe")
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        metadata = os.fstat(descriptor)
+        opened_path_metadata = os.stat(lock_path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or bool(getattr(metadata, "st_file_attributes", 0) & reparse)
+            or bool(getattr(opened_path_metadata, "st_file_attributes", 0) & reparse)
+            or (metadata.st_dev, metadata.st_ino)
+            != (opened_path_metadata.st_dev, opened_path_metadata.st_ino)
+        ):
+            raise OSError("lock is not a regular file")
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif os.name == "nt":
+            import msvcrt
+
+            if metadata.st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            raise OSError("unsupported lock platform")
+        locked = True
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, str(os.getpid()).encode("ascii"))
+        os.fsync(descriptor)
     except OSError as exc:
-        raise RegistryLockError("could not create registry update lock") from exc
+        if descriptor is not None:
+            os.close(descriptor)
+            descriptor = None
+        raise RegistryLockError(f"registry update is locked: {lock_path.name}") from exc
     try:
-        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-            handle.write(str(os.getpid()))
-            handle.flush()
-            os.fsync(handle.fileno())
         yield
     finally:
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+        if descriptor is not None:
+            if locked:
+                try:
+                    if os.name == "posix":
+                        import fcntl
+
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    elif os.name == "nt":
+                        import msvcrt
+
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            os.close(descriptor)
 
 
 def _backup_connection(source: sqlite3.Connection, destination: Path) -> None:

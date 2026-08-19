@@ -1,10 +1,12 @@
 # Weekly Registry and Article Detail automation
 
 This document defines the supported application-side contract for the proposed
-Monday 10:30 Registry update. The implementation is deployed, but the Hermes
-job is deliberately **not installed or enabled**. Its exact-date production
-dry-run is currently blocked by the identity-less legacy Publisher ledger
-record; this is a writer/reader contract mismatch, not Registry data damage. No
+Monday 10:30 Registry update. The base runner is deployed; this validated-
+fallback change still requires merge and deployment. The Hermes job is
+deliberately **not installed or enabled**. The legacy Publisher identity
+repair is complete and valid. Two controlled capture candidates observed 21
+successes and four deterministic publisher-wall 403 failures; neither promoted,
+and the live DB remained byte-for-byte unchanged. No
 production database, delivery state, recipient configuration, or email job is
 modified.
 
@@ -35,9 +37,13 @@ been installed and observed successfully.
 
 ## Data-equivalence decision
 
-The chosen design is **Registry DB first, with the existing per-article JSON as
-a compatibility fallback**. No external metadata export and no schema migration
-are needed.
+The chosen design is **Registry DB first, with the existing per-article JSON and
+SHA-matched report metadata as whole-bundle compatibility fallbacks**. Registry
+schema v4 adds append-only `article_capture_resolutions` audit rows; it does not
+turn fallback metadata into fetched content or enrichment. During rollout the
+reader accepts exact v3 and exact v4 databases and reports the actual version.
+Only the outer weekly candidate is migrated from v3 to v4 before atomic
+promotion, so the live v3 database and a v3 backup remain readable.
 
 The two stores are not identical. Legacy annotation JSON records a reviewed
 evidence choice; Registry enrichment records deterministic output for a fetched
@@ -72,11 +78,25 @@ or recipient data. If the Registry itself is unavailable, Registry endpoints
 continue to return their existing 503 response; annotation JSON cannot recreate
 article identity and history.
 
+A validated resolution is deliberately narrow. It is allowed only when the
+candidate DB proves that the exact latest attempt for that eligible report
+article is `failed` with `error_code=http_error`, HTTP 403, and no content
+version. The validator then accepts one complete JSON annotation bundle, or—only
+when JSON is absent or has no entry for that URL—one complete SHA-matched report
+bundle. Missing fields, malformed JSON, canonical identity mismatch, timeout,
+DNS failure, 5xx, and `blocked_response` remain unresolved. JSON and report
+fields are never spliced. Browserbase, residential proxies, CAPTCHA bypasses,
+and similar acquisition workarounds are intentionally excluded: they weaken
+provenance and do not turn a bot wall into fetched source evidence.
+
 ## Supported CLI
 
 All paths are explicit. Runtime data must remain outside the checkout, and the
 lock path must be exactly `<database>.lock` so existing `update` and
-`capture-enrich` commands coordinate with the weekly transaction.
+`capture-enrich` commands coordinate with the weekly transaction. The lockfile
+is a persistent safe inode; one nonblocking OS lock is held on one descriptor
+for the entire critical section, interoperates with shell `flock` on POSIX, and
+is released by process exit without unlink races.
 
 ```bash
 python -m climate_registry weekly-sync \
@@ -87,6 +107,7 @@ python -m climate_registry weekly-sync \
   --backup-dir /var/lib/climate-registry/backups \
   --lock-file /var/lib/climate-registry/article-registry.sqlite3.lock \
   --publisher-ledger-dir /var/lib/climate-monitor/weekly-run-ledger \
+  --metadata-dir /srv/climate_monitor_wiki/article_metadata \
   --dry-run
 ```
 
@@ -102,50 +123,70 @@ Before any mutation it verifies:
   date/title/filename, and SHA form one valid artifact;
 - the live DB is a regular non-link file outside the checkout, has no SQLite
   sidecars, and uses the standard lock;
+- the annotation catalog stays within 64 files, 2 MiB per file, 16 MiB total,
+  and 10,000 articles; each regular non-link file is read through a bounded
+  no-follow descriptor and the sorted filename/size/raw-SHA catalog fingerprint
+  remains exact through both promotion revalidations;
 - the update plan contains no report date other than the explicit target; and
 - the backup destination and all configured path components are safe.
 
 `--dry-run` performs those read-only checks and returns exact would-add and
-would-capture counts/IDs. It does not acquire the lock, create a candidate or
+would-capture counts/IDs. It may probe an existing persistent lock inode
+nonblockingly, but does not retain the lock, create a candidate or
 backup, fetch content, reload, change state, or send mail.
 
 Exit codes for `weekly-sync` are intentionally distinct:
 
 | Code | Meaning |
 |---:|---|
-| `0` | Successful candidate promotion |
+| `0` | Successful candidate promotion, including validated fallback coverage |
 | `6` | Safe no-op; the exact report and all eligible articles are already current |
 | `7` | Upstream or input preflight blocked |
-| `5` | Capture/enrichment was partial; candidate discarded |
+| `5` | Coverage remains unresolved; candidate discarded |
 | `8` | Candidate, backup, promotion, or post-promotion validation failed |
 | `4` | Lock or live-fingerprint conflict |
 
-Every outcome is one compact JSON line. A successful/no-op result includes the
+Every outcome is one compact JSON line. Top-level `status` remains
+`ok`/`partial`/`no-op` for compatibility; additive `coverage_status` is
+`ok`, `partial_with_validated_fallback`, or `blocked_unresolved`. Counts keep
+real capture failures separate from accepted fallbacks and unresolved articles:
+`articles_failed`, `articles_fallback`, and `articles_unresolved`. A
+successful/no-op result includes the
 date, report SHA, actual and planned counts, target capture IDs, promotion,
 reload requirement, before/after DB SHA, exact ordered target article IDs, and
-the retained backup's basename. A partial result lists candidate successes and
+the retained backup's basename. `fallback_article_ids` is sorted, is an exact
+subset of the target membership, and has exactly `articles_fallback` entries.
+A partial result lists candidate successes and
 stable per-article failure codes but exposes no content, URLs, paths, SMTP
 state, or recipients.
 
 ## Candidate transaction and rollback
 
 Formal sync repeats all preflight checks while holding the standard exclusive
-DB lock. It copies the live DB to a same-filesystem outer candidate, applies the
+DB lock. It creates a mode-`700` same-filesystem private directory, copies the
+live DB into its outer candidate, applies the
 historical update there, then captures only target-report eligible articles
 whose current enrichment or latest successful fetch is missing/stale. Existing
 capture uses `PinnedTransport`, the explicit deadline, bounded redirects/body,
 and SSRF/DNS/TLS controls. Refresh is enabled for an existing content version
 whose enrichment or latest fetch is not complete.
 
-The outer candidate is discarded if any fetch/enrichment is partial. Before
+After capture, exact eligible 403 failures may receive append-only validated
+resolution rows in the outer candidate. The failed fetch's `requested_url`
+must equal the article canonical URL; a redirected `final_url` is audit data,
+not canonical identity. The candidate is discarded if any
+article remains unresolved. Before
 promotion it must pass the Registry schema, integrity and relationship checks;
 the exact report SHA, filename and date; article membership/order/pillar; latest
 fetch; current content ownership; structurally valid enrichment; and generator
 provenance checks.
 
-Only then is a mode-`600`, hash-verified exact backup of the still-locked live
+After full validation, the candidate's device/inode/size/raw SHA identity is
+bound and checked again immediately before replacement. Only then is a
+mode-`600`, hash-verified exact backup of the still-locked live
 DB created. The code rechecks the live SHA and sidecars, uses same-filesystem
-`os.replace`, fsyncs the parent directory, and validates the installed DB. If a
+`os.replace`, fsyncs the parent directory, and runs the full report/membership/
+coverage candidate validator against the installed live DB. If a
 failure occurs after replacement, it reconstructs and atomically installs the
 exact verified backup with the original live DB mode and POSIX ownership before
 reporting failure.
@@ -190,7 +231,9 @@ cd /srv/climate_monitor_wiki
   --backup-dir /var/lib/climate-registry/backups \
   --lock-file /var/lib/climate-registry/article-registry.sqlite3.lock \
   --publisher-ledger-dir /var/lib/climate-monitor/weekly-run-ledger \
-  --base-url "https://$SITE_HOST"
+  --metadata-dir /srv/climate_monitor_wiki/article_metadata \
+  --base-url "https://$SITE_HOST" \
+  --expected-api-host "$SITE_HOST"
 ```
 
 `RELOAD_TOKEN` is read from the server environment and is never placed on the
@@ -198,11 +241,20 @@ command line. The runner executes dry-run, then formal sync only after the
 dry-run passes. It passes the dry-run report SHA into formal sync as a mandatory
 pre-write expected identity. It validates both machine results, rechecks the
 source, Registry identity/current DB SHA, artifact and exact article membership,
-calls `/api/reload`, and then
+and calls `/api/reload` only after an actual promotion. A formal no-op completes
+from those local bindings with `reload=not-needed` and makes no API or other
+network request. For a promoted run it then
 requires Registry latest date, report 200, the already proven
 source/Registry/artifact SHA binding, non-null narrative briefing, monitoring
-snapshot and PDF, article count, and one complete eligible Article Detail with
-content-enrichment provenance. It exits nonzero with a stable sanitized reason
+snapshot and PDF, article count, and every eligible Article Detail. DB-first
+enrichment may have structurally valid empty category/keyword lists; a fallback
+detail must be complete/nonempty, have one provenance, show the real latest
+failed 403, and be named in the sync's bound `fallback_article_ids`. The API
+still chooses content DB → JSON → report; resolution rows are coverage audit,
+not a content source. Remote API URLs require HTTPS and an exact explicit
+`--expected-api-host` (or `SITE_HOST`); literal loopback is the only HTTP
+exception. Userinfo and redirects are rejected, so a reload token is never
+forwarded. It exits nonzero with a stable sanitized reason
 so Hermes can alert and stop. It has no email or delivery-state code path.
 The runner's final JSON safely retains `backup_name` and the before/after DB
 hashes, so an audited `restore-backup` does not depend on directory scanning or
@@ -241,16 +293,17 @@ and the required 2026-08-17 SHA, see
 This PR itself stops before deployment or scheduling. A separately authorized
 production adoption should:
 
-1. merge the ledger-contract PR and deploy the resulting latest `main` from a
+1. merge the validated-fallback change and deploy the resulting latest `main` from a
    clean checkout;
 2. retain the existing 08:00 Monitor, enabled 09:00 Email/PDF job and four
    recipients, and the 10:00 Publisher schedule/rolling-PR behavior; deploy the
    repo-owned Publisher ledger recorder as the sole recorder and remove or
    disable any legacy external flat-record writer;
 3. confirm the explicit external DB/artifact/ledger/backup paths and permissions;
-4. run and archive the exact-date legacy-ledger repair dry-run;
-5. under separate authorization apply the repair, then pass exact-date
-   weekly-sync dry-run and a safe formal no-op/controlled first sync;
+4. retain the completed exact-date legacy-ledger repair evidence; do not reapply it;
+5. pass exact-date weekly-sync dry-run and a controlled formal sync. Expect
+   21 captured, four real failed 403s, four validated fallbacks and zero
+   unresolved, or a no-op if those exact resolutions are already current;
 6. create the 10:30 Hermes job disabled, validate it, and enable it only under a
    further separate authorization; and
 7. observe at least one normal Monday before calling Registry/article metadata

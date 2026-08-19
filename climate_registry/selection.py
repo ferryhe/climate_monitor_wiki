@@ -19,7 +19,7 @@ import idna
 from climate_monitor.dedupe import canonical_title, canonical_url
 
 from .classification import classify_document
-from .contract import SchemaContractError, validate_v3_contract
+from .contract import SchemaContractError, validate_registry_contract
 from .errors import RegistryBuildError, RegistryInputError
 from .reports import ParsedReport, parse_historical_report, parse_report_directory
 
@@ -398,7 +398,7 @@ def _read_only_connection(database: Path) -> sqlite3.Connection:
 def load_registry_selection_snapshot(
     database: Path, source_dir: Path
 ) -> RegistrySelectionSnapshot:
-    """Read a synchronized immutable v3 Registry snapshot without mutation."""
+    """Read a synchronized immutable supported Registry snapshot without mutation."""
 
     database = Path(database).resolve()
     source_dir = Path(source_dir).resolve()
@@ -421,7 +421,7 @@ def load_registry_selection_snapshot(
     connection = _read_only_connection(database)
     try:
         try:
-            validate_v3_contract(connection)
+            validate_registry_contract(connection)
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RegistryBuildError("registry database failed integrity validation")
             if connection.execute("PRAGMA foreign_key_check").fetchall():
@@ -456,7 +456,7 @@ def load_registry_selection_snapshot(
                     "registry article graph and source history are not synchronized"
                 )
         except SchemaContractError as exc:
-            raise RegistryInputError("registry schema v3 contract is invalid") from exc
+            raise RegistryInputError("registry schema contract is invalid") from exc
         except (RegistryInputError, RegistryBuildError):
             raise
         except sqlite3.DatabaseError as exc:

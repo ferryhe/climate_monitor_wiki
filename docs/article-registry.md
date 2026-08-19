@@ -89,7 +89,7 @@ The update contract is append-only:
 ## Read-only candidate planning and Publisher gate
 
 `plan-selection` evaluates a bounded producer candidate document against an
-exact, synchronized schema-v3 Registry snapshot:
+exact, synchronized supported Registry snapshot (v3 or v4 during rollout):
 
 ```bash
 python -m climate_registry plan-selection \
@@ -148,7 +148,7 @@ from falling through into B. A canonical URL already present in the Registry is
 evidence only and is not rejected.
 
 The Registry is opened afresh with SQLite `mode=ro&immutable=1` and
-`query_only`. Schema version, the complete v3 contract, integrity, foreign
+`query_only`. Schema version, the complete version-specific contract, integrity, foreign
 keys, and every stored report filename/SHA are checked against `sources/`.
 The canonical URL set derived from every parsed source article must also equal
 the Registry `articles` URL set in both directions; matching report rows with a
@@ -371,8 +371,13 @@ usage text to stderr.
 
 Capture uses the same fail-closed lock, SQLite backup API, candidate validation,
 live fingerprint/sidecar check, atomic replacement, and parent-directory fsync
-as persistent report updates. The backup is the rollback source. Retained locks
-or SQLite sidecars require manual reconciliation and are never auto-removed.
+as persistent report updates. The backup is the rollback source. The
+`<database>.lock` inode is intentionally persistent: POSIX `flock` or the
+Windows byte-range equivalent is held on one descriptor for the complete
+critical section, so shell and Python writers mutually exclude one another and
+a crash releases the kernel lock automatically. An unlocked retained lockfile
+is not stale work and must not permanently block a later run. SQLite sidecars
+still require manual reconciliation and are never auto-removed.
 Failed candidate construction leaves the live database unchanged; ordinary
 per-article failures are intentionally saved as audit records and reported with
 exit code 5.
@@ -390,8 +395,8 @@ display; the future read-only website must enforce `display_policy`.
 caller's active transaction. Persistent updates use one writer, keep the
 candidate database on the live database filesystem for atomic replacement, and
 use SQLite's backup API rather than copying a live database file. A retained
-lock file means the previous process did not complete cleanly and requires
-manual reconciliation; it must not be deleted automatically.
+lock filename is the stable coordination inode, not evidence of a live holder;
+lock state is determined only by the nonblocking OS lock on its open descriptor.
 
 ## Read-only website access
 
@@ -404,9 +409,10 @@ CLIMATE_REGISTRY_DB=/external/path/article-registry.sqlite3
 ```
 
 The path must resolve outside the repository. If it is absent, unavailable, or
-not at schema version 3, `/api/registry/status` returns HTTP 503 with a stable
+not at exact schema version 3 or 4, `/api/registry/status` returns HTTP 503 with a stable
 machine reason while Chat, the Wiki, and `/api/health` remain available. A valid
-schema-v3 database, including an empty one, returns HTTP 200. The application never creates,
+v3 or v4 database, including an empty one, returns HTTP 200 and reports its actual
+version. The application never creates,
 migrates, replaces, or repairs this database. Every request opens a fresh
 SQLite URI connection using `mode=ro&immutable=1` and `query_only`, so an atomic
 replacement made by the standalone capture/update workflow is observed by the
@@ -435,7 +441,7 @@ For the container, use `docker-compose.registry.yml` with
 `CLIMATE_REGISTRY_HOST_DIR` pointing to the external directory. The override
 sets `CLIMATE_REGISTRY_DB=/registry/article-registry.sqlite3` and
 mounts the directory read-only. The mounted main database must be self-contained
-and validated at schema v3; checkpoint/reconcile it before deployment so the
+and validated at exact schema v3 or v4; checkpoint/reconcile it before deployment so the
 reader never depends on WAL, SHM, or journal sidecars. See
 [`deployment.md`](deployment.md#optional-read-only-article-registry) for the
 status matrix, permissions, smoke tests, and rollback procedure.
@@ -450,5 +456,7 @@ The deployed DB-first candidate transaction for a future exact-date weekly
 update is documented in
 [`weekly-registry-automation.md`](weekly-registry-automation.md). That feature
 adds `weekly-sync` and a tested, disabled 10:30 runner draft; the Hermes job is
-still not created, and the current production gate is the Publisher ledger
-identity repair/validation described there.
+still not created. The exact-date Publisher ledger repair is complete and
+valid; the remaining production gate is deployment of this validated-fallback
+change followed by the controlled exact sync and API/DB/hash verification
+described there.

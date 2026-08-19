@@ -330,21 +330,26 @@ def test_api_preflight_and_persistent_reject_unexpected_semantic_schema_objects(
         validate_registry_host_directory(host_dir, repository_root=ROOT)
 
 
-def test_extra_non_unique_performance_index_is_allowed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", (3, 4))
+def test_extra_non_unique_performance_index_is_compatible_with_exact_contract(
+    tmp_path, monkeypatch, version
+):
     host_dir = tmp_path / "registry"
-    database = _database(host_dir)
+    database = _database(host_dir, version=version)
     connection = sqlite3.connect(database)
     connection.execute("CREATE INDEX optional_reports_date_lookup ON reports(report_date)")
     connection.commit()
-    assert _validate_database(connection) == 3
+    assert _validate_database(connection) == version
     connection.close()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
 
     response = TestClient(app).get("/api/registry/status")
 
     assert response.status_code == 200
-    assert response.json()["available"] is True
-    assert validate_registry_host_directory(host_dir, repository_root=ROOT)["available"] is True
+    assert response.json()["schema_version"] == version
+    assert validate_registry_host_directory(
+        host_dir, repository_root=ROOT
+    )["schema_version"] == version
 
 
 @pytest.mark.parametrize("kind", ["relative", "inside", "missing-dir", "missing-db", "v2", "corrupt", "sidecar"])

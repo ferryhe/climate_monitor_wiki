@@ -464,9 +464,9 @@ def test_plan_requires_exact_report_history_synchronization(tmp_path, mode):
     [
         ("missing", RegistryInputError, "registry database does not exist"),
         ("corrupt", RegistryBuildError, "registry database is unreadable or corrupt"),
-        ("v2", RegistryInputError, "registry schema v3 contract is invalid"),
-        ("future", RegistryInputError, "registry schema v3 contract is invalid"),
-        ("contract", RegistryInputError, "registry schema v3 contract is invalid"),
+        ("v2", RegistryInputError, "registry schema contract is invalid"),
+        ("future", RegistryInputError, "registry schema contract is invalid"),
+        ("contract", RegistryInputError, "registry schema contract is invalid"),
         ("out-of-sync", RegistryInputError, "registry and source history are not synchronized"),
     ],
 )

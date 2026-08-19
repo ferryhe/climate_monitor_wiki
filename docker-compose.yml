@@ -8,6 +8,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
       RELOAD_TOKEN: ${RELOAD_TOKEN:-}
+      # Shared exact-host binding for operational API runners.
+      SITE_HOST: ${SITE_HOST:-172.31.10.77}
     volumes:
       # Bind-mount the content so an ingest run on the host is picked up by
       # POST /api/reload without rebuilding the image.

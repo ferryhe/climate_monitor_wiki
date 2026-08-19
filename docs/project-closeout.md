@@ -1,10 +1,11 @@
 # Production readiness and operator guide
 
-**Status:** `READY PENDING LEDGER REPAIR — REGISTRY SYNC NOT SCHEDULED`
+**Status:** `LEDGER REPAIR COMPLETE — VALIDATED FALLBACK DEPLOYMENT/SYNC PENDING`
 
-**Repository baseline:** `main` at `2ba7b619` (PR #48 and PR #49 merged)
+**Repository baseline for this task:** `origin/main` at `cf19da8`
 
-**Verified production deployment:** `14904db` (PR #49 deployed; PR #48 not deployed)
+**Production deployment:** confirm the exact commit in the controlled runbook;
+do not infer it from the historical record below.
 
 **Audit date:** 2026-08-18
 
@@ -31,13 +32,24 @@ source-backed website:
 6. Caddy provides public HTTPS in front of the application container.
 
 The Monday 10:30 Weekly Registry Sync implementation and tested runner are in
-`main` and deployed, but the Hermes job has not been created or observed. Its
-exact-date production dry-run is currently blocked because the legacy Publisher
-ledger record lacks a structured canonical report identity. DB-first Article
+`main`, but the Hermes job has not been created or observed. The exact legacy
+Publisher identity repair is complete and valid. Two controlled candidates
+observed 21 capture successes and four deterministic 403 failures, did not
+promote, and left the live DB byte-for-byte unchanged. DB-first Article
 Detail uses Registry enrichment; tracked
 `article_metadata/*.json` remains a compatibility fallback and is not a weekly
-generated artifact. Until ledger repair/validation and the first observed run
-complete, this project must not be described as `PRODUCTION COMPLETE`.
+generated artifact. Until validated fallback is deployed, a controlled exact
+sync is verified, and the first scheduled run is observed, this project must
+not be described as `PRODUCTION COMPLETE`.
+
+The pending controlled first sync also validates Registry schema v4 fallback
+coverage. Only an exact latest failed HTTP 403 publisher bot wall may use one
+complete JSON or SHA-matched report metadata bundle; it remains a real failed
+fetch and is never represented as content/enrichment. `articles_failed`,
+`articles_fallback`, and `articles_unresolved` therefore remain distinct. The
+design intentionally does not add Browserbase, proxy rotation, or CAPTCHA
+bypass. Deployment, a disabled 10:30 task, and observation of a real Monday run
+are still required; this is not `PRODUCTION COMPLETE`.
 
 The website is both a weekly-report archive and a retrieval interface. It lets
 an operator verify the published briefing/PDF, trace every report back to its
@@ -252,7 +264,7 @@ server scheduler owns dispatch, credentials, and authoritative execution state.
 | Monday 08:00 | Weekly Climate & Actuarial Monitor (`f5259a8ec2d9`) | Confirmed | Collect sources and write the canonical Monday report |
 | Monday 09:00 | Weekly Climate Email (PDF highlights) | Confirmed; retained | Be the only delivery-artifact producer and intentionally email the existing four recipients |
 | Monday 10:00 | Weekly Climate Wiki Publisher (`dccb79cd69bc`) | Confirmed | Import through an isolated clone and update the rolling PR |
-| Monday 10:30 | Weekly Registry Sync | Implementation deployed; job not configured | Repair/validate Publisher identity, then atomically update/enrich the external Registry, reload, and verify; schedule and observe before claiming production completion |
+| Monday 10:30 | Weekly Registry Sync | Base runner deployed; validated-fallback change pending; job not configured | Atomically update/enrich or validate fallback coverage, reload, and verify; schedule and observe before claiming production completion |
 
 These are three distinct operational facts:
 
@@ -309,9 +321,10 @@ confirmed every supported CLI help path exits successfully. The base Compose
 file and the combined Registry, delivery-artifact, update-status, and job-status
 overrides also passed `docker compose config --quiet`.
 
-## 9. Accepted production verification record
+## 9. Superseded historical production verification record
 
-The owner-provided production verification now records:
+The earlier owner-provided verification recorded the following. It is retained
+as history; the currently deployed commit must be reverified in the runbook:
 
 - `14904db` deployed and healthy; GitHub `main` later advanced to `2ba7b619`,
   which has not been deployed;
@@ -327,9 +340,9 @@ The owner-provided production verification now records:
 
 These checks establish that the deployed website, Registry/Article Detail code,
 and historical artifact repair are healthy. The 10:30 Hermes task remains
-unconfigured. Its current blocker is the identity-less legacy Publisher ledger
-record, not Registry data corruption. `PRODUCTION COMPLETE` may be claimed only
-after the ledger-contract rollout and exact-date repair/weekly-sync validation,
+unconfigured. The legacy Publisher repair is complete; the remaining gate is
+validated-fallback deployment and controlled weekly-sync/API/DB verification.
+`PRODUCTION COMPLETE` may be claimed only after that validation,
 then disabled-task validation, separate enablement, and one observed normal
 Monday cycle.
 
@@ -340,21 +353,19 @@ Monday cycle.
 2. After the next normal Monday run, verify that the new report automatically
    receives a narrative summary, Monitoring Snapshot, and PDF from the 09:00
    job, and that the PDF highlights email is delivered to the four recipients.
-3. Merge the ledger-contract PR, deploy the resulting latest `main`, and verify
+3. Merge the validated-fallback change, deploy the resulting latest `main`, and verify
    health, Registry, and all four Historical Reports dates.
-4. Run the exact 2026-08-17 legacy-ledger repair in default dry-run mode. Verify
-   source, Registry, artifact-directory, and manifest report SHA are all
-   `ed19d7b8c8fbe99a5f66b333b5e2d5fbee63c3f41cf927d79d812888fc333972`.
-5. Only under separate authorization, apply that exact repair; prove the source,
-   Registry DB, delivery artifact inventory/state, and checkout did not change.
-6. Run exact-date `weekly-sync --dry-run`, followed by a formal no-op or other
-   separately controlled first sync. It must not capture, promote, reload,
-   modify the DB, or send mail when the Registry date is already complete.
-7. Create the Monday 10:30 Weekly Registry Sync disabled, validate its command
+4. Retain the completed 2026-08-17 repair validation and exact SHA evidence; do
+   not reapply it.
+5. Run exact-date `weekly-sync --dry-run`, followed by the controlled formal
+   sync. Expect 21 captured / 4 failed / 4 validated fallback / 0 unresolved and
+   promotion, or a no-op if those exact resolutions are already current. Verify
+   DB hashes, API provenance, report/PDF views, and no delivery-state/email use.
+6. Create the Monday 10:30 Weekly Registry Sync disabled, validate its command
    and configuration, and enable it only after separate authorization. Observe
    at least one normal Monday cycle before changing the status to
    `PRODUCTION COMPLETE`.
-8. Wait for at least one successful weekly cycle before requesting separate,
+7. Wait for at least one successful weekly cycle before requesting separate,
    audited authorization to remove the old quarantine. Do not perform an
    unaudited deletion.
 
@@ -366,7 +377,7 @@ The intended production chain, with the remaining gate shown explicitly, is:
       -> 09:00 PDF highlights email (confirmed, 4 recipients)
       -> read-only artifact mount -> Historical Reports
       -> 10:00 rolling Wiki PR
-      -> exact-date legacy ledger repair + weekly-sync validation
-      -> 10:30 Weekly Registry Sync (IMPLEMENTED / DEPLOYED / NOT SCHEDULED)
+      -> legacy ledger repair COMPLETE -> validated-fallback controlled sync
+      -> 10:30 Weekly Registry Sync (BASE RUNNER DEPLOYED / FALLBACK CHANGE PENDING / NOT SCHEDULED)
       -> Executive Summary + Snapshot + PDF + Articles + Detail
 ```

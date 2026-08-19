@@ -74,6 +74,7 @@ def validate_registry_host_directory(
     try:
         reader = RegistryReader(database, repository_root=root)
         with reader.connect() as connection:
+            schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
             quick = connection.execute("PRAGMA quick_check").fetchone()[0]
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
             foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -83,7 +84,7 @@ def validate_registry_host_directory(
         raise PreflightError("registry database failed SQLite validation")
     if database_sidecars(database):
         raise PreflightError("registry validation produced unexpected SQLite sidecars")
-    return {"available": True, "schema_version": 3}
+    return {"available": True, "schema_version": schema_version}
 
 
 def main() -> int:

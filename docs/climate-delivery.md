@@ -134,7 +134,7 @@ exactly:
 
 - the canonical weekly Markdown filename, date, title, raw-byte SHA-256, site
   statistics, article order, and Pillar A/B sections;
-- the Registry v3 report identity and every historical `report_appearances`
+- the supported Registry report identity and every historical `report_appearances`
   row, including canonical URL, ordinal, pillar, and the report-time article
   title and summary; and
 - one unambiguous, schema-valid `article_metadata/articles-*.json` annotation
