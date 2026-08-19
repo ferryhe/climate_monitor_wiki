@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/schemas/article_semantic_bundle_v1.schema.json",
+  "title": "Article semantic bundle v1",
+  "description": "Portable structural subset for one atomic Hermes-authored summary/categories/keywords bundle. Full validation MUST also run climate_monitor.taxonomy.validate_semantic_bundle against monitoring/taxonomies/article_categories_v1.yaml; the Python validator enforces taxonomy membership and identity, NFC and whitespace normalization, case-insensitive uniqueness, and generic-keyword rejection that this schema alone does not express.",
+  "$comment": "The Python validator is intentionally stricter: it additionally requires strict UTF-8 encodability and rejects every Unicode format character (category Cf), including directional controls and zero-width characters.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "taxonomy_id",
+    "taxonomy_sha256",
+    "summary",
+    "categories",
+    "keywords"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "article-semantic-bundle.v1"
+    },
+    "taxonomy_id": {
+      "const": "climate-actuarial-v1"
+    },
+    "taxonomy_sha256": {
+      "const": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+      }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "not": {
+          "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+        }
+      }
+    },
+    "keywords": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "not": {
+          "pattern": "[,;\\u0000-\\u001f\\u007f-\\u009f]"
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import json
 import os
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,9 @@ from climate_registry.annotations import (
 )
 import climate_registry.annotations as annotation_module
 from climate_registry.reports import parse_report_directory
+
+
+_BASE_ARTICLE_TAXONOMY = annotation_module._ARTICLE_TAXONOMY
 
 
 def _valid_annotation_payload():
@@ -82,6 +86,57 @@ def test_annotation_batches_reject_duplicate_json_members(tmp_path):
     assert load_article_annotations(metadata_dir) == {}
 
 
+def test_registry_annotation_bounds_follow_taxonomy_constraints(monkeypatch):
+    payload = _valid_annotation_payload()
+
+    _set_annotation_constraints(monkeypatch, categories_min_items=2, categories_max_items=2)
+    payload["articles"][0]["categories"] = ["Physical Risk"]
+    assert _load_payload(payload) is None
+    payload["articles"][0]["categories"] = ["Physical Risk", "Insurance Risk"]
+    assert _load_payload(payload) is not None
+
+    _set_annotation_constraints(monkeypatch, keywords_min_items=4, keywords_max_items=4)
+    payload = _valid_annotation_payload()
+    assert _load_payload(payload) is None
+    payload["articles"][0]["keywords"].append("claims")
+    assert _load_payload(payload) is not None
+
+    _set_annotation_constraints(monkeypatch, keyword_max_chars=5)
+    payload = _valid_annotation_payload()
+    payload["articles"][0]["keywords"] = ["flood", "pricing", "risk"]
+    assert _load_payload(payload) is None
+    payload["articles"][0]["keywords"] = ["flood", "price", "risk"]
+    assert _load_payload(payload) is not None
+
+    _set_annotation_constraints(monkeypatch, summary_min_chars=5, summary_max_chars=10)
+    payload = _valid_annotation_payload()
+    payload["articles"][0]["summary"] = "four"
+    assert _load_payload(payload) is None
+    payload["articles"][0]["summary"] = "five5"
+    assert _load_payload(payload) is not None
+    payload["articles"][0]["summary"] = "eleven chars"
+    assert _load_payload(payload) is None
+
+    _set_annotation_constraints(monkeypatch, disallowed_keywords=frozenset({"custom"}))
+    payload = _valid_annotation_payload()
+    payload["articles"][0]["keywords"] = ["flood", "pricing", "custom"]
+    assert _load_payload(payload) is None
+
+    taxonomy_without_physical_risk = replace(
+        _BASE_ARTICLE_TAXONOMY,
+        categories=tuple(
+            category
+            for category in _BASE_ARTICLE_TAXONOMY.categories
+            if category.label != "Physical Risk"
+        ),
+    )
+    monkeypatch.setattr(
+        annotation_module, "_ARTICLE_TAXONOMY", taxonomy_without_physical_risk
+    )
+    payload = _valid_annotation_payload()
+    assert _load_payload(payload) is None
+
+
 def test_annotation_batches_allow_distinct_official_evidence_urls_only_for_alternates(
     tmp_path,
 ):
@@ -132,6 +187,19 @@ def test_bundled_annotations_cover_each_unique_historical_article_once():
         canonical_url(item.source_url) != item.canonical_url
         for item in annotations.values()
         if item.source_basis in {"official_replacement", "publisher_excerpt"}
+    )
+
+
+def _load_payload(payload):
+    return annotation_module._load_batch_bytes(json.dumps(payload).encode("utf-8"))
+
+
+def _set_annotation_constraints(monkeypatch, **changes):
+    taxonomy = _BASE_ARTICLE_TAXONOMY
+    monkeypatch.setattr(
+        annotation_module,
+        "_ARTICLE_TAXONOMY",
+        replace(taxonomy, constraints=replace(taxonomy.constraints, **changes)),
     )
 
 

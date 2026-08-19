@@ -1,0 +1,68 @@
+schema_version: article-category-taxonomy.v1
+taxonomy_id: climate-actuarial-v1
+
+constraints:
+  summary:
+    min_chars: 1
+    max_chars: 2000
+  categories:
+    min_items: 1
+    max_items: 3
+  keywords:
+    min_items: 3
+    max_items: 8
+    max_chars: 100
+    disallowed:
+      - article
+      - news
+      - report
+      - update
+
+categories:
+  - id: physical_risk
+    label: Physical Risk
+    description: Acute and chronic climate hazards, catastrophe exposure, and physical loss drivers.
+    signals:
+      - physical_risk
+
+  - id: transition_risk
+    label: Transition Risk
+    description: Policy, technology, market, and emissions-transition impacts on institutions and portfolios.
+    signals:
+      - transition_risk
+
+  - id: adaptation_resilience
+    label: Adaptation & Resilience
+    description: Measures that reduce vulnerability, close protection gaps, or strengthen climate resilience.
+    signals:
+      - adaptation_resilience
+
+  - id: climate_risk
+    label: Climate Risk
+    description: Cross-cutting climate risk that is not more accurately assigned to a narrower climate class.
+    signals:
+      - general_climate
+
+  - id: insurance_risk
+    label: Insurance Risk
+    description: Underwriting, pricing, reserving, reinsurance, products, and insurance protection gaps.
+    signals:
+      - insurance_risk
+
+  - id: capital_solvency
+    label: Capital & Solvency
+    description: Capital adequacy, solvency, balance-sheet resilience, and investment risk implications.
+    signals:
+      - capital_solvency
+
+  - id: supervision_disclosure
+    label: Supervision & Disclosure
+    description: Prudential supervision, governance, reporting, disclosure, and professional standards.
+    signals:
+      - supervision_disclosure
+
+  - id: actuarial_modelling
+    label: Actuarial Modelling
+    description: Scenario analysis and actuarial assumptions, models, methods, and professional practice.
+    signals:
+      - actuarial_modeling
