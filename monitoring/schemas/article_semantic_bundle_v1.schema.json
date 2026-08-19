@@ -3,6 +3,7 @@
   "$id": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/schemas/article_semantic_bundle_v1.schema.json",
   "title": "Article semantic bundle v1",
   "description": "Portable structural subset for one atomic Hermes-authored summary/categories/keywords bundle. Full validation MUST also run climate_monitor.taxonomy.validate_semantic_bundle against monitoring/taxonomies/article_categories_v1.yaml; the Python validator enforces taxonomy membership and identity, NFC and whitespace normalization, case-insensitive uniqueness, and generic-keyword rejection that this schema alone does not express.",
+  "$comment": "The Python validator is intentionally stricter: it additionally requires strict UTF-8 encodability and rejects every Unicode format character (category Cf), including directional controls and zero-width characters.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -27,7 +28,9 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 2000,
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+      }
     },
     "categories": {
       "type": "array",
@@ -38,7 +41,9 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 100,
-        "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        "not": {
+          "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+        }
       }
     },
     "keywords": {
@@ -50,7 +55,9 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 100,
-        "pattern": "^[^,;\\u0000-\\u001f\\u007f-\\u009f]+$"
+        "not": {
+          "pattern": "[,;\\u0000-\\u001f\\u007f-\\u009f]"
+        }
       }
     }
   }

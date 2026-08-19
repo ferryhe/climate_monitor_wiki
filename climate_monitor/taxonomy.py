@@ -24,6 +24,9 @@ _TOKEN = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _TOP_LEVEL_FIELDS = {"schema_version", "taxonomy_id", "constraints", "categories"}
 _CONSTRAINT_FIELDS = {"summary", "categories", "keywords"}
 _CATEGORY_FIELDS = {"id", "label", "description", "signals"}
+_SUPPORTED_TAXONOMY_IDENTITIES = {
+    (TAXONOMY_SCHEMA_VERSION, DEFAULT_TAXONOMY_ID): DEFAULT_TAXONOMY_SHA256,
+}
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -38,9 +41,16 @@ def _construct_unique_mapping(
     output: dict[Any, Any] = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
-        if key in output:
+        try:
+            duplicate = key in output
+        except TypeError as exc:
+            raise ValueError("taxonomy contains an invalid YAML mapping key") from exc
+        if duplicate:
             raise ValueError("taxonomy contains a duplicate YAML key")
-        output[key] = loader.construct_object(value_node, deep=deep)
+        try:
+            output[key] = loader.construct_object(value_node, deep=deep)
+        except TypeError as exc:
+            raise ValueError("taxonomy contains an invalid YAML mapping key") from exc
     return output
 
 
@@ -112,17 +122,39 @@ def _bounded_pair(value: Any, *, name: str) -> tuple[int, int]:
     return minimum, maximum
 
 
-def _normalized_string(value: Any, *, name: str, maximum: int = 500) -> str:
+def _validate_unicode_scalar_text(value: str, *, name: str) -> None:
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{name} must be a non-empty normalized string") from exc
+    # V1 rejects every Unicode format character (category Cf), including
+    # directional controls, isolates, and zero-width joiners/separators. This
+    # explicit policy is intentionally stricter than the portable JSON Schema.
+    if any(
+        ord(character) < 32
+        or 127 <= ord(character) <= 159
+        or unicodedata.category(character) == "Cf"
+        for character in value
+    ):
+        raise ValueError(f"{name} must be a non-empty normalized string")
+
+
+def _normalized_string(
+    value: Any,
+    *,
+    name: str,
+    maximum: int | None = 500,
+) -> str:
     if (
         not isinstance(value, str)
         or not value
         or value != value.strip()
         or " ".join(value.split()) != value
         or unicodedata.normalize("NFC", value) != value
-        or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
-        or len(value) > maximum
+        or (maximum is not None and len(value) > maximum)
     ):
         raise ValueError(f"{name} must be a non-empty normalized string")
+    _validate_unicode_scalar_text(value, name=name)
     return value
 
 
@@ -222,18 +254,16 @@ def _parse_categories(value: Any) -> tuple[ArticleCategory, ...]:
     return tuple(output)
 
 
-def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTaxonomy:
-    taxonomy_path = Path(path)
-    try:
-        with taxonomy_path.open("rb") as source:
-            raw = source.read(MAX_TAXONOMY_BYTES + 1)
-    except OSError as exc:
-        raise ValueError("taxonomy file cannot be read") from exc
+def _parse_article_taxonomy_bytes(raw: bytes) -> ArticleTaxonomy:
     if not raw or len(raw) > MAX_TAXONOMY_BYTES:
         raise ValueError("taxonomy file is empty or exceeds its size limit")
     try:
-        payload = yaml.load(raw.decode("utf-8"), Loader=_UniqueKeyLoader)
-    except (UnicodeError, yaml.YAMLError) as exc:
+        decoded = raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("taxonomy must be valid UTF-8 YAML") from exc
+    try:
+        payload = yaml.load(decoded, Loader=_UniqueKeyLoader)
+    except yaml.YAMLError as exc:
         raise ValueError("taxonomy must be valid UTF-8 YAML") from exc
     root = _mapping(payload, name="taxonomy", fields=_TOP_LEVEL_FIELDS)
     if root["schema_version"] != TAXONOMY_SCHEMA_VERSION:
@@ -242,11 +272,6 @@ def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTa
     if _TOKEN.fullmatch(taxonomy_id) is None or taxonomy_id != DEFAULT_TAXONOMY_ID:
         raise ValueError("unsupported taxonomy_id")
     sha256 = hashlib.sha256(raw).hexdigest()
-    if (
-        taxonomy_path.resolve() == DEFAULT_TAXONOMY_PATH.resolve()
-        and sha256 != DEFAULT_TAXONOMY_SHA256
-    ):
-        raise ValueError("default taxonomy does not match the immutable v1 SHA-256")
     return ArticleTaxonomy(
         schema_version=TAXONOMY_SCHEMA_VERSION,
         taxonomy_id=taxonomy_id,
@@ -256,12 +281,37 @@ def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTa
     )
 
 
+def _validate_supported_taxonomy_identity(taxonomy: ArticleTaxonomy) -> None:
+    if not isinstance(taxonomy, ArticleTaxonomy):
+        raise ValueError("taxonomy does not match a supported taxonomy identity")
+    expected_sha256 = _SUPPORTED_TAXONOMY_IDENTITIES.get(
+        (taxonomy.schema_version, taxonomy.taxonomy_id)
+    )
+    if expected_sha256 is None or taxonomy.sha256 != expected_sha256:
+        raise ValueError("taxonomy does not match a supported taxonomy identity")
+
+
+def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTaxonomy:
+    taxonomy_path = Path(path)
+    try:
+        with taxonomy_path.open("rb") as source:
+            raw = source.read(MAX_TAXONOMY_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("taxonomy file cannot be read") from exc
+    taxonomy = _parse_article_taxonomy_bytes(raw)
+    _validate_supported_taxonomy_identity(taxonomy)
+    return taxonomy
+
+
 def validate_semantic_bundle(
     value: Any,
     *,
     taxonomy: ArticleTaxonomy | None = None,
 ) -> dict[str, Any]:
     selected = taxonomy or load_article_taxonomy()
+    _validate_supported_taxonomy_identity(selected)
+    if taxonomy is not None and selected != load_article_taxonomy():
+        raise ValueError("taxonomy does not match the supported taxonomy contract")
     bundle = _mapping(
         value,
         name="semantic bundle",
@@ -292,7 +342,7 @@ def validate_semantic_bundle(
         name="categories",
         minimum=selected.constraints.categories_min_items,
         maximum=selected.constraints.categories_max_items,
-        item_maximum=100,
+        item_maximum=None,
         allowed=selected.allowed_labels,
     )
     keywords = _semantic_values(
@@ -322,7 +372,7 @@ def _semantic_values(
     name: str,
     minimum: int,
     maximum: int,
-    item_maximum: int,
+    item_maximum: int | None,
     allowed: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     if not isinstance(value, list) or not minimum <= len(value) <= maximum:

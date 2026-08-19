@@ -76,6 +76,7 @@ def _string_list(
     *,
     minimum: int,
     maximum: int,
+    item_maximum: int | None,
     allowed: frozenset[str] | None = None,
 ) -> tuple[str, ...] | None:
     if not isinstance(value, list) or not minimum <= len(value) <= maximum:
@@ -83,7 +84,12 @@ def _string_list(
     output: list[str] = []
     seen: set[str] = set()
     for item in value:
-        if not isinstance(item, str) or not item or item != item.strip() or len(item) > 100:
+        if (
+            not isinstance(item, str)
+            or not item
+            or item != item.strip()
+            or (item_maximum is not None and len(item) > item_maximum)
+        ):
             return None
         key = item.casefold()
         if key in seen or (allowed is not None and item not in allowed):
@@ -118,14 +124,26 @@ def _load_batch_bytes(raw_bytes: bytes) -> tuple[ArticleAnnotation, ...] | None:
     ):
         return None
 
+    constraints = _ARTICLE_TAXONOMY.constraints
     output: list[ArticleAnnotation] = []
     for raw in payload["articles"]:
         if not isinstance(raw, dict) or set(raw) != ARTICLE_FIELDS:
             return None
         source_url, declared_canonical = raw["source_url"], raw["canonical_url"]
         title, summary, source_basis = raw["title"], raw["summary"], raw["source_basis"]
-        categories = _string_list(raw["categories"], minimum=1, maximum=3, allowed=ALLOWED_CATEGORIES)
-        keywords = _string_list(raw["keywords"], minimum=3, maximum=8)
+        categories = _string_list(
+            raw["categories"],
+            minimum=constraints.categories_min_items,
+            maximum=constraints.categories_max_items,
+            item_maximum=None,
+            allowed=_ARTICLE_TAXONOMY.allowed_labels,
+        )
+        keywords = _string_list(
+            raw["keywords"],
+            minimum=constraints.keywords_min_items,
+            maximum=constraints.keywords_max_items,
+            item_maximum=constraints.keyword_max_chars,
+        )
         if not isinstance(source_url, str) or not isinstance(declared_canonical, str):
             return None
         try:
@@ -152,12 +170,18 @@ def _load_batch_bytes(raw_bytes: bytes) -> tuple[ArticleAnnotation, ...] | None:
             or not isinstance(source_basis, str)
             or source_basis not in SOURCE_BASES
             or not isinstance(summary, str)
-            or not summary
             or summary != summary.strip()
-            or len(summary) > 2_000
+            or not (
+                constraints.summary_min_chars
+                <= len(summary)
+                <= constraints.summary_max_chars
+            )
             or categories is None
             or keywords is None
-            or any(keyword.casefold() in DISALLOWED_KEYWORDS for keyword in keywords)
+            or any(
+                keyword.casefold() in constraints.disallowed_keywords
+                for keyword in keywords
+            )
         ):
             return None
         if (

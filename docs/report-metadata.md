@@ -37,11 +37,16 @@ object that the external Hermes monitor will adopt in a later, separately
 reviewed migration. Schema-only validation is insufficient: the Python
 validator additionally enforces taxonomy membership and identity, NFC and
 whitespace normalization, case-insensitive uniqueness, and generic-keyword
-rejection. Category membership is intentionally validated from the YAML rather
-than duplicated as a second enum in the JSON Schema. Each bundle binds both the
-taxonomy ID and the exact taxonomy file SHA-256. Taxonomy v1 is immutable; a
-future label or meaning change must add a new versioned taxonomy instead of
-editing v1 in place.
+rejection. It is intentionally stricter than the JSON Schema: every accepted
+string must be strictly UTF-8 encodable, and all Unicode format characters
+(`Cf`) are rejected, including directional controls and zero-width characters.
+Inputs fail closed rather than being stripped, replaced, or normalized on the
+caller's behalf. Category membership is intentionally validated from the YAML
+rather than duplicated as a second enum in the JSON Schema. Each bundle binds
+both the taxonomy ID and the exact taxonomy file SHA-256, independent of where
+the taxonomy file is stored. Taxonomy v1 is immutable; a future label or meaning
+change must add a new explicitly supported versioned identity instead of editing
+v1 in place.
 
 The shared consumers load the taxonomy during module import. A missing,
 unreadable, malformed, or wrong-identity default taxonomy therefore fails
