@@ -94,15 +94,26 @@ def _stub_processes(
     return config_calls, actual_calls
 
 
-@pytest.mark.parametrize("command", ["up", "create", "run", "watch"])
+@pytest.mark.parametrize("command", ["up", "create"])
 def test_creating_commands_validate_the_final_compose_model(monkeypatch, command):
     config_calls, actual_calls = _stub_processes(monkeypatch)
     arguments = ["--profile", "up", command, "--example"]
 
     assert safe_compose.run_compose(arguments) == 0
     assert [call[0] for call in config_calls] == [
-        ["docker", "compose", "--profile", "up", "config", "--format", "json"]
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "up",
+            "--profile",
+            "*",
+            "config",
+            "--format",
+            "json",
+        ]
     ]
+    assert config_calls[0][1]["shell"] is False
     assert [call[0] for call in actual_calls] == [
         ["docker", "compose", *arguments]
     ]
@@ -130,24 +141,8 @@ def test_global_option_values_are_not_mistaken_for_subcommands(monkeypatch):
         "docker",
         "compose",
         *arguments[:-2],
-        "config",
-        "--format",
-        "json",
-    ]
-    assert actual_calls[0][0] == ["docker", "compose", *arguments]
-
-
-def test_double_dash_marks_the_subcommand_boundary(monkeypatch):
-    config_calls, actual_calls = _stub_processes(monkeypatch)
-    arguments = ["--project-directory", "up", "--", "run", "--rm", "wiki"]
-
-    assert safe_compose.run_compose(arguments) == 0
-    assert config_calls[0][0] == [
-        "docker",
-        "compose",
-        "--project-directory",
-        "up",
-        "--",
+        "--profile",
+        "*",
         "config",
         "--format",
         "json",
@@ -157,7 +152,50 @@ def test_double_dash_marks_the_subcommand_boundary(monkeypatch):
 
 @pytest.mark.parametrize(
     "arguments",
-    [["--help"], ["-h"], ["--version"], ["help"], ["version"]],
+    [
+        ["--"],
+        ["--", "help", "up"],
+        ["--", "up"],
+        ["help", "up"],
+        ["--", "run", "wiki"],
+    ],
+)
+def test_pre_subcommand_terminator_and_help_fail_closed(
+    monkeypatch, capsys, arguments
+):
+    config_calls, actual_calls = _stub_processes(monkeypatch)
+
+    assert safe_compose.main(arguments) == 2
+    assert capsys.readouterr().err == (
+        "docker compose wrapper usage error: unknown or missing subcommand\n"
+    )
+    assert config_calls == []
+    assert actual_calls == []
+
+
+@pytest.mark.parametrize("arguments", [["up", "--", "wiki"], ["logs", "--", "wiki"]])
+def test_post_subcommand_terminator_is_preserved(monkeypatch, arguments):
+    config_calls, actual_calls = _stub_processes(monkeypatch)
+
+    assert safe_compose.run_compose(arguments) == 0
+    if arguments[0] == "up":
+        assert config_calls[0][0] == [
+            "docker",
+            "compose",
+            "--profile",
+            "*",
+            "config",
+            "--format",
+            "json",
+        ]
+    else:
+        assert config_calls == []
+    assert actual_calls[0][0] == ["docker", "compose", *arguments]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["--help"], ["-h"], ["--version"], ["version"]],
 )
 def test_help_and_version_are_direct_passthrough(monkeypatch, arguments):
     config_calls, actual_calls = _stub_processes(monkeypatch)
@@ -202,6 +240,42 @@ def test_noncreating_commands_do_not_require_protected_sources(monkeypatch, comm
     assert safe_compose.run_compose(arguments, environment={"PATH": "ignored"}) == 0
     assert config_calls == []
     assert actual_calls[0][0] == ["docker", "compose", *arguments]
+
+
+@pytest.mark.parametrize(
+    "arguments_template",
+    [
+        ["run", "wiki"],
+        ["run", "-v", "{source}:/registry", "wiki"],
+        ["run", "--volume", "{source}:/registry", "wiki"],
+        ["run", "--volume={source}:/registry", "wiki"],
+        ["run", "-v{source}:/registry", "wiki"],
+        ["run", "--volume", "registry-data:/registry", "wiki"],
+    ],
+)
+def test_run_and_volume_variants_fail_before_any_docker_command(
+    monkeypatch, capsys, tmp_path, arguments_template
+):
+    secret = tmp_path / "private-source"
+    arguments = [argument.format(source=secret) for argument in arguments_template]
+    config_calls, actual_calls = _stub_processes(monkeypatch)
+
+    assert safe_compose.main(arguments) == 2
+    error = capsys.readouterr().err
+    assert error == "docker compose wrapper usage error: unknown or missing subcommand\n"
+    assert str(secret) not in error
+    assert config_calls == []
+    assert actual_calls == []
+
+
+@pytest.mark.parametrize("command", ["watch", "publish", "bridge", "alpha"])
+def test_unsupported_compose_subcommands_fail_closed(monkeypatch, command):
+    config_calls, actual_calls = _stub_processes(monkeypatch)
+
+    with pytest.raises(safe_compose.ComposeBindSourceError):
+        safe_compose.run_compose([command])
+    assert config_calls == []
+    assert actual_calls == []
 
 
 @pytest.mark.parametrize("arguments", [[], ["unknown"], ["--new-option", "up"]])
@@ -313,6 +387,33 @@ def test_compose_file_and_profile_select_the_final_registry_mount(
         ["--profile", "guarded", "up"],
         environment,
     )
+
+
+@pytest.mark.parametrize("command", ["up", "create"])
+def test_explicit_profile_hidden_wiki_cannot_bypass_protected_mount_validation(
+    tmp_path, monkeypatch, command
+):
+    missing = tmp_path / "private-missing-source"
+    compose = tmp_path / "profile-hidden.yml"
+    _write_bind_compose(
+        compose,
+        source=str(missing),
+        profile="guarded",
+    )
+    actual_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        safe_compose,
+        "_run_actual_compose",
+        lambda compose_command, **kwargs: actual_calls.append(compose_command),
+    )
+
+    with pytest.raises(safe_compose.ComposeBindSourceError) as raised:
+        safe_compose.run_compose(
+            ["-f", str(compose), command, "wiki"],
+            environment=dict(os.environ),
+        )
+    assert str(missing) not in str(raised.value)
+    assert actual_calls == []
 
 
 def test_env_file_is_resolved_by_compose(tmp_path, monkeypatch):

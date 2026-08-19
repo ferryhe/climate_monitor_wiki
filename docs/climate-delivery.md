@@ -192,8 +192,8 @@ export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
 ```
 
 This read-only `config` command is passed through with Compose's normal
-semantics. Use the same wrapper and override set for any later `up`, `create`,
-`run`, or `watch`; that creation preflight validates the final resolved mount
+semantics. Use the same wrapper and override set for any later `up` or `create`;
+that all-profile creation preflight validates the final resolved mount
 and rejects linked, reparse-point, missing, non-directory, or writable sources.
 See [`deployment.md`](deployment.md#optional-read-only-article-registry) for
 the remaining TOCTOU boundary and recovery-command behavior.

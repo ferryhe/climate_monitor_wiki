@@ -14,7 +14,7 @@ from types import FrameType
 from typing import Any
 
 
-_CREATING_COMMANDS = {"create", "run", "up", "watch"}
+_CREATING_COMMANDS = {"create", "up"}
 _PASSTHROUGH_COMMANDS = {
     "build",
     "config",
@@ -22,7 +22,6 @@ _PASSTHROUGH_COMMANDS = {
     "down",
     "events",
     "exec",
-    "help",
     "images",
     "kill",
     "logs",
@@ -88,10 +87,7 @@ def _classify_command(arguments: Sequence[str]) -> _Command:
     while index < len(arguments):
         argument = arguments[index]
         if argument == "--":
-            index += 1
-            if index >= len(arguments):
-                raise _usage_error()
-            break
+            raise _usage_error()
         if argument in _TERMINAL_GLOBAL_OPTIONS:
             return _Command(name=None, index=None, requires_preflight=False)
         if argument in _GLOBAL_FLAG_OPTIONS:
@@ -146,6 +142,8 @@ def _load_final_model(
         docker,
         "compose",
         *arguments[:command_index],
+        "--profile",
+        "*",
         "config",
         "--format",
         "json",

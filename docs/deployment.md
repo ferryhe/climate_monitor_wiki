@@ -176,10 +176,14 @@ sets the fixed in-container database path. The host directory is configuration,
 not repository content:
 
 For every optional bind override in this section, use
-`python -m scripts.safe_compose` for container-creating `up`, `create`, `run`,
-or `watch` operations. The wrapper preserves the caller's working directory,
-environment, and Compose global options and first asks Docker Compose itself
-for `config --format json`. It validates every final `/registry`,
+`python -m scripts.safe_compose` for the supported container-creating `up` and
+`create` operations. The wrapper rejects `run`, `watch`, `help`, and unknown
+subcommands before starting Docker. It preserves the caller's working
+directory, environment, and Compose global options and first asks Docker
+Compose itself for `--profile "*" config --format json`, with the wildcard
+passed as one literal argument. That all-profile model prevents an explicitly
+selected profile-hidden `wiki` service from bypassing validation. It validates
+every final `/registry`,
 `/delivery-output`, `/update-status`, and `/job-status` mount that appears in
 that resolved model. Each must be one unique, read-only bind from an absolute,
 existing ordinary directory. The source and every existing parent are checked
