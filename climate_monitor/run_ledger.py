@@ -551,9 +551,22 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
         # bumps st_ctime on the *shared* inode, which a second fstat of the
         # same descriptor observes -- that is a benign, expected event for this
         # ledger's hard-link dedupe tokens and must not be treated as "changed
-        # while reading" (PR-A root cause (b)). The business-level content
-        # contract is enforced by the caller (read bytes are compared for
-        # identity), and size growth is rejected below.
+        # while reading" (PR-A root cause (b)).
+        #
+        # The caller-side content/crypto identity contract is enforced ONLY
+        # where the caller performs a byte/size comparison -- e.g.
+        # append_attempt()/_read_existing() compare the read bytes against the
+        # expected canonical bytes. Other readers (e.g. RunLedgerReader._load,
+        # report_artifact_identity / ledger_repair artifact validation) rely on
+        # the inode/size checks above WITHOUT a byte comparison, so these checks
+        # must never be weakened. Size growth / truncation is rejected below.
+        #
+        # Known TOCTOU limitation: between the post-read fstat of the pinned
+        # descriptor and this post-read path lookup, a file renamed away to B and
+        # renamed back to the original A entirely within that window would resolve
+        # to inode A and be accepted. The descriptor still pins A, so no read
+        # bytes are corrupted; this is the accepted residual risk of an
+        # open-then-stat bounded reader.
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise LedgerContractError("attempt changed while reading")
         if (after.st_dev, after.st_ino) != (after_path.st_dev, after_path.st_ino):
