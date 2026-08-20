@@ -51,6 +51,8 @@ from .persistent import _file_sha256, _validate_database
 from .reports import ParsedReport, parse_historical_report
 from .schema import apply_migrations
 from .weekly import (
+    WeeklyPreflightError,
+    _absolute_path,
     _backup_name,
     _candidate_identity,
     _create_exact_backup,
@@ -311,6 +313,18 @@ def _assert_safe_backup_dir(backup_dir: Path, database: Path) -> None:
         raise RegistryInputError("backup directory is unsafe")
 
 
+def _semantic_path(value: str | Path, *, label: str) -> Path:
+    try:
+        return _absolute_path(value, label=label)
+    except WeeklyPreflightError as exc:
+        message = str(exc).replace(
+            "weekly registry preflight failed:",
+            "semantic import preflight failed:",
+            1,
+        )
+        raise RegistryInputError(message) from exc
+
+
 def _open_read_only_database(database: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
 
@@ -406,8 +420,8 @@ def _write_semantic_records(
                 categories_json, keywords_json, taxonomy_id,
                 taxonomy_raw_sha256, bundle_sha256, validated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(report_sha256, article_id) DO UPDATE SET
-                report_id = excluded.report_id,
+            ON CONFLICT(report_id, article_id) DO UPDATE SET
+                report_sha256 = excluded.report_sha256,
                 canonical_url = excluded.canonical_url,
                 title = excluded.title,
                 summary = excluded.summary,
@@ -461,8 +475,8 @@ def _apply_candidate(
                     "semantic import written count does not match verified sidecar count"
                 )
             persisted = connection.execute(
-                "SELECT COUNT(*) FROM article_semantics WHERE report_sha256 = ?",
-                (report_sha,),
+                "SELECT COUNT(*) FROM article_semantics WHERE report_id = ?",
+                (report_id,),
             ).fetchone()[0]
             if persisted != sidecar_count:
                 raise RegistryInputError(
@@ -491,18 +505,12 @@ def _apply(
 ) -> dict[str, Any]:
     if database is None:
         raise RegistryInputError("a registry database is required to apply semantic import")
-    database = Path(database)
-    if _is_link_or_reparse(database):
-        raise RegistryInputError("registry database is unsafe")
+    database = _semantic_path(database, label="database")
     if not database.is_file():
         raise RegistryInputError(f"registry database does not exist: {database}")
     if backup_dir is None:
         raise RegistryInputError("a backup directory is required to apply semantic import")
-    database = database.resolve()
-    backup_dir = Path(backup_dir)
-    if backup_dir.exists() and _is_link_or_reparse(backup_dir):
-        raise RegistryInputError("backup directory is unsafe")
-    backup_dir = backup_dir.resolve()
+    backup_dir = _semantic_path(backup_dir, label="backup directory")
     _assert_safe_backup_dir(backup_dir, database)
 
     with _exclusive_database_lock(database):
@@ -538,6 +546,11 @@ def _apply(
                 matched=matched,
                 sidecar_count=sidecar_count,
             )
+            if sidecars := _sqlite_entries(candidate):
+                names = ", ".join(path.name for path in sidecars)
+                raise RegistryInputError(
+                    f"semantic import candidate has active SQLite sidecar files: {names}"
+                )
             candidate_sha = _file_sha256(candidate)
             if candidate_sha == live_sha:
                 return {

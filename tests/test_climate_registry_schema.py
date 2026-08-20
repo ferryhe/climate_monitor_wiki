@@ -663,6 +663,41 @@ def test_v3_indexes_support_article_history_queries():
     } <= indexes
 
 
+def _insert_semantic_membership(
+    connection: sqlite3.Connection,
+    *,
+    report_id: str,
+    report_date: str,
+    filename: str,
+    discovery_id: str,
+    report_sha256: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO reports VALUES (?, ?, ?, ?, ?, 'weekly',
+                                    'weekly-pillars-v1', 1, 1, 0, '[]')
+        """,
+        (report_id, report_date, filename, f"Report {report_id}", report_sha256),
+    )
+    connection.execute(
+        """
+        INSERT INTO discoveries VALUES (?, ?, 1, 'pillar-a', 'A', 'a', 'v',
+                                        'https://example.com/a', 'Title',
+                                        'Summary', 1, NULL)
+        """,
+        (discovery_id, report_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO report_appearances(
+            report_id, article_id, version_id, discovery_id, section, pillar,
+            ordinal, disposition
+        ) VALUES (?, 'a', 'v', ?, 'pillar-a', 'A', 1, 'new')
+        """,
+        (report_id, discovery_id),
+    )
+
+
 def test_article_semantics_have_relational_constraints_without_redundant_index():
     connection = sqlite3.connect(":memory:")
     connection.execute("PRAGMA foreign_keys = ON")
@@ -678,6 +713,15 @@ def test_article_semantics_have_relational_constraints_without_redundant_index()
         for row in connection.execute("PRAGMA index_list(article_semantics)")
     }
     assert "idx_article_semantics_report" not in indexes
+    index_columns = {
+        tuple(
+            detail[2]
+            for detail in connection.execute(f"PRAGMA index_info({name})")
+        )
+        for name in indexes
+    }
+    assert ("report_sha256", "article_id") not in index_columns
+    assert ("report_id", "article_id") in index_columns
 
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
@@ -688,3 +732,98 @@ def test_article_semantics_have_relational_constraints_without_redundant_index()
             """,
             ("a" * 64,),
         )
+
+    report_sha256 = "b" * 64
+    with connection:
+        _insert_article(connection, article_id="a")
+        connection.execute(
+            """
+            INSERT INTO article_versions VALUES ('v', 'a', 'Title', 'title',
+                                                 'Summary', 'fingerprint',
+                                                 'report-title-summary',
+                                                 '2026-08-10', '2026-08-17')
+            """
+        )
+        _insert_semantic_membership(
+            connection,
+            report_id="report-one",
+            report_date="2026-08-10",
+            filename="one.md",
+            discovery_id="discovery-one",
+            report_sha256=report_sha256,
+        )
+        _insert_semantic_membership(
+            connection,
+            report_id="report-two",
+            report_date="2026-08-17",
+            filename="two.md",
+            discovery_id="discovery-two",
+            report_sha256=report_sha256,
+        )
+        connection.execute(
+            """
+            INSERT INTO article_semantics(
+                report_id, report_sha256, article_id, validated_at
+            ) VALUES ('report-one', ?, 'a', '2026-08-17T00:00:00Z')
+            """,
+            (report_sha256,),
+        )
+        connection.execute(
+            """
+            INSERT INTO article_semantics(
+                report_id, report_sha256, article_id, validated_at
+            ) VALUES ('report-two', ?, 'a', '2026-08-17T00:00:00Z')
+            """,
+            (report_sha256,),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """
+            INSERT INTO article_semantics(
+                report_id, report_sha256, article_id, validated_at
+            ) VALUES ('report-one', ?, 'a', '2026-08-17T00:00:00Z')
+            """,
+            (report_sha256,),
+        )
+
+
+def test_v5_to_v6_refuses_ambiguous_semantic_report_sha_mapping():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection, target_version=5)
+    report_sha256 = "a" * 64
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO reports VALUES ('report-one', '2026-08-10', 'one.md',
+                                        'Report one', ?, 'weekly',
+                                        'weekly-pillars-v1', 1, 1, 0, '[]')
+            """,
+            (report_sha256,),
+        )
+        connection.execute(
+            """
+            INSERT INTO reports VALUES ('report-two', '2026-08-17', 'two.md',
+                                        'Report two', ?, 'weekly',
+                                        'weekly-pillars-v1', 1, 1, 0, '[]')
+            """,
+            (report_sha256,),
+        )
+        connection.execute(
+            """
+            INSERT INTO article_semantics(
+                report_sha256, article_id, validated_at
+            ) VALUES (?, 'article-shared', '2026-08-17T00:00:00Z')
+            """,
+            (report_sha256,),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="ambiguous"):
+        apply_migrations(connection)
+
+    assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(article_semantics)")
+    }
+    assert "report_id" not in columns

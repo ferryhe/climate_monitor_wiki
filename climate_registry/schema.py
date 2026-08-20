@@ -436,9 +436,6 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             validated_at TEXT NOT NULL,
             PRIMARY KEY (report_sha256, article_id)
         );
-
-        CREATE INDEX idx_article_semantics_report
-            ON article_semantics(report_sha256, article_id);
         """,
     ),
     (
@@ -470,7 +467,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
                     length(bundle_sha256) = 64 AND bundle_sha256 NOT GLOB '*[^0-9a-f]*'
                 )),
             validated_at TEXT NOT NULL,
-            PRIMARY KEY (report_sha256, article_id),
+            PRIMARY KEY (report_id, article_id),
             FOREIGN KEY (report_id, report_sha256)
                 REFERENCES reports(report_id, report_sha256),
             FOREIGN KEY (report_id, article_id)
@@ -482,20 +479,36 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             categories_json, keywords_json, taxonomy_id, taxonomy_raw_sha256,
             bundle_sha256, validated_at
         )
-        SELECT (
-                SELECT r.report_id
-                FROM reports r
-                WHERE r.report_sha256 = old.report_sha256
-            ),
+        SELECT r.report_id,
             old.report_sha256, old.article_id, old.canonical_url, old.title,
             old.summary, old.categories_json, old.keywords_json, old.taxonomy_id,
             old.taxonomy_raw_sha256, old.bundle_sha256, old.validated_at
-        FROM article_semantics_v5 old;
+        FROM article_semantics_v5 old
+        JOIN reports r ON r.report_sha256 = old.report_sha256;
 
         DROP TABLE article_semantics_v5;
         """,
     ),
 )
+
+
+def _preflight_migration(connection: sqlite3.Connection, version: int) -> None:
+    if version != 6:
+        return
+    row = connection.execute(
+        """
+        SELECT old.report_sha256, COUNT(r.report_id) AS report_count
+        FROM (SELECT DISTINCT report_sha256 FROM article_semantics) old
+        LEFT JOIN reports r ON r.report_sha256 = old.report_sha256
+        GROUP BY old.report_sha256
+        HAVING report_count <> 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is not None:
+        raise sqlite3.IntegrityError(
+            "cannot migrate article_semantics: ambiguous or missing report_sha256 mapping"
+        )
 
 
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
@@ -531,6 +544,7 @@ def apply_migrations(connection: sqlite3.Connection, *, target_version: int | No
             continue
         escaped_name = name.replace("'", "''")
         try:
+            _preflight_migration(connection, version)
             connection.executescript(
                 f"""
                 BEGIN IMMEDIATE;

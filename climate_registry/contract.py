@@ -178,7 +178,6 @@ REQUIRED_INDEXES = frozenset(
         "idx_enrichments_content_generated",
         "idx_capture_resolutions_report_article",
         "idx_capture_resolutions_fetch",
-        "idx_article_semantics_report",
         "idx_reports_id_sha256",
     }
 )
@@ -280,14 +279,8 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
-    if version < 5:
-        names = frozenset(
-            name for name in names if not name.startswith("idx_article_semantics_")
-        )
     if version < 6:
         names = frozenset(name for name in names if name != "idx_reports_id_sha256")
-    if version >= 6:
-        names = frozenset(name for name in names if name != "idx_article_semantics_report")
     if version == 3:
         names = frozenset(
             name for name in names if not name.startswith("idx_capture_resolutions_")

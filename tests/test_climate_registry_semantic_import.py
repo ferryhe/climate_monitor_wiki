@@ -83,6 +83,82 @@ def _registry_database_for_report(tmp_path: Path, report: Path) -> Path:
     return database
 
 
+def _duplicate_sha_database(tmp_path: Path) -> Path:
+    database = tmp_path / "duplicate-sha.sqlite3"
+    connection = sqlite3.connect(database)
+    sha256 = "a" * 64
+    with connection:
+        from climate_registry.schema import apply_migrations
+
+        apply_migrations(connection)
+        connection.execute(
+            "INSERT INTO sources VALUES ('s', 'example.com', 'Example', '2026-08-10', '2026-08-17')"
+        )
+        connection.execute(
+            """
+            INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen)
+            VALUES ('article-shared', 'https://example.com/shared', 's',
+                    '2026-08-10', '2026-08-17')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO article_versions VALUES (
+                'version-shared', 'article-shared', 'Shared title', 'shared title',
+                'Shared summary', 'fingerprint-shared', 'report-title-summary',
+                '2026-08-10', '2026-08-17'
+            )
+            """
+        )
+        for report_id, report_date, filename, discovery_id in (
+            ("report-one", "2026-08-10", "one.md", "discovery-one"),
+            ("report-two", "2026-08-17", "two.md", "discovery-two"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO reports VALUES (?, ?, ?, ?, ?, 'weekly',
+                                            'weekly-pillars-v1', 1, 1, 0, '[]')
+                """,
+                (report_id, report_date, filename, f"Report {report_id}", sha256),
+            )
+            connection.execute(
+                """
+                INSERT INTO discoveries VALUES (?, ?, 1, 'pillar-a', 'A',
+                                                'article-shared', 'version-shared',
+                                                'https://example.com/shared',
+                                                'Shared title', 'Shared summary',
+                                                1, NULL)
+                """,
+                (discovery_id, report_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO report_appearances(
+                    report_id, article_id, version_id, discovery_id, section,
+                    pillar, ordinal, disposition
+                ) VALUES (?, 'article-shared', 'version-shared', ?, 'pillar-a',
+                          'A', 1, 'new')
+                """,
+                (report_id, discovery_id),
+            )
+    connection.close()
+    return database
+
+
+def _semantic_record() -> dict:
+    return {
+        "article_id": "article-shared",
+        "canonical_url": "https://example.com/shared",
+        "title": "Shared title",
+        "summary": "Shared semantic summary.",
+        "categories": ["Physical Risk"],
+        "keywords": ["risk"],
+        "taxonomy_id": "taxonomy",
+        "taxonomy_raw_sha256": "b" * 64,
+        "bundle_sha256": "c" * 64,
+    }
+
+
 def _semantics_rows(database: Path) -> list[tuple]:
     connection = sqlite3.connect(database)
     try:
@@ -98,7 +174,7 @@ def _semantics_rows(database: Path) -> list[tuple]:
                 SELECT report_sha256, article_id, canonical_url, title, summary,
                        categories_json, keywords_json, taxonomy_id,
                        taxonomy_raw_sha256, bundle_sha256, report_id
-                FROM article_semantics ORDER BY article_id
+                FROM article_semantics ORDER BY report_id, article_id
                 """
             )
         )
@@ -238,6 +314,48 @@ def test_apply_is_idempotent_for_the_same_report(tmp_path):
 
     assert len(second) == 2
     assert [row[:4] for row in first] == [row[:4] for row in second]
+
+
+def test_candidate_apply_keeps_duplicate_sha_reports_separate(tmp_path):
+    database = _duplicate_sha_database(tmp_path)
+    sha256 = "a" * 64
+    record = _semantic_record()
+    connection = sqlite3.connect(database)
+    try:
+        with connection:
+            semantic_import._write_semantic_records(
+                connection,
+                report_id="report-one",
+                report_sha=sha256,
+                matched=[record],
+            )
+    finally:
+        connection.close()
+
+    written = semantic_import._apply_candidate(
+        database,
+        report_id="report-two",
+        report_sha=sha256,
+        matched=[record],
+        sidecar_count=1,
+    )
+
+    assert written == 1
+    connection = sqlite3.connect(database)
+    try:
+        rows = connection.execute(
+            """
+            SELECT report_id, report_sha256, article_id
+            FROM article_semantics
+            ORDER BY report_id, article_id
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    assert rows == [
+        ("report-one", sha256, "article-shared"),
+        ("report-two", sha256, "article-shared"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +680,42 @@ def test_apply_rejects_unsafe_database_symlink_before_backup(tmp_path, monkeypat
     assert not (tmp_path / "backups").exists()
 
 
+@pytest.mark.parametrize("unsafe_role", ["database", "backup"])
+def test_apply_rejects_raw_path_components_before_resolve(
+    tmp_path, monkeypatch, unsafe_role
+):
+    report = _report_with_sidecar(tmp_path)
+    unsafe_dir = tmp_path / f"unsafe-{unsafe_role}"
+    unsafe_dir.mkdir()
+    if unsafe_role == "database":
+        database = _registry_database_for_report(unsafe_dir, report)
+        backup_dir = tmp_path / "backups"
+    else:
+        database = _registry_database_for_report(tmp_path, report)
+        backup_dir = unsafe_dir / "backups"
+    before = database.read_bytes()
+    real_is_link = weekly_helpers._is_link_or_reparse
+
+    def flagged(path):
+        return Path(path) == unsafe_dir or real_is_link(path)
+
+    monkeypatch.setattr(weekly_helpers, "_is_link_or_reparse", flagged)
+
+    with pytest.raises(RegistryInputError, match="path is unsafe"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=backup_dir,
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+    assert not (unsafe_dir / "backups").exists()
+
+
 def test_short_backup_writes_are_completed_and_verified(tmp_path, monkeypatch):
     report = _report_with_sidecar(tmp_path)
     database = _registry_database_for_report(tmp_path, report)
@@ -609,6 +763,40 @@ def test_apply_failure_before_promotion_leaves_live_database_unchanged(
     assert database.read_bytes() == before
     assert _semantics_rows(database) == []
     assert not (tmp_path / "backups").exists()
+
+
+def test_candidate_sidecars_after_apply_block_promotion_and_leave_live_unchanged(
+    tmp_path, monkeypatch
+):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+    real_apply_candidate = semantic_import._apply_candidate
+
+    def apply_candidate_with_sidecar(candidate, **kwargs):
+        written = real_apply_candidate(candidate, **kwargs)
+        Path(f"{candidate}-wal").write_bytes(b"uncheckpointed candidate wal")
+        return written
+
+    monkeypatch.setattr(
+        semantic_import,
+        "_apply_candidate",
+        apply_candidate_with_sidecar,
+    )
+
+    with pytest.raises(RegistryInputError, match="candidate has active SQLite sidecar"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+    assert not list(database.parent.glob("*.semantic-candidate*"))
 
 
 def test_written_count_mismatch_blocks_promotion_and_leaves_live_unchanged(
