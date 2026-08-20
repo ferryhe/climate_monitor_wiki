@@ -46,7 +46,15 @@ def _write_source_config(path: Path) -> None:
     )
 
 
-def _write_run_config(path: Path, *, source_dir: Path, wiki_dir: Path, state: Path, max_items: int = 12) -> None:
+def _write_run_config(
+    path: Path,
+    *,
+    source_dir: Path,
+    wiki_dir: Path,
+    state: Path,
+    max_items: int = 12,
+    write_empty_report: bool = False,
+) -> None:
     path.write_text(
         f"""
 report_title: Weekly Climate & Actuarial Monitor
@@ -59,7 +67,7 @@ research_lane:
 output:
   source_dir: {source_dir.as_posix()}
   wiki_dir: {wiki_dir.as_posix()}
-  write_empty_report: false
+  write_empty_report: {str(write_empty_report).lower()}
 dedupe:
   url_tracking_path: {(state / "seen_urls.json").as_posix()}
   title_tracking_path: {(state / "seen_titles.json").as_posix()}
@@ -205,6 +213,206 @@ def test_only_finally_selected_articles_receive_semantics(tmp_path):
     assert REPORT_URL_LINE.findall(report_path.read_text(encoding="utf-8")) == [
         payload["articles"][0]["url"]
     ]
+
+
+def test_run_monitor_skips_publication_when_semantic_selection_drops_everything(tmp_path, monkeypatch):
+    root = tmp_path / "all-dropped"
+    root.mkdir(parents=True, exist_ok=True)
+    source_config = root / "sources.yaml"
+    run_config = root / "run_config.yaml"
+    source_dir = root / "sources"
+    wiki_dir = root / "wiki"
+    state = root / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+
+    state.mkdir(parents=True)
+    seen_urls = state / "seen_urls.json"
+    seen_titles = state / "seen_titles.json"
+    seen_urls.write_text('["https://existing.example/item"]\n', encoding="utf-8")
+    seen_titles.write_text('["existing title"]\n', encoding="utf-8")
+    seen_urls_before = seen_urls.read_bytes()
+    seen_titles_before = seen_titles.read_bytes()
+
+    source_dir.mkdir(parents=True)
+    report_path = source_dir / "climate-monitor-2026-05-14.md"
+    sidecar_path = semantic_sidecar_path(report_path)
+    report_path.write_text("previous report\n", encoding="utf-8")
+    sidecar_path.write_text("previous sidecar\n", encoding="utf-8")
+    report_before = report_path.read_bytes()
+    sidecar_before = sidecar_path.read_bytes()
+
+    warning = "iais seed https://www.iais.org/broken/: timeout"
+    drop_note = (
+        "dropped non-semantic article (unvalidatable bundle): "
+        "Climate insurance capital update [https://www.iais.org/all-filtered] "
+        "(semantic bundle is not contract-valid: test)"
+    )
+    sync_calls = []
+
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+        return [
+            CandidateItem(
+                title="Climate insurance capital update",
+                url="https://www.iais.org/all-filtered",
+                summary="Climate risk and insurance capital supervision.",
+                source_name="IAIS",
+                lane="website",
+            )
+        ], [warning]
+
+    def fake_select(items):
+        assert [item.title for item in items] == ["Climate insurance capital update"]
+        return [], [drop_note]
+
+    monkeypatch.setattr("climate_monitor.orchestrator.collect_website_items", fake_collect)
+    monkeypatch.setattr("climate_monitor.orchestrator.select_semantic_articles", fake_select)
+    monkeypatch.setattr(
+        "climate_monitor.orchestrator.sync_source_wiki",
+        lambda *args, **kwargs: sync_calls.append((args, kwargs)),
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        site_scopes_path=None,
+        state_dir=state,
+        sync=True,
+    )
+
+    assert result.report_path is None
+    assert result.semantics_path is None
+    assert result.report_sha256 == ""
+    assert result.items == ()
+    assert result.dedup_notes == (drop_note,)
+    assert result.warnings == (warning,)
+    assert result.synced is False
+    assert report_path.read_bytes() == report_before
+    assert sidecar_path.read_bytes() == sidecar_before
+    assert seen_urls.read_bytes() == seen_urls_before
+    assert seen_titles.read_bytes() == seen_titles_before
+    assert sync_calls == []
+
+
+def test_run_monitor_publishes_remaining_items_after_partial_semantic_drop(tmp_path, monkeypatch):
+    root = tmp_path / "partial-drop"
+    root.mkdir(parents=True, exist_ok=True)
+    source_config = root / "sources.yaml"
+    run_config = root / "run_config.yaml"
+    source_dir = root / "sources"
+    wiki_dir = root / "wiki"
+    state = root / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+
+    drop_note = "dropped non-semantic article (unvalidatable bundle): filtered"
+
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+        return [
+            CandidateItem(
+                title="Dropped climate insurance update",
+                url="https://www.iais.org/dropped",
+                summary="Climate risk and insurance capital supervision.",
+                source_name="IAIS",
+                lane="website",
+            ),
+            CandidateItem(
+                title="Kept climate insurance update",
+                url="https://www.iais.org/kept",
+                summary="Climate risk and insurance capital supervision.",
+                source_name="IAIS",
+                lane="website",
+            ),
+        ], []
+
+    def fake_select(items):
+        assert [item.url for item in items] == [
+            "https://www.iais.org/dropped",
+            "https://www.iais.org/kept",
+        ]
+        return [items[1]], [drop_note]
+
+    monkeypatch.setattr("climate_monitor.orchestrator.collect_website_items", fake_collect)
+    monkeypatch.setattr("climate_monitor.orchestrator.select_semantic_articles", fake_select)
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        site_scopes_path=None,
+        state_dir=state,
+        sync=False,
+    )
+
+    assert result.report_path is not None
+    assert [item.url for item in result.items] == ["https://www.iais.org/kept"]
+    assert result.dedup_notes == (drop_note,)
+    report_path = Path(result.report_path)
+    report_text = report_path.read_text(encoding="utf-8")
+    payload = json.loads(semantic_sidecar_path(report_path).read_text(encoding="utf-8"))
+    rendered_urls = rendered_article_urls(report_text)
+    sidecar_urls = [article["url"] for article in payload["articles"]]
+    assert rendered_urls == ["https://www.iais.org/kept"]
+    assert sidecar_urls == rendered_urls
+    assert payload["article_count"] == 1
+
+
+def test_run_monitor_can_intentionally_publish_empty_semantic_report(tmp_path, monkeypatch):
+    root = tmp_path / "intentional-empty"
+    root.mkdir(parents=True, exist_ok=True)
+    source_config = root / "sources.yaml"
+    run_config = root / "run_config.yaml"
+    source_dir = root / "sources"
+    wiki_dir = root / "wiki"
+    state = root / "state"
+    _write_source_config(source_config)
+    _write_run_config(
+        run_config,
+        source_dir=source_dir,
+        wiki_dir=wiki_dir,
+        state=state,
+        write_empty_report=True,
+    )
+
+    drop_note = "dropped non-semantic article (unvalidatable bundle): filtered"
+
+    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+        return [
+            CandidateItem(
+                title="Climate insurance capital update",
+                url="https://www.iais.org/all-filtered",
+                summary="Climate risk and insurance capital supervision.",
+                source_name="IAIS",
+                lane="website",
+            )
+        ], []
+
+    monkeypatch.setattr("climate_monitor.orchestrator.collect_website_items", fake_collect)
+    monkeypatch.setattr(
+        "climate_monitor.orchestrator.select_semantic_articles",
+        lambda items: ([], [drop_note]),
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        site_scopes_path=None,
+        state_dir=state,
+        sync=False,
+    )
+
+    assert result.report_path is not None
+    assert result.items == ()
+    assert result.dedup_notes == (drop_note,)
+    report_path = Path(result.report_path)
+    report_text = report_path.read_text(encoding="utf-8")
+    payload = json.loads(semantic_sidecar_path(report_path).read_text(encoding="utf-8"))
+    assert rendered_article_urls(report_text) == []
+    assert payload["article_count"] == 0
+    assert payload["articles"] == []
+    assert payload["report"]["filename"] == report_path.name
 
 
 def test_every_final_article_carries_a_validated_semantic_bundle(tmp_path):
