@@ -175,11 +175,40 @@ application root `/app`) and
 sets the fixed in-container database path. The host directory is configuration,
 not repository content:
 
+For every optional bind override in this section, use
+`python -m scripts.safe_compose` for the supported container-creating `up` and
+`create` operations. The wrapper rejects `run`, `watch`, `help`, and unknown
+subcommands before starting Docker. It preserves the caller's working
+directory, environment, and Compose global options and first asks Docker
+Compose itself for `--profile "*" config --format json`, with the wildcard
+passed as one literal argument. That all-profile model prevents an explicitly
+selected profile-hidden `wiki` service from bypassing validation. It validates
+every final `/registry`,
+`/delivery-output`, `/update-status`, and `/job-status` mount that appears in
+that resolved model. Each must be one unique, read-only bind from an absolute,
+existing ordinary directory. The source and every existing parent are checked
+with no-follow metadata; symlinks and Windows reparse points or junctions are
+rejected. Errors do not print the source path or environment value.
+
+This wrapper is preflight hardening, not an atomic filesystem guarantee. A
+trusted host path can still be replaced in the TOCTOU interval after validation
+and before Docker opens it, so operators must prevent hostile same-user changes.
+The check runs immediately before the requested Compose process. Every source
+YAML also keeps `bind.create_host_path: false` as a second fail-closed layer on
+engines that honor it.
+
+Recovery and inspection commands such as `down`, `stop`, `rm`, `ps`, `logs`,
+and `config` pass directly to Docker Compose and are not blocked when an
+optional source is absent. `config` therefore retains Compose's normal errors
+but does not perform the wrapper's filesystem check. An unknown or
+unrecognizable subcommand fails closed without starting Docker.
+
 ```bash
 export CLIMATE_REGISTRY_HOST_DIR=/home/ubuntu/climate_monitor_data/registry
 
 docker compose -f docker-compose.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.registry.yml config --quiet
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml -f docker-compose.registry.yml config --quiet
 ```
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
@@ -216,7 +245,8 @@ jobs do not change:
 ROLLBACK_TAG="climate-monitor-wiki:pre-registry-$(date -u +%Y%m%dT%H%M%SZ)"
 docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
-docker compose -f docker-compose.yml -f docker-compose.registry.yml \
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --build --no-deps wiki
 
 curl --fail-with-body -sS https://climate.aiinforsearch.com/api/registry/status \
@@ -242,7 +272,8 @@ wiring:
 
 ```bash
 docker image tag "$ROLLBACK_TAG" climate-monitor-wiki:local
-docker compose -f docker-compose.yml -f docker-compose.registry.yml \
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --no-build --no-deps --force-recreate wiki
 # For a pre-Registry image, use only: docker compose up -d --no-build --no-deps --force-recreate wiki
 ```
@@ -255,12 +286,14 @@ those remain explicit, separately reviewed server operations.
 
 Historical Reports can consume an operator-managed delivery artifact tree with
 the independent `docker-compose.delivery.yml` override. Set the host path
-explicitly; Compose will fail instead of creating a missing directory:
+explicitly. The command below checks the resolved Compose configuration; a
+later container-creating wrapper invocation also performs the filesystem
+preflight before Docker can create a missing directory:
 
 ```bash
 export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
 
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.registry.yml \
   -f docker-compose.delivery.yml \
@@ -295,7 +328,7 @@ override:
 
 ```bash
 export CLIMATE_UPDATE_STATUS_HOST_DIR=/external/weekly-run-ledger
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.update-status.yml \
   config --quiet
@@ -325,7 +358,7 @@ Enable its independent directory mount with:
 
 ```bash
 export CLIMATE_JOB_STATUS_HOST_DIR=/external/sanitized-job-status
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.job-status.yml \
   config --quiet

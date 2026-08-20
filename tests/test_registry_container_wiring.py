@@ -10,6 +10,7 @@ import urllib.error
 from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from api_server import app
@@ -109,6 +110,15 @@ def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only
 
 
 def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
+    declared = yaml.safe_load(
+        (ROOT / "docker-compose.registry.yml").read_text(encoding="utf-8")
+    )["services"]["wiki"]["volumes"][0]
+    assert declared["type"] == "bind"
+    assert declared["source"].startswith("${CLIMATE_REGISTRY_HOST_DIR:?")
+    assert declared["target"] == "/registry"
+    assert declared["read_only"] is True
+    assert declared["bind"] == {"create_host_path": False}
+
     docker = shutil.which("docker")
     if not docker:
         pytest.skip("Docker CLI is not installed")
@@ -138,9 +148,9 @@ def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
     rendered = json.loads(completed.stdout)
     mounts = rendered["services"]["wiki"]["volumes"]
     registry = next(item for item in mounts if item["target"] == "/registry")
+    assert registry["type"] == "bind"
     assert registry["source"] == str(tmp_path.resolve())
     assert registry["read_only"] is True
-    assert registry["bind"]["create_host_path"] is False
 
 
 def test_unconfigured_status_is_503_with_safe_reason_and_core_app_stays_healthy(monkeypatch):

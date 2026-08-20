@@ -185,11 +185,18 @@ For Compose, use the independent read-only override:
 
 ```bash
 export CLIMATE_DELIVERY_ARTIFACTS_HOST_DIR=/external/climate-delivery-output
-docker compose \
+.venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.delivery.yml \
   config --quiet
 ```
+
+This read-only `config` command is passed through with Compose's normal
+semantics. Use the same wrapper and override set for any later `up` or `create`;
+that all-profile creation preflight validates the final resolved mount
+and rejects linked, reparse-point, missing, non-directory, or writable sources.
+See [`deployment.md`](deployment.md#optional-read-only-article-registry) for
+the remaining TOCTOU boundary and recovery-command behavior.
 
 The override binds that directory read-only at `/delivery-output`, disables
 implicit host-directory creation, and sets the fixed container path. The base
