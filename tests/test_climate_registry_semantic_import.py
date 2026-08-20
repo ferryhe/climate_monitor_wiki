@@ -23,11 +23,14 @@ from pathlib import Path
 
 import pytest
 
+import climate_registry.semantic_import as semantic_import
+import climate_registry.weekly as weekly_helpers
 from climate_monitor.semantic_bundle import (
     SemanticBundleError,
     semantic_sidecar_path,
     serialize_sidecar,
 )
+from climate_registry.audit import build_audit_registry
 from climate_registry.cli import main
 from climate_registry.errors import RegistryInputError
 from climate_registry.semantic_import import (
@@ -35,6 +38,7 @@ from climate_registry.semantic_import import (
     _target_article_identities,
     import_report_semantics,
 )
+from climate_registry.weekly import WeeklyValidationError
 
 from test_climate_delivery_pipeline import DELIVERY_REPORT, _write_sidecar
 
@@ -68,6 +72,93 @@ def _empty_database(tmp_path: Path, name: str = "registry.sqlite3") -> Path:
     return database
 
 
+def _registry_database_for_report(tmp_path: Path, report: Path) -> Path:
+    """Build a real Registry DB that already contains the target report."""
+
+    source_dir = tmp_path / "registry-sources"
+    source_dir.mkdir()
+    (source_dir / report.name).write_bytes(report.read_bytes())
+    database = tmp_path / "registry.sqlite3"
+    build_audit_registry(source_dir, database, tmp_path / "registry-audit")
+    return database
+
+
+def _duplicate_sha_database(tmp_path: Path) -> Path:
+    database = tmp_path / "duplicate-sha.sqlite3"
+    connection = sqlite3.connect(database)
+    sha256 = "a" * 64
+    with connection:
+        from climate_registry.schema import apply_migrations
+
+        apply_migrations(connection)
+        connection.execute(
+            "INSERT INTO sources VALUES ('s', 'example.com', 'Example', '2026-08-10', '2026-08-17')"
+        )
+        connection.execute(
+            """
+            INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen)
+            VALUES ('article-shared', 'https://example.com/shared', 's',
+                    '2026-08-10', '2026-08-17')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO article_versions VALUES (
+                'version-shared', 'article-shared', 'Shared title', 'shared title',
+                'Shared summary', 'fingerprint-shared', 'report-title-summary',
+                '2026-08-10', '2026-08-17'
+            )
+            """
+        )
+        for report_id, report_date, filename, discovery_id in (
+            ("report-one", "2026-08-10", "one.md", "discovery-one"),
+            ("report-two", "2026-08-17", "two.md", "discovery-two"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO reports VALUES (?, ?, ?, ?, ?, 'weekly',
+                                            'weekly-pillars-v1', 1, 1, 0, '[]')
+                """,
+                (report_id, report_date, filename, f"Report {report_id}", sha256),
+            )
+            connection.execute(
+                """
+                INSERT INTO discoveries VALUES (?, ?, 1, 'pillar-a', 'A',
+                                                'article-shared', 'version-shared',
+                                                'https://example.com/shared',
+                                                'Shared title', 'Shared summary',
+                                                1, NULL)
+                """,
+                (discovery_id, report_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO report_appearances(
+                    report_id, article_id, version_id, discovery_id, section,
+                    pillar, ordinal, disposition
+                ) VALUES (?, 'article-shared', 'version-shared', ?, 'pillar-a',
+                          'A', 1, 'new')
+                """,
+                (report_id, discovery_id),
+            )
+    connection.close()
+    return database
+
+
+def _semantic_record() -> dict:
+    return {
+        "article_id": "article-shared",
+        "canonical_url": "https://example.com/shared",
+        "title": "Shared title",
+        "summary": "Shared semantic summary.",
+        "categories": ["Physical Risk"],
+        "keywords": ["risk"],
+        "taxonomy_id": "taxonomy",
+        "taxonomy_raw_sha256": "b" * 64,
+        "bundle_sha256": "c" * 64,
+    }
+
+
 def _semantics_rows(database: Path) -> list[tuple]:
     connection = sqlite3.connect(database)
     try:
@@ -82,8 +173,8 @@ def _semantics_rows(database: Path) -> list[tuple]:
                 """
                 SELECT report_sha256, article_id, canonical_url, title, summary,
                        categories_json, keywords_json, taxonomy_id,
-                       taxonomy_raw_sha256, bundle_sha256
-                FROM article_semantics ORDER BY article_id
+                       taxonomy_raw_sha256, bundle_sha256, report_id
+                FROM article_semantics ORDER BY report_id, article_id
                 """
             )
         )
@@ -158,9 +249,10 @@ def test_dry_run_plan_is_deterministic_across_repeated_calls(tmp_path):
 
 def test_apply_writes_matched_rows_one_to_one(tmp_path):
     report = _report_with_sidecar(tmp_path)
-    database = _empty_database(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
     backup_dir = tmp_path / "backups"
     sha256 = _report_sha256(report)
+    before = database.read_bytes()
 
     plan = import_report_semantics(
         report,
@@ -175,6 +267,7 @@ def test_apply_writes_matched_rows_one_to_one(tmp_path):
     rows = _semantics_rows(database)
     assert len(rows) == 2
     assert {row[0] for row in rows} == {sha256}
+    assert {row[10] for row in rows} == {"report-2026-08-10"}
     assert [row[1] for row in rows] == sorted(row[1] for row in rows)
     titles = {row[3] for row in rows}
     assert titles == {"First finding", "Second finding"}
@@ -192,12 +285,14 @@ def test_apply_writes_matched_rows_one_to_one(tmp_path):
 
     # An exact pre-apply backup was retained for the reviewer.
     assert backup_dir.is_dir()
-    assert len(list(backup_dir.iterdir())) == 1
+    backups = list(backup_dir.iterdir())
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
 
 
 def test_apply_is_idempotent_for_the_same_report(tmp_path):
     report = _report_with_sidecar(tmp_path)
-    database = _empty_database(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
     sha256 = _report_sha256(report)
 
     import_report_semantics(
@@ -219,6 +314,48 @@ def test_apply_is_idempotent_for_the_same_report(tmp_path):
 
     assert len(second) == 2
     assert [row[:4] for row in first] == [row[:4] for row in second]
+
+
+def test_candidate_apply_keeps_duplicate_sha_reports_separate(tmp_path):
+    database = _duplicate_sha_database(tmp_path)
+    sha256 = "a" * 64
+    record = _semantic_record()
+    connection = sqlite3.connect(database)
+    try:
+        with connection:
+            semantic_import._write_semantic_records(
+                connection,
+                report_id="report-one",
+                report_sha=sha256,
+                matched=[record],
+            )
+    finally:
+        connection.close()
+
+    written = semantic_import._apply_candidate(
+        database,
+        report_id="report-two",
+        report_sha=sha256,
+        matched=[record],
+        sidecar_count=1,
+    )
+
+    assert written == 1
+    connection = sqlite3.connect(database)
+    try:
+        rows = connection.execute(
+            """
+            SELECT report_id, report_sha256, article_id
+            FROM article_semantics
+            ORDER BY report_id, article_id
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    assert rows == [
+        ("report-one", sha256, "article-shared"),
+        ("report-two", sha256, "article-shared"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +498,48 @@ def test_unmatched_sidecar_articles_are_dropped_from_the_write_set(tmp_path):
     assert len(unmatched) == 2
 
 
+def test_dry_run_marks_unmatched_sidecar_rows_as_blocked(tmp_path, monkeypatch):
+    report = _report_with_sidecar(tmp_path)
+    sha256 = _report_sha256(report)
+    identities = _target_article_identities(report)
+    partial = {key: value for index, (key, value) in enumerate(identities.items()) if index == 0}
+
+    monkeypatch.setattr(semantic_import, "_target_article_identities", lambda *_args: partial)
+
+    plan = import_report_semantics(report, expected_report_sha256=sha256, dry_run=True)
+
+    assert plan["status"] == "blocked"
+    assert plan["blocked"] is True
+    assert plan["would_write"] == 1
+    assert plan["sidecar_count"] == 2
+    assert plan["unmatched_count"] == 1
+    assert "unmatched_sidecar_rows" in plan["blockers"]
+    assert "sidecar_match_count_mismatch" in plan["blockers"]
+
+
+def test_apply_refuses_unmatched_sidecar_rows_before_backup(tmp_path, monkeypatch):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+    identities = _target_article_identities(report)
+    partial = {key: value for index, (key, value) in enumerate(identities.items()) if index == 0}
+
+    monkeypatch.setattr(semantic_import, "_target_article_identities", lambda *_args: partial)
+
+    with pytest.raises(RegistryInputError, match="unmatched sidecar"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
 def test_registry_article_id_is_recomputed_from_the_canonical_url(tmp_path):
     """The sidecar's own article_id is a different identity scheme; the import
     must recompute the Registry identity so rows join to the Registry."""
@@ -374,6 +553,312 @@ def test_registry_article_id_is_recomputed_from_the_canonical_url(tmp_path):
     registry_ids = {record["article_id"] for record in matched}
     assert registry_ids == set(identities)
     assert registry_ids.isdisjoint(sidecar_ids)
+
+
+def test_apply_requires_report_membership_in_registry_before_backup(tmp_path):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    connection = sqlite3.connect(database)
+    with connection:
+        first_article_id = connection.execute(
+            "SELECT article_id FROM report_appearances ORDER BY article_id LIMIT 1"
+        ).fetchone()[0]
+        connection.execute(
+            "DELETE FROM report_appearances WHERE article_id = ?",
+            (first_article_id,),
+        )
+    connection.close()
+    before = database.read_bytes()
+
+    with pytest.raises(RegistryInputError, match="target article membership"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
+def test_apply_requires_report_sha_in_registry_before_backup(tmp_path):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute("UPDATE reports SET report_sha256 = ?", ("f" * 64,))
+    connection.close()
+    before = database.read_bytes()
+
+    with pytest.raises(RegistryInputError, match="exact report SHA"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
+def test_report_bytes_are_snapshotted_once_for_verify_hash_and_parse(tmp_path, monkeypatch):
+    report = _report_with_sidecar(tmp_path)
+    original_bytes = report.read_bytes()
+    original_sha = hashlib.sha256(original_bytes).hexdigest()
+    real_verify = semantic_import.verify_semantic_sidecar
+
+    def replace_after_verify(path, *, report_bytes=None):
+        assert report_bytes == original_bytes
+        payload = real_verify(path, report_bytes=report_bytes)
+        report.write_text(
+            DELIVERY_REPORT.replace("First finding", "Changed after verify"),
+            encoding="utf-8",
+        )
+        return payload
+
+    monkeypatch.setattr(semantic_import, "verify_semantic_sidecar", replace_after_verify)
+
+    plan = import_report_semantics(
+        report,
+        expected_report_sha256=original_sha,
+        dry_run=True,
+    )
+
+    assert plan["status"] == "dry-run"
+    assert plan["report_sha256"] == original_sha
+    assert plan["would_write"] == 2
+
+
+def test_apply_rejects_active_sqlite_sidecars_before_backup(tmp_path):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    Path(f"{database}-wal").write_bytes(b"active wal")
+    before = database.read_bytes()
+
+    with pytest.raises(RegistryInputError, match="SQLite sidecar"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
+def test_apply_rejects_unsafe_database_symlink_before_backup(tmp_path, monkeypatch):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+
+    monkeypatch.setattr(
+        semantic_import,
+        "_is_link_or_reparse",
+        lambda path: Path(path) == database,
+    )
+
+    with pytest.raises(RegistryInputError, match="unsafe"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
+@pytest.mark.parametrize("unsafe_role", ["database", "backup"])
+def test_apply_rejects_raw_path_components_before_resolve(
+    tmp_path, monkeypatch, unsafe_role
+):
+    report = _report_with_sidecar(tmp_path)
+    unsafe_dir = tmp_path / f"unsafe-{unsafe_role}"
+    unsafe_dir.mkdir()
+    if unsafe_role == "database":
+        database = _registry_database_for_report(unsafe_dir, report)
+        backup_dir = tmp_path / "backups"
+    else:
+        database = _registry_database_for_report(tmp_path, report)
+        backup_dir = unsafe_dir / "backups"
+    before = database.read_bytes()
+    real_is_link = weekly_helpers._is_link_or_reparse
+
+    def flagged(path):
+        return Path(path) == unsafe_dir or real_is_link(path)
+
+    monkeypatch.setattr(weekly_helpers, "_is_link_or_reparse", flagged)
+
+    with pytest.raises(RegistryInputError, match="path is unsafe"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=backup_dir,
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+    assert not (unsafe_dir / "backups").exists()
+
+
+def test_short_backup_writes_are_completed_and_verified(tmp_path, monkeypatch):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+    real_write = weekly_helpers.os.write
+
+    def short_write(descriptor, data):
+        return real_write(descriptor, data[: min(len(data), 7)])
+
+    monkeypatch.setattr(weekly_helpers.os, "write", short_write)
+
+    import_report_semantics(
+        report,
+        expected_report_sha256=_report_sha256(report),
+        dry_run=False,
+        database=database,
+        backup_dir=tmp_path / "backups",
+    )
+
+    backup = next((tmp_path / "backups").iterdir())
+    assert backup.read_bytes() == before
+
+
+def test_apply_failure_before_promotion_leaves_live_database_unchanged(
+    tmp_path, monkeypatch
+):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+
+    def fail_write(*_args, **_kwargs):
+        raise sqlite3.DatabaseError("injected semantic write failure")
+
+    monkeypatch.setattr(semantic_import, "_write_semantic_records", fail_write)
+
+    with pytest.raises(sqlite3.DatabaseError, match="injected"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
+def test_candidate_sidecars_after_apply_block_promotion_and_leave_live_unchanged(
+    tmp_path, monkeypatch
+):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+    real_apply_candidate = semantic_import._apply_candidate
+
+    def apply_candidate_with_sidecar(candidate, **kwargs):
+        written = real_apply_candidate(candidate, **kwargs)
+        Path(f"{candidate}-wal").write_bytes(b"uncheckpointed candidate wal")
+        return written
+
+    monkeypatch.setattr(
+        semantic_import,
+        "_apply_candidate",
+        apply_candidate_with_sidecar,
+    )
+
+    with pytest.raises(RegistryInputError, match="candidate has active SQLite sidecar"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+    assert not list(database.parent.glob("*.semantic-candidate*"))
+
+
+def test_written_count_mismatch_blocks_promotion_and_leaves_live_unchanged(
+    tmp_path, monkeypatch
+):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+
+    def short_write_count(*_args, **_kwargs):
+        return 1
+
+    monkeypatch.setattr(semantic_import, "_write_semantic_records", short_write_count)
+
+    with pytest.raises(RegistryInputError, match="written count"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    assert _semantics_rows(database) == []
+    assert not (tmp_path / "backups").exists()
+
+
+def test_post_promotion_validation_failure_restores_exact_live_database(
+    tmp_path, monkeypatch
+):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    before = database.read_bytes()
+    before_sha = hashlib.sha256(before).hexdigest()
+
+    def reject_promoted_database(_connection):
+        raise WeeklyValidationError("injected semantic promotion validation")
+
+    real_promote = semantic_import._promote
+
+    def promote_with_validation_failure(*args, **kwargs):
+        monkeypatch.setattr(
+            weekly_helpers, "_validate_database", reject_promoted_database
+        )
+        return real_promote(*args, **kwargs)
+
+    monkeypatch.setattr(semantic_import, "_promote", promote_with_validation_failure)
+
+    with pytest.raises(WeeklyValidationError, match="injected"):
+        import_report_semantics(
+            report,
+            expected_report_sha256=_report_sha256(report),
+            dry_run=False,
+            database=database,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert database.read_bytes() == before
+    backups = list((tmp_path / "backups").iterdir())
+    assert len(backups) == 1
+    assert hashlib.sha256(backups[0].read_bytes()).hexdigest() == before_sha
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +895,7 @@ def test_cli_defaults_to_dry_run_and_writes_nothing(tmp_path, capsys):
 
 def test_cli_apply_writes_rows(tmp_path, capsys):
     report = _report_with_sidecar(tmp_path)
-    database = _empty_database(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
 
     code = main(
         [
@@ -496,3 +981,36 @@ def test_cli_apply_without_a_database_fails_closed(tmp_path, capsys):
     assert payload["status"] == "error"
     assert payload["kind"] == "input"
     assert "database" in payload["message"]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered"])
+def test_cli_sidecar_errors_are_structured_json(tmp_path, capsys, mutation):
+    report = _report_with_sidecar(tmp_path)
+    database = _registry_database_for_report(tmp_path, report)
+    if mutation == "missing":
+        semantic_sidecar_path(report).unlink()
+    else:
+        semantic_sidecar_path(report).write_bytes(b"{not json")
+
+    code = main(
+        [
+            "semantic-import",
+            "--report",
+            str(report),
+            "--expected-report-sha256",
+            _report_sha256(report),
+            "--database",
+            str(database),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+            "--apply",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert code == 2
+    assert output.count("\n") == 1
+    payload = json.loads(output)
+    assert payload["status"] == "error"
+    assert payload["kind"] == "semantic_bundle"
+    assert "sidecar" in payload["message"]

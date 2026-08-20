@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from climate_monitor.semantic_bundle import SemanticBundleError
+
 from .audit import build_audit_registry
 from .capture import MAX_BATCH, capture_enrich_registry
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
@@ -219,6 +221,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             }, 3
     except RegistryInputError as exc:
         result, code = {"status": "error", "kind": "input", "message": str(exc)}, 2
+    except SemanticBundleError as exc:
+        result, code = {
+            "status": "error",
+            "kind": "semantic_bundle",
+            "message": str(exc),
+        }, 2
     except RegistryBuildError as exc:
         result, code = {"status": "error", "kind": "build", "message": str(exc)}, 3
     except RegistryLockError as exc:

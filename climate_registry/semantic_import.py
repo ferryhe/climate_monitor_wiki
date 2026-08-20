@@ -11,9 +11,9 @@ This module imports the verified ``<report>.semantics.json`` sidecar into a new
   SHA raises :class:`RegistryInputError` and never writes.
 * **Fail-closed.** The sidecar is verified by
   :func:`climate_monitor.semantic_bundle.verify_semantic_sidecar`, which raises
-  on any missing/stale/mismatched/tampered artifact. When an apply fails, the
-  pre-apply exact backup is restored, so the live database is never left in a
-  partial state.
+  on any missing/stale/mismatched/tampered artifact. Apply writes are staged in
+  a copied candidate database, backed up under the Registry lock, and promoted
+  through the weekly verified-restore primitive.
 
 Design notes (see PR-D):
 
@@ -24,8 +24,8 @@ Design notes (see PR-D):
   the Registry uses.
 * A sidecar article is "matched" only if its recomputed Registry ``article_id``
   is present in the target report's parsed article set (derived from the same
-  canonical Markdown the sidecar is bound to). Unmatched sidecar articles are
-  dropped and never invent rows.
+  canonical Markdown the sidecar is bound to). Unmatched sidecar articles block
+  dry-run plans and are refused on apply.
 """
 
 from __future__ import annotations
@@ -34,22 +34,35 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import stat
+import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from climate_monitor.dedupe import canonical_url
-from climate_monitor.semantic_bundle import verify_semantic_sidecar
+from climate_monitor.semantic_bundle import SemanticBundleError, verify_semantic_sidecar
 
 from .audit import _stable_id
-from .errors import RegistryInputError
-from .reports import parse_historical_report
+from .errors import RegistryInputError, RegistryLockError
+from .persistent import _file_sha256, _validate_database
+from .reports import ParsedReport, parse_historical_report
 from .schema import apply_migrations
-from .weekly import _backup_name, _exclusive_database_lock
+from .weekly import (
+    WeeklyPreflightError,
+    _absolute_path,
+    _backup_name,
+    _candidate_identity,
+    _create_exact_backup,
+    _exclusive_database_lock,
+    _fsync_parent,
+    _is_link_or_reparse,
+    _promote,
+    _sqlite_entries,
+    _validate_exact_backup,
+)
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -57,35 +70,29 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _VALIDATED_AT_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
-def _report_sha256(report_path: Path) -> str:
-    """Return the canonical report sha256 (sha256 of the Markdown file bytes).
-
-    This is the same derivation ``ParsedReport.sha256`` uses: the sidecar is
-    bound to this exact value and ``verify_semantic_sidecar`` has already
-    confirmed the committed sidecar matches it.
-    """
-
-    return hashlib.sha256(report_path.read_bytes()).hexdigest()
-
-
-def _target_article_identities(
-    report_path: Path,
-) -> dict[str, tuple[str, str, str]]:
-    """Return the Registry article identities present in the target report.
-
-    Maps ``registry_article_id`` -> ``(canonical_url, title, summary)`` using
-    the same ``_stable_id("article", canonical_url(url))`` derivation the
-    Registry pipeline uses. This is the authoritative "target report's article
-    set" the sidecar is joined against.
-    """
-
+def _snapshot_report_bytes(report_path: Path) -> bytes:
     try:
-        report = parse_historical_report(report_path)
+        return report_path.read_bytes()
+    except OSError as exc:
+        raise SemanticBundleError("canonical report is unavailable") from exc
+
+
+def _snapshot_sha256(report_bytes: bytes) -> str:
+    return hashlib.sha256(report_bytes).hexdigest()
+
+
+def _parse_report_snapshot(report_path: Path, report_bytes: bytes) -> ParsedReport:
+    try:
+        return parse_historical_report(report_path, raw=report_bytes)
     except Exception as exc:  # noqa: BLE001 - fail closed on any parse error
         raise RegistryInputError(
             f"could not parse the target report for semantic import: {exc}"
         ) from exc
 
+
+def _article_identities_from_report(
+    report: ParsedReport,
+) -> dict[str, tuple[str, str, str]]:
     identities: dict[str, tuple[str, str, str]] = {}
     seen: set[str] = set()
     for article in report.articles:
@@ -104,34 +111,32 @@ def _target_article_identities(
     return identities
 
 
+def _target_article_identities(
+    report_path: Path,
+    report_bytes: bytes | None = None,
+) -> dict[str, tuple[str, str, str]]:
+    """Return the Registry article identities present in the target report.
+
+    Maps ``registry_article_id`` -> ``(canonical_url, title, summary)`` using
+    the same ``_stable_id("article", canonical_url(url))`` derivation the
+    Registry pipeline uses. This is the authoritative "target report's article
+    set" the sidecar is joined against.
+    """
+
+    if report_bytes is not None:
+        report = _parse_report_snapshot(report_path, report_bytes)
+    else:
+        try:
+            report = parse_historical_report(report_path)
+        except Exception as exc:  # noqa: BLE001 - fail closed on any parse error
+            raise RegistryInputError(
+                f"could not parse the target report for semantic import: {exc}"
+            ) from exc
+    return _article_identities_from_report(report)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime(_VALIDATED_AT_FORMAT)
-
-
-def _exact_backup(source: Path, destination: Path) -> None:
-    """Copy ``source`` to ``destination`` exactly (O_EXCL, 0o600), registry-style."""
-
-    source_descriptor = os.open(
-        str(source),
-        os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        source_metadata = os.fstat(source_descriptor)
-        if not stat.S_ISREG(source_metadata.st_mode):
-            raise OSError("live database is not regular")
-        destination_descriptor = os.open(
-            str(destination),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        try:
-            while chunk := os.read(source_descriptor, 1024 * 1024):
-                os.write(destination_descriptor, chunk)
-        finally:
-            os.close(destination_descriptor)
-    finally:
-        os.close(source_descriptor)
-    os.chmod(destination, 0o600)
 
 
 def _bundle_sha256(semantics: Mapping[str, Any]) -> str:
@@ -161,7 +166,7 @@ def _build_records(payload: Mapping[str, Any], target: Mapping[str, Any]) -> tup
         semantics = article.get("semantics") or {}
         record = {
             "article_id": registry_id,
-            "canonical_url": article.get("canonical_url"),
+            "canonical_url": canonical,
             "title": article.get("title"),
             "summary": semantics.get("summary"),
             "categories": list(semantics.get("categories") or []),
@@ -210,11 +215,13 @@ def import_report_semantics(
 
     report_path = Path(report_path)
 
+    report_bytes = _snapshot_report_bytes(report_path)
+
     # 1. Verify the sidecar (fail-closed). Propagates SemanticBundleError.
-    payload = verify_semantic_sidecar(report_path)
+    payload = verify_semantic_sidecar(report_path, report_bytes=report_bytes)
 
     # 2. The SHA-gate: exact report sha256 is required for any import.
-    report_sha = _report_sha256(report_path)
+    report_sha = _snapshot_sha256(report_bytes)
     if (
         expected_report_sha256 is None
         or _SHA256.fullmatch(expected_report_sha256) is None
@@ -223,15 +230,27 @@ def import_report_semantics(
         raise RegistryInputError("exact report SHA required to import semantics")
 
     # 3. Build the join against the target report's article set.
-    target = _target_article_identities(report_path)
+    parsed_report = _parse_report_snapshot(report_path, report_bytes)
+    target = _target_article_identities(report_path, report_bytes)
     matched, unmatched = _build_records(payload, target)
+    sidecar_count = len(payload.get("articles", []))
 
     matched_sorted = sorted(matched, key=lambda record: record["article_id"])
     unmatched_sorted = sorted(unmatched, key=lambda record: record["article_id"])
+    blockers: list[str] = []
+    if unmatched_sorted:
+        blockers.append("unmatched_sidecar_rows")
+    if len(matched_sorted) != sidecar_count:
+        blockers.append("sidecar_match_count_mismatch")
 
     plan: dict[str, Any] = {
-        "status": "dry-run" if dry_run else "applied",
+        "status": "blocked" if blockers else ("dry-run" if dry_run else "applied"),
         "report_sha256": report_sha,
+        "sidecar_count": sidecar_count,
+        "matched_count": len(matched_sorted),
+        "unmatched_count": len(unmatched_sorted),
+        "blocked": bool(blockers),
+        "blockers": blockers,
         "matched": [
             (record["article_id"], record["title"], record["categories"], record["keywords"])
             for record in matched_sorted
@@ -246,10 +265,231 @@ def import_report_semantics(
     if dry_run:
         return plan
 
-    plan["written"] = len(matched_sorted)
+    if unmatched_sorted:
+        raise RegistryInputError("semantic import blocked: unmatched sidecar rows")
+    if len(matched_sorted) != sidecar_count:
+        raise RegistryInputError(
+            "semantic import blocked: matched count does not match verified sidecar count"
+        )
+
     plan["database"] = str(database)
-    _apply(report_sha, matched_sorted, database, backup_dir)
+    apply_result = _apply(
+        report_sha,
+        matched_sorted,
+        database,
+        backup_dir,
+        target=target,
+        report_date=parsed_report.report_date,
+        report_filename=parsed_report.path.name,
+        sidecar_count=sidecar_count,
+    )
+    plan.update(apply_result)
     return plan
+
+
+def _assert_safe_database(database: Path) -> None:
+    if _is_link_or_reparse(database):
+        raise RegistryInputError("registry database is unsafe")
+    try:
+        metadata = os.lstat(database)
+    except OSError as exc:
+        raise RegistryInputError(f"registry database does not exist: {database}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RegistryInputError("registry database is not a regular file")
+    sidecars = _sqlite_entries(database)
+    if sidecars:
+        names = ", ".join(path.name for path in sidecars)
+        raise RegistryInputError(
+            f"registry has active SQLite sidecar files; reconcile before semantic import: {names}"
+        )
+
+
+def _assert_safe_backup_dir(backup_dir: Path, database: Path) -> None:
+    if backup_dir == database or backup_dir in database.parents:
+        raise RegistryInputError(
+            "backup directory must not contain the live registry database"
+        )
+    if backup_dir.exists() and (_is_link_or_reparse(backup_dir) or not backup_dir.is_dir()):
+        raise RegistryInputError("backup directory is unsafe")
+
+
+def _semantic_path(value: str | Path, *, label: str) -> Path:
+    try:
+        return _absolute_path(value, label=label)
+    except WeeklyPreflightError as exc:
+        message = str(exc).replace(
+            "weekly registry preflight failed:",
+            "semantic import preflight failed:",
+            1,
+        )
+        raise RegistryInputError(message) from exc
+
+
+def _open_read_only_database(database: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+
+
+def _registry_report_id(
+    connection: sqlite3.Connection,
+    *,
+    report_date: str,
+    report_filename: str,
+    report_sha: str,
+) -> str:
+    row = connection.execute(
+        """
+        SELECT report_id
+        FROM reports
+        WHERE report_date = ? AND filename = ? AND report_sha256 = ?
+        """,
+        (report_date, report_filename, report_sha),
+    ).fetchone()
+    if row is None:
+        raise RegistryInputError(
+            "exact report SHA is missing from the Registry DB"
+        )
+    return str(row[0])
+
+
+def _verify_target_memberships(
+    connection: sqlite3.Connection,
+    *,
+    report_id: str,
+    target: Mapping[str, tuple[str, str, str]],
+) -> None:
+    rows = connection.execute(
+        """
+        SELECT ra.article_id, a.canonical_url
+        FROM report_appearances ra
+        JOIN articles a ON a.article_id = ra.article_id
+        WHERE ra.report_id = ?
+        """,
+        (report_id,),
+    ).fetchall()
+    present = {str(row[0]): str(row[1]) for row in rows}
+    missing = [
+        article_id
+        for article_id, (canonical, _title, _summary) in target.items()
+        if present.get(article_id) != canonical
+    ]
+    if missing:
+        raise RegistryInputError(
+            "target article membership is missing from the Registry DB"
+        )
+
+
+def _verified_registry_target(
+    database: Path,
+    *,
+    report_sha: str,
+    report_date: str,
+    report_filename: str,
+    target: Mapping[str, tuple[str, str, str]],
+) -> str:
+    connection = _open_read_only_database(database)
+    try:
+        _validate_database(connection)
+        report_id = _registry_report_id(
+            connection,
+            report_date=report_date,
+            report_filename=report_filename,
+            report_sha=report_sha,
+        )
+        _verify_target_memberships(
+            connection,
+            report_id=report_id,
+            target=target,
+        )
+        return report_id
+    finally:
+        connection.close()
+
+
+def _write_semantic_records(
+    connection: sqlite3.Connection,
+    *,
+    report_id: str,
+    report_sha: str,
+    matched: list[dict],
+) -> int:
+    for record in matched:
+        connection.execute(
+            """
+            INSERT INTO article_semantics (
+                report_id, report_sha256, article_id, canonical_url, title, summary,
+                categories_json, keywords_json, taxonomy_id,
+                taxonomy_raw_sha256, bundle_sha256, validated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_id, article_id) DO UPDATE SET
+                report_sha256 = excluded.report_sha256,
+                canonical_url = excluded.canonical_url,
+                title = excluded.title,
+                summary = excluded.summary,
+                categories_json = excluded.categories_json,
+                keywords_json = excluded.keywords_json,
+                taxonomy_id = excluded.taxonomy_id,
+                taxonomy_raw_sha256 = excluded.taxonomy_raw_sha256,
+                bundle_sha256 = excluded.bundle_sha256,
+                validated_at = excluded.validated_at
+            """,
+            (
+                report_id,
+                report_sha,
+                record["article_id"],
+                record["canonical_url"],
+                record["title"],
+                record["summary"],
+                json.dumps(record["categories"], ensure_ascii=False, sort_keys=True),
+                json.dumps(record["keywords"], ensure_ascii=False, sort_keys=True),
+                record["taxonomy_id"],
+                record["taxonomy_raw_sha256"],
+                record["bundle_sha256"],
+                _utc_now(),
+            ),
+        )
+    return len(matched)
+
+
+def _apply_candidate(
+    candidate: Path,
+    *,
+    report_id: str,
+    report_sha: str,
+    matched: list[dict],
+    sidecar_count: int,
+) -> int:
+    connection = sqlite3.connect(candidate)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        apply_migrations(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            written = _write_semantic_records(
+                connection,
+                report_id=report_id,
+                report_sha=report_sha,
+                matched=matched,
+            )
+            if written != sidecar_count:
+                raise RegistryInputError(
+                    "semantic import written count does not match verified sidecar count"
+                )
+            persisted = connection.execute(
+                "SELECT COUNT(*) FROM article_semantics WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()[0]
+            if persisted != sidecar_count:
+                raise RegistryInputError(
+                    "semantic import written count does not match verified sidecar count"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        _validate_database(connection)
+        return written
+    finally:
+        connection.close()
 
 
 def _apply(
@@ -257,82 +497,108 @@ def _apply(
     matched: list[dict],
     database: str | Path | None,
     backup_dir: str | Path | None,
-) -> None:
+    *,
+    target: Mapping[str, tuple[str, str, str]],
+    report_date: str,
+    report_filename: str,
+    sidecar_count: int,
+) -> dict[str, Any]:
     if database is None:
         raise RegistryInputError("a registry database is required to apply semantic import")
-    database = Path(database)
+    database = _semantic_path(database, label="database")
     if not database.is_file():
         raise RegistryInputError(f"registry database does not exist: {database}")
     if backup_dir is None:
         raise RegistryInputError("a backup directory is required to apply semantic import")
-    backup_dir = Path(backup_dir).resolve()
-    try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise RegistryInputError(f"could not prepare the backup directory: {exc}") from exc
-
-    backup_path = backup_dir / _backup_name(
-        database,
-        datetime.now(timezone.utc),
-        hashlib.sha256(database.read_bytes()).hexdigest(),
-    )
-    if backup_path.exists():
-        raise RegistryInputError(f"backup destination already exists: {backup_path.name}")
+    backup_dir = _semantic_path(backup_dir, label="backup directory")
+    _assert_safe_backup_dir(backup_dir, database)
 
     with _exclusive_database_lock(database):
-        # Exact pre-apply backup so any failure restores the untouched state.
-        _exact_backup(database, backup_path)
+        _assert_safe_database(database)
         try:
-            connection = sqlite3.connect(database)
+            live_sha = _file_sha256(database)
+        except OSError as exc:
+            raise RegistryInputError("registry database could not be read") from exc
+        report_id = _verified_registry_target(
+            database,
+            report_sha=report_sha,
+            report_date=report_date,
+            report_filename=report_filename,
+            target=target,
+        )
+        candidate: Path | None = None
+        backup_path: Path | None = None
+        try:
+            descriptor, candidate_name = tempfile.mkstemp(
+                prefix=f".{database.name}.",
+                suffix=".semantic-candidate",
+                dir=database.parent,
+            )
+            os.close(descriptor)
+            candidate = Path(candidate_name)
+            candidate.unlink()
+            _create_exact_backup(database, candidate)
+            _validate_exact_backup(candidate, live_sha)
+            written = _apply_candidate(
+                candidate,
+                report_id=report_id,
+                report_sha=report_sha,
+                matched=matched,
+                sidecar_count=sidecar_count,
+            )
+            if sidecars := _sqlite_entries(candidate):
+                names = ", ".join(path.name for path in sidecars)
+                raise RegistryInputError(
+                    f"semantic import candidate has active SQLite sidecar files: {names}"
+                )
+            candidate_sha = _file_sha256(candidate)
+            if candidate_sha == live_sha:
+                return {
+                    "written": written,
+                    "backup_name": None,
+                    "database_sha256_before": live_sha,
+                    "database_sha256_after": live_sha,
+                }
+            candidate_identity = _candidate_identity(candidate)
             try:
-                connection.execute("PRAGMA foreign_keys = ON")
-                # Ensure the article_semantics table exists (idempotent).
-                apply_migrations(connection)
-                connection.execute("BEGIN IMMEDIATE")
-                for record in matched:
-                    connection.execute(
-                        """
-                        INSERT INTO article_semantics (
-                            report_sha256, article_id, canonical_url, title, summary,
-                            categories_json, keywords_json, taxonomy_id,
-                            taxonomy_raw_sha256, bundle_sha256, validated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(report_sha256, article_id) DO UPDATE SET
-                            canonical_url = excluded.canonical_url,
-                            title = excluded.title,
-                            summary = excluded.summary,
-                            categories_json = excluded.categories_json,
-                            keywords_json = excluded.keywords_json,
-                            taxonomy_id = excluded.taxonomy_id,
-                            taxonomy_raw_sha256 = excluded.taxonomy_raw_sha256,
-                            bundle_sha256 = excluded.bundle_sha256,
-                            validated_at = excluded.validated_at
-                        """,
-                        (
-                            report_sha,
-                            record["article_id"],
-                            record["canonical_url"],
-                            record["title"],
-                            record["summary"],
-                            json.dumps(record["categories"], ensure_ascii=False, sort_keys=True),
-                            json.dumps(record["keywords"], ensure_ascii=False, sort_keys=True),
-                            record["taxonomy_id"],
-                            record["taxonomy_raw_sha256"],
-                            record["bundle_sha256"],
-                            _utc_now(),
-                        ),
-                    )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
-            finally:
-                connection.close()
-        except Exception:
-            # Restore the exact pre-apply backup: no orphan rows, no schema drift.
-            shutil.copy2(backup_path, database)
-            try:
-                backup_path.unlink()
-            except OSError:
-                pass
-            raise
+                backup_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise RegistryInputError(
+                    f"could not prepare the backup directory: {exc}"
+                ) from exc
+            if _is_link_or_reparse(backup_dir) or not backup_dir.is_dir():
+                raise RegistryInputError("backup directory is unsafe")
+            backup_path = backup_dir / _backup_name(
+                database,
+                datetime.now(timezone.utc),
+                live_sha,
+            )
+            if backup_path.exists() or backup_path.is_symlink():
+                raise RegistryInputError(
+                    f"backup destination already exists: {backup_path.name}"
+                )
+            _create_exact_backup(database, backup_path)
+            _fsync_parent(backup_path)
+            _validate_exact_backup(backup_path, live_sha)
+            if _sqlite_entries(database) or _file_sha256(database) != live_sha:
+                raise RegistryLockError(
+                    "live registry changed before semantic import promotion"
+                )
+            after_sha = _promote(
+                candidate,
+                database,
+                backup_path,
+                live_sha,
+                expected_candidate_identity=candidate_identity,
+            )
+            return {
+                "written": written,
+                "backup_name": backup_path.name,
+                "database_sha256_before": live_sha,
+                "database_sha256_after": after_sha,
+            }
+        finally:
+            if candidate is not None:
+                candidate.unlink(missing_ok=True)
+                for sidecar in _sqlite_entries(candidate):
+                    sidecar.unlink(missing_ok=True)

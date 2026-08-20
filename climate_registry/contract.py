@@ -64,7 +64,7 @@ REQUIRED_TABLE_COLUMNS = {
         "validated_at",
     },
     "article_semantics": {
-        "report_sha256", "article_id", "canonical_url", "title", "summary",
+        "report_id", "report_sha256", "article_id", "canonical_url", "title", "summary",
         "categories_json", "keywords_json", "taxonomy_id", "taxonomy_raw_sha256",
         "bundle_sha256", "validated_at",
     },
@@ -79,8 +79,9 @@ _V5_TABLES = frozenset({"article_semantics"})
 V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES
 V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES
 V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+V6_TABLES = V5_TABLES
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -88,7 +89,16 @@ def _required_tables(version: int) -> frozenset[str]:
         return V3_TABLES
     if version == 4:
         return V4_TABLES
-    return V5_TABLES
+    if version == 5:
+        return V5_TABLES
+    return V6_TABLES
+
+
+def _required_columns(table: str, version: int) -> set[str]:
+    columns = set(REQUIRED_TABLE_COLUMNS[table])
+    if table == "article_semantics" and version == 5:
+        columns.remove("report_id")
+    return columns
 
 REQUIRED_FOREIGN_KEYS = {
     "articles": {
@@ -134,6 +144,10 @@ REQUIRED_FOREIGN_KEYS = {
         ("articles", ("article_id",), ("article_id",)),
         ("article_fetches", ("fetch_id",), ("fetch_id",)),
     },
+    "article_semantics": {
+        ("reports", ("report_id", "report_sha256"), ("report_id", "report_sha256")),
+        ("report_appearances", ("report_id", "article_id"), ("report_id", "article_id")),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -164,7 +178,7 @@ REQUIRED_INDEXES = frozenset(
         "idx_enrichments_content_generated",
         "idx_capture_resolutions_report_article",
         "idx_capture_resolutions_fetch",
-        "idx_article_semantics_report",
+        "idx_reports_id_sha256",
     }
 )
 
@@ -182,7 +196,8 @@ def _expected_object_sql(
     )
     expected: dict[str, str] = {}
     for name in names:
-        start = re.search(rf"CREATE\s+{kind}\s+{re.escape(name)}\b", migration_sql, re.IGNORECASE)
+        create = r"CREATE\s+(?:UNIQUE\s+)?INDEX" if kind == "INDEX" else rf"CREATE\s+{kind}"
+        start = re.search(rf"{create}\s+{re.escape(name)}\b", migration_sql, re.IGNORECASE)
         if start is None:
             raise RuntimeError(f"schema migration is missing required {kind.lower()}: {name}")
         tail = migration_sql[start.start():]
@@ -264,15 +279,22 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
-    if version < 5:
-        names = frozenset(
-            name for name in names if not name.startswith("idx_article_semantics_")
-        )
+    if version < 6:
+        names = frozenset(name for name in names if name != "idx_reports_id_sha256")
     if version == 3:
         names = frozenset(
             name for name in names if not name.startswith("idx_capture_resolutions_")
         )
     return names
+
+
+def _required_foreign_keys(
+    table: str, version: int
+) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    keys = set(REQUIRED_FOREIGN_KEYS.get(table, set()))
+    if table == "article_semantics" and version < 6:
+        keys.clear()
+    return keys
 
 
 def _foreign_key_contracts(
@@ -316,7 +338,7 @@ def validate_registry_contract(connection: sqlite3.Connection) -> int:
     if tables - set(required_tables):
         raise SchemaContractError("invalid registry tables contract")
     for table in required_tables:
-        required_columns = REQUIRED_TABLE_COLUMNS[table]
+        required_columns = _required_columns(table, version)
         if table not in tables:
             raise SchemaContractError(f"incomplete registry schema: {table}")
         actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
@@ -352,7 +374,7 @@ def validate_registry_contract(connection: sqlite3.Connection) -> int:
         raise SchemaContractError("invalid migration metadata")
 
     for table in required_tables:
-        expected_keys = REQUIRED_FOREIGN_KEYS.get(table, set())
+        expected_keys = _required_foreign_keys(table, version)
         if not expected_keys <= _foreign_key_contracts(connection, table):
             raise SchemaContractError("incomplete registry foreign keys")
 

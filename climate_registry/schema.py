@@ -436,12 +436,79 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             validated_at TEXT NOT NULL,
             PRIMARY KEY (report_sha256, article_id)
         );
+        """,
+    ),
+    (
+        6,
+        "article_semantics_relational_constraints",
+        """
+        CREATE UNIQUE INDEX idx_reports_id_sha256
+            ON reports(report_id, report_sha256);
 
-        CREATE INDEX idx_article_semantics_report
-            ON article_semantics(report_sha256, article_id);
+        ALTER TABLE article_semantics RENAME TO article_semantics_v5;
+
+        CREATE TABLE article_semantics (
+            report_id TEXT NOT NULL,
+            report_sha256 TEXT NOT NULL
+                CHECK (length(report_sha256) = 64 AND report_sha256 NOT GLOB '*[^0-9a-f]*'),
+            article_id TEXT NOT NULL,
+            canonical_url TEXT,
+            title TEXT,
+            summary TEXT,
+            categories_json TEXT,
+            keywords_json TEXT,
+            taxonomy_id TEXT,
+            taxonomy_raw_sha256 TEXT
+                CHECK (taxonomy_raw_sha256 IS NULL OR (
+                    length(taxonomy_raw_sha256) = 64 AND taxonomy_raw_sha256 NOT GLOB '*[^0-9a-f]*'
+                )),
+            bundle_sha256 TEXT
+                CHECK (bundle_sha256 IS NULL OR (
+                    length(bundle_sha256) = 64 AND bundle_sha256 NOT GLOB '*[^0-9a-f]*'
+                )),
+            validated_at TEXT NOT NULL,
+            PRIMARY KEY (report_id, article_id),
+            FOREIGN KEY (report_id, report_sha256)
+                REFERENCES reports(report_id, report_sha256),
+            FOREIGN KEY (report_id, article_id)
+                REFERENCES report_appearances(report_id, article_id)
+        );
+
+        INSERT INTO article_semantics (
+            report_id, report_sha256, article_id, canonical_url, title, summary,
+            categories_json, keywords_json, taxonomy_id, taxonomy_raw_sha256,
+            bundle_sha256, validated_at
+        )
+        SELECT r.report_id,
+            old.report_sha256, old.article_id, old.canonical_url, old.title,
+            old.summary, old.categories_json, old.keywords_json, old.taxonomy_id,
+            old.taxonomy_raw_sha256, old.bundle_sha256, old.validated_at
+        FROM article_semantics_v5 old
+        JOIN reports r ON r.report_sha256 = old.report_sha256;
+
+        DROP TABLE article_semantics_v5;
         """,
     ),
 )
+
+
+def _preflight_migration(connection: sqlite3.Connection, version: int) -> None:
+    if version != 6:
+        return
+    row = connection.execute(
+        """
+        SELECT old.report_sha256, COUNT(r.report_id) AS report_count
+        FROM (SELECT DISTINCT report_sha256 FROM article_semantics) old
+        LEFT JOIN reports r ON r.report_sha256 = old.report_sha256
+        GROUP BY old.report_sha256
+        HAVING report_count <> 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is not None:
+        raise sqlite3.IntegrityError(
+            "cannot migrate article_semantics: ambiguous or missing report_sha256 mapping"
+        )
 
 
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
@@ -477,6 +544,7 @@ def apply_migrations(connection: sqlite3.Connection, *, target_version: int | No
             continue
         escaped_name = name.replace("'", "''")
         try:
+            _preflight_migration(connection, version)
             connection.executescript(
                 f"""
                 BEGIN IMMEDIATE;
