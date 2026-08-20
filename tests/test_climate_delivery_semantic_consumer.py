@@ -23,7 +23,11 @@ from pypdf import PdfReader
 from climate_delivery.delivery import load_summary_with_sha256
 from climate_delivery.errors import InputError
 from climate_delivery.pdf import render_pdf
-from climate_delivery.pipeline import run_delivery
+from climate_delivery.pipeline import (
+    _attach_verified_semantics,
+    _index_sidecar_semantics,
+    run_delivery,
+)
 from climate_delivery.report import parse_weekly_report
 from climate_delivery.summary import build_summary
 from climate_monitor.semantic_bundle import (
@@ -197,6 +201,22 @@ def test_run_delivery_fails_closed_if_report_and_sidecar_change_after_parse(tmp_
 
     assert not any(output.rglob("summary.json"))
     assert not any(output.rglob("*.pdf"))
+
+
+def test_missing_verified_semantics_error_names_highlight_url(tmp_path):
+    report = _report_only(tmp_path)
+    summary = build_summary(parse_weekly_report(report))
+    payload = _valid_payload(report)
+    payload["articles"] = payload["articles"][:1]
+
+    with pytest.raises(SemanticBundleError) as excinfo:
+        _attach_verified_semantics(summary, _index_sidecar_semantics(payload))
+
+    message = str(excinfo.value)
+    assert "verified sidecar semantics are missing for delivery highlight URL" in message
+    assert "https://example.test/second" in message
+    assert "https://example.test/first" not in message
+    assert "article_semantics" not in summary
 
 
 # ---------------------------------------------------------------------------

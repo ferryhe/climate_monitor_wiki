@@ -50,7 +50,9 @@ def _attach_verified_semantics(
         url = item["url"]
         semantics = index.get(url)
         if not semantics:
-            raise SemanticBundleError("verified sidecar semantics are missing for a delivery highlight")
+            raise SemanticBundleError(
+                f"verified sidecar semantics are missing for delivery highlight URL: {url}"
+            )
         article_semantics[url] = dict(semantics)
     summary["article_semantics"] = article_semantics
     return summary
