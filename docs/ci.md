@@ -1,7 +1,7 @@
 # Continuous integration
 
 GitHub Actions runs the `CI` workflow for pull requests, pushes to `main`, and
-manual dispatches. It has three stable job names:
+manual dispatches. It has four stable check names:
 
 - `python-tests (3.11)` and `python-tests (3.12)` install only
   `requirements.txt`, run `pip check`, and execute the complete pytest suite.
@@ -26,6 +26,12 @@ Equivalent local checks are:
 python -m pytest -q
 python -m compileall climate_monitor climate_registry
 node --check showcase/app.js
-git diff --check
+git fetch origin main
+BASE_SHA="$(git merge-base HEAD origin/main)"
+git diff --check "$BASE_SHA...HEAD"
 docker build --pull --tag climate-monitor-wiki:ci .
 ```
+
+The fetch and merge-base steps make the whitespace check cover the complete
+pull-request range against the latest `origin/main`, rather than only local
+working-tree changes.
