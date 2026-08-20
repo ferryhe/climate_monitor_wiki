@@ -88,6 +88,9 @@ class CandidateItem:
     topics: tuple[str, ...] = ()
     categories: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
+    # Semantics supplied by the single existing authoring pass, when present.
+    # ``None`` means the deterministic pipeline derivation is used instead.
+    semantics: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -98,11 +101,15 @@ class MonitorRunResult:
     dedup_notes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     synced: bool = False
+    report_sha256: str = ""
+    semantics_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "report_date": self.report_date.isoformat(),
             "report_path": _safe_path(self.report_path),
+            "report_sha256": self.report_sha256,
+            "semantics_path": _safe_path(self.semantics_path),
             "synced": self.synced,
             "item_count": len(self.items),
             "items": [_candidate_item_to_dict(item) for item in self.items],

@@ -14,6 +14,11 @@ from .dedupe import canonical_title, canonical_url, dedupe_items
 from .models import CandidateItem, MonitorRunResult, RunConfig
 from .report_writer import render_report
 from .research_search import search_recent_research
+from .semantic_bundle import (
+    commit_report_with_semantics,
+    recover_pending_commit,
+    select_semantic_articles,
+)
 from .web_listening_adapter import collect_website_items
 
 
@@ -122,6 +127,14 @@ def run_monitor(
     kept, dedup_notes = dedupe_items(relevant, seen_urls=seen_urls, seen_titles=seen_titles)
     kept = kept[: config.max_items_per_report]
 
+    # Drop benign per-item oddities (blank URL, sparse/unvalidatable bundle)
+    # before the Markdown and sidecar are built over the *same* item set. This
+    # keeps them 1:1 and turns previously run-aborting inputs into per-item
+    # drops (reviewer HIGH-1 / residual). Genuinely corrupt inputs still raise
+    # inside commit_report_with_semantics verification (fail-closed).
+    kept_semantic, drop_notes = select_semantic_articles(kept)
+    dedup_notes.extend(drop_notes)
+
     if not kept and not config.write_empty_report:
         return MonitorRunResult(
             report_date=day,
@@ -137,20 +150,28 @@ def run_monitor(
     output_source_dir.mkdir(parents=True, exist_ok=True)
     output_wiki_dir.mkdir(parents=True, exist_ok=True)
     output_path = _source_file_path(output_source_dir, day)
-    output_path.write_text(
-        render_report(
-            report_date=day,
-            title=config.report_title,
-            items=kept,
-            dedup_notes=dedup_notes,
-            sites_monitored=len(sources),
-            warnings=website_warnings,
-        ),
-        encoding="utf-8",
+    recover_pending_commit(output_path)
+    report_text = render_report(
+        report_date=day,
+        title=config.report_title,
+        items=kept_semantic,
+        dedup_notes=dedup_notes,
+        sites_monitored=len(sources),
+        warnings=website_warnings,
+    )
+    # One atomic commit: the canonical Markdown and its semantic sidecar are
+    # validated first and then published together, so neither can be updated
+    # without the other. Semantics come from the single existing authoring
+    # pass; this step never calls a model and never touches the network.
+    commit = commit_report_with_semantics(
+        report_path=output_path,
+        report_date=day,
+        report_text=report_text,
+        items=kept_semantic,
     )
 
     if update_seen_state:
-        for item in kept:
+        for item in kept_semantic:
             seen_urls.add(canonical_url(item.url))
             title_key = canonical_title(item.title)
             if title_key:
@@ -166,8 +187,10 @@ def run_monitor(
     return MonitorRunResult(
         report_date=day,
         report_path=str(output_path),
-        items=tuple(kept),
+        items=tuple(kept_semantic),
         dedup_notes=tuple(dedup_notes),
         warnings=tuple(website_warnings),
         synced=synced,
+        report_sha256=commit["report_sha256"],
+        semantics_path=str(commit["sidecar_path"]),
     )

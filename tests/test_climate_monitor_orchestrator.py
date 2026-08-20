@@ -468,6 +468,8 @@ def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
     assert list(payload) == [
         "report_date",
         "report_path",
+        "report_sha256",
+        "semantics_path",
         "synced",
         "item_count",
         "items",
@@ -476,6 +478,8 @@ def test_monitor_run_result_serializes_stable_json_with_safe_item_fields():
     ]
     assert payload["report_date"] == "2026-05-14"
     assert payload["report_path"] == "climate-monitor-2026-05-14.md"
+    assert payload["report_sha256"] == ""
+    assert payload["semantics_path"] is None
     assert payload["synced"] is True
     assert payload["item_count"] == 1
     assert payload["dedup_notes"] == ["Duplicate title - skipped"]

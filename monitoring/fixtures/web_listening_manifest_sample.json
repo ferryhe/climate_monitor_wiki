@@ -12,7 +12,18 @@
       "title": "Climate supervision update",
       "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
       "status": "new",
-      "observed_at": "2026-05-14T00:00:00Z"
+      "observed_at": "2026-05-14T00:00:00Z",
+      "semantics": {
+        "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
+        "categories": [
+          "Supervision & Disclosure"
+        ],
+        "keywords": [
+          "supervisory review",
+          "climate scenario",
+          "insurance supervision"
+        ]
+      }
     },
     {
       "item_id": "iais-2026-05-14-2",
