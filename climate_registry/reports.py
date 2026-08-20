@@ -345,11 +345,11 @@ def _parse_legacy(path: Path, raw: bytes, text: str, report_date: str) -> Parsed
     )
 
 
-def parse_historical_report(path: Path) -> ParsedReport:
+def parse_historical_report(path: Path, *, raw: bytes | None = None) -> ParsedReport:
     match = REPORT_NAME.fullmatch(path.name)
     if not match:
         raise ValueError(f"unsupported report filename: {path.name}")
-    raw = path.read_bytes()
+    raw = path.read_bytes() if raw is None else raw
     text = raw.decode("utf-8")
     if "Pillar A" in text and "Pillar B" in text and "Weekly Climate" in text:
         return _parse_weekly(path, raw, text)

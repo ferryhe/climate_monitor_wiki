@@ -441,6 +441,60 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             ON article_semantics(report_sha256, article_id);
         """,
     ),
+    (
+        6,
+        "article_semantics_relational_constraints",
+        """
+        CREATE UNIQUE INDEX idx_reports_id_sha256
+            ON reports(report_id, report_sha256);
+
+        ALTER TABLE article_semantics RENAME TO article_semantics_v5;
+
+        CREATE TABLE article_semantics (
+            report_id TEXT NOT NULL,
+            report_sha256 TEXT NOT NULL
+                CHECK (length(report_sha256) = 64 AND report_sha256 NOT GLOB '*[^0-9a-f]*'),
+            article_id TEXT NOT NULL,
+            canonical_url TEXT,
+            title TEXT,
+            summary TEXT,
+            categories_json TEXT,
+            keywords_json TEXT,
+            taxonomy_id TEXT,
+            taxonomy_raw_sha256 TEXT
+                CHECK (taxonomy_raw_sha256 IS NULL OR (
+                    length(taxonomy_raw_sha256) = 64 AND taxonomy_raw_sha256 NOT GLOB '*[^0-9a-f]*'
+                )),
+            bundle_sha256 TEXT
+                CHECK (bundle_sha256 IS NULL OR (
+                    length(bundle_sha256) = 64 AND bundle_sha256 NOT GLOB '*[^0-9a-f]*'
+                )),
+            validated_at TEXT NOT NULL,
+            PRIMARY KEY (report_sha256, article_id),
+            FOREIGN KEY (report_id, report_sha256)
+                REFERENCES reports(report_id, report_sha256),
+            FOREIGN KEY (report_id, article_id)
+                REFERENCES report_appearances(report_id, article_id)
+        );
+
+        INSERT INTO article_semantics (
+            report_id, report_sha256, article_id, canonical_url, title, summary,
+            categories_json, keywords_json, taxonomy_id, taxonomy_raw_sha256,
+            bundle_sha256, validated_at
+        )
+        SELECT (
+                SELECT r.report_id
+                FROM reports r
+                WHERE r.report_sha256 = old.report_sha256
+            ),
+            old.report_sha256, old.article_id, old.canonical_url, old.title,
+            old.summary, old.categories_json, old.keywords_json, old.taxonomy_id,
+            old.taxonomy_raw_sha256, old.bundle_sha256, old.validated_at
+        FROM article_semantics_v5 old;
+
+        DROP TABLE article_semantics_v5;
+        """,
+    ),
 )
 
 

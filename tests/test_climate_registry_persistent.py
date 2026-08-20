@@ -153,7 +153,7 @@ def test_plan_is_read_only_and_update_is_backed_up_incremental_and_idempotent(tm
     }
 
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (6,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
     assert connection.execute(
         """
@@ -200,15 +200,15 @@ def test_update_migrates_v1_registry_and_imports_a_new_report(tmp_path):
     _write_report(source_dir, "2026-08-10", _item("New", "New summary.", "https://example.com/new"))
 
     plan = persistent.plan_registry_update(source_dir, database)
-    assert plan["pending_migrations"] == [2, 3, 4, 5]
+    assert plan["pending_migrations"] == [2, 3, 4, 5, 6]
     assert [item["date"] for item in plan["new_reports"]] == ["2026-08-10"]
 
     result = persistent.update_registry(source_dir, database, tmp_path / "backups")
     assert result["status"] == "updated"
-    assert result["applied_migrations"] == [2, 3, 4, 5]
+    assert result["applied_migrations"] == [2, 3, 4, 5, 6]
     assert result["imported_reports"] == ["2026-08-10"]
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (6,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
 
 
@@ -317,12 +317,12 @@ def test_v2_registry_can_be_planned_and_migrated_without_changing_existing_rows(
     plan = persistent.plan_registry_update(source_dir, database)
 
     assert plan["database_schema_version"] == 2
-    assert plan["target_schema_version"] == 5
-    assert plan["pending_migrations"] == [3, 4, 5]
+    assert plan["target_schema_version"] == 6
+    assert plan["pending_migrations"] == [3, 4, 5, 6]
     result = persistent.update_registry(source_dir, database, tmp_path / "backups")
-    assert result["applied_migrations"] == [3, 4, 5]
+    assert result["applied_migrations"] == [3, 4, 5, 6]
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (6,)
     assert counts_before == {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         for table in counts_before

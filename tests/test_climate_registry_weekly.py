@@ -756,6 +756,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
         connection.execute(
             "DROP INDEX IF EXISTS idx_article_semantics_report"
         )
+        connection.execute("DROP INDEX IF EXISTS idx_reports_id_sha256")
         connection.execute("DELETE FROM schema_migrations WHERE version > 3")
         connection.execute("PRAGMA user_version = 3")
     connection.close()
@@ -767,7 +768,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 5
+    ).status()["schema_version"] == 6
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository

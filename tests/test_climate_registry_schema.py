@@ -8,10 +8,10 @@ from climate_registry.schema import apply_migrations
 def test_migrations_are_idempotent_and_enable_foreign_keys():
     connection = sqlite3.connect(":memory:")
 
-    assert apply_migrations(connection) == [1, 2, 3, 4, 5]
+    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6]
     assert apply_migrations(connection) == []
     assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
-    assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (6,)
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -158,9 +158,9 @@ def test_v2_to_v3_preserves_existing_rows_and_defaults_to_summary_excerpt():
         for table in ("sources", "articles", "article_versions", "reports", "discoveries")
     }
 
-    assert apply_migrations(connection) == [3, 4, 5]
+    assert apply_migrations(connection) == [3, 4, 5, 6]
 
-    assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (6,)
     assert connection.execute(
         "SELECT current_content_version_id, display_policy FROM articles WHERE article_id = 'a'"
     ).fetchone() == (None, "summary_excerpt")
@@ -246,7 +246,7 @@ def test_v2_to_v3_preserves_the_historical_audit_baseline_counts():
         for table in counts_before
     } == counts_before
 
-    assert apply_migrations(connection) == [3, 4, 5]
+    assert apply_migrations(connection) == [3, 4, 5, 6]
 
     assert {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -661,3 +661,30 @@ def test_v3_indexes_support_article_history_queries():
         "idx_content_versions_article_fetched",
         "idx_enrichments_content_generated",
     } <= indexes
+
+
+def test_article_semantics_have_relational_constraints_without_redundant_index():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("PRAGMA foreign_keys = ON")
+    apply_migrations(connection)
+
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(article_semantics)")
+    }
+    assert "report_id" in columns
+    indexes = {
+        row[1]
+        for row in connection.execute("PRAGMA index_list(article_semantics)")
+    }
+    assert "idx_article_semantics_report" not in indexes
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """
+            INSERT INTO article_semantics(
+                report_id, report_sha256, article_id, validated_at
+            ) VALUES ('missing-report', ?, 'missing-article', '2026-08-17T00:00:00Z')
+            """,
+            ("a" * 64,),
+        )
