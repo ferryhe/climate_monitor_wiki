@@ -86,7 +86,7 @@ def test_builds_fresh_database_duplicate_audit_and_weekly_manifests(tmp_path):
 
     connection = sqlite3.connect(database)
     assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-    assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (4,)
+    assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (5,)
     assert connection.execute("SELECT COUNT(*) FROM discoveries").fetchone() == (5,)
     assert connection.execute("SELECT COUNT(*) FROM url_aliases").fetchone() == (4,)
     assert connection.execute(
