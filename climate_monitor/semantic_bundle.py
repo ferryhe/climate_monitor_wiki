@@ -44,7 +44,7 @@ SIDECAR_SUFFIX = ".semantics.json"
 PENDING_SUFFIX = ".pending"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (\S+) <br>$", re.MULTILINE)
+_REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (.+?) <br>$", re.MULTILINE)
 _LANE_ORDER = ("website", "document", "research")
 _AGENT_BUNDLE_FIELDS = frozenset({"summary", "categories", "keywords"})
 _BOUND_BUNDLE_FIELDS = _AGENT_BUNDLE_FIELDS | {
@@ -144,6 +144,48 @@ def derive_semantic_bundle(item: Any, *, taxonomy: ArticleTaxonomy) -> dict[str,
 
 def semantics_provenance(item: Any) -> str:
     return "agent_bundle" if _value(item, "semantics", None) is not None else "pipeline_derived"
+
+
+def select_semantic_articles(
+    items: Iterable[Any], taxonomy: ArticleTaxonomy | None = None
+) -> tuple[list[Any], list[str]]:
+    """Keep only items that can carry a contract-valid semantic bundle.
+
+    A benign per-item oddity -- a blank URL, a URL that cannot be
+    canonicalised, or a sparse/unvalidatable derived bundle -- is recorded as a
+    *drop* reason and excluded from the semantic sidecar, rather than aborting
+    the whole weekly report. Genuinely corrupt inputs still raise inside
+    :func:`commit_report_with_semantics` verification (fail-closed), so this
+    filter only ever narrows the per-item selection; it never weakens the
+    contract.
+
+    This is the drop-filter that turns the two reviewer HIGH regressions
+    (blank-URL research item, sparse bundle) and the residual risk into
+    per-item drops instead of run aborts: the Markdown and the sidecar are then
+    built over the *same* dropped set, so they stay 1:1 and no orphan sidecar
+    entry can appear.
+    """
+
+    selected = taxonomy or load_article_taxonomy()
+    kept: list[Any] = []
+    notes: list[str] = []
+    for item in items:
+        title = _clean(_value(item, "title", "")) or "(untitled)"
+        url = str(_value(item, "url", ""))
+        if not canonical_url(url).strip():
+            notes.append(
+                f"dropped non-semantic article (no canonical URL identity): {title} [{url}]"
+            )
+            continue
+        try:
+            derive_semantic_bundle(item, taxonomy=selected)
+        except SemanticBundleError as exc:
+            notes.append(
+                f"dropped non-semantic article (unvalidatable bundle): {title} [{url}] ({exc})"
+            )
+            continue
+        kept.append(item)
+    return kept, notes
 
 
 def _candidate_bundle(item: Any, *, taxonomy: ArticleTaxonomy) -> dict[str, Any]:

@@ -19,6 +19,8 @@ from climate_monitor.semantic_bundle import (
     commit_report_with_semantics,
     derive_semantic_bundle,
     recover_pending_commit,
+    rendered_article_urls,
+    select_semantic_articles,
     semantic_sidecar_path,
     serialize_sidecar,
     verify_semantic_sidecar,
@@ -30,7 +32,7 @@ from climate_monitor.taxonomy import (
 )
 
 
-REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (\S+) <br>$", re.MULTILINE)
+REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (.+?) <br>$", re.MULTILINE)
 
 
 def _write_source_config(path: Path) -> None:
@@ -767,3 +769,160 @@ def test_sidecar_schema_pins_the_immutable_taxonomy_identity():
     assert taxonomy["sha256"]["const"] == DEFAULT_TAXONOMY_SHA256
     assert schema["properties"]["schema_version"]["const"] == "article-semantic-sidecar.v1"
     assert schema["additionalProperties"] is False
+
+
+# --------------------------------------------------------------------------
+# Reviewer regressions (iteration 2)
+#   HIGH-1 / residual: benign per-item oddities (blank URL, sparse/unvalidatable
+#   bundle) become per-item DROPS, never a whole-run abort that writes zero
+#   artifacts. The Markdown and the sidecar are built over the same dropped
+#   set, so they stay 1:1.
+#   HIGH-2: a URL containing a space must round-trip through commit + verify
+#   (1:1, byte-stable).
+# --------------------------------------------------------------------------
+
+
+def test_run_monitor_publishes_report_and_excludes_blank_url_research_item(tmp_path):
+    # A blank-URL research item previously made article_identity raise inside
+    # commit_report_with_semantics, aborting the entire run and writing zero
+    # artifacts. It must now be dropped per-item and the rest of the report
+    # published (Markdown + sidecar 1:1 over the same dropped set).
+    root = tmp_path / "blank"
+    root.mkdir(parents=True, exist_ok=True)
+    source_config = root / "sources.yaml"
+    run_config = root / "run_config.yaml"
+    manifest = root / "manifest.json"
+    research = root / "research.json"
+    source_dir = root / "sources"
+    wiki_dir = root / "wiki"
+    state = root / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state, max_items=12)
+    _write_manifest(manifest, count=1)
+    research.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Valid climate insurance capital study",
+                    "url": "https://example.org/valid-study",
+                    "summary": "Insurance supervisors discuss climate risk and capital adequacy.",
+                    "source_name": "Example Research",
+                    "published": "2026-05-01",
+                },
+                {
+                    "title": "Blank URL climate insurance note",
+                    "url": "",
+                    "summary": "Climate and insurance capital requirements for supervision and disclosure.",
+                    "source_name": "Example Research",
+                    "published": "2026-05-01",
+                },
+            ],
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 14),
+        manifest_fixture_path=manifest,
+        research_fixture_path=research,
+        state_dir=state,
+        sync=False,
+    )
+
+    # The run did not abort: both the canonical Markdown and the sidecar exist.
+    assert result.report_path is not None
+    report_path = Path(result.report_path)
+    report_text = report_path.read_text(encoding="utf-8")
+    assert semantic_sidecar_path(report_path).exists()
+    payload = json.loads(semantic_sidecar_path(report_path).read_text(encoding="utf-8"))
+
+    # The valid items are published; the blank-URL item is excluded.
+    assert "Valid climate insurance capital study" in report_text
+    assert "Climate supervision update 1" in report_text
+    # The blank-URL item is NOT published as an article (it only appears in the
+    # drop note below, which is expected). It must be absent from the sidecar.
+    assert not any(
+        article["title"] == "Blank URL climate insurance note"
+        for article in payload["articles"]
+    )
+
+    # The exclusion is recorded as a drop note.
+    assert any(
+        "Blank URL climate insurance note" in note or "no canonical URL" in note
+        for note in result.dedup_notes
+    )
+
+    # The sidecar is 1:1 with the rendered Markdown (no orphan entry).
+    rendered = rendered_article_urls(report_text)
+    sidecar_urls = [article["url"] for article in payload["articles"]]
+    assert sidecar_urls == rendered
+    assert len(payload["articles"]) == 2
+    verify_semantic_sidecar(report_path)
+
+
+def test_select_semantic_articles_drops_blank_url_and_sparse_items():
+    taxonomy = load_article_taxonomy()
+    blank = _item(url="   ", title="No URL")
+    sparse = _item(
+        title="Sparse",
+        url="https://example.org/sparse",
+        categories=(),
+        climate_signal="none",
+        actuarial_signal="none",
+        climate_related=False,
+        actuarial_related=False,
+    )
+    good = _item()
+
+    kept, notes = select_semantic_articles([blank, sparse, good], taxonomy=taxonomy)
+    assert [item.title for item in kept] == ["Climate supervision update"]
+    assert len(notes) == 2
+    assert any("No URL" in note for note in notes)
+    assert any("Sparse" in note for note in notes)
+
+
+def test_select_semantic_articles_keeps_everything_when_all_valid():
+    items = [_item(), _item(title="Second", url="https://example.org/second")]
+    kept, notes = select_semantic_articles(items)
+    assert len(kept) == 2
+    assert notes == []
+
+
+def test_article_with_space_in_url_round_trips_through_commit_and_verify(tmp_path):
+    # HIGH-2: a URL containing a space previously truncated at the first space
+    # (the old \S+ regex) and failed the 1:1 check. The non-greedy (.+?) regex
+    # must capture the full URL and round-trip it byte-stable into the sidecar.
+    report_path = tmp_path / "climate-monitor-2026-05-14.md"
+    spaced_url = "https://www.iais.org/climate supervision"
+    item = _item(url=spaced_url)
+    report_text = f"# report\n**URL:** {spaced_url} <br>\n"
+
+    commit = commit_report_with_semantics(
+        report_path=report_path,
+        report_date=date(2026, 5, 14),
+        report_text=report_text,
+        items=[item],
+    )
+    sidecar_path = semantic_sidecar_path(report_path)
+    assert sidecar_path.exists()
+    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    # The full URL (spaces included) round-trips unchanged into the sidecar.
+    assert payload["articles"][0]["url"] == spaced_url
+    rendered = rendered_article_urls(report_text)
+    assert rendered == [spaced_url]
+    assert [article["url"] for article in payload["articles"]] == rendered
+    # Verification accepts the committed pair (1:1, byte-stable).
+    verified = verify_semantic_sidecar(report_path)
+    assert verified["article_count"] == 1
+    # A byte-identical re-run is deterministic.
+    report_path2 = tmp_path / "climate-monitor-2026-05-14-b.md"
+    commit2 = commit_report_with_semantics(
+        report_path=report_path2,
+        report_date=date(2026, 5, 14),
+        report_text=report_text,
+        items=[item],
+    )
+    assert commit2["report_sha256"] == commit["report_sha256"]
