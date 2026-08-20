@@ -411,6 +411,36 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             ON article_capture_resolutions(fetch_id);
         """,
     ),
+    (
+        5,
+        "article_semantics_import",
+        """
+        CREATE TABLE article_semantics (
+            report_sha256 TEXT NOT NULL
+                CHECK (length(report_sha256) = 64 AND report_sha256 NOT GLOB '*[^0-9a-f]*'),
+            article_id TEXT NOT NULL,
+            canonical_url TEXT,
+            title TEXT,
+            summary TEXT,
+            categories_json TEXT,
+            keywords_json TEXT,
+            taxonomy_id TEXT,
+            taxonomy_raw_sha256 TEXT
+                CHECK (taxonomy_raw_sha256 IS NULL OR (
+                    length(taxonomy_raw_sha256) = 64 AND taxonomy_raw_sha256 NOT GLOB '*[^0-9a-f]*'
+                )),
+            bundle_sha256 TEXT
+                CHECK (bundle_sha256 IS NULL OR (
+                    length(bundle_sha256) = 64 AND bundle_sha256 NOT GLOB '*[^0-9a-f]*'
+                )),
+            validated_at TEXT NOT NULL,
+            PRIMARY KEY (report_sha256, article_id)
+        );
+
+        CREATE INDEX idx_article_semantics_report
+            ON article_semantics(report_sha256, article_id);
+        """,
+    ),
 )
 
 

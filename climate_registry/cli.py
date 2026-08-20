@@ -10,6 +10,7 @@ from .capture import MAX_BATCH, capture_enrich_registry
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from .fetch import DEFAULT_TIMEOUT
 from .persistent import plan_registry_update, update_registry
+from .semantic_import import import_report_semantics
 from .selection import load_selection_input, plan_registry_selection
 from .weekly import (
     WeeklyPartialError,
