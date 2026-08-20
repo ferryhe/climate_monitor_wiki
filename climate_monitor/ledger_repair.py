@@ -232,7 +232,7 @@ def _validate_registry(
         connection = sqlite3.connect(database_uri, uri=True)
         connection.row_factory = sqlite3.Row
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in {2, 3, 4}:
+        if version not in {2, 3, 4, 5}:
             raise RepairPreflightError("Registry database schema is unsupported")
         rows = connection.execute(
             "SELECT report_id, report_date, filename, report_sha256 "

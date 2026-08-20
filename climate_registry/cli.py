@@ -83,6 +83,13 @@ def _parser() -> argparse.ArgumentParser:
     weekly.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     weekly.add_argument("--dry-run", action="store_true")
 
+    semantic = subcommands.add_parser("semantic-import")
+    semantic.add_argument("--report", required=True, type=Path)
+    semantic.add_argument("--expected-report-sha256", required=True)
+    semantic.add_argument("--database", type=Path)
+    semantic.add_argument("--backup-dir", type=Path)
+    semantic.add_argument("--apply", action="store_true")
+
     restore = subcommands.add_parser("restore-backup")
     restore.add_argument("--database", required=True, type=Path)
     restore.add_argument("--backup", required=True, type=Path)
@@ -157,6 +164,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_report_sha256=args.expected_report_sha256,
                 timeout=args.timeout,
                 dry_run=args.dry_run,
+            )
+        elif args.command == "semantic-import":
+            result = import_report_semantics(
+                report_path=args.report,
+                expected_report_sha256=args.expected_report_sha256,
+                dry_run=not args.apply,
+                database=args.database,
+                backup_dir=args.backup_dir,
             )
         else:
             result = restore_registry_backup(

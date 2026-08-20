@@ -63,9 +63,32 @@ REQUIRED_TABLE_COLUMNS = {
         "fallback_source", "fallback_provenance", "bundle_json", "bundle_sha256",
         "validated_at",
     },
+    "article_semantics": {
+        "report_sha256", "article_id", "canonical_url", "title", "summary",
+        "categories_json", "keywords_json", "taxonomy_id", "taxonomy_raw_sha256",
+        "bundle_sha256", "validated_at",
+    },
 }
 
-V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - {"article_capture_resolutions"}
+# Tables introduced per migration. The contract is validated per deployed
+# schema version, so an older database is never asked for a newer table and a
+# newer database is never rejected for carrying one.
+_V4_TABLES = frozenset({"article_capture_resolutions"})
+_V5_TABLES = frozenset({"article_semantics"})
+
+V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES
+V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES
+V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5)
+
+
+def _required_tables(version: int) -> frozenset[str]:
+    if version == 3:
+        return V3_TABLES
+    if version == 4:
+        return V4_TABLES
+    return V5_TABLES
 
 REQUIRED_FOREIGN_KEYS = {
     "articles": {
@@ -141,6 +164,7 @@ REQUIRED_INDEXES = frozenset(
         "idx_enrichments_content_generated",
         "idx_capture_resolutions_report_article",
         "idx_capture_resolutions_fetch",
+        "idx_article_semantics_report",
     }
 )
 
@@ -201,7 +225,7 @@ def _golden_table_contracts(version: int) -> tuple[
     connection = sqlite3.connect(":memory:")
     try:
         apply_migrations(connection, target_version=version)
-        required_tables = V3_TABLES if version == 3 else frozenset(REQUIRED_TABLE_COLUMNS)
+        required_tables = _required_tables(version)
         table_sql = {
             table: _normalize_sql(
                 connection.execute(
@@ -224,7 +248,9 @@ def _golden_table_contracts(version: int) -> tuple[
         connection.close()
 
 
-GOLDEN_CONTRACTS = {version: _golden_table_contracts(version) for version in (3, 4)}
+GOLDEN_CONTRACTS = {
+    version: _golden_table_contracts(version) for version in SUPPORTED_SCHEMA_VERSIONS
+}
 
 
 def _required_triggers(version: int) -> frozenset[str]:
@@ -237,12 +263,16 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 
 def _required_indexes(version: int) -> frozenset[str]:
-    if version == 3:
-        return frozenset(
-            name for name in REQUIRED_INDEXES
-            if not name.startswith("idx_capture_resolutions_")
+    names = REQUIRED_INDEXES
+    if version < 5:
+        names = frozenset(
+            name for name in names if not name.startswith("idx_article_semantics_")
         )
-    return REQUIRED_INDEXES
+    if version == 3:
+        names = frozenset(
+            name for name in names if not name.startswith("idx_capture_resolutions_")
+        )
+    return names
 
 
 def _foreign_key_contracts(
@@ -265,12 +295,12 @@ def _foreign_key_contracts(
 
 
 def validate_registry_contract(connection: sqlite3.Connection) -> int:
-    """Validate an exact registry v3 or v4 contract using read-only queries."""
+    """Validate an exact supported registry contract using read-only queries."""
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (3, 4):
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise SchemaContractError("unsupported registry schema")
 
-    required_tables = V3_TABLES if version == 3 else frozenset(REQUIRED_TABLE_COLUMNS)
+    required_tables = _required_tables(version)
     expected_table_sql, expected_columns, expected_table_indexes = GOLDEN_CONTRACTS[version]
 
     tables = {

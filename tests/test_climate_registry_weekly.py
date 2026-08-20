@@ -752,7 +752,11 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
         connection.execute("DROP TRIGGER article_capture_resolutions_are_append_only_update")
         connection.execute("DROP TRIGGER article_capture_resolutions_are_append_only_delete")
         connection.execute("DROP TABLE article_capture_resolutions")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 4")
+        connection.execute("DROP TABLE IF EXISTS article_semantics")
+        connection.execute(
+            "DROP INDEX IF EXISTS idx_article_semantics_report"
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version > 3")
         connection.execute("PRAGMA user_version = 3")
     connection.close()
     assert api_server.RegistryReader(
@@ -763,7 +767,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 4
+    ).status()["schema_version"] == 5
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository

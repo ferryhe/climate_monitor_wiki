@@ -271,7 +271,11 @@ def _apply(
     except OSError as exc:
         raise RegistryInputError(f"could not prepare the backup directory: {exc}") from exc
 
-    backup_path = backup_dir / _backup_name(database)
+    backup_path = backup_dir / _backup_name(
+        database,
+        datetime.now(timezone.utc),
+        hashlib.sha256(database.read_bytes()).hexdigest(),
+    )
     if backup_path.exists():
         raise RegistryInputError(f"backup destination already exists: {backup_path.name}")
 
