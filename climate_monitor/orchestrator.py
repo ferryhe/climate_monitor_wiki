@@ -135,7 +135,7 @@ def run_monitor(
     kept_semantic, drop_notes = select_semantic_articles(kept)
     dedup_notes.extend(drop_notes)
 
-    if not kept and not config.write_empty_report:
+    if not kept_semantic and not config.write_empty_report:
         return MonitorRunResult(
             report_date=day,
             report_path=None,
