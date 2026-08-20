@@ -545,6 +545,93 @@ def test_read_bounded_file_ignores_benign_ctime_bump_from_concurrent_link(
     assert calls["data"] >= 2
 
 
+def test_read_bounded_file_rejects_same_inode_same_size_mtime_change(
+    tmp_path, monkeypatch
+):
+    """A same-inode, same-size rewrite during the read must be rejected.
+
+    This is distinct from benign hard-link churn: link-count changes bump ctime,
+    but an in-place rewrite changes mtime and can leave the reader holding stale
+    bytes from before the path contained different content.
+    """
+    path = tmp_path / "attempt.json"
+    old = b"A" * 4096
+    new = b"B" * len(old)
+    path.write_bytes(old)
+    original_stat = path.stat()
+    changed_mtime_ns = original_stat.st_mtime_ns + 1_000_000_000
+
+    data_fd: dict = {}
+    real_open = os.open
+
+    def fake_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        # POSIX opens the data file via path.name + dir_fd; non-POSIX opens the
+        # full Path. Match both so the patch is not silently skipped off Linux.
+        if args and args[0] in (path.name, path) and "fd" not in data_fd:
+            data_fd["fd"] = fd
+        return fd
+
+    monkeypatch.setattr(os, "open", fake_open)
+
+    state = {"rewrite_fired": False}
+    real_read = os.read
+
+    def fake_read(fd, size):
+        chunk = real_read(fd, size)
+        if data_fd and fd == data_fd.get("fd") and chunk and not state["rewrite_fired"]:
+            path.write_bytes(new)
+            os.utime(
+                path,
+                ns=(original_stat.st_atime_ns, changed_mtime_ns),
+            )
+            state["rewrite_fired"] = True
+        return chunk
+
+    monkeypatch.setattr(os, "read", fake_read)
+
+    real_fstat = os.fstat
+    calls = {"data_fstat": 0, "path_stat_bumped": False}
+
+    def fake_fstat(fd):
+        st = real_fstat(fd)
+        if data_fd and fd == data_fd.get("fd"):
+            calls["data_fstat"] += 1
+            if state["rewrite_fired"]:
+                return _StatProxy(st, st_mtime_ns=changed_mtime_ns)
+        return st
+
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+
+    real_stat = os.stat
+    real_lstat = os.lstat
+
+    def fake_stat(target, *args, **kwargs):
+        st = real_stat(target, *args, **kwargs)
+        if state["rewrite_fired"] and target in (path.name, path):
+            calls["path_stat_bumped"] = True
+            return _StatProxy(st, st_mtime_ns=changed_mtime_ns)
+        return st
+
+    def fake_lstat(target, *args, **kwargs):
+        st = real_lstat(target, *args, **kwargs)
+        if state["rewrite_fired"] and target in (path.name, path):
+            calls["path_stat_bumped"] = True
+            return _StatProxy(st, st_mtime_ns=changed_mtime_ns)
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+    with pytest.raises(LedgerContractError, match="attempt changed while reading"):
+        read_bounded_file(path, max_bytes=4096)
+    # Guards: the test must exercise the stale-snapshot window on the data fd
+    # and the final path snapshot, not pass because the monkeypatch did nothing.
+    assert state["rewrite_fired"]
+    assert calls["data_fstat"] >= 2
+    assert calls["path_stat_bumped"]
+    assert path.read_bytes() == new
+
+
 def test_read_bounded_file_still_detects_replacement(tmp_path, monkeypatch):
     """Preserved contract: a rename-swap (path resolves to a different inode)
     must STILL raise ``LedgerContractError("attempt changed while reading")``.
