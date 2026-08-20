@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -394,6 +395,277 @@ def test_concurrent_identical_writers_create_exactly_one_attempt(tmp_path):
     assert results.count("already_exists") == 15
     assert len(list(ledger.rglob("*.json"))) == 1
     assert not list(ledger.rglob("*.tmp"))
+
+
+def test_concurrent_identical_writers_stress_creates_exactly_one_attempt(tmp_path):
+    """PR-A regression: heavier concurrency maximizes hard-link ctime churn.
+
+    The business invariant is exactly one attempt for identical payloads, even
+    under the link-count ctime bumps that previously triggered spurious
+    ``LedgerContractError`` failures (root cause (b)). This does not rely on any
+    timestamp resolution -- it verifies the idempotent dedupe outcome.
+    """
+    ledger = tmp_path / "ledger"
+    payload = _attempt()
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        results = list(
+            pool.map(
+                lambda _index: append_attempt(ledger, payload, repository_root=ROOT),
+                range(64),
+            )
+        )
+
+    assert results.count("created") == 1
+    assert results.count("already_exists") == 63
+    assert len(list(ledger.rglob("*.json"))) == 1
+    assert not list(ledger.rglob("*.tmp"))
+
+
+def test_concurrent_different_payloads_create_distinct_attempts(tmp_path):
+    """Different payloads (distinct attempt_id) must each persist exactly once.
+
+    This pins the genuine concurrency semantics: dedupe is keyed on the full
+    attempt identity, not just arrival order, and distinct writers never
+    collide into a single file.
+    """
+
+    def _payload(index: int) -> dict:
+        return _attempt(
+            attempt_id=f"20260810t080000z-attempt-{index:02d}",
+            result_code=f"result_{index}",
+        )
+
+    ledger = tmp_path / "ledger"
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(
+            pool.map(
+                lambda index: append_attempt(
+                    ledger, _payload(index), repository_root=ROOT
+                ),
+                range(32),
+            )
+        )
+
+    assert results.count("created") == 32
+    assert results.count("already_exists") == 0
+    assert len(list(ledger.rglob("*.json"))) == 32
+    assert not list(ledger.rglob("*.tmp"))
+
+
+def test_link_failure_rollbacks_residual_temp(tmp_path, monkeypatch):
+    """A hard-link failure on the write path must roll back and leave no .tmp.
+
+    This exercises the failure branch of ``append_attempt`` and asserts the
+    residual-temporary cleanup contract survives a fault (no broad retry, no
+    silent leak).
+    """
+    ledger = tmp_path / "ledger"
+    payload = _attempt()
+
+    state = {"calls": 0}
+    real_link = os.link
+
+    def faulty_link(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise OSError("injected link failure")
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(os, "link", faulty_link)
+
+    with pytest.raises(LedgerUnavailableError):
+        append_attempt(ledger, payload, repository_root=ROOT)
+    assert not list(ledger.rglob("*.tmp"))
+
+    # Once the fault clears, a clean write succeeds and still leaves no .tmp.
+    assert append_attempt(ledger, payload, repository_root=ROOT) == "created"
+    assert not list(ledger.rglob("*.tmp"))
+
+
+class _StatProxy:
+    """Wrap an ``os.stat_result``, overriding selected fields for deterministic
+    races. Used to simulate the ctime-on-link-count condition without needing a
+    real concurrent process or a mounted overlayfs (which requires root)."""
+
+    def __init__(self, st, **overrides):
+        object.__setattr__(self, "_st", st)
+        object.__setattr__(self, "_over", overrides)
+
+    def __getattr__(self, name):
+        over = object.__getattribute__(self, "_over")
+        if name in over:
+            return over[name]
+        return getattr(object.__getattribute__(self, "_st"), name)
+
+
+def test_read_bounded_file_ignores_benign_ctime_bump_from_concurrent_link(
+    tmp_path, monkeypatch
+):
+    """PR-A root-cause regression (deterministic).
+
+    A concurrent ``os.link()`` bumps ``st_ctime`` on the *shared* inode between
+    the pre-read and post-read fstat of the same descriptor. The reader must NOT
+    treat that benign link-count change as "attempt changed while reading".
+    """
+    path = tmp_path / "attempt.json"
+    data = b'{"attempt_id":"x","status":"success"}\n'
+    path.write_bytes(data)
+
+    data_fd: dict = {}
+    real_open = os.open
+
+    def fake_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        # POSIX opens the data file via path.name + dir_fd; non-POSIX opens the
+        # full Path. Match both so the patch is not silently skipped off Linux.
+        if args and args[0] in (path.name, path):
+            data_fd["fd"] = fd
+        return fd
+
+    monkeypatch.setattr(os, "open", fake_open)
+
+    real_fstat = os.fstat
+    calls = {"data": 0}
+
+    def fake_fstat(fd):
+        st = real_fstat(fd)
+        if data_fd and fd == data_fd.get("fd"):
+            calls["data"] += 1
+            if calls["data"] == 2:  # post-read fstat (the "after" snapshot)
+                return _StatProxy(st, st_ctime_ns=st.st_ctime_ns + 1)
+        return st
+
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+
+    # Must not raise; must return the consistent bytes.
+    assert read_bounded_file(path, max_bytes=4096) == data
+    # Guard: the ctime bump simulation must have actually fired on the data
+    # descriptor, otherwise this test would pass without exercising anything.
+    assert calls["data"] >= 2
+
+
+def test_read_bounded_file_still_detects_replacement(tmp_path, monkeypatch):
+    """Preserved contract: a rename-swap (path resolves to a different inode)
+    must STILL raise ``LedgerContractError("attempt changed while reading")``.
+
+    This guards against the fix accidentally weakening TOCTOU / replacement
+    detection. Identity (dev, ino) of the open descriptor and the post-read
+    path lookup must agree; a swap changes the path's inode.
+    """
+    path = tmp_path / "attempt.json"
+    data = b'{"attempt_id":"x","status":"success"}\n'
+    path.write_bytes(data)
+
+    # POSIX resolves the post-read path via os.stat(name, dir_fd=...); non-POSIX
+    # uses os.lstat(path). Patch both so the simulated rename-swap reaches the
+    # branch actually taken on the current platform (no silent no-op off Linux).
+    real_stat = os.stat
+    real_lstat = os.lstat
+    stat_calls = {"n": 0}
+    lstat_calls = {"n": 0}
+
+    def fake_stat(target, *args, **kwargs):
+        st = real_stat(target, *args, **kwargs)
+        stat_calls["n"] += 1
+        if stat_calls["n"] == 2:  # post-read path stat -> simulate rename-swap inode
+            return _StatProxy(st, st_ino=st.st_ino + 1, st_dev=st.st_dev)
+        return st
+
+    def fake_lstat(target, *args, **kwargs):
+        st = real_lstat(target, *args, **kwargs)
+        lstat_calls["n"] += 1
+        if lstat_calls["n"] == 2:  # post-read path lstat -> simulate rename-swap inode
+            return _StatProxy(st, st_ino=st.st_ino + 1, st_dev=st.st_dev)
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+    with pytest.raises(LedgerContractError, match="attempt changed while reading"):
+        read_bounded_file(path, max_bytes=4096)
+    # Guard: the swap simulation must have fired on the platform's lookup call.
+    assert stat_calls["n"] >= 2 or lstat_calls["n"] >= 2
+
+
+def test_read_bounded_file_rejects_size_growth(tmp_path, monkeypatch):
+    """Preserved contract: concurrent size growth must still be rejected.
+
+    The descriptor snapshot size must match the bytes read, and the path's
+    current size must match the descriptor size.
+    """
+    path = tmp_path / "attempt.json"
+    data = b'{"attempt_id":"x","status":"success"}\n'
+    path.write_bytes(data)
+
+    data_fd: dict = {}
+    real_open = os.open
+
+    def fake_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        # POSIX opens the data file via path.name + dir_fd; non-POSIX opens the
+        # full Path. Match both so the patch is not silently skipped off Linux.
+        if args and args[0] in (path.name, path):
+            data_fd["fd"] = fd
+        return fd
+
+    monkeypatch.setattr(os, "open", fake_open)
+
+    real_fstat = os.fstat
+    calls = {"data": 0}
+
+    def fake_fstat(fd):
+        st = real_fstat(fd)
+        if data_fd and fd == data_fd.get("fd"):
+            calls["data"] += 1
+            if calls["data"] == 2:  # post-read fstat (the "after" snapshot)
+                return _StatProxy(st, st_size=st.st_size + 1)
+        return st
+
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+    with pytest.raises(LedgerContractError, match="attempt changed while reading"):
+        read_bounded_file(path, max_bytes=4096)
+    # Guard: the size-growth simulation must have actually fired on the data
+    # descriptor, otherwise this test would pass without exercising anything.
+    assert calls["data"] >= 2
+
+
+def test_read_bounded_file_concurrent_hardlink_is_portable_and_benign(
+    tmp_path,
+):
+    """Platform-agnostic regression for PR-A root cause (b).
+
+    Unlike the deterministic monkeypatch tests above, this exercises the real
+    bug: a concurrent ``os.link()`` (the ledger's hard-link dedupe token) bumps
+    ``st_ctime`` on the *shared* inode while ``read_bounded_file`` is reading.
+    The reader must return consistent bytes with no spurious
+    ``LedgerContractError``. Because it uses a genuine hard link rather than a
+    monkeypatched ``os.*`` call, it cannot silently no-op on non-POSIX
+    platforms.
+    """
+    path = tmp_path / "attempt.json"
+    data = b'{"attempt_id":"x","status":"success"}\n'
+    path.write_bytes(data)
+    link_path = tmp_path / "attempt.link"
+
+    stop = threading.Event()
+
+    def hammer_links():
+        while not stop.is_set():
+            try:
+                os.link(path, link_path)
+                os.unlink(link_path)
+            except OSError:
+                # Lost a race with the reader's own operations; harmless.
+                pass
+
+    thread = threading.Thread(target=hammer_links, daemon=True)
+    thread.start()
+    try:
+        for _ in range(200):
+            assert read_bounded_file(path, max_bytes=4096) == data
+    finally:
+        stop.set()
+        thread.join(timeout=5)
 
 
 def test_retries_are_preserved_and_ordered_by_finished_time_then_attempt_id(tmp_path):
