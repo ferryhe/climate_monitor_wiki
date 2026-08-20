@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -516,7 +517,9 @@ def test_read_bounded_file_ignores_benign_ctime_bump_from_concurrent_link(
 
     def fake_open(*args, **kwargs):
         fd = real_open(*args, **kwargs)
-        if args and args[0] == path.name:
+        # POSIX opens the data file via path.name + dir_fd; non-POSIX opens the
+        # full Path. Match both so the patch is not silently skipped off Linux.
+        if args and args[0] in (path.name, path):
             data_fd["fd"] = fd
         return fd
 
@@ -537,6 +540,9 @@ def test_read_bounded_file_ignores_benign_ctime_bump_from_concurrent_link(
 
     # Must not raise; must return the consistent bytes.
     assert read_bounded_file(path, max_bytes=4096) == data
+    # Guard: the ctime bump simulation must have actually fired on the data
+    # descriptor, otherwise this test would pass without exercising anything.
+    assert calls["data"] >= 2
 
 
 def test_read_bounded_file_still_detects_replacement(tmp_path, monkeypatch):
@@ -551,19 +557,34 @@ def test_read_bounded_file_still_detects_replacement(tmp_path, monkeypatch):
     data = b'{"attempt_id":"x","status":"success"}\n'
     path.write_bytes(data)
 
+    # POSIX resolves the post-read path via os.stat(name, dir_fd=...); non-POSIX
+    # uses os.lstat(path). Patch both so the simulated rename-swap reaches the
+    # branch actually taken on the current platform (no silent no-op off Linux).
     real_stat = os.stat
-    calls = {"n": 0}
+    real_lstat = os.lstat
+    stat_calls = {"n": 0}
+    lstat_calls = {"n": 0}
 
     def fake_stat(target, *args, **kwargs):
         st = real_stat(target, *args, **kwargs)
-        calls["n"] += 1
-        if calls["n"] == 2:  # post-read path stat -> simulate rename-swap inode
+        stat_calls["n"] += 1
+        if stat_calls["n"] == 2:  # post-read path stat -> simulate rename-swap inode
+            return _StatProxy(st, st_ino=st.st_ino + 1, st_dev=st.st_dev)
+        return st
+
+    def fake_lstat(target, *args, **kwargs):
+        st = real_lstat(target, *args, **kwargs)
+        lstat_calls["n"] += 1
+        if lstat_calls["n"] == 2:  # post-read path lstat -> simulate rename-swap inode
             return _StatProxy(st, st_ino=st.st_ino + 1, st_dev=st.st_dev)
         return st
 
     monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "lstat", fake_lstat)
     with pytest.raises(LedgerContractError, match="attempt changed while reading"):
         read_bounded_file(path, max_bytes=4096)
+    # Guard: the swap simulation must have fired on the platform's lookup call.
+    assert stat_calls["n"] >= 2 or lstat_calls["n"] >= 2
 
 
 def test_read_bounded_file_rejects_size_growth(tmp_path, monkeypatch):
@@ -581,7 +602,9 @@ def test_read_bounded_file_rejects_size_growth(tmp_path, monkeypatch):
 
     def fake_open(*args, **kwargs):
         fd = real_open(*args, **kwargs)
-        if args and args[0] == path.name:
+        # POSIX opens the data file via path.name + dir_fd; non-POSIX opens the
+        # full Path. Match both so the patch is not silently skipped off Linux.
+        if args and args[0] in (path.name, path):
             data_fd["fd"] = fd
         return fd
 
@@ -601,6 +624,48 @@ def test_read_bounded_file_rejects_size_growth(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "fstat", fake_fstat)
     with pytest.raises(LedgerContractError, match="attempt changed while reading"):
         read_bounded_file(path, max_bytes=4096)
+    # Guard: the size-growth simulation must have actually fired on the data
+    # descriptor, otherwise this test would pass without exercising anything.
+    assert calls["data"] >= 2
+
+
+def test_read_bounded_file_concurrent_hardlink_is_portable_and_benign(
+    tmp_path,
+):
+    """Platform-agnostic regression for PR-A root cause (b).
+
+    Unlike the deterministic monkeypatch tests above, this exercises the real
+    bug: a concurrent ``os.link()`` (the ledger's hard-link dedupe token) bumps
+    ``st_ctime`` on the *shared* inode while ``read_bounded_file`` is reading.
+    The reader must return consistent bytes with no spurious
+    ``LedgerContractError``. Because it uses a genuine hard link rather than a
+    monkeypatched ``os.*`` call, it cannot silently no-op on non-POSIX
+    platforms.
+    """
+    path = tmp_path / "attempt.json"
+    data = b'{"attempt_id":"x","status":"success"}\n'
+    path.write_bytes(data)
+    link_path = tmp_path / "attempt.link"
+
+    stop = threading.Event()
+
+    def hammer_links():
+        while not stop.is_set():
+            try:
+                os.link(path, link_path)
+                os.unlink(link_path)
+            except OSError:
+                # Lost a race with the reader's own operations; harmless.
+                pass
+
+    thread = threading.Thread(target=hammer_links, daemon=True)
+    thread.start()
+    try:
+        for _ in range(200):
+            assert read_bounded_file(path, max_bytes=4096) == data
+    finally:
+        stop.set()
+        thread.join(timeout=5)
 
 
 def test_retries_are_preserved_and_ordered_by_finished_time_then_attempt_id(tmp_path):
