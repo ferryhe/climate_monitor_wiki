@@ -118,6 +118,17 @@ half-updated. `verify_semantic_sidecar` re-checks the committed pair and
 rejects a report SHA mismatch, a stale sidecar, a missing sidecar, and any
 article-set drift.
 
+The 09:00 delivery (`climate_delivery.pipeline.run_delivery`) is the consumer.
+It calls `verify_semantic_sidecar(report_path)` on the same canonical Markdown
+and aborts fail-closed when the sidecar is missing, stale, SHA- or
+filename-mismatched, or carries a contract-invalid article bundle. It then
+indexes the verified per-article `summary`/`categories`/`keywords` by the
+article `url` and `canonical_url`, carries them into `summary.json` under a
+top-level `article_semantics` map keyed by highlight URL, and renders the
+verified categories and keywords beneath each PDF highlight. The v1 highlight
+shape is preserved exactly, and the delivery path performs no Markdown scrape
+and no model/LLM call of its own.
+
 Taxonomy identity is checked by ID **and** file SHA-256, not by path: a
 taxonomy copied elsewhere still validates, and a tampered copy is rejected.
 

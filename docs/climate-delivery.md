@@ -43,6 +43,12 @@ layouts with exit code 2. The report must:
 - contain `Sites checked`, `succeeded`, and `failed` counts whose arithmetic is
   consistent; and
 - contain at least one linked highlight and one original HTTP(S) link.
+- be accompanied by the sibling `<report>.semantics.json` semantic sidecar
+  that the 08:00 producer committed next to it, bound to the report's exact
+  raw-byte SHA-256 and filename. The `run` command verifies this sidecar
+  fail-closed: a missing, stale, SHA-mismatched, filename-mismatched, or
+  otherwise contract-invalid sidecar aborts delivery outright. There is no
+  Markdown-scrape fallback and no model/LLM call on the delivery path.
 
 Extraction is deterministic. The content executive summary contains three or
 four sentences derived from report counts, representative report titles, and a
@@ -175,6 +181,14 @@ then obtain authorization for the final artifact-only run.
 replaced. The manifest records relative artifact paths and SHA-256 hashes for
 the summary and PDF. It contains recipient IDs and states but no address,
 credential, or absolute repository path.
+
+The `summary.json` preserves the v1 highlight shape (`pillar`, `title`,
+`summary`, `url`) exactly and additionally carries a top-level
+`article_semantics` map keyed by highlight URL. Each entry holds the verified
+`summary`, `categories`, and `keywords` taken verbatim from the sidecar's
+article bundle. The PDF renders those verified categories and keywords beneath
+each highlight. The delivery module never derives, scrapes, or infers semantics
+itself; whatever the sidecar does not verifiably provide is simply absent.
 
 ## Optional Historical Reports integration
 
