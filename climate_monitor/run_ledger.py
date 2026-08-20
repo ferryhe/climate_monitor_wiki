@@ -546,12 +546,14 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
         # *after* reading must still resolve to that *same* inode on the *same*
         # device. A rename-swap (a different file moved onto the path) changes
         # the path's (dev, ino) and is rejected here. We deliberately DO NOT
-        # compare ctime/mtime between the pre-read and post-read fstat: a
-        # concurrent hard link (os.link) performed by another ledger writer
-        # bumps st_ctime on the *shared* inode, which a second fstat of the
-        # same descriptor observes -- that is a benign, expected event for this
-        # ledger's hard-link dedupe tokens and must not be treated as "changed
-        # while reading" (PR-A root cause (b)).
+        # compare ctime between the pre-read and post-read fstat: a concurrent
+        # hard link (os.link) performed by another ledger writer bumps st_ctime
+        # on the *shared* inode, which a second fstat of the same descriptor
+        # observes -- that is a benign, expected event for this ledger's
+        # hard-link dedupe tokens and must not be treated as "changed while
+        # reading" (PR-A root cause (b)). In contrast, mtime movement still
+        # means the file contents may have changed during the read and is
+        # rejected below.
         #
         # The caller-side content/crypto identity contract is enforced ONLY
         # where the caller performs a byte/size comparison -- e.g.
@@ -582,6 +584,11 @@ def read_bounded_file(path: Path, *, max_bytes: int) -> bytes:
             before.st_size != after.st_size
             or after.st_size != len(raw)
             or after_path.st_size != after.st_size
+        ):
+            raise LedgerContractError("attempt changed while reading")
+        if (
+            before.st_mtime_ns != after.st_mtime_ns
+            or after_path.st_mtime_ns != after.st_mtime_ns
         ):
             raise LedgerContractError("attempt changed while reading")
         return raw
