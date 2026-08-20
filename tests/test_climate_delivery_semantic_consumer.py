@@ -11,6 +11,8 @@ production path.
 
 import hashlib
 import json
+import runpy
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -263,3 +265,44 @@ def test_delivery_is_deterministic_across_runs(tmp_path, monkeypatch):
     artifact_dir_b = _artifact_dir(output_b, first)
     assert (artifact_dir_b / "summary.json").read_bytes() == summary_a
     assert (artifact_dir_b / "climate-monitor-2026-08-10.pdf").read_bytes() == pdf_a
+
+
+# ---------------------------------------------------------------------------
+# CLI boundary: the fail-closed SemanticBundleError must surface as the
+# structured JSON error contract, never as a raw traceback (the scheduled
+# 09:00 job depends on the JSON payload + exit code).
+# ---------------------------------------------------------------------------
+
+
+def test_delivery_cli_reports_structured_input_error_when_sidecar_missing(tmp_path, monkeypatch, capsys):
+    configure_env(monkeypatch)
+    report = _report_only(tmp_path)
+    assert not semantic_sidecar_path(report).exists()
+
+    argv = [
+        "climate-delivery",
+        "run",
+        "--report",
+        str(report),
+        "--output-dir",
+        str(tmp_path / "output"),
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--config",
+        str(config_file(tmp_path)),
+        "--dry-run",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    # Exercise the real console entrypoint so the SystemExit contract is covered.
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_module("climate_delivery.cli", run_name="__main__")
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["status"] == "error"
+    assert payload["kind"] == "input"
+    assert payload["message"]
+    assert "Traceback" not in captured.out and "Traceback" not in captured.err
+    assert "SemanticBundleError" not in captured.out
