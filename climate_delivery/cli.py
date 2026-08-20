@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Sequence
 
+from climate_monitor.semantic_bundle import SemanticBundleError
+
 from .backfill import backfill_reports
 from .config import load_delivery_config
 from .delivery import deliver, load_summary, load_summary_with_sha256
@@ -126,6 +128,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise InputError("unsupported climate-delivery command")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
+    except SemanticBundleError as exc:
+        # The 08:00 producer's SHA-bound semantic sidecar is missing, mismatched
+        # or tampered. ``run_delivery`` fails closed by raising this error, which
+        # is a ValueError (not a ClimateDeliveryError), so it is translated here
+        # at the CLI boundary into the structured input-error contract instead of
+        # escaping as a raw traceback and breaking the scheduled job's contract.
+        payload, code = {"status": "error", "kind": "input", "message": _redact(str(exc))}, 2
     except InputError as exc:
         payload, code = {"status": "error", "kind": "input", "message": _redact(str(exc))}, 2
     except GenerationError as exc:

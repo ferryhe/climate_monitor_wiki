@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,78 @@ from climate_delivery.cli import main
 from climate_delivery.errors import DeliveryError, GenerationError, InputError, LockStateError
 from climate_delivery.pipeline import run_delivery
 from climate_delivery.report import parse_weekly_report
+from climate_monitor.semantic_bundle import (
+    build_sidecar_payload,
+    serialize_sidecar,
+    semantic_sidecar_path,
+)
+from climate_monitor.taxonomy import load_article_taxonomy
 
 from test_climate_delivery_email import config_file
 from test_climate_delivery_report import REPORT, report_file
+
+
+# --- Semantic sidecar fixtures (PR-C consumer contract) ---------------------
+#
+# The 09:00 delivery now requires the SHA-bound semantic sidecar that the 08:00
+# producer commits next to the canonical Markdown. These helpers build a report
+# in the canonical ``**URL:**`` format (so the sidecar's 1:1 URL binding holds)
+# together with a valid, taxonomy-verified sidecar. Reusing them keeps every
+# pre-existing pipeline test exercising the real disk-backed verify path.
+
+DELIVERY_REPORT = (
+    REPORT.replace("  🔗 https://example.test/first", "**URL:** https://example.test/first <br>")
+    .replace("  🔗 https://example.test/second", "**URL:** https://example.test/second <br>")
+)
+
+
+def _sidecar_items() -> list[dict]:
+    return [
+        {
+            "url": "https://example.test/first",
+            "title": "First finding",
+            "lane": "website",
+            "source_name": "Example",
+            "content_hash": "f" * 64,
+            "semantics": {
+                "summary": "First article semantic summary.",
+                "categories": ["Physical Risk", "Insurance Risk"],
+                "keywords": ["flood", "pricing", "resilience"],
+            },
+        },
+        {
+            "url": "https://example.test/second",
+            "title": "Second finding",
+            "lane": "website",
+            "source_name": "Example",
+            "content_hash": "s" * 64,
+            "semantics": {
+                "summary": "Second article semantic summary.",
+                "categories": ["Supervision & Disclosure", "Capital & Solvency"],
+                "keywords": ["disclosure", "capital", "supervision"],
+            },
+        },
+    ]
+
+
+def _write_sidecar(report_path: Path) -> None:
+    report_path = Path(report_path)
+    report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    payload = build_sidecar_payload(
+        report_date=date(2026, 8, 10),
+        report_filename=report_path.name,
+        report_sha256=report_sha256,
+        items=_sidecar_items(),
+        taxonomy=load_article_taxonomy(),
+    )
+    semantic_sidecar_path(report_path).write_bytes(serialize_sidecar(payload))
+
+
+def delivery_report(tmp_path: Path, text: str = DELIVERY_REPORT, name: str = "climate-monitor-2026-08-10.md") -> Path:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    _write_sidecar(path)
+    return path
 
 
 def configure_env(monkeypatch):
@@ -26,7 +96,7 @@ def configure_env(monkeypatch):
 
 def test_run_writes_content_addressed_artifacts_and_redacted_manifest(tmp_path, monkeypatch):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     output = tmp_path / "output"
     state = tmp_path / "state"
 
@@ -66,7 +136,7 @@ def test_run_writes_content_addressed_artifacts_and_redacted_manifest(tmp_path, 
 
 def test_existing_run_lock_fails_without_force(tmp_path, monkeypatch):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     digest = parse_weekly_report(report).sha256
     state = tmp_path / "state"
     locks = state / "locks"
@@ -79,13 +149,17 @@ def test_existing_run_lock_fails_without_force(tmp_path, monkeypatch):
 
 def test_same_date_changed_report_uses_a_new_content_addressed_directory(tmp_path, monkeypatch):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     output = tmp_path / "output"
     state = tmp_path / "state"
     config = config_file(tmp_path)
     first = run_delivery(report, output, state, config, dry_run=True)
 
-    report.write_text(REPORT.replace("One deterministic observation.", "A changed deterministic observation."), encoding="utf-8")
+    report.write_text(
+        DELIVERY_REPORT.replace("One deterministic observation.", "A changed deterministic observation."),
+        encoding="utf-8",
+    )
+    _write_sidecar(report)
     second = run_delivery(report, output, state, config, dry_run=True)
 
     assert first["report_sha256"] != second["report_sha256"]
@@ -96,7 +170,7 @@ def test_same_date_changed_report_uses_a_new_content_addressed_directory(tmp_pat
 @pytest.mark.parametrize("changed", ["summary", "pdf"])
 def test_existing_content_addressed_artifacts_are_never_overwritten(tmp_path, monkeypatch, changed):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     output = tmp_path / "output"
     state = tmp_path / "state"
     config = config_file(tmp_path)
@@ -125,7 +199,7 @@ def test_pipeline_requires_external_absolute_non_nested_paths(tmp_path, monkeypa
     configure_env(monkeypatch)
     valid_inputs = tmp_path / "valid-inputs"
     valid_inputs.mkdir()
-    report = report_file(valid_inputs)
+    report = delivery_report(valid_inputs)
     config = config_file(valid_inputs)
     with pytest.raises(InputError, match="nested|separate"):
         run_delivery(report, tmp_path / "work", tmp_path / "work" / "state", config, dry_run=True)
@@ -140,7 +214,7 @@ def test_pipeline_rejects_existing_file_where_directory_root_is_required(tmp_pat
     configure_env(monkeypatch)
     valid_cli_inputs = tmp_path / "valid-cli-inputs"
     valid_cli_inputs.mkdir()
-    report = report_file(valid_cli_inputs)
+    report = delivery_report(valid_cli_inputs)
     config = config_file(valid_cli_inputs)
     output = tmp_path / "output"
     state = tmp_path / "state"
@@ -154,7 +228,7 @@ def test_pipeline_rejects_existing_file_where_directory_root_is_required(tmp_pat
 @pytest.mark.parametrize("argument", ["report", "config"])
 def test_pipeline_rejects_existing_directory_where_file_is_required(tmp_path, monkeypatch, argument):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     config = config_file(tmp_path)
     selected = report if argument == "report" else config
     selected.unlink()
@@ -166,7 +240,7 @@ def test_pipeline_rejects_existing_directory_where_file_is_required(tmp_path, mo
 
 def test_pipeline_preserves_original_error_when_failure_manifest_cannot_be_written(tmp_path, monkeypatch):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     original = LockStateError("original ambiguous state")
     manifest_error = OSError("manifest write failed")
     monkeypatch.setattr("climate_delivery.pipeline.deliver", lambda *args, **kwargs: (_ for _ in ()).throw(original))
@@ -192,7 +266,7 @@ def test_failure_manifest_distinguishes_known_and_ambiguous_outcomes(
     tmp_path, monkeypatch, error, recipient_status, manifest_status
 ):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     output = tmp_path / "output"
     state_dir = tmp_path / "state"
     parsed = parse_weekly_report(report)
@@ -253,7 +327,7 @@ def test_cli_returns_exit2_for_path_type_conflicts(tmp_path, capsys):
 
     cli_inputs = tmp_path / "cli-run-inputs"
     cli_inputs.mkdir()
-    report = report_file(cli_inputs)
+    report = delivery_report(cli_inputs)
     config = config_file(cli_inputs)
     for conflict in ("output", "state"):
         output_root = tmp_path / f"{conflict}-output-root"
@@ -281,7 +355,7 @@ def test_cli_returns_exit2_for_path_type_conflicts(tmp_path, capsys):
 
 def test_cli_requires_explicit_paths_and_dry_run_succeeds(tmp_path, monkeypatch, capsys):
     configure_env(monkeypatch)
-    report = report_file(tmp_path)
+    report = delivery_report(tmp_path)
     result = main(
         [
             "run",
