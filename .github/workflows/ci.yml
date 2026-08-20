@@ -1,0 +1,175 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: python-tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install declared dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --requirement requirements.txt
+
+      - name: Check dependency consistency
+        run: |
+          set -euo pipefail
+          python -m pip check
+
+      - name: Run full test suite
+        run: |
+          set -euo pipefail
+          python -m pytest -q
+
+  repository-checks:
+    name: repository-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up repository Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up Node.js LTS
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Compile core Python packages
+        run: |
+          set -euo pipefail
+          python -m compileall climate_monitor climate_registry
+
+      - name: Check frontend JavaScript syntax
+        run: |
+          set -euo pipefail
+          node --check showcase/app.js
+
+      - name: Check pull request whitespace
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+
+      - name: Check pushed changes for whitespace errors
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            git diff-tree --check --root -r "$HEAD_SHA"
+          else
+            git diff --check "$BEFORE_SHA" "$HEAD_SHA"
+          fi
+
+      - name: Check dispatched revision for whitespace errors
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git diff-tree --check --root -r "$HEAD_SHA"
+
+  docker-build-smoke:
+    name: docker-build-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build application image
+        run: |
+          set -euo pipefail
+          docker build --pull --tag climate-monitor-wiki:ci .
+
+      - name: Run offline container smoke
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python -i climate-monitor-wiki:ci - <<'PY'
+          import importlib.metadata as metadata
+          import json
+
+          import agentic_wiki.wiki_agent
+          import api_server
+          import climate_delivery
+          import climate_monitor
+          import climate_registry
+          from climate_monitor.taxonomy import (
+              DEFAULT_TAXONOMY_ID,
+              DEFAULT_TAXONOMY_SHA256,
+              load_article_taxonomy,
+          )
+
+          taxonomy = load_article_taxonomy()
+          jsonschema_version = metadata.version("jsonschema")
+          version_parts = jsonschema_version.split(".")
+
+          assert DEFAULT_TAXONOMY_ID == "climate-actuarial-v1"
+          assert DEFAULT_TAXONOMY_SHA256 == (
+              "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+          )
+          assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID
+          assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256
+          assert len(taxonomy.categories) == 8
+          assert int(version_parts[0]) == 4 and int(version_parts[1]) >= 23
+
+          print(
+              json.dumps(
+                  {
+                      "categories": len(taxonomy.categories),
+                      "core_imports": "ok",
+                      "jsonschema": jsonschema_version,
+                      "taxonomy_id": taxonomy.taxonomy_id,
+                      "taxonomy_sha256": taxonomy.sha256,
+                  },
+                  sort_keys=True,
+              )
+          )
+          PY
