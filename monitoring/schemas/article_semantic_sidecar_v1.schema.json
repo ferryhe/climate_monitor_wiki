@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/schemas/article_semantic_sidecar_v1.schema.json",
+  "title": "Article semantic sidecar v1",
+  "description": "Portable structural subset for the deterministic sidecar the 08:00 weekly monitor writes beside each canonical Markdown report. Full validation MUST run climate_monitor.semantic_bundle.verify_semantic_sidecar, which additionally binds the sidecar to the canonical report SHA-256 and filename, enforces 1:1 correspondence and deterministic ordering against the report's rendered articles, recomputes each article identity, and runs climate_monitor.taxonomy.validate_semantic_bundle on every bundle. This schema alone expresses none of those bindings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "article_count",
+    "articles",
+    "report",
+    "taxonomy",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "article-semantic-sidecar.v1"
+    },
+    "article_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "filename", "sha256"],
+      "properties": {
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "filename": {
+          "type": "string",
+          "pattern": "^climate-monitor-\\d{4}-\\d{2}-\\d{2}\\.md$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "taxonomy_id", "sha256"],
+      "properties": {
+        "schema_version": {
+          "const": "article-category-taxonomy.v1"
+        },
+        "taxonomy_id": {
+          "const": "climate-actuarial-v1"
+        },
+        "sha256": {
+          "const": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator", "bundle_schema_version", "identity_scheme"],
+      "properties": {
+        "generator": {
+          "const": "climate_monitor.semantic_bundle"
+        },
+        "bundle_schema_version": {
+          "const": "article-semantic-bundle.v1"
+        },
+        "identity_scheme": {
+          "const": "article-identity.v1"
+        }
+      }
+    },
+    "articles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "article_id",
+          "position",
+          "url",
+          "canonical_url",
+          "title",
+          "source",
+          "lane",
+          "content_hash",
+          "semantics",
+          "semantics_provenance"
+        ],
+        "properties": {
+          "article_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "canonical_url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "lane": {
+            "enum": ["website", "document", "research"]
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "semantics": {
+            "$ref": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/schemas/article_semantic_bundle_v1.schema.json"
+          },
+          "semantics_provenance": {
+            "enum": ["agent_bundle", "pipeline_derived"]
+          }
+        }
+      }
+    }
+  }
+}
