@@ -64,10 +64,24 @@ def read_manifest_items(path: str | Path) -> list[CandidateItem]:
                     detected_at=str(raw.get("observed_at", "")),
                     content_hash=_content_hash(raw),
                     source_item_id=item_id,
+                    semantics=_manifest_semantics(raw),
                     **_asset_fields(asset, raw=raw),
                 )
             )
     return items
+
+
+def _manifest_semantics(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Return semantics attached by the single existing authoring pass.
+
+    ``web_listening`` manifests may carry a ``semantics`` object produced in the
+    same Hermes pass that discovered the item. It is passed through untouched;
+    ``climate_monitor.semantic_bundle`` validates it fail-closed later, only for
+    articles that survive final selection.
+    """
+
+    semantics = raw.get("semantics")
+    return dict(semantics) if isinstance(semantics, dict) else None
 
 
 def _manifest_item_is_actionable(raw: dict[str, Any]) -> bool:

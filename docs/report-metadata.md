@@ -60,8 +60,8 @@ The shared consumers load the taxonomy during module import. A missing,
 unreadable, malformed, or wrong-identity default taxonomy therefore fails
 startup with a contract-level `ValueError`; there is no fallback category list.
 
-The planned external-Hermes migration keeps `web_listening` as the acquisition
-engine and extends the existing monitor rather than creating another crawler:
+The migration keeps `web_listening` as the acquisition engine and extends the
+existing monitor rather than creating another crawler:
 
 ```text
 web_listening acquisition (existing per-site HTTP/browser policy)
@@ -75,11 +75,51 @@ web_listening acquisition (existing per-site HTTP/browser policy)
 
 The three semantic fields are one atomic bundle and are generated only after
 final selection. The deterministic driver validates and renders them; it must
-not fetch an article again, call another model, or invent a missing field. The
-current production Hermes prompt and external `weekly_driver.py` have not yet
-been moved by this contract-only change. That migration requires a separate
-review of their exact dependencies and state-commit order before the 08:00 job
-is changed.
+not fetch an article again, call another model, or invent a missing field.
+
+## Semantic sidecar (`article-semantic-sidecar.v1`)
+
+`climate_monitor/semantic_bundle.py` is the repository-owned producer. For each
+canonical report `sources/climate-monitor-<date>.md` it writes the sibling
+`sources/climate-monitor-<date>.semantics.json`.
+
+Producer contract:
+
+- Semantics are produced **only** for the finally selected articles
+  (`kept[:max_items_per_report]`), after relevance filtering and de-duplication.
+- **Exactly one authoring pass.** If the existing `web_listening` manifest item
+  carries a `semantics` object, it is used verbatim
+  (`semantics_provenance: "agent_bundle"`). Otherwise the bundle is composed
+  from the classifier values the pipeline already computed for that item
+  (`semantics_provenance: "pipeline_derived"`). The producer opens no socket,
+  reads no environment variable, and makes no second per-article model call.
+- `climate_monitor.taxonomy.validate_semantic_bundle` is the runtime authority
+  and runs on every article. Invalid Unicode, unknown categories, disallowed
+  keywords, duplicate values, and count/length violations **raise**; nothing is
+  silently repaired.
+- Each sidecar binds the sidecar schema version, the taxonomy ID and exact
+  taxonomy file SHA-256, the canonical report date, filename, and SHA-256, and
+  one stable per-article identity
+  (`sha256("article-identity.v1\n" + canonical_url)`).
+- Articles are ordered exactly as `render_report` emits them (website, then
+  document, then research) and correspond 1:1 with the report's `**URL:**`
+  lines: nothing missing, nothing duplicated, nothing stale.
+- Serialization is deterministic: UTF-8, sorted keys, two-space indent, fixed
+  separators, no carriage returns, single trailing newline. Re-running the same
+  input produces byte-identical output.
+
+Commit protocol: the Markdown and the sidecar are validated **before** any
+write, staged as `<name>.pending` siblings, fsynced, then committed with
+`os.replace`. A validation failure therefore cannot overwrite an existing
+canonical artifact. If the process dies between the two commits,
+`recover_pending_commit` — called by `run_monitor` before it writes — either
+completes the staged pair or discards it, so the pair can never be left
+half-updated. `verify_semantic_sidecar` re-checks the committed pair and
+rejects a report SHA mismatch, a stale sidecar, a missing sidecar, and any
+article-set drift.
+
+Taxonomy identity is checked by ID **and** file SHA-256, not by path: a
+taxonomy copied elsewhere still validates, and a tampered copy is rejected.
 
 At runtime, full-content Registry enrichment takes precedence, followed by the
 unique article annotation, then explicit metadata embedded in a report. Batch
