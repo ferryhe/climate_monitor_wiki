@@ -1134,3 +1134,43 @@ def test_article_with_space_in_url_round_trips_through_commit_and_verify(tmp_pat
         items=[item],
     )
     assert commit2["report_sha256"] == commit["report_sha256"]
+
+
+def test_rendered_article_urls_accepts_lf_and_crlf_without_broadening_shape():
+    lf_report = (
+        "**URL:** https://example.test/first <br>\n"
+        "**URL:** https://example.test/second <br>\n"
+    )
+    crlf_report = lf_report.replace("\n", "\r\n")
+
+    expected = ["https://example.test/first", "https://example.test/second"]
+    assert rendered_article_urls(lf_report) == expected
+    assert rendered_article_urls(crlf_report) == expected
+
+    assert rendered_article_urls(" **URL:** https://example.test/first <br>\n") == []
+    assert rendered_article_urls("**URL:** https://example.test/first <br> \n") == []
+    assert rendered_article_urls("**URL:** https://example.test/first <br />\n") == []
+
+
+def test_verify_accepts_crlf_report_bound_to_matching_sidecar(tmp_path):
+    report_path = tmp_path / "climate-monitor-2026-05-14.md"
+    report_text = (
+        "# report\r\n"
+        "**URL:** https://www.iais.org/climate-supervision <br>\r\n"
+    )
+    report_bytes = report_text.encode("utf-8")
+    report_path.write_bytes(report_bytes)
+    payload = build_sidecar_payload(
+        report_date=date(2026, 5, 14),
+        report_filename=report_path.name,
+        report_sha256=hashlib.sha256(report_bytes).hexdigest(),
+        items=[_item()],
+        taxonomy=load_article_taxonomy(),
+    )
+    semantic_sidecar_path(report_path).write_bytes(serialize_sidecar(payload))
+
+    verified = verify_semantic_sidecar(report_path)
+
+    assert [article["url"] for article in verified["articles"]] == [
+        "https://www.iais.org/climate-supervision"
+    ]

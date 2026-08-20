@@ -44,7 +44,7 @@ SIDECAR_SUFFIX = ".semantics.json"
 PENDING_SUFFIX = ".pending"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (.+?) <br>$", re.MULTILINE)
+_REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (.+?) <br>\r?$", re.MULTILINE)
 _LANE_ORDER = ("website", "document", "research")
 _AGENT_BUNDLE_FIELDS = frozenset({"summary", "categories", "keywords"})
 _BOUND_BUNDLE_FIELDS = _AGENT_BUNDLE_FIELDS | {
@@ -425,15 +425,16 @@ def _verify_payload(payload: Any, *, report_bytes: bytes, report_path: Path) -> 
     return dict(payload)
 
 
-def verify_semantic_sidecar(report_path: str | Path) -> dict[str, Any]:
+def verify_semantic_sidecar(report_path: str | Path, *, report_bytes: bytes | None = None) -> dict[str, Any]:
     """Verify the committed Markdown/sidecar pair, or raise."""
 
     path = Path(report_path)
     sidecar_path = semantic_sidecar_path(path)
-    try:
-        report_bytes = path.read_bytes()
-    except OSError as exc:
-        raise SemanticBundleError("canonical report is unavailable") from exc
+    if report_bytes is None:
+        try:
+            report_bytes = path.read_bytes()
+        except OSError as exc:
+            raise SemanticBundleError("canonical report is unavailable") from exc
     try:
         raw = sidecar_path.read_bytes()
     except OSError as exc:
@@ -451,7 +452,8 @@ def verify_semantic_sidecar(report_path: str | Path) -> dict[str, Any]:
 
 
 def _write_pending(path: Path, payload: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags, 0o644)
     try:
         written = 0
         while written < len(payload):
