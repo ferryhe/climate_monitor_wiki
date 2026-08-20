@@ -13,6 +13,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.platypus import CondPageBreak, HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from .delivery import _validate_summary
 from .errors import GenerationError
 from .io import atomic_replace
 from .summary import format_scope_line
@@ -238,6 +239,7 @@ def _monitoring_snapshot(summary: dict[str, Any], styles) -> Table:
 
 
 def render_pdf(summary: dict[str, Any], output: Path) -> None:
+    _validate_summary(summary)
     output = Path(output)
     temporary: str | None = None
     styles = _styles()

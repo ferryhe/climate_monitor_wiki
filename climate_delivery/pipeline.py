@@ -8,7 +8,7 @@ from climate_monitor.semantic_bundle import SemanticBundleError, verify_semantic
 
 from .config import load_delivery_config
 from .delivery import deliver
-from .errors import DeliveryError, GenerationError, LockStateError
+from .errors import DeliveryError, GenerationError, InputError, LockStateError
 from .io import atomic_write_bytes, atomic_write_json, exclusive_lock
 from .paths import validate_run_paths
 from .pdf import render_pdf
@@ -45,9 +45,14 @@ def _attach_verified_semantics(
     """
 
     highlights = summary.get("highlights", [])
-    summary["article_semantics"] = {
-        item["url"]: dict(index.get(item["url"], {})) for item in highlights
-    }
+    article_semantics: dict[str, dict[str, Any]] = {}
+    for item in highlights:
+        url = item["url"]
+        semantics = index.get(url)
+        if not semantics:
+            raise SemanticBundleError("verified sidecar semantics are missing for a delivery highlight")
+        article_semantics[url] = dict(semantics)
+    summary["article_semantics"] = article_semantics
     return summary
 
 
@@ -153,7 +158,6 @@ def run_delivery(
     dry_run: bool = False,
     smtp_factory=None,
     clock=None,
-    semantics_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     report_path, output_dir, state_dir, config_path = validate_run_paths(
         report_path,
@@ -161,20 +165,22 @@ def run_delivery(
         state_dir,
         config_path,
     )
-    report = parse_weekly_report(report_path)
+    try:
+        report_bytes = report_path.read_bytes()
+    except OSError as exc:
+        raise InputError("report must be a readable UTF-8 file") from exc
+    report = parse_weekly_report(report_path, raw=report_bytes)
     config = load_delivery_config(config_path)
 
     # The 09:00 delivery consumes the SAME SHA-bound semantic sidecar that the
     # 08:00 producer committed next to the canonical Markdown. Verification is
     # fail-closed: a missing, stale, mismatched, or corrupt sidecar aborts the
     # delivery outright. There is no Markdown-scrape fallback and no model/LLM
-    # call -- a report without a verifiable semantic contract cannot be
-    # delivered. ``semantics_override`` exists ONLY for unit tests; the real
-    # production path always loads and verifies from disk.
-    if semantics_override is not None:
-        sidecar_payload: Mapping[str, Any] = semantics_override
-    else:
-        sidecar_payload = verify_semantic_sidecar(report_path)
+    # call, and verification uses the exact report bytes parsed above.
+    sidecar_payload = verify_semantic_sidecar(report_path, report_bytes=report_bytes)
+    sidecar_report = sidecar_payload.get("report")
+    if not isinstance(sidecar_report, Mapping) or sidecar_report.get("sha256") != report.sha256:
+        raise SemanticBundleError("verified sidecar report sha256 does not match the parsed report")
 
     semantics_index = _index_sidecar_semantics(sidecar_payload)
 

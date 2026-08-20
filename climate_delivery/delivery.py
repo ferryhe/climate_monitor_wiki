@@ -12,6 +12,8 @@ from email.utils import format_datetime, formataddr
 from pathlib import Path
 from typing import Any, Callable
 
+from climate_monitor.taxonomy import validate_semantic_bundle
+
 from .config import DeliveryConfig
 from .errors import DeliveryError, InputError, LockStateError
 from .io import atomic_write_json, exclusive_lock
@@ -59,6 +61,16 @@ def _validate_summary(summary: dict[str, Any]) -> None:
         raise InputError("summary original_links must be a non-empty list")
     if any(not isinstance(item, str) or not re.fullmatch(r"https?://[^\s]+", item) for item in original_links):
         raise InputError("summary original_links entries must be HTTP(S) strings")
+    if "article_semantics" in summary:
+        article_semantics = summary["article_semantics"]
+        highlight_urls = {item["url"] for item in summary["highlights"]}
+        if not isinstance(article_semantics, dict) or set(article_semantics) != highlight_urls:
+            raise InputError("summary article_semantics must exactly match highlight URLs")
+        for bundle in article_semantics.values():
+            try:
+                validate_semantic_bundle(bundle)
+            except ValueError as exc:
+                raise InputError("summary article_semantics entries must be valid semantic bundles") from exc
 
 
 def load_summary_with_sha256(path: Path) -> tuple[dict[str, Any], str]:
