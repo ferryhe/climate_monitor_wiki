@@ -3,7 +3,7 @@ import os
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -163,7 +163,13 @@ def _section_header(title: str, styles) -> list:
     ]
 
 
-def _highlight_card(item: dict[str, str], number: int, styles) -> KeepTogether:
+def _highlight_card(
+    item: dict[str, str],
+    number: int,
+    styles,
+    semantics: Mapping[str, Any] | None = None,
+) -> KeepTogether:
+    semantics = semantics or {}
     url = _safe(item["url"])
     content = [
         Paragraph(
@@ -173,6 +179,16 @@ def _highlight_card(item: dict[str, str], number: int, styles) -> KeepTogether:
     ]
     if item["summary"]:
         content.append(Paragraph(_safe(item["summary"]), styles["card_body"]))
+    categories = semantics.get("categories") or []
+    keywords = semantics.get("keywords") or []
+    if categories:
+        content.append(
+            Paragraph("Categories: " + _safe(", ".join(categories)), styles["card_body"])
+        )
+    if keywords:
+        content.append(
+            Paragraph("Keywords: " + _safe(", ".join(keywords)), styles["card_body"])
+        )
     card = Table([[content]], colWidths=[FRAME_WIDTH], hAlign="LEFT")
     card.setStyle(
         TableStyle(
@@ -262,7 +278,11 @@ def render_pdf(summary: dict[str, Any], output: Path) -> None:
         highlights = [item for item in summary["highlights"] if item["pillar"] == pillar]
         if not highlights:
             continue
-        cards = [_highlight_card(item, number, styles) for number, item in enumerate(highlights, start=1)]
+        semantics_index = summary.get("article_semantics", {})
+        cards = [
+            _highlight_card(item, number, styles, semantics_index.get(item["url"]))
+            for number, item in enumerate(highlights, start=1)
+        ]
         story.append(CondPageBreak(50 * mm))
         story.extend(_section_header(f"Pillar {pillar}", styles))
         story.extend(cards)

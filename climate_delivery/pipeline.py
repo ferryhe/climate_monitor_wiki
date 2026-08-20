@@ -2,7 +2,9 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from climate_monitor.semantic_bundle import SemanticBundleError, verify_semantic_sidecar
 
 from .config import load_delivery_config
 from .delivery import deliver
@@ -12,6 +14,41 @@ from .paths import validate_run_paths
 from .pdf import render_pdf
 from .report import parse_weekly_report
 from .summary import build_summary, write_summary
+
+
+def _index_sidecar_semantics(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index verified sidecar article semantics by both raw and canonical URL.
+
+    The delivery report's highlight URLs are matched against the sidecar's
+    article ``url`` and ``canonical_url`` so that tracking-parameter variants
+    still resolve to the same verified bundle.
+    """
+
+    index: dict[str, dict[str, Any]] = {}
+    for article in payload.get("articles", []):
+        semantics = article.get("semantics") or {}
+        for key in (article.get("url"), article.get("canonical_url")):
+            if key:
+                index[key] = semantics
+    return index
+
+
+def _attach_verified_semantics(
+    summary: dict[str, Any], index: Mapping[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Carry the verified per-article semantics alongside the highlights.
+
+    The v1 summary highlight shape (``pillar``, ``title``, ``summary``,
+    ``url``) is preserved exactly so ``_validate_summary`` keeps passing; the
+    verified semantics travel in a separate top-level ``article_semantics``
+    map keyed by highlight URL and are consumed by the PDF renderer.
+    """
+
+    highlights = summary.get("highlights", [])
+    summary["article_semantics"] = {
+        item["url"]: dict(index.get(item["url"], {})) for item in highlights
+    }
+    return summary
 
 
 def _file_sha256(path: Path) -> str:
@@ -116,6 +153,7 @@ def run_delivery(
     dry_run: bool = False,
     smtp_factory=None,
     clock=None,
+    semantics_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     report_path, output_dir, state_dir, config_path = validate_run_paths(
         report_path,
@@ -125,7 +163,23 @@ def run_delivery(
     )
     report = parse_weekly_report(report_path)
     config = load_delivery_config(config_path)
+
+    # The 09:00 delivery consumes the SAME SHA-bound semantic sidecar that the
+    # 08:00 producer committed next to the canonical Markdown. Verification is
+    # fail-closed: a missing, stale, mismatched, or corrupt sidecar aborts the
+    # delivery outright. There is no Markdown-scrape fallback and no model/LLM
+    # call -- a report without a verifiable semantic contract cannot be
+    # delivered. ``semantics_override`` exists ONLY for unit tests; the real
+    # production path always loads and verifies from disk.
+    if semantics_override is not None:
+        sidecar_payload: Mapping[str, Any] = semantics_override
+    else:
+        sidecar_payload = verify_semantic_sidecar(report_path)
+
+    semantics_index = _index_sidecar_semantics(sidecar_payload)
+
     summary = build_summary(report)
+    _attach_verified_semantics(summary, semantics_index)
     artifact_dir = output_dir / report.report_date / report.sha256
     summary_path = artifact_dir / "summary.json"
     pdf_name = f"climate-monitor-{report.report_date}.pdf"
