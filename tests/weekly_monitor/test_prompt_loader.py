@@ -39,6 +39,15 @@ def test_prompt_loader_returns_exact_versioned_prompt_bytes_and_stable_sha():
     assert b"sk-" not in prompt.raw_bytes
 
 
+def test_pinned_prompt_artifacts_are_lf_normalized():
+    attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+
+    assert (
+        "monitoring/jobs/weekly-climate-monitor-08h/prompts/*.prompt.md text eol=lf"
+        in attrs
+    )
+
+
 def test_weekly_monitor_management_metadata_is_not_live_hermes_config():
     manifest = json.loads((JOB_ROOT / "manifest.json").read_text(encoding="utf-8"))
     driver = json.loads(
@@ -52,6 +61,11 @@ def test_weekly_monitor_management_metadata_is_not_live_hermes_config():
     assert manifest["prompt"]["chars"] == EXPECTED_PROMPT_CHARS
     assert manifest["prompt"]["lines"] == EXPECTED_PROMPT_LINES
     assert manifest["boundaries"]["does_not_store_credentials"] is True
+    assert (
+        manifest["boundaries"]["does_not_store_host_paths_except_exact_prompt_artifact"]
+        is True
+    )
+    assert "does_not_store_host_paths" not in manifest["boundaries"]
     assert manifest["provenance"]["raw_job_json_status"]["committed"] is False
     assert manifest["provenance"]["raw_job_json_status"]["available_externally"] is True
     assert manifest["provenance"]["raw_job_json_status"]["tarball_missing_job_json"] is True

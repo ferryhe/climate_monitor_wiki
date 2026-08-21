@@ -39,6 +39,9 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Print structured JSON for ai_interface.")
     args = parser.parse_args()
 
+    if args.production_weekly and not args.authoring_response:
+        parser.error("--production-weekly requires --authoring-response")
+
     report_date = date.fromisoformat(args.date) if args.date else None
     common = {
         "source_config_path": Path(args.source_config),

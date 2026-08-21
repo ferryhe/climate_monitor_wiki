@@ -13,6 +13,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from climate_monitor.models import CandidateItem
+from climate_monitor.orchestrator import run_monitor
 from climate_monitor.semantic_bundle import article_identity, semantic_sidecar_path
 from climate_monitor.taxonomy import DEFAULT_TAXONOMY_ID, DEFAULT_TAXONOMY_SHA256
 from climate_monitor.weekly_monitor.authoring_contract import (
@@ -139,6 +140,35 @@ def _write_manifest(path: Path) -> None:
     )
 
 
+def test_run_monitor_rejects_partial_provenance_before_writing_artifacts(tmp_path):
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    state = tmp_path / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+    _write_manifest(manifest)
+
+    with pytest.raises(ValueError, match="provenance metadata is incomplete"):
+        run_monitor(
+            source_config_path=source_config,
+            run_config_path=run_config,
+            report_date=date(2026, 5, 18),
+            manifest_fixture_path=manifest,
+            state_dir=state,
+            prompt_provenance={
+                "id": "weekly_monitor",
+                "version": "v1",
+                "sha256": load_weekly_monitor_prompt().sha256,
+            },
+        )
+
+    assert not source_dir.exists()
+    assert not wiki_dir.exists()
+
+
 def test_weekly_driver_fails_before_artifacts_seen_state_or_sync_on_invalid_authoring(tmp_path):
     source_config = tmp_path / "sources.yaml"
     run_config = tmp_path / "run_config.yaml"
@@ -260,6 +290,19 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path):
     ).validate(provenance)
     assert str(tmp_path) not in encoded
     assert "sk-test-secret" not in encoded
+
+
+def test_cli_production_weekly_requires_authoring_response_at_parse_time():
+    completed = subprocess.run(
+        [sys.executable, "scripts/run_climate_monitor.py", "--production-weekly"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "--production-weekly requires --authoring-response" in completed.stderr
+    assert "production weekly driver requires an authoring response file" not in completed.stderr
 
 
 def test_cli_production_weekly_path_uses_repo_prompt_without_printing_prompt_or_secrets(tmp_path):

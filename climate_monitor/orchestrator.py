@@ -22,7 +22,7 @@ from .semantic_bundle import (
 )
 from .web_listening_adapter import collect_website_items
 from .weekly_monitor.authoring_contract import validate_authoring_response
-from .weekly_monitor.provenance import build_run_provenance
+from .weekly_monitor.provenance import build_run_provenance, require_complete_provenance_inputs
 
 
 DEFAULT_STATE_DIR = Path("monitoring/state")
@@ -99,6 +99,13 @@ def run_monitor(
 ) -> MonitorRunResult:
     day = report_date or date.today()
     repo_root = Path.cwd()
+    emit_provenance = require_complete_provenance_inputs(
+        prompt_provenance=prompt_provenance,
+        driver_version=driver_version,
+        contract_version=contract_version,
+        repository_commit_sha=repository_commit_sha,
+        model_metadata=model_metadata,
+    )
     sources = load_sources(source_config_path)
     config = _with_output_overrides(load_run_config(run_config_path), source_dir=source_dir, wiki_dir=wiki_dir)
     state_root = _resolve_path(state_dir, root=repo_root)
@@ -183,7 +190,7 @@ def run_monitor(
     )
     sidecar_path = Path(commit["sidecar_path"])
     provenance = None
-    if prompt_provenance is not None or repository_commit_sha or driver_version or contract_version:
+    if emit_provenance:
         provenance = build_run_provenance(
             commit=commit,
             prompt_provenance=prompt_provenance,

@@ -48,7 +48,7 @@
   "boundaries": {
     "does_not_define_live_schedule": true,
     "does_not_store_credentials": true,
-    "does_not_store_host_paths": true,
+    "does_not_store_host_paths_except_exact_prompt_artifact": true,
     "does_not_replace_hermes": true
   }
 }
