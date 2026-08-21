@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/jobs/weekly-climate-monitor-08h/contracts/provenance.v1.schema.json",
+  "title": "Weekly monitor run provenance v1",
+  "description": "Safe public provenance for a successful strict weekly driver run. It intentionally records filenames and hashes, not host paths, credentials, raw logs, or live Hermes payloads.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "prompt",
+    "driver",
+    "taxonomy",
+    "report",
+    "semantic_sidecar",
+    "final_articles",
+    "model"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "weekly-monitor-provenance.v1"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_sha"],
+      "properties": {
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {
+          "const": "weekly_monitor"
+        },
+        "version": {
+          "const": "v1"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contract_version"],
+      "properties": {
+        "version": {
+          "const": "weekly-monitor-driver.v1"
+        },
+        "contract_version": {
+          "const": "weekly-monitor-authoring.v1"
+        }
+      }
+    },
+    "taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taxonomy_id", "sha256"],
+      "properties": {
+        "taxonomy_id": {
+          "const": "climate-actuarial-v1"
+        },
+        "sha256": {
+          "const": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "pattern": "^climate-monitor-\\d{4}-\\d{2}-\\d{2}\\.md$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "semantic_sidecar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "pattern": "^climate-monitor-\\d{4}-\\d{2}-\\d{2}\\.semantics\\.json$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "final_articles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "identities"],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "settings"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "maxLength": 120,
+          "pattern": "^[^\\\\/:\\r\\n\\t]*$"
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 120,
+          "pattern": "^[^\\\\/:\\r\\n\\t]*$"
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_output_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "temperature": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            }
+          }
+        }
+      }
+    }
+  }
+}

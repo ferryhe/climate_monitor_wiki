@@ -6,10 +6,11 @@ content database, or replacement for the Article Registry.
 
 The repo-owned 10:00 Publisher wrapper records its own outcome after the rolling
 PR transaction and production-checkout integrity check have completed. The
-production monitor still runs in the separate `web_listening` workspace, so
-this application cannot truthfully reconstruct its 57-source results or
-registry revision from generated Markdown; Monitor producer wiring remains a
-separate concern.
+repository now contains a strict weekly monitor driver and prompt provenance
+contract, but the live 08:00 producer still belongs to Hermes until a separately
+authorized cutover is performed. This application cannot truthfully reconstruct
+Hermes' 57-source results or registry revision from generated Markdown; Monitor
+producer wiring and live scheduler changes remain separate concerns.
 
 ## Attempt contract
 

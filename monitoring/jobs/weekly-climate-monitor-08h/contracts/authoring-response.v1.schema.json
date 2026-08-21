@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/jobs/weekly-climate-monitor-08h/contracts/authoring-response.v1.schema.json",
+  "title": "Weekly monitor authoring response v1",
+  "description": "Structural contract for the single weekly monitor authoring response over the final selected article set. Runtime validation MUST also run climate_monitor.weekly_monitor.authoring_contract.validate_authoring_response, which binds every article_id to the final selected set, rejects missing, duplicate, unknown, or extra articles, and validates every semantic bundle against the versioned taxonomy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "article_count",
+    "articles"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "weekly-monitor-authoring-response.v1"
+    },
+    "contract_version": {
+      "const": "weekly-monitor-authoring.v1"
+    },
+    "article_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "articles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "article_id",
+          "semantics"
+        ],
+        "properties": {
+          "article_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "semantics": {
+            "$ref": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/schemas/article_semantic_bundle_v1.schema.json"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/jobs/weekly-climate-monitor-08h/contracts/authoring-request.v1.schema.json",
+  "title": "Weekly monitor authoring request v1",
+  "description": "Portable structural contract for the repository-produced authoring request over the final selected article set. Runtime code computes article_id from canonical article identity and does not include prompt bytes, secrets, host paths, or live Hermes configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "report_date",
+    "prompt",
+    "taxonomy",
+    "articles"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "weekly-monitor-authoring-request.v1"
+    },
+    "contract_version": {
+      "const": "weekly-monitor-authoring.v1"
+    },
+    "report_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {
+          "const": "weekly_monitor"
+        },
+        "version": {
+          "const": "v1"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "taxonomy_id", "sha256", "allowed_categories"],
+      "properties": {
+        "schema_version": {
+          "const": "article-category-taxonomy.v1"
+        },
+        "taxonomy_id": {
+          "const": "climate-actuarial-v1"
+        },
+        "sha256": {
+          "const": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+        },
+        "allowed_categories": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "articles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "article_id",
+          "url",
+          "canonical_url",
+          "title",
+          "source",
+          "lane",
+          "content_hash",
+          "source_summary",
+          "detected_at",
+          "published",
+          "classifier"
+        ],
+        "properties": {
+          "article_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "canonical_url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "lane": {
+            "enum": ["website", "document", "research"]
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "source_summary": {
+            "type": "string"
+          },
+          "detected_at": {
+            "type": "string"
+          },
+          "published": {
+            "type": "string"
+          },
+          "classifier": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "climate_signal",
+              "actuarial_signal",
+              "categories",
+              "keywords",
+              "topics"
+            ],
+            "properties": {
+              "climate_signal": {
+                "type": "string"
+              },
+              "actuarial_signal": {
+                "type": "string"
+              },
+              "categories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "topics": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

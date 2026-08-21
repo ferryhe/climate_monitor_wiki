@@ -1,0 +1,101 @@
+{
+  "schema_version": "weekly-monitor-hermes-job-capture.redacted.v1",
+  "capture_kind": "redacted-hermes-job-metadata",
+  "capture_basis": "controller-safe-inspection",
+  "not_live_scheduler_config": true,
+  "job": {
+    "id": "f5259a8ec2d9",
+    "name": "Weekly Climate & Actuarial Monitor (IAA CSC Supras)",
+    "enabled": true,
+    "state": "scheduled",
+    "created_at": "2026-07-26T19:53:13.667513-04:00",
+    "next_run_at": "2026-08-24T04:00:00-04:00",
+    "last_run_at": "2026-08-17T08:28:13.098952-04:00",
+    "last_status": "ok",
+    "schedule": {
+      "kind": "cron",
+      "expr": "0 8 * * 1",
+      "display": "0 8 * * 1",
+      "timezone": "UTC"
+    }
+  },
+  "tarball_reference": {
+    "filename": "monitor-08h-package.tar.gz",
+    "readme_claimed_job_json_included": true,
+    "tarball_missing_job_json": true,
+    "missing_filename": "job-08h-monitor.json"
+  },
+  "raw_job_json": {
+    "raw_job_json_committed": false,
+    "raw_job_json_available_externally": true,
+    "raw_job_json_source": "user-provided local attachment, not committed",
+    "raw_job_json_filename": "job-08h-monitor.json",
+    "file_bytes": 18122,
+    "file_sha256": "de237bb2719ec8812718776d64626fbab9d1e3fe8ddca55eb6955244455255f8",
+    "physical_line_count": 46,
+    "parsed_top_level_property_count": 31
+  },
+  "prompt": {
+    "raw_prompt_committed": true,
+    "prompt_artifact_path": "prompts/weekly-monitor-v1.prompt.md",
+    "body_redacted_from_capture": true,
+    "prompt_chars": 16406,
+    "prompt_lines": 276,
+    "prompt_sha256": "543f8c5b2d30f8b51dc2253a69cdb516d58dfd37cb9b2389e94dd5f5ebbd14b6",
+    "matches_snapshot": "monitor-post-pr44adapter2-f5259a8ec2d9.snapshot.json",
+    "captured_production_driver": true,
+    "not_repository_instruction": true,
+    "snapshot_inventory": [
+      {
+        "snapshot": "monitor-pre-pr44adapter-f5259a8ec2d9.snapshot.json",
+        "prompt_hash": "5fa51bb90c7b9a4452f50108c3dbafaaa763b1df0c7d18d97ce27ef855bd0186",
+        "prompt_chars": 4762
+      },
+      {
+        "snapshot": "monitor-post-pr44adapter-f5259a8ec2d9.snapshot.json",
+        "prompt_hash": "eb9afc5cbda5cb49fad95c058defcae2ea36fc977cdc708ef5287a17c6f89ab0",
+        "prompt_chars": 7193
+      },
+      {
+        "snapshot": "monitor-post-pr44adapter2-f5259a8ec2d9.snapshot.json",
+        "prompt_hash": "543f8c5b2d30f8b51dc2253a69cdb516d58dfd37cb9b2389e94dd5f5ebbd14b6",
+        "prompt_chars": 16406
+      },
+      {
+        "snapshot": "monitor-preflight-pre-f5259a8ec2d9.snapshot.json",
+        "prompt_hash": "f3e014d8184162a943f71d1c2505effaebe745b5da6175ebf68e24a6f832d324",
+        "prompt_chars": 7212
+      },
+      {
+        "snapshot": "monitor-verify1-f5259a8ec2d9.snapshot.json",
+        "prompt_hash": "f3e014d8184162a943f71d1c2505effaebe745b5da6175ebf68e24a6f832d324",
+        "prompt_chars": 7212
+      }
+    ]
+  },
+  "runtime_shape": {
+    "script": null,
+    "no_agent": false,
+    "model": null,
+    "workdir": null
+  },
+  "redactions": {
+    "delivery_channels": [
+      "discord",
+      "feishu"
+    ],
+    "delivery_identifiers_redacted": true,
+    "host_paths_redacted": true,
+    "origin_identifiers_redacted": true,
+    "credential_values_redacted": true,
+    "raw_prompt_text_redacted": true,
+    "raw_logs_redacted": true
+  },
+  "notes": [
+    "This file records sanitized provenance metadata only.",
+    "The raw job JSON has been provided as a local attachment and verified externally, but it is intentionally not committed.",
+    "The monitor-08h-package.tar.gz README claimed job-08h-monitor.json was included, but that tarball omitted the file.",
+    "The captured production prompt is not an instruction for repository agents to execute.",
+    "Full production capture, parity, cutover, rollback, and observed Monday completion remain external host-runtime work."
+  ]
+}
