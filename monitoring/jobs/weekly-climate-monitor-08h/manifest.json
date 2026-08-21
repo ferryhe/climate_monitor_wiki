@@ -1,0 +1,54 @@
+{
+  "schema_version": "weekly-monitor-job-manifest.v1",
+  "job_id": "weekly-climate-monitor-08h",
+  "display_name": "Weekly Climate & Actuarial Monitor (IAA CSC Supras)",
+  "repository_owned": true,
+  "runtime_owner": "Hermes",
+  "not_live_scheduler_config": true,
+  "public_runtime_identity": {
+    "hermes_job_id": "f5259a8ec2d9",
+    "cron_utc": "0 8 * * 1",
+    "name": "Weekly Climate & Actuarial Monitor (IAA CSC Supras)"
+  },
+  "prompt": {
+    "id": "weekly_monitor",
+    "version": "v1",
+    "metadata_path": "prompts/weekly-monitor-v1.meta.json",
+    "body_path": "prompts/weekly-monitor-v1.prompt.md",
+    "artifact_committed": true,
+    "sha256": "543f8c5b2d30f8b51dc2253a69cdb516d58dfd37cb9b2389e94dd5f5ebbd14b6",
+    "chars": 16406,
+    "lines": 276
+  },
+  "contracts": {
+    "authoring_request_schema": "contracts/authoring-request.v1.schema.json",
+    "authoring_response_schema": "contracts/authoring-response.v1.schema.json",
+    "provenance_schema": "contracts/provenance.v1.schema.json"
+  },
+  "driver": {
+    "metadata_path": "driver/driver.v1.json",
+    "entrypoint_runbook": "driver/hermes-entrypoint.md"
+  },
+  "docs": {
+    "ownership_runbook": "docs/ownership-runbook.md",
+    "parity_cutover_rollback": "docs/parity-cutover-rollback.md"
+  },
+  "provenance": {
+    "captures_readme": "provenance/captures/README.md",
+    "redacted_job_capture": "provenance/captures/hermes-job-f5259a8ec2d9.redacted.json",
+    "raw_job_json_status": {
+      "committed": false,
+      "available_externally": true,
+      "source": "user-provided local attachment, not committed",
+      "sha256": "de237bb2719ec8812718776d64626fbab9d1e3fe8ddca55eb6955244455255f8",
+      "tarball_missing_job_json": true
+    },
+    "redacted_snapshots_glob": "provenance/captures/snapshots/*.snapshot.redacted.json"
+  },
+  "boundaries": {
+    "does_not_define_live_schedule": true,
+    "does_not_store_credentials": true,
+    "does_not_store_host_paths_except_exact_prompt_artifact": true,
+    "does_not_replace_hermes": true
+  }
+}

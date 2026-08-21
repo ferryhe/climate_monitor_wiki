@@ -1,0 +1,41 @@
+{
+  "schema_version": "weekly-monitor-authoring-response.v1",
+  "contract_version": "weekly-monitor-authoring.v1",
+  "article_count": 2,
+  "articles": [
+    {
+      "article_id": "87b61ed31821b8379f59fd3f59b2529d763c3162a1739469127cef9156cce08a",
+      "semantics": {
+        "schema_version": "article-semantic-bundle.v1",
+        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94",
+        "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
+        "categories": [
+          "Supervision & Disclosure"
+        ],
+        "keywords": [
+          "supervisory review",
+          "climate scenario",
+          "insurance supervision"
+        ]
+      }
+    },
+    {
+      "article_id": "87b61ed31821b8379f59fd3f59b2529d763c3162a1739469127cef9156cce08a",
+      "semantics": {
+        "schema_version": "article-semantic-bundle.v1",
+        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94",
+        "summary": "Duplicate output for the same article identity.",
+        "categories": [
+          "Climate Risk"
+        ],
+        "keywords": [
+          "climate risk",
+          "supervision",
+          "capital"
+        ]
+      }
+    }
+  ]
+}

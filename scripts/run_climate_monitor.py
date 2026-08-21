@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from climate_monitor.orchestrator import run_monitor
+from climate_monitor.weekly_monitor.driver import run_weekly_monitor
 
 
 def main() -> None:
@@ -25,23 +26,49 @@ def main() -> None:
     parser.add_argument("--wiki-dir", default="")
     parser.add_argument("--no-sync", action="store_true")
     parser.add_argument("--no-update-seen-state", action="store_true")
+    parser.add_argument(
+        "--production-weekly",
+        action="store_true",
+        help="Use the repo-owned strict weekly driver and versioned prompt.",
+    )
+    parser.add_argument("--authoring-response", default="")
+    parser.add_argument("--model-provider", default="")
+    parser.add_argument("--model", default="")
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--max-output-tokens", type=int, default=None)
     parser.add_argument("--json", action="store_true", help="Print structured JSON for ai_interface.")
     args = parser.parse_args()
 
+    if args.production_weekly and not args.authoring_response:
+        parser.error("--production-weekly requires --authoring-response")
+
     report_date = date.fromisoformat(args.date) if args.date else None
-    result = run_monitor(
-        source_config_path=Path(args.source_config),
-        run_config_path=Path(args.run_config),
-        report_date=report_date,
-        manifest_fixture_path=Path(args.manifest_fixture) if args.manifest_fixture else None,
-        research_fixture_path=Path(args.research_fixture) if args.research_fixture else None,
-        site_scopes_path=Path(args.site_scopes) if args.site_scopes else None,
-        state_dir=Path(args.state_dir),
-        source_dir=Path(args.source_dir) if args.source_dir else None,
-        wiki_dir=Path(args.wiki_dir) if args.wiki_dir else None,
-        sync=not args.no_sync,
-        update_seen_state=not args.no_update_seen_state,
-    )
+    common = {
+        "source_config_path": Path(args.source_config),
+        "run_config_path": Path(args.run_config),
+        "report_date": report_date,
+        "manifest_fixture_path": Path(args.manifest_fixture) if args.manifest_fixture else None,
+        "research_fixture_path": Path(args.research_fixture) if args.research_fixture else None,
+        "site_scopes_path": Path(args.site_scopes) if args.site_scopes else None,
+        "state_dir": Path(args.state_dir),
+        "source_dir": Path(args.source_dir) if args.source_dir else None,
+        "wiki_dir": Path(args.wiki_dir) if args.wiki_dir else None,
+        "sync": not args.no_sync,
+        "update_seen_state": not args.no_update_seen_state,
+    }
+    if args.production_weekly:
+        result = run_weekly_monitor(
+            **common,
+            authoring_response_path=Path(args.authoring_response) if args.authoring_response else None,
+            model_provider=args.model_provider,
+            model=args.model,
+            temperature=args.temperature,
+            max_output_tokens=args.max_output_tokens,
+        )
+    else:
+        if args.authoring_response:
+            parser.error("--authoring-response requires --production-weekly")
+        result = run_monitor(**common)
 
     if args.json:
         print(result.to_json(), end="")

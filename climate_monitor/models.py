@@ -103,9 +103,10 @@ class MonitorRunResult:
     synced: bool = False
     report_sha256: str = ""
     semantics_path: str | None = None
+    provenance: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "report_date": self.report_date.isoformat(),
             "report_path": _safe_path(self.report_path),
             "report_sha256": self.report_sha256,
@@ -116,6 +117,9 @@ class MonitorRunResult:
             "dedup_notes": list(self.dedup_notes),
             "warnings": list(self.warnings),
         }
+        if self.provenance is not None:
+            payload["provenance"] = _json_value(self.provenance)
+        return payload
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2) + "\n"

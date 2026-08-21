@@ -1,2 +1,3 @@
 monitoring/taxonomies/*.yaml text eol=lf
 monitoring/schemas/*.json text eol=lf
+monitoring/jobs/weekly-climate-monitor-08h/prompts/*.prompt.md text eol=lf

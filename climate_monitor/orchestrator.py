@@ -5,6 +5,7 @@ import os
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+from typing import Any, Mapping
 
 from scripts.sync_source_wiki import sync_source_wiki
 
@@ -20,6 +21,8 @@ from .semantic_bundle import (
     select_semantic_articles,
 )
 from .web_listening_adapter import collect_website_items
+from .weekly_monitor.authoring_contract import validate_authoring_response
+from .weekly_monitor.provenance import build_run_provenance, require_complete_provenance_inputs
 
 
 DEFAULT_STATE_DIR = Path("monitoring/state")
@@ -87,9 +90,22 @@ def run_monitor(
     wiki_dir: str | Path | None = None,
     sync: bool = True,
     update_seen_state: bool = True,
+    authoring_response: Mapping[str, Any] | None = None,
+    prompt_provenance: Mapping[str, str] | None = None,
+    driver_version: str = "",
+    contract_version: str = "",
+    repository_commit_sha: str = "",
+    model_metadata: Mapping[str, Any] | None = None,
 ) -> MonitorRunResult:
     day = report_date or date.today()
     repo_root = Path.cwd()
+    emit_provenance = require_complete_provenance_inputs(
+        prompt_provenance=prompt_provenance,
+        driver_version=driver_version,
+        contract_version=contract_version,
+        repository_commit_sha=repository_commit_sha,
+        model_metadata=model_metadata,
+    )
     sources = load_sources(source_config_path)
     config = _with_output_overrides(load_run_config(run_config_path), source_dir=source_dir, wiki_dir=wiki_dir)
     state_root = _resolve_path(state_dir, root=repo_root)
@@ -127,13 +143,16 @@ def run_monitor(
     kept, dedup_notes = dedupe_items(relevant, seen_urls=seen_urls, seen_titles=seen_titles)
     kept = kept[: config.max_items_per_report]
 
-    # Drop benign per-item oddities (blank URL, sparse/unvalidatable bundle)
-    # before the Markdown and sidecar are built over the *same* item set. This
-    # keeps them 1:1 and turns previously run-aborting inputs into per-item
-    # drops (reviewer HIGH-1 / residual). Genuinely corrupt inputs still raise
-    # inside commit_report_with_semantics verification (fail-closed).
-    kept_semantic, drop_notes = select_semantic_articles(kept)
-    dedup_notes.extend(drop_notes)
+    if authoring_response is not None:
+        authored = validate_authoring_response(kept, authoring_response)
+        kept_semantic = list(authored.items)
+    else:
+        # Drop benign per-item oddities (blank URL, sparse/unvalidatable bundle)
+        # before the Markdown and sidecar are built over the *same* item set.
+        # Strict production authoring bypasses this fallback and fails closed
+        # above when the supplied response is incomplete or invalid.
+        kept_semantic, drop_notes = select_semantic_articles(kept)
+        dedup_notes.extend(drop_notes)
 
     if not kept_semantic and not config.write_empty_report:
         return MonitorRunResult(
@@ -169,6 +188,17 @@ def run_monitor(
         report_text=report_text,
         items=kept_semantic,
     )
+    sidecar_path = Path(commit["sidecar_path"])
+    provenance = None
+    if emit_provenance:
+        provenance = build_run_provenance(
+            commit=commit,
+            prompt_provenance=prompt_provenance,
+            driver_version=driver_version,
+            contract_version=contract_version,
+            repository_commit_sha=repository_commit_sha,
+            model_metadata=model_metadata,
+        )
 
     if update_seen_state:
         for item in kept_semantic:
@@ -192,5 +222,6 @@ def run_monitor(
         warnings=tuple(website_warnings),
         synced=synced,
         report_sha256=commit["report_sha256"],
-        semantics_path=str(commit["sidecar_path"]),
+        semantics_path=str(sidecar_path),
+        provenance=provenance,
     )

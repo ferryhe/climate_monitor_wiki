@@ -1,0 +1,30 @@
+{
+  "schema_version": "weekly-monitor-driver-metadata.v1",
+  "driver_version": "weekly-monitor-driver.v1",
+  "python_module": "climate_monitor.weekly_monitor.driver",
+  "python_callable": "run_weekly_monitor",
+  "cli_entrypoint": "scripts/run_climate_monitor.py",
+  "required_cli_flags": [
+    "--production-weekly",
+    "--authoring-response"
+  ],
+  "optional_public_metadata_flags": [
+    "--model-provider",
+    "--model",
+    "--temperature",
+    "--max-output-tokens"
+  ],
+  "behavior": {
+    "strict_authoring_response_required": true,
+    "validates_before_artifact_mutation": true,
+    "second_per_article_model_call": false,
+    "existing_manual_fixture_path_preserved_without_production_weekly": true
+  },
+  "runtime_boundary": {
+    "owner": "Hermes",
+    "not_live_scheduler_config": true,
+    "contains_credentials": false,
+    "contains_host_paths": false,
+    "contains_runtime_limits": false
+  }
+}
