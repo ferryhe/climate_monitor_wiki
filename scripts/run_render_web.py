@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 
 from climate_registry.audit import build_audit_registry
 
@@ -18,6 +19,7 @@ def _run_app() -> None:
 
 
 def main() -> None:
+    load_dotenv(ROOT / ".env")
     if os.getenv("CLIMATE_REGISTRY_DB", "").strip():
         _run_app()
         return
