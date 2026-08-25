@@ -35,6 +35,14 @@ per-article JSON annotations remain a compatibility fallback, including
 reviewed source-annotation fields; the browser payload and ordering are
 unchanged.
 
+The Registry UI keeps `summary` and `report_summary` distinct because they have
+different provenance: `summary` belongs to the current atomic semantic bundle,
+while `report_summary` is the text observed in the historical report. All three
+Registry surfaces resolve one display presentation in the same order:
+`summary`, legacy `enrichment.summary`, then `report_summary`. When the last
+fallback is used, the UI labels it `Historical report`; it does not infer the
+missing categories or keywords.
+
 ## Chat Tab
 
 The chat surface is intentionally sparse:
