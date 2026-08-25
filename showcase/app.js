@@ -1506,6 +1506,59 @@ function registryMetric(label, value) {
   return wrapper;
 }
 
+const REGISTRY_SUMMARY_PRESENTATION = {
+  content_enrichment: {
+    sourceLabel: "Captured content",
+    provenanceCopy: "Summary generated from captured article content",
+  },
+  original_content_annotation: {
+    sourceLabel: "Original source",
+    provenanceCopy: "Summary based on the linked original content",
+  },
+  official_replacement_annotation: {
+    sourceLabel: "Official replacement",
+    provenanceCopy: "Summary based on an official replacement page",
+  },
+  publisher_excerpt_annotation: {
+    sourceLabel: "Publisher excerpt",
+    provenanceCopy: "Summary based on the publisher's available excerpt",
+  },
+  report_fallback_annotation: {
+    sourceLabel: "Report fallback",
+    provenanceCopy: "Summary based on historical report text because the original source was unavailable",
+  },
+  source_report: {
+    sourceLabel: "Historical report",
+    provenanceCopy: "Summary from the historical report",
+  },
+};
+
+function registrySummaryPresentation(article) {
+  let text = "";
+  let provenance = null;
+  if (article.summary) {
+    text = article.summary;
+    provenance =
+      article.summary_provenance ||
+      (article.source_annotation?.source_basis
+        ? `${article.source_annotation.source_basis}_annotation`
+        : null);
+  } else if (article.enrichment?.summary) {
+    text = article.enrichment.summary;
+    provenance = "content_enrichment";
+  } else if (article.report_summary) {
+    text = article.report_summary;
+    provenance = "source_report";
+  }
+  const presentation = REGISTRY_SUMMARY_PRESENTATION[provenance] || {};
+  return {
+    text,
+    provenance,
+    sourceLabel: presentation.sourceLabel || "",
+    provenanceCopy: presentation.provenanceCopy || "",
+  };
+}
+
 function safeSourceUrl(value) {
   try {
     const url = new URL(value);
@@ -1772,38 +1825,21 @@ async function loadRegistryReport(reportDate) {
       const button = registryElement("button", "registry-article-link", article.title);
       button.type = "button";
       button.dataset.articleId = article.article_id;
-      const summarySourceLabels = {
-          content_enrichment: "Captured content",
-          original_content_annotation: "Original source",
-          official_replacement_annotation: "Official replacement",
-          publisher_excerpt_annotation: "Publisher excerpt",
-          report_fallback_annotation: "Report fallback",
-          source_report: "Historical report",
-        };
-      const legacySourceLabels = {
-        original_content: "Original source",
-        official_replacement: "Official replacement",
-        publisher_excerpt: "Publisher excerpt",
-        report_fallback: "Report fallback",
-      };
-      const summarySourceLabel =
-        article.summary_provenance == null
-          ? legacySourceLabels[article.source_annotation?.source_basis] || ""
-          : summarySourceLabels[article.summary_provenance] || "";
+      const summaryPresentation = registrySummaryPresentation(article);
       const meta = registryElement(
         "span",
         "registry-card__meta",
         [
           article.pillar ? `Pillar ${article.pillar}` : article.section,
           article.publisher,
-          summarySourceLabel,
+          summaryPresentation.sourceLabel,
         ]
           .filter(Boolean)
           .join(" · "),
       );
       item.append(button, meta);
-      if (article.summary) {
-        item.append(registryElement("p", "registry-card__summary", article.summary));
+      if (summaryPresentation.text) {
+        item.append(registryElement("p", "registry-card__summary", summaryPresentation.text));
       }
       els.registryReportArticles.append(item);
     });
@@ -1845,6 +1881,7 @@ async function loadRegistryArticles() {
       const button = registryElement("button", "registry-card");
       button.type = "button";
       button.dataset.articleId = article.article_id;
+      const summaryPresentation = registrySummaryPresentation(article);
       button.append(
         registryElement("strong", "registry-card__title", article.title),
         registryElement(
@@ -1852,8 +1889,12 @@ async function loadRegistryArticles() {
           "registry-card__meta",
           `${article.publisher} · last seen ${article.last_seen}`,
         ),
-        registryElement("span", "registry-card__summary", article.report_summary),
       );
+      if (summaryPresentation.text) {
+        button.append(
+          registryElement("span", "registry-card__summary", summaryPresentation.text),
+        );
+      }
       els.registryArticles.append(button);
     });
     updateRegistryPagination("articles", payload.pagination);
@@ -1917,10 +1958,13 @@ async function loadRegistryArticle(articleId) {
       metrics.push(registryMetric("Captured", article.content.fetched_at));
     }
     els.registryArticleMeta.append(...metrics);
-    const summary = article.summary || article.enrichment?.summary || article.report_summary;
-    if (summary) {
+    const summaryPresentation = registrySummaryPresentation(article);
+    if (summaryPresentation.text) {
       const summaryBlock = registryElement("div", "registry-summary");
-      summaryBlock.append(registryElement("h4", "", "Summary"), registryElement("p", "", summary));
+      summaryBlock.append(
+        registryElement("h4", "", "Summary"),
+        registryElement("p", "", summaryPresentation.text),
+      );
       els.registryEnrichment.append(summaryBlock);
     }
     appendRegistryTags(
@@ -1933,34 +1977,17 @@ async function loadRegistryArticle(articleId) {
       "Keywords",
       article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
     );
-    const summaryProvenance =
-      article.summary_provenance ||
-      (article.enrichment?.summary
-        ? "content_enrichment"
-        : article.source_annotation
-          ? `${article.source_annotation.source_basis}_annotation`
-          : summary
-            ? "source_report"
-            : null);
-    const provenanceCopy = {
-      content_enrichment: "Summary generated from captured article content",
-      original_content_annotation: "Summary based on the linked original content",
-      official_replacement_annotation: "Summary based on an official replacement page",
-      publisher_excerpt_annotation: "Summary based on the publisher's available excerpt",
-      report_fallback_annotation:
-        "Summary based on historical report text because the original source was unavailable",
-      source_report: "Summary from the historical report",
-    }[summaryProvenance];
-    if (provenanceCopy) {
+    if (summaryPresentation.provenanceCopy) {
       const reviewed =
-        summaryProvenance.endsWith("_annotation") && article.source_annotation?.generated_on
+        summaryPresentation.provenance?.endsWith("_annotation") &&
+        article.source_annotation?.generated_on
           ? ` · reviewed ${article.source_annotation.generated_on}`
           : "";
       els.registryEnrichment.append(
         registryElement(
           "p",
           "muted registry-provenance",
-          `${provenanceCopy}${reviewed}`,
+          `${summaryPresentation.provenanceCopy}${reviewed}`,
         ),
       );
     }

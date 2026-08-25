@@ -1241,6 +1241,13 @@ def test_frontend_exposes_safe_registry_workspace_without_operations():
     assert "/api/registry/reports" in script
     assert "/api/registry/articles" in script
     assert "registryMarkdown.textContent" in script
+    assert "function registrySummaryPresentation(article)" in script
+    assert script.count("registrySummaryPresentation(article)") == 4
+    assert script.index("if (article.summary)") < script.index("else if (article.enrichment?.summary)")
+    assert script.index("else if (article.enrichment?.summary)") < script.index(
+        "else if (article.report_summary)"
+    )
+    assert 'provenance = "source_report"' in script
     assert not any(label in index for label in ("Refetch", "Reclassify", "Delete article", "Edit article"))
     assert "registryCard.innerHTML" not in script
     assert 'role="group" aria-label="Historical report sections"' in index
