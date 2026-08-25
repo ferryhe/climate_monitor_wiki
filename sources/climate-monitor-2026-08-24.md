@@ -19,7 +19,7 @@
 
 Only organization news/publications **relevant to climate change and actuarial risk** are shown — general, personnel, or non-climate items are filtered out. Each monitored site is tracked at the article level, so each link points to the **exact item**, not the homepage. Each item leads with a short summary, then the link.
 
-### Climate/actuarial-relevant articles detected this run: 6
+### Climate/actuarial-relevant articles detected this run: 5
 
 **PSI**
 - **UNEP FI at the World Circular Economy Forum**
@@ -42,10 +42,6 @@ Only organization news/publications **relevant to climate change and actuarial r
   - A Swiss solar-railway pilot illustrates distributed renewable energy in transport - a real-world climate-mitigation case study for infrastructure and green investment risk.
   🔗 https://www.weforum.org/videos/switzerland_solar_railway
 
-- **Nature and Biodiversity**
-  - WEF's nature-and-biodiversity coverage tracks the biodiversity dimension of climate risk (aligned with TNFD) that insurers and actuaries increasingly price into physical-risk and ESG frameworks.
-  🔗 https://www.weforum.org/stories/nature-and-biodiversity
-
 - **Is that you again, demand destruction? This time fossil fuels are in doubt**
   - WEF analysis argues fossil-fuel demand destruction is now plausible amid the green-energy transition - a transition-risk signal for actuaries assessing carbon-intensive asset exposure.
   🔗 https://www.weforum.org/stories/economic-growth/oil-hormuz-demand-destruction-war-iran-green-energy
@@ -61,15 +57,15 @@ Only organization news/publications **relevant to climate change and actuarial r
 
 ## 🌍 Pillar B — Climate & Actuarial Intelligence (last 3 months)
 
-1 de-duplicated items (removed 0 duplicate URLs). Each item leads with a short summary, then the link:
-
-- **IFRS Foundation — ISSB Update January 2026** (web)
-  - ISSB's January 2026 meeting advanced work on nature-related and climate disclosure guidance, relevant to actuaries preparing IFRS S2-aligned resilience and scenario analyses.
-  🔗 https://www.ifrs.org/news-and-events/updates/issb/2026/issb-update-january-2026/
+No qualifying Pillar B items fell within the declared 2026-05-26 through 2026-08-24 window.
 
 
 ---
 
 ## 🔗 Original Links
 
-- https://www.ifrs.org/news-and-events/updates/issb/2026/issb-update-january-2026/
+- https://www.unepfi.org/events/unep-fi-at-the-world-circular-economy-forum
+- https://www.undp.org/stories/restoring-land-reducing-disasters
+- https://www.weforum.org/stories/energy-transition/how-ai-and-power-systems-are-rewriting-each-others-rules
+- https://www.weforum.org/videos/switzerland_solar_railway
+- https://www.weforum.org/stories/economic-growth/oil-hormuz-demand-destruction-war-iran-green-energy
