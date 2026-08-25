@@ -178,8 +178,14 @@ This repo includes a [`render.yaml`](render.yaml) Blueprint and a [`.python-vers
 If you deploy it as a Render web service, the relevant settings are:
 
 - Build Command: `pip install -r requirements.txt`
-- Start Command: `uvicorn api_server:app --host 0.0.0.0 --port $PORT`
+- Start Command: `python -m scripts.run_render_web`
 - Health Check Path: `/api/health`
+
+The Render start command builds an ephemeral SQLite Registry from the tracked
+`sources/` history before starting the API. This keeps Historical Reports usable
+on Render's free, ephemeral filesystem. The Registry is rebuilt after each
+restart or deploy; if `CLIMATE_REGISTRY_DB` is explicitly configured, that
+external database is used instead and the bootstrap is skipped.
 
 The Blueprint also sets:
 
