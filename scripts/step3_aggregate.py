@@ -8,12 +8,13 @@ This is a deterministic script — no LLM, no randomness.
 """
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from datetime import date
 
-REPO = Path(__file__).resolve().parent.parent
-REPORTS = REPO / "data" / "reports"
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 
 def normalize_url(url: str) -> str:
