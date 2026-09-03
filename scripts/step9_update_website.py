@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Step 9: Update website (wiki pages + registry reload)."""
+"""Step 9: Update website (wiki pages + verified API reload).
+
+The reload token is read from the RELOAD_TOKEN environment variable (see
+.env.example) and is never stored in this file. The post-reload smoke test
+verifies that the new report date is actually served by /api/config and that
+the chat endpoint still answers with evidence sources.
+"""
+from __future__ import annotations
+
 import argparse
+import os
 import shutil
 import subprocess
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
-SOURCES = Path("/home/ubuntu/climate_monitor_wiki/sources")
-PYTHON = Path("/home/ubuntu/climate_monitor_wiki/.venv/bin/python")
-REPO = "/home/ubuntu/climate_monitor_wiki"
-RELOAD_TOKEN = "b49ca3d610ed7f41b6e24ecad794c28f21d9e6f5f06b965f"
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = HOME / "data" / "reports"
+SOURCES = HOME / "sources"
+PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 
 
-def last_monday():
+def last_monday() -> date:
     """Get the most recent Monday."""
     today = date.today()
     if today.weekday() == 0:
@@ -21,61 +30,44 @@ def last_monday():
     return today - timedelta(days=today.weekday())
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def run(cmd: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(HOME))
+    if result.returncode != 0:
+        print(f"ERROR: {' '.join(cmd)} failed (exit {result.returncode}): {result.stderr.strip() or result.stdout.strip()}")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Update website (wiki pages + verified reload)")
     parser.add_argument("--date", default=last_monday().isoformat())
     args = parser.parse_args()
 
-    # Step 9a: Copy latest MD to sources/ for wiki generation
+    if not os.environ.get("RELOAD_TOKEN"):
+        print("ERROR: RELOAD_TOKEN environment variable is not set", file=sys.stderr)
+        return 1
+
+    # Step 9a: Copy latest MD to sources/ for wiki generation.
     md_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not md_path.exists():
-        print(f"ERROR: markdown not found: {md_path}")
-        return
+        print(f"ERROR: markdown not found: {md_path}", file=sys.stderr)
+        return 1
+    SOURCES.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(md_path, SOURCES / md_path.name)
+    print(f"Copied {md_path.name} to sources/")
 
-    sources_dir = SOURCES
-    sources_dir.mkdir(parents=True, exist_ok=True)
-    dest = sources_dir / f"climate-monitor-{args.date}.md"
-    shutil.copy2(md_path, dest)
-    print(f"Copied MD to sources/")
+    # Step 9b: Regenerate wiki pages. Fail closed on any error.
+    result = run([str(PYTHON), "scripts/sync_source_wiki.py", "--cadence", "weekly"])
+    if result.returncode != 0:
+        return 1
+    print("OK: wiki pages regenerated")
 
-    # Step 9b: Regenerate wiki pages
-    try:
-        result = subprocess.run(
-            [str(PYTHON), "scripts/sync_source_wiki.py", "--cadence", "weekly"],
-            capture_output=True, text=True, timeout=120, cwd=REPO
-        )
-        if result.returncode != 0:
-            print(f"WARNING: wiki sync failed: {result.stderr}")
-        else:
-            print("OK: wiki pages regenerated")
-    except Exception as e:
-        print(f"WARNING: wiki sync error: {e}")
-
-    # Step 9c: Reload registry in container via API
-    try:
-        reload_script_content = (
-            "import urllib.request, json\n"
-            "req = urllib.request.Request(\n"
-            "    'http://localhost:8501/api/reload',\n"
-            "    data=json.dumps({}).encode(),\n"
-            "    method='POST',\n"
-            "    headers={'Content-Type': 'application/json', 'X-Reload-Token': '" + RELOAD_TOKEN + "'}"
-            ")\n"
-            "with urllib.request.urlopen(req, timeout=30) as resp:\n"
-            "    print('Reload:', resp.status)\n"
-        )
-        result = subprocess.run(
-            ["sudo", "docker", "exec", "-i", "climate-wiki-app", "python3"],
-            input=reload_script_content,
-            capture_output=True, text=True, timeout=60
-        )
-        if result.returncode != 0:
-            print(f"WARNING: container reload failed: {result.stderr}")
-        else:
-            print("OK: container registry reloaded")
-    except Exception as e:
-        print(f"WARNING: container reload error: {e}")
+    # Step 9c: Reload the API corpus and verify the new date is served.
+    result = run([str(PYTHON), "scripts/reload_and_smoke_test.py", "--date", args.date])
+    if result.returncode != 0:
+        return 1
+    print("OK: API reloaded and smoke test passed")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
