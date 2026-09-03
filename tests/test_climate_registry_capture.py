@@ -798,11 +798,12 @@ def test_refresh_batches_advance_to_never_fetched_then_oldest(tmp_path):
 def test_unicode_enrichment_is_factual_and_idempotent():
     markdown = """# Climate Risk and Insurance Supervision Update
 
-Climate risk reporting covers insurance capital, flood losses, investment disclosure, and supervisory policy. The report explains how actuarial analysis supports risk management across pricing and reserving. Regulators expect insurers to integrate scenario testing into solvency reviews."""
+Climate risk reporting covers insurance capital, flood losses, investment disclosure, and supervisory policy. The report explains how actuarial analysis supports risk management across pricing and reserving in Montréal and Zürich. Regulators expect insurers to integrate scenario testing into solvency reviews."""
     first = capture.deterministic_enrichment(markdown)
     second = capture.deterministic_enrichment(markdown)
     assert first == second
     assert first["language"] == "en"
+    assert "Montréal" in first["summary"]  # non-ASCII text round-trips through enrichment
     source_text = re.sub(r"\s+", " ", re.sub(r"(?m)^#\s+", "", markdown)).strip()
     assert all(part.strip() in source_text for part in re.split(r"[.]", first["summary"]) if part.strip())
     assert 8 <= len(first["keywords"]) <= 12
