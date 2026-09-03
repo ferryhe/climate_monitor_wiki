@@ -182,8 +182,10 @@ def test_run_delivery_fails_closed_if_report_and_sidecar_change_after_parse(tmp_
     output = tmp_path / "output"
     original_parse = parse_weekly_report
 
-    def parse_then_replace(path: Path, *, raw: bytes | None = None):
-        parsed = original_parse(path, raw=raw)
+    def parse_then_replace(
+        path: Path, *, raw: bytes | None = None, allow_offcycle: bool = False
+    ):
+        parsed = original_parse(path, raw=raw, allow_offcycle=allow_offcycle)
         changed_report = (
             DELIVERY_REPORT.replace(
                 "One deterministic observation.",

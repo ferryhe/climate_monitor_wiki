@@ -26,7 +26,7 @@ class _AttemptFailure(Exception):
         self.unknown = unknown
 
 
-def _validate_summary(summary: dict[str, Any]) -> None:
+def _validate_summary(summary: dict[str, Any], *, allow_offcycle: bool = False) -> None:
     if not isinstance(summary, dict) or summary.get("schema_version") != 1:
         raise InputError("summary schema_version must be 1")
     report = summary.get("report")
@@ -36,7 +36,9 @@ def _validate_summary(summary: dict[str, Any]) -> None:
         report_date = date.fromisoformat(report["date"])
     except (TypeError, ValueError) as exc:
         raise InputError("summary report date is invalid") from exc
-    if report_date.weekday() != 0 or not isinstance(report["title"], str):
+    if (report_date.weekday() != 0 and not allow_offcycle) or not isinstance(
+        report["title"], str
+    ):
         raise InputError("summary must describe a Monday weekly report")
     if not isinstance(report["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", report["sha256"]):
         raise InputError("summary report sha256 is invalid")
@@ -73,18 +75,20 @@ def _validate_summary(summary: dict[str, Any]) -> None:
                 raise InputError("summary article_semantics entries must be valid semantic bundles") from exc
 
 
-def load_summary_with_sha256(path: Path) -> tuple[dict[str, Any], str]:
+def load_summary_with_sha256(
+    path: Path, *, allow_offcycle: bool = False
+) -> tuple[dict[str, Any], str]:
     try:
         raw = Path(path).read_bytes()
         value = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise InputError("summary must be a readable JSON file") from exc
-    _validate_summary(value)
+    _validate_summary(value, allow_offcycle=allow_offcycle)
     return value, hashlib.sha256(raw).hexdigest()
 
 
-def load_summary(path: Path) -> dict[str, Any]:
-    return load_summary_with_sha256(path)[0]
+def load_summary(path: Path, *, allow_offcycle: bool = False) -> dict[str, Any]:
+    return load_summary_with_sha256(path, allow_offcycle=allow_offcycle)[0]
 
 
 def _featured_highlights(summary: dict[str, Any]) -> list[tuple[int, dict[str, str]]]:
@@ -246,8 +250,9 @@ def prepare_messages(
     *,
     pdf_data: bytes | None = None,
     clock: Callable[[], datetime] | None = None,
+    allow_offcycle: bool = False,
 ) -> list[tuple[str, bytes]]:
-    _validate_summary(summary)
+    _validate_summary(summary, allow_offcycle=allow_offcycle)
     if pdf_data is None:
         pdf_data = _read_pdf(pdf_path)
     material = _message_material(summary, pdf_data, config)
@@ -423,8 +428,9 @@ def deliver(
     acquire_lock: bool = True,
     summary_artifact_sha256: str | None = None,
     clock: Callable[[], datetime] | None = None,
+    allow_offcycle: bool = False,
 ) -> dict[str, Any]:
-    _validate_summary(summary)
+    _validate_summary(summary, allow_offcycle=allow_offcycle)
     summary_hash = summary_artifact_sha256 or _summary_sha256(summary)
     if not re.fullmatch(r"[0-9a-f]{64}", summary_hash):
         raise InputError("summary artifact sha256 is invalid")

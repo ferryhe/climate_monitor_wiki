@@ -54,16 +54,31 @@ def _parser() -> argparse.ArgumentParser:
     plan = subcommands.add_parser("plan-update")
     plan.add_argument("--source-dir", required=True, type=Path)
     plan.add_argument("--database", required=True, type=Path)
+    plan.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
 
     update = subcommands.add_parser("update")
     update.add_argument("--source-dir", required=True, type=Path)
     update.add_argument("--database", required=True, type=Path)
+    update.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
     update.add_argument("--backup-dir", required=True, type=Path)
 
     selection = subcommands.add_parser("plan-selection")
     selection.add_argument("--database", required=True, type=Path)
     selection.add_argument("--source-dir", required=True, type=Path)
     selection.add_argument("--input", required=True, type=Path)
+    selection.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
 
     capture = subcommands.add_parser("capture-enrich")
     capture.add_argument("--database", required=True, type=Path)
@@ -84,6 +99,11 @@ def _parser() -> argparse.ArgumentParser:
     weekly.add_argument("--expected-report-sha256")
     weekly.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     weekly.add_argument("--dry-run", action="store_true")
+    weekly.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday target dates (manual re-runs). Off by default.",
+    )
 
     semantic = subcommands.add_parser("semantic-import")
     semantic.add_argument("--report", required=True, type=Path)
@@ -140,12 +160,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "audit-history":
             result = build_audit_registry(args.source_dir, args.database, args.output_dir)
         elif args.command == "plan-update":
-            result = plan_registry_update(args.source_dir, args.database)
+            result = plan_registry_update(
+                args.source_dir, args.database, allow_offcycle=args.allow_offcycle
+            )
         elif args.command == "update":
-            result = update_registry(args.source_dir, args.database, args.backup_dir)
+            result = update_registry(
+                args.source_dir,
+                args.database,
+                args.backup_dir,
+                allow_offcycle=args.allow_offcycle,
+            )
         elif args.command == "plan-selection":
-            payload = load_selection_input(args.input)
-            result = plan_registry_selection(args.database, args.source_dir, payload)
+            payload = load_selection_input(
+                args.input, allow_offcycle=args.allow_offcycle
+            )
+            result = plan_registry_selection(
+                args.database,
+                args.source_dir,
+                payload,
+                allow_offcycle=args.allow_offcycle,
+            )
         elif args.command == "capture-enrich":
             if args.limit is not None and not 1 <= args.limit <= MAX_BATCH:
                 raise RegistryInputError(f"limit must be between 1 and {MAX_BATCH}")
@@ -169,6 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_report_sha256=args.expected_report_sha256,
                 timeout=args.timeout,
                 dry_run=args.dry_run,
+                allow_offcycle=args.allow_offcycle,
             )
         elif args.command == "semantic-import":
             result = import_report_semantics(

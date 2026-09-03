@@ -56,6 +56,11 @@ def extract_md_executive_summary(md_path):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=last_monday().isoformat())
+    parser.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
     args = parser.parse_args()
 
     try:
@@ -91,10 +96,13 @@ def main() -> int:
 
         # Step 6a: Build summary JSON
         print("Running summarize...")
-        result = subprocess.run(
-            [str(PYTHON), "-m", "climate_delivery", "summarize",
+        summarize_args = [str(PYTHON), "-m", "climate_delivery", "summarize",
              "--report", str(tmp_md.resolve()),
-             "--output", str(tmp_summary.resolve())],
+             "--output", str(tmp_summary.resolve())]
+        if args.allow_offcycle:
+            summarize_args.append("--allow-offcycle")
+        result = subprocess.run(
+            summarize_args,
             capture_output=True, text=True, timeout=120, env=env,
         )
         if result.returncode != 0:
@@ -111,10 +119,13 @@ def main() -> int:
 
         # Step 6b: Render PDF
         print("Running render-pdf...")
-        result = subprocess.run(
-            [str(PYTHON), "-m", "climate_delivery", "render-pdf",
+        render_args = [str(PYTHON), "-m", "climate_delivery", "render-pdf",
              "--summary", str(tmp_summary.resolve()),
-             "--output", str(tmp_pdf.resolve())],
+             "--output", str(tmp_pdf.resolve())]
+        if args.allow_offcycle:
+            render_args.append("--allow-offcycle")
+        result = subprocess.run(
+            render_args,
             capture_output=True, text=True, timeout=120, env=env,
         )
         if result.returncode != 0:

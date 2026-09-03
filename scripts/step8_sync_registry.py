@@ -131,7 +131,10 @@ def main() -> int:
         print(f"Initialized registry database: {DB} (schema v{init.get('schema_version')})")
 
     try:
-        plan = run_cli(["plan-update", "--source-dir", str(SOURCES), "--database", str(DB)])
+        plan_args = ["plan-update", "--source-dir", str(SOURCES), "--database", str(DB)]
+        if args.allow_offcycle:
+            plan_args.append("--allow-offcycle")
+        plan = run_cli(plan_args)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -148,14 +151,15 @@ def main() -> int:
         return 0
 
     try:
-        updated = run_cli(
-            [
-                "update",
-                "--source-dir", str(SOURCES),
-                "--database", str(DB),
-                "--backup-dir", str(BACKUP_DIR),
-            ]
-        )
+        update_args = [
+            "update",
+            "--source-dir", str(SOURCES),
+            "--database", str(DB),
+            "--backup-dir", str(BACKUP_DIR),
+        ]
+        if args.allow_offcycle:
+            update_args.append("--allow-offcycle")
+        updated = run_cli(update_args)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

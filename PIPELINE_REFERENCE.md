@@ -51,7 +51,9 @@ date explicitly, and step1 anchors its query window on that date.
 - Step 1 filters new articles against this baseline (skipping `__pillar_b__`)
 
 ### Registry DB
-- Stores Monday reports only
+- Stores Monday reports by default; non-Monday (offcycle) manual re-runs are
+  accepted only with an explicit `--allow-offcycle` opt-in on the registry
+  CLI (`plan-selection`, `weekly-sync`) and the step scripts
 - Sync is append-only via `climate_registry plan-update`/`update` with SHA conflict checks
 
 ## Data Flow

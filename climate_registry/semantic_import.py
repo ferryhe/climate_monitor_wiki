@@ -83,7 +83,11 @@ def _snapshot_sha256(report_bytes: bytes) -> str:
 
 def _parse_report_snapshot(report_path: Path, report_bytes: bytes) -> ParsedReport:
     try:
-        return parse_historical_report(report_path, raw=report_bytes)
+        # Read-tolerant: the target report is already persisted (or explicitly
+        # accepted) history; Monday-only policy lives at ingestion boundaries.
+        return parse_historical_report(
+            report_path, raw=report_bytes, allow_offcycle=True
+        )
     except Exception as exc:  # noqa: BLE001 - fail closed on any parse error
         raise RegistryInputError(
             f"could not parse the target report for semantic import: {exc}"
@@ -127,7 +131,9 @@ def _target_article_identities(
         report = _parse_report_snapshot(report_path, report_bytes)
     else:
         try:
-            report = parse_historical_report(report_path)
+            # Read-tolerant: already persisted history may include explicitly
+            # accepted off-cycle reports.
+            report = parse_historical_report(report_path, allow_offcycle=True)
         except Exception as exc:  # noqa: BLE001 - fail closed on any parse error
             raise RegistryInputError(
                 f"could not parse the target report for semantic import: {exc}"

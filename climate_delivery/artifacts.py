@@ -140,6 +140,7 @@ def _load_validated(
     report_title: str,
     report_sha256: str,
     include_pdf_bytes: bool,
+    allow_offcycle: bool = False,
 ) -> ValidatedReportArtifact | ValidatedReportArtifactDownload:
     configured_root = Path(root_value)
     if not configured_root.is_absolute():
@@ -216,7 +217,7 @@ def _load_validated(
     summary_path = _contained_file(root, artifact_dir / summary_name)
     summary_raw = _read_limited(summary_path, MAX_SUMMARY_BYTES)
     summary = _mapping(json.loads(summary_raw.decode("utf-8")))
-    _validate_summary(summary)
+    _validate_summary(summary, allow_offcycle=allow_offcycle)
     actual_summary_sha256 = hashlib.sha256(summary_raw).hexdigest()
     if actual_summary_sha256 != expected_summary_sha256:
         raise _InvalidArtifact("summary hash mismatch")
@@ -275,6 +276,7 @@ def load_report_artifact(
     report_title: str,
     report_sha256: str,
     include_pdf_bytes: Literal[False],
+    allow_offcycle: bool = False,
 ) -> ValidatedReportArtifact | None: ...
 
 
@@ -287,6 +289,7 @@ def load_report_artifact(
     report_title: str,
     report_sha256: str,
     include_pdf_bytes: Literal[True],
+    allow_offcycle: bool = False,
 ) -> ValidatedReportArtifactDownload | None: ...
 
 
@@ -298,6 +301,7 @@ def load_report_artifact(
     report_title: str,
     report_sha256: str,
     include_pdf_bytes: bool,
+    allow_offcycle: bool = False,
 ) -> ValidatedReportArtifact | ValidatedReportArtifactDownload | None:
     """Load one exact content-addressed delivery artifact, failing closed."""
     if output_dir is None or not str(output_dir).strip():
@@ -310,6 +314,7 @@ def load_report_artifact(
             report_title=report_title,
             report_sha256=report_sha256,
             include_pdf_bytes=include_pdf_bytes,
+            allow_offcycle=allow_offcycle,
         )
     except (
         InputError,

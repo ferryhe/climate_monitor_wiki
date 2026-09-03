@@ -199,7 +199,9 @@ class RegistryReader:
             return None
         path = self.source_dir / filename
         try:
-            report = parse_historical_report(path)
+            # Read-tolerant: an explicitly accepted off-cycle report is valid
+            # persisted history; Monday-only policy lives at ingestion.
+            report = parse_historical_report(path, allow_offcycle=True)
         except (ClimateDeliveryError, OSError, UnicodeError, ValueError):
             return None
         if report.report_date != report_date or report.sha256 != expected_sha256:

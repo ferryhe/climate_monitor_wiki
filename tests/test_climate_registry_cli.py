@@ -411,7 +411,7 @@ def test_plan_selection_cli_preserves_stable_database_failure_taxonomy(
         encoding="utf-8",
     )
 
-    def fail(*_args):
+    def fail(*_args, **_kwargs):
         raise failure
 
     monkeypatch.setattr(registry_cli, "plan_registry_selection", fail)
@@ -566,11 +566,12 @@ def test_weekly_sync_cli_passes_explicit_inputs_and_distinguishes_no_op(
             "artifact_root": tmp_path / "artifacts",
             "backup_dir": tmp_path / "backups",
             "lock_file": tmp_path / "registry.sqlite3.lock",
-                "publisher_ledger_dir": tmp_path / "ledger",
-                "metadata_dir": None,
+            "publisher_ledger_dir": tmp_path / "ledger",
+            "metadata_dir": None,
             "expected_report_sha256": None,
             "timeout": 12.5,
             "dry_run": True,
+            "allow_offcycle": False,
         }
         return {"status": status, "date": "2026-08-17"}
 

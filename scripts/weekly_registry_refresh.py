@@ -356,7 +356,9 @@ def _verify_sha_binding(
         expected_filename = f"climate-monitor-{args.date}.md"
         if identity.filename != expected_filename:
             raise _JobError("sha_verification_failed")
-        source_report = parse_historical_report(args.source_dir / expected_filename)
+        source_report = parse_historical_report(
+            args.source_dir / expected_filename, allow_offcycle=True
+        )
         artifact = load_report_artifact(
             args.artifact_root,
             report_date=identity.report_date,

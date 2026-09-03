@@ -107,12 +107,12 @@ def _validate_remote_url(remote_url: str) -> None:
         )
 
 
-def validate_report(path: Path) -> str:
+def validate_report(path: Path, *, allow_offcycle: bool = False) -> str:
     match = REPORT_RE.fullmatch(path.name)
     if not match:
         raise PublishError(f"invalid report filename: {path.name}")
     filename_date = date.fromisoformat(match.group(1))
-    if filename_date.weekday() != 0:
+    if filename_date.weekday() != 0 and not allow_offcycle:
         raise PublishError(f"report is not Monday-dated: {path.name}")
     text = path.read_text(encoding="utf-8")
     if not text.strip():
@@ -127,40 +127,47 @@ def validate_report(path: Path) -> str:
     return match.group(1)
 
 
-def discover_reports(report_dir: Path, *, today: date) -> list[Path]:
+def discover_reports(
+    report_dir: Path, *, today: date, allow_offcycle: bool = False
+) -> list[Path]:
     if not report_dir.is_dir():
         raise PublishError(f"report directory not found: {report_dir}")
-    cutoff = _current_monday(today)
+    cutoff = today if allow_offcycle else _current_monday(today)
     reports: list[Path] = []
     for path in sorted(report_dir.glob("climate-monitor-*.md")):
         match = REPORT_RE.fullmatch(path.name)
         if not match:
             continue
         report_day = date.fromisoformat(match.group(1))
-        if report_day > cutoff or report_day.weekday() != 0:
+        if report_day > cutoff or (report_day.weekday() != 0 and not allow_offcycle):
             continue
-        validate_report(path)
+        validate_report(path, allow_offcycle=allow_offcycle)
         reports.append(path)
     return reports
 
 
 def _final_report_identity(
-    checkout: Path, report_dir: Path, *, today: date
+    checkout: Path, report_dir: Path, *, today: date, allow_offcycle: bool = False
 ) -> ReportIdentity:
-    report_date = _current_monday(today).isoformat()
+    if allow_offcycle:
+        report_date = today.isoformat()
+        unavailable_message = "canonical report is unavailable"
+    else:
+        report_date = _current_monday(today).isoformat()
+        unavailable_message = "current Monday report is unavailable"
     filename = f"climate-monitor-{report_date}.md"
     authoritative = report_dir / filename
     final_source = checkout / "sources" / filename
     authoritative_exists = authoritative.is_file()
     final_exists = final_source.is_file()
     if not authoritative_exists and not final_exists:
-        raise PublishError(f"current Monday report is unavailable: {filename}")
+        raise PublishError(f"{unavailable_message}: {filename}")
     if not authoritative_exists:
-        raise PublishError(f"current Monday report is unavailable: {filename}")
+        raise PublishError(f"{unavailable_message}: {filename}")
     if not final_exists:
         raise PublishError(f"final canonical report is unavailable: {filename}")
-    validate_report(authoritative)
-    validate_report(final_source)
+    validate_report(authoritative, allow_offcycle=allow_offcycle)
+    validate_report(final_source, allow_offcycle=allow_offcycle)
     authoritative_raw = authoritative.read_bytes()
     final_source_raw = final_source.read_bytes()
     if authoritative_raw != final_source_raw:
@@ -186,6 +193,7 @@ def _final_report_identity(
             report_date=report_date,
             filename=filename,
             sha256=hashlib.sha256(final_source_raw).hexdigest(),
+            allow_offcycle=allow_offcycle,
         )
     except LedgerError as exc:
         raise PublishError("final canonical report identity is invalid") from exc
@@ -196,6 +204,7 @@ def validate_pending_reports(
     *,
     source_dir: Path,
     registry_database: Path | None = None,
+    allow_offcycle: bool = False,
 ) -> dict[Path, str]:
     """Fail closed on newly introduced report candidates before any copy or push."""
 
@@ -212,7 +221,7 @@ def validate_pending_reports(
     parsed_reports = []
     for path in reports:
         try:
-            report = parse_strict_weekly_report(path)
+            report = parse_strict_weekly_report(path, allow_offcycle=allow_offcycle)
         except RegistryInputError as exc:
             raise PublishError(f"pending report is not valid weekly Markdown: {exc}") from exc
         if report.cadence != "weekly" or any(article.pillar not in {"A", "B"} for article in report.articles):
@@ -234,6 +243,7 @@ def validate_pending_reports(
             plan = plan_selection(
                 candidate_payload(report.report_date, candidates),
                 historical_urls=historical_urls,
+                allow_offcycle=allow_offcycle,
             )
         except RegistryInputError as exc:
             raise PublishError(f"pending report candidate contract is invalid: {report.path.name}") from exc
@@ -309,10 +319,11 @@ def validate_remote_branch(
     ref: str,
     changes: list[tuple[str, str]],
     report_dir: Path,
+    allow_offcycle: bool = False,
     today: date,
 ) -> None:
     added_dates: set[str] = set()
-    cutoff = _current_monday(today)
+    cutoff = today if allow_offcycle else _current_monday(today)
     for status, path in changes:
         match = re.fullmatch(
             r"sources/climate-monitor-(\d{4}-\d{2}-\d{2})\.md", path
@@ -320,12 +331,12 @@ def validate_remote_branch(
         if not match:
             continue
         report_day = date.fromisoformat(match.group(1))
-        if status != "A" or report_day.weekday() != 0 or report_day > cutoff:
+        if status != "A" or (report_day.weekday() != 0 and not allow_offcycle) or report_day > cutoff:
             raise PublishError(f"invalid rolling source: {status} {path}")
         authoritative = report_dir / Path(path).name
         if not authoritative.is_file():
             raise PublishError(f"authoritative report missing for rolling source: {path}")
-        validate_report(authoritative)
+        validate_report(authoritative, allow_offcycle=allow_offcycle)
         remote_blob = _output(runner, ["git", "rev-parse", f"{ref}:{path}"], checkout)
         authoritative_blob = _output(
             runner,
@@ -802,6 +813,7 @@ def _publish_attempt(
     verifier: Verifier,
     candidate_branch: str,
     registry_database: Path | None,
+    allow_offcycle: bool = False,
 ) -> PublishResult:
     with tempfile.TemporaryDirectory(prefix="climate-weekly-publish-") as tmp:
         checkout = Path(tmp) / "repo"
@@ -827,9 +839,10 @@ def _publish_attempt(
                 changes=remote_changes,
                 report_dir=report_dir,
                 today=today,
+                allow_offcycle=allow_offcycle,
             )
 
-        discovered = discover_reports(report_dir, today=today)
+        discovered = discover_reports(report_dir, today=today, allow_offcycle=allow_offcycle)
         pending = [
             report
             for report in discovered
@@ -839,6 +852,7 @@ def _publish_attempt(
             pending,
             source_dir=checkout / "sources",
             registry_database=registry_database,
+            allow_offcycle=allow_offcycle,
         )
 
         imported: list[str] = []
@@ -850,7 +864,7 @@ def _publish_attempt(
                 raise PublishError(
                     f"authoritative report changed after selection validation: {report.name}"
                 )
-            imported.append(validate_report(destination))
+            imported.append(validate_report(destination, allow_offcycle=allow_offcycle))
 
         runner(
             [
@@ -874,8 +888,10 @@ def _publish_attempt(
         )
         if changes:
             known_dates = [
-                validate_report(path)
-                for path in discover_reports(checkout / "sources", today=today)
+                validate_report(path, allow_offcycle=allow_offcycle)
+                for path in discover_reports(
+                    checkout / "sources", today=today, allow_offcycle=allow_offcycle
+                )
             ]
             commit_date = max(
                 known_dates, default=_current_monday(today).isoformat()
@@ -904,7 +920,9 @@ def _publish_attempt(
             base_sha=base_sha,
             branch_sha=remote_branch_sha,
         )
-        report_identity = _final_report_identity(checkout, report_dir, today=today)
+        report_identity = _final_report_identity(
+            checkout, report_dir, today=today, allow_offcycle=allow_offcycle
+        )
         remote_tree = None
         if remote_branch_sha:
             remote_tree = _output(
@@ -974,6 +992,7 @@ def publish(
     runner: CommandRunner = run_command,
     verifier: Verifier = verify_checkout,
     registry_database: Path | None = None,
+    allow_offcycle: bool = False,
 ) -> PublishResult:
     production_repo = production_repo.resolve()
     before_head = _output(runner, ["git", "rev-parse", "HEAD"], production_repo)
@@ -996,6 +1015,7 @@ def publish(
                     verifier=verifier,
                     candidate_branch=candidate_branch,
                     registry_database=registry_database,
+                    allow_offcycle=allow_offcycle,
                 )
             except _MainChanged as exc:
                 if attempt == MAX_BASE_ATTEMPTS:
@@ -1065,6 +1085,7 @@ def _append_publisher_result(
     result: PublishResult | None,
     report_date: str,
     repository_root: Path,
+    allow_offcycle: bool = False,
 ) -> str:
     finished_at = datetime.now(timezone.utc).replace(microsecond=0)
     if result is None:
@@ -1087,7 +1108,10 @@ def _append_publisher_result(
         )
     try:
         return append_attempt(
-            ledger_dir, attempt, repository_root=repository_root
+            ledger_dir,
+            attempt,
+            repository_root=repository_root,
+            allow_offcycle=allow_offcycle,
         )
     except LedgerError as exc:
         raise PublishError("publisher ledger append failed") from exc
@@ -1099,15 +1123,25 @@ def main() -> int:
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--registry-database", type=Path)
     parser.add_argument("--ledger-dir", type=Path, required=True)
+    parser.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
     args = parser.parse_args()
     run_today = date.today()
-    report_date = _current_monday(run_today).isoformat()
+    report_date = (
+        run_today.isoformat()
+        if args.allow_offcycle
+        else _current_monday(run_today).isoformat()
+    )
     try:
         result = publish(
             production_repo=args.production_repo,
             report_dir=args.report_dir,
             today=run_today,
             registry_database=args.registry_database,
+            allow_offcycle=args.allow_offcycle,
         )
     except Exception as exc:
         try:
@@ -1116,6 +1150,7 @@ def main() -> int:
                 result=None,
                 report_date=report_date,
                 repository_root=args.production_repo.resolve(),
+                allow_offcycle=args.allow_offcycle,
             )
         except PublishError as ledger_error:
             raise PublishError(f"{exc}; {ledger_error}") from exc
@@ -1126,6 +1161,7 @@ def main() -> int:
             result=result,
             report_date=report_date,
             repository_root=args.production_repo.resolve(),
+            allow_offcycle=args.allow_offcycle,
         )
     except PublishError as exc:
         try:
@@ -1134,6 +1170,7 @@ def main() -> int:
                 result=None,
                 report_date=report_date,
                 repository_root=args.production_repo.resolve(),
+                allow_offcycle=args.allow_offcycle,
             )
         except PublishError as failure_error:
             raise PublishError(f"{exc}; {failure_error}") from exc

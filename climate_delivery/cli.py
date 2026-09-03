@@ -29,10 +29,20 @@ def _parser() -> Parser:
     summarize = subcommands.add_parser("summarize")
     summarize.add_argument("--report", type=Path, required=True)
     summarize.add_argument("--output", type=Path, required=True)
+    summarize.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
 
     pdf = subcommands.add_parser("render-pdf")
     pdf.add_argument("--summary", type=Path, required=True)
     pdf.add_argument("--output", type=Path, required=True)
+    pdf.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
 
     email = subcommands.add_parser("send-email")
     email.add_argument("--summary", type=Path, required=True)
@@ -40,6 +50,11 @@ def _parser() -> Parser:
     email.add_argument("--config", type=Path, required=True)
     email.add_argument("--state-dir", type=Path, required=True)
     email.add_argument("--dry-run", action="store_true")
+    email.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
 
     run = subcommands.add_parser("run")
     run.add_argument("--report", type=Path, required=True)
@@ -47,6 +62,11 @@ def _parser() -> Parser:
     run.add_argument("--state-dir", type=Path, required=True)
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument(
+        "--allow-offcycle",
+        action="store_true",
+        help="Allow non-Monday report dates (manual re-runs). Off by default.",
+    )
 
     backfill = subcommands.add_parser("backfill")
     selector = backfill.add_mutually_exclusive_group(required=True)
@@ -71,15 +91,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_path = external_file_path(args.report, "report")
             output_path = external_file_path(args.output, "output")
             require_distinct_files(report_path, output_path, "report", "output")
-            report = parse_weekly_report(report_path)
+            report = parse_weekly_report(
+                report_path, allow_offcycle=args.allow_offcycle
+            )
             write_summary(build_summary(report), output_path)
             result = {"status": "success", "report_date": report.report_date, "report_sha256": report.sha256}
         elif args.command == "render-pdf":
             summary_path = external_file_path(args.summary, "summary")
             output_path = external_file_path(args.output, "output")
             require_distinct_files(summary_path, output_path, "summary", "output")
-            summary = load_summary(summary_path)
-            render_pdf(summary, output_path)
+            summary = load_summary(summary_path, allow_offcycle=args.allow_offcycle)
+            render_pdf(summary, output_path, allow_offcycle=args.allow_offcycle)
             result = {
                 "status": "success",
                 "report_date": summary["report"]["date"],
@@ -91,7 +113,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path = external_file_path(args.config, "config")
             state_dir = external_directory_root(args.state_dir, "state-dir")
             require_distinct_files(summary_path, pdf_path, "summary", "pdf")
-            summary, summary_sha256 = load_summary_with_sha256(summary_path)
+            summary, summary_sha256 = load_summary_with_sha256(
+                summary_path, allow_offcycle=args.allow_offcycle
+            )
             result = deliver(
                 summary,
                 pdf_path,
@@ -99,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 state_dir,
                 dry_run=args.dry_run,
                 summary_artifact_sha256=summary_sha256,
+                allow_offcycle=args.allow_offcycle,
             )
         elif args.command == "run":
             report_path, output_dir, state_dir, config_path = validate_run_paths(
@@ -113,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 state_dir,
                 config_path,
                 dry_run=args.dry_run,
+                allow_offcycle=args.allow_offcycle,
             )
         elif args.command == "backfill":
             result = backfill_reports(

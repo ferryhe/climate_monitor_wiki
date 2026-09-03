@@ -238,8 +238,10 @@ def _monitoring_snapshot(summary: dict[str, Any], styles) -> Table:
     return table
 
 
-def render_pdf(summary: dict[str, Any], output: Path) -> None:
-    _validate_summary(summary)
+def render_pdf(
+    summary: dict[str, Any], output: Path, *, allow_offcycle: bool = False
+) -> None:
+    _validate_summary(summary, allow_offcycle=allow_offcycle)
     output = Path(output)
     temporary: str | None = None
     styles = _styles()

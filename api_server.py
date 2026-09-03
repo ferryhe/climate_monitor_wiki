@@ -215,6 +215,9 @@ def registry_report(report_date: str) -> dict:
             report_title=identity.report_title,
             report_sha256=identity.report_sha256,
             include_pdf_bytes=False,
+            # Read-tolerant: persisted artifacts of an explicitly accepted
+            # off-cycle report remain loadable via the API.
+            allow_offcycle=True,
         )
         report["report_briefing"] = artifact.briefing if artifact else None
         report["report_pdf"] = (
@@ -241,6 +244,9 @@ def registry_report_pdf(report_date: str) -> Response:
             report_title=identity.report_title,
             report_sha256=identity.report_sha256,
             include_pdf_bytes=True,
+            # Read-tolerant: persisted artifacts of an explicitly accepted
+            # off-cycle report remain loadable via the API.
+            allow_offcycle=True,
         )
         if artifact is None:
             raise HTTPException(status_code=404, detail="Report PDF not found.")

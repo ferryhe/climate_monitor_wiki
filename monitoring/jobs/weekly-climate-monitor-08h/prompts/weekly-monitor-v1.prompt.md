@@ -7,9 +7,16 @@ CONTEXT / ENVIRONMENT:
 
 STEP-BY-STEP (do ALL, in order):
 0. PREVIOUS-REPORT / REGISTRY SYNCHRONIZATION PREFLIGHT (run BEFORE any collection/model/network step):
-Set the scheduled Monday date and run the following read-only preflight. It proves the latest prior
+Set the report date and run the following read-only preflight. It proves the latest prior
 producer report is present in the deployed app sources with a matching SHA-256, and that the Registry
 and app source history are synchronized, before paying for a new collection.
+
+IMPORTANT — date selection rule: the report date labels the day the data was collected and must be
+the ACTUAL run date (today, ISO YYYY-MM-DD). On the scheduled Monday run today is a Monday; on a
+manual re-run mid-week today is NOT a Monday, and that is correct — do NOT backdate to the last
+Monday and do NOT pick the next/upcoming Monday (future dates collide with next week's scheduled
+run). Use the same date value in EVERY step below, and pass --allow-offcycle to the registry CLI
+whenever the date is not a Monday.
   export MON_REPORT_DATE=<TODAY>
   python3 - <<'PY'
 import os, sys, json, tempfile, hashlib, subprocess, re, shutil
@@ -42,7 +49,16 @@ for f in Path(PROD_REPORTS).glob("climate-monitor-*.md"):
 if not cands:
     fail("registry_history_lagging:no_prior_report")
 cands.sort()
+# The newest prior report may be an unpublished off-cycle (non-Monday) manual
+# run: those are exempt from the sync check, so walk back to the newest
+# MONDAY report. A Monday report that is missing from sources/ or mismatched
+# is a real publication gap and fails closed.
 prior_date, prior = cands[-1]
+while prior_date.weekday() != 0:
+    cands.pop()
+    if not cands:
+        fail("registry_history_lagging:no_synced_prior_report")
+    prior_date, prior = cands[-1]
 # 2. identical filename present in app sources
 src_file = Path(SRC) / prior.name
 if not src_file.exists():
@@ -59,6 +75,7 @@ inp.write_text(json.dumps({"schema_version": "registry-selection-input.v1",
 os.chmod(inp, 0o600)
 try:
     r = subprocess.run([APP_PY, "-m", "climate_registry", "plan-selection",
+                        "--allow-offcycle",
                         "--database", REG_DB, "--source-dir", SRC, "--input", str(inp)],
                        capture_output=True, text=True, cwd=APP_REPO)
     if r.returncode != 0:
@@ -95,7 +112,7 @@ call a model at this stage.
   c. Build a strict input document (mode 0600) in a mode-0700 temp dir OUTSIDE
      both repos:
        {"schema_version":"registry-selection-input.v1",
-        "report_date":"<Monday YYYY-MM-DD>",
+        "report_date":"<run date YYYY-MM-DD>",
         "candidates":[
           {"candidate_id":"a-0001","pillar":"A","title":<t>,"url":<u>,"summary":<s>},
           {"candidate_id":"b-0001","pillar":"B","title":<t>,"url":<u>,"summary":<s>}, ...]}
@@ -103,6 +120,7 @@ call a model at this stage.
   d. Invoke read-only from the app repo:
        cd /home/ubuntu/climate_monitor_wiki
        .venv/bin/python -m climate_registry plan-selection \
+         --allow-offcycle \
          --database /home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3 \
          --source-dir /home/ubuntu/climate_monitor_wiki/sources \
          --input <temp-input>
@@ -186,7 +204,7 @@ try:
     sys.argv = ["weekly_driver.py", "--pillar-b-json", PB,
                 "--article-changes-json", AC, "--deliver-only", "--date", MONDAY]
     weekly_driver.main()
-    # 9. exactly one canonical Monday file in staging
+    # 9. exactly one canonical report file in staging
     staged = [p for p in Path(staging).iterdir() if p.is_file()]
     if len(staged) != 1 or staged[0].name != final_report.name:
         print("result_code=staging_unexpected_files")
@@ -198,7 +216,7 @@ sys.path.insert(0, "/home/ubuntu/climate_monitor_wiki")
 from pathlib import Path
 from climate_registry.selection import parse_strict_weekly_report, canonical_url, canonical_title
 staged=Path(sys.argv[1]); plan=json.load(open(sys.argv[2])); cands={c["candidate_id"]:c for c in json.load(open(sys.argv[3]))["candidates"]}
-rep=parse_strict_weekly_report(staged)
+rep=parse_strict_weekly_report(staged, allow_offcycle=True)
 dec={d["candidate_id"]:d for d in plan["decisions"]}
 selected={cid:cands[cid] for cid,d in dec.items() if d["disposition"]=="selected"}
 parsed=[(a.pillar, canonical_title(a.title), canonical_url(a.url)) for a in rep.articles]

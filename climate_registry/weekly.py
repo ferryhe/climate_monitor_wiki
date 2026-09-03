@@ -87,6 +87,7 @@ Clock = Callable[[], datetime]
 @dataclass(frozen=True)
 class _Preflight:
     target_date: str
+    allow_offcycle: bool
     repository_root: Path
     source_dir: Path
     source_path: Path
@@ -148,14 +149,14 @@ def _valid_utc_timestamp(value: Any) -> bool:
     )
 
 
-def _target_day(value: str) -> str:
+def _target_day(value: str, *, allow_offcycle: bool = False) -> str:
     try:
         parsed = date.fromisoformat(value)
     except (TypeError, ValueError) as exc:
         raise WeeklyPreflightError(
             "weekly registry preflight failed: target date is invalid"
         ) from exc
-    if parsed.isoformat() != value or parsed.weekday() != 0:
+    if parsed.isoformat() != value or (parsed.weekday() != 0 and not allow_offcycle):
         raise WeeklyPreflightError(
             "weekly registry preflight failed: target date must be a Monday"
         )
@@ -348,7 +349,9 @@ def _tracked_at_head(
     )
 
 
-def _parse_target(source_dir: Path, target_date: str) -> tuple[Path, ParsedReport]:
+def _parse_target(
+    source_dir: Path, target_date: str, *, allow_offcycle: bool = False
+) -> tuple[Path, ParsedReport]:
     source_path = source_dir / f"climate-monitor-{target_date}.md"
     if _is_link_or_reparse(source_path):
         raise WeeklyPreflightError(
@@ -365,7 +368,7 @@ def _parse_target(source_dir: Path, target_date: str) -> tuple[Path, ParsedRepor
             "weekly registry preflight failed: target source is not a regular file"
         )
     try:
-        report = parse_historical_report(source_path)
+        report = parse_historical_report(source_path, allow_offcycle=allow_offcycle)
     except Exception as exc:
         raise WeeklyPreflightError(
             "weekly registry preflight failed: target source could not be parsed"
@@ -384,6 +387,7 @@ def _latest_publisher_attempt(
     target_date: str,
     report_sha256: str,
     now: datetime,
+    allow_offcycle: bool = False,
 ) -> None:
     try:
         reader = RunLedgerReader(ledger_dir, repository_root=repository_root)
@@ -418,8 +422,11 @@ def _latest_publisher_attempt(
         validate_report_identity(
             latest.get("report"),
             expected_report_date=target_date,
-            expected_filename=canonical_report_filename(target_date),
+            expected_filename=canonical_report_filename(
+                target_date, allow_offcycle=allow_offcycle
+            ),
             expected_sha256=report_sha256,
+            allow_offcycle=allow_offcycle,
         )
     except LedgerContractError:
         raise WeeklyPreflightError(
@@ -427,7 +434,9 @@ def _latest_publisher_attempt(
         )
 
 
-def _validate_artifact(artifact_root: Path, report: ParsedReport) -> None:
+def _validate_artifact(
+    artifact_root: Path, report: ParsedReport, *, allow_offcycle: bool = False
+) -> None:
     artifact = load_report_artifact(
         artifact_root,
         report_date=report.report_date,
@@ -435,6 +444,7 @@ def _validate_artifact(artifact_root: Path, report: ParsedReport) -> None:
         report_title=report.title,
         report_sha256=report.sha256,
         include_pdf_bytes=False,
+        allow_offcycle=allow_offcycle,
     )
     if artifact is None:
         raise WeeklyPreflightError(
@@ -569,10 +579,16 @@ def _dry_plan_articles(
 
 
 def _safe_update_plan(
-    source_dir: Path, database: Path, target_date: str
+    source_dir: Path,
+    database: Path,
+    target_date: str,
+    *,
+    allow_offcycle: bool = False,
 ) -> dict[str, Any]:
     try:
-        plan = plan_registry_update(source_dir, database)
+        plan = plan_registry_update(
+            source_dir, database, allow_offcycle=allow_offcycle
+        )
     except (RegistryInputError, RegistryBuildError) as exc:
         raise WeeklyPreflightError(
             "weekly registry preflight failed: registry update plan is invalid"
@@ -604,11 +620,14 @@ def _preflight(
     check_lock: bool,
     fallback_decisions: dict[str, FallbackDecision] | None = None,
     metadata_fingerprint: str | None = None,
+    allow_offcycle: bool = False,
 ) -> _Preflight:
-    target_date = _target_day(target_date)
+    target_date = _target_day(target_date, allow_offcycle=allow_offcycle)
     source_dir_path = _absolute_path(source_dir, label="source directory")
     repository_root = _repository_for_source(source_dir_path, runner=git_runner)
-    source_path, report = _parse_target(source_dir_path, target_date)
+    source_path, report = _parse_target(
+        source_dir_path, target_date, allow_offcycle=allow_offcycle
+    )
     _tracked_at_head(source_path, repository_root=repository_root, runner=git_runner)
 
     database_path = _absolute_path(database, label="database")
@@ -670,9 +689,12 @@ def _preflight(
         target_date=target_date,
         report_sha256=report.sha256,
         now=now,
+        allow_offcycle=allow_offcycle,
     )
-    _validate_artifact(artifact_root_path, report)
-    plan = _safe_update_plan(source_dir_path, database_path, target_date)
+    _validate_artifact(artifact_root_path, report, allow_offcycle=allow_offcycle)
+    plan = _safe_update_plan(
+        source_dir_path, database_path, target_date, allow_offcycle=allow_offcycle
+    )
     article_ids, eligible_ids = _target_identities(report)
     metadata_path = (
         _absolute_path(metadata_dir, label="article metadata")
@@ -706,6 +728,7 @@ def _preflight(
     )
     return _Preflight(
         target_date=target_date,
+        allow_offcycle=allow_offcycle,
         repository_root=repository_root,
         source_dir=source_dir_path,
         source_path=source_path,
@@ -842,6 +865,7 @@ def _revalidate_upstream(
         check_lock=False,
         fallback_decisions=reference.fallback_decisions,
         metadata_fingerprint=reference.metadata_fingerprint,
+        allow_offcycle=reference.allow_offcycle,
     )
     if (
         current.live_sha256 != reference.live_sha256
@@ -1513,6 +1537,7 @@ def weekly_sync(
     metadata_dir: str | Path | None = None,
     expected_report_sha256: str | None = None,
     dry_run: bool = False,
+    allow_offcycle: bool = False,
     resolver: Resolver = _default_resolver,
     transport: Transport | None = None,
     clock: Clock = _default_clock,
@@ -1547,6 +1572,7 @@ def weekly_sync(
         clock=clock,
         git_runner=git_runner,
         check_lock=True,
+        allow_offcycle=allow_offcycle,
     )
     if (
         expected_report_sha256 is not None
@@ -1588,6 +1614,7 @@ def weekly_sync(
             git_runner=git_runner,
             check_lock=False,
             fallback_decisions=initial.fallback_decisions,
+            allow_offcycle=allow_offcycle,
             metadata_fingerprint=initial.metadata_fingerprint,
         )
         if (
@@ -1649,7 +1676,10 @@ def weekly_sync(
                 )
             try:
                 update_result = update_registry(
-                    locked.source_dir, candidate, scratch / "update-backups"
+                    locked.source_dir,
+                    candidate,
+                    scratch / "update-backups",
+                    allow_offcycle=locked.allow_offcycle,
                 )
             except (RegistryInputError, RegistryBuildError, RegistryLockError) as exc:
                 raise WeeklyValidationError(

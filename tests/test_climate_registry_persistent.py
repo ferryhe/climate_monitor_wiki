@@ -236,8 +236,10 @@ def test_changed_or_out_of_order_report_fails_closed_without_mutation(tmp_path):
 
     (source_dir / "climate-monitor-2026-08-03.md").unlink()
     _write_report(source_dir, "2026-08-11", _item("Tuesday", "Off-cycle.", "https://example.com/tuesday"))
-    with pytest.raises(RegistryBuildError, match="must be a Monday"):
+    with pytest.raises(RegistryInputError, match="off-cycle report requires --allow-offcycle"):
         persistent.plan_registry_update(source_dir, database)
+    plan = persistent.plan_registry_update(source_dir, database, allow_offcycle=True)
+    assert any(item["date"] == "2026-08-11" for item in plan["new_reports"])
 
 
 def test_plan_reports_previously_imported_source_file_as_missing(tmp_path):
