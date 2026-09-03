@@ -34,7 +34,7 @@ CATEGORY_LABELS = {
 }
 
 
-def build_category_label(cat):
+def build_category_label(cat: str) -> str:
     return CATEGORY_LABELS.get(cat, cat)
 
 
@@ -152,7 +152,20 @@ def main() -> int:
         cat = item.get("category", "general")
         if isinstance(cat, list):
             cat = cat[0] if cat else "general"
+        if not isinstance(cat, str) or not cat:
+            cat = "general"
         categories.setdefault(cat, []).append(item)
+
+    def item_category_labels(item: dict, fallback: str) -> list[str]:
+        """Full ordered category list (first = primary) as display labels."""
+        values = item.get("categories")
+        if isinstance(values, list):
+            labels = [build_category_label(c) for c in values if isinstance(c, str) and c]
+            if labels:
+                return labels
+        if not isinstance(fallback, str) or not fallback:
+            fallback = "general"
+        return [build_category_label(fallback)]
 
     lines.append("## Pillar A — Climate & Actuarial Site Changes")
     lines.append("")
@@ -170,7 +183,7 @@ def main() -> int:
             summary = item.get("summary", "")
             keywords = item.get("keywords", [])
             lines.append(f"- **{title}**")
-            lines.append(f"  - **Categories:** {build_category_label(cat)}")
+            lines.append(f"  - **Categories:** {', '.join(item_category_labels(item, cat))}")
             if summary:
                 lines.append(f"  - {summary}")
             if keywords:
@@ -196,7 +209,7 @@ def main() -> int:
             summary = item.get("summary", "")
             keywords = item.get("keywords", [])
             lines.append(f"- **{title}**")
-            lines.append(f"  - **Categories:** {build_category_label(cat)}")
+            lines.append(f"  - **Categories:** {', '.join(item_category_labels(item, cat))}")
             if summary:
                 lines.append(f"  - {summary}")
             if keywords:
@@ -236,7 +249,7 @@ def main() -> int:
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
                 "summary": item.get("summary", ""),
-                "categories": [build_category_label(cat)],
+                "categories": item_category_labels(item, cat),
                 "keywords": item.get("keywords", []),
                 "source": item.get("source", ""),
                 "pillar": "A" if item.get("source") != "web" else "B",
