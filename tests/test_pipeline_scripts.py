@@ -213,3 +213,66 @@ def test_step5_help_marks_monitor_stats_required():
     result = run_script("step5_build_md.py", "--help")
     assert result.returncode == 0
     assert "Required JSON" in result.stdout
+
+
+WEEKLY_MD = """# Weekly Climate Monitor
+
+**Report Date:** 2026-09-14
+
+## Executive Summary
+
+Sites checked: **57**, succeeded: **54**, failed: **3**
+
+## Pillar A
+
+- **Flood insurance claims surge**
+  https://example.org/flood
+  - Grounded summary about flood claims.
+
+## Pillar B
+
+## Original Links
+
+- https://example.org/flood
+"""
+
+
+def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
+    """step8 promotes the generated report into sources/ via a pid-unique
+    staging file; a retried run must be a clean no-op without leftover
+    .tmp.* files (fixed .tmp suffix once let concurrent runs clobber)."""
+    import sqlite3
+
+    from climate_registry.schema import apply_migrations
+
+    sources = tmp_path / "sources"
+    db_path = tmp_path / "registry.sqlite3"
+    backup_dir = tmp_path / "backups"
+    conn = sqlite3.connect(db_path)
+    apply_migrations(conn)
+    conn.close()
+    (reports_dir / "climate-monitor-2026-09-14.md").write_text(WEEKLY_MD)
+
+    env = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WIKI_SOURCES": str(sources),
+        "CLIMATE_REGISTRY_DB": str(db_path),
+        "CLIMATE_REGISTRY_BACKUP_DIR": str(backup_dir),
+    }
+    result = run_script("step8_sync_registry.py", "--date", "2026-09-14",
+                        "--allow-future", "--allow-offcycle", env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (sources / "climate-monitor-2026-09-14.md").read_text() == WEEKLY_MD
+    assert not list(sources.glob("*.tmp*"))
+
+    # Retried run: sources/ and generated agree -> no promotion, no conflict.
+    result2 = run_script("step8_sync_registry.py", "--date", "2026-09-14",
+                         "--allow-future", "--allow-offcycle", env_extra=env)
+    assert result2.returncode == 0, result2.stdout + result2.stderr
+    assert "up to date" in result2.stdout
+    assert not list(sources.glob("*.tmp*"))
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+    conn.close()

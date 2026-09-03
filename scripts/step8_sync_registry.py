@@ -102,9 +102,15 @@ def main() -> int:
     generated_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not report_path.exists() and generated_path.exists():
         SOURCES.mkdir(parents=True, exist_ok=True)
-        tmp_report = report_path.with_suffix(report_path.suffix + ".tmp")
-        shutil.copy2(generated_path, tmp_report)
-        os.replace(tmp_report, report_path)
+        # pid-unique staging name: a fixed ".tmp" suffix lets concurrent or
+        # retried runs clobber each other's staging file before os.replace.
+        tmp_report = report_path.with_suffix(report_path.suffix + f".tmp.{os.getpid()}")
+        try:
+            shutil.copy2(generated_path, tmp_report)
+            os.replace(tmp_report, report_path)
+        except OSError:
+            tmp_report.unlink(missing_ok=True)
+            raise
         print(f"Promoted generated report to sources/: {report_path}")
     elif report_path.exists() and generated_path.exists():
         if report_path.read_bytes() != generated_path.read_bytes():
