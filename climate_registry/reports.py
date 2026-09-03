@@ -127,8 +127,10 @@ def _is_ignored_heading(heading: str) -> bool:
     ) or key.strip(" 📊") == "summary"
 
 
-def _parse_weekly(path: Path, raw: bytes, text: str) -> ParsedReport:
-    report = parse_weekly_report(path, raw=raw)
+def _parse_weekly(
+    path: Path, raw: bytes, text: str, *, allow_offcycle: bool = False
+) -> ParsedReport:
+    report = parse_weekly_report(path, raw=raw, allow_offcycle=allow_offcycle)
     return ParsedReport(
         path=path,
         report_date=report.report_date,
@@ -345,17 +347,24 @@ def _parse_legacy(path: Path, raw: bytes, text: str, report_date: str) -> Parsed
     )
 
 
-def parse_historical_report(path: Path, *, raw: bytes | None = None) -> ParsedReport:
+def parse_historical_report(
+    path: Path, *, raw: bytes | None = None, allow_offcycle: bool = False
+) -> ParsedReport:
     match = REPORT_NAME.fullmatch(path.name)
     if not match:
         raise ValueError(f"unsupported report filename: {path.name}")
     raw = path.read_bytes() if raw is None else raw
     text = raw.decode("utf-8")
     if "Pillar A" in text and "Pillar B" in text and "Weekly Climate" in text:
-        return _parse_weekly(path, raw, text)
+        return _parse_weekly(path, raw, text, allow_offcycle=allow_offcycle)
     return _parse_legacy(path, raw, text, match.group(1))
 
 
-def parse_report_directory(source_dir: Path) -> tuple[ParsedReport, ...]:
+def parse_report_directory(
+    source_dir: Path, *, allow_offcycle: bool = False
+) -> tuple[ParsedReport, ...]:
     paths: Iterable[Path] = sorted(source_dir.glob("climate-monitor-*.md"))
-    return tuple(parse_historical_report(path) for path in paths)
+    return tuple(
+        parse_historical_report(path, allow_offcycle=allow_offcycle)
+        for path in paths
+    )

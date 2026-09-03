@@ -186,7 +186,9 @@ def _validate_public_http_url(url: str) -> None:
             raise RegistryInputError("selection candidate URL is invalid")
 
 
-def _validate_payload(payload: Any) -> tuple[str, tuple[SelectionCandidate, ...]]:
+def _validate_payload(
+    payload: Any, *, allow_offcycle: bool = False
+) -> tuple[str, tuple[SelectionCandidate, ...]]:
     if not isinstance(payload, dict) or set(payload) != ROOT_KEYS:
         raise RegistryInputError("selection input has an invalid top-level contract")
     if payload.get("schema_version") != INPUT_SCHEMA_VERSION:
@@ -199,7 +201,7 @@ def _validate_payload(payload: Any) -> tuple[str, tuple[SelectionCandidate, ...]
         parsed_date = date.fromisoformat(report_date)
     except ValueError as exc:
         raise RegistryInputError("selection report_date is invalid") from exc
-    if parsed_date.weekday() != 0:
+    if parsed_date.weekday() != 0 and not allow_offcycle:
         raise RegistryInputError("selection report_date must be a Monday")
 
     raw_candidates = payload.get("candidates")
@@ -238,7 +240,9 @@ def _validate_payload(payload: Any) -> tuple[str, tuple[SelectionCandidate, ...]
     return report_date, tuple(candidates)
 
 
-def load_selection_input(path: Path) -> dict[str, Any]:
+def load_selection_input(
+    path: Path, *, allow_offcycle: bool = False
+) -> dict[str, Any]:
     """Load and strictly validate a bounded selection input document."""
 
     input_path = Path(path)
@@ -272,7 +276,7 @@ def load_selection_input(path: Path) -> dict[str, Any]:
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
         )
-        _validate_payload(payload)
+        _validate_payload(payload, allow_offcycle=allow_offcycle)
     except RegistryInputError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
@@ -345,7 +349,9 @@ def _strict_pillar_items(section: str, pillar: str) -> tuple[tuple[str, str, str
     return tuple(items)
 
 
-def parse_strict_weekly_report(path: Path) -> ParsedReport:
+def parse_strict_weekly_report(
+    path: Path, *, allow_offcycle: bool = False
+) -> ParsedReport:
     """Parse a weekly report while requiring unambiguous item/source links."""
 
     report_path = Path(path)
@@ -360,7 +366,7 @@ def parse_strict_weekly_report(path: Path) -> ParsedReport:
         for item in _strict_pillar_items(_pillar_section(text, pillar), pillar)
     )
     try:
-        report = parse_historical_report(report_path)
+        report = parse_historical_report(report_path, allow_offcycle=allow_offcycle)
     except Exception as exc:
         raise RegistryInputError("weekly report structure is invalid") from exc
     if report.cadence != "weekly":
@@ -395,10 +401,14 @@ def _read_only_connection(database: Path) -> sqlite3.Connection:
         raise RegistryBuildError("registry database could not be opened read-only") from exc
 
 
-def load_registry_selection_snapshot(
-    database: Path, source_dir: Path
-) -> RegistrySelectionSnapshot:
-    """Read a synchronized immutable supported Registry snapshot without mutation."""
+def load_registry_selection_snapshot(database: Path, source_dir: Path) -> RegistrySelectionSnapshot:
+    """Read a synchronized immutable supported Registry snapshot without mutation.
+
+    The snapshot always reads persisted source history tolerantly: sources/
+    may already contain explicitly accepted off-cycle reports, and Monday-only
+    policy for NEW candidates is enforced by plan_selection's payload
+    validation, not by snapshot parsing.
+    """
 
     database = Path(database).resolve()
     source_dir = Path(source_dir).resolve()
@@ -412,7 +422,10 @@ def load_registry_selection_snapshot(
         raise RegistryInputError("registry database has active SQLite sidecars")
 
     try:
-        reports = parse_report_directory(source_dir)
+        # Read-tolerant: the snapshot reads persisted source history, which may
+        # include explicitly accepted off-cycle reports. Monday-only policy for
+        # NEW candidates is enforced by plan_selection's payload validation.
+        reports = parse_report_directory(source_dir, allow_offcycle=True)
     except Exception as exc:
         raise RegistryBuildError("registry source report history is invalid") from exc
     if not reports:
@@ -469,11 +482,11 @@ def load_registry_selection_snapshot(
 
 
 def plan_selection(
-    payload: dict[str, Any], *, historical_urls: Iterable[str]
+    payload: dict[str, Any], *, historical_urls: Iterable[str], allow_offcycle: bool = False
 ) -> dict[str, Any]:
     """Return a deterministic safe-ID-only plan for already validated candidates."""
 
-    report_date, candidates = _validate_payload(payload)
+    report_date, candidates = _validate_payload(payload, allow_offcycle=allow_offcycle)
     ordered = tuple(candidate for pillar in ("A", "B") for candidate in candidates if candidate.pillar == pillar)
     historical = frozenset(historical_urls)
     url_owners: dict[str, SelectionCandidate] = {}
@@ -534,13 +547,15 @@ def plan_selection(
 
 
 def plan_registry_selection(
-    database: Path, source_dir: Path, payload: dict[str, Any]
+    database: Path, source_dir: Path, payload: dict[str, Any], *, allow_offcycle: bool = False
 ) -> dict[str, Any]:
     """Plan candidate selection against an exact synchronized Registry baseline."""
 
-    _validate_payload(payload)
+    _validate_payload(payload, allow_offcycle=allow_offcycle)
     snapshot = load_registry_selection_snapshot(database, source_dir)
-    return plan_selection(payload, historical_urls=snapshot.canonical_urls)
+    return plan_selection(
+        payload, historical_urls=snapshot.canonical_urls, allow_offcycle=allow_offcycle
+    )
 
 
 def candidate_payload(

@@ -7,7 +7,7 @@ import sqlite3
 import stat
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -86,7 +86,11 @@ def _validate_database(connection: sqlite3.Connection) -> int:
 
 def _parse_sources(source_dir: Path) -> tuple[ParsedReport, ...]:
     try:
-        reports = parse_report_directory(source_dir)
+        # Read-tolerant: sources/ is append-mostly persisted history and may
+        # already contain explicitly accepted off-cycle reports. Monday-only
+        # policy is enforced for NEW reports by plan_registry_update's opt-in
+        # gate, not by parsing existing history.
+        reports = parse_report_directory(source_dir, allow_offcycle=True)
         if not reports:
             raise RegistryInputError(f"no climate-monitor Markdown reports found in: {source_dir}")
         return reports
@@ -96,7 +100,9 @@ def _parse_sources(source_dir: Path) -> tuple[ParsedReport, ...]:
         raise RegistryBuildError(f"could not parse report history: {exc}") from exc
 
 
-def plan_registry_update(source_dir: Path, database: Path) -> dict:
+def plan_registry_update(
+    source_dir: Path, database: Path, *, allow_offcycle: bool = False
+) -> dict:
     """Plan an append-only update without modifying the database or sources."""
 
     source_dir, database = _validate_paths(source_dir, database)
@@ -152,6 +158,19 @@ def plan_registry_update(source_dir: Path, database: Path) -> dict:
                     "stored_filename": stored["filename"],
                     "stored_sha256": stored["sha256"],
                 }
+            )
+
+    # NEW-report boundary: persisted history may include accepted off-cycle
+    # dates, but a NEW non-Monday report requires the explicit opt-in.
+    if not allow_offcycle:
+        offcycle_new = [
+            item["date"]
+            for item in new_reports
+            if date.fromisoformat(item["date"]).weekday() != 0
+        ]
+        if offcycle_new:
+            raise RegistryInputError(
+                f"new off-cycle report requires --allow-offcycle: {offcycle_new[0]}"
             )
 
     pending_migrations = [migration[0] for migration in MIGRATIONS if migration[0] > version]
@@ -307,7 +326,13 @@ def _fsync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
-def update_registry(source_dir: Path, database: Path, backup_dir: Path) -> dict:
+def update_registry(
+    source_dir: Path,
+    database: Path,
+    backup_dir: Path,
+    *,
+    allow_offcycle: bool = False,
+) -> dict:
     """Atomically install a migrated, append-only registry update."""
 
     source_dir, database = _validate_paths(source_dir, database)
@@ -325,13 +350,17 @@ def update_registry(source_dir: Path, database: Path, backup_dir: Path) -> dict:
             names = ", ".join(path.name for path in sidecars)
             raise RegistryInputError(f"registry has active SQLite sidecar files; reconcile before update: {names}")
         live_fingerprint = _file_sha256(database)
-        plan = plan_registry_update(source_dir, database)
+        plan = plan_registry_update(
+            source_dir, database, allow_offcycle=allow_offcycle
+        )
         if plan["conflicts"]:
             raise RegistryInputError("registry update plan contains report identity conflicts")
         if not plan["mutation_required"]:
             return {**plan, "status": "no-op", "backup": None, "imported_reports": []}
 
-        reports_by_date = {report.report_date: report for report in _parse_sources(source_dir)}
+        reports_by_date = {
+            report.report_date: report for report in _parse_sources(source_dir)
+        }
         for item in plan["new_reports"]:
             report = reports_by_date.get(item["date"])
             if report is None or report.sha256 != item["sha256"] or report.path.name != item["filename"]:

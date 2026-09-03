@@ -3,7 +3,7 @@
   "prompt_id": "weekly_monitor",
   "version": "v1",
   "prompt_path": "prompts/weekly-monitor-v1.prompt.md",
-  "sha256": "543f8c5b2d30f8b51dc2253a69cdb516d58dfd37cb9b2389e94dd5f5ebbd14b6",
+  "sha256": "53896231729799845b48e85eb5901cacce03aa26cec2199e2176dc254d5b7909",
   "authoring_request_schema": "contracts/authoring-request.v1.schema.json",
   "authoring_response_schema": "contracts/authoring-response.v1.schema.json",
   "contract_version": "weekly-monitor-authoring.v1"

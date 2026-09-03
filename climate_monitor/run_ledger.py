@@ -148,17 +148,21 @@ def _nonnegative_int(value: Any, *, field: str) -> int:
     return value
 
 
-def canonical_report_filename(report_date: str) -> str:
+def canonical_report_filename(
+    report_date: str, *, allow_offcycle: bool = False
+) -> str:
     parsed = _strict_date(report_date, field="report report_date")
-    if parsed.weekday() != 0:
+    if parsed.weekday() != 0 and not allow_offcycle:
         raise LedgerContractError("report report_date must be Monday")
     return f"climate-monitor-{report_date}.md"
 
 
 def build_report_identity(
-    *, report_date: str, filename: str, sha256: str
+    *, report_date: str, filename: str, sha256: str, allow_offcycle: bool = False
 ) -> ReportIdentity:
-    expected_filename = canonical_report_filename(report_date)
+    expected_filename = canonical_report_filename(
+        report_date, allow_offcycle=allow_offcycle
+    )
     if filename != expected_filename:
         raise LedgerContractError("report filename does not match report_date")
     if not isinstance(sha256, str) or not _SHA256.fullmatch(sha256):
@@ -177,6 +181,7 @@ def validate_report_identity(
     expected_report_date: str | None = None,
     expected_filename: str | None = None,
     expected_sha256: str | None = None,
+    allow_offcycle: bool = False,
 ) -> ReportIdentity:
     expected = frozenset({"report_id", "report_date", "sha256"})
     _exact_fields(raw, expected=expected, label="report")
@@ -185,6 +190,7 @@ def validate_report_identity(
         report_date=raw["report_date"],
         filename=f"{report_id}.md",
         sha256=raw["sha256"],
+        allow_offcycle=allow_offcycle,
     )
     if expected_report_date is not None and identity.report_date != expected_report_date:
         raise LedgerContractError("report report_date does not match attempt report_date")
@@ -272,7 +278,9 @@ def _validate_sources(raw: Any) -> dict[str, Any]:
     return {**counts, "failures": normalized_failures}
 
 
-def validate_attempt(payload: Any) -> dict[str, Any]:
+def validate_attempt(
+    payload: Any, *, allow_offcycle: bool = False
+) -> dict[str, Any]:
     _exact_fields(
         payload,
         expected=_ATTEMPT_FIELDS,
@@ -286,7 +294,7 @@ def validate_attempt(payload: Any) -> dict[str, Any]:
     if not isinstance(stage, str) or stage not in STAGES:
         raise LedgerContractError("invalid stage")
     report_day = _strict_date(payload["report_date"], field="report_date")
-    if report_day.weekday() != 0:
+    if report_day.weekday() != 0 and not allow_offcycle:
         raise LedgerContractError("report_date must be Monday")
     scheduled = _strict_utc(payload["scheduled_for"], field="scheduled_for")
     finished = _strict_utc(payload["finished_at"], field="finished_at")
@@ -339,8 +347,10 @@ def validate_attempt(payload: Any) -> dict[str, Any]:
     return normalized
 
 
-def canonical_attempt_bytes(payload: Any) -> bytes:
-    normalized = validate_attempt(payload)
+def canonical_attempt_bytes(
+    payload: Any, *, allow_offcycle: bool = False
+) -> bytes:
+    normalized = validate_attempt(payload, allow_offcycle=allow_offcycle)
     return (
         json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         + "\n"
@@ -390,7 +400,9 @@ def decode_attempt_repair_json(raw: str | bytes) -> dict[str, Any]:
     return validate_attempt_repair(payload)
 
 
-def decode_attempt_json(raw: str | bytes) -> dict[str, Any]:
+def decode_attempt_json(
+    raw: str | bytes, *, allow_offcycle: bool = False
+) -> dict[str, Any]:
     raw_size = len(raw.encode("utf-8")) if isinstance(raw, str) else len(raw)
     if raw_size > MAX_ATTEMPT_BYTES:
         raise LedgerContractError("attempt exceeds file size limit")
@@ -400,7 +412,7 @@ def decode_attempt_json(raw: str | bytes) -> dict[str, Any]:
         raise
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise LedgerContractError("attempt contains invalid JSON") from exc
-    return validate_attempt(payload)
+    return validate_attempt(payload, allow_offcycle=allow_offcycle)
 
 
 def _metadata_is_link_or_reparse(metadata: os.stat_result) -> bool:
@@ -650,9 +662,10 @@ def append_attempt(
     payload: Any,
     *,
     repository_root: str | Path,
+    allow_offcycle: bool = False,
 ) -> str:
-    normalized = validate_attempt(payload)
-    encoded = canonical_attempt_bytes(normalized)
+    normalized = validate_attempt(payload, allow_offcycle=allow_offcycle)
+    encoded = canonical_attempt_bytes(normalized, allow_offcycle=allow_offcycle)
     if len(encoded) > MAX_ATTEMPT_BYTES:
         raise LedgerContractError("attempt exceeds file size limit")
     root = _external_directory(ledger_dir, repository_root=repository_root)
@@ -1321,7 +1334,12 @@ class RunLedgerReader:
             total_bytes += len(raw)
             if total_bytes > self.max_total_bytes:
                 raise LedgerContractError("ledger exceeds total byte limit")
-            attempt = decode_attempt_json(raw)
+            # Readers are tolerant of off-cycle weekday dates: the ledger is a
+            # shared append-only log, and records written with an explicit
+            # --allow-offcycle opt-in are valid history. Monday-only policy is
+            # enforced at the write/operation boundary (validate_attempt
+            # default), not when reading existing records.
+            attempt = decode_attempt_json(raw, allow_offcycle=True)
             relative = path.relative_to(self.root)
             expected = Path(
                 "attempts",

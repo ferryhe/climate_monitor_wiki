@@ -158,7 +158,9 @@ def _validate_original_link_entries(section: str) -> None:
             raise InputError("Original Links entries must use HTTP(S) URLs")
 
 
-def parse_weekly_report(path: Path, *, raw: bytes | None = None) -> WeeklyReport:
+def parse_weekly_report(
+    path: Path, *, raw: bytes | None = None, allow_offcycle: bool = False
+) -> WeeklyReport:
     path = Path(path)
     if not path.is_file():
         raise InputError("report file does not exist")
@@ -182,7 +184,7 @@ def parse_weekly_report(path: Path, *, raw: bytes | None = None) -> WeeklyReport
         parsed_date = date.fromisoformat(declared_date)
     except ValueError as exc:
         raise InputError("Report Date is invalid") from exc
-    if parsed_date.weekday() != 0:
+    if parsed_date.weekday() != 0 and not allow_offcycle:
         raise InputError("weekly Report Date must be a Monday")
 
     h1 = [match.group(2).strip() for match in HEADING.finditer(text) if len(match.group(1)) == 1]

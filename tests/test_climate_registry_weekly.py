@@ -1161,12 +1161,28 @@ def test_missing_committed_target_source_fails_closed(weekly_fixture):
     assert not weekly_fixture.lock_file.exists()
 
 
+def test_target_day_offcycle_requires_explicit_opt_in():
+    with pytest.raises(weekly.WeeklyPreflightError, match="must be a Monday"):
+        weekly._target_day("2026-09-02")
+    assert weekly._target_day("2026-09-02", allow_offcycle=True) == "2026-09-02"
+    assert weekly._target_day("2026-08-31", allow_offcycle=True) == "2026-08-31"
+
+
+def test_weekly_sync_offcycle_opt_in_passes_target_day_gate(weekly_fixture):
+    with pytest.raises(weekly.WeeklyPreflightError) as exc_info:
+        weekly.weekly_sync(
+            **weekly_fixture.arguments(
+                target_date="2026-08-18", dry_run=True, allow_offcycle=True
+            )
+        )
+    assert "must be a Monday" not in str(exc_info.value)
+
+
 def test_source_date_and_non_target_update_plan_fail_closed(weekly_fixture):
     with pytest.raises(weekly.WeeklyPreflightError, match="must be a Monday"):
         weekly.weekly_sync(
             **weekly_fixture.arguments(target_date="2026-08-18", dry_run=True)
         )
-
     extra = weekly_fixture.source_dir / "climate-monitor-2026-08-24.md"
     extra.write_text(
         _report("2026-08-24", title="Extra", url="https://example.com/extra"),

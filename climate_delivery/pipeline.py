@@ -160,6 +160,7 @@ def run_delivery(
     dry_run: bool = False,
     smtp_factory=None,
     clock=None,
+    allow_offcycle: bool = False,
 ) -> dict[str, Any]:
     report_path, output_dir, state_dir, config_path = validate_run_paths(
         report_path,
@@ -171,7 +172,9 @@ def run_delivery(
         report_bytes = report_path.read_bytes()
     except OSError as exc:
         raise InputError("report must be a readable UTF-8 file") from exc
-    report = parse_weekly_report(report_path, raw=report_bytes)
+    report = parse_weekly_report(
+        report_path, raw=report_bytes, allow_offcycle=allow_offcycle
+    )
     config = load_delivery_config(config_path)
 
     # The 09:00 delivery consumes the SAME SHA-bound semantic sidecar that the
@@ -199,7 +202,7 @@ def run_delivery(
         candidate_summary = temporary_dir / "summary.json"
         candidate_pdf = temporary_dir / pdf_name
         write_summary(summary, candidate_summary)
-        render_pdf(summary, candidate_pdf)
+        render_pdf(summary, candidate_pdf, allow_offcycle=allow_offcycle)
         summary_sha256 = _file_sha256(candidate_summary)
         pdf_sha256 = _file_sha256(candidate_pdf)
 
@@ -220,6 +223,7 @@ def run_delivery(
                     smtp_factory=smtp_factory,
                     acquire_lock=False,
                     summary_artifact_sha256=summary_sha256,
+                    allow_offcycle=allow_offcycle,
                     clock=clock,
                 )
             except (DeliveryError, LockStateError) as original_error:

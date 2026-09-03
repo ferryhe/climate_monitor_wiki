@@ -10,10 +10,10 @@ from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_pro
 
 ROOT = Path(__file__).resolve().parents[2]
 JOB_ROOT = ROOT / "monitoring" / "jobs" / "weekly-climate-monitor-08h"
-EXPECTED_PROMPT_SHA256 = "543f8c5b2d30f8b51dc2253a69cdb516d58dfd37cb9b2389e94dd5f5ebbd14b6"
-EXPECTED_PROMPT_CHARS = 16406
-EXPECTED_PROMPT_LINES = 276
-EXPECTED_PROMPT_BYTES = 16410
+EXPECTED_PROMPT_SHA256 = "53896231729799845b48e85eb5901cacce03aa26cec2199e2176dc254d5b7909"
+EXPECTED_PROMPT_CHARS = 18391
+EXPECTED_PROMPT_LINES = 306
+EXPECTED_PROMPT_BYTES = 18401
 
 
 def test_prompt_loader_returns_exact_versioned_prompt_bytes_and_stable_sha():

@@ -164,6 +164,17 @@ def test_input_parser_rejects_duplicate_keys_unknown_fields_bounds_and_bad_value
     with pytest.raises(RegistryInputError, match="size limit"):
         load_selection_input(too_large)
 
+
+def test_offcycle_report_date_requires_explicit_opt_in(tmp_path):
+    payload = _payload(_candidate("safe-id", "A", "Title", "https://example.com/story"), day="2026-09-02")
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RegistryInputError, match="must be a Monday"):
+        load_selection_input(input_path)
+
+    assert load_selection_input(input_path, allow_offcycle=True) == payload
+
     with pytest.raises(RegistryInputError, match="regular file"):
         load_selection_input(tmp_path)
 

@@ -188,7 +188,10 @@ def test_existing_content_addressed_artifacts_are_never_overwritten(tmp_path, mo
 
         monkeypatch.setattr("climate_delivery.pipeline.build_summary", changed_summary)
     else:
-        monkeypatch.setattr("climate_delivery.pipeline.render_pdf", lambda summary, path: path.write_bytes(b"different pdf"))
+        monkeypatch.setattr(
+            "climate_delivery.pipeline.render_pdf",
+            lambda summary, path, *, allow_offcycle=False: path.write_bytes(b"different pdf"),
+        )
 
     with pytest.raises(LockStateError, match="artifact"):
         run_delivery(report, output, state, config, dry_run=True)

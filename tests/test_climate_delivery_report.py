@@ -176,6 +176,17 @@ def test_invalid_weekly_report_is_rejected(tmp_path, name, text, message):
         parse_weekly_report(report_file(tmp_path, text=text, name=name))
 
 
+def test_offcycle_weekly_report_requires_explicit_opt_in(tmp_path):
+    tuesday_text = REPORT.replace("2026-08-10", "2026-08-11", 1)
+    path = report_file(
+        tmp_path, text=tuesday_text, name="climate-monitor-2026-08-11.md"
+    )
+    with pytest.raises(InputError, match="Monday"):
+        parse_weekly_report(path)
+    report = parse_weekly_report(path, allow_offcycle=True)
+    assert report.report_date == "2026-08-11"
+
+
 def test_pdf_display_text_is_ascii_safe_for_real_weekly_report(tmp_path):
     source = Path(__file__).parents[1] / "sources" / "climate-monitor-2026-08-10.md"
     summary = build_summary(parse_weekly_report(source))
