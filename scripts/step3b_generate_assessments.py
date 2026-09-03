@@ -20,6 +20,7 @@ import json
 import os
 import re
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
@@ -167,6 +168,16 @@ def main() -> int:
     parser.add_argument("--date", required=True)
     parser.add_argument("--force", action="store_true", help="overwrite existing assessments")
     args = parser.parse_args()
+
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
 
     agg_path = REPORTS / f"aggregated_{args.date}.json"
     if not agg_path.exists():

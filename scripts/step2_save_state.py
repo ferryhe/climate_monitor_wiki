@@ -16,11 +16,21 @@ def main():
     parser.add_argument("--date", default=date.today().isoformat())
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
     # Load pillar_b results
-    pb_path = REPORTS / f"pillar_b_{args.date}.json"
-    if not pb_path.exists():
-        print(f"ERROR: {pb_path} not found")
-        return
+    pillar_b_path = REPORTS / f"pillar_b_{args.date}.json"
+    if not pillar_b_path.exists():
+        print(f"ERROR: {pillar_b_path} not found")
+        return 1
     
     pillar_b = json.loads(pb_path.read_text())
     
@@ -44,10 +54,12 @@ def main():
             new_urls.append(url)
     
     # Save state
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    tmp_state = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+    tmp_state.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    os.replace(tmp_state, STATE_FILE)
     print(f"Added {len(new_urls)} Pillar B URLs to article_state.json")
     print(f"Total state URLs: {sum(len(v) for v in state.values())}")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

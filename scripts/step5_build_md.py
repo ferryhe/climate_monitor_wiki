@@ -56,6 +56,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
     filtered_path = REPORTS / f"filtered_{args.date}.json"
     if not filtered_path.exists():
         print(f"ERROR: {filtered_path} not found")
@@ -73,12 +83,21 @@ def main() -> int:
     if pillar_a_path.exists():
         sites_with_changes = json.loads(pillar_a_path.read_text()).get("sites_with_changes")
 
-    checked = succeeded = failed = 0
-    if args.monitor_stats and args.monitor_stats.exists():
-        stats = json.loads(args.monitor_stats.read_text())
-        checked = int(stats.get("checked", 0))
-        succeeded = int(stats.get("succeeded", 0))
-        failed = int(stats.get("failed", 0))
+    checked = succeeded = failed = None
+    if not args.monitor_stats or not args.monitor_stats.exists():
+        print(
+            "ERROR: --monitor-stats is required. The delivery contract needs real "
+            "per-site check totals (checked/succeeded/failed); fabricating zeros "
+            "is not allowed. Pass the monitoring run's stats JSON."
+        )
+        return 1
+    stats = json.loads(args.monitor_stats.read_text())
+    checked = int(stats.get("checked", 0))
+    succeeded = int(stats.get("succeeded", 0))
+    failed = int(stats.get("failed", 0))
+    if checked == 0 and succeeded == 0 and failed == 0:
+        print("ERROR: --monitor-stats contains all zeros; refusing to publish fabricated counts")
+        return 1
 
     lines = ["# 🌡️ Weekly Climate & Actuarial Monitor (Supranational Orgs)", ""]
     lines.append(f"**Report Date:** {args.date}")
