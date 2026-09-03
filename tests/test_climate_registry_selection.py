@@ -196,7 +196,7 @@ def test_offcycle_report_date_requires_explicit_opt_in(tmp_path):
         "https://example.com/story?q=[raw]",
         "https://example.com/story#part[raw]",
         "https://example.com/café",
-        "https://例え.example/story",
+        "https://café.example/story",
         "https://example.com/%2fstory",
         "https://example.com/%41",
         "https://example.com/%7Euser",

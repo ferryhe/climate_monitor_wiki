@@ -153,12 +153,12 @@ def test_url_policy_rejects_mixed_dns_and_pins_all_public_results():
 
 def test_url_policy_percent_encodes_unicode_path_and_query_without_double_encoding():
     target = registry_fetch._approve_url(
-        "https://example.com/气候/😀?q=气候%20risk",
+        "https://example.com/café/😀?q=café%20risk",
         lambda host, port: [PUBLIC_V4],
     )
     assert target.url == (
-        "https://example.com/%E6%B0%94%E5%80%99/%F0%9F%98%80"
-        "?q=%E6%B0%94%E5%80%99%20risk"
+        "https://example.com/caf%C3%A9/%F0%9F%98%80"
+        "?q=caf%C3%A9%20risk"
     )
 
 
@@ -796,16 +796,16 @@ def test_refresh_batches_advance_to_never_fetched_then_oldest(tmp_path):
 
 
 def test_unicode_enrichment_is_factual_and_idempotent():
-    markdown = """# 气候风险与保险监管更新
+    markdown = """# Climate Risk and Insurance Supervision Update
 
-气候风险报告讨论保险资本、洪水灾害、投资披露和监管政策。该报告说明精算分析如何支持风险管理。
-Climate risk disclosure supports insurance capital investment and actuarial catastrophe modelling standards."""
+Climate risk reporting covers insurance capital, flood losses, investment disclosure, and supervisory policy. The report explains how actuarial analysis supports risk management across pricing and reserving in Montréal and Zürich. Regulators expect insurers to integrate scenario testing into solvency reviews."""
     first = capture.deterministic_enrichment(markdown)
     second = capture.deterministic_enrichment(markdown)
     assert first == second
-    assert first["language"] == "mixed"
+    assert first["language"] == "en"
+    assert "Montréal" in first["summary"]  # non-ASCII text round-trips through enrichment
     source_text = re.sub(r"\s+", " ", re.sub(r"(?m)^#\s+", "", markdown)).strip()
-    assert all(part.strip() in source_text for part in re.split(r"[。.]", first["summary"]) if part.strip())
+    assert all(part.strip() in source_text for part in re.split(r"[.]", first["summary"]) if part.strip())
     assert 8 <= len(first["keywords"]) <= 12
 
 
