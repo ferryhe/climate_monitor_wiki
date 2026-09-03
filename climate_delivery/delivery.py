@@ -48,7 +48,7 @@ def _validate_summary(summary: dict[str, Any]) -> None:
     if not isinstance(monitoring_notes, list) or not all(isinstance(item, str) for item in monitoring_notes):
         raise InputError("summary monitoring notes must be strings")
     for item in summary["highlights"]:
-        if not isinstance(item, dict) or set(item) != {"pillar", "title", "summary", "url"}:
+        if not isinstance(item, dict) or not {"pillar", "title", "summary", "url"}.issubset(item.keys()):
             raise InputError("summary highlight schema is invalid")
         if not isinstance(item["pillar"], str) or item["pillar"] not in {"A", "B"}:
             raise InputError("summary highlight values are invalid")

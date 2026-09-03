@@ -132,14 +132,16 @@ def extract_summary(markdown: str) -> str:
 
 
 def render_daily_page(
-    day: str, *, summary: str, has_source: bool, cadence: str = "daily"
+    day: str, *, summary: str, has_source: bool, cadence: str = "daily",
+    full_content: str = ""
 ) -> str:
     source_line = (
         f"Source: [[sources/climate-monitor-{day}]]"
         if has_source
         else "Source: missing"
     )
-    body = summary if has_source else "No report - source file missing for this date."
+    # Use full content if available, otherwise fall back to summary
+    body = full_content if full_content else (summary if has_source else "No report - source file missing for this date.")
     return "\n".join(
         [
             f"# Climate Monitor - {day}",
@@ -147,12 +149,10 @@ def render_daily_page(
             f"**Report Date:** {day}",
             source_line,
             "",
-            "## Summary",
-            "",
             body,
             "",
             "## Tags",
-            f"#climate-monitor #{cadence}-report #{day}",
+            f"#climate-monitor #{cadence}-report {day}",
             "",
         ]
     )
@@ -281,6 +281,7 @@ def sync_source_wiki(
         source_path = source_dir / f"climate-monitor-{day}.md"
         has_source = source_path.exists()
         summary = ""
+        full_content = ""
         if has_source:
             source_markdown = _normalize_text(source_path.read_text(encoding="utf-8"))
             report_date = _extract_report_date(source_markdown)
@@ -290,9 +291,11 @@ def sync_source_wiki(
                     "Used the filename date."
                 )
             summary = extract_summary(source_markdown)
+            full_content = source_markdown
 
         page_content = render_daily_page(
-            day, summary=summary, has_source=has_source, cadence=cadence
+            day, summary=summary, has_source=has_source, cadence=cadence,
+            full_content=full_content
         )
         target_path = wiki_dir / f"climate-monitor-{day}.md"
         write_state = _write_if_changed(target_path, page_content)

@@ -1,0 +1,330 @@
+{
+  "assessments": [
+    {
+      "id": 0,
+      "relevant": true,
+      "category": "general",
+      "summary": "UNEP published its environmental and social sustainability framework, providing guidelines for integrating climate risk into insurance and investment decisions. The framework addresses physical and transition risk assessment methodologies relevant for actuarial practice.",
+      "keywords": [
+        "social sustainability",
+        "environmental and social",
+        "sustainability framework unep",
+        "published its environmental",
+        "and social sustainability"
+      ]
+    },
+    {
+      "id": 1,
+      "relevant": true,
+      "category": "general",
+      "summary": "WEF analysis of 2026 as a triple COP year (climate, biodiversity, land) and its implications for business risk management. Highlights the growing importance of climate scenario analysis for insurance pricing.",
+      "keywords": [
+        "triple cop year",
+        "business wef analysis",
+        "as a triple",
+        "cop year",
+        "climate"
+      ]
+    },
+    {
+      "id": 2,
+      "relevant": true,
+      "category": "mitigation_energy",
+      "summary": "WEF report on carbon dioxide removal (CDR) market infrastructure development. Relevant for actuaries assessing transition risk exposure in carbon-intensive asset portfolios.",
+      "keywords": [
+        "carbon dioxide removal",
+        "cdr market infrastructure",
+        "wef report on",
+        "market infrastructure development",
+        "relevant for actuaries"
+      ]
+    },
+    {
+      "id": 3,
+      "relevant": true,
+      "category": "general",
+      "summary": "WEF analysis of waste-to-energy solutions for EU emissions reduction and energy security. Implications for actuaries pricing energy transition risk in infrastructure portfolios.",
+      "keywords": [
+        "waste to energy",
+        "eu emissions energy",
+        "security wef analysis",
+        "of waste",
+        "energy solutions for"
+      ]
+    },
+    {
+      "id": 4,
+      "relevant": true,
+      "category": "biodiversity_nature",
+      "summary": "WEF article on philanthropy's role in climate action. Relevant for actuaries assessing ESG integration in investment portfolios.",
+      "keywords": [
+        "philanthropy key change",
+        "climate action wef",
+        "article on philanthropy",
+        "s role in",
+        "climate action"
+      ]
+    },
+    {
+      "id": 5,
+      "relevant": true,
+      "category": "general",
+      "summary": "Article from World Bank on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "keywords": [
+        "money on the",
+        "table why better",
+        "budget planning iskey",
+        "to fixing the",
+        "water crisis article"
+      ]
+    },
+    {
+      "id": 6,
+      "relevant": true,
+      "category": "general",
+      "summary": "AFDB blog on climate change impacts in Africa. Relevant for actuaries assessing physical risk exposure in African insurance markets.",
+      "keywords": [
+        "climate change in",
+        "africa afdb blog",
+        "on climate change",
+        "impacts in africa",
+        "relevant for actuaries"
+      ]
+    },
+    {
+      "id": 7,
+      "relevant": true,
+      "category": "catastrophe_natcat",
+      "summary": "WHO report on Nepal flood response. Relevant for actuaries assessing catastrophe risk in South Asian markets.",
+      "keywords": [
+        "who is on",
+        "the ground in",
+        "nepal responding to",
+        "the devastating flash",
+        "floods who report"
+      ]
+    },
+    {
+      "id": 8,
+      "relevant": true,
+      "category": "catastrophe_natcat",
+      "summary": "WHO emergency update on 2026 Rasuwa flash floods in Nepal. Implications for actuaries modeling flood risk frequency and severity.",
+      "keywords": [
+        "rasuwa flash floods",
+        "rasuwa flash",
+        "who emergency update",
+        "in nepal",
+        "implications for actuaries"
+      ]
+    },
+    {
+      "id": 9,
+      "relevant": true,
+      "category": "catastrophe_natcat",
+      "summary": "WMO report on Nepal flood tragedy and cross-border cascading risks. Relevant for actuaries assessing systemic risk in catastrophe modeling.",
+      "keywords": [
+        "flood tragedy nepal",
+        "highlights cross border",
+        "and cascading risks",
+        "wmo report on",
+        "nepal flood tragedy"
+      ]
+    },
+    {
+      "id": 10,
+      "relevant": true,
+      "category": "general",
+      "summary": "Article from WRI on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "keywords": [
+        "quarter of world",
+        "s crops threatened",
+        "by water risks",
+        "article from wri",
+        "on climate"
+      ]
+    },
+    {
+      "id": 11,
+      "relevant": true,
+      "category": "general",
+      "summary": "OSFI actuarial report on the Canada Student Financial Assistance Program. Provides actuarial methodology insights relevant for public sector risk assessment.",
+      "keywords": [
+        "oca releases report",
+        "on the csfa",
+        "program osfi actuarial",
+        "report on the",
+        "canada student financial"
+      ]
+    },
+    {
+      "id": 12,
+      "relevant": true,
+      "category": "biodiversity_nature",
+      "summary": "Article from C3S on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "keywords": [
+        "processionary caterpillar outbreaks",
+        "how sustax leverages",
+        "s data to",
+        "assess climate risk",
+        "article from c"
+      ]
+    },
+    {
+      "id": 13,
+      "relevant": true,
+      "category": "general",
+      "summary": "NASA Earthdata training on Worldview and water quality applications. Relevant for actuaries assessing coastal property risk using satellite data.",
+      "keywords": [
+        "worldview and water",
+        "water quality",
+        "quality applications in",
+        "coastal regions nasa",
+        "earthdata training on"
+      ]
+    },
+    {
+      "id": 14,
+      "relevant": true,
+      "category": "general",
+      "summary": "NASA Earthdata training on SAR for surface water monitoring. Relevant for actuaries modeling water resource risk.",
+      "keywords": [
+        "water resource",
+        "monitoring surface water",
+        "with sar for",
+        "water resource management",
+        "nasa earthdata training"
+      ]
+    },
+    {
+      "id": 15,
+      "relevant": true,
+      "category": "general",
+      "summary": "NASA Earthdata report on low water levels in Lake Powell and Lake Mead. Relevant for actuaries assessing drought risk in western US insurance markets.",
+      "keywords": [
+        "mead august",
+        "low water levels",
+        "lake powell lake",
+        "nasa earthdata report",
+        "on low water"
+      ]
+    },
+    {
+      "id": 16,
+      "relevant": true,
+      "category": "conference",
+      "summary": "UNDRR event on urban resilience and disaster preparedness in Alexandria. Relevant for actuaries assessing urban catastrophe risk.",
+      "keywords": [
+        "and disaster preparedness",
+        "strengthening urban resilience",
+        "alexandria undrr event",
+        "on urban resilience",
+        "in alexandria"
+      ]
+    },
+    {
+      "id": 17,
+      "relevant": true,
+      "category": "adaptation_resilience",
+      "summary": "UNDRR report on media resilience and risk communication in Lake Chad Basin. Relevant for actuaries assessing climate adaptation risk.",
+      "keywords": [
+        "media resilience",
+        "lake chad",
+        "media resilience and",
+        "risk communication take",
+        "centre stage lake"
+      ]
+    },
+    {
+      "id": 18,
+      "relevant": true,
+      "category": "general",
+      "summary": "IAA project on determining climate change impact on insurance risk. Recommends collaboration among actuarial organizations to support climate risk assessment.",
+      "keywords": [
+        "determining the impact",
+        "of climate change",
+        "on insurance risk",
+        "and the global",
+        "community iaa project"
+      ]
+    },
+    {
+      "id": 19,
+      "relevant": true,
+      "category": "general",
+      "summary": "Article from  on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "keywords": [
+        "climate risk",
+        "when actuaries see",
+        "the future",
+        "insurance",
+        "and your wallet"
+      ]
+    },
+    {
+      "id": 20,
+      "relevant": true,
+      "category": "general",
+      "summary": "LSE Grantham Institute explainer on climate change impacts on insurance underwriting. Covers how actuaries forecast future losses using statistical models.",
+      "keywords": [
+        "insurance underwriting",
+        "how is insurance",
+        "underwriting impacted by",
+        "climate change",
+        "lse lse grantham"
+      ]
+    },
+    {
+      "id": 21,
+      "relevant": true,
+      "category": "climate_disclosure",
+      "summary": "Official IFRS S2 standard page. Requires entities to disclose climate-related risks and opportunities affecting cash flows, access to finance, and cost of capital.",
+      "keywords": [
+        "ifrs s",
+        "standard page",
+        "climate",
+        "related disclosures official",
+        "requires entities to"
+      ]
+    },
+    {
+      "id": 22,
+      "relevant": true,
+      "category": "parametric_insurance",
+      "summary": "World Bank paper on parametric insurance products for climate adaptation in developing countries. Covers weather index insurance and catastrophe bonds.",
+      "keywords": [
+        "developing parametric insurance",
+        "for weather related",
+        "risks world bank",
+        "paper on parametric",
+        "insurance products for"
+      ]
+    },
+    {
+      "id": 23,
+      "relevant": true,
+      "category": "regulation_standards",
+      "summary": "IAIS page on climate change as a source of financial risk. Addresses insurer resilience and global financial stability implications.",
+      "keywords": [
+        "climate risk",
+        "stability implications",
+        "international association of",
+        "insurance supervisors iais",
+        "page on climate"
+      ]
+    },
+    {
+      "id": 24,
+      "relevant": true,
+      "category": "health_mortality",
+      "summary": "World Bank paper on Climate and Health Risk Index (CHRI). Improves how climate change and health resources are invested.",
+      "keywords": [
+        "health risk index",
+        "the climate and",
+        "world bank paper",
+        "on climate and",
+        "chri"
+      ]
+    }
+  ],
+  "executive_summary": "Across 25 updates from 57 monitored organizations and web search, this week's evidence concentrated on general, mitigation energy, biodiversity nature. New monitored-site developments include Environmental and Social Sustainability , 2026 Triple Cop Year Business. Notable wider-intelligence items include Determining the Impact of Climate Change, When Actuaries See The Future: Climate R.\n\nCategory analysis: Adaptation Resilience (1): Media Resilience and Risk Comm; Biodiversity Nature (2): Philanthropy Key Change Climat, Processionary caterpillar outb; Catastrophe Natcat (3): WHO is on the Ground in Nepal , 2026 Rasuwa Flash Floods; Climate Disclosure (1): IFRS S2 Climate-related Disclo; Conference (1): Strengthening Urban Resilience; General (13): Environmental and Social Susta, 2026 Triple Cop Year Business; Health Mortality (1): The Climate and Health Risk In; Mitigation Energy (1): Carbon Dioxide Removal CDR Mar; Parametric Insurance (1): Developing Parametric Insuranc; Regulation Standards (1): Climate risk - International A.\n\nActuarial implications include: pricing and product design for climate-related perils, catastrophe modeling and hazard trends, scenario analysis and stress testing for transition risk, disclosure quality and reporting controls under IFRS S2, and growth of parametric insurance markets for climate adaptation.\n\nRecommendations for the working group: (1) Monitor IFRS S2 implementation developments for actuarial reporting implications, (2) Track parametric insurance market growth for climate adaptation, (3) Review catastrophe model updates reflecting 2026 flood events, (4) Assess scenario analysis updates from NGFS and IPCC."
+}

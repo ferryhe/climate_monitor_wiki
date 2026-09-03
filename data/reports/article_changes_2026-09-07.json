@@ -1,0 +1,222 @@
+{
+  "date": "2026-09-07",
+  "pillar": "A",
+  "sites_with_changes": 37,
+  "orgs_with_articles": 11,
+  "baseline_urls": 1348,
+  "new_articles": 22,
+  "seen_before": 11,
+  "generated_at": "2026-09-02T23:58:24.668502+00:00",
+  "articles": [
+    {
+      "org": "UNEP",
+      "items": [
+        {
+          "title": "Environmental and Social Sustainability Framework",
+          "url": "https://www.unep.org/about-un-environment-programme/environmental-and-social-sustainability-framework",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "WEF",
+      "items": [
+        {
+          "title": "2026 Triple Cop Year Business",
+          "url": "https://www.weforum.org/stories/climate-action/2026-triple-cop-year-business",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Carbon Dioxide Removal CDR Market Infrastructure",
+          "url": "https://www.weforum.org/stories/climate-action/carbon-dioxide-removal-cdr-market-infrastructure",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Waste to Energy EU Emissions Energy Security",
+          "url": "https://www.weforum.org/stories/energy-transition/waste-to-energy-eu-emissions-energy-security",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Philanthropy Key Change Climate Action",
+          "url": "https://www.weforum.org/stories/nature-and-biodiversity/philanthropy-key-change-climate-action",
+          "categories": [
+            "biodiversity_nature"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "World Bank",
+      "items": [
+        {
+          "title": "Money on the Table Why Better Budget Planning IsKey to Fixing the Water Crisis",
+          "url": "https://blogs.worldbank.org/en/voices/Money-on-the-Table-Why-Better-Budget-Planning-IsKey-to-Fixing-the-Water-Crisis",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "AFDB",
+      "items": [
+        {
+          "title": "Climate Change in Africa",
+          "url": "https://blogs.afdb.org/climate-change-in-africa",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "WHO",
+      "items": [
+        {
+          "title": "WHO is on the Ground in Nepal Responding to the Devastating Flash Floods",
+          "url": "https://www.who.int/multi-media/details/who-is-on-the-ground-in-nepal-responding-to-the-devastating-flash-floods",
+          "categories": [
+            "catastrophe_natcat"
+          ]
+        },
+        {
+          "title": "2026 Rasuwa Flash Floods",
+          "url": "https://www.who.int/nepal/emergencies/2026-rasuwa-flash-floods",
+          "categories": [
+            "catastrophe_natcat"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "WMO",
+      "items": [
+        {
+          "title": "Flood Tragedy Nepal Highlights Cross Border and Cascading Risks",
+          "url": "https://wmo.int/media/news/flood-tragedy-nepal-highlights-cross-border-and-cascading-risks",
+          "categories": [
+            "catastrophe_natcat"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "WRI",
+      "items": [
+        {
+          "title": "One-Quarter of World’s Crops Threatened by Water Risks",
+          "url": "https://www.wri.org/insights/growing-water-risks-food-crops",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "OSFI",
+      "items": [
+        {
+          "title": "OCA releases Report on the CSFA Program",
+          "url": "https://www.osfi-bsif.gc.ca/en/oca/actuarial-reports/actuarial-report-canada-student-financial-assistance-program-31-july-2025",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Actuarial Report Canada Student Financial Assistance Program 31 July 2025",
+          "url": "https://www.osfi-bsif.gc.ca/en/oca/actuarial-reports/actuarial-report-canada-student-financial-assistance-program-31-july-2025",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "C3S",
+      "items": [
+        {
+          "title": "Processionary caterpillar outbreaks: how Sustax leverages C3S data to assess climate risk",
+          "url": "https://climate.copernicus.eu/processionary-caterpillar-outbreaks-how-sustax-leverages-c3s-data-assess-climate-risk",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Processionary Caterpillar Outbreaks How Sustax Leverages C3S Data Assess Climate",
+          "url": "https://climate.copernicus.eu/processionary-caterpillar-outbreaks-how-sustax-leverages-c3s-data-assess-climate-risk",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "NASAEarthdata",
+      "items": [
+        {
+          "title": "Worldview and Water Quality Applications in Coastal Regions",
+          "url": "https://www.earthdata.nasa.gov/learn/trainings/worldview-water-quality-applications-coastal-regions",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Monitoring Surface Water with SAR for Water Resource Management",
+          "url": "https://www.earthdata.nasa.gov/learn/trainings/monitoring-surface-water-sar-water-resource-management",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Monitoring Surface Water SAR Water Resource Management",
+          "url": "https://www.earthdata.nasa.gov/learn/trainings/monitoring-surface-water-sar-water-resource-management",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Worldview Water Quality Applications Coastal Regions",
+          "url": "https://www.earthdata.nasa.gov/learn/trainings/worldview-water-quality-applications-coastal-regions",
+          "categories": [
+            "general"
+          ]
+        },
+        {
+          "title": "Low Water Levels Lake Powell Lake Mead August 2026",
+          "url": "https://www.earthdata.nasa.gov/news/worldview-image-archive/low-water-levels-lake-powell-lake-mead-august-2026",
+          "categories": [
+            "general"
+          ]
+        }
+      ]
+    },
+    {
+      "org": "UNDRR",
+      "items": [
+        {
+          "title": "Strengthening Urban Resilience and Disaster Preparedness Alexandria",
+          "url": "https://www.undrr.org/event/strengthening-urban-resilience-and-disaster-preparedness-alexandria",
+          "categories": [
+            "catastrophe_natcat",
+            "adaptation_resilience"
+          ]
+        },
+        {
+          "title": "Media Resilience and Risk Communication Take Centre Stage Lake Chad Basin",
+          "url": "https://www.undrr.org/news/media-resilience-and-risk-communication-take-centre-stage-lake-chad-basin",
+          "categories": [
+            "adaptation_resilience"
+          ]
+        }
+      ]
+    }
+  ]
+}

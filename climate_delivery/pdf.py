@@ -180,8 +180,8 @@ def _highlight_card(
     ]
     if item["summary"]:
         content.append(Paragraph(_safe(item["summary"]), styles["card_body"]))
-    categories = semantics.get("categories") or []
-    keywords = semantics.get("keywords") or []
+    categories = item.get("categories") or semantics.get("categories") or []
+    keywords = item.get("keywords") or semantics.get("keywords") or []
     if categories:
         content.append(
             Paragraph("Categories: " + _safe(", ".join(categories)), styles["card_body"])
@@ -281,10 +281,28 @@ def render_pdf(summary: dict[str, Any], output: Path) -> None:
         if not highlights:
             continue
         semantics_index = summary.get("article_semantics", {})
-        cards = [
-            _highlight_card(item, number, styles, semantics_index.get(item["url"]))
-            for number, item in enumerate(highlights, start=1)
-        ]
+        # Group by category
+        categories = {}
+        for h in highlights:
+            cat = h.get("categories", [])
+            if isinstance(cat, list) and cat:
+                cat = cat[0]
+            else:
+                cat = "general"
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(h)
+        cards = []
+        number = 1
+        for cat in sorted(categories.keys()):
+            cat_items = categories[cat]
+            cat_label = cat.replace("_", " ").title()
+            cat_header = f"Category: {cat_label} ({len(cat_items)})"
+            cards.append(Paragraph(cat_header, styles["section"]))
+            cards.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceBefore=0, spaceAfter=4))
+            for item in cat_items:
+                cards.append(_highlight_card(item, number, styles, semantics_index.get(item["url"])))
+                number += 1
         story.append(CondPageBreak(50 * mm))
         story.extend(_section_header(f"Pillar {pillar}", styles))
         story.extend(cards)

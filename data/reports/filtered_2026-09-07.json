@@ -1,0 +1,426 @@
+{
+  "date": "2026-09-07",
+  "total_input": 25,
+  "relevant": 25,
+  "non_relevant": 0,
+  "items": [
+    {
+      "title": "Environmental and Social Sustainability Framework",
+      "url": "https://www.unep.org/about-un-environment-programme/environmental-and-social-sustainability-framework",
+      "source": "UNEP",
+      "pillar": "A",
+      "summary": "UNEP published its environmental and social sustainability framework, providing guidelines for integrating climate risk into insurance and investment decisions. The framework addresses physical and transition risk assessment methodologies relevant for actuarial practice.",
+      "org": "UNEP",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "social sustainability",
+        "environmental and social",
+        "sustainability framework unep",
+        "published its environmental",
+        "and social sustainability"
+      ]
+    },
+    {
+      "title": "2026 Triple Cop Year Business",
+      "url": "https://www.weforum.org/stories/climate-action/2026-triple-cop-year-business",
+      "source": "WEF",
+      "pillar": "A",
+      "summary": "WEF analysis of 2026 as a triple COP year (climate, biodiversity, land) and its implications for business risk management. Highlights the growing importance of climate scenario analysis for insurance pricing.",
+      "org": "WEF",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "triple cop year",
+        "business wef analysis",
+        "as a triple",
+        "cop year",
+        "climate"
+      ]
+    },
+    {
+      "title": "Carbon Dioxide Removal CDR Market Infrastructure",
+      "url": "https://www.weforum.org/stories/climate-action/carbon-dioxide-removal-cdr-market-infrastructure",
+      "source": "WEF",
+      "pillar": "A",
+      "summary": "WEF report on carbon dioxide removal (CDR) market infrastructure development. Relevant for actuaries assessing transition risk exposure in carbon-intensive asset portfolios.",
+      "org": "WEF",
+      "relevant": true,
+      "category": "mitigation_energy",
+      "keywords": [
+        "carbon dioxide removal",
+        "cdr market infrastructure",
+        "wef report on",
+        "market infrastructure development",
+        "relevant for actuaries"
+      ]
+    },
+    {
+      "title": "Waste to Energy EU Emissions Energy Security",
+      "url": "https://www.weforum.org/stories/energy-transition/waste-to-energy-eu-emissions-energy-security",
+      "source": "WEF",
+      "pillar": "A",
+      "summary": "WEF analysis of waste-to-energy solutions for EU emissions reduction and energy security. Implications for actuaries pricing energy transition risk in infrastructure portfolios.",
+      "org": "WEF",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "waste to energy",
+        "eu emissions energy",
+        "security wef analysis",
+        "of waste",
+        "energy solutions for"
+      ]
+    },
+    {
+      "title": "Philanthropy Key Change Climate Action",
+      "url": "https://www.weforum.org/stories/nature-and-biodiversity/philanthropy-key-change-climate-action",
+      "source": "WEF",
+      "pillar": "A",
+      "summary": "WEF article on philanthropy's role in climate action. Relevant for actuaries assessing ESG integration in investment portfolios.",
+      "org": "WEF",
+      "relevant": true,
+      "category": "biodiversity_nature",
+      "keywords": [
+        "philanthropy key change",
+        "climate action wef",
+        "article on philanthropy",
+        "s role in",
+        "climate action"
+      ]
+    },
+    {
+      "title": "Money on the Table Why Better Budget Planning IsKey to Fixing the Water Crisis",
+      "url": "https://blogs.worldbank.org/en/voices/Money-on-the-Table-Why-Better-Budget-Planning-IsKey-to-Fixing-the-Water-Crisis",
+      "source": "World Bank",
+      "pillar": "A",
+      "summary": "Article from World Bank on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "org": "World Bank",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "money on the",
+        "table why better",
+        "budget planning iskey",
+        "to fixing the",
+        "water crisis article"
+      ]
+    },
+    {
+      "title": "Climate Change in Africa",
+      "url": "https://blogs.afdb.org/climate-change-in-africa",
+      "source": "AFDB",
+      "pillar": "A",
+      "summary": "AFDB blog on climate change impacts in Africa. Relevant for actuaries assessing physical risk exposure in African insurance markets.",
+      "org": "AFDB",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "climate change in",
+        "africa afdb blog",
+        "on climate change",
+        "impacts in africa",
+        "relevant for actuaries"
+      ]
+    },
+    {
+      "title": "WHO is on the Ground in Nepal Responding to the Devastating Flash Floods",
+      "url": "https://www.who.int/multi-media/details/who-is-on-the-ground-in-nepal-responding-to-the-devastating-flash-floods",
+      "source": "WHO",
+      "pillar": "A",
+      "summary": "WHO report on Nepal flood response. Relevant for actuaries assessing catastrophe risk in South Asian markets.",
+      "org": "WHO",
+      "relevant": true,
+      "category": "catastrophe_natcat",
+      "keywords": [
+        "who is on",
+        "the ground in",
+        "nepal responding to",
+        "the devastating flash",
+        "floods who report"
+      ]
+    },
+    {
+      "title": "2026 Rasuwa Flash Floods",
+      "url": "https://www.who.int/nepal/emergencies/2026-rasuwa-flash-floods",
+      "source": "WHO",
+      "pillar": "A",
+      "summary": "WHO emergency update on 2026 Rasuwa flash floods in Nepal. Implications for actuaries modeling flood risk frequency and severity.",
+      "org": "WHO",
+      "relevant": true,
+      "category": "catastrophe_natcat",
+      "keywords": [
+        "rasuwa flash floods",
+        "rasuwa flash",
+        "who emergency update",
+        "in nepal",
+        "implications for actuaries"
+      ]
+    },
+    {
+      "title": "Flood Tragedy Nepal Highlights Cross Border and Cascading Risks",
+      "url": "https://wmo.int/media/news/flood-tragedy-nepal-highlights-cross-border-and-cascading-risks",
+      "source": "WMO",
+      "pillar": "A",
+      "summary": "WMO report on Nepal flood tragedy and cross-border cascading risks. Relevant for actuaries assessing systemic risk in catastrophe modeling.",
+      "org": "WMO",
+      "relevant": true,
+      "category": "catastrophe_natcat",
+      "keywords": [
+        "flood tragedy nepal",
+        "highlights cross border",
+        "and cascading risks",
+        "wmo report on",
+        "nepal flood tragedy"
+      ]
+    },
+    {
+      "title": "One-Quarter of World’s Crops Threatened by Water Risks",
+      "url": "https://www.wri.org/insights/growing-water-risks-food-crops",
+      "source": "WRI",
+      "pillar": "A",
+      "summary": "Article from WRI on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "org": "WRI",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "quarter of world",
+        "s crops threatened",
+        "by water risks",
+        "article from wri",
+        "on climate"
+      ]
+    },
+    {
+      "title": "OCA releases Report on the CSFA Program",
+      "url": "https://www.osfi-bsif.gc.ca/en/oca/actuarial-reports/actuarial-report-canada-student-financial-assistance-program-31-july-2025",
+      "source": "OSFI",
+      "pillar": "A",
+      "summary": "OSFI actuarial report on the Canada Student Financial Assistance Program. Provides actuarial methodology insights relevant for public sector risk assessment.",
+      "org": "OSFI",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "oca releases report",
+        "on the csfa",
+        "program osfi actuarial",
+        "report on the",
+        "canada student financial"
+      ]
+    },
+    {
+      "title": "Processionary caterpillar outbreaks: how Sustax leverages C3S data to assess climate risk",
+      "url": "https://climate.copernicus.eu/processionary-caterpillar-outbreaks-how-sustax-leverages-c3s-data-assess-climate-risk",
+      "source": "C3S",
+      "pillar": "A",
+      "summary": "Article from C3S on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "org": "C3S",
+      "relevant": true,
+      "category": "biodiversity_nature",
+      "keywords": [
+        "processionary caterpillar outbreaks",
+        "how sustax leverages",
+        "s data to",
+        "assess climate risk",
+        "article from c"
+      ]
+    },
+    {
+      "title": "Worldview and Water Quality Applications in Coastal Regions",
+      "url": "https://www.earthdata.nasa.gov/learn/trainings/worldview-water-quality-applications-coastal-regions",
+      "source": "NASAEarthdata",
+      "pillar": "A",
+      "summary": "NASA Earthdata training on Worldview and water quality applications. Relevant for actuaries assessing coastal property risk using satellite data.",
+      "org": "NASAEarthdata",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "worldview and water",
+        "water quality",
+        "quality applications in",
+        "coastal regions nasa",
+        "earthdata training on"
+      ]
+    },
+    {
+      "title": "Monitoring Surface Water with SAR for Water Resource Management",
+      "url": "https://www.earthdata.nasa.gov/learn/trainings/monitoring-surface-water-sar-water-resource-management",
+      "source": "NASAEarthdata",
+      "pillar": "A",
+      "summary": "NASA Earthdata training on SAR for surface water monitoring. Relevant for actuaries modeling water resource risk.",
+      "org": "NASAEarthdata",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "water resource",
+        "monitoring surface water",
+        "with sar for",
+        "water resource management",
+        "nasa earthdata training"
+      ]
+    },
+    {
+      "title": "Low Water Levels Lake Powell Lake Mead August 2026",
+      "url": "https://www.earthdata.nasa.gov/news/worldview-image-archive/low-water-levels-lake-powell-lake-mead-august-2026",
+      "source": "NASAEarthdata",
+      "pillar": "A",
+      "summary": "NASA Earthdata report on low water levels in Lake Powell and Lake Mead. Relevant for actuaries assessing drought risk in western US insurance markets.",
+      "org": "NASAEarthdata",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "mead august",
+        "low water levels",
+        "lake powell lake",
+        "nasa earthdata report",
+        "on low water"
+      ]
+    },
+    {
+      "title": "Strengthening Urban Resilience and Disaster Preparedness Alexandria",
+      "url": "https://www.undrr.org/event/strengthening-urban-resilience-and-disaster-preparedness-alexandria",
+      "source": "UNDRR",
+      "pillar": "A",
+      "summary": "UNDRR event on urban resilience and disaster preparedness in Alexandria. Relevant for actuaries assessing urban catastrophe risk.",
+      "org": "UNDRR",
+      "relevant": true,
+      "category": "conference",
+      "keywords": [
+        "and disaster preparedness",
+        "strengthening urban resilience",
+        "alexandria undrr event",
+        "on urban resilience",
+        "in alexandria"
+      ]
+    },
+    {
+      "title": "Media Resilience and Risk Communication Take Centre Stage Lake Chad Basin",
+      "url": "https://www.undrr.org/news/media-resilience-and-risk-communication-take-centre-stage-lake-chad-basin",
+      "source": "UNDRR",
+      "pillar": "A",
+      "summary": "UNDRR report on media resilience and risk communication in Lake Chad Basin. Relevant for actuaries assessing climate adaptation risk.",
+      "org": "UNDRR",
+      "relevant": true,
+      "category": "adaptation_resilience",
+      "keywords": [
+        "media resilience",
+        "lake chad",
+        "media resilience and",
+        "risk communication take",
+        "centre stage lake"
+      ]
+    },
+    {
+      "title": "Determining the Impact of Climate Change on Insurance Risk and the Global Community",
+      "url": "https://actuary.org/resources/determining-the-impact-of-climate-change-on-insurance-risk-and-the-global-community/",
+      "source": "web",
+      "summary": "IAA project on determining climate change impact on insurance risk. Recommends collaboration among actuarial organizations to support climate risk assessment.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "determining the impact",
+        "of climate change",
+        "on insurance risk",
+        "and the global",
+        "community iaa project"
+      ]
+    },
+    {
+      "title": "When Actuaries See The Future: Climate Risk, Insurance, And Your Wallet",
+      "url": "https://www.forbes.com/sites/billfrist/2026/01/21/when-actuaries-see-the-future-climate-risk-insurance-and-your-wallet/",
+      "source": "web",
+      "summary": "Article from  on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "climate risk",
+        "when actuaries see",
+        "the future",
+        "insurance",
+        "and your wallet"
+      ]
+    },
+    {
+      "title": "How is insurance underwriting impacted by climate change? - LSE",
+      "url": "https://www.lse.ac.uk/granthaminstitute/explainers/how-is-insurance-underwriting-impacted-by-climate-change/",
+      "source": "web",
+      "summary": "LSE Grantham Institute explainer on climate change impacts on insurance underwriting. Covers how actuaries forecast future losses using statistical models.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "general",
+      "keywords": [
+        "insurance underwriting",
+        "how is insurance",
+        "underwriting impacted by",
+        "climate change",
+        "lse lse grantham"
+      ]
+    },
+    {
+      "title": "IFRS S2 Climate-related Disclosures",
+      "url": "https://www.ifrs.org/issued-standards/ifrs-sustainability-standards-navigator/ifrs-s2-climate-related-disclosures/",
+      "source": "web",
+      "summary": "Official IFRS S2 standard page. Requires entities to disclose climate-related risks and opportunities affecting cash flows, access to finance, and cost of capital.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "climate_disclosure",
+      "keywords": [
+        "ifrs s",
+        "standard page",
+        "climate",
+        "related disclosures official",
+        "requires entities to"
+      ]
+    },
+    {
+      "title": "Developing Parametric Insurance for Weather Related Risks",
+      "url": "https://openknowledge.worldbank.org/entities/publication/97cce0ec-4645-51eb-9584-0190028bfc59",
+      "source": "web",
+      "summary": "World Bank paper on parametric insurance products for climate adaptation in developing countries. Covers weather index insurance and catastrophe bonds.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "parametric_insurance",
+      "keywords": [
+        "developing parametric insurance",
+        "for weather related",
+        "risks world bank",
+        "paper on parametric",
+        "insurance products for"
+      ]
+    },
+    {
+      "title": "Climate risk - International Association of Insurance Supervisors",
+      "url": "https://www.iais.org/activities-topics/climate-risk/",
+      "source": "web",
+      "summary": "IAIS page on climate change as a source of financial risk. Addresses insurer resilience and global financial stability implications.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "regulation_standards",
+      "keywords": [
+        "climate risk",
+        "stability implications",
+        "international association of",
+        "insurance supervisors iais",
+        "page on climate"
+      ]
+    },
+    {
+      "title": "The Climate and Health Risk Index",
+      "url": "https://openknowledge.worldbank.org/entities/publication/70e9088c-3183-4651-a559-3782a12b8352",
+      "source": "web",
+      "summary": "World Bank paper on Climate and Health Risk Index (CHRI). Improves how climate change and health resources are invested.",
+      "pillar": "B",
+      "relevant": true,
+      "category": "health_mortality",
+      "keywords": [
+        "health risk index",
+        "the climate and",
+        "world bank paper",
+        "on climate and",
+        "chri"
+      ]
+    }
+  ]
+}

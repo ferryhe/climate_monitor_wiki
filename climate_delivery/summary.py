@@ -132,7 +132,14 @@ def build_summary(report: WeeklyReport) -> dict[str, Any]:
             item for item in report.monitoring_notes if not item.casefold().startswith("sites checked:")
         ],
         "highlights": [
-            {"pillar": item.pillar, "title": item.title, "summary": item.summary, "url": item.url}
+            {
+                "pillar": item.pillar,
+                "title": item.title,
+                "summary": item.summary,
+                "url": item.url,
+                "categories": list(item.categories) if item.categories else [],
+                "keywords": list(item.keywords) if item.keywords else [],
+            }
             for item in report.highlights
         ],
         "original_links": list(report.original_links),
