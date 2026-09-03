@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-"""Step 3 Filter: Apply Hermes LLM assessments with keyword fallback."""
+"""Step 3 Filter: Apply article assessments with keyword fallback.
+
+Assessments are joined to articles by URL (the deterministic fallback
+generator writes the article URL into each assessment record). When an
+assessment set has no URLs (plain Hermes output keyed by id), the join falls
+back to the positional id — safe only because this stage consumes the
+aggregated list before any filtering happens.
+"""
+from __future__ import annotations
+
 import argparse
 import json
+import os
 from datetime import date
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = HOME / "data" / "reports"
 
 CLIMATE_KEYWORDS = [
     "climate", "warming", "emission", "carbon", "greenhouse", "ghg",
@@ -49,67 +60,51 @@ CATEGORY_MAP = {
 }
 
 
-def keyword_classify(title, url):
-    """Fallback classification using keywords."""
+def keyword_classify(title: str, url: str) -> list[str]:
     text = f"{title} {url}".lower()
-    categories = []
-    for cat, keywords in CATEGORY_MAP.items():
-        if any(kw in text for kw in keywords):
-            categories.append(cat)
-    if not categories:
-        categories.append("general")
-    return categories
+    categories = [cat for cat, keywords in CATEGORY_MAP.items() if any(kw in text for kw in keywords)]
+    return categories or ["general"]
 
 
-def keyword_relevant(title, url):
-    """Fallback relevance check using keywords."""
+def keyword_relevant(title: str, url: str) -> bool:
     text = f"{title} {url}".lower()
     return any(kw in text for kw in CLIMATE_KEYWORDS) or any(kw in text for kw in ACTUARIAL_KEYWORDS)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Apply Hermes assessments with keyword fallback")
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Apply assessments with keyword fallback")
     parser.add_argument("--date", default=date.today().isoformat())
     args = parser.parse_args()
 
-    # Load aggregated articles
     agg_path = REPORTS / f"aggregated_{args.date}.json"
     if not agg_path.exists():
         print(f"ERROR: {agg_path} not found")
-        return
-    data = json.loads(agg_path.read_text())
-    items = data.get("items", [])
+        return 1
+    items = json.loads(agg_path.read_text()).get("items", [])
 
-    # Load Hermes assessments (if available)
+    assessments = []
     assess_path = REPORTS / f"hermes_assessments_{args.date}.json"
     if assess_path.exists():
         assessments = json.loads(assess_path.read_text()).get("assessments", [])
-    else:
-        assessments = []
 
-    # Build assessment map
-    assess_map = {a["id"]: a for a in assessments}
+    by_url = {a.get("url"): a for a in assessments if a.get("url")}
+    by_id = {a["id"]: a for a in assessments if "id" in a}
 
-    # Apply assessments
     relevant_items = []
     non_relevant_count = 0
-
     for i, item in enumerate(items):
-        assessment = assess_map.get(i, {})
-        
-        # Use Hermes assessment if available, otherwise fallback to keyword
+        assessment = by_url.get(item.get("url")) or by_id.get(i) or {}
         if assessment:
-            is_rel = assessment.get("relevant", False)
+            is_rel = bool(assessment.get("relevant", False))
             category = assessment.get("category", "general")
             summary = assessment.get("summary", "")
             keywords = assessment.get("keywords", [])
         else:
-            # Fallback to keyword-based
             is_rel = keyword_relevant(item.get("title", ""), item.get("url", ""))
             category = keyword_classify(item.get("title", ""), item.get("url", ""))
             summary = ""
             keywords = []
-        
+
         if is_rel:
             item["relevant"] = True
             item["category"] = category
@@ -119,7 +114,6 @@ def main():
         else:
             non_relevant_count += 1
 
-    # Save filtered results
     output = {
         "date": args.date,
         "total_input": len(items),
@@ -127,12 +121,12 @@ def main():
         "non_relevant": non_relevant_count,
         "items": relevant_items,
     }
-
     out_path = REPORTS / f"filtered_{args.date}.json"
     out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
     print(f"Step 3 Filter: {len(relevant_items)} relevant, {non_relevant_count} non-relevant")
     print(f"OK: {out_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
