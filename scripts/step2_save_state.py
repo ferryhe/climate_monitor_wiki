@@ -31,20 +31,20 @@ def main():
     if not pillar_b_path.exists():
         print(f"ERROR: {pillar_b_path} not found")
         return 1
-    
+
     pillar_b = json.loads(pb_path.read_text())
-    
+
     # Load current state
     if STATE_FILE.exists():
         state = json.loads(STATE_FILE.read_text())
     else:
         state = {}
-    
+
     # Add Pillar B URLs under "__pillar_b__" key
     pb_key = "__pillar_b__"
     if pb_key not in state:
         state[pb_key] = []
-    
+
     existing = set(state[pb_key])
     new_urls = []
     for item in pillar_b:
@@ -52,7 +52,7 @@ def main():
         if url and url not in existing:
             state[pb_key].append(url)
             new_urls.append(url)
-    
+
     # Save state
     tmp_state = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
     tmp_state.write_text(json.dumps(state, ensure_ascii=False, indent=2))

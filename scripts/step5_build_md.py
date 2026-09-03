@@ -54,6 +54,8 @@ def main() -> int:
         default=None,
         help="Optional JSON with checked/succeeded/failed per-site check totals",
     )
+    parser.add_argument("--allow-offcycle", action="store_true", help="Allow non-Monday report dates")
+    parser.add_argument("--allow-future", action="store_true", help="Allow future report dates")
     args = parser.parse_args()
 
     try:
@@ -65,6 +67,12 @@ def main() -> int:
         print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
         return 1
     args.date = parsed_date.isoformat()
+    if parsed_date > date.today() and not args.allow_future:
+        print(f"ERROR: report date {args.date} is in the future; pass --allow-future to override")
+        return 1
+    if parsed_date.weekday() != 0 and not args.allow_offcycle:
+        print(f"ERROR: report date {args.date} is not a Monday; pass --allow-offcycle to override")
+        return 1
 
     filtered_path = REPORTS / f"filtered_{args.date}.json"
     if not filtered_path.exists():
@@ -92,10 +100,21 @@ def main() -> int:
         )
         return 1
     stats = json.loads(args.monitor_stats.read_text())
-    checked = int(stats.get("checked", 0))
-    succeeded = int(stats.get("succeeded", 0))
-    failed = int(stats.get("failed", 0))
-    if checked == 0 and succeeded == 0 and failed == 0:
+    if not isinstance(stats, dict):
+        print("ERROR: --monitor-stats must be a JSON object")
+        return 1
+    for key in ("checked", "succeeded", "failed"):
+        value = stats.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            print(f"ERROR: --monitor-stats missing or invalid '{key}' (non-negative integer required)")
+            return 1
+    checked, succeeded, failed = stats["checked"], stats["succeeded"], stats["failed"]
+    if checked != succeeded + failed:
+        print(
+            f"ERROR: --monitor-stats inconsistent: checked={checked} != succeeded+failed={succeeded + failed}"
+        )
+        return 1
+    if checked == 0:
         print("ERROR: --monitor-stats contains all zeros; refusing to publish fabricated counts")
         return 1
 
@@ -195,8 +214,9 @@ def main() -> int:
     md_text = "\n".join(lines)
     out_path = args.output or (REPORTS / f"climate-monitor-{args.date}.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(md_text)
-    print(f"OK: {out_path} ({len(md_text)} chars)")
+    tmp_md = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_md.write_text(md_text)
+    print(f"Staged: {tmp_md} ({len(md_text)} chars)")
 
     json_out = {
         "report_date": args.date,
@@ -223,8 +243,12 @@ def main() -> int:
             for item in cat_items
         ]
     json_path = out_path.with_suffix(".json")
-    json_path.write_text(json.dumps(json_out, ensure_ascii=False, indent=2))
-    print(f"JSON: {json_path}")
+    tmp_json = json_path.with_suffix(json_path.suffix + ".tmp")
+    tmp_json.write_text(json.dumps(json_out, ensure_ascii=False, indent=2))
+    # Commit both outputs only after both serializations succeeded.
+    os.replace(tmp_json, json_path)
+    os.replace(tmp_md, out_path)
+    print(f"OK: {out_path} + {json_path}")
     return 0
 
 

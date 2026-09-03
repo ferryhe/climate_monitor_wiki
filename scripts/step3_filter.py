@@ -102,6 +102,11 @@ def main() -> int:
 
     def sanitize_assessment(a: dict) -> dict:
         out = {}
+        # Preserve validated identity fields so the join can actually match.
+        aid = a.get("id")
+        out["id"] = aid if isinstance(aid, int) else None
+        url = a.get("url")
+        out["url"] = url if isinstance(url, str) and url else None
         out["relevant"] = a.get("relevant") is True
         cat = a.get("category", "general")
         out["category"] = cat if isinstance(cat, str) and cat in ALLOWED_CATEGORIES else "general"

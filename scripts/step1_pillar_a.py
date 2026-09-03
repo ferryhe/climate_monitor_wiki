@@ -116,7 +116,7 @@ def normalize_title(title):
     """Normalize article title to proper title case (APA/Chicago style)."""
     if not title:
         return title
-    
+
     # Known acronyms that should stay uppercase
     acronyms = {
         'c3s': 'C3S', 'who': 'WHO', 'undrr': 'UNDRR', 'wef': 'WEF',
@@ -129,7 +129,7 @@ def normalize_title(title):
         'cdr': 'CDR', 'ccs': 'CCS', 'cat': 'CAT',
         'sar': 'SAR', 'ngo': 'NGO', 'ngos': 'NGOs',
     }
-    
+
     # Lowercase words that should remain lowercase in title case
     minor_words = {
         'a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'so', 'yet',
@@ -138,18 +138,18 @@ def normalize_title(title):
         'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
         'shall', 'should', 'may', 'might', 'can', 'could',
     }
-    
+
     # If title is all lowercase or all uppercase, convert to title case
     if title.islower() or title.isupper():
         words = title.lower().split()
         if not words:
             return title
-        
+
         result = []
         for i, word in enumerate(words):
             # Clean word for acronym lookup
             clean = re.sub(r'[^a-zA-Z0-9]', '', word).lower()
-            
+
             # Always capitalize first and last word
             if i == 0 or i == len(words) - 1:
                 if clean in acronyms:
@@ -165,9 +165,9 @@ def normalize_title(title):
             # Lowercase minor words
             else:
                 result.append(word.lower())
-        
+
         return ' '.join(result)
-    
+
     return title
 
 
@@ -226,26 +226,26 @@ def extract_articles_from_changes(site_id, since_date):
     """Extract real article titles and URLs from the changes table diffs."""
     try:
         c = sqlite3.connect(str(SITE_DB))
-        
+
         # Get new_content changes (these have #### [Title](URL) format)
         rows = c.execute(
-            """SELECT diff_snippet FROM changes 
+            """SELECT diff_snippet FROM changes
                WHERE site_id = ? AND detected_at >= ? AND change_type = 'new_content'
                ORDER BY detected_at DESC""",
             (site_id, since_date)
         ).fetchall()
-        
+
         articles = []
         for row in rows:
             diff = row[0] or ""
             lines = diff.split('\n')
-            
+
             for line in lines:
                 line = line.strip()
                 if not line.startswith('+') or line.startswith('+++'):
                     continue
                 line = line[1:].strip()
-                
+
                 # Pattern: #### [Title](URL)
                 m = re.match(r'^#{2,6}\s+\[([^\]]+)\]\((https?://[^\)]+)\)', line)
                 if m:
@@ -253,15 +253,15 @@ def extract_articles_from_changes(site_id, since_date):
                     url = m.group(2).split('?')[0].rstrip('/')
                     if not is_junk_url(url) and not is_junk_title(title):
                         articles.append({"title": title[:120], "url": url})
-        
+
         # Also get new_links changes (just URLs, extract title from URL)
         rows = c.execute(
-            """SELECT diff_snippet FROM changes 
+            """SELECT diff_snippet FROM changes
                WHERE site_id = ? AND detected_at >= ? AND change_type = 'new_links'
                ORDER BY detected_at DESC""",
             (site_id, since_date)
         ).fetchall()
-        
+
         for row in rows:
             diff = row[0] or ""
             for line in diff.split('\n'):
@@ -278,7 +278,7 @@ def extract_articles_from_changes(site_id, since_date):
                         if len(path) >= 10:
                             path = normalize_title(path)
                             articles.append({"title": path[:80], "url": url})
-        
+
         c.close()
         return articles
     except Exception as e:
@@ -305,60 +305,60 @@ def main():
             continue
         for url in urls:
             baseline_urls.add(url.split('?')[0].rstrip('/'))
-    
+
     print(f"Baseline (Pillar A): {len(baseline_urls)} URLs in article_state.json")
 
     # Query changes from last N days
     window_anchor = date.fromisoformat(args.date)
     since = (window_anchor - timedelta(days=args.since_days)).isoformat()
-    
+
     c = sqlite3.connect(str(SITE_DB))
-    
+
     # Get distinct sites with changes
     sites_with_changes = c.execute(
-        """SELECT DISTINCT s.id, s.name, s.url 
-           FROM changes c 
-           JOIN sites s ON s.id = c.site_id 
+        """SELECT DISTINCT s.id, s.name, s.url
+           FROM changes c
+           JOIN sites s ON s.id = c.site_id
            WHERE c.detected_at >= ?
            ORDER BY s.id""",
         (since,)
     ).fetchall()
-    
+
     print(f"Sites with changes (last {args.since_days} days): {len(sites_with_changes)}")
-    
+
     articles = []
     new_baseline_urls: dict[str, set[str]] = {}
     total_new = 0
     total_seen_before = 0
-    
+
     for site_id, name, url in sites_with_changes:
         # Extract articles from changes table
         found = extract_articles_from_changes(site_id, since)
-        
+
         if not found:
             continue
-        
+
         items = []
         for art in found:
             title = art["title"]
             art_url = art["url"]
-            
+
             # Filter junk
             if is_junk_url(art_url) or is_junk_title(title):
                 continue
-            
+
             # Check baseline (Pillar A only)
             if art_url in baseline_urls:
                 total_seen_before += 1
                 continue
-            
+
             # Filter irrelevant
             if not is_relevant(title + " " + art_url):
                 continue
-            
+
             # Classify
             categories = classify_article(title, art_url)
-            
+
             items.append({
                 "title": title[:120],
                 "url": art_url,
@@ -366,13 +366,13 @@ def main():
             })
             new_baseline_urls.setdefault(name, set()).add(art_url)
             total_new += 1
-        
+
         if items:
             articles.append({
                 "org": name,
                 "items": items,
             })
-    
+
     c.close()
 
     # Append newly discovered Pillar A URLs to the baseline so the same
@@ -416,4 +416,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

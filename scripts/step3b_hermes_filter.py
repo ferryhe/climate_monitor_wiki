@@ -63,14 +63,14 @@ def main():
     if not in_path.exists():
         print(f"ERROR: {in_path} not found")
         return 1
-    
+
     data = json.loads(in_path.read_text())
     items = data.get("items", [])
-    
+
     if not items:
         print("ERROR: no articles to assess")
         return 1
-    
+
     # Build prompt
     prompt = PROMPT_TEMPLATE.format(
         articles=json.dumps([{
@@ -80,7 +80,7 @@ def main():
             "source": item.get("source", ""),
         } for i, item in enumerate(items)], ensure_ascii=False, indent=2)
     )
-    
+
     # Save prompt for Hermes to process
     prompt_path = REPORTS / f"hermes_prompt_{args.date}.json"
     prompt_path.write_text(json.dumps({
@@ -104,7 +104,7 @@ def main():
             }
         }
     }, ensure_ascii=False, indent=2))
-    
+
     print(f"Prompt generated: {prompt_path}")
     print(f"Articles to assess: {len(items)}")
 

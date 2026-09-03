@@ -40,6 +40,8 @@ def run(cmd: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[st
 def main() -> int:
     parser = argparse.ArgumentParser(description="Update website (wiki pages + verified reload)")
     parser.add_argument("--date", default=last_monday().isoformat())
+    parser.add_argument("--allow-offcycle", action="store_true", help="Allow non-Monday report dates")
+    parser.add_argument("--allow-future", action="store_true", help="Allow future report dates")
     args = parser.parse_args()
 
     try:
@@ -51,6 +53,12 @@ def main() -> int:
         print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
         return 1
     args.date = parsed_date.isoformat()
+    if parsed_date > date.today() and not args.allow_future:
+        print(f"ERROR: report date {args.date} is in the future; pass --allow-future to override")
+        return 1
+    if parsed_date.weekday() != 0 and not args.allow_offcycle:
+        print(f"ERROR: report date {args.date} is not a Monday; pass --allow-offcycle to override")
+        return 1
 
     if not os.environ.get("RELOAD_TOKEN"):
         print("ERROR: RELOAD_TOKEN environment variable is not set", file=sys.stderr)
@@ -74,7 +82,7 @@ def main() -> int:
             return 1
         print(f"{dest.name} already in sources/ (identical); nothing to copy")
     else:
-        tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
+        tmp_dest = dest.with_suffix(f".tmp-{os.getpid()}")
         shutil.copy2(md_path, tmp_dest)
         os.replace(tmp_dest, dest)
         print(f"Copied {md_path.name} to sources/")

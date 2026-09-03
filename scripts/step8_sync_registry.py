@@ -69,6 +69,8 @@ def run_cli(args: list[str]) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync weekly report + articles into the Registry")
     parser.add_argument("--date", required=True)
+    parser.add_argument("--allow-offcycle", action="store_true", help="Allow non-Monday report dates")
+    parser.add_argument("--allow-future", action="store_true", help="Allow future report dates")
     args = parser.parse_args()
 
     try:
@@ -80,6 +82,12 @@ def main() -> int:
         print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
         return 1
     args.date = parsed_date.isoformat()
+    if parsed_date > date.today() and not args.allow_future:
+        print(f"ERROR: report date {args.date} is in the future; pass --allow-future to override")
+        return 1
+    if parsed_date.weekday() != 0 and not args.allow_offcycle:
+        print(f"ERROR: report date {args.date} is not a Monday; pass --allow-offcycle to override")
+        return 1
 
     # The registry ingests from SOURCES (the append-mostly source of truth).
     # If this week's report has not been copied there yet, promote it from the
@@ -90,7 +98,9 @@ def main() -> int:
     generated_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not report_path.exists() and generated_path.exists():
         SOURCES.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(generated_path, report_path)
+        tmp_report = report_path.with_suffix(report_path.suffix + ".tmp")
+        shutil.copy2(generated_path, tmp_report)
+        os.replace(tmp_report, report_path)
         print(f"Promoted generated report to sources/: {report_path}")
     elif report_path.exists() and generated_path.exists():
         if report_path.read_bytes() != generated_path.read_bytes():

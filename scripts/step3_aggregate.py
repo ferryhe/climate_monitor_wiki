@@ -45,13 +45,13 @@ def dedup_items(items: list[dict]) -> list[dict]:
     seen_urls = {}
     seen_titles = set()
     result = []
-    
+
     for item in items:
         url = normalize_url(item.get("url", ""))
         title = item.get("title", "").strip()
         # Dedupe on a normalized key but keep the verbatim title in output.
         title_key = normalize_title(title) if title else ""
-        
+
         if url and url in seen_urls:
             kept = seen_urls[url]
             if not kept.get("summary") and item.get("summary"):
@@ -61,13 +61,13 @@ def dedup_items(items: list[dict]) -> list[dict]:
             continue
         if title_key and title_key in seen_titles:
             continue
-        
+
         if url:
             seen_urls[url] = item
         if title_key:
             seen_titles.add(title_key)
         result.append(item)
-    
+
     return result
 
 
@@ -140,4 +140,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

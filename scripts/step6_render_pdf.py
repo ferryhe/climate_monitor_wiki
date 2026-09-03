@@ -30,7 +30,7 @@ def extract_md_executive_summary(md_path):
     """Extract executive summary paragraphs from MD."""
     text = md_path.read_text(encoding='utf-8')
     lines = text.split('\n')
-    
+
     # Find section
     in_section = False
     summary_lines = []
@@ -44,7 +44,7 @@ def extract_md_executive_summary(md_path):
             stripped = line.strip()
             if stripped and not stripped.startswith('- Sites checked:') and not stripped.startswith('- Monitored window:') and not stripped.startswith('- Pillar B search window:') and not stripped.startswith('- Total detected changes:'):
                 summary_lines.append(stripped)
-    
+
     return summary_lines
 
 
