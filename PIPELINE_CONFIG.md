@@ -55,6 +55,9 @@ Use web_search tool with these queries (run all):
 3. "parametric insurance climate adaptation {YEAR}"
 4. "climate risk scenario actuarial {YEAR}"
 
+Base each summary strictly on the search result snippet for that URL; if the
+snippet is empty or uninformative, leave summary as "".
+
 Save to: data/reports/pillar_b_{REPORT_DATE}.json
 Format: [{{"title":"...","url":"...","source":"web","summary":"..."}}]
 ```
@@ -88,6 +91,16 @@ For each article, provide:
   * general (climate-related but not specific)
 - summary: 2-4 sentences explaining the article's key points for actuaries
 - keywords: 3-5 specific terms from article content
+
+INTEGRITY RULES (mandatory):
+1. summary MUST be "" (empty) unless you actually fetched the article content
+   with web_search / web_extract and the summary is grounded in that fetched
+   content. Never summarize from the title alone.
+2. Do not invent keywords that do not appear in the fetched content or the
+   title. If you did not fetch the article, limit keywords to terms present
+   in the title.
+3. If you cannot verify relevance from the title alone, fetch the article
+   before marking it relevant.
 
 Also generate a 4-paragraph executive summary STRUCTURED BY CATEGORY:
 1. Overall findings (total articles, key themes)
