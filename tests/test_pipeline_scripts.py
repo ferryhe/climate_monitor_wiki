@@ -104,6 +104,33 @@ def test_step5_requires_consistent_monitor_stats(reports_dir):
                         "--monitor-stats", str(reports_dir / "stats.json"),
                         *allow, env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_step5_null_category_falls_back_to_general(reports_dir):
+    """Legacy filtered_*.json with category:null (and a null inside
+    categories) must render into the general section, not crash the join."""
+    write_json(reports_dir / "filtered_2026-09-14.json", {
+        "total_input": 1, "relevant": 1, "non_relevant": 0,
+        "items": [{"title": "legacy item", "url": "https://example.org/legacy",
+                   "category": None, "categories": [None, "scenario_analysis"],
+                   "summary": "s", "keywords": [], "source": "OrgA",
+                   "pillar": "A"}],
+    })
+    write_json(reports_dir / "hermes_assessments_2026-09-14.json", {
+        "assessments": [], "executive_summary": "test summary"})
+    write_json(reports_dir / "stats.json", {"checked": 57, "succeeded": 54, "failed": 3})
+    env = {"CLIMATE_REPORTS_DIR": str(reports_dir)}
+    result = run_script("step5_build_md.py", "--date", "2026-09-14",
+                        "--monitor-stats", str(reports_dir / "stats.json"),
+                        "--allow-future", "--allow-offcycle", env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
+    assert "General" in md
+    assert "Scenario Analysis" in md  # categories 里的合法元素仍展示
+    sidecar = json.loads(
+        (reports_dir / "climate-monitor-2026-09-14.json").read_text())
+    items = sidecar["categories"]["general"]
+    assert items[0]["categories"] == ["Scenario Analysis"]
     md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
     assert "Sites checked: **57**, succeeded: **54**, failed: **3**" in md
     assert (reports_dir / "climate-monitor-2026-09-14.json").exists()

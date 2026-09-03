@@ -152,15 +152,19 @@ def main() -> int:
         cat = item.get("category", "general")
         if isinstance(cat, list):
             cat = cat[0] if cat else "general"
+        if not isinstance(cat, str) or not cat:
+            cat = "general"
         categories.setdefault(cat, []).append(item)
 
     def item_category_labels(item: dict, fallback: str) -> list[str]:
         """Full ordered category list (first = primary) as display labels."""
         values = item.get("categories")
         if isinstance(values, list):
-            labels = [build_category_label(c) for c in values if isinstance(c, str)]
+            labels = [build_category_label(c) for c in values if isinstance(c, str) and c]
             if labels:
                 return labels
+        if not isinstance(fallback, str) or not fallback:
+            fallback = "general"
         return [build_category_label(fallback)]
 
     lines.append("## Pillar A — Climate & Actuarial Site Changes")
