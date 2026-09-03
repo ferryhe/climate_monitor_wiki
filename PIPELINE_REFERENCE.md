@@ -1,4 +1,7 @@
-# Climate Monitor Pipeline — Complete Reference
+# Climate Monitor Pipeline — Reference
+
+Complete reference for the weekly climate/actuarial monitoring pipeline. For
+editable LLM prompts, see [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md).
 
 ## Pipeline Architecture
 
@@ -10,13 +13,13 @@ Weekly cron jobs (every Monday):
        Step 2 also saves Pillar B URLs     → article_state.json (dedup baseline)
 08:30  Step 3: Aggregate + Dedup           → aggregated_{DATE}.json
 08:32  Step 4: Extract Conferences         → conferences_{DATE}.json
-08:35  Step 5: Hermes LLM Classification  → hermes_assessments_{DATE}.json
-08:37  Step 5b: Apply Assessments         → filtered_{DATE}.json
-09:00  Step 6: Build Markdown Report     → climate-monitor-{DATE}.md
-09:15  Step 7: Render PDF                → climate_delivery_artifacts/{DATE}/{SHA}/climate-monitor-{DATE}.pdf
-09:30  Step 8: Send Email                → email sent
-09:45  Step 9: Sync Registry            → article-registry.sqlite3
-10:00  Step 10: Update Website          → wiki + container reload
+08:35  Step 5: Hermes LLM Classification   → hermes_assessments_{DATE}.json
+08:37  Step 5b: Apply Assessments          → filtered_{DATE}.json
+09:00  Step 6: Build Markdown Report       → climate-monitor-{DATE}.md
+09:15  Step 7: Render PDF                  → climate_delivery_artifacts/{DATE}/{SHA}/climate-monitor-{DATE}.pdf
+09:30  Step 8: Send Email                  → email sent
+09:45  Step 9: Sync Registry               → article-registry.sqlite3
+10:00  Step 10: Update Website             → wiki + container reload
 ```
 
 ## Steps Detail
@@ -35,6 +38,23 @@ Weekly cron jobs (every Monday):
 | 8 | 09:30 | Send Email | LLM | Cron: Step 7 | Email |
 | 9 | 09:45 | Sync Registry | Script | `scripts/step8_sync_registry.py` | Registry DB |
 | 10 | 10:00 | Update Website | Script | `scripts/step9_update_website.py` | Wiki + RAG |
+
+## Key Files
+
+| File | Location | Purpose |
+|---|---|---|
+| `step1_pillar_a.py` | `scripts/` | Extract articles from SQLite changes + baseline dedup |
+| `step2_save_state.py` | `scripts/` | Persist Pillar B URLs into the dedup baseline |
+| `step3_aggregate.py` | `scripts/` | Merge Pillar A + B, dedup by URL |
+| `step7b_extract_conferences.py` | `scripts/` | Pre-extract conference articles from aggregated JSON |
+| `step3b_generate_assessments.py` | `scripts/` | Store LLM assessments (fallback: keyword classification) |
+| `step3b_hermes_filter.py` | `scripts/` | Generate the Hermes prompt for classification |
+| `step3_filter.py` | `scripts/` | Apply Hermes LLM assessments (or keyword fallback) |
+| `step5_build_md.py` | `scripts/` | Build final markdown report |
+| `step6_render_pdf.py` | `scripts/` | Render PDF via climate_delivery |
+| `step8_sync_registry.py` | `scripts/` | Sync to article-registry.sqlite3 |
+| `step9_update_website.py` | `scripts/` | Update wiki + container reload |
+| `PIPELINE_CONFIG.md` | repo root | Cron schedule + Hermes prompt templates (modifiable) |
 
 ## Date Logic
 
@@ -91,7 +111,7 @@ article_state.json (dedup baseline)
                └─────────┬─────────┘
                          ▼
                 ┌─────────────┐
-                │  Step 5b   │
+                │  Step 5b    │
                 │  Filter     │
                 │  Relevant?  │
                 └──────┬──────┘
@@ -100,8 +120,8 @@ article_state.json (dedup baseline)
                 ┌─────────────┐
                 │  Step 6     │
                 │  Build MD   │
-                │  (SINGLE   │
-                │  SOURCE)   │
+                │  (SINGLE    │
+                │  SOURCE)    │
                 └──────┬──────┘
                        │
          ┌─────────────┼─────────────┐
@@ -115,7 +135,7 @@ article_state.json (dedup baseline)
                                      ▼
                             ┌─────────────┐
                             │  Step 10    │
-                            │  Update Web  │
+                            │  Update Web │
                             │  wiki + RAG │
                             └─────────────┘
 ```
@@ -147,7 +167,7 @@ article_state.json (dedup baseline)
 ### {Category} ({count})
 
 - **{Title}**
-  - **Categories:** {Category}
+  - **Categories:** {Primary}, {Secondary}, ...
   - {Summary (2-4 sentences)}
   - **Keywords:** {keyword1}, {keyword2}, ...
   🔗 {URL}
@@ -159,7 +179,7 @@ article_state.json (dedup baseline)
 ### {Category} ({count})
 
 - **{Title}**
-  - **Categories:** {Category}
+  - **Categories:** {Primary}, {Secondary}, ...
   - {Summary}
   - **Keywords:** ...
   🔗 {URL}
@@ -172,6 +192,13 @@ article_state.json (dedup baseline)
 - {URL2}
 ...
 ```
+
+### Categories contract
+
+Every article carries an ordered `categories` list (first element = primary
+display category) plus a derived `category` field equal to `categories[0]` for
+compatibility. Sections group articles by the primary category only; the
+`Categories:` line and the JSON sidecar emit the full ordered list.
 
 ## Web Interface
 

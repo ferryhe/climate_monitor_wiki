@@ -1202,7 +1202,7 @@ def test_unavailable_registry_routes_return_503_without_paths(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("endpoint", ("reports", "articles"))
-@pytest.mark.parametrize("value", ("9" * 10_000, "", "+1", "-1", " 1", "1 ", "１"))
+@pytest.mark.parametrize("value", ("9" * 10_000, "", "+1", "-1", " 1", "1 ", "١"))
 def test_pagination_rejects_unbounded_or_non_ascii_decimal_values(
     registry_client, endpoint, value
 ):
