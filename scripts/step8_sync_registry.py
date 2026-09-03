@@ -28,7 +28,7 @@ def main():
         print(f"ERROR: markdown not found: {md_path}")
         return
 
-    lock_file = DB.with_suffix(".lock")
+    lock_file = DB.with_name(f"{DB.name}.lock")
     cmd = [
         sys.executable, "-m", "climate_registry", "weekly-sync",
         "--date", args.date,
