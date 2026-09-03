@@ -1,36 +1,46 @@
 services:
   wiki:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     image: climate-monitor-wiki:local
     container_name: climate-wiki-app
-    ports:
-      - "8501:8501"
+    restart: unless-stopped
     environment:
-      - CLIMATE_REGISTRY_DB=/registry/article-registry.sqlite3
-      - RELOAD_TOKEN=b49ca3d610ed7f41b6e24ecad794c28f21d9e6f5f06b965f
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      RELOAD_TOKEN: ${RELOAD_TOKEN:-}
     volumes:
-      - /home/ubuntu/climate_monitor_data/registry:/registry:rw
+      # Bind-mount the content so an ingest run on the host is picked up by
+      # POST /api/reload without rebuilding the image.
       - ./wiki:/app/wiki:ro
       - ./sources:/app/sources:ro
+      - ./article_metadata:/app/article_metadata:ro
     expose:
       - "8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8501/api/config').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   caddy:
     image: caddy:2-alpine
     container_name: climate-wiki-caddy
+    restart: unless-stopped
+    depends_on:
+      - wiki
+    environment:
+      SITE_HOST: ${SITE_HOST:-172.31.10.77}
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"
-      - "2019"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    restart: unless-stopped
+      - caddy_logs:/var/log/caddy
 
 volumes:
   caddy_data:
   caddy_config:
+  caddy_logs:
