@@ -15,8 +15,9 @@ IMPORTANT — date selection rule: the report date labels the day the data was c
 the ACTUAL run date (today, ISO YYYY-MM-DD). On the scheduled Monday run today is a Monday; on a
 manual re-run mid-week today is NOT a Monday, and that is correct — do NOT backdate to the last
 Monday and do NOT pick the next/upcoming Monday (future dates collide with next week's scheduled
-run). Use the same date value in EVERY step below, and pass --allow-offcycle to the registry CLI
-whenever the date is not a Monday.
+run). Use the same date value in EVERY step below. A non-Monday date requires an EXPLICIT manual-run
+opt-in: the run must be launched with CLIMATE_MONITOR_ALLOW_OFFCYCLE=1 in the environment. Without
+that opt-in a non-Monday date fails closed in every gate — never infer intent from the weekday.
   export MON_REPORT_DATE=<TODAY>
   python3 - <<'PY'
 import os, sys, json, tempfile, hashlib, subprocess, re, shutil
@@ -29,6 +30,7 @@ APP_PY = os.environ.get("MON_APP_PY", "/home/ubuntu/climate_monitor_wiki/.venv/b
 REG_DB = os.environ.get("MON_REG", "/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3")
 SRC = os.environ.get("MON_SRC", "/home/ubuntu/climate_monitor_wiki/sources")
 PROD_REPORTS = os.environ.get("MON_PROD_REPORTS", "/home/ubuntu/web_listening/data/reports")
+ALLOW_OFFCYCLE = os.environ.get("CLIMATE_MONITOR_ALLOW_OFFCYCLE", "0") == "1"
 
 def fail(code):
     print("result_code=" + code)
@@ -74,10 +76,16 @@ inp.write_text(json.dumps({"schema_version": "registry-selection-input.v1",
                            "report_date": MONDAY, "candidates": []}))
 os.chmod(inp, 0o600)
 try:
-    r = subprocess.run([APP_PY, "-m", "climate_registry", "plan-selection",
-                        "--allow-offcycle",
-                        "--database", REG_DB, "--source-dir", SRC, "--input", str(inp)],
-                       capture_output=True, text=True, cwd=APP_REPO)
+    selection_args = [APP_PY, "-m", "climate_registry", "plan-selection",
+                      "--database", REG_DB, "--source-dir", SRC, "--input", str(inp)]
+    if date.fromisoformat(MONDAY).weekday() != 0:
+        if not ALLOW_OFFCYCLE:
+            # A non-Monday date WITHOUT the explicit manual-run opt-in is an
+            # accident (scheduled job fired late, date mis-set): fail closed.
+            fail("offcycle_date_without_optin")
+        # Explicit manual/backfill opt-in: allow the off-cycle date.
+        selection_args.append("--allow-offcycle")
+    r = subprocess.run(selection_args, capture_output=True, text=True, cwd=APP_REPO)
     if r.returncode != 0:
         fail("registry_history_lagging:cli_error")
     plan = json.loads(r.stdout.strip())
@@ -120,10 +128,13 @@ call a model at this stage.
   d. Invoke read-only from the app repo:
        cd /home/ubuntu/climate_monitor_wiki
        .venv/bin/python -m climate_registry plan-selection \
-         --allow-offcycle \
          --database /home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3 \
          --source-dir /home/ubuntu/climate_monitor_wiki/sources \
          --input <temp-input>
+     Add --allow-offcycle ONLY for an explicitly opted-in manual/backfill run
+     (launched with CLIMATE_MONITOR_ALLOW_OFFCYCLE=1 and a non-Monday report
+     date). Scheduled Monday runs MUST omit it, so a mistakenly set non-Monday
+     date still fails closed.
   e. Require ALL of: exit 0; exactly one compact JSON line; schema_version
      "registry-selection-plan.v1"; matching report_date; exactly one decision per
      input candidate_id; no duplicate/unknown/missing IDs; pillar matches input;
@@ -211,12 +222,13 @@ try:
         sys.exit(2)
     staged_report = staged[0]
     # 10. validate with the REAL deployed app parser + selected/rejected coverage
-    val_src = """import sys, json
+    val_src = """import sys, json, os
 sys.path.insert(0, "/home/ubuntu/climate_monitor_wiki")
 from pathlib import Path
 from climate_registry.selection import parse_strict_weekly_report, canonical_url, canonical_title
 staged=Path(sys.argv[1]); plan=json.load(open(sys.argv[2])); cands={c["candidate_id"]:c for c in json.load(open(sys.argv[3]))["candidates"]}
-rep=parse_strict_weekly_report(staged, allow_offcycle=True)
+allow_offcycle = os.environ.get("CLIMATE_MONITOR_ALLOW_OFFCYCLE", "0") == "1"
+rep=parse_strict_weekly_report(staged, allow_offcycle=allow_offcycle)
 dec={d["candidate_id"]:d for d in plan["decisions"]}
 selected={cid:cands[cid] for cid,d in dec.items() if d["disposition"]=="selected"}
 parsed=[(a.pillar, canonical_title(a.title), canonical_url(a.url)) for a in rep.articles]

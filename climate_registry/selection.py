@@ -401,10 +401,14 @@ def _read_only_connection(database: Path) -> sqlite3.Connection:
         raise RegistryBuildError("registry database could not be opened read-only") from exc
 
 
-def load_registry_selection_snapshot(
-    database: Path, source_dir: Path, *, allow_offcycle: bool = False
-) -> RegistrySelectionSnapshot:
-    """Read a synchronized immutable supported Registry snapshot without mutation."""
+def load_registry_selection_snapshot(database: Path, source_dir: Path) -> RegistrySelectionSnapshot:
+    """Read a synchronized immutable supported Registry snapshot without mutation.
+
+    The snapshot always reads persisted source history tolerantly: sources/
+    may already contain explicitly accepted off-cycle reports, and Monday-only
+    policy for NEW candidates is enforced by plan_selection's payload
+    validation, not by snapshot parsing.
+    """
 
     database = Path(database).resolve()
     source_dir = Path(source_dir).resolve()
@@ -548,9 +552,7 @@ def plan_registry_selection(
     """Plan candidate selection against an exact synchronized Registry baseline."""
 
     _validate_payload(payload, allow_offcycle=allow_offcycle)
-    snapshot = load_registry_selection_snapshot(
-        database, source_dir, allow_offcycle=allow_offcycle
-    )
+    snapshot = load_registry_selection_snapshot(database, source_dir)
     return plan_selection(
         payload, historical_urls=snapshot.canonical_urls, allow_offcycle=allow_offcycle
     )

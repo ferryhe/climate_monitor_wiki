@@ -16,9 +16,9 @@
     "metadata_path": "prompts/weekly-monitor-v1.meta.json",
     "body_path": "prompts/weekly-monitor-v1.prompt.md",
     "artifact_committed": true,
-    "sha256": "a6769950d5a23e28df9fe5f5d801e5a836fe1326ce6db521724af91a8491088d",
-    "chars": 17451,
-    "lines": 294
+    "sha256": "53896231729799845b48e85eb5901cacce03aa26cec2199e2176dc254d5b7909",
+    "chars": 18391,
+    "lines": 306
   },
   "contracts": {
     "authoring_request_schema": "contracts/authoring-request.v1.schema.json",
