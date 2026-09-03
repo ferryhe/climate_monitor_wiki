@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
 DB = Path("/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3")
-ARTIFACTS = Path("/home/ubuntu/climate_monitor_wiki/climate_delivery_artifacts")
+ARTIFACTS = Path("/home/ubuntu/climate_delivery_artifacts")
 
 
 def last_monday():
@@ -28,10 +28,9 @@ def main():
         print(f"ERROR: markdown not found: {md_path}")
         return
 
-    # Use the existing weekly_sync pipeline from climate_registry
     cmd = [
-        sys.executable, "-m", "climate_registry.weekly", "sync",
-        "--target-date", args.date,
+        sys.executable, "-m", "climate_registry", "weekly-sync",
+        "--date", args.date,
         "--source-dir", str(REPORTS),
         "--database", str(DB),
         "--artifact-root", str(ARTIFACTS),
@@ -42,15 +41,12 @@ def main():
 
     print(f"Running weekly_sync for {args.date}...")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-
+    print(result.stdout)
     if result.returncode != 0:
         print(f"ERROR: weekly_sync failed (exit {result.returncode})")
-        print(f"stdout: {result.stdout[:500]}")
         print(f"stderr: {result.stderr[:500]}")
         return
-
     print(f"OK: weekly_sync completed for {args.date}")
-    print(result.stdout[-500:] if len(result.stdout) > 500 else result.stdout)
 
 
 if __name__ == "__main__":

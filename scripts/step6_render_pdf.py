@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
-ARTIFACTS = Path("/home/ubuntu/climate_monitor_wiki/climate_delivery_artifacts")
+ARTIFACTS = Path("/home/ubuntu/climate_delivery_artifacts")
 PYTHON = Path("/home/ubuntu/climate_monitor_wiki/.venv/bin/python")
 REPO = Path("/home/ubuntu/climate_monitor_wiki")
 
