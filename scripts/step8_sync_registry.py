@@ -19,12 +19,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
 SOURCES = Path(os.environ.get("CLIMATE_WIKI_SOURCES", str(HOME / "sources")))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 DB = Path(
     os.environ.get(
@@ -68,9 +71,37 @@ def main() -> int:
     parser.add_argument("--date", required=True)
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
+    # The registry ingests from SOURCES (the append-mostly source of truth).
+    # If this week's report has not been copied there yet, promote it from the
+    # generated reports directory so step 8 does not depend on step 9 running
+    # first. If both copies exist but differ, refuse to proceed: that is a
+    # content identity conflict the operator must resolve.
     report_path = SOURCES / f"climate-monitor-{args.date}.md"
+    generated_path = REPORTS / f"climate-monitor-{args.date}.md"
+    if not report_path.exists() and generated_path.exists():
+        SOURCES.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(generated_path, report_path)
+        print(f"Promoted generated report to sources/: {report_path}")
+    elif report_path.exists() and generated_path.exists():
+        if report_path.read_bytes() != generated_path.read_bytes():
+            print(
+                f"ERROR: sources/ and generated reports disagree for {args.date}; "
+                "resolve the content conflict before syncing",
+                file=sys.stderr,
+            )
+            return 1
     if not report_path.exists():
-        print(f"ERROR: source report not found: {report_path}", file=sys.stderr)
+        print(f"ERROR: report not found in {SOURCES} or {REPORTS}", file=sys.stderr)
         return 1
 
     try:

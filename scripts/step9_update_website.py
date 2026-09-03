@@ -42,18 +42,42 @@ def main() -> int:
     parser.add_argument("--date", default=last_monday().isoformat())
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
     if not os.environ.get("RELOAD_TOKEN"):
         print("ERROR: RELOAD_TOKEN environment variable is not set", file=sys.stderr)
         return 1
 
-    # Step 9a: Copy latest MD to sources/ for wiki generation.
+    # Step 9a: Promote the generated MD into sources/ (append-mostly: never
+    # overwrite an existing source with different content).
     md_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not md_path.exists():
         print(f"ERROR: markdown not found: {md_path}", file=sys.stderr)
         return 1
     SOURCES.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(md_path, SOURCES / md_path.name)
-    print(f"Copied {md_path.name} to sources/")
+    dest = SOURCES / md_path.name
+    if dest.exists():
+        if dest.read_bytes() != md_path.read_bytes():
+            print(
+                f"ERROR: {dest.name} already exists with different content; "
+                "sources/ is append-mostly — resolve manually before rerunning",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{dest.name} already in sources/ (identical); nothing to copy")
+    else:
+        tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
+        shutil.copy2(md_path, tmp_dest)
+        os.replace(tmp_dest, dest)
+        print(f"Copied {md_path.name} to sources/")
 
     # Step 9b: Regenerate wiki pages. Fail closed on any error.
     result = run([str(PYTHON), "scripts/sync_source_wiki.py", "--cadence", "weekly"])

@@ -53,6 +53,16 @@ def main() -> int:
     parser.add_argument("--date", default=last_monday().isoformat())
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
     md_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not md_path.exists():
         print(f"ERROR: markdown not found: {md_path}")

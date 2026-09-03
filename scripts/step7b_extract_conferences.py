@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -15,7 +16,9 @@ EVENT_URL_PATTERNS = [
     r'/workshop/', r'/seminar/', r'/webinar/', r'/summit/',
 ]
 
-# Title keywords that indicate events (must be whole words)
+# Title keywords that indicate events. Multi-word phrases are matched
+# verbatim; single words use word-boundary matching to avoid false positives
+# such as "congressional briefing" or "meeting the targets".
 EVENT_TITLE_KEYWORDS = [
     'conference', 'meeting', 'workshop', 'seminar', 'webinar',
     'summit', 'symposium', 'congress', 'registration open',
@@ -31,7 +34,10 @@ def is_conference_article(title, url):
             return True
     title_lower = title.lower()
     for keyword in EVENT_TITLE_KEYWORDS:
-        if keyword in title_lower:
+        if " " in keyword:
+            if keyword in title_lower:
+                return True
+        elif re.search(rf'\b{re.escape(keyword)}\b', title_lower):
             return True
     return False
 
@@ -53,19 +59,13 @@ def extract_conference_info(item):
     }
 
     # Try to extract date from title or summary
-    import re
     date_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}', title + " " + summary, re.I)
     if date_match:
         conf_info["date"] = date_match.group(0)
 
-    # Try to extract location
-    location_keywords = ["in ", "at ", "hosted by"]
-    for keyword in location_keywords:
-        idx = (title + " " + summary).lower().find(keyword)
-        if idx >= 0:
-            location = (title + " " + summary)[idx:idx+100].split('.')[0].split(',')[0]
-            conf_info["location"] = location
-            break
+    # Location is deliberately not extracted: naive "in /at " scanning
+    # produced misleading values from ordinary prose. If a structured
+    # location field is ever needed, derive it from fetched content only.
 
     # Try to extract organizers
     if "hosted by" in (title + summary).lower():
@@ -81,13 +81,23 @@ def main():
     parser.add_argument("--date", default=date.today().isoformat())
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
     # Load aggregated articles. Conferences are extracted from the full
     # candidate set so this step does not depend on the assessments/filter
     # stage (which runs afterwards and consumes this output).
     agg_path = REPORTS / f"aggregated_{args.date}.json"
     if not agg_path.exists():
         print(f"ERROR: {agg_path} not found")
-        return
+        return 1
 
     items = json.loads(agg_path.read_text()).get("items", [])
 
@@ -111,4 +121,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

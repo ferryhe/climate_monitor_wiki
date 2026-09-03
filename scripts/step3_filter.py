@@ -76,6 +76,16 @@ def main() -> int:
     parser.add_argument("--date", default=date.today().isoformat())
     args = parser.parse_args()
 
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
+
     agg_path = REPORTS / f"aggregated_{args.date}.json"
     if not agg_path.exists():
         print(f"ERROR: {agg_path} not found")
@@ -86,9 +96,39 @@ def main() -> int:
     assess_path = REPORTS / f"hermes_assessments_{args.date}.json"
     if assess_path.exists():
         assessments = json.loads(assess_path.read_text()).get("assessments", [])
+    assessments = [a for a in assessments if isinstance(a, dict)]
 
-    by_url = {a.get("url"): a for a in assessments if a.get("url")}
-    by_id = {a["id"]: a for a in assessments if "id" in a}
+    ALLOWED_CATEGORIES = set(CATEGORY_MAP) | {"general", "conference"}
+
+    def sanitize_assessment(a: dict) -> dict:
+        out = {}
+        out["relevant"] = a.get("relevant") is True
+        cat = a.get("category", "general")
+        out["category"] = cat if isinstance(cat, str) and cat in ALLOWED_CATEGORIES else "general"
+        summary = a.get("summary", "")
+        out["summary"] = summary if isinstance(summary, str) else ""
+        keywords = a.get("keywords", [])
+        out["keywords"] = [k for k in keywords if isinstance(k, str)][:8] if isinstance(keywords, list) else []
+        return out
+
+    assessments = [sanitize_assessment(a) for a in assessments]
+    by_url = {}
+    for a in assessments:
+        u = a.get("url")
+        if u:
+            if u in by_url:
+                print(f"WARNING: duplicate assessment url {u}; keeping first")
+            else:
+                by_url[u] = a
+    # Positional id fallback is only allowed when no assessment carries a URL
+    # (plain Hermes output). Mixed or stale id-based files must not silently
+    # misclassify articles.
+    by_id = {}
+    if not by_url:
+        for a in assessments:
+            aid = a.get("id")
+            if isinstance(aid, int) and 0 <= aid < len(items):
+                by_id[aid] = a
 
     relevant_items = []
     non_relevant_count = 0

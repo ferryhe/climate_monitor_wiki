@@ -390,7 +390,9 @@ def main():
                         existing.add(url)
                         updated += 1
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            tmp_state = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+            tmp_state.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            os.replace(tmp_state, STATE_FILE)
             print(f"Baseline updated: +{updated} Pillar A URLs in article_state.json")
         except OSError as exc:
             print(f"WARNING: could not update article_state.json: {exc}", file=sys.stderr)

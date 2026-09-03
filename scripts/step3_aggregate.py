@@ -34,24 +34,38 @@ def normalize_title(title: str) -> str:
 
 
 def dedup_items(items: list[dict]) -> list[dict]:
-    """Deduplicate by URL and near-identical titles."""
-    seen_urls = set()
+    """Deduplicate by normalized URL and near-identical titles.
+
+    When a URL duplicate arrives, merge summary/keywords from the duplicate
+    into the kept record instead of silently dropping richer data (Pillar B
+    search results often carry a summary the Pillar A record lacks).
+    Titles are preserved verbatim — title-casing only happens upstream for
+    URL-slug-derived titles.
+    """
+    seen_urls = {}
     seen_titles = set()
     result = []
     
     for item in items:
         url = normalize_url(item.get("url", ""))
-        title = normalize_title(item.get("title", ""))
+        title = item.get("title", "").strip()
+        # Dedupe on a normalized key but keep the verbatim title in output.
+        title_key = normalize_title(title) if title else ""
         
         if url and url in seen_urls:
+            kept = seen_urls[url]
+            if not kept.get("summary") and item.get("summary"):
+                kept["summary"] = item["summary"]
+            if item.get("keywords") and not kept.get("keywords"):
+                kept["keywords"] = item["keywords"]
             continue
-        if title and title in seen_titles:
+        if title_key and title_key in seen_titles:
             continue
         
         if url:
-            seen_urls.add(url)
-        if title:
-            seen_titles.add(title)
+            seen_urls[url] = item
+        if title_key:
+            seen_titles.add(title_key)
         result.append(item)
     
     return result
@@ -62,6 +76,16 @@ def main():
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+
+    try:
+        parsed_date = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    if parsed_date.isoformat() != args.date:
+        print(f"ERROR: invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        return 1
+    args.date = parsed_date.isoformat()
 
     # Read Pillar A
     pa_path = REPORTS / f"article_changes_{args.date}.json"

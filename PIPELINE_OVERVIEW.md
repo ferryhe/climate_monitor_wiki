@@ -81,15 +81,15 @@
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  STEP 4: LLM Summary Generation (08:45)                                   │
-│  Type: Hermes LLM (web_search skill)                                      │
+│  STEP 4: Hermes LLM Assessments (08:35)                                   │
+│  Type: Hermes LLM cron (prompt from step3b_hermes_filter.py)              │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │ 1. Read filtered articles                                            │  │
-│  │ 2. For each article, generate 1-2 line summary using LLM             │  │
-│  │ 3. Generate 4-paragraph Executive Summary                           │  │
-│  │ 4. Output: executive_summary_YYYY-MM-DD.json                       │  │
+│  │ 1. Read aggregated articles (title + URL only)                       │  │
+│  │ 2. Assess relevance + category + keywords                            │  │
+│  │ 3. Summary: "" unless the article content was actually fetched        │  │
+│  │ 4. Output: hermes_assessments_YYYY-MM-DD.json                        │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
-│  Output: data/reports/executive_summary_YYYY-MM-DD.json                  │
+│  Output: data/reports/hermes_assessments_YYYY-MM-DD.json                  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -97,10 +97,10 @@
 │  STEP 5: Build Markdown Report (09:00)                                     │
 │  Script: step5_build_md.py                                                 │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │ 1. Load filtered + executive_summary JSON                             │  │
-│  │ 2. Build MD with: title, metadata, stats, Pillar A/B sections        │  │
-│  │ 3. Include filtering stats (23 relevant, 0 non-relevant)            │  │
-│  │ 4. Output: climate-monitor-YYYY-MM-DD.md                            │  │
+│  │ 1. Load filtered items + assessments executive summary                │  │
+│  │ 2. Build MD with: title, metadata, Pillar A/B sections               │  │
+│  │ 3. Monitor stats from --monitor-stats (required; fails closed)      │  │
+│  │ 4. Output: climate-monitor-YYYY-MM-DD.md + .json                    │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │  Output: data/reports/climate-monitor-YYYY-MM-DD.md (7839 chars)          │
 └─────────────────────────────────────────────────────────────────────────────┘
