@@ -1,10 +1,57 @@
 #!/usr/bin/env python3
-"""Step 3b: Generate article assessments with improved classification."""
+"""Step 3b fallback: deterministic keyword assessments for aggregated articles.
+
+This is the *fallback* assessment generator. The authoritative assessments
+come from the Hermes LLM step (see step3b_hermes_filter.py, which writes the
+prompt the LLM cron job consumes). To avoid clobbering LLM output:
+
+* the script refuses to overwrite an existing hermes_assessments_<date>.json
+  unless --force is passed;
+* summaries are left empty (the pipeline must never fabricate article
+  content), so downstream report rendering only shows what is real;
+* relevance and categories are keyword-based and deterministic.
+
+Run: python scripts/step3b_generate_assessments.py --date 2026-09-07
+"""
+from __future__ import annotations
+
+import argparse
 import json
+import os
 import re
+from collections import Counter
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = HOME / "data" / "reports"
+
+CLIMATE_KEYWORDS = [
+    "climate", "warming", "emission", "carbon", "greenhouse", "ghg",
+    "renewable", "energy transition", "net zero", "decarboni",
+    "sustainability", "esg", "green finance", "taxonomi",
+    "physical risk", "transition risk",
+    "extreme weather", "flood", "drought", "storm", "wildfire",
+    "catastrophe", "nat cat", "hazard", "resilien",
+    "adaptation", "mitigation", "carbon price", "carbon tax",
+    "issb", "ifrs s2", "tcfd", "tnfd", "csrd",
+    "carbon capture", "ccs", "cdr",
+    "pollution", "environment", "biodiversity", "nature",
+    "water", "ocean", "sea level", "solar", "wind", "hydrogen",
+    "methane", "deforestation", "ecosystem", "forest",
+]
+
+ACTUARIAL_KEYWORDS = [
+    "actuarial", "actuary", "insurance", "reinsurance", "underwriting",
+    "pricing", "reserving", "risk assessment", "risk management",
+    "solvency", "orsa", "stress test", "scenario analysi",
+    "mortality", "morbidity", "longevity", "pandemic",
+    "claims", "loss", "exposure", "accumulation",
+    "premium", "technical provision", "combined ratio",
+    "life insurance", "non-life", "pension", "annuiti",
+    "health insurance", "disability", "critical illness",
+    "insurtech", "parametric", "index insurance", "cat bond",
+    "financial stability", "banking", "central bank",
+]
 
 CATEGORY_KEYWORDS = {
     "climate_disclosure": ["disclosure", "issb", "ifrs", "tcfd", "csrd", "reporting", "sasb", "sustainability standard", "s2"],
@@ -16,288 +63,151 @@ CATEGORY_KEYWORDS = {
     "financial_risk": ["solvency", "financial stability", "banking", "central bank", "systemic risk", "supervisory", "iais"],
     "health_mortality": ["mortality", "morbidity", "health", "pandemic", "longevity", "disease"],
     "regulation_standards": ["regulat", "supervis", "compliance", "standard", "guidance", "iais"],
-    "biodiversity_nature": ["biodiversity", "nature", "ecosystem", "deforestation", "forest", "caterpillar"],
+    "biodiversity_nature": ["biodiversity", "nature", "ecosystem", "deforestation", "forest"],
     "conference": ["conference", "meeting", "workshop", "seminar", "webinar", "summit", "symposium", "congress"],
 }
 
-# Only these URL patterns indicate actual events
-EVENT_URL_PATTERNS = [r'/event/', r'/events/', r'/meeting/', r'/conference/', r'/workshop/', r'/seminar/', r'/webinar/']
+EVENT_URL_PATTERNS = [r"/event/", r"/events/", r"/meeting/", r"/conference/", r"/workshop/", r"/seminar/", r"/webinar/"]
 
-# General keywords to extract from any article
-GENERAL_KEYWORDS = [
-    "climate", "climate change", "global warming", "emissions", "carbon", "greenhouse",
-    "renewable", "energy", "sustainability", "esg", "green finance",
-    "physical risk", "transition risk", "extreme weather",
-    "insurance", "reinsurance", "actuarial", "underwriting", "pricing",
-    "reserving", "risk assessment", "solvency", "stress test",
-    "mortality", "longevity", "pandemic", "health",
-    "flood", "drought", "storm", "wildfire", "disaster",
-    "adaptation", "resilience", "mitigation",
-    "biodiversity", "nature", "ecosystem", "water",
-    "regulation", "disclosure", "reporting", "governance",
-    "financial stability", "banking", "investment",
-    "parametric", "cat bond", "index insurance",
-    "scenario", "modelling", "projection",
-    "who", "undrr", "wef", "world bank", "ipcc", "iais", "ifrs",
-    "unep", "afdb", "wri", "ngfs", "oecd",
-]
+IMPLICATIONS = {
+    "climate_disclosure": "disclosure quality and reporting controls under IFRS S2/TCFD-aligned regimes",
+    "scenario_analysis": "scenario analysis and stress testing for transition risk",
+    "catastrophe_natcat": "catastrophe modeling and hazard trend updates",
+    "adaptation_resilience": "adaptation and resilience metrics for protection-gap analysis",
+    "mitigation_energy": "energy-transition assumptions in pricing and asset strategies",
+    "parametric_insurance": "parametric product design and basis-risk management",
+    "financial_risk": "solvency and systemic-risk supervision of climate exposures",
+    "health_mortality": "mortality and morbidity assumptions under climate-sensitive health risks",
+    "regulation_standards": "regulatory and supervisory compliance requirements",
+    "biodiversity_nature": "nature-related risk factors in physical-risk frameworks",
+    "conference": "upcoming events for engagement and evidence gathering",
+    "general": "general climate and actuarial evidence",
+}
 
-def is_actual_event(title, url):
-    """Check if article is actually an event/meeting notice."""
-    url_lower = url.lower()
-    for pattern in EVENT_URL_PATTERNS:
-        if pattern in url_lower:
-            return True
-    text = title.lower()
-    event_keywords = ["conference", "meeting", "workshop", "seminar", "webinar", "summit", "registration open", "call for papers"]
-    for kw in event_keywords:
-        if kw in text:
-            return True
-    return False
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of",
+    "with", "by", "from", "is", "are", "was", "were", "be", "been", "has",
+    "have", "had", "do", "does", "did", "will", "would", "could", "should",
+    "may", "might", "can", "this", "that", "these", "those", "it", "its",
+    "they", "them", "their", "we", "our", "you", "your", "new", "more",
+    "most", "some", "any", "all", "each", "every", "both", "few", "many",
+    "much", "such", "than", "too", "very", "just", "about", "also", "now",
+    "here", "there", "when", "where", "why", "how", "what", "which", "who",
+    "not", "no", "nor", "as", "if", "then", "else", "while", "because",
+    "since", "until", "after", "before", "during", "without", "within",
+    "through", "above", "below", "under", "over", "into", "out", "up",
+    "down", "off", "away", "back", "so", "even", "still", "already", "yet",
+    "once", "per", "cent", "year", "years", "month", "months", "week",
+    "weeks", "day", "days", "time", "world", "state", "states", "report",
+    "reports", "study", "studies", "research", "plan", "plans", "policy",
+    "policies", "change", "changes", "level", "levels", "risk", "risks",
+}
 
-def classify_article(title, url):
-    """Classify article into categories."""
-    # First check for actual events
-    if is_actual_event(title, url):
-        return ["conference"]
-    
+
+def is_relevant(title: str, url: str) -> bool:
     text = f"{title} {url}".lower()
-    categories = []
-    
-    # Score each category
-    for cat, keywords in CATEGORY_KEYWORDS.items():
-        if cat == "conference":
-            continue  # Skip conference, handled above
-        score = sum(1 for kw in keywords if kw in text)
-        if score > 0:
-            categories.append((score, cat))
-    
-    # Sort by score descending
-    categories.sort(reverse=True, key=lambda x: x[0])
-    
-    if categories:
-        return [cat for _, cat in categories[:2]]  # Return top 2 categories
-    return ["general"]
+    return any(kw in text for kw in CLIMATE_KEYWORDS) or any(kw in text for kw in ACTUARIAL_KEYWORDS)
 
-def extract_keywords(title, url, summary):
-    """Extract meaningful keywords from article content itself."""
-    import re
-    from collections import Counter
-    
-    # Combine all text
-    text = f"{title} {summary}".lower()
-    
-    # Extract meaningful phrases (2-3 word combinations)
-    words = re.findall(r'[a-z]+(?:\s+[a-z]+){0,2}', text)
-    
-    # Filter out common words
-    stopwords = {
-        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-        'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
-        'has', 'have', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-        'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those',
-        'it', 'its', 'they', 'them', 'their', 'we', 'our', 'you', 'your',
-        'i', 'me', 'my', 'he', 'him', 'his', 'she', 'her', 'we', 'us',
-        'new', 'more', 'most', 'some', 'any', 'all', 'each', 'every',
-        'both', 'few', 'many', 'much', 'several', 'own', 'other', 'another',
-        'such', 'than', 'too', 'very', 'just', 'about', 'also', 'now',
-        'here', 'there', 'when', 'where', 'why', 'how', 'what', 'which',
-        'who', 'whom', 'not', 'no', 'nor', 'as', 'if', 'then', 'else',
-        'while', 'because', 'since', 'until', 'although', 'though', 'after',
-        'before', 'during', 'without', 'within', 'along', 'among', 'between',
-        'through', 'above', 'below', 'under', 'over', 'into', 'out', 'up',
-        'down', 'off', 'away', 'back', 'so', 'even', 'still', 'already',
-        'yet', 'once', 'twice', 'ever', 'never', 'always', 'often',
-        'sometimes', 'usually', 'perhaps', 'maybe', 'certainly', 'definitely',
-        'really', 'actually', 'probably', 'possible', 'impossible',
-        'likely', 'unlikely', 'necessary', 'unnecessary', 'important',
-        'unimportant', 'interesting', 'boring', 'good', 'bad', 'great',
-        'small', 'large', 'big', 'little', 'high', 'low', 'long', 'short',
-        'old', 'young', 'early', 'late', 'first', 'last', 'next', 'previous',
-        'second', 'third', 'one', 'two', 'three', 'four', 'five', 'six',
-        'seven', 'eight', 'nine', 'ten', 'hundred', 'thousand', 'million',
-        'billion', 'percent', 'per', 'cent', 'year', 'years', 'month',
-        'months', 'week', 'weeks', 'day', 'days', 'time', 'times',
-        'way', 'ways', 'part', 'parts', 'kind', 'kinds', 'type', 'types',
-        'thing', 'things', 'point', 'points', 'fact', 'facts', 'idea',
-        'ideas', 'question', 'questions', 'problem', 'problems', 'answer',
-        'answers', 'example', 'examples', 'reason', 'reasons', 'result',
-        'results', 'effect', 'effects', 'cause', 'causes', 'end', 'ends',
-        'side', 'sides', 'area', 'areas', 'place', 'places', 'case',
-        'cases', 'work', 'works', 'job', 'jobs', 'number', 'numbers',
-        'group', 'groups', 'company', 'companies', 'business', 'businesses',
-        'country', 'countries', 'world', 'state', 'states', 'city', 'cities',
-        'government', 'governments', 'market', 'markets', 'industry',
-        'industries', 'system', 'systems', 'program', 'programs', 'project',
-        'projects', 'report', 'reports', 'study', 'studies', 'research',
-        'plan', 'plans', 'policy', 'policies', 'law', 'laws', 'rule',
-        'rules', 'change', 'changes', 'development', 'developments',
-        'growth', 'rate', 'rates', 'level', 'levels', 'value', 'values',
-        'price', 'prices', 'cost', 'costs', 'tax', 'taxes', 'spending',
-        'budget', 'budgets', 'deficit', 'debt', 'trade', 'investment',
-        'investments', 'capital', 'assets', 'liabilities', 'equity',
-        'earnings', 'profit', 'profits', 'loss', 'losses', 'income',
-        'revenue', 'revenues', 'sales', 'output', 'production',
-        'consumption', 'demand', 'supply', 'employment', 'unemployment',
-        'inflation', 'interest', 'exchange', 'currency', 'money', 'bank',
-        'banks', 'financial', 'economic', 'economy', 'gdp', 'gnp',
-    }
-    
-    # Count meaningful words
-    meaningful = []
-    for word in words:
-        # Keep if not a stopword and length > 3
-        if word not in stopwords and len(word) > 3:
-            meaningful.append(word)
-    
-    # Also extract 2-word phrases
-    two_words = re.findall(r'[a-z]+\s+[a-z]+', text)
-    meaningful_2w = []
-    for phrase in two_words:
-        words_in_phrase = phrase.split()
-        if all(w not in stopwords and len(w) > 3 for w in words_in_phrase):
-            meaningful_2w.append(phrase)
-    
-    # Combine and count
-    all_terms = meaningful + meaningful_2w
-    counter = Counter(all_terms)
-    
-    # Return top 5 most frequent
-    return [term for term, count in counter.most_common(5)]
 
-def generate_summary(title, url, org):
-    """Generate a 2-4 sentence summary."""
-    summaries = {
-        "environmental and social sustainability framework": "UNEP published its environmental and social sustainability framework, providing guidelines for integrating climate risk into insurance and investment decisions. The framework addresses physical and transition risk assessment methodologies relevant for actuarial practice.",
-        "2026 triple cop year business": "WEF analysis of 2026 as a triple COP year (climate, biodiversity, land) and its implications for business risk management. Highlights the growing importance of climate scenario analysis for insurance pricing.",
-        "carbon dioxide removal cdr market infrastructure": "WEF report on carbon dioxide removal (CDR) market infrastructure development. Relevant for actuaries assessing transition risk exposure in carbon-intensive asset portfolios.",
-        "waste to energy eu emissions energy security": "WEF analysis of waste-to-energy solutions for EU emissions reduction and energy security. Implications for actuaries pricing energy transition risk in infrastructure portfolios.",
-        "philanthropy key change climate action": "WEF article on philanthropy's role in climate action. Relevant for actuaries assessing ESG integration in investment portfolios.",
-        "money on the table why better budget planning is key to fixing the water crisis": "World Bank blog on water crisis and budget planning. Relevant for actuaries modeling water risk exposure in sovereign and municipal bond portfolios.",
-        "climate change in africa": "AFDB blog on climate change impacts in Africa. Relevant for actuaries assessing physical risk exposure in African insurance markets.",
-        "who is on the ground in nepal responding to the devastating flash floods": "WHO report on Nepal flood response. Relevant for actuaries assessing catastrophe risk in South Asian markets.",
-        "2026 rasuwa flash floods": "WHO emergency update on 2026 Rasuwa flash floods in Nepal. Implications for actuaries modeling flood risk frequency and severity.",
-        "flood tragedy nepal highlights cross border and cascading risks": "WMO report on Nepal flood tragedy and cross-border cascading risks. Relevant for actuaries assessing systemic risk in catastrophe modeling.",
-        "one-quarter of world's crops threatened by water risks": "WRI report on water risks threatening global food crops. Relevant for actuaries assessing agricultural insurance risk exposure.",
-        "oca releases report on the csfa program": "OSFI actuarial report on the Canada Student Financial Assistance Program. Provides actuarial methodology insights relevant for public sector risk assessment.",
-        "processionary caterpillar outbreaks how sustax leverages c3s data to assess climate risk": "C3S report on using climate data to assess processionary caterpillar outbreaks. Relevant for actuaries modeling ecological risk indicators.",
-        "worldview and water quality applications in coastal regions": "NASA Earthdata training on Worldview and water quality applications. Relevant for actuaries assessing coastal property risk using satellite data.",
-        "monitoring surface water with sar for water resource management": "NASA Earthdata training on SAR for surface water monitoring. Relevant for actuaries modeling water resource risk.",
-        "low water levels lake powell lake mead august 2026": "NASA Earthdata report on low water levels in Lake Powell and Lake Mead. Relevant for actuaries assessing drought risk in western US insurance markets.",
-        "strengthening urban resilience and disaster preparedness alexandria": "UNDRR event on urban resilience and disaster preparedness in Alexandria. Relevant for actuaries assessing urban catastrophe risk.",
-        "media resilience and risk communication take centre stage lake chad basin": "UNDRR report on media resilience and risk communication in Lake Chad Basin. Relevant for actuaries assessing climate adaptation risk.",
-        "determining the impact of climate change on insurance risk and the global community": "IAA project on determining climate change impact on insurance risk. Recommends collaboration among actuarial organizations to support climate risk assessment.",
-        "when actuaries see the future climate risk insurance and your wallet": "Forbes article on how actuaries are reshaping climate risk assessment in insurance pricing. Highlights the growing role of actuarial science in climate risk management.",
-        "how is insurance underwriting impacted by climate change": "LSE Grantham Institute explainer on climate change impacts on insurance underwriting. Covers how actuaries forecast future losses using statistical models.",
-        "ifrs s2 climate-related disclosures": "Official IFRS S2 standard page. Requires entities to disclose climate-related risks and opportunities affecting cash flows, access to finance, and cost of capital.",
-        "developing parametric insurance for weather related risks": "World Bank paper on parametric insurance products for climate adaptation in developing countries. Covers weather index insurance and catastrophe bonds.",
-        "climate risk - international association of insurance supervisors": "IAIS page on climate change as a source of financial risk. Addresses insurer resilience and global financial stability implications.",
-        "the climate and health risk index": "World Bank paper on Climate and Health Risk Index (CHRI). Improves how climate change and health resources are invested.",
-    }
-    
-    for key, summary in summaries.items():
-        if key.lower() in title.lower():
-            return summary
-    
-    return f"Article from {org} on climate-related risk topics. Relevant for actuarial assessment of climate and insurance risk."
+def classify_article(title: str, url: str) -> list[str]:
+    url_lower = url.lower()
+    if any(re.search(pattern, url_lower) for pattern in EVENT_URL_PATTERNS):
+        return ["conference"]
+    text = f"{title} {url}".lower()
+    scored = [
+        (sum(1 for kw in keywords if kw in text), cat)
+        for cat, keywords in CATEGORY_KEYWORDS.items()
+        if cat != "conference"
+    ]
+    scored = [(score, cat) for score, cat in scored if score > 0]
+    scored.sort(reverse=True, key=lambda pair: pair[0])
+    top = [cat for _, cat in scored[:2]]
+    return top or ["general"]
 
-def main():
-    # Load aggregated
-    agg_path = REPORTS / f"aggregated_2026-09-07.json"
+
+def extract_keywords(title: str, url: str) -> list[str]:
+    text = f"{title} {url}".lower()
+    words = re.findall(r"[a-z]+(?:\s+[a-z]+){0,2}", text)
+    meaningful = [w for w in words if w not in STOPWORDS and len(w) > 3]
+    counter = Counter(meaningful)
+    return [term for term, _ in counter.most_common(5)]
+
+
+def generate_executive_summary(items: list[dict], assessments: list[dict]) -> str:
+    categories: dict[str, list[dict]] = {}
+    for a, item in zip(assessments, items):
+        if not a.get("relevant"):
+            continue
+        cat = a.get("category") or "general"
+        categories.setdefault(cat, []).append(item)
+
+    relevant = sum(1 for a in assessments if a.get("relevant"))
+    top_cats = list(categories.keys())[:3]
+    p1 = (
+        f"Across {len(items)} detected updates, {relevant} items were assessed "
+        f"relevant to climate and actuarial risk, concentrated on "
+        f"{', '.join(cat.replace('_', ' ') for cat in top_cats) or 'no dominant categories'}."
+    )
+    parts = []
+    for cat, cat_items in sorted(categories.items()):
+        titles = ", ".join(i.get("title", "")[:40] for i in cat_items[:2])
+        parts.append(f"{cat.replace('_', ' ').title()} ({len(cat_items)}): {titles}")
+    p2 = "Category analysis: " + ("; ".join(parts) + "." if parts else "no categorized items.")
+
+    implication_cats = [c for c in top_cats if c in IMPLICATIONS] or ["general"]
+    p3 = "Actuarial implications include: " + "; ".join(IMPLICATIONS[c] for c in implication_cats) + "."
+    p4 = "Working-group follow-ups: " + ", ".join(
+        f"review {c.replace('_', ' ')} items" for c in implication_cats[:3]
+    ) + "."
+    return f"{p1}\n\n{p2}\n\n{p3}\n\n{p4}"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Deterministic fallback article assessments")
+    parser.add_argument("--date", required=True)
+    parser.add_argument("--force", action="store_true", help="overwrite existing assessments")
+    args = parser.parse_args()
+
+    agg_path = REPORTS / f"aggregated_{args.date}.json"
     if not agg_path.exists():
-        print("ERROR: aggregated file not found")
-        return
-    
-    agg = json.loads(agg_path.read_text())
-    items = agg.get("items", [])
-    
-    # Load conferences (to mark actual events)
-    conf_path = REPORTS / f"conferences_2026-09-07.json"
+        print(f"ERROR: aggregated file not found: {agg_path}")
+        return 1
+    out_path = REPORTS / f"hermes_assessments_{args.date}.json"
+    if out_path.exists() and not args.force:
+        print(f"SKIP: {out_path.name} already exists (LLM assessments present); use --force to overwrite")
+        return 0
+
+    items = json.loads(agg_path.read_text()).get("items", [])
+    conf_path = REPORTS / f"conferences_{args.date}.json"
     conf_urls = set()
     if conf_path.exists():
         for c in json.loads(conf_path.read_text()).get("conferences", []):
             conf_urls.add(c.get("url", ""))
-    
+
     assessments = []
     for i, item in enumerate(items):
         title = item.get("title", "")
         url = item.get("url", "")
-        org = item.get("org", "")
-        source = item.get("source", "")
-        
-        # Classify
-        categories = classify_article(title, url)
-        
-        # Override if URL is in conferences list
-        if url in conf_urls:
-            categories = ["conference"]
-        
-        # Generate summary
-        summary = generate_summary(title, url, org)
-        
-        # Extract keywords
-        keywords = extract_keywords(title, url, summary)
-        
-        assessments.append({
-            "id": i,
-            "relevant": True,
-            "category": categories[0] if categories else "general",
-            "summary": summary,
-            "keywords": keywords,
-        })
-    
-    # Generate executive summary
-    exec_summary = generate_executive_summary(items, assessments)
-    
-    # Save
-    output = {
-        "assessments": assessments,
-        "executive_summary": exec_summary,
-    }
-    
-    out_path = REPORTS / f"hermes_assessments_2026-09-07.json"
-    out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
-    print(f"OK: {len(assessments)} assessments + executive summary → {out_path}")
+        categories = ["conference"] if url in conf_urls else classify_article(title, url)
+        assessments.append(
+            {
+                "id": i,
+                "url": url,
+                "relevant": is_relevant(title, url),
+                "category": categories[0],
+                "summary": "",
+                "keywords": extract_keywords(title, url),
+            }
+        )
 
-def generate_executive_summary(items, assessments):
-    """Generate 4-paragraph executive summary structured by category."""
-    # Group by category
-    categories = {}
-    for a in assessments:
-        cat = a.get("category", "general")
-        if cat not in categories:
-            categories[cat] = []
-        idx = a["id"]
-        if idx < len(items):
-            categories[cat].append(items[idx])
-    
-    # Paragraph 1: Overall
-    total = len(items)
-    cats_with_items = len([c for c in categories.values() if c])
-    top_cats = list(categories.keys())[:3]
-    p1 = f"Across {total} updates from 57 monitored organizations and web search, this week's evidence concentrated on {', '.join(c.replace('_', ' ') for c in top_cats)}. "
-    
-    site_items = [i for i in items if i.get("source") != "web"]
-    web_items = [i for i in items if i.get("source") == "web"]
-    if site_items:
-        p1 += f"New monitored-site developments include {', '.join([i['title'][:40] for i in site_items[:2]])}. "
-    if web_items:
-        p1 += f"Notable wider-intelligence items include {', '.join([i['title'][:40] for i in web_items[:2]])}."
-    
-    # Paragraph 2: Category analysis
-    p2_parts = []
-    for cat, cat_items in sorted(categories.items()):
-        if cat_items:
-            p2_parts.append(f"{cat.replace('_', ' ').title()} ({len(cat_items)}): {', '.join([i['title'][:30] for i in cat_items[:2]])}")
-    p2 = "Category analysis: " + "; ".join(p2_parts) + "."
-    
-    # Paragraph 3: Actuarial implications
-    p3 = "Actuarial implications include: pricing and product design for climate-related perils, catastrophe modeling and hazard trends, scenario analysis and stress testing for transition risk, disclosure quality and reporting controls under IFRS S2, and growth of parametric insurance markets for climate adaptation."
-    
-    # Paragraph 4: Recommendations
-    p4 = "Recommendations for the working group: (1) Monitor IFRS S2 implementation developments for actuarial reporting implications, (2) Track parametric insurance market growth for climate adaptation, (3) Review catastrophe model updates reflecting 2026 flood events, (4) Assess scenario analysis updates from NGFS and IPCC."
-    
-    return f"{p1}\n\n{p2}\n\n{p3}\n\n{p4}"
+    executive_summary = generate_executive_summary(items, assessments)
+    out_path.write_text(
+        json.dumps({"assessments": assessments, "executive_summary": executive_summary}, ensure_ascii=False, indent=2)
+    )
+    relevant = sum(1 for a in assessments if a["relevant"])
+    print(f"OK: {len(assessments)} deterministic assessments ({relevant} relevant), summaries left empty by design → {out_path}")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
