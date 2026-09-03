@@ -366,6 +366,9 @@ def _verify_sha_binding(
             report_title=identity.report_title,
             report_sha256=identity.report_sha256,
             include_pdf_bytes=False,
+            # Read-tolerant: persisted artifacts of an explicitly accepted
+            # off-cycle report remain loadable (policy lives at ingestion).
+            allow_offcycle=True,
         )
         database_after = _stream_sha256(args.database)
     except _JobError:
