@@ -52,7 +52,8 @@ def main() -> int:
         "--monitor-stats",
         type=Path,
         default=None,
-        help="Optional JSON with checked/succeeded/failed per-site check totals",
+        help="Required JSON with checked/succeeded/failed per-site check totals "
+             "(the script fails closed when it is missing)",
     )
     parser.add_argument("--allow-offcycle", action="store_true", help="Allow non-Monday report dates")
     parser.add_argument("--allow-future", action="store_true", help="Allow future report dates")

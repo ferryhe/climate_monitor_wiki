@@ -32,7 +32,7 @@ def main():
         print(f"ERROR: {pillar_b_path} not found")
         return 1
 
-    pillar_b = json.loads(pb_path.read_text())
+    pillar_b = json.loads(pillar_b_path.read_text())
 
     # Load current state
     if STATE_FILE.exists():

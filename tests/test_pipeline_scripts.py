@@ -138,3 +138,78 @@ def test_step3b_generate_refuses_to_overwrite_without_force(reports_dir):
     assert "SKIP" in result.stdout
     payload = json.loads((reports_dir / "hermes_assessments_2026-09-14.json").read_text())
     assert payload["executive_summary"] == "llm produced this"
+
+
+def test_step2_save_state_writes_pillar_b_urls(reports_dir):
+    """Regression: the script once crashed on an undefined pb_path NameError."""
+    state_dir = reports_dir / "state"
+    state_dir.mkdir(parents=True)
+    state_file = state_dir / "article_state.json"
+    write_json(reports_dir / "pillar_b_2026-09-14.json", [
+        {"url": "https://example.org/b1", "title": "t1"},
+        {"url": "https://example.org/b1", "title": "dup"},
+        {"url": "https://example.org/b2/", "title": "t2"},
+    ])
+    write_json(state_file, {"__pillar_b__": ["https://example.org/b1"]})
+    result = run_script("step2_save_state.py", "--date", "2026-09-14",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir),
+                                   "CLIMATE_WL_STATE": str(state_file)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    state = json.loads(state_file.read_text())
+    # b1 was already present and duplicated; b2 is new (trailing slash stripped).
+    assert state["__pillar_b__"] == ["https://example.org/b1", "https://example.org/b2"]
+
+
+def test_step3_filter_keyword_fallback_single_string_category_and_both_keywords(reports_dir):
+    """Keyword fallback: category must be a str, and relevance needs BOTH
+    climate and actuarial keywords (matching the Step 3b prompt contract)."""
+    write_json(reports_dir / "aggregated_2026-09-14.json", {
+        "date": "2026-09-14",
+        "items": [
+            {"title": "Flood insurance claims surge", "url": "https://example.org/flood",
+             "source": "OrgA", "pillar": "A"},
+            {"title": "Solar energy report", "url": "https://example.org/solar",
+             "source": "OrgA", "pillar": "A"},
+            {"title": "Board appointment", "url": "https://example.org/board",
+             "source": "OrgA", "pillar": "A"},
+        ],
+    })
+    result = run_script("step3_filter.py", "--date", "2026-09-14",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    items = json.loads((reports_dir / "filtered_2026-09-14.json").read_text())["items"]
+    assert [i["url"] for i in items] == ["https://example.org/flood"]
+    assert isinstance(items[0]["category"], str)
+    assert items[0]["category"] == "catastrophe_natcat"
+
+
+def test_step3b_fallback_relevance_and_conference_survival(reports_dir):
+    """Fallback assessments: BOTH keyword families required; pre-identified
+    conference URLs stay relevant so step7b extractions survive filtering."""
+    write_json(reports_dir / "aggregated_2026-09-14.json", {
+        "date": "2026-09-14",
+        "items": [
+            {"title": "Climate stress test for insurers", "url": "https://example.org/stress"},
+            {"title": "Solar energy report", "url": "https://example.org/solar"},
+            {"title": "Annual actuarial congress", "url": "https://example.org/events/congress"},
+        ],
+    })
+    write_json(reports_dir / "conferences_2026-09-14.json",
+               {"conferences": [{"url": "https://example.org/events/congress"}]})
+    result = run_script("step3b_generate_assessments.py", "--date", "2026-09-14",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assessments = json.loads(
+        (reports_dir / "hermes_assessments_2026-09-14.json").read_text())["assessments"]
+    by_url = {a["url"]: a for a in assessments}
+    assert by_url["https://example.org/stress"]["relevant"] is True
+    assert by_url["https://example.org/solar"]["relevant"] is False
+    assert by_url["https://example.org/events/congress"]["relevant"] is True
+    assert by_url["https://example.org/events/congress"]["category"] == "conference"
+
+
+def test_step5_help_marks_monitor_stats_required():
+    """--help must match the fail-closed behaviour (it was labelled Optional)."""
+    result = run_script("step5_build_md.py", "--help")
+    assert result.returncode == 0
+    assert "Required JSON" in result.stdout

@@ -107,7 +107,9 @@ STOPWORDS = {
 
 def is_relevant(title: str, url: str) -> bool:
     text = f"{title} {url}".lower()
-    return any(kw in text for kw in CLIMATE_KEYWORDS) or any(kw in text for kw in ACTUARIAL_KEYWORDS)
+    has_climate = any(kw in text for kw in CLIMATE_KEYWORDS)
+    has_actuarial = any(kw in text for kw in ACTUARIAL_KEYWORDS)
+    return has_climate and has_actuarial
 
 
 def classify_article(title: str, url: str) -> list[str]:
@@ -199,12 +201,16 @@ def main() -> int:
     for i, item in enumerate(items):
         title = item.get("title", "")
         url = item.get("url", "")
-        categories = ["conference"] if url in conf_urls else classify_article(title, url)
+        is_conference = url in conf_urls
+        categories = ["conference"] if is_conference else classify_article(title, url)
         assessments.append(
             {
                 "id": i,
                 "url": url,
-                "relevant": is_relevant(title, url),
+                # Pre-identified conference URLs are kept relevant even when
+                # their title/URL has no climate/actuarial keywords, otherwise
+                # the fallback would silently drop every step7b extraction.
+                "relevant": is_conference or is_relevant(title, url),
                 "category": categories[0],
                 "summary": "",
                 "keywords": extract_keywords(title, url),

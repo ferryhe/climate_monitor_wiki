@@ -60,15 +60,19 @@ CATEGORY_MAP = {
 }
 
 
-def keyword_classify(title: str, url: str) -> list[str]:
+def keyword_classify(title: str, url: str) -> str:
     text = f"{title} {url}".lower()
-    categories = [cat for cat, keywords in CATEGORY_MAP.items() if any(kw in text for kw in keywords)]
-    return categories or ["general"]
+    for cat, keywords in CATEGORY_MAP.items():
+        if any(kw in text for kw in keywords):
+            return cat
+    return "general"
 
 
 def keyword_relevant(title: str, url: str) -> bool:
     text = f"{title} {url}".lower()
-    return any(kw in text for kw in CLIMATE_KEYWORDS) or any(kw in text for kw in ACTUARIAL_KEYWORDS)
+    has_climate = any(kw in text for kw in CLIMATE_KEYWORDS)
+    has_actuarial = any(kw in text for kw in ACTUARIAL_KEYWORDS)
+    return has_climate and has_actuarial
 
 
 def main() -> int:
