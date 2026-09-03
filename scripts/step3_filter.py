@@ -16,7 +16,7 @@ from datetime import date
 from pathlib import Path
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
-REPORTS = HOME / "data" / "reports"
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 CLIMATE_KEYWORDS = [
     "climate", "warming", "emission", "carbon", "greenhouse", "ghg",

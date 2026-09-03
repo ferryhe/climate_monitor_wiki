@@ -2,10 +2,12 @@
 """Step 7b: Extract conference/meeting info into JSON for downstream use."""
 import argparse
 import json
+import os
 from datetime import date
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 # Only these URL patterns indicate actual events
 EVENT_URL_PATTERNS = [
@@ -16,7 +18,7 @@ EVENT_URL_PATTERNS = [
 # Title keywords that indicate events (must be whole words)
 EVENT_TITLE_KEYWORDS = [
     'conference', 'meeting', 'workshop', 'seminar', 'webinar',
-    'summit', 'symposium', 'congress', 'session', 'registration open',
+    'summit', 'symposium', 'congress', 'registration open',
     'call for papers', 'agenda', 'programme',
 ]
 
@@ -79,14 +81,15 @@ def main():
     parser.add_argument("--date", default=date.today().isoformat())
     args = parser.parse_args()
 
-    # Load filtered articles
-    filtered_path = REPORTS / f"filtered_{args.date}.json"
-    if not filtered_path.exists():
-        print(f"ERROR: {filtered_path} not found")
+    # Load aggregated articles. Conferences are extracted from the full
+    # candidate set so this step does not depend on the assessments/filter
+    # stage (which runs afterwards and consumes this output).
+    agg_path = REPORTS / f"aggregated_{args.date}.json"
+    if not agg_path.exists():
+        print(f"ERROR: {agg_path} not found")
         return
 
-    filtered = json.loads(filtered_path.read_text())
-    items = filtered.get("items", [])
+    items = json.loads(agg_path.read_text()).get("items", [])
 
     # Find conference articles
     conferences = []

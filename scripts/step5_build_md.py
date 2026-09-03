@@ -16,7 +16,7 @@ from datetime import date
 from pathlib import Path
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
-REPORTS = HOME / "data" / "reports"
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 CATEGORY_LABELS = {
     "climate_disclosure": "Climate Disclosure",
@@ -48,6 +48,12 @@ def main() -> int:
         default=None,
         help="Number of monitored sites (omits the Scope line when unknown)",
     )
+    parser.add_argument(
+        "--monitor-stats",
+        type=Path,
+        default=None,
+        help="Optional JSON with checked/succeeded/failed per-site check totals",
+    )
     args = parser.parse_args()
 
     filtered_path = REPORTS / f"filtered_{args.date}.json"
@@ -67,6 +73,13 @@ def main() -> int:
     if pillar_a_path.exists():
         sites_with_changes = json.loads(pillar_a_path.read_text()).get("sites_with_changes")
 
+    checked = succeeded = failed = 0
+    if args.monitor_stats and args.monitor_stats.exists():
+        stats = json.loads(args.monitor_stats.read_text())
+        checked = int(stats.get("checked", 0))
+        succeeded = int(stats.get("succeeded", 0))
+        failed = int(stats.get("failed", 0))
+
     lines = ["# 🌡️ Weekly Climate & Actuarial Monitor (Supranational Orgs)", ""]
     lines.append(f"**Report Date:** {args.date}")
     lines.append(f"**Generated:** {date.today().isoformat()}T00:00:00Z")
@@ -77,6 +90,7 @@ def main() -> int:
     lines.append("")
     lines.append("## 📋 Executive Summary")
     lines.append("")
+    lines.append(f"- Sites checked: **{checked}**, succeeded: **{succeeded}**, failed: **{failed}**")
     if sites_with_changes is not None:
         lines.append(f"- Sites with changes in the monitored window: **{sites_with_changes}**")
     lines.append(f"- Monitored window: last 7 days (per-site `check`)")

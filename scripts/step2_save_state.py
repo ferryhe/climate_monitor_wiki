@@ -2,11 +2,13 @@
 """Step 2: Pillar B — save results to article_state.json for dedup."""
 import argparse
 import json
+import os
 from datetime import date
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
-STATE_FILE = Path("/home/ubuntu/web_listening/data/article_state.json")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
+STATE_FILE = Path(os.environ.get("CLIMATE_WL_STATE", "/home/ubuntu/web_listening/data/article_state.json"))
 
 
 def main():

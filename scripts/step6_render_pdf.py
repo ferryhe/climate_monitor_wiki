@@ -11,10 +11,11 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
-ARTIFACTS = Path("/home/ubuntu/climate_delivery_artifacts")
-PYTHON = Path("/home/ubuntu/climate_monitor_wiki/.venv/bin/python")
-REPO = Path("/home/ubuntu/climate_monitor_wiki")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
+ARTIFACTS = Path(os.environ.get("CLIMATE_ARTIFACT_ROOT", "/home/ubuntu/climate_delivery_artifacts"))
+PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
+REPO = HOME
 
 
 def last_monday():
@@ -47,7 +48,7 @@ def extract_md_executive_summary(md_path):
     return summary_lines
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=last_monday().isoformat())
     args = parser.parse_args()
@@ -55,7 +56,7 @@ def main():
     md_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not md_path.exists():
         print(f"ERROR: markdown not found: {md_path}")
-        return
+        return 1
 
     data = md_path.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
@@ -83,7 +84,7 @@ def main():
         )
         if result.returncode != 0:
             print(f"ERROR: summarize failed (exit {result.returncode}): {result.stderr}")
-            return
+            return 1
         print("OK: summary.json generated")
 
         # Inject MD executive summary into summary JSON
@@ -103,11 +104,17 @@ def main():
         )
         if result.returncode != 0:
             print(f"ERROR: render-pdf failed (exit {result.returncode}): {result.stderr}")
-            return
+            return 1
 
         shutil.copy2(tmp_pdf, pdf_path)
-        print(f"OK: {pdf_path} ({pdf_path.stat().st_size} bytes)")
+        with pdf_path.open("rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                pdf_path.unlink()
+                print("ERROR: render-pdf produced a file without a %PDF- header")
+                return 1
+        print(f"OK: {pdf_path} ({pdf_path.stat().st_size} bytes, %PDF- verified)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

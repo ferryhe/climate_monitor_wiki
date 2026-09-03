@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
-REPORTS = HOME / "data" / "reports"
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 WL_REPO = Path(os.environ.get("CLIMATE_WL_REPO", "/home/ubuntu/web_listening"))
 SITE_DB = WL_REPO / "data" / "web_listening.db"
 STATE_FILE = WL_REPO / "data" / "article_state.json"
