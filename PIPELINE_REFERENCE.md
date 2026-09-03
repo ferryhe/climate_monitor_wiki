@@ -7,11 +7,11 @@ Weekly cron jobs (every Monday):
 
 08:00  Step 1: Pillar A Site Check          → article_changes_{DATE}.json
 08:15  Step 2: Pillar B Web Search          → pillar_b_{DATE}.json
-       Step 2b: Save Pillar B URLs         → article_state.json (dedup baseline)
+       Step 2 also saves Pillar B URLs     → article_state.json (dedup baseline)
 08:30  Step 3: Aggregate + Dedup           → aggregated_{DATE}.json
 08:32  Step 4: Extract Conferences         → conferences_{DATE}.json
 08:35  Step 5: Hermes LLM Classification  → hermes_assessments_{DATE}.json
-       Step 5b: Apply Assessments         → filtered_{DATE}.json
+08:37  Step 5b: Apply Assessments         → filtered_{DATE}.json
 09:00  Step 6: Build Markdown Report     → climate-monitor-{DATE}.md
 09:15  Step 7: Render PDF                → climate_delivery_artifacts/{DATE}/{SHA}/climate-monitor-{DATE}.pdf
 09:30  Step 8: Send Email                → email sent
@@ -25,11 +25,11 @@ Weekly cron jobs (every Monday):
 |---|---|---|---|---|---|
 | 1 | 08:00 | Pillar A Site Check | Script | `scripts/step1_pillar_a.py` | article_changes JSON |
 | 2 | 08:15 | Pillar B Web Search | LLM | Cron: Step 2 | pillar_b JSON |
-| 2b | 08:15 | Save Pillar B State | Script | `scripts/step2b_save_state.py` | article_state.json |
+| 2b | 08:15 | Save Pillar B State | Script | `scripts/step2_save_state.py` | article_state.json |
 | 3 | 08:30 | Aggregate Report | Script | `scripts/step3_aggregate.py` | aggregated JSON |
 | 4 | 08:32 | Extract Conferences | Script | `scripts/step7b_extract_conferences.py` | conferences JSON |
 | 5 | 08:35 | Hermes Classification | LLM | Cron: Step 3b | hermes_assessments JSON |
-| 5b | 08:35 | Apply Filter | Script | `scripts/step3_filter.py` | filtered JSON |
+| 5b | 08:37 | Apply Filter | Script | `scripts/step3_filter.py` | filtered JSON |
 | 6 | 09:00 | Build Markdown | Script | `scripts/step5_build_md.py` | climate-monitor MD |
 | 7 | 09:15 | Render PDF | Script | `scripts/step6_render_pdf.py` | PDF artifact |
 | 8 | 09:30 | Send Email | LLM | Cron: Step 7 | Email |
@@ -38,19 +38,21 @@ Weekly cron jobs (every Monday):
 
 ## Date Logic
 
-All scripts use `last_monday()` — the most recent Monday. If today is Monday, use today.
+Every script accepts `--date`. Steps 6/8/9 default to `last_monday()`; the
+other steps default to today's date. The cron jobs always pass the report
+date explicitly, and step1 anchors its query window on that date.
 
 ## Dedup Mechanism
 
 ### article_state.json
 - Stores all previously seen URLs (Pillar A + B)
-- Pillar A: URLs from web_listening changes
+- Pillar A: URLs from web_listening changes, appended by Step 1 under the org key
 - Pillar B: URLs from web_search (under `__pillar_b__` key)
-- Step 1 filters new articles against this baseline
+- Step 1 filters new articles against this baseline (skipping `__pillar_b__`)
 
 ### Registry DB
 - Stores Monday reports only
-- 9 reports currently (latest 2026-09-07)
+- Sync is append-only via `climate_registry plan-update`/`update` with SHA conflict checks
 
 ## Data Flow
 
