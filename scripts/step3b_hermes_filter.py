@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Step 3b: Hermes LLM relevance filter + classification + summary generation."""
+"""Step 3b helper: write the Hermes LLM assessment prompt to a JSON file.
+
+This script does NOT call any LLM. It emits hermes_prompt_<date>.json, which
+the LLM cron job (PIPELINE_CONFIG.md § Step 3b) reads and answers into
+hermes_assessments_<date>.json. The deterministic keyword fallback lives in
+step3b_generate_assessments.py and refuses to overwrite LLM output.
+"""
 import argparse
 import json
+import os
 from datetime import date
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 
 PROMPT_TEMPLATE = """You are a climate & actuarial intelligence analyst. Assess each article for relevance to climate change and actuarial risk.
