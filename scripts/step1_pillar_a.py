@@ -2,6 +2,7 @@
 """Step 1: Pillar A — extract articles with real titles, URLs, and summaries from changes."""
 import argparse
 import json
+import os
 import re
 import string
 import sqlite3
@@ -9,8 +10,9 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-REPORTS = Path("/home/ubuntu/climate_monitor_wiki/data/reports")
-WL_REPO = Path("/home/ubuntu/web_listening")
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+REPORTS = HOME / "data" / "reports"
+WL_REPO = Path(os.environ.get("CLIMATE_WL_REPO", "/home/ubuntu/web_listening"))
 SITE_DB = WL_REPO / "data" / "web_listening.db"
 STATE_FILE = WL_REPO / "data" / "article_state.json"
 
@@ -250,8 +252,6 @@ def extract_articles_from_changes(site_id, since_date):
                     title = m.group(1).strip()
                     url = m.group(2).split('?')[0].rstrip('/')
                     if not is_junk_url(url) and not is_junk_title(title):
-                        # Normalize title
-                        title = normalize_title(title)
                         articles.append({"title": title[:120], "url": url})
         
         # Also get new_links changes (just URLs, extract title from URL)
@@ -266,6 +266,8 @@ def extract_articles_from_changes(site_id, since_date):
             diff = row[0] or ""
             for line in diff.split('\n'):
                 line = line.strip()
+                if line.startswith('+'):
+                    line = line[1:].strip()
                 if line.startswith('https://') or line.startswith('http://'):
                     url = line.split()[0].split('?')[0].rstrip('/')
                     if not is_junk_url(url):
@@ -291,19 +293,24 @@ def main():
     parser.add_argument("--since-days", type=int, default=7)
     args = parser.parse_args()
 
-    # Load baseline state (Pillar A URLs from article_state.json)
+    # Load baseline state (Pillar A URLs from article_state.json).
+    # The "__pillar_b__" key tracks web-search URLs and must not be treated
+    # as a monitored-org baseline.
     state = {}
     if STATE_FILE.exists():
         state = json.loads(STATE_FILE.read_text())
     baseline_urls = set()
     for org, urls in state.items():
+        if org == "__pillar_b__":
+            continue
         for url in urls:
             baseline_urls.add(url.split('?')[0].rstrip('/'))
     
     print(f"Baseline (Pillar A): {len(baseline_urls)} URLs in article_state.json")
 
     # Query changes from last N days
-    since = (date.today() - timedelta(days=args.since_days)).isoformat()
+    window_anchor = date.fromisoformat(args.date)
+    since = (window_anchor - timedelta(days=args.since_days)).isoformat()
     
     c = sqlite3.connect(str(SITE_DB))
     
@@ -320,6 +327,7 @@ def main():
     print(f"Sites with changes (last {args.since_days} days): {len(sites_with_changes)}")
     
     articles = []
+    new_baseline_urls: dict[str, set[str]] = {}
     total_new = 0
     total_seen_before = 0
     
@@ -356,6 +364,7 @@ def main():
                 "url": art_url,
                 "categories": categories,
             })
+            new_baseline_urls.setdefault(name, set()).add(art_url)
             total_new += 1
         
         if items:
@@ -365,7 +374,27 @@ def main():
             })
     
     c.close()
-    
+
+    # Append newly discovered Pillar A URLs to the baseline so the same
+    # article is not reported again next week. Failure is non-fatal: the
+    # report stays valid, at the cost of repeats next run.
+    if new_baseline_urls:
+        try:
+            updated = 0
+            for org, urls in new_baseline_urls.items():
+                bucket = state.setdefault(org, [])
+                existing = set(bucket)
+                for url in sorted(urls):
+                    if url not in existing:
+                        bucket.append(url)
+                        existing.add(url)
+                        updated += 1
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            print(f"Baseline updated: +{updated} Pillar A URLs in article_state.json")
+        except OSError as exc:
+            print(f"WARNING: could not update article_state.json: {exc}", file=sys.stderr)
+
     output = {
         "date": args.date,
         "pillar": "A",
