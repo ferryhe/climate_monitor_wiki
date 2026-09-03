@@ -145,7 +145,7 @@ def test_invalid_semantic_bundle_fails_closed(field, value, message):
 @pytest.mark.parametrize(
     ("summary", "keywords"),
     [
-        ("气候风险影响保险定价。", ["气候", "保险", "定价"]),
+        ("Κλιματικοί κίνδυνοι επηρεάζουν την τιμολόγηση των ασφαλίστρων.", ["κλίμα", "ασφάλιση", "τιμολόγηση"]),
         ("Résumé des risques climatiques.", ["résilience", "assurance", "modélisation"]),
         ("Climate risk affects pricing.", ["climate", "insurance", "pricing"]),
     ],

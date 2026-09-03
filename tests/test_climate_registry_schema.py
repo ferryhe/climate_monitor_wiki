@@ -258,7 +258,7 @@ def test_content_fetch_and_enrichment_contract_round_trips_unicode_metadata():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection)
     _insert_article(connection)
-    markdown = "# 风险摘要\n\n北极升温与保险损失。"
+    markdown = "# Résumé des risques climatiques\n\nRéchauffement arctique et pertes assurantielles."
     with connection:
         connection.execute(
             """
@@ -287,13 +287,13 @@ def test_content_fetch_and_enrichment_contract_round_trips_unicode_metadata():
                 enrichment_id, content_version_id, status, summary, categories_json,
                 keywords_json, language, generator_kind, generator_name,
                 generator_version, generated_at
-            ) VALUES ('e1', 'cv1', 'complete', ?, ?, ?, 'zh', 'deterministic',
+            ) VALUES ('e1', 'cv1', 'complete', ?, ?, ?, 'fr', 'deterministic',
                       'fixture-enricher', '1', ?)
             """,
             (
-                "本周气候风险摘要。",
-                '["气候风险","保险"]',
-                '["北极","损失"]',
+                "Résumé hebdomadaire des risques climatiques.",
+                '["risque_climatique","assurance"]',
+                '["arctique","pertes"]',
                 "2026-08-13T12:01:00Z",
             ),
         )
@@ -311,9 +311,9 @@ def test_content_fetch_and_enrichment_contract_round_trips_unicode_metadata():
         """
     ).fetchone() == (
         markdown,
-        "本周气候风险摘要。",
-        '["气候风险","保险"]',
-        '["北极","损失"]',
+        "Résumé hebdomadaire des risques climatiques.",
+        '["risque_climatique","assurance"]',
+        '["arctique","pertes"]',
         "cv1",
         "full_markdown",
     )

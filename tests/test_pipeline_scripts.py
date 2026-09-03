@@ -126,7 +126,7 @@ def test_step5_null_category_falls_back_to_general(reports_dir):
     assert result.returncode == 0, result.stdout + result.stderr
     md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
     assert "General" in md
-    assert "Scenario Analysis" in md  # categories 里的合法元素仍展示
+    assert "Scenario Analysis" in md  # valid entries inside categories still render
     sidecar = json.loads(
         (reports_dir / "climate-monitor-2026-09-14.json").read_text())
     items = sidecar["categories"]["general"]

@@ -16,3 +16,9 @@ external/
 *.sqlite3-wal
 *.sqlite3-shm
 climate_delivery_artifacts/
+
+# Personal Obsidian vault config; only the project-authored plugin is tracked
+.obsidian/*
+!.obsidian/plugins/
+.obsidian/plugins/*
+!.obsidian/plugins/climate-agent-chat/

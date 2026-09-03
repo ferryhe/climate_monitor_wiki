@@ -171,6 +171,11 @@ python scripts/run_climate_monitor.py --date "$REPORT_DATE"
 
 Hermes is the sole report generator. There is no GitHub Actions generator. An emergency manual run is performed only on the controlled server with the existing monitor and rolling-PR publisher.
 
+Pipeline internals are documented in [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md)
+(architecture, step contracts, date logic, dedup, MD report structure) and
+[PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) (cron schedule and editable LLM
+prompts).
+
 ## Deploy on Render
 
 This repo includes a [`render.yaml`](render.yaml) Blueprint and a [`.python-version`](.python-version) pin for Render.
@@ -213,6 +218,9 @@ The plugin already lives at:
 .obsidian/plugins/climate-agent-chat/
 ```
 
+This is the only Obsidian file shipped in the repo; personal vault
+configuration and other community plugins are local-only (gitignored).
+
 To use it:
 
 1. Start the API server with `uvicorn api_server:app --host 0.0.0.0 --port 8501`.
@@ -220,12 +228,14 @@ To use it:
 3. Enable **Climate Agent Chat** under Community plugins.
 4. Click the message icon or run **Open Climate Agent Chat**.
 
-For the best vault experience, keep these Obsidian plugins enabled:
+For the best vault experience, install the following community plugins from
+your local Obsidian (they are not bundled with the repo):
 
 - `Dataview`
 - `Obsidian Git`
 
-The vault already includes `Dataview`, and the web workspace now mirrors that browsing model with a Dataview-style table and graph explorer.
+The web workspace mirrors the Dataview browsing model with a Dataview-style
+table and graph explorer.
 The Obsidian plugin now also lets you switch between `Brief`, `Detailed`, and `Report` answers before sending.
 For daily report notes, the detail panel's `Source` link opens the matching raw Markdown file under the GitHub repo's `main` branch `sources/` directory.
 
@@ -263,13 +273,13 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 ├── climate_delivery/  # Summary/PDF/manifest and retained email delivery
 ├── scripts/           # Monitor, publisher, reload, Registry and QA entrypoints
 ├── tests/             # API, transaction, browser, and regression tests
-└── .obsidian/         # Vault config + local plugin
+└── .obsidian/         # Project Obsidian plugin (climate-agent-chat) only
 ```
 
 ## Reports
 
-25 source-backed report pages are present: 20 legacy daily reports from April,
-one June report, and four weekly reports from **2026-07-27 through 2026-08-17**.
+26 source-backed report pages are present: 20 legacy daily reports from April,
+one June report, and five weekly reports from **2026-07-27 through 2026-08-24**.
 Source files in `sources/` contain the original report content. Weekly rendering
 shows only dates with a real source report and never manufactures gap pages.
 
@@ -291,4 +301,4 @@ Monitoring reports are sourced from 14 high-priority organizations such as
 IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations
 per run via automated monitoring.
 
-_Last updated: 2026-08-17_
+_Last updated: 2026-09-03_
