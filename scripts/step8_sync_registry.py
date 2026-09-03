@@ -25,14 +25,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
-PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", "/home/ubuntu/climate_monitor_wiki/.venv/bin/python"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+SOURCES = Path(os.environ.get("CLIMATE_WIKI_SOURCES", str(HOME / "sources")))
+REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
+PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 if not PYTHON.exists():
     # Fall back to the interpreter running this script (e.g. Render, where the
     # /home/ubuntu venv path does not exist).
     PYTHON = Path(sys.executable)
-SOURCES = Path(os.environ.get("CLIMATE_WIKI_SOURCES", str(HOME / "sources")))
-REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
-PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 DB = Path(
     os.environ.get(
         "CLIMATE_REGISTRY_DB",
