@@ -253,6 +253,45 @@ def _backup_connection(source: sqlite3.Connection, destination: Path) -> None:
         destination_connection.close()
 
 
+def initialize_registry(database: Path) -> dict:
+    """Idempotently create and migrate the registry database.
+
+    First-run bootstrap for the pipeline: plan-update/update refuse a missing
+    database (fail-closed), so a fresh deployment must run this once. Existing
+    databases are only validated, never modified.
+    """
+    database = database.resolve()
+    if database.is_file():
+        connection = _read_only_connection(database)
+        try:
+            version = _validate_database(connection)
+        finally:
+            connection.close()
+        return {"status": "ok", "created": False, "schema_version": version}
+    try:
+        database.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RegistryBuildError("could not create the registry database directory") from exc
+    with _exclusive_database_lock(database):
+        if database.is_file():
+            connection = _read_only_connection(database)
+            try:
+                version = _validate_database(connection)
+            finally:
+                connection.close()
+            return {"status": "ok", "created": False, "schema_version": version}
+        connection = sqlite3.connect(database)
+        try:
+            apply_migrations(connection)
+            version = _validate_database(connection)
+        finally:
+            connection.close()
+        if os.name == "posix":
+            database.chmod(0o600)
+            _fsync_parent(database)
+    return {"status": "ok", "created": True, "schema_version": version}
+
+
 def _backup_name(database: Path) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{database.name}.{stamp}.bak"

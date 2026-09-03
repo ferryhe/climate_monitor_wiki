@@ -11,7 +11,7 @@ from .audit import build_audit_registry
 from .capture import MAX_BATCH, capture_enrich_registry
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from .fetch import DEFAULT_TIMEOUT
-from .persistent import plan_registry_update, update_registry
+from .persistent import initialize_registry, plan_registry_update, update_registry
 from .semantic_import import import_report_semantics
 from .selection import load_selection_input, plan_registry_selection
 from .weekly import (
@@ -98,6 +98,9 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("--expected-sha256", required=True)
     restore.add_argument("--backup-dir", required=True, type=Path)
     restore.add_argument("--lock-file", required=True, type=Path)
+
+    init = subcommands.add_parser("init")
+    init.add_argument("--database", required=True, type=Path)
     return parser
 
 
@@ -175,6 +178,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 database=args.database,
                 backup_dir=args.backup_dir,
             )
+        elif args.command == "init":
+            result = initialize_registry(args.database)
         else:
             result = restore_registry_backup(
                 database=args.database,
