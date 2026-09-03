@@ -211,6 +211,9 @@ def main() -> int:
                 # their title/URL has no climate/actuarial keywords, otherwise
                 # the fallback would silently drop every step7b extraction.
                 "relevant": is_conference or is_relevant(title, url),
+                # Ordered category list: first element is the primary category
+                # used for display; downstream keeps the full list.
+                "categories": categories,
                 "category": categories[0],
                 "summary": "",
                 "keywords": extract_keywords(title, url),

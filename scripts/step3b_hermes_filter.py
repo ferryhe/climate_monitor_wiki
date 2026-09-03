@@ -20,16 +20,17 @@ PROMPT_TEMPLATE = """You are a climate & actuarial intelligence analyst. Assess 
 
 For each article, provide:
 1. relevant: true/false (is this about climate change AND actuarial/insurance risk?)
-2. category: one of [climate_disclosure, scenario_analysis, catastrophe_natcat, adaptation_resilience, mitigation_energy, parametric_insurance, financial_risk, health_mortality, regulation_standards, biodiversity_nature, general]
-3. summary: "" (empty string) unless you actually fetched the article content and the summary is grounded in it. You may fetch articles with web tools. NEVER invent content from title/URL alone; if you did not fetch an article, its summary MUST be the empty string.
-4. keywords: 3-5 specific keywords derived from the title (or from the fetched content)
+2. categories: an ordered list of one or more of [climate_disclosure, scenario_analysis, catastrophe_natcat, adaptation_resilience, mitigation_energy, parametric_insurance, financial_risk, health_mortality, regulation_standards, biodiversity_nature, conference, general]. The FIRST element is the primary category used for display; later elements are secondary themes.
+3. category: must equal categories[0] (compatibility field)
+4. summary: "" (empty string) unless you actually fetched the article content and the summary is grounded in it. You may fetch articles with web tools. NEVER invent content from title/URL alone; if you did not fetch an article, its summary MUST be the empty string.
+5. keywords: 3-5 specific keywords derived from the title (or from the fetched content)
 
 Articles to assess:
 {articles}
 
 Respond in JSON format:
 {{"assessments": [
-  {{"id": 0, "relevant": true/false, "category": "...", "summary": "...", "keywords": [...]}},
+  {{"id": 0, "relevant": true/false, "categories": ["primary", "secondary"], "category": "primary", "summary": "...", "keywords": [...]}},
   ...
 ]}}
 
@@ -95,6 +96,7 @@ def main():
                         "properties": {
                             "id": {"type": "integer"},
                             "relevant": {"type": "boolean"},
+                            "categories": {"type": "array", "items": {"type": "string"}},
                             "category": {"type": "string"},
                             "summary": {"type": "string"},
                             "keywords": {"type": "array", "items": {"type": "string"}}

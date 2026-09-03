@@ -181,6 +181,7 @@ def test_step3_filter_keyword_fallback_single_string_category_and_both_keywords(
     assert [i["url"] for i in items] == ["https://example.org/flood"]
     assert isinstance(items[0]["category"], str)
     assert items[0]["category"] == "catastrophe_natcat"
+    assert items[0]["categories"] == ["catastrophe_natcat"]
 
 
 def test_step3b_fallback_relevance_and_conference_survival(reports_dir):
@@ -206,6 +207,107 @@ def test_step3b_fallback_relevance_and_conference_survival(reports_dir):
     assert by_url["https://example.org/solar"]["relevant"] is False
     assert by_url["https://example.org/events/congress"]["relevant"] is True
     assert by_url["https://example.org/events/congress"]["category"] == "conference"
+    assert by_url["https://example.org/events/congress"]["categories"] == ["conference"]
+
+
+def test_step3b_fallback_multi_category_ordering(reports_dir):
+    """Fallback assessments keep the full scored category list; the primary
+    (highest-scoring) category is first and mirrors the 'category' field."""
+    write_json(reports_dir / "aggregated_2026-09-14.json", {
+        "date": "2026-09-14",
+        "items": [
+            {"title": "Parametric flood insurance scenario stress test",
+             "url": "https://example.org/multi"},
+        ],
+    })
+    result = run_script("step3b_generate_assessments.py", "--date", "2026-09-14",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assessments = json.loads(
+        (reports_dir / "hermes_assessments_2026-09-14.json").read_text())["assessments"]
+    item = assessments[0]
+    assert item["relevant"] is True
+    assert len(item["categories"]) >= 2
+    assert item["category"] == item["categories"][0]
+    # scenario keywords ("scenario", "stress test") score higher than the
+    # single flood/parametric hits in this synthetic title.
+    assert item["categories"][0] == "scenario_analysis"
+
+
+def test_step3_filter_preserves_ordered_multi_categories(reports_dir):
+    """Assessments with 'categories' keep the validated, deduplicated order;
+    the single 'category' field is derived from categories[0]. Invalid and
+    duplicate entries are dropped."""
+    write_json(reports_dir / "aggregated_2026-09-14.json", {
+        "date": "2026-09-14",
+        "items": [
+            {"title": "t", "url": "https://example.org/m", "source": "OrgA", "pillar": "A"},
+        ],
+    })
+    write_json(reports_dir / "hermes_assessments_2026-09-14.json", {
+        "assessments": [
+            {"id": 0, "url": "https://example.org/m", "relevant": True,
+             "categories": ["financial_risk", "catastrophe_natcat", "financial_risk",
+                            "not-a-category", "parametric_insurance"],
+             "category": "financial_risk",
+             "summary": "", "keywords": []},
+        ],
+    })
+    result = run_script("step3_filter.py", "--date", "2026-09-14",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    items = json.loads((reports_dir / "filtered_2026-09-14.json").read_text())["items"]
+    assert items[0]["categories"] == ["financial_risk", "catastrophe_natcat", "parametric_insurance"]
+    assert items[0]["category"] == "financial_risk"
+
+
+def test_step3_filter_legacy_single_category_still_works(reports_dir):
+    """Legacy assessments without 'categories' derive the list from 'category'."""
+    write_json(reports_dir / "aggregated_2026-09-14.json", {
+        "date": "2026-09-14",
+        "items": [
+            {"title": "t", "url": "https://example.org/l", "source": "OrgA", "pillar": "A"},
+        ],
+    })
+    write_json(reports_dir / "hermes_assessments_2026-09-14.json", {
+        "assessments": [
+            {"id": 0, "url": "https://example.org/l", "relevant": True,
+             "category": "catastrophe_natcat", "summary": "", "keywords": []},
+        ],
+    })
+    result = run_script("step3_filter.py", "--date", "2026-09-14",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    items = json.loads((reports_dir / "filtered_2026-09-14.json").read_text())["items"]
+    assert items[0]["categories"] == ["catastrophe_natcat"]
+    assert items[0]["category"] == "catastrophe_natcat"
+
+
+def test_step5_emits_full_categories_and_primary_sections(reports_dir):
+    """MD sections group by primary category; each item's Categories line and
+    the JSON sidecar carry the full ordered list."""
+    write_json(reports_dir / "filtered_2026-09-14.json", {
+        "total_input": 1, "relevant": 1, "non_relevant": 0,
+        "items": [{"title": "Flood stress test guidance", "url": "https://example.org/a",
+                   "categories": ["catastrophe_natcat", "scenario_analysis", "financial_risk"],
+                   "category": "catastrophe_natcat",
+                   "summary": "", "keywords": ["flood"], "source": "OrgA", "pillar": "A"}],
+    })
+    write_json(reports_dir / "hermes_assessments_2026-09-14.json",
+               {"assessments": [], "executive_summary": "test summary"})
+    write_json(reports_dir / "stats.json", {"checked": 57, "succeeded": 54, "failed": 3})
+    allow = ["--allow-future", "--allow-offcycle"]
+    result = run_script("step5_build_md.py", "--date", "2026-09-14",
+                        "--monitor-stats", str(reports_dir / "stats.json"),
+                        *allow, env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
+    assert "### Catastrophe & NatCat (1)" in md
+    assert "### Scenario Analysis (1)" not in md  # primary grouping only
+    assert "**Categories:** Catastrophe & NatCat, Scenario Analysis, Financial Risk" in md
+    sidecar = json.loads((reports_dir / "climate-monitor-2026-09-14.json").read_text())
+    item = sidecar["categories"]["catastrophe_natcat"][0]
+    assert item["categories"] == ["Catastrophe & NatCat", "Scenario Analysis", "Financial Risk"]
 
 
 def test_step5_help_marks_monitor_stats_required():

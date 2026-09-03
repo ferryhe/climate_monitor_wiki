@@ -60,12 +60,17 @@ CATEGORY_MAP = {
 }
 
 
-def keyword_classify(title: str, url: str) -> str:
+def keyword_classify(title: str, url: str) -> list[str]:
+    """Score-based multi-category fallback: ordered list, first = primary."""
     text = f"{title} {url}".lower()
-    for cat, keywords in CATEGORY_MAP.items():
-        if any(kw in text for kw in keywords):
-            return cat
-    return "general"
+    scored = [
+        (sum(1 for kw in keywords if kw in text), cat)
+        for cat, keywords in CATEGORY_MAP.items()
+    ]
+    scored = [(score, cat) for score, cat in scored if score > 0]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    categories = [cat for _, cat in scored]
+    return categories or ["general"]
 
 
 def keyword_relevant(title: str, url: str) -> bool:
@@ -112,8 +117,24 @@ def main() -> int:
         url = a.get("url")
         out["url"] = url if isinstance(url, str) and url else None
         out["relevant"] = a.get("relevant") is True
+        # Multi-category contract: 'categories' is an ordered list whose first
+        # element is the primary display category. Legacy assessments carry
+        # only the single 'category' field; derive the list from it.
+        raw_categories = a.get("categories")
+        if isinstance(raw_categories, list):
+            categories: list[str] = []
+            seen: set[str] = set()
+            for value in raw_categories:
+                if isinstance(value, str) and value in ALLOWED_CATEGORIES and value not in seen:
+                    categories.append(value)
+                    seen.add(value)
+        else:
+            categories = []
         cat = a.get("category", "general")
-        out["category"] = cat if isinstance(cat, str) and cat in ALLOWED_CATEGORIES else "general"
+        if not categories:
+            categories = [cat] if isinstance(cat, str) and cat in ALLOWED_CATEGORIES else ["general"]
+        out["categories"] = categories
+        out["category"] = categories[0]
         summary = a.get("summary", "")
         out["summary"] = summary if isinstance(summary, str) else ""
         keywords = a.get("keywords", [])
@@ -145,17 +166,20 @@ def main() -> int:
         assessment = by_url.get(item.get("url")) or by_id.get(i) or {}
         if assessment:
             is_rel = bool(assessment.get("relevant", False))
-            category = assessment.get("category", "general")
+            categories = assessment.get("categories") or ["general"]
+            category = assessment.get("category", categories[0])
             summary = assessment.get("summary", "")
             keywords = assessment.get("keywords", [])
         else:
             is_rel = keyword_relevant(item.get("title", ""), item.get("url", ""))
-            category = keyword_classify(item.get("title", ""), item.get("url", ""))
+            categories = keyword_classify(item.get("title", ""), item.get("url", ""))
+            category = categories[0]
             summary = ""
             keywords = []
 
         if is_rel:
             item["relevant"] = True
+            item["categories"] = categories
             item["category"] = category
             item["summary"] = summary
             item["keywords"] = keywords

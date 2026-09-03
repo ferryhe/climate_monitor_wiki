@@ -76,7 +76,9 @@ Use web_search to verify articles if needed.
 
 For each article, provide:
 - relevant: true/false (must be about BOTH climate AND actuarial/insurance topics)
-- category: one of:
+- categories: an ordered list of one or more of the categories below. The
+  FIRST element is the primary category used for report sectioning; later
+  elements are secondary themes. Order by relevance, most relevant first.
   * climate_disclosure (reporting standards, ISSB, IFRS S2, TCFD)
   * scenario_analysis (stress testing, ORSA, modelling)
   * catastrophe_natcat (natural disasters, floods, droughts, storms)
@@ -89,6 +91,7 @@ For each article, provide:
   * biodiversity_nature (biodiversity, nature, ecosystem)
   * conference (conference, meeting, workshop, seminar, event)
   * general (climate-related but not specific)
+- category: must equal categories[0] (kept for compatibility)
 - summary: 2-4 sentences explaining the article's key points for actuaries
 - keywords: 3-5 specific terms from article content
 
