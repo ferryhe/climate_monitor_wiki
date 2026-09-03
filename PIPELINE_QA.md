@@ -2,13 +2,12 @@
 
 ## Q1: article_state.json 包含 Pillar A and B，right？
 
-**答：只包含 Pillar A。**
+**答：两者都包含，但以不同键区分。**
 
-- `article_state.json` 有 57 个机构、1349 个 URL
-- 这些 URL 全部来自 `web_listening` 系统对 57 个机构网站的监控（Pillar A）
-- Pillar B 的 URL 来自 Hermes `web_search`，不写入 `article_state.json`
-
-**这意味着**：基线去重只对 Pillar A 有效。Pillar B 的 URL 可能和 Pillar A 重复（如 IPCC 文章既被网站监控又被搜索到），需要在 Step 3 聚合时去重。
+- `article_state.json` 的 57 个机构键存 Pillar A 的监控 URL，是 Pillar A 的去重基线；
+- `__pillar_b__` 键存 Pillar B（web_search）的 URL，由 `step2_save_state.py` 写入；
+- `step1_pillar_a.py` 构建 Pillar A 基线时**跳过 `__pillar_b__` 键**，并把本周新发现的 Pillar A URL 追加回对应机构键；
+- 跨 Pillar 的重复仍由 Step 3 聚合阶段的 URL 归一化去重兜底。
 
 ---
 

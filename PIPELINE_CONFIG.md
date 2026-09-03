@@ -1,6 +1,6 @@
 # Pipeline Configuration
 
-## Cron Jobs (13 total)
+## Cron Jobs (11 total)
 
 | # | Time | Name | Type | Schedule | Prompt Config |
 |---|---|---|---|---|---|
@@ -9,6 +9,7 @@
 | 3 | 08:30 | Aggregate Report | Script | 30 8 * * 1 | N/A |
 | 4 | 08:32 | Extract Conferences | Script | 32 8 * * 1 | N/A |
 | 5 | 08:35 | Hermes Relevance + Classification | LLM | 35 8 * * 1 | PIPELINE_CONFIG.md § Step 3b |
+| 5b | 08:37 | Apply Assessments Filter | Script | 37 8 * * 1 | N/A |
 | 6 | 09:00 | Build Markdown Report | Script | 0 9 * * 1 | N/A |
 | 7 | 09:15 | Render PDF | Script | 15 9 * * 1 | N/A |
 | 8 | 09:30 | Send Email | LLM | 30 9 * * 1 | PIPELINE_CONFIG.md § Step 7 |
@@ -21,7 +22,7 @@
 Step 1: Pillar A ──────────────→ article_changes_{DATE}.json
 Step 2: Pillar B ──────────────→ pillar_b_{DATE}.json
                                       │
-Step 2b: Save Pillar B State ──→ article_state.json (dedup baseline)
+Step 2 (state save) ──────────→ article_state.json (dedup baseline)
                                       │
 Step 3: Aggregate ────────────→ aggregated_{DATE}.json
                                       │
@@ -29,7 +30,7 @@ Step 7b: Extract Conferences ──→ conferences_{DATE}.json
                                       │
 Step 3b: Hermes LLM ────────→ hermes_assessments_{DATE}.json
                                       │
-Step 3f: Filter ────────────→ filtered_{DATE}.json
+Step 3f: Filter (08:37) ──────→ filtered_{DATE}.json
                                       │
 Step 5: Build MD ────────────→ climate-monitor-{DATE}.md (SINGLE SOURCE OF TRUTH)
                                       │

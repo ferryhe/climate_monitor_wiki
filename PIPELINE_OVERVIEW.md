@@ -15,7 +15,8 @@
 │  │ 3. Parse diff_snippet: extract #### [Title](URL) from new_content   │  │
 │  │ 4. Extract URLs from new_links changes                                │  │
 │  │ 5. Filter: is_junk_url, is_junk_title, baseline dedup, relevance    │  │
-│  │ 6. Output: article_changes_YYYY-MM-DD.json                           │  │
+│  │ 6. Append new URLs back to article_state.json (org keys only)         │  │
+│  │ 7. Output: article_changes_YYYY-MM-DD.json                           │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │  Output: data/reports/article_changes_YYYY-MM-DD.json                       │
 │  Example: 11 orgs, 22 new articles (15 already in baseline)               │
@@ -112,7 +113,7 @@
 │  │ 1. Copy MD to /tmp (outside repo for climate_delivery)               │  │
 │  │ 2. Run: climate_delivery summarize --report /tmp/xxx.md              │  │
 │  │ 3. Run: climate_delivery render-pdf --summary /tmp/xxx.json          │  │
-│  │ 4. Verify PDF (%PDF- header)                                        │  │
+│  │ 4. Verify PDF (%PDF- header, fail closed)                            │  │
 │  │ 5. Output to climate_delivery_artifacts/YYYY-MM-DD/SHA/              │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │  Output: climate_delivery_artifacts/2026-09-07/SHA/climate-monitor.pdf     │
@@ -136,13 +137,13 @@
 │  STEP 8: Sync Registry (09:45)                                            │
 │  Script: step8_sync_registry.py                                            │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │ 1. Load filtered articles                                            │  │
-│  │ 2. Connect to article-registry.sqlite3                               │  │
-│  │ 3. Insert new articles (skip duplicates)                             │  │
-│  │ 4. Update reports table with new report_date                          │  │
-│  │ 5. Output: registry updated                                          │  │
+│  │ 1. Require sources/climate-monitor-<date>.md                          │  │
+│  │ 2. Run: climate_registry plan-update (append-only, SHA checks)        │  │
+│  │ 3. Fail closed on any report identity conflict                        │  │
+│  │ 4. Run: climate_registry update (lock, migrations, exact backup)      │  │
+│  │ 5. Output: registry updated (imported report dates)                   │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
-│  Output: Registry DB updated (8 reports → 9 reports)                        │
+│  Output: Registry DB updated (append-only; semantics via semantic-import)   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -150,12 +151,12 @@
 │  STEP 9: Update Website (10:00)                                           │
 │  Script: step9_update_website.py                                          │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │ 1. Run: python3 scripts/sync_source_wiki.py --cadence weekly           │  │
-│  │ 2. POST /api/reload (with RELOAD_TOKEN) to container                │  │
-│  │ 3. Verify: registry API returns 08-31 as latest                     │  │
-│  │ 4. Output: Website updated                                           │  │
+│  │ 1. Copy MD to sources/                                                │  │
+│  │ 2. Run: sync_source_wiki.py --cadence weekly (fail closed)            │  │
+│  │ 3. Run: reload_and_smoke_test.py --date <date> (RELOAD_TOKEN env)     │  │
+│  │ 4. Verify /api/config serves the new date; chat returns sources       │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
-│  Output: climate-monitor wiki updated + container reloaded                  │
+│  Output: wiki updated + API reloaded and smoke-tested                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
