@@ -124,6 +124,12 @@ def main() -> int:
         print(f"ERROR: report not found in {SOURCES} or {REPORTS}", file=sys.stderr)
         return 1
 
+    # First-run bootstrap: plan-update/update refuse a missing database
+    # (fail-closed), so initialize the schema before the first sync.
+    if not DB.exists():
+        init = run_cli(["init", "--database", str(DB)])
+        print(f"Initialized registry database: {DB} (schema v{init.get('schema_version')})")
+
     try:
         plan = run_cli(["plan-update", "--source-dir", str(SOURCES), "--database", str(DB)])
     except RuntimeError as exc:

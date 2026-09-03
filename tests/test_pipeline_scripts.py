@@ -240,17 +240,14 @@ Sites checked: **57**, succeeded: **54**, failed: **3**
 def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
     """step8 promotes the generated report into sources/ via a pid-unique
     staging file; a retried run must be a clean no-op without leftover
-    .tmp.* files (fixed .tmp suffix once let concurrent runs clobber)."""
+    .tmp.* files (fixed .tmp suffix once let concurrent runs clobber).
+    The registry DB does NOT exist beforehand: step8 must bootstrap the
+    schema itself (first-deploy path)."""
     import sqlite3
-
-    from climate_registry.schema import apply_migrations
 
     sources = tmp_path / "sources"
     db_path = tmp_path / "registry.sqlite3"
     backup_dir = tmp_path / "backups"
-    conn = sqlite3.connect(db_path)
-    apply_migrations(conn)
-    conn.close()
     (reports_dir / "climate-monitor-2026-09-14.md").write_text(WEEKLY_MD)
 
     env = {
@@ -262,6 +259,7 @@ def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
     result = run_script("step8_sync_registry.py", "--date", "2026-09-14",
                         "--allow-future", "--allow-offcycle", env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "Initialized registry database" in result.stdout
     assert (sources / "climate-monitor-2026-09-14.md").read_text() == WEEKLY_MD
     assert not list(sources.glob("*.tmp*"))
 
@@ -269,10 +267,40 @@ def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
     result2 = run_script("step8_sync_registry.py", "--date", "2026-09-14",
                          "--allow-future", "--allow-offcycle", env_extra=env)
     assert result2.returncode == 0, result2.stdout + result2.stderr
+    assert "Initialized registry database" not in result2.stdout
     assert "up to date" in result2.stdout
     assert not list(sources.glob("*.tmp*"))
 
     conn = sqlite3.connect(db_path)
     assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+    conn.close()
+
+
+def test_cli_init_is_idempotent(tmp_path):
+    """climate_registry init creates a migrated DB once and validates on rerun."""
+    db_path = tmp_path / "registry.sqlite3"
+    env = {"CLIMATE_WIKI_HOME": str(REPO)}
+    first = subprocess.run(
+        [PYTHON, "-m", "climate_registry", "init", "--database", str(db_path)],
+        capture_output=True, text=True, env={**os.environ, **env}, cwd=REPO, timeout=60,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    payload = json.loads(first.stdout)
+    assert payload["status"] == "ok" and payload["created"] is True
+
+    second = subprocess.run(
+        [PYTHON, "-m", "climate_registry", "init", "--database", str(db_path)],
+        capture_output=True, text=True, env={**os.environ, **env}, cwd=REPO, timeout=60,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    payload2 = json.loads(second.stdout)
+    assert payload2["status"] == "ok" and payload2["created"] is False
+    assert payload2["schema_version"] == payload["schema_version"]
+
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == payload["schema_version"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == payload["schema_version"]
     conn.close()
