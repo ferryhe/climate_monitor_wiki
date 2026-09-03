@@ -36,9 +36,9 @@ def _validate_summary(summary: dict[str, Any], *, allow_offcycle: bool = False) 
         report_date = date.fromisoformat(report["date"])
     except (TypeError, ValueError) as exc:
         raise InputError("summary report date is invalid") from exc
-    if (report_date.weekday() != 0 and not allow_offcycle) or not isinstance(
-        report["title"], str
-    ):
+    if not isinstance(report["title"], str):
+        raise InputError("summary report title must be a string")
+    if report_date.weekday() != 0 and not allow_offcycle:
         raise InputError("summary must describe a Monday weekly report")
     if not isinstance(report["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", report["sha256"]):
         raise InputError("summary report sha256 is invalid")
