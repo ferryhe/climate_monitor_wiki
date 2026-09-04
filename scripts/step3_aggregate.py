@@ -10,11 +10,163 @@ import argparse
 import json
 import os
 import re
+import sys
+from collections import Counter
 from pathlib import Path
 from datetime import date
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from climate_registry.classification import classify_document
+from climate_registry.errors import RegistryInputError
+from climate_registry.selection import (
+    MAX_SUMMARY,
+    MAX_TITLE,
+    MAX_URL,
+    _validate_public_http_url,
+)
+
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
+
+PILLAR_A_ITEM_FIELDS = frozenset({"title", "url", "categories"})
+PILLAR_B_ITEM_FIELDS = frozenset({"title", "url", "source", "summary"})
+
+
+def _row_reasons(item: object, *, allowed_fields: frozenset[str]) -> list[str]:
+    if not isinstance(item, dict):
+        return ["invalid_record_type"]
+
+    reasons = []
+    if set(item) - allowed_fields:
+        reasons.append("unexpected_fields")
+
+    title = item.get("title")
+    if not isinstance(title, str) or not title.strip():
+        reasons.append("missing_title")
+    elif len(title) > MAX_TITLE:
+        reasons.append("invalid_title")
+
+    url = item.get("url")
+    if not isinstance(url, str) or not url.strip():
+        reasons.append("missing_url")
+    elif len(url) > MAX_URL:
+        reasons.append("invalid_url")
+    else:
+        try:
+            _validate_public_http_url(url)
+        except RegistryInputError:
+            reasons.append("invalid_url")
+        else:
+            if not classify_document(url).publication_eligible:
+                reasons.append("publication_ineligible_url")
+
+    summary = item.get("summary", "")
+    if not isinstance(summary, str) or len(summary) > MAX_SUMMARY:
+        reasons.append("invalid_summary")
+    if "categories" in item:
+        categories = item["categories"]
+        if (
+            not isinstance(categories, list)
+            or not categories
+            or any(not isinstance(value, str) or not value.strip() for value in categories)
+        ):
+            reasons.append("invalid_categories")
+    return reasons
+
+
+def _record_errors(
+    errors: dict[str, Counter[str]], artifact: str, reasons: list[str]
+) -> None:
+    if reasons:
+        errors.setdefault(artifact, Counter()).update(reasons)
+        errors[artifact]["__rows__"] += 1
+
+
+def _load_pillar_a(
+    path: Path, *, report_date: str, errors: dict[str, Counter[str]]
+) -> list[dict]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError("Pillar A artifact must be a JSON object")
+    if payload.get("date") != report_date:
+        raise ValueError("Pillar A artifact date does not match --date")
+    if payload.get("pillar") != "A":
+        raise ValueError("Pillar A artifact must declare pillar A")
+    groups = payload.get("articles")
+    if not isinstance(groups, list):
+        raise ValueError("Pillar A artifact articles must be an array")
+
+    retained = []
+    for group_index, group in enumerate(groups):
+        if not isinstance(group, dict) or not isinstance(group.get("items"), list):
+            _record_errors(errors, path.name, ["invalid_org_group"])
+            continue
+        org = group.get("org")
+        org_valid = isinstance(org, str) and bool(org.strip())
+        for item_index, item in enumerate(group["items"]):
+            reasons = _row_reasons(item, allowed_fields=PILLAR_A_ITEM_FIELDS)
+            if not org_valid:
+                reasons.append("invalid_org")
+            _record_errors(errors, path.name, reasons)
+            if reasons:
+                continue
+            retained.append({
+                "title": item["title"],
+                "url": item["url"],
+                "source": org,
+                "pillar": "A",
+                "summary": "",
+                "org": org,
+                "provenance": {
+                    "artifact": path.name,
+                    "record": f"articles[{group_index}].items[{item_index}]",
+                },
+            })
+    return retained
+
+
+def _load_pillar_b(path: Path, *, errors: dict[str, Counter[str]]) -> list[dict]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, list):
+        raise ValueError("Pillar B artifact must be a JSON array")
+
+    retained = []
+    for item_index, item in enumerate(payload):
+        reasons = _row_reasons(item, allowed_fields=PILLAR_B_ITEM_FIELDS)
+        if isinstance(item, dict):
+            if set(item) != PILLAR_B_ITEM_FIELDS:
+                if "unexpected_fields" not in reasons:
+                    reasons.append("unexpected_fields")
+            if item.get("source") != "web":
+                reasons.append("invalid_source")
+        _record_errors(errors, path.name, reasons)
+        if reasons:
+            continue
+        retained.append({
+            **item,
+            "pillar": "B",
+            "provenance": {
+                "artifact": path.name,
+                "record": f"[{item_index}]",
+            },
+        })
+    return retained
+
+
+def _format_errors(errors: dict[str, Counter[str]]) -> str:
+    rows = sum(counts["__rows__"] for counts in errors.values())
+    artifacts = []
+    for artifact, counts in errors.items():
+        reason_text = ", ".join(
+            f"{reason}={count}"
+            for reason, count in sorted(counts.items())
+            if reason != "__rows__"
+        )
+        artifacts.append(f"{artifact}: {counts['__rows__']} ({reason_text})")
+    return f"{rows} malformed article rows: " + "; ".join(artifacts)
 
 
 def normalize_url(url: str) -> str:
@@ -87,34 +239,47 @@ def main():
         return 1
     args.date = parsed_date.isoformat()
 
-    # Read Pillar A
+    out_path = args.output or (REPORTS / f"aggregated_{args.date}.json")
     pa_path = REPORTS / f"article_changes_{args.date}.json"
+    pb_path = REPORTS / f"pillar_b_{args.date}.json"
+    try:
+        if out_path.resolve() in {pa_path.resolve(), pb_path.resolve()}:
+            print(f"ERROR: aggregate output must not overwrite an input artifact: {out_path}")
+            return 1
+        out_path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"ERROR: cannot invalidate stale aggregate {out_path}: {exc}")
+        return 1
+
+    errors: dict[str, Counter[str]] = {}
+
+    # Read Pillar A
     if pa_path.exists():
-        pa_data = json.loads(pa_path.read_text())
-        pa_items = []
-        for org in pa_data.get("articles", []):
-            for item in org.get("items", []):
-                pa_items.append({
-                    "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "source": org.get("org", ""),
-                    "pillar": "A",
-                    "summary": item.get("summary", ""),
-                    "org": org.get("org", ""),
-                })
+        try:
+            pa_items = _load_pillar_a(
+                pa_path, report_date=args.date, errors=errors
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"ERROR: invalid {pa_path.name}: {exc}")
+            return 1
     else:
         pa_items = []
         print(f"WARNING: Pillar A file not found: {pa_path}")
 
     # Read Pillar B
-    pb_path = REPORTS / f"pillar_b_{args.date}.json"
     if pb_path.exists():
-        pb_items = json.loads(pb_path.read_text())
-        for item in pb_items:
-            item["pillar"] = "B"
+        try:
+            pb_items = _load_pillar_b(pb_path, errors=errors)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"ERROR: invalid {pb_path.name}: {exc}")
+            return 1
     else:
         pb_items = []
         print(f"WARNING: Pillar B file not found: {pb_path}")
+
+    if errors:
+        print(f"ERROR: {_format_errors(errors)}")
+        return 1
 
     # Aggregate
     all_items = pa_items + pb_items
@@ -133,7 +298,6 @@ def main():
         "items": deduped
     }
 
-    out_path = args.output or (REPORTS / f"aggregated_{args.date}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
     print(f"OK: {out_path}")

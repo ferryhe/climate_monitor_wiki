@@ -4,6 +4,7 @@ These tests exercise the scripts as subprocesses against a temp data
 directory (CLIMATE_REPORTS_DIR), so they stay independent of the production
 /home/ubuntu paths.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from scripts import step9_update_website
+from scripts.publish_weekly_reports import validate_pending_reports
 
 REPO = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
@@ -45,6 +47,270 @@ def write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False))
 
 
+def monitor_result(report_date, *, checked=57, succeeded=54, failed=3):
+    failures = [
+        {"source_id": f"source-{index}", "status": "failed", "error_code": "timeout"}
+        for index in range(failed)
+    ]
+    return {
+        "schema_version": "weekly-run-attempt.v1",
+        "attempt_id": f"{report_date.replace('-', '')}t080000z-monitor-01",
+        "stage": "monitor",
+        "report_date": report_date,
+        "scheduled_for": f"{report_date}T08:00:00Z",
+        "finished_at": f"{report_date}T08:30:00Z",
+        "status": "partial" if failed else "success",
+        "result_code": "report_written_with_failures" if failed else "report_written",
+        "sources": {
+            "total": checked,
+            "updated": succeeded,
+            "unchanged": 0,
+            "failed": failed,
+            "blocked": 0,
+            "failures": failures,
+        },
+    }
+
+
+def bind_monitor_result_to_report(path, result):
+    sources = result["sources"]
+    unknown = (
+        b"Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown**"
+    )
+    evidenced = (
+        f"Sites checked: **{sources['total']}**, succeeded: "
+        f"**{sources['updated'] + sources['unchanged']}**, failed: "
+        f"**{sources['failed'] + sources['blocked']}**"
+    ).encode("ascii")
+    candidate = path.read_bytes()
+    assert candidate.count(unknown) == 1
+    result["report"] = {
+        "report_id": path.stem,
+        "report_date": result["report_date"],
+        "sha256": hashlib.sha256(candidate.replace(unknown, evidenced)).hexdigest(),
+    }
+    return result
+
+
+def test_step3_rejects_71_change_event_rows_with_grouped_reasons(reports_dir):
+    report_date = "2026-08-31"
+    write_json(reports_dir / f"article_changes_{report_date}.json", {
+        "date": report_date,
+        "pillar": "A",
+        "articles": [{
+            "org": "Example Org",
+            "items": [
+                {
+                    "id": index,
+                    "change_type": "new_content",
+                    "detected_at": "2026-08-31T08:00:00Z",
+                    "summary": "Content changed on Example Org",
+                    "diff_snippet": "https://example.org/article",
+                }
+                for index in range(71)
+            ],
+        }],
+    })
+    write_json(reports_dir / f"pillar_b_{report_date}.json", [{
+        "title": "Climate risk for insurers",
+        "url": "https://example.org/climate-risk",
+        "source": "web",
+        "summary": "Evidence from the search result.",
+    }])
+
+    result = run_script(
+        "step3_aggregate.py", "--date", report_date,
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 1
+    assert "71 malformed article rows" in result.stdout
+    assert "article_changes_2026-08-31.json: 71" in result.stdout
+    assert "missing_title=71" in result.stdout
+    assert "missing_url=71" in result.stdout
+    assert "unexpected_fields=71" in result.stdout
+    assert not (reports_dir / f"aggregated_{report_date}.json").exists()
+
+
+def test_step3_invalidates_stale_aggregate_before_rejecting_malformed_rows(
+    reports_dir,
+):
+    report_date = "2026-08-31"
+    aggregate = reports_dir / f"aggregated_{report_date}.json"
+    aggregate.write_text('{"items":[{"title":"stale"}]}')
+    write_json(reports_dir / f"article_changes_{report_date}.json", {
+        "date": report_date,
+        "pillar": "A",
+        "articles": [{
+            "org": "Example Org",
+            "items": [{
+                "change_type": "new_content",
+                "detected_at": "2026-08-31T08:00:00Z",
+                "diff_snippet": "https://example.org/article",
+            }],
+        }],
+    })
+
+    result = run_script(
+        "step3_aggregate.py", "--date", report_date,
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 1
+    assert "1 malformed article rows" in result.stdout
+    assert not aggregate.exists()
+
+
+def test_step3_reports_failure_to_invalidate_aggregate(reports_dir):
+    report_date = "2026-08-31"
+    output = reports_dir / "occupied-output"
+    output.mkdir()
+
+    result = run_script(
+        "step3_aggregate.py", "--date", report_date, "--output", str(output),
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 1
+    assert "cannot invalidate stale aggregate" in result.stdout
+
+
+def test_step3_never_invalidates_an_input_artifact(reports_dir):
+    report_date = "2026-08-31"
+    pillar_a = reports_dir / f"article_changes_{report_date}.json"
+    write_json(pillar_a, {
+        "date": report_date,
+        "pillar": "A",
+        "articles": [],
+    })
+    before = pillar_a.read_bytes()
+
+    result = run_script(
+        "step3_aggregate.py", "--date", report_date,
+        "--output", str(pillar_a),
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 1
+    assert "must not overwrite an input artifact" in result.stdout
+    assert pillar_a.read_bytes() == before
+
+
+def test_step3_validates_both_article_schemas_and_records_provenance(reports_dir):
+    report_date = "2026-09-14"
+    pillar_a_url = "https://example.org/articles/climate-risk?edition=exact"
+    pillar_b_url = "https://example.net/research/insurance-transition#findings"
+    write_json(reports_dir / f"article_changes_{report_date}.json", {
+        "date": report_date,
+        "pillar": "A",
+        "articles": [{
+            "org": "Example Org",
+            "items": [{
+                "title": "Climate risk guidance",
+                "url": pillar_a_url,
+                "categories": ["financial_risk"],
+            }],
+        }],
+    })
+    write_json(reports_dir / f"pillar_b_{report_date}.json", [{
+        "title": "Insurance transition research",
+        "url": pillar_b_url,
+        "source": "web",
+        "summary": "Evidence from the search result.",
+    }])
+
+    result = run_script(
+        "step3_aggregate.py", "--date", report_date,
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    items = json.loads(
+        (reports_dir / f"aggregated_{report_date}.json").read_text()
+    )["items"]
+    assert [item["url"] for item in items] == [pillar_a_url, pillar_b_url]
+    assert [item["pillar"] for item in items] == ["A", "B"]
+    assert [item["provenance"] for item in items] == [
+        {
+            "artifact": f"article_changes_{report_date}.json",
+            "record": "articles[0].items[0]",
+        },
+        {
+            "artifact": f"pillar_b_{report_date}.json",
+            "record": "[0]",
+        },
+    ]
+    write_json(reports_dir / f"hermes_assessments_{report_date}.json", {
+        "assessments": [
+            {"id": 0, "url": pillar_a_url, "relevant": True, "category": "financial_risk"},
+            {"id": 1, "url": pillar_b_url, "relevant": True, "category": "financial_risk"},
+        ],
+    })
+    filtered_result = run_script(
+        "step3_filter.py", "--date", report_date,
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+    assert filtered_result.returncode == 0, filtered_result.stdout + filtered_result.stderr
+    filtered_items = json.loads(
+        (reports_dir / f"filtered_{report_date}.json").read_text()
+    )["items"]
+    assert [item["provenance"] for item in filtered_items] == [
+        item["provenance"] for item in items
+    ]
+
+
+@pytest.mark.parametrize(
+    ("pillar_a_item", "pillar_b_item", "reason"),
+    [
+        (
+            {"title": "Climate report", "url": "https://example.org/"},
+            {"title": "Insurance report", "url": "https://example.net/story", "source": "web", "summary": ""},
+            "publication_ineligible_url=1",
+        ),
+        (
+            {"title": "Climate report", "url": "https://example.org/story"},
+            {"title": "Insurance report", "url": "https://example.net/story", "source": "wire", "summary": ""},
+            "invalid_source=1",
+        ),
+        (
+            {"title": "Climate report", "url": "https://example.org/story", "categories": "general"},
+            {"title": "Insurance report", "url": "https://example.net/story", "source": "web", "summary": ""},
+            "invalid_categories=1",
+        ),
+        (
+            {"title": "Climate report", "url": "https://example.org/story", "summary": "not an upstream field"},
+            {"title": "Insurance report", "url": "https://example.net/story", "source": "web", "summary": ""},
+            "unexpected_fields=1",
+        ),
+        (
+            {"title": "Climate report", "url": "https://example.org/story", "categories": []},
+            {"title": "Insurance report", "url": "https://example.net/story", "source": "web", "summary": ""},
+            "invalid_categories=1",
+        ),
+    ],
+)
+def test_step3_fails_closed_when_either_article_schema_is_invalid(
+    reports_dir, pillar_a_item, pillar_b_item, reason
+):
+    report_date = "2026-09-14"
+    write_json(reports_dir / f"article_changes_{report_date}.json", {
+        "date": report_date,
+        "pillar": "A",
+        "articles": [{"org": "Example Org", "items": [pillar_a_item]}],
+    })
+    write_json(reports_dir / f"pillar_b_{report_date}.json", [pillar_b_item])
+
+    result = run_script(
+        "step3_aggregate.py", "--date", report_date,
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 1
+    assert "1 malformed article rows" in result.stdout
+    assert reason in result.stdout
+    assert not (reports_dir / f"aggregated_{report_date}.json").exists()
+
+
 def test_step3_filter_joins_assessments_by_url(reports_dir):
     """A dropped non-relevant item must not shift summaries onto other URLs."""
     write_json(reports_dir / "aggregated_2026-09-14.json", {
@@ -75,7 +341,7 @@ def test_step3_filter_joins_assessments_by_url(reports_dir):
     assert items[1]["category"] == "parametric_insurance"
 
 
-def test_step5_requires_consistent_monitor_stats(reports_dir):
+def test_step5_accepts_only_valid_same_report_monitor_results(reports_dir):
     write_json(reports_dir / "filtered_2026-09-14.json", {
         "total_input": 1, "relevant": 1, "non_relevant": 0,
         "items": [{"title": "t", "url": "https://example.org/a", "category": "general",
@@ -86,26 +352,147 @@ def test_step5_requires_consistent_monitor_stats(reports_dir):
     env = {"CLIMATE_REPORTS_DIR": str(reports_dir)}
     allow = ["--allow-future", "--allow-offcycle"]
 
-    # Missing fields must fail (no fabricated zeros).
-    write_json(reports_dir / "stats.json", {"checked": 25})
+    # A legacy count-only document is not an evidenced monitor result.
+    write_json(reports_dir / "monitor-result.json", {
+        "checked": 57, "succeeded": 54, "failed": 3,
+    })
     result = run_script("step5_build_md.py", "--date", "2026-09-14",
-                        "--monitor-stats", str(reports_dir / "stats.json"),
+                        "--monitor-result", str(reports_dir / "monitor-result.json"),
                         *allow, env_extra=env)
     assert result.returncode == 1
+    assert "validated weekly-run-attempt.v1" in result.stdout
 
-    # Inconsistent totals must fail.
-    write_json(reports_dir / "stats.json", {"checked": 57, "succeeded": 54, "failed": 1})
+    # A valid result from a different report identity must fail.
+    write_json(reports_dir / "monitor-result.json", monitor_result("2026-09-21"))
     result = run_script("step5_build_md.py", "--date", "2026-09-14",
-                        "--monitor-stats", str(reports_dir / "stats.json"),
+                        "--monitor-result", str(reports_dir / "monitor-result.json"),
                         *allow, env_extra=env)
     assert result.returncode == 1
+    assert "report_date does not match" in result.stdout
 
-    # Consistent stats succeed and are written verbatim.
-    write_json(reports_dir / "stats.json", {"checked": 57, "succeeded": 54, "failed": 3})
+    # A non-canonical report identity cannot bind totals to this candidate.
+    result_with_wrong_report = monitor_result("2026-09-14")
+    result_with_wrong_report["report"] = {
+        "report_id": "different-report",
+        "report_date": "2026-09-14",
+        "sha256": "a" * 64,
+    }
+    write_json(reports_dir / "monitor-result.json", result_with_wrong_report)
     result = run_script("step5_build_md.py", "--date", "2026-09-14",
-                        "--monitor-stats", str(reports_dir / "stats.json"),
+                        "--monitor-result", str(reports_dir / "monitor-result.json"),
                         *allow, env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
+    md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
+    assert "Sites checked: **unknown**" in md
+
+    # A valid result without an exact report identity also remains unknown.
+    write_json(reports_dir / "monitor-result.json", monitor_result("2026-09-14"))
+    result = run_script("step5_build_md.py", "--date", "2026-09-14",
+                        "--monitor-result", str(reports_dir / "monitor-result.json"),
+                        *allow, env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = reports_dir / "climate-monitor-2026-09-14.md"
+    assert "Sites checked: **unknown**" in report.read_text()
+
+    # Only an exact raw-byte report identity supplies acquisition totals.
+    bound_result = bind_monitor_result_to_report(
+        report, monitor_result("2026-09-14")
+    )
+    write_json(reports_dir / "monitor-result.json", bound_result)
+    result = run_script("step5_build_md.py", "--date", "2026-09-14",
+                        "--monitor-result", str(reports_dir / "monitor-result.json"),
+                        *allow, env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    md = report.read_text()
+    assert "Sites checked: **57**, succeeded: **54**, failed: **3**" in md
+
+
+def test_step5_missing_monitor_result_is_unknown_and_passes_registry_gate(
+    reports_dir, tmp_path
+):
+    report_date = "2026-09-14"
+    write_json(reports_dir / f"filtered_{report_date}.json", {
+        "total_input": 1,
+        "relevant": 1,
+        "non_relevant": 0,
+        "items": [{
+            "title": "Climate risk for insurers",
+            "url": "https://example.org/reports/climate-risk",
+            "category": "financial_risk",
+            "summary": "",
+            "keywords": [],
+            "source": "Example Org",
+            "pillar": "A",
+            "provenance": {
+                "artifact": f"article_changes_{report_date}.json",
+                "record": "articles[0].items[0]",
+            },
+        }],
+    })
+    write_json(reports_dir / f"hermes_assessments_{report_date}.json", {
+        "assessments": [], "executive_summary": "Evidence-safe summary",
+    })
+
+    result = run_script(
+        "step5_build_md.py", "--date", report_date,
+        "--allow-future", "--allow-offcycle",
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    md = report.read_text()
+    assert "Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown**" in md
+    assert "Sites checked: **0**" not in md
+    assert "Sites checked: **57**" not in md
+    sidecar = json.loads(report.with_suffix(".json").read_text())
+    assert sidecar["categories"]["financial_risk"][0]["provenance"] == {
+        "artifact": f"article_changes_{report_date}.json",
+        "record": "articles[0].items[0]",
+    }
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    assert validate_pending_reports(
+        [report], source_dir=source_dir, allow_offcycle=True
+    ) == {report: hashlib.sha256(report.read_bytes()).hexdigest()}
+
+
+def test_step5_same_date_sibling_report_sha_does_not_supply_totals(reports_dir):
+    report_date = "2026-09-14"
+    write_json(reports_dir / f"filtered_{report_date}.json", {
+        "total_input": 1,
+        "relevant": 1,
+        "non_relevant": 0,
+        "items": [{
+            "title": "Climate risk for insurers",
+            "url": "https://example.org/reports/climate-risk",
+            "category": "financial_risk",
+            "summary": "",
+            "keywords": [],
+            "source": "Example Org",
+            "pillar": "A",
+        }],
+    })
+    sibling = monitor_result(report_date)
+    sibling["attempt_id"] = "20260914t081500z-monitor-sibling"
+    sibling["report"] = {
+        "report_id": f"climate-monitor-{report_date}",
+        "report_date": report_date,
+        "sha256": "a" * 64,
+    }
+    write_json(reports_dir / "sibling-monitor-result.json", sibling)
+
+    result = run_script(
+        "step5_build_md.py", "--date", report_date,
+        "--monitor-result", str(reports_dir / "sibling-monitor-result.json"),
+        "--allow-future", "--allow-offcycle",
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    md = (reports_dir / f"climate-monitor-{report_date}.md").read_text()
+    assert "Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown**" in md
+    assert "Sites checked: **57**" not in md
 
 
 def test_step5_null_category_falls_back_to_general(reports_dir):
@@ -120,10 +507,8 @@ def test_step5_null_category_falls_back_to_general(reports_dir):
     })
     write_json(reports_dir / "hermes_assessments_2026-09-14.json", {
         "assessments": [], "executive_summary": "test summary"})
-    write_json(reports_dir / "stats.json", {"checked": 57, "succeeded": 54, "failed": 3})
     env = {"CLIMATE_REPORTS_DIR": str(reports_dir)}
     result = run_script("step5_build_md.py", "--date", "2026-09-14",
-                        "--monitor-stats", str(reports_dir / "stats.json"),
                         "--allow-future", "--allow-offcycle", env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
     md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
@@ -134,7 +519,7 @@ def test_step5_null_category_falls_back_to_general(reports_dir):
     items = sidecar["categories"]["general"]
     assert items[0]["categories"] == ["Scenario Analysis"]
     md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
-    assert "Sites checked: **57**, succeeded: **54**, failed: **3**" in md
+    assert "Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown**" in md
     assert (reports_dir / "climate-monitor-2026-09-14.json").exists()
 
 
@@ -324,10 +709,8 @@ def test_step5_emits_full_categories_and_primary_sections(reports_dir):
     })
     write_json(reports_dir / "hermes_assessments_2026-09-14.json",
                {"assessments": [], "executive_summary": "test summary"})
-    write_json(reports_dir / "stats.json", {"checked": 57, "succeeded": 54, "failed": 3})
     allow = ["--allow-future", "--allow-offcycle"]
     result = run_script("step5_build_md.py", "--date", "2026-09-14",
-                        "--monitor-stats", str(reports_dir / "stats.json"),
                         *allow, env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
     assert result.returncode == 0, result.stdout + result.stderr
     md = (reports_dir / "climate-monitor-2026-09-14.md").read_text()
@@ -339,11 +722,12 @@ def test_step5_emits_full_categories_and_primary_sections(reports_dir):
     assert item["categories"] == ["Catastrophe & NatCat", "Scenario Analysis", "Financial Risk"]
 
 
-def test_step5_help_marks_monitor_stats_required():
-    """--help must match the fail-closed behaviour (it was labelled Optional)."""
+def test_step5_help_describes_validated_monitor_result_and_unknown_fallback():
     result = run_script("step5_build_md.py", "--help")
     assert result.returncode == 0
-    assert "Required JSON" in result.stdout
+    help_text = " ".join(result.stdout.split())
+    assert "Validated weekly-run-attempt.v1" in help_text
+    assert "unknown" in help_text
 
 
 WEEKLY_MD = """# Weekly Climate Monitor
