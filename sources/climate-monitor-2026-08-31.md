@@ -17,7 +17,7 @@ Wider-intelligence items include Risk Management and Climate Risk: A Collection 
 
 Across the evidence, recurring actuarial implications include climate-risk disclosure and reporting practice, actuarial risk management practice, and scenario analysis for pricing and valuation.
 
-- Sites checked: **0**, succeeded: **0**, failed: **0** (no verified automated acquisition run is associated with this manual backfill)
+- Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown** (no verified automated acquisition run is associated with this manual backfill)
 - Monitored window for change detection: last 7 days (per-site `check`)
 - Article-tracking: exact news/publication URLs per org (stealth-enabled)
 - Pillar B internet search window: **last 3 months** (3 months before report date)
@@ -32,7 +32,7 @@ Only organization news/publications **relevant to climate change and actuarial r
 ### Adaptation & Resilience (2)
 
 - **IWMI-IPCC co-sponsored expert meeting on addressing water risks and building resilience to climate change**
-  - **Categories:** Adaptation & Resilience, Conference & Events
+  - **Categories:** Adaptation & Resilience, Physical Risk
   - IWMI-IPCC co-sponsored expert meeting on water-cycle risks under climate change, directly relevant to actuarial hazard modeling and adaptation planning.
   - **Keywords:** water risk, climate change, resilience, hazard modeling, adaptation
   🔗 https://www.ipcc.ch/event/iwmi-ipcc-co-sponsored-expert-meeting-on-addressing-water-risks-and-building-resilience-to-climate-change
@@ -43,32 +43,32 @@ Only organization news/publications **relevant to climate change and actuarial r
   - **Keywords:** water crisis, climate adaptation, water risk, actuarial modeling, resilience
   🔗 https://www.weforum.org/stories/nature-and-biodiversity/what-is-the-year-of-water
 
-### Biodiversity & Nature (2)
+### Climate Risk (2)
 
 - **It's another triple COP year: What that means for business leaders**
-  - **Categories:** Biodiversity & Nature, Mitigation & Energy
+  - **Categories:** Climate Risk, Transition Risk
   - Explains how 2026's coinciding UN climate, biodiversity, and land COPs create momentum for integrated climate risk action.
   - **Keywords:** triple COP, climate change, biodiversity, land, business leaders
   🔗 https://www.weforum.org/stories/climate-action/triple-cop-year-land-biodiversity-climate-change-pledges
 
 - **The Hidden Economic Power of Healthy Soils**
-  - **Categories:** Biodiversity & Nature, Physical Risk
+  - **Categories:** Physical Risk, Climate Risk
   - WEF report framing soil health as a climate asset, relevant to land-use and agricultural risk modeling.
   - **Keywords:** soil health, climate asset, land use, agricultural risk, risk modeling
   🔗 https://www.weforum.org/publications/hidden-economic-power-of-healthy-soils
 
-### Catastrophe & NatCat (1)
+### Physical Risk (1)
 
 - **Europe's devastating heatwaves and wildfires in 4 charts**
-  - **Categories:** Catastrophe & NatCat, Health & Mortality
+  - **Categories:** Physical Risk
   - Documents record-breaking June-July 2026 European heatwaves and wildfires with data on ~10,000 excess deaths, economic costs, and physical risks relevant to insurers.
   - **Keywords:** heatwaves, wildfires, excess deaths, economic costs, physical risk
   🔗 https://www.weforum.org/stories/nature-and-biodiversity/europe-heatwaves-wildfires-charts
 
-### Health & Mortality (1)
+### Insurance Risk (1)
 
 - **New research helps fill longstanding gap in group insurance conversions**
-  - **Categories:** Health & Mortality, Actuarial Modelling, Insurance Risk
+  - **Categories:** Insurance Risk, Actuarial Modelling
   - CIA releases GC2020 mortality table for group life conversions, providing actuaries with a dedicated basis for pricing, valuation, and conversion risk assessment.
   - **Keywords:** mortality table, group life, insurance conversions, pricing, valuation
   🔗 https://www.cia-ica.ca/news/new-research-helps-fill-longstanding-gap-in-group-insurance-conversions
@@ -85,18 +85,18 @@ Only organization news/publications **relevant to climate change and actuarial r
 
 2 de-duplicated items (removed 0 duplicate URLs). Each item leads with a short summary, then the link.
 
-### Climate Disclosure (1)
+### Climate Risk (1)
 
 - **Risk Management and Climate Risk: A Collection of Essays — SOA** (web)
-  - **Categories:** Climate Disclosure, Financial Risk
+  - **Categories:** Climate Risk, Actuarial Modelling, Supervision & Disclosure
   - SOA 2026 essay collection on identifying, quantifying, reporting, and managing the financial impacts of climate-related risks — directly relevant to actuarial risk management practice.
   - **Keywords:** climate risk, financial impacts, risk management, reporting, actuarial practice
   🔗 https://www.soa.org/resources/research-reports/2026/climate-risk-essay-collection/
 
-### Scenario Analysis (1)
+### Actuarial Modelling (1)
 
 - **Climate-Related Scenarios Applied to Insurers and Other Financial Institutions — IAA** (web)
-  - **Categories:** Scenario Analysis, Financial Risk
+  - **Categories:** Actuarial Modelling, Insurance Risk, Capital & Solvency
   - IAA paper examining challenges actuaries face in implementing climate scenario analysis and outlining practical approaches for insurers and financial institutions.
   - **Keywords:** climate scenarios, scenario analysis, insurers, financial institutions, actuarial practice
   🔗 https://actuaries.org/paper/climate-related-scenarios-applied-to-insurers-and-other-financial-institutions/

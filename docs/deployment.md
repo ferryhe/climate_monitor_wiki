@@ -140,7 +140,7 @@ bash scripts/weekly_wiki_refresh.sh
 
 The wrapper passes `--registry-database` only when that value is non-empty. It
 does not source `.env`, guess or print the path, or use `CLIMATE_REGISTRY_DB`.
-The configured exact schema-v3 or schema-v4 database must be an immutable, sidecar-free snapshot
+The configured exact schema-v6 database must be an immutable, sidecar-free snapshot
 whose report filename/SHA identities exactly match `origin/main`'s `sources/`.
 It is opened with SQLite read-only URI and `query_only`; a missing, corrupt,
 wrong-schema, contract-broken, or out-of-sync snapshot stops publication before
@@ -377,10 +377,10 @@ status overrides. See [`job-status.md`](job-status.md) for the strict snapshot
 contract, API responses, atomic replacement procedure, and security boundary.
 
 This application phase creates no exporter, systemd timer, Hermes job, or
-snapshot. App-only deployment or rollback rebuilds/recreates only Wiki; it does
-not restart Caddy or alter the confirmed 08:00/09:00/10:00 jobs. It also does
-not create or verify the 10:30 Weekly Registry Sync job, which remains a
-separate production-completion gate.
+snapshot. App-only deployment or rollback rebuilds/recreates only Wiki and then
+restarts Caddy so it resolves the recreated app container; it does not alter the
+confirmed 08:00/09:00/10:00 jobs. It also does not create or verify the 10:30
+Weekly Registry Sync job, which remains a separate production-completion gate.
 
 ## Future weekly Registry sync
 
@@ -402,11 +402,12 @@ confirm and record the actual deployed commit at run time.
 ### Stage A — deploy validated fallback coverage
 
 1. Confirm the production checkout is clean, fetch `origin`, and fast-forward
-   only to the human-approved merge commit containing Registry schema v4 and
+   only to the human-approved merge commit containing Registry schema v6 and
    validated fallback coverage.
 2. Rebuild/recreate only the app with the already approved Registry, delivery,
    update-status, and job-status overrides. This application-deployment substep
-   does not restart Caddy or alter any Hermes job.
+   restarts Caddy after recreating the app container and does not alter any
+   Hermes job.
 3. Verify `/api/health`, `/api/config`, Registry status, Article Detail DB-first
    and JSON-fallback behavior, and Historical Report detail/PDF responses for
    `2026-07-27`, `2026-08-03`, `2026-08-10`, and `2026-08-17`.

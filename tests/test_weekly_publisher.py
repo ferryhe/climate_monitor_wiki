@@ -660,6 +660,7 @@ def test_weekly_wrapper_passes_only_explicit_nonempty_registry_database():
     assert 'ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")' in script
     assert "${CLIMATE_REPORTS_DIR:-/home/ubuntu/web_listening/data/reports}" in script
     assert 'ARGS+=(--allow-offcycle)' in script
+    assert 'ARGS+=(--date "$CLIMATE_PUBLISH_REPORT_DATE")' in script
     assert "source .env" not in script
     assert "CLIMATE_REGISTRY_DB" not in script
 
@@ -1098,6 +1099,49 @@ def test_main_records_only_failure_when_publish_raises(monkeypatch, tmp_path):
     assert len(attempts) == 1
     assert attempts[0]["status"] == "failed"
     assert "report" not in attempts[0]
+
+
+def test_main_uses_explicit_offcycle_date_for_publication(monkeypatch, tmp_path):
+    observed = {}
+    identity = build_report_identity(
+        report_date="2026-09-03",
+        filename="climate-monitor-2026-09-03.md",
+        sha256="a" * 64,
+        allow_offcycle=True,
+    )
+
+    def fake_publish(**kwargs):
+        observed.update(kwargs)
+        return publisher.PublishResult(
+            status="no-op", base_sha="b" * 40, report=identity
+        )
+
+    monkeypatch.setattr(publisher, "publish", fake_publish)
+    monkeypatch.setattr(
+        publisher,
+        "_append_publisher_result",
+        lambda *_args, **_kwargs: "ok",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publish_weekly_reports.py",
+            "--production-repo",
+            str(ROOT),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--ledger-dir",
+            str(tmp_path / "ledger"),
+            "--date",
+            "2026-09-03",
+            "--allow-offcycle",
+        ],
+    )
+
+    assert publisher.main() == 0
+    assert observed["today"] == date(2026, 9, 3)
+    assert observed["allow_offcycle"] is True
 
 
 def test_stale_main_index_is_reconciled_without_new_import(local_remote, tmp_path):

@@ -424,7 +424,7 @@ def test_step8_requires_deployed_source_and_is_rerun_safe(reports_dir, tmp_path)
 def test_step9_delegates_to_rolling_publisher_without_touching_sources(
     reports_dir, tmp_path, monkeypatch, capsys
 ):
-    report_date = "2026-08-31"
+    report_date = "2026-09-03"
     (reports_dir / f"climate-monitor-{report_date}.md").write_text(
         WEEKLY_MD.replace("2026-09-14", report_date)
     )
@@ -446,13 +446,15 @@ def test_step9_delegates_to_rolling_publisher_without_touching_sources(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["step9_update_website.py", "--date", report_date],
+        ["step9_update_website.py", "--date", report_date, "--allow-offcycle"],
     )
 
     assert step9_update_website.main() == 0
     assert observed["cmd"] == ["bash", str(publisher)]
     assert observed["env"]["REPORT_DIR"] == str(reports_dir)
     assert observed["env"]["REPO"] == str(tmp_path)
+    assert observed["env"]["CLIMATE_PUBLISH_REPORT_DATE"] == report_date
+    assert observed["env"]["CLIMATE_PUBLISH_ALLOW_OFFCYCLE"] == "1"
     assert "RELOAD_TOKEN" not in observed["env"]
     assert not (tmp_path / "sources").exists()
     assert "merge and deployment are still required" in capsys.readouterr().out

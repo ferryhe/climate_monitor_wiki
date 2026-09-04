@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from climate_monitor.taxonomy import load_article_taxonomy
 from climate_registry.reports import parse_historical_report, parse_report_directory
 
 
@@ -235,12 +236,52 @@ def test_bundled_manual_captures_preserve_dates_pillars_and_metadata():
 
     august = by_date["2026-08-31"]
     september = by_date["2026-09-03"]
-    assert august.sites_checked == 0
-    assert september.sites_checked == 57
-    assert [sum(item.pillar == pillar for item in august.articles) for pillar in ("A", "B")] == [6, 2]
-    assert [sum(item.pillar == pillar for item in september.articles) for pillar in ("A", "B")] == [18, 7]
-    assert all(item.categories and item.keywords for item in (*august.articles, *september.articles))
+    assert (
+        august.sites_checked,
+        august.sites_succeeded,
+        august.sites_failed,
+    ) == (None, None, None)
+    assert (
+        september.sites_checked,
+        september.sites_succeeded,
+        september.sites_failed,
+    ) == (None, None, None)
+    assert [
+        sum(item.pillar == pillar for item in august.articles)
+        for pillar in ("A", "B")
+    ] == [6, 2]
+    assert [
+        sum(item.pillar == pillar for item in september.articles)
+        for pillar in ("A", "B")
+    ] == [18, 4]
+    assert all(
+        item.categories and item.keywords
+        for item in (*august.articles, *september.articles)
+    )
+    assert all(
+        item.summary.endswith("no verified article synopsis was retained.")
+        for item in september.articles
+    )
+    taxonomy = load_article_taxonomy()
+    allowed_categories = taxonomy.allowed_labels
+    assert all(
+        set(item.categories) <= allowed_categories
+        for item in (*august.articles, *september.articles)
+    )
+    assert all(
+        taxonomy.constraints.keywords_min_items
+        <= len(item.keywords)
+        <= taxonomy.constraints.keywords_max_items
+        for item in (*august.articles, *september.articles)
+    )
+    assert all(
+        keyword.casefold() not in taxonomy.constraints.disallowed_keywords
+        and len(keyword) <= taxonomy.constraints.keyword_max_chars
+        for item in (*august.articles, *september.articles)
+        for keyword in item.keywords
+    )
 
     september_text = (source_dir / "climate-monitor-2026-09-03.md").read_text(encoding="utf-8")
     assert "**Generated:** 2026-09-03T00:00:00Z" in september_text
     assert "normalized to its actual generation date, 2026-09-03" in september_text
+    assert "Retained after Registry publication checks: **22**" in september_text

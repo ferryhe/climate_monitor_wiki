@@ -22,6 +22,9 @@ fi
 if [[ "${CLIMATE_PUBLISH_ALLOW_OFFCYCLE:-0}" == "1" ]]; then
   ARGS+=(--allow-offcycle)
 fi
+if [[ -n "${CLIMATE_PUBLISH_REPORT_DATE:-}" ]]; then
+  ARGS+=(--date "$CLIMATE_PUBLISH_REPORT_DATE")
+fi
 
 exec flock --nonblock "$LOCK_FILE" \
   "$PY" "$REPO/scripts/publish_weekly_reports.py" \

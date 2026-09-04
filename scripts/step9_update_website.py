@@ -89,6 +89,7 @@ def main() -> int:
             "REPO": str(HOME),
             "PYTHON": str(PYTHON),
             "REPORT_DIR": str(REPORTS),
+            "CLIMATE_PUBLISH_REPORT_DATE": args.date,
         }
     )
     if args.allow_offcycle:

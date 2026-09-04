@@ -77,6 +77,24 @@ def test_weekly_report_is_strictly_validated_and_summary_is_deterministic(tmp_pa
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_weekly_report_preserves_explicitly_unknown_site_counts(tmp_path):
+    text = REPORT.replace(
+        "Sites checked: **3**, succeeded: **2**, failed: **1**",
+        "Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown**",
+    )
+
+    report = parse_weekly_report(report_file(tmp_path, text=text))
+    summary = build_summary(report)
+
+    assert (report.checked, report.succeeded, report.failed) == (None, None, None)
+    assert summary["report"]["sites"] == {
+        "checked": None,
+        "succeeded": None,
+        "failed": None,
+    }
+    assert format_scope_line(summary) == "Weekly report"
+
+
 def test_original_links_allows_explanatory_bullets_and_http_markdown_links(tmp_path):
     text = REPORT.replace(
         "- https://example.test/first\n- https://example.test/second",
@@ -168,6 +186,14 @@ def test_content_executive_summary_uses_singular_update_for_one_themed_highlight
                 "Sites checked: **3**, succeeded: **3**, failed: **1**",
             ),
             "sum",
+        ),
+        (
+            "climate-monitor-2026-08-10.md",
+            REPORT.replace(
+                "Sites checked: **3**, succeeded: **2**, failed: **1**",
+                "Sites checked: **unknown**, succeeded: **2**, failed: **1**",
+            ),
+            "all be integers or all unknown",
         ),
     ],
 )

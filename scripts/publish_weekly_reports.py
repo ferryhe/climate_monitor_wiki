@@ -1124,12 +1124,19 @@ def main() -> int:
     parser.add_argument("--registry-database", type=Path)
     parser.add_argument("--ledger-dir", type=Path, required=True)
     parser.add_argument(
+        "--date",
+        help="Publish and verify this report date instead of deriving it from today.",
+    )
+    parser.add_argument(
         "--allow-offcycle",
         action="store_true",
         help="Allow non-Monday report dates (manual re-runs). Off by default.",
     )
     args = parser.parse_args()
-    run_today = date.today()
+    try:
+        run_today = date.fromisoformat(args.date) if args.date else date.today()
+    except ValueError:
+        parser.error("--date must be a valid ISO date (YYYY-MM-DD)")
     report_date = (
         run_today.isoformat()
         if args.allow_offcycle
