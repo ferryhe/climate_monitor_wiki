@@ -336,7 +336,7 @@ def test_noncanonical_unreserved_alias_cannot_bypass_same_run_or_history():
 
 def test_all_tracked_historical_urls_satisfy_canonical_lexical_policy():
     source_dir = Path(__file__).resolve().parents[1] / "sources"
-    reports = parse_report_directory(source_dir)
+    reports = parse_report_directory(source_dir, allow_offcycle=True)
     articles = [
         article
         for report in reports

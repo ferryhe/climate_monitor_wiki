@@ -658,6 +658,8 @@ def test_weekly_wrapper_passes_only_explicit_nonempty_registry_database():
 
     assert 'if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]' in script
     assert 'ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")' in script
+    assert "${CLIMATE_REPORTS_DIR:-/home/ubuntu/web_listening/data/reports}" in script
+    assert 'ARGS+=(--allow-offcycle)' in script
     assert "source .env" not in script
     assert "CLIMATE_REGISTRY_DB" not in script
 

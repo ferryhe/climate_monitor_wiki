@@ -18,8 +18,10 @@ Weekly cron jobs (every Monday):
 09:00  Step 6: Build Markdown Report       → climate-monitor-{DATE}.md
 09:15  Step 7: Render PDF                  → climate_delivery_artifacts/{DATE}/{SHA}/climate-monitor-{DATE}.pdf
 09:30  Step 8: Send Email                  → email sent
-09:45  Step 9: Sync Registry               → article-registry.sqlite3
-10:00  Step 10: Update Website             → wiki + container reload
+10:00  Step 10: Publish rolling PR          → codex/hermes-weekly-monitor
+       Human review + merge                → GitHub main
+       Server + Render deploy              → reviewed sources + wiki
+       Step 9: Sync deployed Registry      → article-registry.sqlite3
 ```
 
 ## Steps Detail
@@ -36,8 +38,8 @@ Weekly cron jobs (every Monday):
 | 6 | 09:00 | Build Markdown | Script | `scripts/step5_build_md.py` | climate-monitor MD |
 | 7 | 09:15 | Render PDF | Script | `scripts/step6_render_pdf.py` | PDF artifact |
 | 8 | 09:30 | Send Email | LLM | Cron: Step 7 | Email |
-| 9 | 09:45 | Sync Registry | Script | `scripts/step8_sync_registry.py` | Registry DB |
-| 10 | 10:00 | Update Website | Script | `scripts/step9_update_website.py` | Wiki + RAG |
+| 10 | 10:00 | Publish Wiki PR | Script | `scripts/step9_update_website.py` | Rolling PR |
+| 9 | Post-deploy | Sync Registry | Script | `scripts/step8_sync_registry.py` | Registry DB |
 
 ## Key Files
 
@@ -52,15 +54,16 @@ Weekly cron jobs (every Monday):
 | `step3_filter.py` | `scripts/` | Apply Hermes LLM assessments (or keyword fallback) |
 | `step5_build_md.py` | `scripts/` | Build final markdown report |
 | `step6_render_pdf.py` | `scripts/` | Render PDF via climate_delivery |
-| `step8_sync_registry.py` | `scripts/` | Sync to article-registry.sqlite3 |
-| `step9_update_website.py` | `scripts/` | Update wiki + container reload |
+| `step8_sync_registry.py` | `scripts/` | Sync a deployed source to article-registry.sqlite3 |
+| `step9_update_website.py` | `scripts/` | Delegate publication to the isolated rolling-PR publisher |
 | `PIPELINE_CONFIG.md` | repo root | Cron schedule + Hermes prompt templates (modifiable) |
 
 ## Date Logic
 
-Every script accepts `--date`. Steps 6/8/9 default to `last_monday()`; the
-other steps default to today's date. The cron jobs always pass the report
-date explicitly, and step1 anchors its query window on that date.
+Every script accepts `--date`. Steps 6/9 default to `last_monday()`; step 8
+requires an explicit deployed report date, and the other steps default to
+today's date. The cron jobs always pass the report date explicitly, and step1
+anchors its query window on that date.
 
 ## Dedup Mechanism
 
@@ -129,17 +132,22 @@ article_state.json (dedup baseline)
          ┌─────────────┼─────────────┐
          │             │             │
          ▼             ▼             ▼
-    ┌──────────┐ ┌──────────┐ ┌──────────┐
-    │  Step 7  │ │  Step 8  │ │  Step 9  │
-    │  PDF     │ │  Email   │ │  Sync DB │
-    └──────────┘ └──────────┘ └──────────┘
-                                     │
+    ┌──────────┐ ┌──────────┐ ┌──────────────┐
+    │  Step 7  │ │  Step 8  │ │   Step 10    │
+    │  PDF     │ │  Email   │ │ Publish PR   │
+    └──────────┘ └──────────┘ └──────┬───────┘
                                      ▼
-                            ┌─────────────┐
-                            │  Step 10    │
-                            │  Update Web │
-                            │  wiki + RAG │
-                            └─────────────┘
+                              review + merge
+                                     │
+                      ┌──────────────┴──────────────┐
+                      ▼                             ▼
+                server deploy                 Render deploy
+                      │
+                      ▼
+                ┌──────────┐
+                │  Step 9  │
+                │ Sync DB  │
+                └──────────┘
 ```
 
 ## MD Report Structure (Single Source of Truth)
@@ -155,7 +163,7 @@ article_state.json (dedup baseline)
 
 ## 📋 Executive Summary
 
-- Sites checked: **57**, succeeded: **57**, failed: **0**
+- Sites checked: **{CHECKED}**, succeeded: **{SUCCEEDED}**, failed: **{FAILED}**
 - Monitored window: last 7 days
 - Pillar B search window: last 3 months
 - Total detected changes: **N** → After relevance filter: **M**

@@ -213,7 +213,7 @@ No qualifying items.
 
 def test_bundled_history_includes_legacy_and_weekly_formats():
     source_dir = Path(__file__).resolve().parents[1] / "sources"
-    reports = parse_report_directory(source_dir)
+    reports = parse_report_directory(source_dir, allow_offcycle=True)
     by_date = {report.report_date: report for report in reports}
 
     assert len(reports) >= 24
@@ -222,3 +222,25 @@ def test_bundled_history_includes_legacy_and_weekly_formats():
     assert all(item.title != "🔗 Read more" for item in by_date["2026-04-23"].articles)
     assert len(by_date["2026-08-10"].articles) == 30
     assert {item.pillar for item in by_date["2026-08-10"].articles} == {"A", "B"}
+
+
+def test_bundled_manual_captures_preserve_dates_pillars_and_metadata():
+    source_dir = Path(__file__).resolve().parents[1] / "sources"
+    reports = parse_report_directory(source_dir, allow_offcycle=True)
+    by_date = {report.report_date: report for report in reports}
+
+    assert "2026-09-07" not in by_date
+    assert "2026-08-31" in by_date
+    assert "2026-09-03" in by_date
+
+    august = by_date["2026-08-31"]
+    september = by_date["2026-09-03"]
+    assert august.sites_checked == 0
+    assert september.sites_checked == 57
+    assert [sum(item.pillar == pillar for item in august.articles) for pillar in ("A", "B")] == [6, 2]
+    assert [sum(item.pillar == pillar for item in september.articles) for pillar in ("A", "B")] == [18, 7]
+    assert all(item.categories and item.keywords for item in (*august.articles, *september.articles))
+
+    september_text = (source_dir / "climate-monitor-2026-09-03.md").read_text(encoding="utf-8")
+    assert "**Generated:** 2026-09-03T00:00:00Z" in september_text
+    assert "normalized to its actual generation date, 2026-09-03" in september_text

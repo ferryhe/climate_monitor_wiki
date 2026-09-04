@@ -124,6 +124,28 @@ def test_builds_fresh_database_duplicate_audit_and_weekly_manifests(tmp_path):
     ).read_bytes()
 
 
+def test_build_accepts_explicitly_published_offcycle_history(tmp_path):
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    (source_dir / "climate-monitor-2026-09-03.md").write_text(
+        _weekly(
+            "2026-09-03",
+            _item("Off-cycle capture", "Source-backed summary.", "https://example.com/offcycle"),
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_audit_registry(
+        source_dir,
+        tmp_path / "registry.sqlite3",
+        tmp_path / "audit",
+    )
+
+    assert result["reports"] == 1
+    assert (tmp_path / "audit" / "weekly-manifests" / "weekly-manifest-2026-09-03.json").is_file()
+
+
 def test_refuses_to_modify_existing_database_or_output(tmp_path):
     source_dir = tmp_path / "sources"
     source_dir.mkdir()

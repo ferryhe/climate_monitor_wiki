@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Step 8: Sync the weekly report and its articles into the Registry.
+"""Step 8: Sync a deployed weekly report and its articles into the Registry.
 
 This script performs no direct database writes. It delegates to the
 registry's own append-only pipeline (`climate_registry plan-update` and
@@ -12,14 +12,15 @@ registry's own append-only pipeline (`climate_registry plan-update` and
 
 Semantic enrichment (titles/summaries/categories/keywords) stays on the
 separate review-gated `semantic-import` path; this step only installs
-reports and article identities.
+reports and article identities. Run it only after the rolling report PR has
+been merged and deployed; generated candidates are never copied into the
+production checkout by this script.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import date
@@ -93,35 +94,30 @@ def main() -> int:
         print(f"ERROR: report date {args.date} is not a Monday; pass --allow-offcycle to override")
         return 1
 
-    # The registry ingests from SOURCES (the append-mostly source of truth).
-    # If this week's report has not been copied there yet, promote it from the
-    # generated reports directory so step 8 does not depend on step 9 running
-    # first. If both copies exist but differ, refuse to proceed: that is a
-    # content identity conflict the operator must resolve.
+    # The registry ingests only from deployed SOURCES (the append-mostly source
+    # of truth). Generated candidates must first go through the isolated
+    # rolling-PR publisher, review, merge, and deployment. Copying a candidate
+    # into the production checkout here would make the server diverge from
+    # Git-backed deployments such as Render.
     report_path = SOURCES / f"climate-monitor-{args.date}.md"
     generated_path = REPORTS / f"climate-monitor-{args.date}.md"
-    if not report_path.exists() and generated_path.exists():
-        SOURCES.mkdir(parents=True, exist_ok=True)
-        # pid-unique staging name: a fixed ".tmp" suffix lets concurrent or
-        # retried runs clobber each other's staging file before os.replace.
-        tmp_report = report_path.with_suffix(report_path.suffix + f".tmp.{os.getpid()}")
-        try:
-            shutil.copy2(generated_path, tmp_report)
-            os.replace(tmp_report, report_path)
-        except OSError:
-            tmp_report.unlink(missing_ok=True)
-            raise
-        print(f"Promoted generated report to sources/: {report_path}")
-    elif report_path.exists() and generated_path.exists():
-        if report_path.read_bytes() != generated_path.read_bytes():
+    if not report_path.exists():
+        if generated_path.exists():
             print(
-                f"ERROR: sources/ and generated reports disagree for {args.date}; "
-                "resolve the content conflict before syncing",
+                f"ERROR: generated report {generated_path.name} is not present in "
+                "deployed sources/; publish it through the rolling PR and deploy "
+                "the merge before syncing the Registry",
                 file=sys.stderr,
             )
-            return 1
-    if not report_path.exists():
-        print(f"ERROR: report not found in {SOURCES} or {REPORTS}", file=sys.stderr)
+        else:
+            print(f"ERROR: report not found in deployed sources/: {report_path}", file=sys.stderr)
+        return 1
+    if generated_path.exists() and report_path.read_bytes() != generated_path.read_bytes():
+        print(
+            f"ERROR: deployed sources/ and generated reports disagree for {args.date}; "
+            "resolve the content conflict before syncing",
+            file=sys.stderr,
+        )
         return 1
 
     # First-run bootstrap: plan-update/update refuse a missing database

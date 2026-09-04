@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 PY="${PYTHON:-$REPO/.venv/bin/python}"
-REPORT_DIR="${REPORT_DIR:-/home/ubuntu/web_listening/data/reports}"
+REPORT_DIR="${REPORT_DIR:-${CLIMATE_REPORTS_DIR:-/home/ubuntu/web_listening/data/reports}}"
 LOCK_FILE="${CLIMATE_PUBLISH_LOCK:-/tmp/climate-monitor-weekly-publisher.lock}"
 LEDGER_DIR="${CLIMATE_RUN_LEDGER_DIR:-/var/lib/climate-monitor/weekly-run-ledger}"
 
@@ -18,6 +18,9 @@ ARGS=(
 )
 if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]; then
   ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")
+fi
+if [[ "${CLIMATE_PUBLISH_ALLOW_OFFCYCLE:-0}" == "1" ]]; then
+  ARGS+=(--allow-offcycle)
 fi
 
 exec flock --nonblock "$LOCK_FILE" \
