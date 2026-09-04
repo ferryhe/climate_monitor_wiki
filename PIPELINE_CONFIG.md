@@ -1,6 +1,6 @@
 # Pipeline Configuration
 
-## Cron Jobs (11 total)
+## Pipeline jobs (10 scheduled + 1 post-deploy)
 
 | # | Time | Name | Type | Schedule | Prompt Config |
 |---|---|---|---|---|---|
@@ -13,8 +13,8 @@
 | 6 | 09:00 | Build Markdown Report | Script | 0 9 * * 1 | N/A |
 | 7 | 09:15 | Render PDF | Script | 15 9 * * 1 | N/A |
 | 8 | 09:30 | Send Email | LLM | 30 9 * * 1 | PIPELINE_CONFIG.md § Step 7 |
-| 9 | 09:45 | Sync Registry | Script | 45 9 * * 1 | N/A |
-| 10 | 10:00 | Update Website | Script | 0 10 * * 1 | N/A |
+| 10 | 10:00 | Publish Wiki PR | Script | 0 10 * * 1 | N/A |
+| 9 | Post-deploy | Sync Registry | Script | Deployment gate | N/A |
 
 ## Data Flow
 
@@ -36,9 +36,23 @@ Step 5: Build MD ────────────→ climate-monitor-{DATE}.
                                       │
                                       ├──→ Step 6: Render PDF ──→ climate-monitor-{DATE}.pdf
                                       ├──→ Step 7: Send Email
-                                      ├──→ Step 8: Sync Registry → article-registry.sqlite3
-                                      └──→ Step 9: Update Website → wiki + RAG
+                                      └──→ Step 9: Publish rolling PR
+                                                   │
+                                                   ▼
+                                      review + merge into GitHub main
+                                                   │
+                                      ┌────────────┴────────────┐
+                                      ▼                         ▼
+                               server deploy              Render deploy
+                                      │
+                                      ▼
+                         Step 8: Sync deployed Registry → article-registry.sqlite3
 ```
+
+The numeric script names are retained for compatibility, but publication now
+precedes the post-deploy Registry sync. Neither script writes generated report
+content directly into the production checkout. GitHub `main` is the common
+content source for the controlled server and Render.
 
 ## Prompt Templates
 

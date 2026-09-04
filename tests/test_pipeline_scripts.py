@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import step9_update_website
+
 REPO = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
 
@@ -366,12 +368,13 @@ Sites checked: **57**, succeeded: **54**, failed: **3**
 """
 
 
-def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
-    """step8 promotes the generated report into sources/ via a pid-unique
-    staging file; a retried run must be a clean no-op without leftover
-    .tmp.* files (fixed .tmp suffix once let concurrent runs clobber).
-    The registry DB does NOT exist beforehand: step8 must bootstrap the
-    schema itself (first-deploy path)."""
+def test_step8_requires_deployed_source_and_is_rerun_safe(reports_dir, tmp_path):
+    """Registry sync must never promote a generated candidate into sources/.
+
+    The report becomes eligible only after the rolling PR is merged and its
+    tracked source is deployed. The registry DB does not exist beforehand, so
+    the accepted path must still bootstrap the first-deploy schema.
+    """
     import sqlite3
 
     sources = tmp_path / "sources"
@@ -387,9 +390,21 @@ def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
     }
     result = run_script("step8_sync_registry.py", "--date", "2026-09-14",
                         "--allow-future", "--allow-offcycle", env_extra=env)
+    assert result.returncode == 1
+    assert "not present in deployed sources/" in result.stderr
+    assert not (sources / "climate-monitor-2026-09-14.md").exists()
+    assert not db_path.exists()
+
+    sources.mkdir()
+    deployed_report = sources / "climate-monitor-2026-09-14.md"
+    deployed_report.write_text(WEEKLY_MD)
+    before = deployed_report.read_bytes()
+
+    result = run_script("step8_sync_registry.py", "--date", "2026-09-14",
+                        "--allow-future", "--allow-offcycle", env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Initialized registry database" in result.stdout
-    assert (sources / "climate-monitor-2026-09-14.md").read_text() == WEEKLY_MD
+    assert deployed_report.read_bytes() == before
     assert not list(sources.glob("*.tmp*"))
 
     # Retried run: sources/ and generated agree -> no promotion, no conflict.
@@ -404,6 +419,45 @@ def test_step8_promotion_is_pid_staged_and_rerun_safe(reports_dir, tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
     conn.close()
+
+
+def test_step9_delegates_to_rolling_publisher_without_touching_sources(
+    reports_dir, tmp_path, monkeypatch, capsys
+):
+    report_date = "2026-09-03"
+    (reports_dir / f"climate-monitor-{report_date}.md").write_text(
+        WEEKLY_MD.replace("2026-09-14", report_date)
+    )
+    publisher = tmp_path / "scripts" / "weekly_wiki_refresh.sh"
+    publisher.parent.mkdir()
+    publisher.write_text("#!/usr/bin/env bash\n")
+    observed = {}
+
+    def fake_run(cmd, *, timeout=900, env=None):
+        observed.update(cmd=cmd, timeout=timeout, env=env)
+        return subprocess.CompletedProcess(cmd, 0, stdout="published\n", stderr="")
+
+    monkeypatch.setattr(step9_update_website, "HOME", tmp_path)
+    monkeypatch.setattr(step9_update_website, "REPORTS", reports_dir)
+    monkeypatch.setattr(step9_update_website, "PYTHON", Path(PYTHON))
+    monkeypatch.setattr(step9_update_website, "PUBLISHER", publisher)
+    monkeypatch.setattr(step9_update_website, "run", fake_run)
+    monkeypatch.setenv("RELOAD_TOKEN", "must-not-reach-publisher")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["step9_update_website.py", "--date", report_date, "--allow-offcycle"],
+    )
+
+    assert step9_update_website.main() == 0
+    assert observed["cmd"] == ["bash", str(publisher)]
+    assert observed["env"]["REPORT_DIR"] == str(reports_dir)
+    assert observed["env"]["REPO"] == str(tmp_path)
+    assert observed["env"]["CLIMATE_PUBLISH_REPORT_DATE"] == report_date
+    assert observed["env"]["CLIMATE_PUBLISH_ALLOW_OFFCYCLE"] == "1"
+    assert "RELOAD_TOKEN" not in observed["env"]
+    assert not (tmp_path / "sources").exists()
+    assert "merge and deployment are still required" in capsys.readouterr().out
 
 
 def test_cli_init_is_idempotent(tmp_path):

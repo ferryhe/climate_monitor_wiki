@@ -774,7 +774,7 @@ def test_bundled_161_annotations_preserve_existing_report_api_payloads(tmp_path)
 
     observed = {}
     reports = sorted(
-        parse_report_directory(root / "sources"),
+        parse_report_directory(root / "sources", allow_offcycle=True),
         key=lambda item: item.report_date,
         reverse=True,
     )

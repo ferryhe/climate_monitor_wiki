@@ -483,7 +483,11 @@ def build_audit_registry(source_dir: Path, database: Path, output_dir: Path) -> 
 
     source_dir, database, output_dir = _validate_inputs(source_dir, database, output_dir)
     try:
-        reports = parse_report_directory(source_dir)
+        # The source tree is already accepted publication history and can
+        # legitimately include an explicitly published off-cycle capture.
+        # Monday-only policy remains at the ingestion boundary; rebuilding the
+        # read-only audit/Render registry must preserve that history.
+        reports = parse_report_directory(source_dir, allow_offcycle=True)
     except Exception as exc:
         raise RegistryBuildError(f"could not parse report history: {exc}") from exc
     database.parent.mkdir(parents=True, exist_ok=True)

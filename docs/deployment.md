@@ -140,7 +140,7 @@ bash scripts/weekly_wiki_refresh.sh
 
 The wrapper passes `--registry-database` only when that value is non-empty. It
 does not source `.env`, guess or print the path, or use `CLIMATE_REGISTRY_DB`.
-The configured exact schema-v3 or schema-v4 database must be an immutable, sidecar-free snapshot
+The configured exact schema-v6 database must be an immutable, sidecar-free snapshot
 whose report filename/SHA identities exactly match `origin/main`'s `sources/`.
 It is opened with SQLite read-only URI and `query_only`; a missing, corrupt,
 wrong-schema, contract-broken, or out-of-sync snapshot stops publication before
@@ -212,7 +212,7 @@ docker compose -f docker-compose.yml config --quiet
 ```
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
-It must be a complete exact schema-v3 or schema-v4 main database with no dependency on WAL, SHM,
+It must be a complete exact schema-v6 main database with no dependency on WAL, SHM,
 or rollback-journal sidecars. Perform the publisher/copyright review first and
 set articles without public full-text rights to `metadata_only` in the offline
 candidate database. The deterministic preflight rejects relative, missing, or
@@ -228,7 +228,7 @@ chmod 0750 "$CLIMATE_REGISTRY_HOST_DIR"
 chmod 0640 "$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
 ```
 
-Expected results are user version `3`, `ok` from both checks, no rows from
+Expected results are user version `6`, `ok` from both checks, no rows from
 `foreign_key_check`, and no sidecar files. Keep the host directory and file
 owner-writable by the approved standalone update/capture operator; align the
 group/read bits with the container's read identity and do not make them public.
@@ -238,8 +238,10 @@ connections with `query_only` and never migrates, repairs, or writes the
 Registry.
 
 Before building, retain the currently deployed app image under a unique rollback
-tag. Then deploy or roll forward only the app container; Caddy and scheduled
-jobs do not change:
+tag. Then deploy or roll forward the app container. Recreating `wiki` can change
+its Docker IP while a running Caddy process still holds the previous resolved
+upstream address, so restart Caddy immediately afterwards. This reloads the
+existing Caddy configuration and certificates; scheduled jobs do not change:
 
 ```bash
 ROLLBACK_TAG="climate-monitor-wiki:pre-registry-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -249,6 +251,10 @@ docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
   -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --build --no-deps wiki
 
+docker compose restart caddy
+
+curl --fail-with-body -sS https://climate.aiinforsearch.com/api/health
+
 curl --fail-with-body -sS https://climate.aiinforsearch.com/api/registry/status \
   | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("available") is True; print(data)'
 ```
@@ -257,7 +263,7 @@ Status contract:
 
 | Condition | HTTP | Safe reason |
 |---|---:|---|
-| Valid exact schema v3 or v4, including an empty Registry | 200 | `available: true` and actual version |
+| Valid exact schema v6, including an empty Registry | 200 | `available: true` and actual version |
 | No Registry configured | 503 | `not_configured` |
 | Missing, unreadable, or corrupt main database | 503 | `database_unavailable` |
 | Path inside the checkout or not absolute | 503 | `invalid_location` |
@@ -275,6 +281,7 @@ docker image tag "$ROLLBACK_TAG" climate-monitor-wiki:local
 .venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --no-build --no-deps --force-recreate wiki
+docker compose restart caddy
 # For a pre-Registry image, use only: docker compose up -d --no-build --no-deps --force-recreate wiki
 ```
 
@@ -370,10 +377,10 @@ status overrides. See [`job-status.md`](job-status.md) for the strict snapshot
 contract, API responses, atomic replacement procedure, and security boundary.
 
 This application phase creates no exporter, systemd timer, Hermes job, or
-snapshot. App-only deployment or rollback rebuilds/recreates only Wiki; it does
-not restart Caddy or alter the confirmed 08:00/09:00/10:00 jobs. It also does
-not create or verify the 10:30 Weekly Registry Sync job, which remains a
-separate production-completion gate.
+snapshot. App-only deployment or rollback rebuilds/recreates only Wiki and then
+restarts Caddy so it resolves the recreated app container; it does not alter the
+confirmed 08:00/09:00/10:00 jobs. It also does not create or verify the 10:30
+Weekly Registry Sync job, which remains a separate production-completion gate.
 
 ## Future weekly Registry sync
 
@@ -395,11 +402,12 @@ confirm and record the actual deployed commit at run time.
 ### Stage A — deploy validated fallback coverage
 
 1. Confirm the production checkout is clean, fetch `origin`, and fast-forward
-   only to the human-approved merge commit containing Registry schema v4 and
+   only to the human-approved merge commit containing Registry schema v6 and
    validated fallback coverage.
 2. Rebuild/recreate only the app with the already approved Registry, delivery,
    update-status, and job-status overrides. This application-deployment substep
-   does not restart Caddy or alter any Hermes job.
+   restarts Caddy after recreating the app container and does not alter any
+   Hermes job.
 3. Verify `/api/health`, `/api/config`, Registry status, Article Detail DB-first
    and JSON-fallback behavior, and Historical Report detail/PDF responses for
    `2026-07-27`, `2026-08-03`, `2026-08-10`, and `2026-08-17`.

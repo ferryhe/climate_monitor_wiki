@@ -161,7 +161,7 @@ def test_annotation_batches_allow_distinct_official_evidence_urls_only_for_alter
 
 def test_bundled_annotations_cover_each_unique_historical_article_once():
     root = Path(__file__).resolve().parents[1]
-    reports = parse_report_directory(root / "sources")
+    reports = parse_report_directory(root / "sources", allow_offcycle=True)
     expected_urls = {
         canonical_url(article.url)
         for report in reports

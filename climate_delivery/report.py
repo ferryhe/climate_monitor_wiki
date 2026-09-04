@@ -10,7 +10,7 @@ from .errors import InputError
 REPORT_NAME = re.compile(r"^climate-monitor-(\d{4}-\d{2}-\d{2})\.md$")
 REPORT_DATE = re.compile(r"^\*\*Report Date:\*\*\s*(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 COUNTS = re.compile(
-    r"Sites checked:\s*\*\*(\d+)\*\*\s*,\s*succeeded:\s*\*\*(\d+)\*\*\s*,\s*failed:\s*\*\*(\d+)\*\*",
+    r"Sites checked:\s*\*\*(\d+|unknown)\*\*\s*,\s*succeeded:\s*\*\*(\d+|unknown)\*\*\s*,\s*failed:\s*\*\*(\d+|unknown)\*\*",
     re.IGNORECASE,
 )
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
@@ -41,9 +41,9 @@ class WeeklyReport:
     report_date: str
     title: str
     sha256: str
-    checked: int
-    succeeded: int
-    failed: int
+    checked: int | None
+    succeeded: int | None
+    failed: int | None
     monitoring_notes: tuple[str, ...]
     highlights: tuple[Highlight, ...]
     original_links: tuple[str, ...]
@@ -201,9 +201,16 @@ def parse_weekly_report(
     count_matches = COUNTS.findall(executive)
     if len(count_matches) != 1:
         raise InputError("Executive Summary must contain checked, succeeded, and failed counts")
-    checked, succeeded, failed = (int(value) for value in count_matches[0])
-    if succeeded + failed != checked:
-        raise InputError("succeeded and failed counts must sum to checked")
+    raw_counts = count_matches[0]
+    unknown = [value.casefold() == "unknown" for value in raw_counts]
+    if any(unknown):
+        if not all(unknown):
+            raise InputError("checked, succeeded, and failed counts must all be integers or all unknown")
+        checked = succeeded = failed = None
+    else:
+        checked, succeeded, failed = (int(value) for value in raw_counts)
+        if succeeded + failed != checked:
+            raise InputError("succeeded and failed counts must sum to checked")
 
     links = tuple(dict.fromkeys(match.group(0).rstrip(".,") for match in URL.finditer(links_section)))
     if not links:
