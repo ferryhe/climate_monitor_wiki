@@ -3,17 +3,29 @@
 
 Reads filtered articles (already enriched with category/summary/keywords by
 Step 3 Filter) plus the optional executive summary from the assessments file.
-All statistics are derived from the input data; nothing is hardcoded. If a
-number is unknown (e.g. per-site check totals live in the monitoring system),
-the corresponding bullet is omitted instead of fabricating a value.
+All statistics are derived from the input data; nothing is hardcoded. Unknown
+per-site acquisition totals are rendered explicitly as unknown.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import sys
 from datetime import date
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from climate_monitor.run_ledger import (
+    LedgerContractError,
+    canonical_report_filename,
+    decode_attempt_json,
+    validate_report_identity,
+)
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
@@ -38,6 +50,58 @@ def build_category_label(cat: str) -> str:
     return CATEGORY_LABELS.get(cat, cat)
 
 
+def monitor_counts(
+    path: Path | None, *, report_date: str, allow_offcycle: bool
+) -> tuple[int | None, int | None, int | None, str | None]:
+    if path is None:
+        return None, None, None, None
+    try:
+        attempt = decode_attempt_json(
+            path.read_bytes(), allow_offcycle=allow_offcycle
+        )
+    except (OSError, LedgerContractError) as exc:
+        raise ValueError(
+            "--monitor-result must be a validated weekly-run-attempt.v1"
+        ) from exc
+    if attempt["stage"] != "monitor":
+        raise ValueError("--monitor-result stage must be monitor")
+    if attempt["report_date"] != report_date:
+        raise ValueError("--monitor-result report_date does not match --date")
+    sources = attempt.get("sources")
+    if sources is None:
+        return None, None, None, None
+    if sources["total"] == 0:
+        raise ValueError("--monitor-result has zero checked sources")
+    report = attempt.get("report")
+    if report is None:
+        print(
+            "WARNING: --monitor-result has no exact report identity; "
+            "acquisition totals are unknown"
+        )
+        return None, None, None, None
+    try:
+        identity = validate_report_identity(
+            report,
+            expected_report_date=report_date,
+            expected_filename=canonical_report_filename(
+                report_date, allow_offcycle=allow_offcycle
+            ),
+            allow_offcycle=allow_offcycle,
+        )
+    except LedgerContractError:
+        print(
+            "WARNING: --monitor-result identifies a different report; "
+            "acquisition totals are unknown"
+        )
+        return None, None, None, None
+    return (
+        sources["total"],
+        sources["updated"] + sources["unchanged"],
+        sources["failed"] + sources["blocked"],
+        identity.sha256,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build final markdown report")
     parser.add_argument("--date", default=date.today().isoformat())
@@ -49,11 +113,13 @@ def main() -> int:
         help="Number of monitored sites (omits the Scope line when unknown)",
     )
     parser.add_argument(
+        "--monitor-result",
         "--monitor-stats",
+        dest="monitor_result",
         type=Path,
         default=None,
-        help="Required JSON with checked/succeeded/failed per-site check totals "
-             "(the script fails closed when it is missing)",
+        help="Validated weekly-run-attempt.v1 monitor result with this exact "
+             "report identity; otherwise acquisition totals are unknown",
     )
     parser.add_argument("--allow-offcycle", action="store_true", help="Allow non-Monday report dates")
     parser.add_argument("--allow-future", action="store_true", help="Allow future report dates")
@@ -92,31 +158,14 @@ def main() -> int:
     if pillar_a_path.exists():
         sites_with_changes = json.loads(pillar_a_path.read_text()).get("sites_with_changes")
 
-    checked = succeeded = failed = None
-    if not args.monitor_stats or not args.monitor_stats.exists():
-        print(
-            "ERROR: --monitor-stats is required. The delivery contract needs real "
-            "per-site check totals (checked/succeeded/failed); fabricating zeros "
-            "is not allowed. Pass the monitoring run's stats JSON."
+    try:
+        checked, succeeded, failed, expected_report_sha256 = monitor_counts(
+            args.monitor_result,
+            report_date=args.date,
+            allow_offcycle=args.allow_offcycle,
         )
-        return 1
-    stats = json.loads(args.monitor_stats.read_text())
-    if not isinstance(stats, dict):
-        print("ERROR: --monitor-stats must be a JSON object")
-        return 1
-    for key in ("checked", "succeeded", "failed"):
-        value = stats.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            print(f"ERROR: --monitor-stats missing or invalid '{key}' (non-negative integer required)")
-            return 1
-    checked, succeeded, failed = stats["checked"], stats["succeeded"], stats["failed"]
-    if checked != succeeded + failed:
-        print(
-            f"ERROR: --monitor-stats inconsistent: checked={checked} != succeeded+failed={succeeded + failed}"
-        )
-        return 1
-    if checked == 0:
-        print("ERROR: --monitor-stats contains all zeros; refusing to publish fabricated counts")
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
         return 1
 
     lines = ["# 🌡️ Weekly Climate & Actuarial Monitor (Supranational Orgs)", ""]
@@ -129,7 +178,16 @@ def main() -> int:
     lines.append("")
     lines.append("## 📋 Executive Summary")
     lines.append("")
-    lines.append(f"- Sites checked: **{checked}**, succeeded: **{succeeded}**, failed: **{failed}**")
+    displayed_counts = (
+        ("unknown", "unknown", "unknown")
+        if checked is None
+        else (str(checked), str(succeeded), str(failed))
+    )
+    acquisition_line_index = len(lines)
+    lines.append(
+        f"- Sites checked: **{displayed_counts[0]}**, succeeded: "
+        f"**{displayed_counts[1]}**, failed: **{displayed_counts[2]}**"
+    )
     if sites_with_changes is not None:
         lines.append(f"- Sites with changes in the monitored window: **{sites_with_changes}**")
     lines.append(f"- Monitored window: last 7 days (per-site `check`)")
@@ -226,10 +284,23 @@ def main() -> int:
     lines.append("")
 
     md_text = "\n".join(lines)
+    if (
+        expected_report_sha256 is not None
+        and hashlib.sha256(md_text.encode("utf-8")).hexdigest()
+        != expected_report_sha256
+    ):
+        lines[acquisition_line_index] = (
+            "- Sites checked: **unknown**, succeeded: **unknown**, failed: **unknown**"
+        )
+        md_text = "\n".join(lines)
+        print(
+            "WARNING: --monitor-result does not identify this exact report; "
+            "acquisition totals are unknown"
+        )
     out_path = args.output or (REPORTS / f"climate-monitor-{args.date}.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_md = out_path.with_suffix(out_path.suffix + ".tmp")
-    tmp_md.write_text(md_text)
+    tmp_md.write_bytes(md_text.encode("utf-8"))
     print(f"Staged: {tmp_md} ({len(md_text)} chars)")
 
     json_out = {
@@ -253,6 +324,7 @@ def main() -> int:
                 "keywords": item.get("keywords", []),
                 "source": item.get("source", ""),
                 "pillar": "A" if item.get("source") != "web" else "B",
+                "provenance": item.get("provenance"),
             }
             for item in cat_items
         ]
