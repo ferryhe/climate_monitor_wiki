@@ -99,6 +99,7 @@ def test_common_malformed_http_urls_fail_python_and_schema(url):
     payload["url"] = url
     payload["canonical_url"] = url
     payload["origins"][0]["url"] = url
+    assert list(Draft202012Validator(schema).iter_errors(payload))
     assert list(
         Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(payload)
     )
@@ -121,6 +122,7 @@ def test_supported_http_host_and_port_forms_pass_python_and_schema(url):
     )
 
     schema = json.loads(CANDIDATE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(candidate.model_dump(mode="json"))
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(
         candidate.model_dump(mode="json")
     )
@@ -753,10 +755,12 @@ def test_non_rfc3339_timestamps_fail_python_and_schema_validation(discovered_at)
         )
     )
     payload["origins"][0]["discovered_at"] = discovered_at
-    errors = list(
+    structural_errors = list(Draft202012Validator(schema).iter_errors(payload))
+    assert any(error.validator == "pattern" for error in structural_errors)
+    supplemental_errors = list(
         Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(payload)
     )
-    assert any(error.validator == "format" for error in errors)
+    assert supplemental_errors
 
 
 @pytest.mark.parametrize(
@@ -793,6 +797,7 @@ def test_rfc3339_timestamps_pass_python_and_schema_validation(discovered_at):
     assert adapted.origins[0].discovered_at == discovered_at
 
     schema = json.loads(CANDIDATE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(candidate.model_dump(mode="json"))
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(
         candidate.model_dump(mode="json")
     )

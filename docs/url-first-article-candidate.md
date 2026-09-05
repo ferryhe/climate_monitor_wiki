@@ -55,7 +55,9 @@ It does not repair the value. Raw URL syntax is checked with the repository's
 existing public-HTTP(S) selection validator; this module does not add another
 URL parser or normalizer. The shared schema requires URI syntax, a non-empty
 DNS-label/IPv4 host or bracketed URI host literal, and a numeric port when one
-is present. It does not duplicate DNS resolution or private-network policy.
+is present. Its structural pattern enforces the common syntax without optional
+format plugins; the `uri` format annotation is supplemental. It does not
+duplicate DNS resolution or private-network policy.
 
 The existing canonicalizer removes fragments and known tracking parameters
 such as `utm_*`, `fbclid`, and `gclid`. It retains semantic query parameters.
