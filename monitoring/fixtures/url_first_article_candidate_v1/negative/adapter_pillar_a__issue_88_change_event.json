@@ -1,0 +1,1 @@
+{"articles":[{"items":[{"change_type":"new_content","detected_at":"2026-08-31T08:00:00Z","diff_snippet":"https://example.org/article","id":1,"summary":"Content changed on Example Org"}],"org":"Example Org"}],"baseline_urls":20,"date":"2026-08-31","generated_at":"2026-08-31T08:00:00Z","new_articles":1,"orgs_with_articles":1,"pillar":"A","seen_before":0,"sites_with_changes":1}
