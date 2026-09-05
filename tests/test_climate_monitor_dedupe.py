@@ -24,32 +24,46 @@ def test_canonical_url_removes_tracking_query_params():
     )
 
 
-def test_dedupe_items_normalizes_tracking_urls_and_titles():
+def test_dedupe_items_normalizes_tracking_urls_without_using_titles_as_identity():
     items = [
         _item("Climate risk report", "https://example.com/report?utm_source=x"),
         _item("Climate risk report ", "https://example.com/report"),
-        _item("Different report", "https://example.com/other"),
+        _item("Climate risk report", "https://example.com/other"),
     ]
 
-    kept, notes = dedupe_items(items, seen_urls=set(), seen_titles=set())
+    kept, notes = dedupe_items(items, seen_urls=set())
 
-    assert [item.title for item in kept] == ["Climate risk report", "Different report"]
-    assert any("duplicate" in note for note in notes)
+    assert [item.url for item in kept] == [
+        "https://example.com/report?utm_source=x",
+        "https://example.com/other",
+    ]
+    assert len(notes) == 1
+    assert "URL history" in notes[0]
 
 
-def test_dedupe_items_uses_existing_seen_url_and_title_sets():
+def test_dedupe_items_uses_only_existing_seen_urls():
     items = [
         _item("Seen URL", "https://example.com/already?mc_cid=123"),
         _item("Seen Title", "https://example.com/new"),
-        _item("Fresh Title", "https://example.com/fresh"),
     ]
 
     kept, notes = dedupe_items(
         items,
         seen_urls={"https://example.com/already"},
-        seen_titles={"seen title"},
     )
 
-    assert [item.title for item in kept] == ["Fresh Title"]
+    assert [item.title for item in kept] == ["Seen Title"]
     assert any("URL history" in note for note in notes)
-    assert any("duplicate title" in note for note in notes)
+    assert not any("title" in note.casefold() for note in notes)
+
+
+def test_dedupe_items_keeps_semantic_query_differences():
+    items = [
+        _item("Edition", "https://example.com/report?edition=2025"),
+        _item("Edition", "https://example.com/report?edition=2026"),
+    ]
+
+    kept, notes = dedupe_items(items, seen_urls=set())
+
+    assert [item.url for item in kept] == [item.url for item in items]
+    assert notes == []

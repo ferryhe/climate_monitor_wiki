@@ -10,12 +10,13 @@ Weekly cron jobs (every Monday):
 
 08:00  Step 1: Pillar A Site Check          → article_changes_{DATE}.json
 08:15  Step 2: Pillar B Web Search          → pillar_b_{DATE}.json
-       Step 2 also saves Pillar B URLs     → article_state.json (dedup baseline)
-08:30  Step 3: Aggregate + Dedup           → aggregated_{DATE}.json
+08:30  Step 3: Aggregate + Dedup           → aggregated + combined candidates
+       Step 3 stages a date-bound URL delta (canonical state is unchanged)
 08:32  Step 4: Extract Conferences         → conferences_{DATE}.json
 08:35  Step 5: Hermes LLM Classification   → hermes_assessments_{DATE}.json
 08:37  Step 5b: Apply Assessments          → filtered_{DATE}.json
-09:00  Step 6: Build Markdown Report       → climate-monitor-{DATE}.md
+09:00  Step 6: Commit Report Bundle        → Markdown + report JSON + combined candidates
+09:01  Post-report URL-state commit         → article_state.json
 09:15  Step 7: Render PDF                  → climate_delivery_artifacts/{DATE}/{SHA}/climate-monitor-{DATE}.pdf
 09:30  Step 8: Send Email                  → email sent
 10:00  Step 10: Publish rolling PR          → codex/hermes-weekly-monitor
@@ -30,12 +31,12 @@ Weekly cron jobs (every Monday):
 |---|---|---|---|---|---|
 | 1 | 08:00 | Pillar A Site Check | Script | `scripts/step1_pillar_a.py` | article_changes JSON |
 | 2 | 08:15 | Pillar B Web Search | LLM | Cron: Step 2 | pillar_b JSON |
-| 2b | 08:15 | Save Pillar B State | Script | `scripts/step2_save_state.py` | article_state.json |
+| 2b | 09:01 | Commit URL State (historical filename) | Script | `scripts/step2_save_state.py --commit-pending` | article_state.json |
 | 3 | 08:30 | Aggregate Report | Script | `scripts/step3_aggregate.py` | aggregated JSON |
 | 4 | 08:32 | Extract Conferences | Script | `scripts/step7b_extract_conferences.py` | conferences JSON |
 | 5 | 08:35 | Hermes Classification | LLM | Cron: Step 3b | hermes_assessments JSON |
 | 5b | 08:37 | Apply Filter | Script | `scripts/step3_filter.py` | filtered JSON |
-| 6 | 09:00 | Build Markdown | Script | `scripts/step5_build_md.py` | climate-monitor MD |
+| 6 | 09:00 | Commit Report Bundle | Script | `scripts/step5_build_md.py` | Markdown + report JSON + combined candidates |
 | 7 | 09:15 | Render PDF | Script | `scripts/step6_render_pdf.py` | PDF artifact |
 | 8 | 09:30 | Send Email | LLM | Cron: Step 7 | Email |
 | 10 | 10:00 | Publish Wiki PR | Script | `scripts/step9_update_website.py` | Rolling PR |
@@ -45,14 +46,14 @@ Weekly cron jobs (every Monday):
 
 | File | Location | Purpose |
 |---|---|---|
-| `step1_pillar_a.py` | `scripts/` | Extract articles from SQLite changes + baseline dedup |
-| `step2_save_state.py` | `scripts/` | Persist Pillar B URLs into the dedup baseline |
-| `step3_aggregate.py` | `scripts/` | Merge Pillar A + B, dedup by URL |
+| `step1_pillar_a.py` | `scripts/` | Extract all valid current articles from SQLite changes |
+| `step2_save_state.py` | `scripts/` | Verify the final bundle and explicitly commit its pending URL delta |
+| `step3_aggregate.py` | `scripts/` | Merge Pillar A + B by canonical URL, apply history, and stage the pending delta |
 | `step7b_extract_conferences.py` | `scripts/` | Pre-extract conference articles from aggregated JSON |
 | `step3b_generate_assessments.py` | `scripts/` | Store LLM assessments (fallback: keyword classification) |
 | `step3b_hermes_filter.py` | `scripts/` | Generate the Hermes prompt for classification |
 | `step3_filter.py` | `scripts/` | Apply Hermes LLM assessments (or keyword fallback) |
-| `step5_build_md.py` | `scripts/` | Build final markdown report |
+| `step5_build_md.py` | `scripts/` | Recoverably commit Markdown, report evidence, and staged combined candidates |
 | `step6_render_pdf.py` | `scripts/` | Render PDF via climate_delivery |
 | `step8_sync_registry.py` | `scripts/` | Sync a deployed source to article-registry.sqlite3 |
 | `step9_update_website.py` | `scripts/` | Delegate publication to the isolated rolling-PR publisher |
@@ -68,10 +69,24 @@ anchors its query window on that date.
 ## Dedup Mechanism
 
 ### article_state.json
-- Stores all previously seen URLs (Pillar A + B)
-- Pillar A: URLs from web_listening changes, appended by Step 1 under the org key
-- Pillar B: URLs from web_search (under `__pillar_b__` key)
-- Step 1 filters new articles against this baseline (skipping `__pillar_b__`)
+- Stores previously committed canonical URLs for Pillar A + B.
+- Step 1 neither filters against nor writes this file; it collects all valid
+  current discoveries in its unchanged artifact shape.
+- Step 3 performs the canonical-URL history split after the A/B merge and
+  stages a pending delta bound to the report date and combined-candidate digest.
+  If a complete same-date report exists, its canonical combined evidence stays
+  untouched and its validated candidate items are carried into the shared merge
+  with incremental current input. The next complete candidate evidence is then
+  staged for Step 5 promotion.
+- Step 5 validates and recoverably promotes Markdown, report JSON, and the
+  matching combined evidence as one bundle without changing Markdown format.
+  A custom Step 3 `--combined-output PATH` is continued with Step 5 and Step 2
+  by passing that same path as `--combined PATH`.
+- Only `step2_save_state.py --commit-pending`, after the final Markdown and
+  report evidence exist, verifies that exact bundle and updates this file.
+- A pending delta for another date is never overwritten. Commit that bound
+  date first; `--no-update-seen-state` leaves the pending and canonical files
+  unchanged.
 
 ### Registry DB
 - Stores Monday reports by default; non-Monday (offcycle) manual re-runs are
@@ -82,9 +97,6 @@ anchors its query window on that date.
 ## Data Flow
 
 ```
-article_state.json (dedup baseline)
-       │
-       ▼
 ┌─────────────┐     ┌─────────────┐
 │  SQLite     │     │  web_search │
 │  changes    │     │  (Hermes)   │
@@ -95,7 +107,7 @@ article_state.json (dedup baseline)
 ┌─────────────┐     ┌─────────────┐
 │  Step 1     │     │  Step 2     │
 │  Pillar A   │     │  Pillar B   │
-│  (filter)   │     │  (search)   │
+│  (collect)  │     │  (search)   │
 └──────┬──────┘     └──────┬──────┘
        │                   │
        └─────────┬─────────┘
@@ -105,6 +117,7 @@ article_state.json (dedup baseline)
         │  Aggregate  │
         │  + Dedup    │
         └──────┬──────┘
+               │ stages date/digest-bound pending URL delta
                │
                ▼
         ┌─────────────┐     ┌─────────────┐
@@ -128,6 +141,11 @@ article_state.json (dedup baseline)
                 │  (SINGLE    │
                 │  SOURCE)    │
                 └──────┬──────┘
+                       │
+                       ▼
+              explicit state commit
+              (`step2_save_state.py
+                 --commit-pending`)
                        │
          ┌─────────────┼─────────────┐
          │             │             │

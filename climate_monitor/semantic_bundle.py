@@ -42,6 +42,8 @@ ARTICLE_IDENTITY_VERSION = "article-identity.v1"
 GENERATOR = "climate_monitor.semantic_bundle"
 SIDECAR_SUFFIX = ".semantics.json"
 PENDING_SUFFIX = ".pending"
+BUNDLE_MANIFEST_SUFFIX = ".bundle.pending.json"
+BUNDLE_MANIFEST_VERSION = "report-artifact-commit.v1"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REPORT_URL_LINE = re.compile(r"^\*\*URL:\*\* (.+?) <br>\r?$", re.MULTILINE)
@@ -86,6 +88,10 @@ def semantic_sidecar_path(report_path: str | Path) -> Path:
 
 def _pending_path(path: Path) -> Path:
     return path.with_name(path.name + PENDING_SUFFIX)
+
+
+def _bundle_manifest_path(path: Path) -> Path:
+    return path.with_name(path.name + BUNDLE_MANIFEST_SUFFIX)
 
 
 def article_identity(item: Any) -> str:
@@ -491,14 +497,15 @@ def commit_report_with_semantics(
     report_text: str,
     items: Sequence[Any],
     taxonomy: ArticleTaxonomy | None = None,
+    evidence_artifacts: Mapping[str | Path, bytes] | None = None,
 ) -> dict[str, Any]:
-    """Validate, stage, and commit the canonical Markdown and its sidecar.
+    """Validate, stage, and commit Markdown, sidecar, and supplied evidence.
 
     Validation runs to completion *before* anything on disk is touched, so a
-    contract failure can never overwrite an existing canonical artifact. Both
-    files are then staged as ``.pending`` siblings and committed with
-    ``os.replace``; an interruption between the two commits is repaired on the
-    next :func:`recover_pending_commit` call.
+    contract failure can never overwrite an existing canonical artifact. All
+    artifacts are then staged as ``.pending`` siblings and committed with
+    ``os.replace``; an interruption between commits is repaired on the next
+    :func:`recover_pending_commit` call.
     """
 
     path = Path(report_path)
@@ -517,18 +524,46 @@ def commit_report_with_semantics(
     sidecar_bytes = serialize_sidecar(payload)
     _verify_payload(payload, report_bytes=report_bytes, report_path=path)
 
-    pending_report = _pending_path(path)
-    pending_sidecar = _pending_path(sidecar_path)
+    artifacts: list[tuple[Path, bytes]] = [(path, report_bytes), (sidecar_path, sidecar_bytes)]
+    for raw_path, raw_bytes in (evidence_artifacts or {}).items():
+        evidence_path = Path(raw_path)
+        if evidence_path.parent != path.parent:
+            raise SemanticBundleError("report evidence artifacts must be siblings of the report")
+        if evidence_path in {path, sidecar_path}:
+            raise SemanticBundleError("report evidence artifact path collides with a canonical artifact")
+        if not isinstance(raw_bytes, bytes):
+            raise SemanticBundleError("report evidence artifact content must be bytes")
+        artifacts.append((evidence_path, raw_bytes))
+    if len({artifact_path for artifact_path, _ in artifacts}) != len(artifacts):
+        raise SemanticBundleError("report evidence artifact paths must be unique")
+
+    manifest_path = _bundle_manifest_path(path)
+    manifest = {
+        "schema_version": BUNDLE_MANIFEST_VERSION,
+        "artifacts": [
+            {
+                "filename": artifact_path.name,
+                "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+            }
+            for artifact_path, artifact_bytes in artifacts
+        ],
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        _write_pending(pending_report, report_bytes)
-        _write_pending(pending_sidecar, sidecar_bytes)
+        # Publish the durable transaction description before any artifact
+        # staging. Without this marker, recovery could mistake report/sidecar
+        # pendings from a multi-artifact bundle for the legacy two-file protocol.
+        _write_pending(manifest_path, serialize_sidecar(manifest))
         _fsync_directory(path.parent)
-        os.replace(pending_report, path)
-        os.replace(pending_sidecar, sidecar_path)
+        for artifact_path, artifact_bytes in artifacts:
+            _write_pending(_pending_path(artifact_path), artifact_bytes)
+        _fsync_directory(path.parent)
+        for artifact_path, _ in artifacts:
+            os.replace(_pending_path(artifact_path), artifact_path)
     except BaseException:
         # Leave the staged files in place: recovery completes or discards them.
         raise
+    manifest_path.unlink()
     _fsync_directory(path.parent)
     return {
         "report_path": path,
@@ -548,6 +583,10 @@ def recover_pending_commit(report_path: str | Path) -> str:
     sidecar_path = semantic_sidecar_path(path)
     pending_report = _pending_path(path)
     pending_sidecar = _pending_path(sidecar_path)
+    manifest_path = _bundle_manifest_path(path)
+
+    if manifest_path.exists():
+        return _recover_manifest_commit(path, sidecar_path, manifest_path)
 
     if not pending_report.exists() and not pending_sidecar.exists():
         return "clean"
@@ -580,3 +619,80 @@ def recover_pending_commit(report_path: str | Path) -> str:
 
     _discard(pending_report, pending_sidecar)
     return "discarded"
+
+
+def _recover_manifest_commit(path: Path, sidecar_path: Path, manifest_path: Path) -> str:
+    """Recover a fully staged report bundle described by its commit manifest."""
+
+    try:
+        manifest = json.loads(manifest_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        _discard(manifest_path, _pending_path(path), _pending_path(sidecar_path))
+        return "discarded"
+    if (
+        not isinstance(manifest, Mapping)
+        or set(manifest) != {"schema_version", "artifacts"}
+        or manifest.get("schema_version") != BUNDLE_MANIFEST_VERSION
+        or not isinstance(manifest.get("artifacts"), list)
+    ):
+        _discard(manifest_path, _pending_path(path), _pending_path(sidecar_path))
+        return "discarded"
+
+    selected: dict[Path, bytes] = {}
+    pending_paths: list[Path] = []
+    seen_names: set[str] = set()
+    for entry in manifest["artifacts"]:
+        if not isinstance(entry, Mapping) or set(entry) != {"filename", "sha256"}:
+            _discard(manifest_path, *pending_paths)
+            return "discarded"
+        filename = entry["filename"]
+        expected = entry["sha256"]
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+            or filename in seen_names
+            or not isinstance(expected, str)
+            or _SHA256.fullmatch(expected) is None
+        ):
+            _discard(manifest_path, *pending_paths)
+            return "discarded"
+        seen_names.add(filename)
+        final_path = path.parent / filename
+        pending_path = _pending_path(final_path)
+        pending_paths.append(pending_path)
+        for source in (pending_path, final_path):
+            try:
+                content = source.read_bytes()
+            except OSError:
+                continue
+            if hashlib.sha256(content).hexdigest() == expected:
+                selected[final_path] = content
+                break
+        if final_path not in selected:
+            _discard(manifest_path, *pending_paths)
+            return "discarded"
+
+    if path not in selected or sidecar_path not in selected:
+        _discard(manifest_path, *pending_paths)
+        return "discarded"
+    try:
+        sidecar = json.loads(selected[sidecar_path].decode("utf-8"))
+        _verify_payload(sidecar, report_bytes=selected[path], report_path=path)
+    except (UnicodeError, ValueError, SemanticBundleError):
+        _discard(manifest_path, *pending_paths)
+        return "discarded"
+
+    for final_path in selected:
+        pending_path = _pending_path(final_path)
+        try:
+            content = pending_path.read_bytes()
+        except OSError:
+            continue
+        if hashlib.sha256(content).hexdigest() == hashlib.sha256(selected[final_path]).hexdigest():
+            os.replace(pending_path, final_path)
+        else:
+            _discard(pending_path)
+    _discard(manifest_path, *pending_paths)
+    _fsync_directory(path.parent)
+    return "applied"

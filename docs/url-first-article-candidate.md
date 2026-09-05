@@ -2,7 +2,8 @@
 
 This document defines the reusable discovery boundary introduced by
 `url-first-article-candidate.v1`. It is a data contract and a set of pure,
-read-only adapters. It is not connected to the running aggregation pipeline.
+read-only adapters. Step 2 now consumes this boundary in both the historical
+`step3_aggregate.py` path and the modern monitor orchestrator.
 
 The contract has two schemas:
 
@@ -166,8 +167,126 @@ web-listening change-event row containing only `id`, `change_type`,
 `detected_at`, `summary`, and `diff_snippet` has no real article URL and is
 rejected; the Issue #88 regression fixture proves this behavior.
 
-The adapters do not alter `scripts/step3_aggregate.py`, monitor totals,
-provenance, seen state, or upstream files.
+The adapters do not mutate upstream files. Runtime aggregation builds on their
+canonical URL, article identity, origin, and merge rules as described below.
+
+## Step 2 runtime integration
+
+`scripts/step3_aggregate.py` reads the unchanged current Step 1a/1b shapes,
+computes each input file's SHA-256, calls `adapt_article_changes()` and
+`adapt_pillar_b()`, and merges through `merge_candidates()`. Its historical
+`aggregated_DATE.json` output remains available to later step scripts. Each
+flat compatibility item now also carries `article_id`, `canonical_url`, and
+the complete `origins` array.
+
+The script also emits canonical `combined-candidates_DATE.json` bytes with
+schema version `combined-candidates.v1`. The artifact contains retained
+`items`, complete candidates excluded by URL history under `history_skips`,
+and row identities/reasons under `invalid_rows` when a non-fatal runtime
+adapter can supply them. Its counts are derived from those arrays:
+
+- `pillar_a_rows` and `pillar_b_rows` count retained origins plus explicitly
+  identified invalid rows;
+- `unique_urls` counts retained plus history-skipped candidates;
+- `cross_pillar_merges` counts URL identities carrying both A and B origins;
+- `history_skips` and `invalid_rows` count their corresponding evidence rows.
+
+The candidates, origins, invalid evidence, keys, digest, and trailing LF all
+have canonical ordering. Swapping the A/B collection order therefore does not
+change the bytes. A malformed current artifact still fails closed. Both the
+historical aggregate and combined output are invalidated before input
+validation so an older success cannot be reused after a failed run.
+
+The modern `run_monitor()` path performs the same URL merge and history check
+before relevance classification. It writes the combined artifact and a
+canonical `candidate-items_DATE.json` snapshot beside the final Markdown and
+semantic sidecar, and commits all four with the existing recoverable
+pending-file protocol. The snapshot retains every report-relevant
+`CandidateItem` field for every retained combined item, is bound to the report
+date plus the exact report and combined-artifact SHA-256 values, and is
+validated against the shared canonical URL/article identities. It does not
+alter the semantic sidecar or Markdown contracts. The optional CLI pair
+`--article-changes-artifact` / `--pillar-b-artifact` lets a controlled run use
+the exact current Step 1 artifacts; it cannot be mixed with manifest/research
+fixtures.
+
+If classification or semantic selection produces no report, the modern path
+still atomically publishes the validated combined-candidate evidence by itself;
+it does not create empty Markdown/semantic output or advance URL state. If a
+process stops after the full report bundle commits but before URL state does,
+the pending delta's own report date and combined-evidence digest locate the
+correct bundle; the modern delta also binds the exact expected Markdown and
+candidate-item snapshot digests. A new-flow pending delta cannot advance URL
+state if that snapshot is missing or inconsistent.
+The next state-enabled invocation validates that bundle,
+applies the delta idempotently, and then either returns the recovered same-date
+run or continues a later report date. A different-date run cannot silently
+discard or overwrite an older transaction.
+
+A same-date successful replay validates the existing complete report, semantic
+sidecar, combined evidence, and candidate-item snapshot before reading history.
+Its validated `items` and full item state (but not old `history_skips` or
+`invalid_rows`) are carried into the shared URL-first merge alongside the
+current inputs, retaining their original origins, classifier evidence,
+timestamps, semantics, and document metadata. A pre-snapshot bundle may be
+returned unchanged when there is no new input, but it is never incrementally
+rewritten from the lossy semantic sidecar reconstruction.
+URLs rendered by that bundle are treated as that date's own history and remain
+eligible, while genuinely older URLs remain excluded. Thus a promoted live
+checkpoint may emit no old row, and an incremental legacy artifact may contain
+only the new row, without either path dropping the committed articles. A live
+replay with no new inputs returns the verified bundle without rewriting it.
+An incomplete or inconsistent same-date bundle fails closed before acquisition.
+
+Title state is compatibility-only. Neither runtime path reads or writes
+`seen_titles` for identity or exclusion, and existing title-state files are
+left byte-for-byte untouched. URL history uses a two-phase delta:
+
+1. aggregation prepares a pending canonical-URL delta without changing the
+   canonical state file; the delta records the report date and exact
+   `combined-candidates.v1` byte digest, plus the expected Markdown and
+   candidate-item snapshot digests when the modern path has already rendered
+   them;
+2. the delta is atomically applied only after all final report artifacts have
+   committed successfully.
+
+If a report transaction is interrupted before a complete bundle exists, a
+well-formed pending delta is discarded only when its recorded canonical-state
+base is still byte-identical; the candidates are then collected again. A
+damaged delta, changed base, or inconsistent committed bundle remains a
+fail-closed error. `--no-update-seen-state` never applies, discards, or
+overwrites an existing pending transaction. For a same-date modern pending it
+validates and returns the already committed bundle without writing any of its
+paths; a different-date no-update run remains isolated and usable.
+
+For the modern path this happens inside `run_monitor()`. In the historical
+step sequence, Step 1 neither suppresses URL-history rediscoveries nor writes
+newly found URLs; Step 3 owns the merge/history split. The first call to
+`step2_save_state.py` is intentionally non-mutating. After Step 5 succeeds,
+run `step2_save_state.py --date DATE --commit-pending`; it verifies the final
+Markdown, report JSON evidence, and canonical combined artifact before applying
+the delta. The pending transaction records the combined artifact SHA-256, and
+the report evidence counts and rendered URLs must match that candidate set, so
+the historical steps cannot commit against a stale same-date report.
+When a complete same-date report already exists, Step 3 writes the next
+combined evidence to a staged sibling and leaves the committed Markdown,
+report JSON, and canonical combined bytes unchanged. Step 5 validates and
+recoverably promotes those three artifacts together, then removes the staged
+combined file. When Step 3 uses `--combined-output PATH`, pass the same path to
+Step 5 as `--combined PATH` and to Step 2 as `--combined PATH`; the default path
+remains unchanged.
+`--dry-run` verifies without applying it, while
+`--no-update-seen-state` leaves both canonical state and pending state alone.
+The historical filenames are retained for compatibility.
+
+Live web-listening link checkpoints follow the same publication boundary.
+Each seed writes a staged checkpoint during collection; a candidate-bearing
+checkpoint is promoted only after the report bundle and canonical URL delta
+both commit. A rejected/no-report candidate or an interrupted run therefore
+leaves the canonical source checkpoint unchanged and is rediscovered on retry.
+Bootstrap, no-new-link, and history-only checkpoints may advance after a
+successful no-report run because they contain no uncommitted candidate URL.
+`--no-update-seen-state` neither stages nor commits these source checkpoints.
 
 ## Canonical JSON and digests
 
@@ -236,8 +355,6 @@ identity and must not discard B origins merely because an A origin exists.
 
 This contract does not implement or change:
 
-- runtime Pillar A/B aggregation or `scripts/step3_aggregate.py`;
-- seen-state or monitoring-state mutation;
 - URL fetching, redirect resolution, agents, or semantic generation;
 - Registry reads or writes, migrations, or historical source changes;
 - Markdown, PDF, email, wiki, or delivery behavior;

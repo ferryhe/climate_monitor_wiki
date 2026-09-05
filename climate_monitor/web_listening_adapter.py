@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from .dedupe import canonical_url
 from .models import CandidateItem, MonitorSource, SiteScope
 
 
@@ -29,6 +30,8 @@ _BLOCKED_CONTENT_MARKERS = (
     "request unsuccessful",
     "security verification",
 )
+_CHECKPOINT_STAGE_VERSION = "web-listening-checkpoint-stage.v1"
+_CHECKPOINT_STAGE_SUFFIX = ".pending-run.json"
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -100,6 +103,8 @@ def collect_source_items(
     state_dir: Path,
     fetch_mode: str = "http",
     scope: SiteScope | None = None,
+    stage_checkpoint: bool = False,
+    update_checkpoint: bool = True,
 ) -> tuple[list[CandidateItem], list[str]]:
     if os.getenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING") != "1":
         raise RuntimeError("live web_listening collection requires CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1")
@@ -140,7 +145,13 @@ def collect_source_items(
             new_links = diff["find_new_links"](previous.get("links", []), eligible_links)
             doc_links = diff["find_document_links"](new_links)
             if not previous.get("content_hash"):
-                _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
+                _save_checkpoint(
+                    state_file,
+                    {"content_hash": content_hash, "links": eligible_links},
+                    candidate_urls=(),
+                    staged=stage_checkpoint,
+                    update=update_checkpoint,
+                )
                 continue
 
             doc_link_set = set(doc_links)
@@ -157,7 +168,13 @@ def collect_source_items(
                         evidence_text=f"{link} {link_title}",
                     )
                 )
-            _save_state(state_file, {"content_hash": content_hash, "links": eligible_links})
+            _save_checkpoint(
+                state_file,
+                {"content_hash": content_hash, "links": eligible_links},
+                candidate_urls=new_links,
+                staged=stage_checkpoint,
+                update=update_checkpoint,
+            )
         except Exception as exc:
             warnings.append(f"{source.key} seed {seed_url}: {exc}")
     return items, warnings
@@ -169,25 +186,29 @@ def collect_website_items(
     state_dir: Path,
     manifest_fixture_path: str | Path | None = None,
     site_scopes: dict[str, SiteScope] | list[SiteScope] | tuple[SiteScope, ...] | None = None,
+    stage_checkpoints: bool = False,
+    update_checkpoints: bool = True,
 ) -> tuple[list[CandidateItem], list[str]]:
     if manifest_fixture_path:
         return read_manifest_items(manifest_fixture_path), []
+    if stage_checkpoints:
+        discard_staged_source_checkpoints(state_dir)
     scope_by_key = _scope_by_source_key(site_scopes)
     items: list[CandidateItem] = []
     warnings: list[str] = []
-    seen_urls: set[str] = set()
     for source in sources:
         scope = scope_by_key.get(source.key)
         try:
-            source_items, source_warnings = collect_source_items(source=source, state_dir=state_dir, scope=scope)
+            kwargs = {"source": source, "state_dir": state_dir, "scope": scope}
+            if stage_checkpoints:
+                kwargs["stage_checkpoint"] = True
+            if not update_checkpoints:
+                kwargs["update_checkpoint"] = False
+            source_items, source_warnings = collect_source_items(**kwargs)
             if source_warnings and not source_items and len(source_warnings) >= len(_seed_urls(source, scope)):
                 warnings.append(f"Source failure for {source.key}: all monitored seeds failed.")
             warnings.extend(source_warnings)
-            for item in source_items:
-                if item.url in seen_urls:
-                    continue
-                seen_urls.add(item.url)
-                items.append(item)
+            items.extend(source_items)
         except Exception as exc:
             warnings.append(f"Source failure for {source.key}: {exc}")
     return items, warnings
@@ -288,6 +309,83 @@ def _load_state(path: Path) -> dict[str, Any]:
 def _save_state(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _checkpoint_stage_path(path: Path) -> Path:
+    return path.with_name(path.name + _CHECKPOINT_STAGE_SUFFIX)
+
+
+def _save_checkpoint(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    candidate_urls: list[str] | tuple[str, ...],
+    staged: bool,
+    update: bool,
+) -> None:
+    if not update:
+        return
+    if not staged:
+        _save_state(path, payload)
+        return
+    identities = sorted({canonical_url(url) or url for url in candidate_urls})
+    _save_state(
+        _checkpoint_stage_path(path),
+        {
+            "schema_version": _CHECKPOINT_STAGE_VERSION,
+            "state_filename": path.name,
+            "candidate_urls": identities,
+            "checkpoint": payload,
+        },
+    )
+
+
+def discard_staged_source_checkpoints(state_dir: str | Path) -> None:
+    """Remove abandoned per-run checkpoint stages without touching canonical state."""
+
+    for path in Path(state_dir).glob(f"*{_CHECKPOINT_STAGE_SUFFIX}"):
+        path.unlink(missing_ok=True)
+
+
+def commit_staged_source_checkpoints(
+    state_dir: str | Path,
+    *,
+    committed_urls: set[str],
+) -> int:
+    """Commit stages whose discovered candidates are all in canonical URL state."""
+
+    committed = {canonical_url(url) for url in committed_urls}
+    applied = 0
+    for staged_path in sorted(Path(state_dir).glob(f"*{_CHECKPOINT_STAGE_SUFFIX}")):
+        payload = _load_state(staged_path)
+        if (
+            not isinstance(payload, dict)
+            or set(payload)
+            != {"schema_version", "state_filename", "candidate_urls", "checkpoint"}
+            or payload["schema_version"] != _CHECKPOINT_STAGE_VERSION
+            or not isinstance(payload["state_filename"], str)
+            or Path(payload["state_filename"]).name != payload["state_filename"]
+            or staged_path.name
+            != payload["state_filename"] + _CHECKPOINT_STAGE_SUFFIX
+            or not isinstance(payload["candidate_urls"], list)
+            or any(not isinstance(url, str) or not url for url in payload["candidate_urls"])
+            or payload["candidate_urls"] != sorted(set(payload["candidate_urls"]))
+            or not isinstance(payload["checkpoint"], dict)
+            or set(payload["checkpoint"]) != {"content_hash", "links"}
+            or not isinstance(payload["checkpoint"]["content_hash"], str)
+            or not isinstance(payload["checkpoint"]["links"], list)
+            or any(not isinstance(url, str) for url in payload["checkpoint"]["links"])
+        ):
+            raise ValueError(f"invalid staged web-listening checkpoint: {staged_path.name}")
+        candidate_urls = set(payload["candidate_urls"])
+        if candidate_urls.issubset(committed):
+            _save_state(
+                staged_path.with_name(payload["state_filename"]),
+                payload["checkpoint"],
+            )
+            applied += 1
+        staged_path.unlink()
+    return applied
 
 
 def _state_path(state_dir: Path, source: MonitorSource, seed_url: str | None = None) -> Path:
