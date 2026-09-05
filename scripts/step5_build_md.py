@@ -26,6 +26,11 @@ from climate_monitor.run_ledger import (
     decode_attempt_json,
     validate_report_identity,
 )
+from climate_monitor.candidate_aggregation import (
+    combined_candidates_path,
+    staged_combined_candidates_path,
+)
+from scripts.step2_save_state import validate_final_report_bundle_bytes
 
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
@@ -44,6 +49,192 @@ CATEGORY_LABELS = {
     "conference": "Conference & Events",
     "general": "General",
 }
+
+LEGACY_BUNDLE_MANIFEST_VERSION = "legacy-report-artifact-commit.v1"
+LEGACY_BUNDLE_MANIFEST_SUFFIX = ".legacy-bundle.pending.json"
+
+
+def _bundle_pending_path(path: Path) -> Path:
+    return path.with_name(path.name + ".legacy.pending")
+
+
+def _bundle_manifest_path(report_path: Path) -> Path:
+    return report_path.with_name(report_path.name + LEGACY_BUNDLE_MANIFEST_SUFFIX)
+
+
+def _write_durable(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags, 0o644)
+    try:
+        written = 0
+        while written < len(payload):
+            written += os.write(descriptor, payload[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directories(paths: tuple[Path, ...]) -> None:
+    for directory in sorted({path.parent for path in paths}, key=str):
+        try:
+            descriptor = os.open(directory, getattr(os, "O_DIRECTORY", os.O_RDONLY))
+        except (OSError, AttributeError):
+            continue
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+
+
+def _discard_bundle_files(*paths: Path) -> None:
+    for path in paths:
+        path.unlink(missing_ok=True)
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def recover_legacy_report_bundle(
+    *,
+    report_path: Path,
+    evidence_path: Path,
+    combined_path: Path,
+    report_date: str,
+) -> str:
+    """Complete or discard an interrupted legacy three-artifact commit."""
+
+    manifest_path = _bundle_manifest_path(report_path)
+    paths = {
+        "report": report_path,
+        "evidence": evidence_path,
+        "combined": combined_path,
+    }
+    pending_paths = tuple(_bundle_pending_path(path) for path in paths.values())
+    if not manifest_path.exists():
+        return "clean"
+    try:
+        manifest = json.loads(manifest_path.read_bytes().decode("utf-8"))
+        if (
+            not isinstance(manifest, dict)
+            or set(manifest) != {"schema_version", "report_date", "artifacts"}
+            or manifest["schema_version"] != LEGACY_BUNDLE_MANIFEST_VERSION
+            or manifest["report_date"] != report_date
+            or not isinstance(manifest["artifacts"], dict)
+            or set(manifest["artifacts"]) != set(paths)
+            or not all(_valid_sha256(value) for value in manifest["artifacts"].values())
+        ):
+            raise ValueError("invalid legacy report commit manifest")
+    except (OSError, UnicodeError, ValueError):
+        _discard_bundle_files(manifest_path, *pending_paths)
+        return "discarded"
+
+    selected: dict[str, bytes] = {}
+    for name, path in paths.items():
+        expected = manifest["artifacts"][name]
+        for source in (_bundle_pending_path(path), path):
+            try:
+                payload = source.read_bytes()
+            except OSError:
+                continue
+            if hashlib.sha256(payload).hexdigest() == expected:
+                selected[name] = payload
+                break
+        if name not in selected:
+            _discard_bundle_files(manifest_path, *pending_paths)
+            return "discarded"
+    try:
+        validate_final_report_bundle_bytes(
+            report_bytes=selected["report"],
+            evidence_bytes=selected["evidence"],
+            combined_bytes=selected["combined"],
+            report_date=report_date,
+        )
+    except (UnicodeError, ValueError):
+        _discard_bundle_files(manifest_path, *pending_paths)
+        return "discarded"
+
+    for name, path in paths.items():
+        pending = _bundle_pending_path(path)
+        try:
+            payload = pending.read_bytes()
+        except OSError:
+            continue
+        if hashlib.sha256(payload).hexdigest() == manifest["artifacts"][name]:
+            os.replace(pending, path)
+        else:
+            pending.unlink(missing_ok=True)
+    _discard_bundle_files(manifest_path, *pending_paths)
+    _fsync_directories(tuple(paths.values()))
+    return "applied"
+
+
+def commit_legacy_report_bundle(
+    *,
+    report_path: Path,
+    report_bytes: bytes,
+    evidence_path: Path,
+    evidence_bytes: bytes,
+    combined_path: Path,
+    combined_bytes: bytes,
+    report_date: str,
+) -> None:
+    """Validate, stage, and recoverably publish the legacy report bundle."""
+
+    recover_legacy_report_bundle(
+        report_path=report_path,
+        evidence_path=evidence_path,
+        combined_path=combined_path,
+        report_date=report_date,
+    )
+    validate_final_report_bundle_bytes(
+        report_bytes=report_bytes,
+        evidence_bytes=evidence_bytes,
+        combined_bytes=combined_bytes,
+        report_date=report_date,
+    )
+    paths = {
+        "report": (report_path, report_bytes),
+        "evidence": (evidence_path, evidence_bytes),
+        "combined": (combined_path, combined_bytes),
+    }
+    manifest = {
+        "schema_version": LEGACY_BUNDLE_MANIFEST_VERSION,
+        "report_date": report_date,
+        "artifacts": {
+            name: hashlib.sha256(payload).hexdigest()
+            for name, (_, payload) in paths.items()
+        },
+    }
+    manifest_bytes = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    manifest_path = _bundle_manifest_path(report_path)
+    try:
+        _write_durable(manifest_path, manifest_bytes)
+        _fsync_directories((manifest_path,))
+        for path, payload in paths.values():
+            _write_durable(_bundle_pending_path(path), payload)
+        _fsync_directories(tuple(path for path, _ in paths.values()))
+        for path, _ in paths.values():
+            os.replace(_bundle_pending_path(path), path)
+    except BaseException:
+        raise
+    manifest_path.unlink()
+    _fsync_directories(tuple(path for path, _ in paths.values()))
 
 
 def build_category_label(cat: str) -> str:
@@ -103,9 +294,22 @@ def monitor_counts(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build final markdown report")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build final Markdown and recoverably promote it with report evidence "
+            "and matching combined candidates when Step 3 evidence is present."
+        )
+    )
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--combined",
+        type=Path,
+        help=(
+            "Canonical combined-candidates.v1 path produced by Step 3; its .next "
+            "sibling is promoted with the final report."
+        ),
+    )
     parser.add_argument(
         "--scope-sites",
         type=int,
@@ -140,6 +344,16 @@ def main() -> int:
     if parsed_date.weekday() != 0 and not args.allow_offcycle:
         print(f"ERROR: report date {args.date} is not a Monday; pass --allow-offcycle to override")
         return 1
+
+    out_path = args.output or (REPORTS / f"climate-monitor-{args.date}.md")
+    json_path = out_path.with_suffix(".json")
+    combined_path = args.combined or combined_candidates_path(REPORTS, args.date)
+    recover_legacy_report_bundle(
+        report_path=out_path,
+        evidence_path=json_path,
+        combined_path=combined_path,
+        report_date=args.date,
+    )
 
     filtered_path = REPORTS / f"filtered_{args.date}.json"
     if not filtered_path.exists():
@@ -297,12 +511,6 @@ def main() -> int:
             "WARNING: --monitor-result does not identify this exact report; "
             "acquisition totals are unknown"
         )
-    out_path = args.output or (REPORTS / f"climate-monitor-{args.date}.md")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_md = out_path.with_suffix(out_path.suffix + ".tmp")
-    tmp_md.write_bytes(md_text.encode("utf-8"))
-    print(f"Staged: {tmp_md} ({len(md_text)} chars)")
-
     json_out = {
         "report_date": args.date,
         "report_title": "Weekly Climate & Actuarial Monitor (Supranational Orgs)",
@@ -328,10 +536,37 @@ def main() -> int:
             }
             for item in cat_items
         ]
-    json_path = out_path.with_suffix(".json")
+    report_bytes = md_text.encode("utf-8")
+    evidence_bytes = json.dumps(json_out, ensure_ascii=False, indent=2).encode("utf-8")
+    staged_combined_path = staged_combined_candidates_path(combined_path)
+    selected_combined_path = (
+        staged_combined_path if staged_combined_path.exists() else combined_path
+    )
+    if selected_combined_path.exists():
+        try:
+            commit_legacy_report_bundle(
+                report_path=out_path,
+                report_bytes=report_bytes,
+                evidence_path=json_path,
+                evidence_bytes=evidence_bytes,
+                combined_path=combined_path,
+                combined_bytes=selected_combined_path.read_bytes(),
+                report_date=args.date,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"ERROR: final report bundle is incomplete or invalid: {exc}")
+            return 1
+        if selected_combined_path == staged_combined_path:
+            staged_combined_path.unlink(missing_ok=True)
+        print(f"OK: {out_path} + {json_path} + {combined_path}")
+        return 0
+
+    # Compatibility for direct Step 5 use without Step 3 candidate evidence.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_md = out_path.with_suffix(out_path.suffix + ".tmp")
     tmp_json = json_path.with_suffix(json_path.suffix + ".tmp")
-    tmp_json.write_text(json.dumps(json_out, ensure_ascii=False, indent=2))
-    # Commit both outputs only after both serializations succeeded.
+    tmp_md.write_bytes(report_bytes)
+    tmp_json.write_bytes(evidence_bytes)
     os.replace(tmp_json, json_path)
     os.replace(tmp_md, out_path)
     print(f"OK: {out_path} + {json_path}")

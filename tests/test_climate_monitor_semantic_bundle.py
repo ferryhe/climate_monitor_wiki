@@ -237,10 +237,6 @@ def test_run_monitor_skips_publication_when_semantic_selection_drops_everything(
     source_dir.mkdir(parents=True)
     report_path = source_dir / "climate-monitor-2026-05-14.md"
     sidecar_path = semantic_sidecar_path(report_path)
-    report_path.write_text("previous report\n", encoding="utf-8")
-    sidecar_path.write_text("previous sidecar\n", encoding="utf-8")
-    report_before = report_path.read_bytes()
-    sidecar_before = sidecar_path.read_bytes()
 
     warning = "iais seed https://www.iais.org/broken/: timeout"
     drop_note = (
@@ -250,7 +246,15 @@ def test_run_monitor_skips_publication_when_semantic_selection_drops_everything(
     )
     sync_calls = []
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+    def fake_collect(
+        sources,
+        *,
+        state_dir,
+        manifest_fixture_path=None,
+        site_scopes=None,
+        stage_checkpoints=False,
+        update_checkpoints=True,
+    ):
         return [
             CandidateItem(
                 title="Climate insurance capital update",
@@ -288,8 +292,8 @@ def test_run_monitor_skips_publication_when_semantic_selection_drops_everything(
     assert result.dedup_notes == (drop_note,)
     assert result.warnings == (warning,)
     assert result.synced is False
-    assert report_path.read_bytes() == report_before
-    assert sidecar_path.read_bytes() == sidecar_before
+    assert not report_path.exists()
+    assert not sidecar_path.exists()
     assert seen_urls.read_bytes() == seen_urls_before
     assert seen_titles.read_bytes() == seen_titles_before
     assert sync_calls == []
@@ -308,7 +312,15 @@ def test_run_monitor_publishes_remaining_items_after_partial_semantic_drop(tmp_p
 
     drop_note = "dropped non-semantic article (unvalidatable bundle): filtered"
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+    def fake_collect(
+        sources,
+        *,
+        state_dir,
+        manifest_fixture_path=None,
+        site_scopes=None,
+        stage_checkpoints=False,
+        update_checkpoints=True,
+    ):
         return [
             CandidateItem(
                 title="Dropped climate insurance update",
@@ -377,7 +389,15 @@ def test_run_monitor_can_intentionally_publish_empty_semantic_report(tmp_path, m
 
     drop_note = "dropped non-semantic article (unvalidatable bundle): filtered"
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+    def fake_collect(
+        sources,
+        *,
+        state_dir,
+        manifest_fixture_path=None,
+        site_scopes=None,
+        stage_checkpoints=False,
+        update_checkpoints=True,
+    ):
         return [
             CandidateItem(
                 title="Climate insurance capital update",
@@ -863,6 +883,94 @@ def test_recovery_applies_a_fully_staged_pair(tmp_path, monkeypatch):
     assert report_path.read_text(encoding="utf-8") == report_text
     verify_semantic_sidecar(report_path)
     assert not list(tmp_path.glob("*.pending"))
+
+
+def test_recovery_completes_report_sidecar_and_combined_evidence_bundle(
+    tmp_path, monkeypatch
+):
+    report_path = tmp_path / "climate-monitor-2026-05-14.md"
+    evidence_path = tmp_path / "combined-candidates_2026-05-14.json"
+    evidence_path.write_bytes(b"previous evidence\n")
+    report_text = "# new report\n**URL:** https://www.iais.org/climate-supervision <br>\n"
+    expected_evidence = b'{"schema_version":"combined-candidates.v1"}\n'
+    real_replace = semantic_bundle.os.replace
+    calls = {"count": 0}
+
+    def crashing_replace(source, target):
+        calls["count"] += 1
+        if calls["count"] == 3:
+            raise OSError("simulated crash before evidence commit")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(semantic_bundle.os, "replace", crashing_replace)
+    with pytest.raises(OSError, match="before evidence commit"):
+        commit_report_with_semantics(
+            report_path=report_path,
+            report_date=date(2026, 5, 14),
+            report_text=report_text,
+            items=[_item()],
+            evidence_artifacts={evidence_path: expected_evidence},
+        )
+    monkeypatch.undo()
+
+    assert evidence_path.read_bytes() == b"previous evidence\n"
+    assert recover_pending_commit(report_path) == "applied"
+    verify_semantic_sidecar(report_path)
+    assert evidence_path.read_bytes() == expected_evidence
+
+
+@pytest.mark.parametrize(
+    "failure_target", ["manifest_before", "manifest", "sidecar", "evidence"]
+)
+def test_staging_interruption_never_publishes_only_part_of_a_multi_artifact_bundle(
+    tmp_path, monkeypatch, failure_target
+):
+    report_path = tmp_path / "climate-monitor-2026-05-14.md"
+    sidecar_path = semantic_sidecar_path(report_path)
+    evidence_path = tmp_path / "combined-candidates_2026-05-14.json"
+    old_report = "# old report\n**URL:** https://www.iais.org/climate-supervision <br>\n"
+    old_evidence = b"old combined evidence\n"
+    commit_report_with_semantics(
+        report_path=report_path,
+        report_date=date(2026, 5, 14),
+        report_text=old_report,
+        items=[_item()],
+        evidence_artifacts={evidence_path: old_evidence},
+    )
+    old_sidecar = sidecar_path.read_bytes()
+    targets = {
+        "manifest_before": report_path.with_name(report_path.name + ".bundle.pending.json"),
+        "manifest": report_path.with_name(report_path.name + ".bundle.pending.json"),
+        "sidecar": sidecar_path.with_name(sidecar_path.name + ".pending"),
+        "evidence": evidence_path.with_name(evidence_path.name + ".pending"),
+    }
+    real_write = semantic_bundle._write_pending
+
+    def interrupted_write(path, payload):
+        if path == targets[failure_target]:
+            if failure_target == "manifest_before":
+                raise OSError("simulated manifest_before staging interruption")
+            real_write(path, payload[: max(1, len(payload) // 2)])
+            raise OSError(f"simulated {failure_target} staging interruption")
+        real_write(path, payload)
+
+    monkeypatch.setattr(semantic_bundle, "_write_pending", interrupted_write)
+    with pytest.raises(OSError, match=failure_target):
+        commit_report_with_semantics(
+            report_path=report_path,
+            report_date=date(2026, 5, 14),
+            report_text="# new report\n**URL:** https://www.iais.org/climate-supervision <br>\n",
+            items=[_item()],
+            evidence_artifacts={evidence_path: b"new combined evidence\n"},
+        )
+    monkeypatch.setattr(semantic_bundle, "_write_pending", real_write)
+
+    expected_recovery = "clean" if failure_target == "manifest_before" else "discarded"
+    assert recover_pending_commit(report_path) == expected_recovery
+    assert report_path.read_text(encoding="utf-8") == old_report
+    assert sidecar_path.read_bytes() == old_sidecar
+    assert evidence_path.read_bytes() == old_evidence
+    assert not list(tmp_path.glob("*pending*"))
 
 
 def test_recovery_discards_an_inconsistent_staged_pair(tmp_path):

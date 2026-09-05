@@ -12,7 +12,12 @@ from climate_monitor.research_search import (
     read_research_fixture,
     search_recent_research,
 )
-from climate_monitor.web_listening_adapter import collect_source_items, collect_website_items, read_manifest_items
+from climate_monitor.web_listening_adapter import (
+    collect_source_items,
+    collect_website_items,
+    commit_staged_source_checkpoints,
+    read_manifest_items,
+)
 
 
 def _config() -> RunConfig:
@@ -370,6 +375,53 @@ def test_collect_website_items_uses_fixture_without_live_web_listening(tmp_path)
     assert items[0].title == "Climate update"
 
 
+def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_merge(
+    tmp_path, monkeypatch
+):
+    sources = [
+        MonitorSource(key="one", abbreviation="ONE", full_name="One", url="https://one.example/"),
+        MonitorSource(key="two", abbreviation="TWO", full_name="Two", url="https://two.example/"),
+    ]
+    checkpoint_calls: list[tuple[str, bool, bool]] = []
+
+    def fake_collect_source_items(
+        *,
+        source,
+        state_dir,
+        fetch_mode="http",
+        scope=None,
+        stage_checkpoint=False,
+        update_checkpoint=True,
+    ):
+        checkpoint_calls.append(
+            (source.key, stage_checkpoint, update_checkpoint)
+        )
+        return [
+            CandidateItem(
+                title=f"{source.full_name} discovery",
+                url="https://example.org/shared",
+                summary="Climate insurance evidence.",
+                source_name=source.full_name,
+                lane="website",
+            )
+        ], []
+
+    monkeypatch.setattr(
+        "climate_monitor.web_listening_adapter.collect_source_items",
+        fake_collect_source_items,
+    )
+
+    items, warnings = collect_website_items(
+        sources,
+        state_dir=tmp_path / "state",
+        stage_checkpoints=True,
+    )
+
+    assert warnings == []
+    assert [item.source_name for item in items] == ["One", "Two"]
+    assert checkpoint_calls == [("one", True, True), ("two", True, True)]
+
+
 def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path, monkeypatch):
     class Page:
         def __init__(self, url: str, links: list[str], text: str):
@@ -449,6 +501,131 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
     item_urls = [item.url for item in items]
     assert "https://www.iais.org/news/" not in item_urls
     assert item_urls.count("https://www.iais.org/climate/report.pdf") == 2
+
+
+def test_staged_source_checkpoints_commit_only_covered_candidates_across_seeds(
+    tmp_path, monkeypatch
+):
+    source_url = "https://example.org/"
+    scoped_seed = "https://example.org/news/"
+    links_by_seed: dict[str, list[str]] = {source_url: [], scoped_seed: []}
+
+    class Page:
+        def __init__(self, url: str):
+            self.final_url = url
+            self.fit_markdown = f"Climate insurance page for {url}"
+            self.markdown = ""
+            self.content_text = ""
+            self.metadata_json = {"links": list(links_by_seed[url])}
+            self.raw_html = ""
+            self.status_code = 200
+
+    class FakeCrawler:
+        def __init__(self, *, fetch_mode: str):
+            self.fetch_mode = fetch_mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json=None):
+            return Page(url)
+
+    diff = {
+        "compute_hash": lambda text: f"hash:{text}",
+        "extract_links": lambda html, base_url: [],
+        "find_document_links": lambda links: [],
+        "find_new_links": lambda previous, current: [
+            link for link in current if link not in previous
+        ],
+        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    }
+    source = MonitorSource(
+        key="example",
+        abbreviation="EXAMPLE",
+        full_name="Example",
+        url=source_url,
+    )
+    scope = SiteScope(
+        source_key="example",
+        seed_urls=(scoped_seed,),
+        include_patterns=("/updates/",),
+        exclude_patterns=(),
+    )
+    state_dir = tmp_path / "state"
+    first_url = "https://example.org/updates/first"
+    second_url = "https://example.org/updates/second"
+    third_url = "https://example.org/updates/third"
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr(
+        "climate_monitor.web_listening_adapter._load_web_listening",
+        lambda: (FakeCrawler, diff),
+    )
+
+    bootstrap_items, bootstrap_warnings = collect_source_items(
+        source=source, state_dir=state_dir, scope=scope
+    )
+    assert bootstrap_items == []
+    assert bootstrap_warnings == []
+    canonical_paths = sorted(state_dir.glob("*.json"))
+    assert len(canonical_paths) == 2
+    bootstrap_bytes = {path.name: path.read_bytes() for path in canonical_paths}
+
+    links_by_seed[source_url].append(first_url)
+    links_by_seed[scoped_seed].append(second_url)
+    staged_items, staged_warnings = collect_source_items(
+        source=source,
+        state_dir=state_dir,
+        scope=scope,
+        stage_checkpoint=True,
+    )
+
+    assert staged_warnings == []
+    assert {item.url for item in staged_items} == {first_url, second_url}
+    assert {path.name: path.read_bytes() for path in canonical_paths} == bootstrap_bytes
+    assert len(list(state_dir.glob("*.pending-run.json"))) == 2
+
+    assert commit_staged_source_checkpoints(
+        state_dir, committed_urls={first_url}
+    ) == 1
+    assert not list(state_dir.glob("*.pending-run.json"))
+
+    retry_items, retry_warnings = collect_source_items(
+        source=source,
+        state_dir=state_dir,
+        scope=scope,
+        stage_checkpoint=True,
+    )
+    assert retry_warnings == []
+    assert [item.url for item in retry_items] == [second_url]
+    assert commit_staged_source_checkpoints(
+        state_dir, committed_urls={first_url, second_url}
+    ) == 2
+
+    committed_states = [
+        json.loads(path.read_text(encoding="utf-8")) for path in canonical_paths
+    ]
+    assert {url for state in committed_states for url in state["links"]} == {
+        first_url,
+        second_url,
+    }
+
+    links_by_seed[source_url].append(third_url)
+    committed_bytes = {path.name: path.read_bytes() for path in canonical_paths}
+    read_only_items, read_only_warnings = collect_source_items(
+        source=source,
+        state_dir=state_dir,
+        scope=scope,
+        stage_checkpoint=True,
+        update_checkpoint=False,
+    )
+    assert read_only_warnings == []
+    assert [item.url for item in read_only_items] == [third_url]
+    assert {path.name: path.read_bytes() for path in canonical_paths} == committed_bytes
+    assert not list(state_dir.glob("*.pending-run.json"))
 
 
 def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monkeypatch):

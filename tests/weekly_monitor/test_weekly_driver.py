@@ -195,10 +195,6 @@ def test_weekly_driver_fails_before_artifacts_seen_state_or_sync_on_invalid_auth
     source_dir.mkdir()
     report_path = source_dir / "climate-monitor-2026-05-18.md"
     sidecar_path = semantic_sidecar_path(report_path)
-    report_path.write_text("# previous canonical report\n", encoding="utf-8")
-    sidecar_path.write_text("previous sidecar\n", encoding="utf-8")
-    report_before = report_path.read_bytes()
-    sidecar_before = sidecar_path.read_bytes()
 
     with pytest.raises(AuthoringContractError):
         run_weekly_monitor(
@@ -212,8 +208,8 @@ def test_weekly_driver_fails_before_artifacts_seen_state_or_sync_on_invalid_auth
             repository_commit_sha="a" * 40,
         )
 
-    assert report_path.read_bytes() == report_before
-    assert sidecar_path.read_bytes() == sidecar_before
+    assert not report_path.exists()
+    assert not sidecar_path.exists()
     assert seen_urls.read_bytes() == seen_urls_before
     assert seen_titles.read_bytes() == seen_titles_before
     assert not wiki_dir.exists()

@@ -20,12 +20,31 @@ def main() -> None:
     parser.add_argument("--date", default="")
     parser.add_argument("--manifest-fixture", default="")
     parser.add_argument("--research-fixture", default="")
+    parser.add_argument(
+        "--article-changes-artifact",
+        default="",
+        help="Current Step 1a article_changes JSON; requires --pillar-b-artifact.",
+    )
+    parser.add_argument(
+        "--pillar-b-artifact",
+        default="",
+        help="Current Step 1b pillar_b JSON; requires --article-changes-artifact.",
+    )
     parser.add_argument("--site-scopes", default="monitoring/site_scopes.yaml")
     parser.add_argument("--state-dir", default="monitoring/state")
     parser.add_argument("--source-dir", default="")
     parser.add_argument("--wiki-dir", default="")
     parser.add_argument("--no-sync", action="store_true")
-    parser.add_argument("--no-update-seen-state", action="store_true")
+    parser.add_argument(
+        "--no-update-seen-state",
+        action="store_true",
+        help=(
+            "Do not prepare or commit URL history or live source checkpoints. By "
+            "default they commit only after Markdown, semantic sidecar, combined "
+            "candidate evidence, full candidate-item snapshot, and canonical URL "
+            "state succeed."
+        ),
+    )
     parser.add_argument(
         "--production-weekly",
         action="store_true",
@@ -41,6 +60,12 @@ def main() -> None:
 
     if args.production_weekly and not args.authoring_response:
         parser.error("--production-weekly requires --authoring-response")
+    if bool(args.article_changes_artifact) != bool(args.pillar_b_artifact):
+        parser.error(
+            "--article-changes-artifact and --pillar-b-artifact must be supplied together"
+        )
+    if args.article_changes_artifact and (args.manifest_fixture or args.research_fixture):
+        parser.error("current Pillar artifacts cannot be combined with manifest/research fixtures")
 
     report_date = date.fromisoformat(args.date) if args.date else None
     common = {
@@ -49,6 +74,10 @@ def main() -> None:
         "report_date": report_date,
         "manifest_fixture_path": Path(args.manifest_fixture) if args.manifest_fixture else None,
         "research_fixture_path": Path(args.research_fixture) if args.research_fixture else None,
+        "article_changes_artifact_path": (
+            Path(args.article_changes_artifact) if args.article_changes_artifact else None
+        ),
+        "pillar_b_artifact_path": Path(args.pillar_b_artifact) if args.pillar_b_artifact else None,
         "site_scopes_path": Path(args.site_scopes) if args.site_scopes else None,
         "state_dir": Path(args.state_dir),
         "source_dir": Path(args.source_dir) if args.source_dir else None,

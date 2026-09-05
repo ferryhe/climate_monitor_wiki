@@ -10,6 +10,12 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from climate_monitor.dedupe import canonical_url
+
 HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 WL_REPO = Path(os.environ.get("CLIMATE_WL_REPO", "/home/ubuntu/web_listening"))
@@ -250,7 +256,7 @@ def extract_articles_from_changes(site_id, since_date):
                 m = re.match(r'^#{2,6}\s+\[([^\]]+)\]\((https?://[^\)]+)\)', line)
                 if m:
                     title = m.group(1).strip()
-                    url = m.group(2).split('?')[0].rstrip('/')
+                    url = canonical_url(m.group(2))
                     if not is_junk_url(url) and not is_junk_title(title):
                         articles.append({"title": title[:120], "url": url})
 
@@ -269,7 +275,7 @@ def extract_articles_from_changes(site_id, since_date):
                 if line.startswith('+'):
                     line = line[1:].strip()
                 if line.startswith('https://') or line.startswith('http://'):
-                    url = line.split()[0].split('?')[0].rstrip('/')
+                    url = canonical_url(line.split()[0])
                     if not is_junk_url(url):
                         # Extract title from URL path
                         path = url.split('/')[-1] if '/' in url else url
@@ -304,7 +310,7 @@ def main():
         if org == "__pillar_b__":
             continue
         for url in urls:
-            baseline_urls.add(url.split('?')[0].rstrip('/'))
+            baseline_urls.add(canonical_url(url))
 
     print(f"Baseline (Pillar A): {len(baseline_urls)} URLs in article_state.json")
 
@@ -327,7 +333,6 @@ def main():
     print(f"Sites with changes (last {args.since_days} days): {len(sites_with_changes)}")
 
     articles = []
-    new_baseline_urls: dict[str, set[str]] = {}
     total_new = 0
     total_seen_before = 0
 
@@ -347,10 +352,10 @@ def main():
             if is_junk_url(art_url) or is_junk_title(title):
                 continue
 
-            # Check baseline (Pillar A only)
+            # Keep compatibility evidence about prior history, but do not
+            # exclude here: Step 3 must see this A origin before URL merging.
             if art_url in baseline_urls:
                 total_seen_before += 1
-                continue
 
             # Filter irrelevant
             if not is_relevant(title + " " + art_url):
@@ -364,7 +369,6 @@ def main():
                 "url": art_url,
                 "categories": categories,
             })
-            new_baseline_urls.setdefault(name, set()).add(art_url)
             total_new += 1
 
         if items:
@@ -374,28 +378,6 @@ def main():
             })
 
     c.close()
-
-    # Append newly discovered Pillar A URLs to the baseline so the same
-    # article is not reported again next week. Failure is non-fatal: the
-    # report stays valid, at the cost of repeats next run.
-    if new_baseline_urls:
-        try:
-            updated = 0
-            for org, urls in new_baseline_urls.items():
-                bucket = state.setdefault(org, [])
-                existing = set(bucket)
-                for url in sorted(urls):
-                    if url not in existing:
-                        bucket.append(url)
-                        existing.add(url)
-                        updated += 1
-            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp_state = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-            tmp_state.write_text(json.dumps(state, ensure_ascii=False, indent=2))
-            os.replace(tmp_state, STATE_FILE)
-            print(f"Baseline updated: +{updated} Pillar A URLs in article_state.json")
-        except OSError as exc:
-            print(f"WARNING: could not update article_state.json: {exc}", file=sys.stderr)
 
     output = {
         "date": args.date,

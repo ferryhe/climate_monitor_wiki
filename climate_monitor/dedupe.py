@@ -29,26 +29,18 @@ def dedupe_items(
     items: list[CandidateT],
     *,
     seen_urls: set[str],
-    seen_titles: set[str],
 ) -> tuple[list[CandidateT], list[str]]:
     kept: list[CandidateT] = []
     notes: list[str] = []
     local_urls: set[str] = set()
-    local_titles: set[str] = set()
 
     for item in items:
         item_title = str(getattr(item, "title", ""))
         url_key = canonical_url(str(getattr(item, "url", "")))
-        title_key = canonical_title(item_title)
-        if title_key and (title_key in seen_titles or title_key in local_titles):
-            notes.append(f"{item_title} duplicate title - skipped")
-            continue
         if url_key in seen_urls or url_key in local_urls:
             notes.append(f"{item_title} ({url_key}) already in URL history - skipped")
             continue
         kept.append(item)
         local_urls.add(url_key)
-        if title_key:
-            local_titles.add(title_key)
 
     return kept, notes

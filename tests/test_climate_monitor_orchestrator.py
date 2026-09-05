@@ -147,7 +147,8 @@ output:
     )
 
     assert result.report_path is None
-    assert not source_dir.exists()
+    assert (source_dir / "combined-candidates_2026-05-14.json").exists()
+    assert not (source_dir / "climate-monitor-2026-05-14.md").exists()
 
 
 def test_run_monitor_requires_actuarial_relevance_for_report_items(tmp_path):
@@ -204,7 +205,8 @@ output:
     )
 
     assert result.report_path is None
-    assert not source_dir.exists()
+    assert (source_dir / "combined-candidates_2026-05-14.json").exists()
+    assert not (source_dir / "climate-monitor-2026-05-14.md").exists()
 
 
 def test_run_monitor_respects_configured_dedupe_paths_when_state_dir_is_default_path(tmp_path, monkeypatch):
@@ -276,7 +278,10 @@ dedupe:
     assert result.dedup_notes == (
         "Climate supervision update (https://www.iais.org/climate-supervision) already in URL history - skipped",
     )
-    assert not source_dir.exists()
+    combined = json.loads(
+        (source_dir / "combined-candidates_2026-05-14.json").read_text(encoding="utf-8")
+    )
+    assert combined["counts"]["history_skips"] == 1
 
 
 def test_run_monitor_fails_when_live_collection_fails_for_every_source(tmp_path, monkeypatch):
@@ -303,7 +308,15 @@ output:
         encoding="utf-8",
     )
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+    def fake_collect(
+        sources,
+        *,
+        state_dir,
+        manifest_fixture_path=None,
+        site_scopes=None,
+        stage_checkpoints=False,
+        update_checkpoints=True,
+    ):
         return [], ["bad: network failure"]
 
     monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
@@ -348,7 +361,15 @@ output:
         encoding="utf-8",
     )
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+    def fake_collect(
+        sources,
+        *,
+        state_dir,
+        manifest_fixture_path=None,
+        site_scopes=None,
+        stage_checkpoints=False,
+        update_checkpoints=True,
+    ):
         return [
                 CandidateItem(
                     title="Climate insurance risk update",
@@ -411,7 +432,15 @@ site_scopes:
     )
     seen = {}
 
-    def fake_collect(sources, *, state_dir, manifest_fixture_path=None, site_scopes=None):
+    def fake_collect(
+        sources,
+        *,
+        state_dir,
+        manifest_fixture_path=None,
+        site_scopes=None,
+        stage_checkpoints=False,
+        update_checkpoints=True,
+    ):
         seen["site_scopes"] = site_scopes
         return [], []
 
@@ -423,6 +452,8 @@ site_scopes:
         run_config_path=run_config,
         site_scopes_path=scopes_config,
         state_dir=tmp_path / "state",
+        source_dir=tmp_path / "sources",
+        wiki_dir=tmp_path / "wiki",
         sync=False,
     )
 

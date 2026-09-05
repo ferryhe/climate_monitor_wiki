@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,20 @@ def reports_dir(tmp_path):
 def write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False))
+
+
+def article_changes(report_date, groups, *, generated_at=None):
+    return {
+        "date": report_date,
+        "pillar": "A",
+        "sites_with_changes": len(groups),
+        "orgs_with_articles": len(groups),
+        "baseline_urls": 0,
+        "new_articles": sum(len(group["items"]) for group in groups),
+        "seen_before": 0,
+        "generated_at": generated_at or f"{report_date}T08:00:00Z",
+        "articles": groups,
+    }
 
 
 def monitor_result(report_date, *, checked=57, succeeded=54, failed=3):
@@ -161,6 +176,80 @@ def test_step3_invalidates_stale_aggregate_before_rejecting_malformed_rows(
     assert not aggregate.exists()
 
 
+def test_step3_invalidates_stale_combined_evidence_before_rejecting_rows(reports_dir):
+    report_date = "2026-08-31"
+    combined = reports_dir / f"combined-candidates_{report_date}.json"
+    state = reports_dir / "article_state.json"
+    state.write_bytes(b'{"Example Org":["https://example.org/existing"]}\r\n')
+    state_before = state.read_bytes()
+    combined.write_text('{"items":[{"title":"stale"}]}')
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        {
+            "date": report_date,
+            "pillar": "A",
+            "articles": [
+                {
+                    "org": "Example Org",
+                    "items": [{"change_type": "new_content"}],
+                }
+            ],
+        },
+    )
+
+    result = run_script(
+        "step3_aggregate.py",
+        "--date",
+        report_date,
+        env_extra={
+            "CLIMATE_REPORTS_DIR": str(reports_dir),
+            "CLIMATE_WL_STATE": str(state),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "malformed article rows" in result.stdout
+    assert not combined.exists()
+    assert state.read_bytes() == state_before
+
+
+def test_step3_groups_missing_pillar_a_categories_and_invalidates_stale_outputs(
+    reports_dir,
+):
+    report_date = "2026-08-31"
+    aggregate = reports_dir / f"aggregated_{report_date}.json"
+    combined = reports_dir / f"combined-candidates_{report_date}.json"
+    aggregate.write_bytes(b"stale aggregate\n")
+    combined.write_bytes(b"stale combined\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(
+            report_date,
+            [{
+                "org": "Example Org",
+                "items": [{
+                    "title": "Climate insurance update",
+                    "url": "https://example.org/update",
+                }],
+            }],
+        ),
+    )
+    write_json(reports_dir / f"pillar_b_{report_date}.json", [])
+
+    result = run_script(
+        "step3_aggregate.py",
+        "--date",
+        report_date,
+        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+    )
+
+    assert result.returncode == 1
+    assert "1 malformed article rows" in result.stdout
+    assert "invalid_categories=1" in result.stdout
+    assert not aggregate.exists()
+    assert not combined.exists()
+
+
 def test_step3_reports_failure_to_invalidate_aggregate(reports_dir):
     report_date = "2026-08-31"
     output = reports_dir / "occupied-output"
@@ -200,10 +289,9 @@ def test_step3_validates_both_article_schemas_and_records_provenance(reports_dir
     report_date = "2026-09-14"
     pillar_a_url = "https://example.org/articles/climate-risk?edition=exact"
     pillar_b_url = "https://example.net/research/insurance-transition#findings"
-    write_json(reports_dir / f"article_changes_{report_date}.json", {
-        "date": report_date,
-        "pillar": "A",
-        "articles": [{
+    write_json(reports_dir / f"article_changes_{report_date}.json", article_changes(
+        report_date,
+        [{
             "org": "Example Org",
             "items": [{
                 "title": "Climate risk guidance",
@@ -211,7 +299,7 @@ def test_step3_validates_both_article_schemas_and_records_provenance(reports_dir
                 "categories": ["financial_risk"],
             }],
         }],
-    })
+    ))
     write_json(reports_dir / f"pillar_b_{report_date}.json", [{
         "title": "Insurance transition research",
         "url": pillar_b_url,
@@ -221,23 +309,26 @@ def test_step3_validates_both_article_schemas_and_records_provenance(reports_dir
 
     result = run_script(
         "step3_aggregate.py", "--date", report_date,
-        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)},
+        env_extra={
+            "CLIMATE_REPORTS_DIR": str(reports_dir),
+            "CLIMATE_WL_STATE": str(reports_dir / "article_state.json"),
+        },
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     items = json.loads(
         (reports_dir / f"aggregated_{report_date}.json").read_text()
     )["items"]
-    assert [item["url"] for item in items] == [pillar_a_url, pillar_b_url]
-    assert [item["pillar"] for item in items] == ["A", "B"]
+    assert [item["url"] for item in items] == [pillar_b_url, pillar_a_url]
+    assert [item["pillar"] for item in items] == ["B", "A"]
     assert [item["provenance"] for item in items] == [
-        {
-            "artifact": f"article_changes_{report_date}.json",
-            "record": "articles[0].items[0]",
-        },
         {
             "artifact": f"pillar_b_{report_date}.json",
             "record": "[0]",
+        },
+        {
+            "artifact": f"article_changes_{report_date}.json",
+            "record": "articles[0].items[0]",
         },
     ]
     write_json(reports_dir / f"hermes_assessments_{report_date}.json", {
@@ -263,12 +354,20 @@ def test_step3_validates_both_article_schemas_and_records_provenance(reports_dir
     ("pillar_a_item", "pillar_b_item", "reason"),
     [
         (
-            {"title": "Climate report", "url": "https://example.org/"},
+            {
+                "title": "Climate report",
+                "url": "https://example.org/",
+                "categories": ["general"],
+            },
             {"title": "Insurance report", "url": "https://example.net/story", "source": "web", "summary": ""},
             "publication_ineligible_url=1",
         ),
         (
-            {"title": "Climate report", "url": "https://example.org/story"},
+            {
+                "title": "Climate report",
+                "url": "https://example.org/story",
+                "categories": ["general"],
+            },
             {"title": "Insurance report", "url": "https://example.net/story", "source": "wire", "summary": ""},
             "invalid_source=1",
         ),
@@ -278,7 +377,12 @@ def test_step3_validates_both_article_schemas_and_records_provenance(reports_dir
             "invalid_categories=1",
         ),
         (
-            {"title": "Climate report", "url": "https://example.org/story", "summary": "not an upstream field"},
+            {
+                "title": "Climate report",
+                "url": "https://example.org/story",
+                "categories": ["general"],
+                "summary": "not an upstream field",
+            },
             {"title": "Insurance report", "url": "https://example.net/story", "source": "web", "summary": ""},
             "unexpected_fields=1",
         ),
@@ -554,24 +658,890 @@ def test_step3b_generate_refuses_to_overwrite_without_force(reports_dir):
     assert payload["executive_summary"] == "llm produced this"
 
 
-def test_step2_save_state_writes_pillar_b_urls(reports_dir):
-    """Regression: the script once crashed on an undefined pb_path NameError."""
+def test_step2_save_state_defers_legacy_state_until_explicit_post_report_commit(reports_dir):
     state_dir = reports_dir / "state"
     state_dir.mkdir(parents=True)
     state_file = state_dir / "article_state.json"
-    write_json(reports_dir / "pillar_b_2026-09-14.json", [
-        {"url": "https://example.org/b1", "title": "t1"},
-        {"url": "https://example.org/b1", "title": "dup"},
-        {"url": "https://example.org/b2/", "title": "t2"},
-    ])
     write_json(state_file, {"__pillar_b__": ["https://example.org/b1"]})
+    before = state_file.read_bytes()
     result = run_script("step2_save_state.py", "--date", "2026-09-14",
                         env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir),
                                    "CLIMATE_WL_STATE": str(state_file)})
     assert result.returncode == 0, result.stdout + result.stderr
-    state = json.loads(state_file.read_text())
-    # b1 was already present and duplicated; b2 is new (trailing slash stripped).
-    assert state["__pillar_b__"] == ["https://example.org/b1", "https://example.org/b2"]
+    assert "DEFERRED" in result.stdout
+    assert state_file.read_bytes() == before
+
+
+def test_legacy_pending_url_delta_commits_only_after_complete_report_bundle(reports_dir):
+    report_date = "2026-09-14"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    write_json(state_file, {"__pillar_b__": ["https://example.org/existing"]})
+    before = state_file.read_bytes()
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    write_json(
+        reports_dir / f"pillar_b_{report_date}.json",
+        [{
+            "title": "Climate insurance evidence",
+            "url": "https://example.org/new?utm_source=mail#part",
+            "source": "web",
+            "summary": "Search-result evidence.",
+        }],
+    )
+    env = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+
+    aggregate = run_script("step3_aggregate.py", "--date", report_date, env_extra=env)
+    assert aggregate.returncode == 0, aggregate.stdout + aggregate.stderr
+    assert state_file.read_bytes() == before
+    pending = state_file.with_name(state_file.name + ".pending-urls.json")
+    assert pending.exists()
+
+    early = run_script(
+        "step2_save_state.py", "--date", report_date, "--commit-pending", env_extra=env
+    )
+    assert early.returncode == 1
+    assert state_file.read_bytes() == before
+
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    report.write_text(
+        "# final report\n\n"
+        f"**Report Date:** {report_date}\n\n"
+        "- https://example.org/new?utm_source=mail\n",
+        encoding="utf-8",
+    )
+    write_json(
+        report.with_suffix(".json"),
+        {
+            "report_date": report_date,
+            "total_input": 1,
+            "relevant": 1,
+            "non_relevant": 0,
+            "categories": {
+                "general": [{"url": "https://example.org/new?utm_source=mail"}]
+            },
+        },
+    )
+    pending_before_dry_run = pending.read_bytes()
+    dry_run = run_script(
+        "step2_save_state.py",
+        "--date",
+        report_date,
+        "--commit-pending",
+        "--dry-run",
+        env_extra=env,
+    )
+    assert dry_run.returncode == 0, dry_run.stdout + dry_run.stderr
+    assert state_file.read_bytes() == before
+    assert pending.read_bytes() == pending_before_dry_run
+    committed = run_script(
+        "step2_save_state.py", "--date", report_date, "--commit-pending", env_extra=env
+    )
+    assert committed.returncode == 0, committed.stdout + committed.stderr
+    assert json.loads(state_file.read_text(encoding="utf-8"))["__pillar_b__"] == [
+        "https://example.org/existing",
+        "https://example.org/new",
+    ]
+    assert not pending.exists()
+
+
+def test_legacy_commit_rejects_a_pending_delta_from_a_different_aggregate(reports_dir):
+    report_date = "2026-09-14"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_text("{}\n", encoding="utf-8")
+    before = state_file.read_bytes()
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    pillar_b = reports_dir / f"pillar_b_{report_date}.json"
+    env = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+
+    write_json(pillar_b, [{
+        "title": "Old candidate",
+        "url": "https://example.org/old",
+        "source": "web",
+        "summary": "Old climate evidence.",
+    }])
+    first = run_script("step3_aggregate.py", "--date", report_date, env_extra=env)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    write_json(pillar_b, [{
+        "title": "New candidate",
+        "url": "https://example.org/new",
+        "source": "web",
+        "summary": "New climate evidence.",
+    }])
+    second = run_script(
+        "step3_aggregate.py",
+        "--date",
+        report_date,
+        "--no-update-seen-state",
+        "--state-file",
+        str(reports_dir / "isolated-read-only-state.json"),
+        env_extra=env,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    report.write_text(
+        "# final report\n\n"
+        f"**Report Date:** {report_date}\n\n"
+        "- https://example.org/new\n",
+        encoding="utf-8",
+    )
+    write_json(
+        report.with_suffix(".json"),
+        {
+            "report_date": report_date,
+            "total_input": 1,
+            "relevant": 1,
+            "non_relevant": 0,
+            "categories": {"general": [{"url": "https://example.org/new"}]},
+        },
+    )
+
+    result = run_script(
+        "step2_save_state.py", "--date", report_date, "--commit-pending", env_extra=env
+    )
+
+    assert result.returncode == 1
+    assert "different combined candidates" in result.stdout
+    assert state_file.read_bytes() == before
+
+
+def _run_legacy_report_cycle(reports_dir, state_file, report_date):
+    environment = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+    for script, arguments in (
+        ("step3_aggregate.py", ("--date", report_date)),
+        ("step3_filter.py", ("--date", report_date)),
+        ("step5_build_md.py", ("--date", report_date)),
+        (
+            "step2_save_state.py",
+            ("--date", report_date, "--commit-pending"),
+        ),
+    ):
+        result = run_script(script, *arguments, env_extra=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_legacy_same_day_successful_replay_keeps_bundle_and_state_stable(reports_dir):
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    write_json(
+        reports_dir / f"pillar_b_{report_date}.json",
+        [
+            {
+                "title": "Climate insurance replay report",
+                "url": "https://example.org/replay?utm_source=mail#findings",
+                "source": "web",
+                "summary": "Search-result evidence.",
+            }
+        ],
+    )
+
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+    paths = {
+        "aggregate": reports_dir / f"aggregated_{report_date}.json",
+        "combined": reports_dir / f"combined-candidates_{report_date}.json",
+        "report": reports_dir / f"climate-monitor-{report_date}.md",
+        "evidence": reports_dir / f"climate-monitor-{report_date}.json",
+        "state": state_file,
+    }
+    first_bytes = {name: path.read_bytes() for name, path in paths.items()}
+
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+
+    assert {name: path.read_bytes() for name, path in paths.items()} == first_bytes
+    combined = json.loads(paths["combined"].read_text(encoding="utf-8"))
+    assert combined["counts"]["history_skips"] == 0
+    assert [item["canonical_url"] for item in combined["items"]] == [
+        "https://example.org/replay"
+    ]
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/replay"]
+    }
+
+
+def test_legacy_same_day_replay_keeps_old_and_adds_only_new_url_state(reports_dir):
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    pillar_b = reports_dir / f"pillar_b_{report_date}.json"
+    old = {
+        "title": "Climate insurance old report",
+        "url": "https://example.org/old",
+        "source": "web",
+        "summary": "Old search-result evidence.",
+    }
+    new = {
+        "title": "Climate insurance new report",
+        "url": "https://example.org/new",
+        "source": "web",
+        "summary": "New search-result evidence.",
+    }
+    write_json(pillar_b, [old])
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+    first_state = state_file.read_bytes()
+
+    write_json(pillar_b, [old, new])
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+
+    assert json.loads(first_state) == {"__pillar_b__": ["https://example.org/old"]}
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/old", "https://example.org/new"]
+    }
+    combined = json.loads(
+        (reports_dir / f"combined-candidates_{report_date}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert combined["counts"]["unique_urls"] == 2
+    assert combined["counts"]["history_skips"] == 0
+    assert {item["canonical_url"] for item in combined["items"]} == {
+        "https://example.org/old",
+        "https://example.org/new",
+    }
+    report = (reports_dir / f"climate-monitor-{report_date}.md").read_text(
+        encoding="utf-8"
+    )
+    assert report.count("https://example.org/old") == 2
+    assert report.count("https://example.org/new") == 2
+
+
+def test_legacy_same_day_incremental_input_carries_committed_candidates_forward(
+    reports_dir,
+):
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    pillar_b = reports_dir / f"pillar_b_{report_date}.json"
+    old = {
+        "title": "Climate insurance old report",
+        "url": "https://example.org/old",
+        "source": "web",
+        "summary": "Old search-result evidence.",
+    }
+    new = {
+        "title": "Climate insurance new report",
+        "url": "https://example.org/new",
+        "source": "web",
+        "summary": "New search-result evidence.",
+    }
+    write_json(pillar_b, [old])
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+    first_combined = json.loads(
+        (reports_dir / f"combined-candidates_{report_date}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    write_json(pillar_b, [new])
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+
+    paths = {
+        "aggregate": reports_dir / f"aggregated_{report_date}.json",
+        "combined": reports_dir / f"combined-candidates_{report_date}.json",
+        "report": reports_dir / f"climate-monitor-{report_date}.md",
+        "evidence": reports_dir / f"climate-monitor-{report_date}.json",
+        "state": state_file,
+    }
+    combined = json.loads(paths["combined"].read_text(encoding="utf-8"))
+    assert combined["counts"] == {
+        "pillar_a_rows": 0,
+        "pillar_b_rows": 2,
+        "unique_urls": 2,
+        "cross_pillar_merges": 0,
+        "history_skips": 0,
+        "invalid_rows": 0,
+    }
+    assert [item["canonical_url"] for item in combined["items"]] == [
+        "https://example.org/new",
+        "https://example.org/old",
+    ]
+    assert all(len(item["origins"]) == 1 for item in combined["items"])
+    carried = next(
+        item
+        for item in combined["items"]
+        if item["canonical_url"] == "https://example.org/old"
+    )
+    assert carried["origins"] == first_combined["items"][0]["origins"]
+    report = paths["report"].read_text(encoding="utf-8")
+    assert report.count("https://example.org/old") == 2
+    assert report.count("https://example.org/new") == 2
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/old", "https://example.org/new"]
+    }
+    incremental_bytes = {name: path.read_bytes() for name, path in paths.items()}
+
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+
+    assert {name: path.read_bytes() for name, path in paths.items()} == incremental_bytes
+
+
+def test_legacy_step3_stages_next_combined_until_report_bundle_commit(reports_dir):
+    from scripts.step2_save_state import validate_final_report_bundle
+
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    pillar_b = reports_dir / f"pillar_b_{report_date}.json"
+    old = {
+        "title": "Climate insurance old report",
+        "url": "https://example.org/old",
+        "source": "web",
+        "summary": "Old search-result evidence.",
+    }
+    new = {
+        "title": "Climate insurance new report",
+        "url": "https://example.org/new",
+        "source": "web",
+        "summary": "New search-result evidence.",
+    }
+    write_json(pillar_b, [old])
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+    environment = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    evidence = report.with_suffix(".json")
+    combined = reports_dir / f"combined-candidates_{report_date}.json"
+    protected = (
+        report.read_bytes(),
+        evidence.read_bytes(),
+        combined.read_bytes(),
+    )
+    write_json(pillar_b, [old, new])
+
+    aggregate = run_script(
+        "step3_aggregate.py", "--date", report_date, env_extra=environment
+    )
+
+    assert aggregate.returncode == 0, aggregate.stdout + aggregate.stderr
+    assert (
+        report.read_bytes(),
+        evidence.read_bytes(),
+        combined.read_bytes(),
+    ) == protected
+    assert validate_final_report_bundle(
+        report=report,
+        evidence=evidence,
+        combined=combined,
+        report_date=report_date,
+    ) == {"https://example.org/old"}
+    staged_combined = combined.with_name(combined.name + ".next")
+    staged = json.loads(staged_combined.read_text(encoding="utf-8"))
+    assert {item["canonical_url"] for item in staged["items"]} == {
+        "https://example.org/old",
+        "https://example.org/new",
+    }
+
+    for script, arguments in (
+        ("step3b_generate_assessments.py", ("--date", report_date, "--force")),
+        ("step3_filter.py", ("--date", report_date)),
+        ("step5_build_md.py", ("--date", report_date)),
+        ("step2_save_state.py", ("--date", report_date, "--commit-pending")),
+    ):
+        result = run_script(script, *arguments, env_extra=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    assert not staged_combined.exists()
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/old", "https://example.org/new"]
+    }
+    assert validate_final_report_bundle(
+        report=report,
+        evidence=evidence,
+        combined=combined,
+        report_date=report_date,
+    ) == {"https://example.org/old", "https://example.org/new"}
+
+
+def test_legacy_custom_combined_path_completes_initial_and_incremental_cycles(
+    reports_dir,
+):
+    from scripts.step2_save_state import validate_final_report_bundle
+
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    custom_combined = reports_dir / "evidence" / "custom-candidates.json"
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    pillar_b = reports_dir / f"pillar_b_{report_date}.json"
+    old = {
+        "title": "Climate insurance old report",
+        "url": "https://example.org/old",
+        "source": "web",
+        "summary": "Old search-result evidence.",
+    }
+    new = {
+        "title": "Climate insurance new report",
+        "url": "https://example.org/new",
+        "source": "web",
+        "summary": "New search-result evidence.",
+    }
+    environment = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+
+    def run_cycle():
+        for script, arguments in (
+            (
+                "step3_aggregate.py",
+                ("--date", report_date, "--combined-output", str(custom_combined)),
+            ),
+            ("step3_filter.py", ("--date", report_date)),
+            (
+                "step5_build_md.py",
+                ("--date", report_date, "--combined", str(custom_combined)),
+            ),
+            (
+                "step2_save_state.py",
+                (
+                    "--date",
+                    report_date,
+                    "--combined",
+                    str(custom_combined),
+                    "--commit-pending",
+                ),
+            ),
+        ):
+            result = run_script(script, *arguments, env_extra=environment)
+            assert result.returncode == 0, result.stdout + result.stderr
+
+    write_json(pillar_b, [old])
+    run_cycle()
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    evidence = report.with_suffix(".json")
+    assert validate_final_report_bundle(
+        report=report,
+        evidence=evidence,
+        combined=custom_combined,
+        report_date=report_date,
+    ) == {"https://example.org/old"}
+    assert not (reports_dir / f"combined-candidates_{report_date}.json").exists()
+
+    write_json(pillar_b, [new])
+    run_cycle()
+
+    assert not custom_combined.with_name(custom_combined.name + ".next").exists()
+    assert validate_final_report_bundle(
+        report=report,
+        evidence=evidence,
+        combined=custom_combined,
+        report_date=report_date,
+    ) == {"https://example.org/old", "https://example.org/new"}
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/old", "https://example.org/new"]
+    }
+
+
+def test_legacy_report_bundle_recovers_interruption_between_artifact_promotions(
+    reports_dir, monkeypatch
+):
+    from scripts import step5_build_md
+    from scripts.step2_save_state import validate_final_report_bundle
+
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    write_json(
+        reports_dir / f"pillar_b_{report_date}.json",
+        [{
+            "title": "Climate insurance recovery report",
+            "url": "https://example.org/recovery",
+            "source": "web",
+            "summary": "Recovery search-result evidence.",
+        }],
+    )
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    evidence = report.with_suffix(".json")
+    combined = reports_dir / f"combined-candidates_{report_date}.json"
+    payloads = (report.read_bytes(), evidence.read_bytes(), combined.read_bytes())
+    real_replace = step5_build_md.os.replace
+    promotions = 0
+
+    def interrupted_replace(source, destination):
+        nonlocal promotions
+        if str(source).endswith(".legacy.pending"):
+            promotions += 1
+            if promotions == 2:
+                raise KeyboardInterrupt("simulated legacy bundle promotion interruption")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(step5_build_md.os, "replace", interrupted_replace)
+    with pytest.raises(KeyboardInterrupt, match="promotion interruption"):
+        step5_build_md.commit_legacy_report_bundle(
+            report_path=report,
+            report_bytes=payloads[0],
+            evidence_path=evidence,
+            evidence_bytes=payloads[1],
+            combined_path=combined,
+            combined_bytes=payloads[2],
+            report_date=report_date,
+        )
+
+    monkeypatch.setattr(step5_build_md.os, "replace", real_replace)
+    assert step5_build_md.recover_legacy_report_bundle(
+        report_path=report,
+        evidence_path=evidence,
+        combined_path=combined,
+        report_date=report_date,
+    ) == "applied"
+    assert validate_final_report_bundle(
+        report=report,
+        evidence=evidence,
+        combined=combined,
+        report_date=report_date,
+    ) == {"https://example.org/recovery"}
+    assert not list(reports_dir.glob("*.legacy.pending"))
+    assert not list(reports_dir.glob("*.legacy-bundle.pending.json"))
+
+
+def test_legacy_different_date_does_not_overwrite_bound_pending_delta(reports_dir):
+    first_date = "2026-08-24"
+    second_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    for report_date, suffix in ((first_date, "first"), (second_date, "second")):
+        write_json(
+            reports_dir / f"article_changes_{report_date}.json",
+            article_changes(report_date, []),
+        )
+        write_json(
+            reports_dir / f"pillar_b_{report_date}.json",
+            [
+                {
+                    "title": f"Climate insurance {suffix} report",
+                    "url": f"https://example.org/{suffix}",
+                    "source": "web",
+                    "summary": f"{suffix.title()} search-result evidence.",
+                }
+            ],
+        )
+    environment = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+    for script in ("step3_aggregate.py", "step3_filter.py", "step5_build_md.py"):
+        result = run_script(script, "--date", first_date, env_extra=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    pending = state_file.with_name(state_file.name + ".pending-urls.json")
+    pending_before = pending.read_bytes()
+    read_only = run_script(
+        "step3_aggregate.py",
+        "--date",
+        second_date,
+        "--no-update-seen-state",
+        env_extra=environment,
+    )
+    assert read_only.returncode == 0, read_only.stdout + read_only.stderr
+    second_aggregate = reports_dir / f"aggregated_{second_date}.json"
+    second_combined = reports_dir / f"combined-candidates_{second_date}.json"
+    read_only_bytes = (second_aggregate.read_bytes(), second_combined.read_bytes())
+    assert pending.read_bytes() == pending_before
+    blocked = run_script(
+        "step3_aggregate.py", "--date", second_date, env_extra=environment
+    )
+    assert blocked.returncode == 1
+    assert first_date in blocked.stdout
+    assert pending.read_bytes() == pending_before
+    assert (second_aggregate.read_bytes(), second_combined.read_bytes()) == read_only_bytes
+    wrong_commit = run_script(
+        "step2_save_state.py",
+        "--date",
+        second_date,
+        "--commit-pending",
+        env_extra=environment,
+    )
+    assert wrong_commit.returncode == 1
+    assert first_date in wrong_commit.stdout
+    assert pending.read_bytes() == pending_before
+
+    committed = run_script(
+        "step2_save_state.py",
+        "--date",
+        first_date,
+        "--commit-pending",
+        env_extra=environment,
+    )
+    assert committed.returncode == 0, committed.stdout + committed.stderr
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/first"]
+    }
+    assert not pending.exists()
+
+
+def test_legacy_same_date_does_not_overwrite_completed_unapplied_pending(reports_dir):
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    write_json(
+        reports_dir / f"pillar_b_{report_date}.json",
+        [
+            {
+                "title": "Climate insurance protected report",
+                "url": "https://example.org/protected",
+                "source": "web",
+                "summary": "Protected search-result evidence.",
+            }
+        ],
+    )
+    environment = {
+        "CLIMATE_REPORTS_DIR": str(reports_dir),
+        "CLIMATE_WL_STATE": str(state_file),
+    }
+    for script in ("step3_aggregate.py", "step3_filter.py", "step5_build_md.py"):
+        result = run_script(script, "--date", report_date, env_extra=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+    pending = state_file.with_name(state_file.name + ".pending-urls.json")
+    protected = {
+        "pending": pending.read_bytes(),
+        "combined": (reports_dir / f"combined-candidates_{report_date}.json").read_bytes(),
+        "report": (reports_dir / f"climate-monitor-{report_date}.md").read_bytes(),
+        "evidence": (reports_dir / f"climate-monitor-{report_date}.json").read_bytes(),
+        "state": state_file.read_bytes(),
+    }
+
+    blocked = run_script(
+        "step3_aggregate.py", "--date", report_date, env_extra=environment
+    )
+
+    assert blocked.returncode == 1
+    assert "--commit-pending" in blocked.stdout
+    assert pending.read_bytes() == protected["pending"]
+    assert (reports_dir / f"combined-candidates_{report_date}.json").read_bytes() == protected["combined"]
+    assert (reports_dir / f"climate-monitor-{report_date}.md").read_bytes() == protected["report"]
+    assert (reports_dir / f"climate-monitor-{report_date}.json").read_bytes() == protected["evidence"]
+    assert state_file.read_bytes() == protected["state"]
+
+    committed = run_script(
+        "step2_save_state.py",
+        "--date",
+        report_date,
+        "--commit-pending",
+        env_extra=environment,
+    )
+    assert committed.returncode == 0, committed.stdout + committed.stderr
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {
+        "__pillar_b__": ["https://example.org/protected"]
+    }
+
+
+def test_legacy_malformed_replay_preserves_committed_bundle_but_invalidates_aggregate(
+    reports_dir,
+):
+    report_date = "2026-08-31"
+    state_file = reports_dir / "state" / "article_state.json"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"{}\n")
+    write_json(
+        reports_dir / f"article_changes_{report_date}.json",
+        article_changes(report_date, []),
+    )
+    pillar_b = reports_dir / f"pillar_b_{report_date}.json"
+    write_json(
+        pillar_b,
+        [
+            {
+                "title": "Climate insurance committed report",
+                "url": "https://example.org/committed",
+                "source": "web",
+                "summary": "Committed search-result evidence.",
+            }
+        ],
+    )
+    _run_legacy_report_cycle(reports_dir, state_file, report_date)
+    aggregate = reports_dir / f"aggregated_{report_date}.json"
+    combined = reports_dir / f"combined-candidates_{report_date}.json"
+    report = reports_dir / f"climate-monitor-{report_date}.md"
+    evidence = report.with_suffix(".json")
+    protected = (
+        combined.read_bytes(),
+        report.read_bytes(),
+        evidence.read_bytes(),
+        state_file.read_bytes(),
+    )
+    write_json(
+        pillar_b,
+        [
+            {
+                "title": "Malformed replacement",
+                "url": "https://example.org/replacement",
+                "source": "not-web",
+                "summary": "Malformed replacement.",
+            }
+        ],
+    )
+
+    failed = run_script(
+        "step3_aggregate.py",
+        "--date",
+        report_date,
+        env_extra={
+            "CLIMATE_REPORTS_DIR": str(reports_dir),
+            "CLIMATE_WL_STATE": str(state_file),
+        },
+    )
+
+    assert failed.returncode == 1
+    assert "invalid_source=1" in failed.stdout
+    assert not aggregate.exists()
+    assert (
+        combined.read_bytes(),
+        report.read_bytes(),
+        evidence.read_bytes(),
+        state_file.read_bytes(),
+    ) == protected
+
+
+def test_step1_preserves_semantic_query_and_does_not_write_seen_state(
+    reports_dir, tmp_path, monkeypatch
+):
+    from scripts import step1_pillar_a
+
+    database = tmp_path / "web_listening.db"
+    state = tmp_path / "article_state.json"
+    output = reports_dir / "article_changes_2026-09-14.json"
+    state.write_bytes(
+        b'{"Example Org":["https://example.org/report?edition=2026"]}\r\n'
+    )
+    before = state.read_bytes()
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE sites(id INTEGER PRIMARY KEY, name TEXT, url TEXT);
+            CREATE TABLE changes(
+                site_id INTEGER, detected_at TEXT, change_type TEXT, diff_snippet TEXT
+            );
+            INSERT INTO sites VALUES(1, 'Example Org', 'https://example.org');
+            """
+        )
+        connection.execute(
+            "INSERT INTO changes VALUES(?, ?, ?, ?)",
+            (
+                1,
+                "2026-09-14T08:00:00Z",
+                "new_content",
+                "+#### [Climate insurance report]"
+                "(https://example.org/report?edition=2026&utm_source=mail#findings)",
+            ),
+        )
+
+    monkeypatch.setattr(step1_pillar_a, "SITE_DB", database)
+    monkeypatch.setattr(step1_pillar_a, "STATE_FILE", state)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "step1_pillar_a.py",
+            "--date",
+            "2026-09-14",
+            "--since-days",
+            "7",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert step1_pillar_a.main() is None
+    assert state.read_bytes() == before
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["seen_before"] == 1
+    assert payload["new_articles"] == 1
+    assert payload["articles"][0]["items"][0]["url"] == (
+        "https://example.org/report?edition=2026"
+    )
+
+    write_json(
+        reports_dir / "pillar_b_2026-09-14.json",
+        [{
+            "title": "Search rediscovery",
+            "url": "https://example.org/report?edition=2026&fbclid=search#abstract",
+            "source": "web",
+            "summary": "Climate insurance search evidence.",
+        }],
+    )
+    result = run_script(
+        "step3_aggregate.py",
+        "--date",
+        "2026-09-14",
+        env_extra={
+            "CLIMATE_REPORTS_DIR": str(reports_dir),
+            "CLIMATE_WL_STATE": str(state),
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert state.read_bytes() == before
+    combined = json.loads(
+        (reports_dir / "combined-candidates_2026-09-14.json").read_text(encoding="utf-8")
+    )
+    assert combined["counts"] == {
+        "pillar_a_rows": 1,
+        "pillar_b_rows": 1,
+        "unique_urls": 1,
+        "cross_pillar_merges": 1,
+        "history_skips": 1,
+        "invalid_rows": 0,
+    }
+    assert combined["items"] == []
+    assert [origin["pillar"] for origin in combined["history_skips"][0]["origins"]] == [
+        "A",
+        "B",
+    ]
 
 
 def test_step3_filter_keyword_fallback_single_string_category_and_both_keywords(reports_dir):
@@ -728,6 +1698,8 @@ def test_step5_help_describes_validated_monitor_result_and_unknown_fallback():
     help_text = " ".join(result.stdout.split())
     assert "Validated weekly-run-attempt.v1" in help_text
     assert "unknown" in help_text
+    assert "--combined" in help_text
+    assert ".next sibling" in help_text
 
 
 WEEKLY_MD = """# Weekly Climate Monitor
