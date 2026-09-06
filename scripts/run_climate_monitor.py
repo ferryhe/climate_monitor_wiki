@@ -151,8 +151,9 @@ def main() -> None:
         print("No monitor-matching updates found; no report written.")
     # Surface the article-evidence.v1 artifact path so downstream consumers
     # (Issue #93) can locate it without scanning ``source_dir``. The
-    # orchestrator always writes one artifact per run inside the #91
-    # transaction; this path is computed the same way the writer does.
+    # orchestrator writes one artifact per run that survives long enough
+    # to reach this print, when at least one candidate was processed;
+    # the path is computed the same way the writer does.
     if result.report_path:
         artifact_path = Path(result.report_path).parent / (
             f"article-evidence.v1_{result.report_date.isoformat()}.json"

@@ -38,8 +38,16 @@ UPSTREAM_SRC = Path("/root/.hermes/projects/web_listening")
 
 
 def _upstream_available() -> bool:
-    """Skip the test if the upstream venv python or source tree is missing."""
-    return UPSTREAM_VENV_PY.exists() and UPSTREAM_SRC.is_dir()
+    """Skip the test if the upstream venv python or source tree is missing
+    or inaccessible. We swallow ``PermissionError`` because GitHub
+    runners (and other CI environments) may not have read access to
+    private local paths; that absence is indistinguishable from the
+    upstream simply not being deployed.
+    """
+    try:
+        return UPSTREAM_VENV_PY.exists() and UPSTREAM_SRC.is_dir()
+    except (PermissionError, OSError):
+        return False
 
 
 pytestmark = pytest.mark.skipif(

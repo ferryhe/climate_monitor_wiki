@@ -238,10 +238,17 @@ def resolve_content_ref(content_ref, content_hash, *, output_dir=None) -> bytes:
     ``O_NOFOLLOW | O_RDONLY``, requires a regular file via ``fstat``, computes
     sha256, and compares. When ``output_dir`` is ``None`` (loopback
     providers), the caller is responsible for verifying from the inline
-    ``content``; ``content_ref`` is treated as a portable opaque string.
+    ``content``; ``content_ref`` is treated as a portable opaque string
+    and no disk read is attempted (this preserves the loopback test/CI
+    seam without introducing a path-traversal surface).
 
     The adapter never calls upstream private ``_read_evidence`` /
     ``_output_path``; the in-adapter portable resolver is the only path.
+
+    Path-safety: ``content_ref`` must be a non-empty relative path with
+    no parent traversal (``..``) or absolute markers; the resolved path
+    must remain inside ``output_dir``. Any violation rejects the record
+    with ``content_ref_corrupt`` before opening a file descriptor.
     """
     if not content_ref or not content_hash:
         raise ArticleContentAdapterError("content_ref_unresolvable")
@@ -249,7 +256,19 @@ def resolve_content_ref(content_ref, content_hash, *, output_dir=None) -> bytes:
         # Loopback providers (tests) bypass the disk. The caller must have
         # already verified the inline content against the digest.
         raise ArticleContentAdapterError("content_ref_unresolvable")
-    target = Path(output_dir) / str(content_ref)
+    ref_name = str(content_ref)
+    ref_path = Path(ref_name)
+    if (
+        not ref_name
+        or ref_path.is_absolute()
+        or ".." in ref_path.parts
+        or any(sep in ref_name for sep in (chr(0),))
+    ):
+        raise ArticleContentAdapterError("content_ref_corrupt")
+    output_root = Path(output_dir).resolve()
+    target = (output_root / ref_name).resolve()
+    if target != output_root and not target.is_relative_to(output_root):
+        raise ArticleContentAdapterError("content_ref_corrupt")
     try:
         fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as exc:
@@ -645,12 +664,18 @@ def _collect_unique_articles(inputs: Iterable[Mapping[str, Any]]) -> list[dict[s
 def verify_record(record, *, inputs_index, content_resolver=None, output_dir=None) -> None:
     """Verify membership and complete referenced bytes, never the preview alone.
 
-    When ``output_dir`` is supplied (the default public path passed it to
-    upstream), ``resolve_content_ref`` reads ``<output_dir>/<content_ref>``
-    on disk. When ``output_dir`` is ``None`` (loopback providers), the inline
-    ``content`` field is the verification path and ``content_ref`` is treated
-    as a portable opaque string — the inline bytes must round-trip through
-    sha256 against ``content_hash``.
+    Three legal verification paths:
+
+    1. ``content_resolver`` supplied — the caller threads an explicit
+       resolver (tests/CI). Bytes are read from the resolver.
+    2. ``output_dir`` supplied (default public path passed it to
+       upstream) — ``resolve_content_ref`` reads
+       ``<output_dir>/<content_ref>`` on disk with O_NOFOLLOW + fstat +
+       sha256 verify.
+    3. Both ``None`` (loopback providers in test/CI mode) — the inline
+       ``content`` field is the verification path; ``content_ref`` is
+       treated as a portable opaque string. The inline bytes must
+       round-trip through sha256 against ``content_hash``.
     """
     if not isinstance(record, Mapping):
         raise ArticleContentAdapterError("missing_output_record")
@@ -663,21 +688,44 @@ def verify_record(record, *, inputs_index, content_resolver=None, output_dir=Non
         raise ArticleContentAdapterError("wrong_requested_url")
     if record.get("status") == "ok":
         ref, digest = record.get("content_ref"), record.get("content_hash")
-        if not ref or not digest:
+        if not digest:
             raise ArticleContentAdapterError("content_ref_unresolvable")
-        try:
-            if content_resolver is not None:
-                body = content_resolver(ref, digest)
-            else:
-                body = resolve_content_ref(ref, digest, output_dir=output_dir)
-        except ArticleContentAdapterError:
-            raise
-        except (OSError, ValueError, KeyError) as exc:
-            raise ArticleContentAdapterError("content_ref_unresolvable") from exc
-        if not isinstance(body, bytes) or hashlib.sha256(body).hexdigest() != digest:
-            raise ArticleContentAdapterError("content_hash_mismatch")
         inline = record.get("content")
-        if inline is not None and inline.encode("utf-8") != body:
+        if content_resolver is not None:
+            # Path 1: explicit resolver (test/CI seam).
+            if not ref:
+                raise ArticleContentAdapterError("content_ref_unresolvable")
+            try:
+                body = content_resolver(ref, digest)
+            except ArticleContentAdapterError:
+                raise
+            except (OSError, ValueError, KeyError) as exc:
+                raise ArticleContentAdapterError("content_ref_unresolvable") from exc
+        elif output_dir is not None:
+            # Path 2: read <output_dir>/<content_ref> from disk.
+            if not ref:
+                raise ArticleContentAdapterError("content_ref_unresolvable")
+            try:
+                body = resolve_content_ref(ref, digest, output_dir=output_dir)
+            except ArticleContentAdapterError:
+                raise
+            except (OSError, ValueError, KeyError) as exc:
+                raise ArticleContentAdapterError("content_ref_unresolvable") from exc
+        elif inline is not None:
+            # Path 3: loopback / test/CI provider with inline body only.
+            # ``content_ref`` is allowed to be None or any opaque string.
+            body = inline.encode("utf-8") if isinstance(inline, str) else inline
+            if not isinstance(body, bytes):
+                raise ArticleContentAdapterError("content_ref_unresolvable")
+        else:
+            raise ArticleContentAdapterError("content_ref_unresolvable")
+        if hashlib.sha256(body).hexdigest() != digest:
+            raise ArticleContentAdapterError("content_hash_mismatch")
+        # Cross-check the inline field against the resolved body when
+        # both are present (defends against adapter/loopback drift).
+        if inline is not None and (
+            not isinstance(inline, str) or inline.encode("utf-8") != body
+        ):
             raise ArticleContentAdapterError("inline_content_mismatch")
 
 
