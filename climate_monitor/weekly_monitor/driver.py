@@ -4,10 +4,22 @@ import re
 import subprocess
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
+from ..dedupe import canonical_url
+from ..models import CandidateItem
+from ..taxonomy import load_article_taxonomy
 from ..orchestrator import run_monitor
-from .authoring_contract import AUTHORING_CONTRACT_VERSION, load_authoring_response
+from .authoring_contract import (
+    AUTHORING_CONTRACT_VERSION,
+    AUTHORING_CONTRACT_VERSION_V2,
+    AUTHORING_REQUEST_SCHEMA_VERSION_V2,
+    AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+    AuthoringContractError,
+    build_authoring_request,
+    load_authoring_response,
+    validate_authoring_response,
+)
 from .prompt_loader import load_weekly_monitor_prompt
 
 
@@ -25,7 +37,7 @@ def run_weekly_monitor(
     research_fixture_path: str | Path | None = None,
     article_changes_artifact_path: str | Path | None = None,
     pillar_b_artifact_path: str | Path | None = None,
-    site_scopes_path: str | Path | None = "monitoring/site_scopes.yaml",
+    site_scopes_path: str | Path = "monitoring/site_scopes.yaml",
     state_dir: str | Path = "monitoring/state",
     source_dir: str | Path | None = None,
     wiki_dir: str | Path | None = None,
@@ -38,6 +50,12 @@ def run_weekly_monitor(
     model: str = "",
     temperature: float | None = None,
     max_output_tokens: int | None = None,
+    # Issue #93 evidence-based authoring: optional ``article_evidence`` and
+    # ``stats`` make the driver the single caller of the v2 request emitter.
+    # ``article_evidence`` may be a mapping with a ``records`` key (the #92
+    # ``article-evidence.v1`` envelope) or a raw sequence of records.
+    article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    stats: Mapping[str, Any] | None = None,
 ):
     if authoring_response_path is None:
         raise ValueError("production weekly driver requires an authoring response file")
@@ -45,6 +63,38 @@ def run_weekly_monitor(
     commit_sha = repository_commit_sha or _repository_commit_sha(Path.cwd())
     if not _GIT_SHA.fullmatch(commit_sha):
         raise ValueError("repository commit SHA must be a 40-character lowercase hex digest")
+    response = load_authoring_response(authoring_response_path)
+
+    # v2 evidence path: when the caller supplies the article-evidence and
+    # stats that the orchestrator just staged, the driver emits the v2
+    # request and validates the response before delegating to the
+    # orchestrator. If neither is supplied, the driver falls back to v1
+    # validation through the orchestrator (unchanged for legacy callers).
+    pre_request = _emit_authoring_request(
+        article_evidence=article_evidence,
+        stats=stats,
+        report_date=report_date,
+        prompt=prompt,
+    )
+    if pre_request is not None:
+        response_schema = response.get("schema_version")
+        if response_schema != AUTHORING_RESPONSE_SCHEMA_VERSION_V2:
+            raise AuthoringContractError(
+                "v2 evidence path requires a v2 authoring response, "
+                f"got {response_schema!r}"
+            )
+        # The strict v2 contract binds the response to the emitted request
+        # identity, deterministic stats, and summary_basis rules. The driver
+        # performs the validation here so AC-6 (production driver actually
+        # calls the request emitter and the response validator/apply) holds
+        # even when the orchestrator later re-validates against the same
+        # articles for the final render.
+        validate_authoring_response(
+            _candidate_items_from_evidence(pre_request, article_evidence),
+            response,
+            taxonomy=load_article_taxonomy(),
+            request=pre_request,
+        )
     return run_monitor(
         source_config_path=source_config_path,
         run_config_path=run_config_path,
@@ -59,14 +109,18 @@ def run_weekly_monitor(
         wiki_dir=wiki_dir,
         sync=sync,
         update_seen_state=update_seen_state,
-        authoring_response=load_authoring_response(authoring_response_path),
+        authoring_response=response,
+        authoring_request=pre_request,
         prompt_provenance={
             "id": prompt.prompt_id,
             "version": prompt.version,
             "sha256": prompt.sha256,
         },
         driver_version=DRIVER_VERSION,
-        contract_version=AUTHORING_CONTRACT_VERSION,
+        contract_version=(
+            AUTHORING_CONTRACT_VERSION_V2 if pre_request is not None
+            else AUTHORING_CONTRACT_VERSION
+        ),
         repository_commit_sha=commit_sha,
         model_metadata=_model_metadata(
             provider=model_provider,
@@ -75,6 +129,79 @@ def run_weekly_monitor(
             max_output_tokens=max_output_tokens,
         ),
     )
+
+
+def _emit_authoring_request(
+    *,
+    article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+    stats: Mapping[str, Any] | None,
+    report_date: date | None,
+    prompt: Any,
+) -> Mapping[str, Any] | None:
+    if not article_evidence:
+        return None
+    if report_date is None:
+        raise ValueError("v2 authoring request requires an explicit report_date")
+    request = build_authoring_request(
+        report_date=report_date,
+        items=_candidate_items_from_evidence(None, article_evidence),
+        prompt=prompt,
+        article_evidence=article_evidence,
+        stats=stats,
+    )
+    if request["schema_version"] != AUTHORING_REQUEST_SCHEMA_VERSION_V2:
+        raise ValueError("v2 driver path requires v2 request schema")
+    return request
+
+
+def _candidate_items_from_evidence(
+    request: Mapping[str, Any] | None,
+    article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+) -> tuple[CandidateItem, ...]:
+    """Construct lightweight CandidateItem shells aligned with the evidence.
+
+    The orchestrator performs full classification later; the driver only needs
+    one shell per evidence URL so ``build_authoring_request`` /
+    ``validate_authoring_response`` can attach the article identity. The
+    shells carry the canonical URL and an explicit ``display_pillar`` when
+    the evidence record provides one.
+    """
+    if article_evidence is None:
+        return ()
+    if isinstance(article_evidence, Mapping):
+        records = article_evidence.get("records")
+    else:
+        records = article_evidence
+    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
+        return ()
+    shells: list[CandidateItem] = []
+    seen: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        url = str(record.get("final_url") or record.get("requested_url") or "").strip()
+        canonical = canonical_url(url)
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        origins_raw = record.get("origins")
+        has_b_origin = isinstance(origins_raw, list) and any(
+            isinstance(origin, Mapping) and origin.get("pillar") == "B"
+            for origin in origins_raw
+        )
+        lane = "research" if has_b_origin else "website"
+        record_title = record.get("title")
+        shell_title = str(record_title) if record_title else ""
+        shell = CandidateItem(
+            title=shell_title,
+            url=url,
+            summary="",
+            source_name="",
+            lane=lane,
+            content_hash=str(record.get("content_hash") or ""),
+        )
+        shells.append(shell)
+    return tuple(shells)
 
 
 def _repository_commit_sha(root: Path) -> str:

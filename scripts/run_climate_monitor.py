@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -92,6 +93,25 @@ def main() -> None:
         help="Inject an article-content provider for test/CI evidence staging.",
     )
     parser.add_argument("--json", action="store_true", help="Print structured JSON for ai_interface.")
+    parser.add_argument(
+        "--article-evidence",
+        default="",
+        help=(
+            "Optional path to a pre-staged article-evidence.v1 JSON envelope. "
+            "When provided, --production-weekly invokes the v2 request emitter "
+            "and response validator before the orchestrator runs. "
+            "--stats must accompany this."
+        ),
+    )
+    parser.add_argument(
+        "--stats",
+        default="",
+        help=(
+            "Deterministic stats JSON (object with checked, succeeded, "
+            "failed keys) used to build the v2 authoring request. "
+            "Required when --article-evidence is set."
+        ),
+    )
     args = parser.parse_args()
 
     if args.production_weekly and not args.authoring_response:
@@ -102,6 +122,12 @@ def main() -> None:
         )
     if args.article_changes_artifact and (args.manifest_fixture or args.research_fixture):
         parser.error("current Pillar artifacts cannot be combined with manifest/research fixtures")
+    if args.production_weekly:
+        if bool(args.article_evidence) != bool(args.stats):
+            parser.error(
+                "--article-evidence and --stats must be supplied together "
+                "(both required for v2 evidence path)"
+            )
 
     report_date = date.fromisoformat(args.date) if args.date else None
     common = {
@@ -122,6 +148,23 @@ def main() -> None:
         "update_seen_state": not args.no_update_seen_state,
     }
     if args.production_weekly:
+        article_evidence_payload: dict | None = None
+        stats_payload: dict | None = None
+        if args.article_evidence:
+            try:
+                article_evidence_payload = json.loads(
+                    Path(args.article_evidence).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                parser.error(
+                    f"--article-evidence file is not readable JSON: {exc}"
+                )
+            try:
+                stats_payload = json.loads(args.stats)
+            except ValueError as exc:
+                parser.error(f"--stats is not valid JSON: {exc}")
+            if not isinstance(stats_payload, dict):
+                parser.error("--stats must be a JSON object")
         result = run_weekly_monitor(
             **common,
             authoring_response_path=Path(args.authoring_response) if args.authoring_response else None,
@@ -129,6 +172,8 @@ def main() -> None:
             model=args.model,
             temperature=args.temperature,
             max_output_tokens=args.max_output_tokens,
+            article_evidence=article_evidence_payload,
+            stats=stats_payload,
         )
     else:
         if args.authoring_response:

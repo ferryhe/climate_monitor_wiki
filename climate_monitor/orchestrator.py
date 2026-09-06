@@ -466,6 +466,7 @@ def run_monitor(
     sync: bool = True,
     update_seen_state: bool = True,
     authoring_response: Mapping[str, Any] | None = None,
+    authoring_request: Mapping[str, Any] | None = None,
     prompt_provenance: Mapping[str, str] | None = None,
     driver_version: str = "",
     contract_version: str = "",
@@ -773,7 +774,9 @@ def run_monitor(
     kept = relevant[: config.max_items_per_report]
 
     if authoring_response is not None:
-        authored = validate_authoring_response(kept, authoring_response)
+        authored = validate_authoring_response(
+            kept, authoring_response, request=authoring_request
+        )
         kept_semantic = list(authored.items)
     else:
         # Drop benign per-item oddities (blank URL, sparse/unvalidatable bundle)

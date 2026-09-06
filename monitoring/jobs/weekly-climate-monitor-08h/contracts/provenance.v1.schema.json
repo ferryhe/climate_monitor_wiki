@@ -57,7 +57,10 @@
           "const": "weekly-monitor-driver.v1"
         },
         "contract_version": {
-          "const": "weekly-monitor-authoring.v1"
+          "enum": [
+            "weekly-monitor-authoring.v1",
+            "weekly-monitor-authoring.v2"
+          ]
         }
       }
     },

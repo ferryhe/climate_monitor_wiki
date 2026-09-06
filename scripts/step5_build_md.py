@@ -241,6 +241,46 @@ def build_category_label(cat: str) -> str:
     return CATEGORY_LABELS.get(cat, cat)
 
 
+def _display_pillar(item: dict) -> str:
+    """Resolve the explicit pillar for a legacy step5 item.
+
+    Issue #93 (transferred from #95): the candidate contract carries an
+    explicit ``display_pillar``. Pre-cutover filtered records did not, so
+    fall back to the historical ``source == "web"`` rule to keep the
+    existing fixtures and downstream ``parse_weekly_report`` consumers
+    compatible. A pillar value other than ``"A"``/``"B"`` keeps the legacy
+    fallback rather than guessing.
+    """
+
+    pillar = item.get("display_pillar", item.get("pillar"))
+    if pillar in {"A", "B"}:
+        return pillar
+    return "B" if item.get("source") == "web" else "A"
+
+
+def _rendered_summary(item: dict) -> str:
+    """Return only evidence-backed prose; preserve pre-cutover v1 artifacts.
+
+    Issue #93 summary_basis rules:
+
+    * ``article_content`` / ``search_snippet``: render the summary with the
+      basis and evidence hash carried by the sidecar.
+    * ``page`` / ``search_result`` / ``change_event`` / ``upstream_artifact``:
+      legacy evidence-backed bases are still rendered.
+    * ``legacy_v1``: pre-cutover summaries keep rendering unchanged so the
+      historical sidecar payloads stay readable by downstream consumers.
+    * anything else (including ``"none"``): omit the summary line so we
+      never invent facts.
+    """
+
+    basis = item.get("summary_basis", "legacy_v1")
+    summary = item.get("summary", "")
+    if basis in {"article_content", "search_snippet", "page", "search_result",
+                 "change_event", "upstream_artifact", "legacy_v1"}:
+        return summary if isinstance(summary, str) else ""
+    return ""
+
+
 def monitor_counts(
     path: Path | None, *, report_date: str, allow_offcycle: bool
 ) -> tuple[int | None, int | None, int | None, str | None]:
@@ -444,7 +484,7 @@ def main() -> int:
     lines.append("Only items **relevant to climate change and actuarial risk** are shown.")
     lines.append("")
     for cat, cat_items in sorted(categories.items()):
-        cat_items_a = [i for i in cat_items if i.get("source") != "web"]
+        cat_items_a = [i for i in cat_items if _display_pillar(i) == "A"]
         if not cat_items_a:
             continue
         lines.append(f"### {build_category_label(cat)} ({len(cat_items_a)})")
@@ -452,7 +492,7 @@ def main() -> int:
         for item in cat_items_a:
             title = item.get("title", "")
             url = item.get("url", "")
-            summary = item.get("summary", "")
+            summary = _rendered_summary(item)
             keywords = item.get("keywords", [])
             lines.append(f"- **{title}**")
             lines.append(f"  - **Categories:** {', '.join(item_category_labels(item, cat))}")
@@ -470,7 +510,7 @@ def main() -> int:
     lines.append("Items from web search, de-duplicated by URL.")
     lines.append("")
     for cat, cat_items in sorted(categories.items()):
-        cat_items_b = [i for i in cat_items if i.get("source") == "web"]
+        cat_items_b = [i for i in cat_items if _display_pillar(i) == "B"]
         if not cat_items_b:
             continue
         lines.append(f"### {build_category_label(cat)} ({len(cat_items_b)})")
@@ -478,7 +518,7 @@ def main() -> int:
         for item in cat_items_b:
             title = item.get("title", "")
             url = item.get("url", "")
-            summary = item.get("summary", "")
+            summary = _rendered_summary(item)
             keywords = item.get("keywords", [])
             lines.append(f"- **{title}**")
             lines.append(f"  - **Categories:** {', '.join(item_category_labels(item, cat))}")
@@ -527,11 +567,18 @@ def main() -> int:
             {
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
-                "summary": item.get("summary", ""),
+                "canonical_url": item.get("canonical_url", item.get("url", "")),
+                "article_id": item.get("article_id"),
+                "origins": item.get("origins", []),
+                "title_basis": item.get("title_basis"),
+                "summary": _rendered_summary(item),
+                "summary_basis": item.get("summary_basis", "legacy_v1"),
+                "evidence_hash": item.get("evidence_hash") or item.get("content_hash"),
                 "categories": item_category_labels(item, cat),
                 "keywords": item.get("keywords", []),
                 "source": item.get("source", ""),
-                "pillar": "A" if item.get("source") != "web" else "B",
+                "pillar": _display_pillar(item),
+                "display_pillar": _display_pillar(item),
                 "provenance": item.get("provenance"),
             }
             for item in cat_items
