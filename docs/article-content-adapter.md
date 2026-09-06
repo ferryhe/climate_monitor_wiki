@@ -1,205 +1,176 @@
-# Article Content Adapter (Issue #92)
+# Article content adapter (Issue #92)
 
-This document is the contract for the thin content-adapter layer introduced
-by Issue #92. It is *not* a downstream contract — the adapter is a pure
-pluggable surface that consumes the post-#91 unique-candidate set and emits
-a versioned `article-evidence.v1` artifact that Issue #93 can consume.
+The adapter consumes the orchestrator's selected, URL-deduplicated candidates
+and stages `article-evidence.v1_<date>.json` beside the report for Issue #93.
+It retains PR #98's public functions and schema constant. Acquisition and
+fallback policy belong to the public upstream article reader.
 
-Reference: [`.issue92/ACCEPTANCE.md`](../.issue92/ACCEPTANCE.md) (Issue #92
-acceptance criteria AC-5..AC-7).
+## Producer path
 
-## Why this exists
+The canonical integration run uses `--manifest-fixture` with the #67 producer's
+`web-listening-manifest.v1` export (`discovered_items`). The existing
+`climate_monitor.web_listening_adapter.read_manifest_items` seeds the
+orchestrator, which filters and deduplicates candidates before staging. The
+producer owns acquisition-batch-result.v2 acquisition state and its manifest
+export; this consumer does not parse that batch envelope as a manifest.
+The historical SQLite/diff parser remains a compatibility entrypoint.
 
-`scripts/step1_pillar_a.py` recovers article URLs from `new_content`
-unified-diff snippets. The candidates flow through Step 2 → Step 3, are
-deduplicated by `climate_monitor.dedupe.canonical_url` (the URL-first
-post-#91 unique set), and are eventually passed to `scripts/run_climate_monitor.py`.
+The consumer imports no upstream Crawler, Storage, or diff implementation and
+maintains no producer checkpoint state. Staging joins manifest provenance onto
+already-selected candidates by source name, item ID, and URL; it preserves
+`source_item_id`, `source_name`, `source_id`, `run_id`, and the original manifest
+`status` as `extra.item_status`. No new status is inferred from a later snapshot.
 
-Issue #92 stands between the unique-candidate set and the next layer (Issue
-#93). It does **not** fetch content itself: it consumes the ferryhe/
-`web_listening#70` public contract for one URL → one record. Today the
-contract is **not yet available**, so every record is honest URL-only state
-with `status="unavailable"`.
+`tests/fixtures/article_content/manifests/climate_92_v2.json` is an independently
+authored six-case consumer fixture using the inspected upstream manifest shape:
 
-## Public API
+| Item suffix | Producer status | Candidate? |
+| --- | --- | --- |
+| html | new | Yes: ordinary HTML article |
+| no-pdf | new | Yes: ordinary page link, no PDF required |
+| bootstrap | existing | No: first snapshot, no prior checkpoint |
+| increment | updated | Yes: normal increment |
+| waiting | new | Yes: pending consumption retains its original status |
+| removed | removed | No: removal is not a new article |
+
+`read_manifest_items` returns four items in that order, with stable source/item
+identity. The producer's actionable statuses are `changed`, `downloaded`, `new`,
+and `updated`; the existing reader also retains its legacy absent-status behavior.
+The fixture is synthetic test data, not a captured production run.
+
+## Provider and resolver contract
+
+Public API:
 
 ```python
 from climate_monitor.article_content_adapter import (
-    check_dependencies,
-    fetch_article_content,
-    collect_evidence,
-    build_article_evidence_artifact,
-    write_article_evidence_artifact,
-    article_evidence_artifact_path,
-    ARTICLE_EVIDENCE_SCHEMA,
-    ARTICLE_EVIDENCE_SCHEMA_VERSION,
+    ARTICLE_EVIDENCE_SCHEMA, ARTICLE_EVIDENCE_SCHEMA_VERSION,
+    ArticleContentAdapterError, check_dependencies, fetch_article_content,
+    map_tool_result_to_record, resolve_content_ref, verify_record,
+    collect_evidence, build_article_evidence_artifact,
+    write_article_evidence_artifact, article_evidence_artifact_path,
+    run_article_evidence,
 )
-
-status = check_dependencies()        # "available" | "partial" | "unavailable"
-record = fetch_article_content(article_id, url, providers=...)
-records = collect_evidence(unique_articles, providers=...)
-artifact = build_article_evidence_artifact(unique_articles, report_date=...)
-write_article_evidence_artifact(source_dir, report_date, artifact)
 ```
 
-### `check_dependencies()`
+Explicit `providers=` always wins, including when the dependency probe reports
+`partial` or `unavailable`. Only `providers[0](article_id, url)` is called; the
+consumer does not attempt subsequent providers. Without injection the adapter
+wraps `web_listening.blocks.article_content.fetch_article_content(url)`, whose
+public signature takes a URL and keyword options, not an article ID.
 
-Probes the upstream `web_listening.contracts.article_content` module via
-`importlib.import_module`:
+`check_dependencies()` reports `available` when that public reader is importable.
+It retains the older contract-module/`PROVIDERS` probe for compatibility
+(`partial` when only that module exists; `unavailable` when neither exists).
+The probe is descriptive and does not suppress explicit providers. Importability
+does not imply permission to read a site: the inspected upstream reader returns
+`permission_denied/no_reviewed_profile` without a reviewed profile. This adapter
+does not create or bypass acquisition authority.
 
-* **`"unavailable"`** — module not importable (current production state).
-  Every record is URL-only with `status="unavailable"` and
-  `failure_reason="web_listening#70 article_content fallback policy not yet available"`.
-* **`"partial"`** — module importable but no `PROVIDERS` iterable declared.
-  Adapter does not fabricate content; treat the same as `unavailable` for
-  evidence-emission purposes.
-* **`"available"`** — module importable with a non-empty `PROVIDERS` iterable.
-  Adapter invokes the first provider in `providers=...` once per article.
+Results may be real Pydantic `ToolResult` objects (`model_dump`) or mappings with
+the same fields: `data_status`, `stop_reason`, `error`, and `data`, including the
+ordered `data.attempts`. PR #98's flat provider mappings remain accepted as a
+compatibility input. Identity fields, if supplied by the provider, must exactly
+match the call. Upstream `data.sha256` becomes `content_hash`; legacy
+`content_hash` is accepted when `sha256` is absent.
 
-No code path may fabricate content. When the helper reports
-`"unavailable"` or `"partial"`, the adapter never touches the network and
-never imports a network-capable library.
+`resolve_content_ref(ref, hash)` delegates to upstream
+`_read_evidence(_output_path(None), ref, hash)`, matching its default output
+location and three-argument signature. Missing resolver support raises
+`ArticleContentAdapterError("content_ref_unresolvable")`. Tests may replace
+`resolve_content_ref` or attach `content_resolver(ref, hash) -> bytes` to an
+explicit provider. The registered loopbacks use an in-process resolver and
+write no body files. Their `memory:` references last only for that process;
+they are test fixtures, not durable production references.
 
-### `fetch_article_content(article_id, url, *, providers=())`
+## Status mapping and content integrity
 
-One URL → one record. When the dependency check returns `"unavailable"` or
-when `providers` is empty, the call returns an URL-only `unavailable` record
-without invoking anything. When a provider raises, the record is marked
-`status="failed"` and `failure_reason` contains the exception class name
-plus the message — no partial artifact, no swallowed traceback.
+| Upstream data_status | Evidence status | Summary basis / failure |
+| --- | --- | --- |
+| present | ok | page; reference and SHA-256 required |
+| present, truncated=true | ok | preview_only; extra.content_status=present_preview_only |
+| no_content | no_content | none; content/ref/hash are null |
+| not_found | failed | upstream stop_reason |
+| auth_required | failed | upstream stop_reason |
+| permission_denied | failed | upstream stop_reason |
+| blocked | failed | upstream stop_reason |
+| interaction_required | failed | upstream stop_reason |
+| failed_quality_gate | failed | upstream stop_reason |
+| error | failed | stop_reason or error code |
+| redirected | no_content | none; final URL retained |
+| reader not importable | unavailable | none; explicit failure_reason |
 
-### `collect_evidence(unique_articles, *, providers=())`
+Records retain method, content type, extraction metadata (under `extra`), and
+ordered attempts. A differing final URL on a non-failure, non-safety result sets
+`extra.redirected=true` and marks the final attempt `redirected=true` when one
+exists. Safety failures retain their failed status.
 
-The runner: it deduplicates inputs by `(article_id, url)` (first occurrence
-wins, input order preserved) and emits **exactly N** records, where N is the
-count of unique inputs. Each distinct `article_id` triggers exactly one
-upstream acquisition chain (one provider invocation). Distinct URLs that
-happen to share a title still produce two distinct records because identity
-is URL/ID-based, not title-based.
+The upstream `full_text` (legacy `content`) may populate `content` only for an
+untruncated successful read. A 2,000-character `truncated_preview` never becomes
+the body: `content=null`, `summary_basis=preview_only`, and the complete body's
+reference/hash remain available. Verification always rereads the complete bytes.
 
-Records are emitted in input order. Every record carries a deterministic
-`record_hash` so consumers can recompute it from
-`RECORD_DIGEST_VERSION + "\n" + canonical_json_bytes(record_without_record_hash)`.
+A snippet-only result requires a nonempty **input** `search_snippet`. It stays in
+`extra.search_snippet` with `summary_basis=search_snippet`; it does not become
+canonical body content. Upstream snippets are ignored. Candidate summaries and
+generic evidence snippets are not implicitly relabeled as search snippets.
+URL-only results without that input use `summary_basis=none`.
 
-## Versioned artifact: `article-evidence.v1`
+## Batch verification and atomic publication
 
-The wired entrypoint writes
-`<source_dir>/article-evidence.v1_<YYYY-MM-DD>.json` with the documented
-schema (also embedded as `ARTICLE_EVIDENCE_SCHEMA` for `jsonschema`
-validation):
+Input identity is `(article_id, canonical_url)`, first occurrence wins. A/B
+aliases sharing a canonical URL collapse to the first record and one fetch.
+Different URLs with the same title remain separate. Reusing one article ID for
+different URLs is rejected before any fetch. Inputs without a URL/usable identity
+are rejected rather than silently omitted.
 
-```json
-{
-  "schema_version": "article-evidence.v1",
-  "report_date": "2026-09-14",
-  "generated_at": "",
-  "dependency_status": "unavailable",
-  "record_count": 2,
-  "records": [
-    {
-      "article_id": "https://example.org/a",
-      "requested_url": "https://example.org/a",
-      "final_url": null,
-      "status": "unavailable",
-      "attempts": [],
-      "selected_method": null,
-      "content_type": null,
-      "content_ref": null,
-      "content": null,
-      "content_hash": null,
-      "summary_basis": null,
-      "failure_reason": "web_listening#70 article_content fallback policy not yet available",
-      "record_hash": "<sha256>"
-    }
-  ],
-  "artifact_digest": "<sha256>"
-}
+Before writing, `verify_record` checks input membership and requested URL. Every
+`ok` record must resolve its reference to bytes whose SHA-256 equals
+`content_hash`; an embedded full body must equal those bytes. The batch must
+contain exactly one record for every unique input. Damaged references, hash or
+identity mismatches, missing/extra/duplicate outputs, and malformed results raise
+`ArticleContentAdapterError` and reject the **whole batch**. A preceding good
+record cannot cause a partial write. An existing artifact remains unchanged.
+Upstream content-reference and capture-integrity error codes also reject the
+batch. Ordinary provider runtime exceptions remain honest failed records.
+
+`build_article_evidence_artifact` validates entirely in memory. The public
+`write_article_evidence_artifact` accepts an already-validated artifact, writes
+a sibling temporary file, then replaces the destination. Callers supplying
+manually assembled dictionaries must validate them before using that low-level
+writer; `run_article_evidence` combines build and write.
+
+Canonical JSON uses UTF-8, sorted keys, no NaN, and separators `(',', ':')`:
+
+- `record_hash = sha256(RECORD_DIGEST_VERSION + '\n' + canonical_json(record_without_record_hash))`.
+- `artifact_digest = sha256(ARTICLE_EVIDENCE_DIGEST_VERSION + '\n' + canonical_json(ordered_record_hashes))`.
+
+The artifact carries schema version, report date, generated-at (empty unless
+explicitly supplied), dependency status, record count, records, and digest.
+`ARTICLE_EVIDENCE_SCHEMA` is the co-located JSON Schema for downstream validation.
+
+## Driver wiring and local smoke
+
+`--source-dir` takes precedence over `load_run_config(...).source_dir`; an empty
+CLI value falls back to the configured directory. Staging occurs after report
+writing, whenever there are items, including JSON-output mode and unavailable
+dependency states. Staging failures produce a clear warning on stdout (inside
+the JSON warnings array in JSON mode) and leave the written report intact.
+
+`--article-evidence-loopback=module:callable` imports an explicit test/CI provider.
+No Registry, email, publisher, reload, or scheduling operation is added.
+
+```bash
+TMP=$(mktemp -d)
+python3 -m scripts.run_climate_monitor \
+  --manifest-fixture tests/fixtures/article_content/manifests/climate_92_v2.json \
+  --article-evidence-loopback tests.fixtures.article_content.providers:loopback_success_provider \
+  --date 2026-09-07 --source-dir "$TMP/sources" --wiki-dir "$TMP/wiki" \
+  --no-sync --no-update-seen-state
 ```
 
-* `schema_version` — `"article-evidence.v1"` (string).
-* `report_date` — ISO 8601 calendar date (string).
-* `generated_at` — populated by the orchestrator when it writes the
-  artifact; the adapter-only helper leaves this empty so consumers can
-  distinguish the adapter-only path from the wired path.
-* `dependency_status` — copied from `check_dependencies()` at build time.
-* `record_count` — integer, must equal `len(records)`.
-* `records` — ordered list of evidence records, one per unique
-  `(article_id, url)` input.
-* `artifact_digest` — `sha256(ARTICLE_EVIDENCE_DIGEST_VERSION + "\n" +
-  canonical_json_bytes([record["record_hash"] for record in records]))`.
-
-### Record fields
-
-| field | type | meaning |
-|---|---|---|
-| `article_id` | string | The URL-first identity (canonical URL when the upstream contract returns no `article_id`). |
-| `requested_url` | string \| null | URL that the caller asked the adapter to fetch. |
-| `final_url` | string \| null | URL the upstream chain ended on (after redirects). May equal `requested_url`. |
-| `status` | string | One of `ok`, `no_content`, `failed`, `unavailable`, `deferred`. |
-| `attempts` | array | Ordered list of `{provider, status, reason}` records. Empty when `dependency_status` is `unavailable`. |
-| `selected_method` | string \| null | Provider that produced `content_hash` (`http`, `browser`, `stealth`, …). Null when `status != "ok"`. |
-| `content_type` | string \| null | MIME type / content class (e.g. `text/html`). Null when no content was produced. |
-| `content_ref` | string \| null | Stable reference (blob path, object-store key, etc.) when content is held outside the artifact. Null when no content was produced. |
-| `content` | string \| null | Bounded body for very small artifacts. The adapter does **not** embed large bodies; use `content_ref` instead. Null when no content was produced. |
-| `content_hash` | string \| null | SHA-256 of the canonical content bytes. Null when no content was produced. |
-| `summary_basis` | string \| null | Which upstream signal grounds the summary (page / search_result / change_event / upstream_artifact). Null when the adapter cannot fetch. |
-| `failure_reason` | string \| null | Populated when `status` is `unavailable` or `failed`. Always points at the upstream cause. |
-| `record_hash` | string | Versioned SHA-256 of the canonical record bytes (excluding `record_hash` itself). Recomputable from `RECORD_DIGEST_VERSION + "\n" + canonical_json(record)`. |
-
-### Honest "unavailable" path
-
-When `web_listening#70` is not landed (today's production state):
-
-* `check_dependencies()` returns `"unavailable"`.
-* `fetch_article_content` returns an URL-only record with
-  `status="unavailable"`, `selected_method=null`, `content=null`,
-  `content_hash=null`, `summary_basis=null`,
-  `failure_reason="web_listening#70 article_content fallback policy not yet available"`,
-  `attempts=[]`.
-* `collect_evidence` emits the same shape for every unique input. No record
-  is silently dropped. No content is fabricated.
-* `build_article_evidence_artifact` reports `dependency_status="unavailable"`
-  and includes the honest records verbatim.
-
-This is the contract guarantee. Issue #93 can rely on the artifact shape
-*without* needing to re-implement the dependency probe.
-
-## Wiring: `scripts/run_climate_monitor.py`
-
-The wired entrypoint is **additive only**. It does **not** modify Steps
-1–5, does **not** touch the Registry, and does **not** introduce a
-parallel default fetch pipeline.
-
-After `run_monitor(...)` returns, `_stage_article_evidence` is invoked:
-
-1. Reads `result.items` (already deduplicated to the post-#91 unique
-   candidate set by `orchestrator`).
-2. Builds the `article-evidence.v1` artifact via
-   `build_article_evidence_artifact(unique_articles, report_date=...)`.
-3. Atomically writes it under `<source_dir>/article-evidence.v1_<date>.json`.
-
-If staging fails for any reason the failure is logged as a warning and the
-report write is not aborted. Steps 1–5 are unchanged.
-
-## Non-goals
-
-This adapter does **not**:
-
-* Summarise or classify articles.
-* Generate, send, or schedule anything.
-* Touch the Registry or any production state.
-* Implement the `web_listening#70` fallback (that contract lives in
-  `ferryhe/web_listening` and is consumed, not implemented, here).
-* Parse `web_listening`'s SQLite or copy its retry policy.
-* Introduce a new framework or speculative abstraction.
-
-## Verification
-
-The wired entrypoint is exercised end-to-end by
-`tests/test_article_content_adapter.py::test_run_climate_monitor_wires_article_evidence_artifact`.
-The focused adapter unit tests cover AC-5 (`check_dependencies`, `fetch_*`,
-`collect_evidence`, dependency-status honesty, failure-path honesty,
-one-acquisition-per-article-id invariant) and AC-7 (artifact schema and
-digest determinism). The parser regression tests in
-`tests/test_step1_pillar_a_parser.py` cover AC-1..AC-4 against the live
-`step1_pillar_a.extract_articles_from_changes`.
+The existing report writer also emits its semantic/candidate sidecars and creates
+an empty wiki directory under the override. Evidence staging adds only its own
+artifact. Adapter tests cover statuses, verification, and digest replay;
+`tests/test_article_evidence_for_issue93.py` validates the manifest round trip and
+reads/schema-validates the artifact from an actual CLI run.
