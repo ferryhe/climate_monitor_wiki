@@ -1,19 +1,7 @@
-"""Thin article-content adapter for Issue #92 AC-5..7.
+"""Consume unique candidates through the public web_listening article reader.
 
-This module is a *thin* content-adapter layer: it consumes the post-#91
-unique-candidate set, calls the (currently unavailable) ferryhe/web_listening#70
-public contract for one URL → one record, and emits exactly N evidence records
-per N unique inputs. It NEVER fabricates content: when the dependency is not
-satisfied every record is URL-only with explicit ``status="unavailable"`` and
-a populated ``failure_reason``.
-
-The adapter's only network touchpoint is the upstream
-``web_listening.contracts.article_content`` provider; the production state of
-that contract today is "not yet available", so :func:`check_dependencies`
-returns ``"unavailable"`` until web_listening#70 lands. The wired
-``scripts/run_climate_monitor.py`` entrypoint always materialises a versioned
-``article-evidence.v1`` artifact regardless of dependency status so issue
-#93 can consume a stable shape.
+Evidence is verified in memory before an atomic artifact write. Explicit
+providers are the test/CI seam; discovery and acquisition policy remain upstream.
 """
 
 from __future__ import annotations
@@ -150,6 +138,7 @@ class ArticleEvidenceRecord:
             "summary_basis": self.summary_basis,
             "failure_reason": self.failure_reason,
         }
+        payload["extra"] = dict(self.extra)
         return payload
 
 
@@ -160,8 +149,8 @@ class ArticleEvidenceRecord:
 
 def _import_web_listening_contract() -> Any | None:
     """Return the ``web_listening.contracts.article_content`` module if
-    importable, otherwise ``None``. This is the only place that probes the
-    upstream contract; tests can monkeypatch it to force a specific status.
+    importable, otherwise ``None``. Retained for PR #98 compatibility;
+    the public reader import is now probed first.
     """
 
     try:
@@ -173,12 +162,15 @@ def _import_web_listening_contract() -> Any | None:
 def check_dependencies() -> str:
     """Return one of ``"available" | "partial" | "unavailable"``.
 
-    * ``"available"``  — ``web_listening.contracts.article_content`` importable
-      AND exposes a non-empty ``PROVIDERS`` iterable.
-    * ``"partial"``    — contract module importable but providers not declared.
-    * ``"unavailable"`` — contract module not importable.
+    The public blocks.article_content reader takes precedence. The older
+    contracts.article_content/PROVIDERS probe remains a compatibility fallback:
+    available with providers, partial with just the module, otherwise unavailable.
+    Explicit provider injection is independent of this descriptive probe.
     """
 
+    public = _import_public_reader()
+    if public is not None and callable(getattr(public, "fetch_article_content", None)):
+        return "available"
     module = _import_web_listening_contract()
     if module is None:
         return "unavailable"
@@ -193,7 +185,7 @@ def check_dependencies() -> str:
 # ---------------------------------------------------------------------------
 
 
-ProviderCallable = Callable[[str, str], Mapping[str, Any]]
+ProviderCallable = Callable[[str, str], Any]
 
 
 def _unavailable_record(
@@ -213,35 +205,124 @@ def _unavailable_record(
         content_ref=None,
         content=None,
         content_hash=None,
-        summary_basis=None,
+        summary_basis="none",
         failure_reason=failure_reason,
     )
 
 
-def _record_from_provider_payload(
-    *, article_id: str, url: str, payload: Mapping[str, Any]
-) -> ArticleEvidenceRecord:
-    """Translate one provider payload into the canonical record shape."""
+class ArticleContentAdapterError(RuntimeError):
+    """Reject an untrustworthy evidence batch before publication."""
 
-    attempts_raw = payload.get("attempts") or []
-    attempts: tuple[dict[str, Any], ...] = tuple(
-        dict(item) if isinstance(item, Mapping) else {"raw": item}
-        for item in attempts_raw
-    )
-    return ArticleEvidenceRecord(
-        article_id=article_id,
-        requested_url=url,
-        final_url=str(payload.get("final_url") or url),
-        status=str(payload.get("status") or "ok"),
-        attempts=attempts,
-        selected_method=payload.get("selected_method"),
-        content_type=payload.get("content_type"),
-        content_ref=payload.get("content_ref"),
-        content=payload.get("content"),
-        content_hash=payload.get("content_hash"),
-        summary_basis=payload.get("summary_basis"),
-        failure_reason=payload.get("failure_reason"),
-    )
+
+def _import_public_reader():
+    try:
+        return importlib.import_module("web_listening.blocks.article_content")
+    except ImportError:
+        return None
+
+
+def resolve_content_ref(content_ref, content_hash) -> bytes:
+    """Read upstream evidence from its default output directory.
+
+    Tests may replace this function or attach a ``content_resolver(ref, hash)``
+    callable to an explicitly injected provider. Inline content is never a
+    substitute for resolving the reference.
+    """
+    module = _import_public_reader()
+    if module is None or not hasattr(module, "_read_evidence"):
+        raise ArticleContentAdapterError("content_ref_unresolvable")
+    try:
+        return module._read_evidence(module._output_path(None), content_ref, content_hash)
+    except (OSError, ValueError) as exc:
+        raise ArticleContentAdapterError(str(exc)) from exc
+
+
+def _default_providers():
+    module = _import_public_reader()
+    if module is None or not callable(getattr(module, "fetch_article_content", None)):
+        return ()
+
+    def public_reader(article_id, url):
+        return module.fetch_article_content(url)
+
+    return (public_reader,)
+
+
+def _tool_mapping(value):
+    if isinstance(value, Mapping):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    raise ArticleContentAdapterError("invalid_tool_result")
+
+
+def map_tool_result_to_record(article_id, url, snippet_input, tool_result) -> dict:
+    """Map the public ToolResult envelope without manufacturing body or snippet."""
+    result = _tool_mapping(tool_result)
+    # Retain PR #98's flat provider mapping as a compatibility input.
+    data = result.get("data", result)
+    if not isinstance(data, Mapping):
+        raise ArticleContentAdapterError("invalid_tool_result_data")
+    for payload in (result, data):
+        if "article_id" in payload and payload["article_id"] != article_id:
+            raise ArticleContentAdapterError("wrong_article_id")
+        if "requested_url" in payload and payload["requested_url"] != url:
+            raise ArticleContentAdapterError("wrong_requested_url")
+    status = result.get("data_status", result.get("status"))
+    if status == "ok":
+        status = "present"
+    failed = {"not_found", "auth_required", "permission_denied", "blocked",
+              "interaction_required", "failed_quality_gate", "error", "failed"}
+    if status not in failed | {"present", "no_content", "redirected", "unavailable", "deferred"}:
+        raise ArticleContentAdapterError("invalid_data_status")
+    attempts = data.get("attempts", [])
+    if not isinstance(attempts, list) or any(not isinstance(a, Mapping) for a in attempts):
+        raise ArticleContentAdapterError("invalid_attempts")
+    attempts = [dict(a) for a in attempts]
+    error = result.get("error") or {}
+    reason = result.get("stop_reason") or error.get("code") or data.get("failure_reason")
+    integrity_errors = {"content_ref_corrupt", "content_ref_hash_mismatch",
+                        "capture_identity_mismatch", "capture_hash_mismatch"}
+    for code in (reason, error.get("code")):
+        if code in integrity_errors:
+            raise ArticleContentAdapterError(code)
+    final_url = data.get("final_url") or url
+    extra = {"extraction_metadata": data.get("extraction_metadata") or {}}
+    safety_errors = {"unsafe_redirect", "blocked_redirect"}
+    if final_url != url and status not in failed and reason not in safety_errors:
+        extra["redirected"] = True
+        if attempts:
+            attempts[-1]["redirected"] = True
+    ok = status == "present"
+    preview = ok and data.get("truncated") is True
+    if preview:
+        extra["content_status"] = "present_preview_only"
+        extra["truncated_preview"] = data.get("truncated_preview")
+    if ok:
+        evidence_status = "ok"
+    elif status in failed:
+        evidence_status = "failed"
+    elif status == "redirected":
+        evidence_status = "no_content"
+    else:
+        evidence_status = status
+    record = ArticleEvidenceRecord(
+        article_id=article_id, requested_url=url, final_url=final_url,
+        status=evidence_status,
+        attempts=tuple(attempts), selected_method=data.get("selected_method"),
+        content_type=data.get("content_type"),
+        content_ref=data.get("content_ref") if ok else None,
+        content_hash=(data.get("sha256") or data.get("content_hash")) if ok else None,
+        content=None if preview or not ok else data.get("full_text", data.get("content")),
+        summary_basis="preview_only" if preview else "page" if ok else "none",
+        failure_reason=(reason or status) if status in failed | {"unavailable", "deferred"} else None,
+        extra=extra,
+    ).to_dict()
+    # Only a real input search_snippet can ground a snippet-only record.
+    if not ok and snippet_input:
+        record["summary_basis"] = "search_snippet"
+        record["extra"]["search_snippet"] = snippet_input
+    return record
 
 
 def fetch_article_content(
@@ -249,96 +330,96 @@ def fetch_article_content(
     url: str,
     *,
     providers: Sequence[ProviderCallable] = (),
+    snippet_input: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch one URL → one evidence record.
+    """Call provider[0] once; explicit providers override all dependency states.
 
-    ``providers`` is an ordered list of zero-arg-prepared callables that
-    accept ``(article_id, url)`` and return a mapping. The first provider
-    is consulted first; if it raises, the record is marked ``"failed"``
-    with the exception class name in ``failure_reason``. When ``providers``
-    is empty OR :func:`check_dependencies` returns ``"unavailable"``, the
-    call returns an URL-only ``"unavailable"`` record and never invokes
-    anything.
+    Provider exceptions become honest failed records. Invalid envelopes and
+    identity mismatches reject the batch instead of becoming successful records.
     """
-
     if not url:
-        record = _unavailable_record(
-            article_id=article_id,
-            url=url,
-            failure_reason="missing url",
-        )
-        return record.to_dict()
-
-    if check_dependencies() in ("unavailable", "partial") or not providers:
-        return _unavailable_record(article_id=article_id, url=url).to_dict()
-
-    provider = providers[0]
+        return _unavailable_record(article_id=article_id, url=url, failure_reason="missing url").to_dict()
+    providers = providers or _default_providers()
+    if not providers:
+        record = _unavailable_record(article_id=article_id, url=url).to_dict()
+        if snippet_input:
+            record["summary_basis"] = "search_snippet"
+            record["extra"]["search_snippet"] = snippet_input
+        return record
     try:
-        payload = provider(article_id, url)
-    except BaseException as exc:  # noqa: BLE001 - honest error surfacing
-        record = ArticleEvidenceRecord(
-            article_id=article_id,
-            requested_url=url,
-            final_url=None,
-            status="failed",
-            attempts=(),
-            selected_method=None,
-            content_type=None,
-            content_ref=None,
-            content=None,
-            content_hash=None,
-            summary_basis=None,
-            failure_reason=f"{type(exc).__name__}: {exc}",
-        )
-        return record.to_dict()
-
-    record = _record_from_provider_payload(article_id=article_id, url=url, payload=payload)
-    return record.to_dict()
+        payload = providers[0](article_id, url)
+    except ArticleContentAdapterError:
+        raise
+    except Exception as exc:
+        record = _unavailable_record(article_id=article_id, url=url,
+            failure_reason=f"{type(exc).__name__}: {exc}").to_dict()
+        record["status"] = "failed"
+        return record
+    return map_tool_result_to_record(article_id, url, snippet_input, payload)
 
 
-# ---------------------------------------------------------------------------
-# Multi-input collector
-# ---------------------------------------------------------------------------
-
-
-def _collect_unique_articles(
-    inputs: Iterable[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """Deduplicate ``inputs`` by ``article_id`` (then ``url``) preserving
-    the *first* occurrence in input order. A bare URL is allowed in lieu of
-    an ``article_id``; the canonical URL is used as the identity in that
-    case.
-    """
-
+def _collect_unique_articles(inputs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """URL-first identity, first occurrence wins; conflicting IDs fail closed."""
     from climate_monitor.dedupe import canonical_url
 
-    seen: set[str] = set()
-    ordered: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    seen_ids: dict[str, str] = {}
+    ordered = []
     for raw in inputs:
-        article_id = str(raw.get("article_id") or "").strip()
         url = str(raw.get("url") or "").strip()
-        if not article_id:
-            if not url:
-                # Skip silent drops: an entry with no article_id and no url
-                # has no identity to operate on. We retain it under an
-                # explicit sentinel so callers can see the miss.
-                article_id = "missing-identity"
-            else:
-                article_id = canonical_url(url)
-        if not url:
-            url = ""
-        identity = (article_id, canonical_url(url)) if url else (article_id, "")
-        if identity in seen:
+        canonical = canonical_url(url)
+        article_id = str(raw.get("article_id") or canonical).strip()
+        if not article_id or not url:
+            raise ArticleContentAdapterError("missing_input_identity")
+        if article_id in seen_ids and seen_ids[article_id] != canonical:
+            raise ArticleContentAdapterError("conflicting_article_id")
+        seen_ids[article_id] = canonical
+        if canonical in seen_urls:
             continue
-        seen.add(identity)
-        ordered.append(
-            {
-                "article_id": article_id,
-                "url": url,
-                "title": str(raw.get("title") or ""),
-            }
-        )
+        seen_urls.add(canonical)
+        ordered.append({**raw, "article_id": article_id, "url": url})
     return ordered
+
+
+def verify_record(record, *, inputs_index, content_resolver=None) -> None:
+    """Verify membership and complete referenced bytes, never the preview alone."""
+    if not isinstance(record, Mapping):
+        raise ArticleContentAdapterError("missing_output_record")
+    article_id = record.get("article_id")
+    if not article_id or not record.get("requested_url"):
+        raise ArticleContentAdapterError("missing_output_identity")
+    if article_id not in inputs_index:
+        raise ArticleContentAdapterError("extra_output_identity")
+    if record["requested_url"] != inputs_index[article_id]["url"]:
+        raise ArticleContentAdapterError("wrong_requested_url")
+    if record.get("status") == "ok":
+        ref, digest = record.get("content_ref"), record.get("content_hash")
+        if not ref or not digest:
+            raise ArticleContentAdapterError("content_ref_unresolvable")
+        try:
+            body = (content_resolver or resolve_content_ref)(ref, digest)
+        except ArticleContentAdapterError:
+            raise
+        except (OSError, ValueError, KeyError) as exc:
+            raise ArticleContentAdapterError("content_ref_unresolvable") from exc
+        if not isinstance(body, bytes) or hashlib.sha256(body).hexdigest() != digest:
+            raise ArticleContentAdapterError("content_hash_mismatch")
+        inline = record.get("content")
+        if inline is not None and inline.encode("utf-8") != body:
+            raise ArticleContentAdapterError("inline_content_mismatch")
+
+
+def _verify_batch(records, articles, *, content_resolver=None):
+    inputs_index = {a["article_id"]: a for a in articles}
+    seen = set()
+    for record in records:
+        verify_record(record, inputs_index=inputs_index, content_resolver=content_resolver)
+        identity = record["article_id"]
+        if identity in seen:
+            raise ArticleContentAdapterError("duplicate_output_identity")
+        seen.add(identity)
+    if seen != set(inputs_index):
+        raise ArticleContentAdapterError("missing_output_identity")
 
 
 def collect_evidence(
@@ -346,23 +427,21 @@ def collect_evidence(
     *,
     providers: Sequence[ProviderCallable] = (),
 ) -> list[dict[str, Any]]:
-    """Emit exactly one record per unique ``(article_id, url)`` input.
-
-    * Inputs are deduplicated by ``(article_id, url)`` (first wins).
-    * Each distinct ``article_id`` triggers exactly one upstream provider call.
-    * Output order matches input order.
-    * ``fetch_article_content`` is invoked once per unique identity and the
-      returned record is materialised with a deterministic ``record_hash``.
-    """
-
+    """Fetch once per canonical URL, preserve input order, reject invalid batches."""
     articles = _collect_unique_articles(unique_articles)
-    records: list[dict[str, Any]] = []
+    providers = providers or _default_providers()
+    resolver = getattr(providers[0], "content_resolver", None) if providers else None
+    records = []
     for article in articles:
-        record = fetch_article_content(
-            article["article_id"], article["url"], providers=providers
-        )
-        record["record_hash"] = _record_digest(record)
+        record = fetch_article_content(article["article_id"], article["url"],
+            providers=providers, snippet_input=article.get("search_snippet"))
+        if isinstance(record, dict):
+            record.setdefault("extra", {}).update({key: article[key] for key in
+                ("source_item_id", "source_name", "source_id", "run_id", "item_status") if key in article})
         records.append(record)
+    _verify_batch(records, articles, content_resolver=resolver)
+    for record in records:
+        record["record_hash"] = _record_digest(record)
     return records
 
 
@@ -434,7 +513,10 @@ def build_article_evidence_artifact(
     """Build (in memory) the versioned article-evidence.v1 artifact."""
 
     dependency_status = check_dependencies()
-    records = collect_evidence(unique_articles, providers=providers)
+    articles = _collect_unique_articles(unique_articles)
+    records = collect_evidence(articles, providers=providers)
+    resolver = getattr(providers[0], "content_resolver", None) if providers else None
+    _verify_batch(records, articles, content_resolver=resolver)
     artifact: dict[str, Any] = {
         "schema_version": ARTICLE_EVIDENCE_SCHEMA_VERSION,
         "report_date": report_date,

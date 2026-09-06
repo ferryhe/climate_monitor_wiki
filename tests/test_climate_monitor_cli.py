@@ -6,6 +6,8 @@ import subprocess
 import sys
 from textwrap import dedent
 
+import pytest
+
 
 def test_run_climate_monitor_json_outputs_fixture_dry_run_result(tmp_path):
     source_config = tmp_path / "sources.yaml"
@@ -149,3 +151,108 @@ output:
     assert "asset_metadata" not in payload["items"][1]
     assert payload["items"][2]["lane"] == "research"
     assert payload["items"][2]["published"] == "2026-05-01"
+
+
+def test_article_evidence_source_dir_override(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from climate_monitor import config
+    from climate_monitor.models import CandidateItem, MonitorRunResult
+    from scripts import run_climate_monitor as cli
+
+    fallback = tmp_path / "configured-sources"
+    override = tmp_path / "override-sources"
+    monkeypatch.setattr(config, "load_run_config", lambda _: SimpleNamespace(source_dir=fallback))
+    monkeypatch.setattr(cli, "run_monitor", lambda **kw: MonitorRunResult(
+        report_date=kw["report_date"], report_path=None,
+        items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
+                             summary="", source_name="Example", lane="website"),)))
+    monkeypatch.setattr(sys, "argv", ["run_climate_monitor", "--date", "2026-09-07",
+        "--source-dir", str(override), "--no-sync", "--no-update-seen-state"])
+    cli.main()
+    assert (override / "article-evidence.v1_2026-09-07.json").exists()
+    assert not fallback.exists()
+
+
+def test_json_mode_still_stages_evidence(tmp_path, monkeypatch, capsys):
+    from climate_monitor.models import CandidateItem, MonitorRunResult
+    from scripts import run_climate_monitor as cli
+    monkeypatch.setattr(cli, "run_monitor", lambda **kw: MonitorRunResult(
+        report_date=kw["report_date"], report_path=None,
+        items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
+                             summary="", source_name="Example", lane="website"),)))
+    monkeypatch.setattr(sys, "argv", ["run_climate_monitor", "--date", "2026-09-07",
+        "--source-dir", str(tmp_path), "--no-sync", "--no-update-seen-state", "--json"])
+    cli.main()
+    assert (tmp_path / "article-evidence.v1_2026-09-07.json").exists()
+    assert json.loads(capsys.readouterr().out)["item_count"] == 1
+
+
+def test_article_evidence_uses_configured_source_dir_without_override(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from climate_monitor import config
+    from climate_monitor.models import CandidateItem, MonitorRunResult
+    from scripts import run_climate_monitor as cli
+    monkeypatch.setattr(config, "load_run_config", lambda _: SimpleNamespace(source_dir=tmp_path))
+    monkeypatch.setattr(cli, "run_monitor", lambda **kw: MonitorRunResult(
+        report_date=kw["report_date"], report_path=None,
+        items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
+                             summary="", source_name="Example", lane="website"),)))
+    monkeypatch.setattr(sys, "argv", ["run_climate_monitor", "--date", "2026-09-07",
+        "--no-sync", "--no-update-seen-state"])
+    cli.main()
+    assert (tmp_path / "article-evidence.v1_2026-09-07.json").exists()
+
+
+def test_staging_only_adds_artifact_and_stdout(tmp_path, monkeypatch, capsys):
+    import builtins
+    from datetime import date
+    from climate_monitor.models import CandidateItem
+    from scripts import run_climate_monitor as cli
+    from tests.fixtures.article_content.providers import loopback_success_provider
+
+    forbidden = ("climate_registry", "climate_delivery", "api_server",
+                 "scripts.publish_weekly_reports", "scripts.reload_and_smoke_test")
+    original = builtins.__import__
+    def guarded_import(name, *args, **kwargs):
+        assert not name.startswith(forbidden), f"unexpected staging import: {name}"
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    def no_process(*args, **kwargs):
+        raise AssertionError("staging must not launch external processes")
+    monkeypatch.setattr(subprocess, "Popen", no_process)
+    report = tmp_path / "report.md"
+    report.write_text("Previously written report\n")
+    item = CandidateItem(title="Climate insurance", url="https://example.org/climate",
+                         summary="", source_name="Example", lane="website")
+    path = cli._stage_article_evidence(items=(item,), report_date=date(2026, 9, 7),
+        source_dir=tmp_path, providers=(loopback_success_provider,))
+    assert {p.name for p in tmp_path.iterdir()} == {"report.md", path.name}
+    assert report.read_text() == "Previously written report\n"
+    assert capsys.readouterr().out == ""  # The CLI prints the returned artifact path.
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+@pytest.mark.parametrize("provider", ["loopback_damaged_content_ref_provider", "missing_provider"])
+def test_staging_failure_preserves_report_and_surfaces_warning(tmp_path, monkeypatch, capsys, json_mode, provider):
+    from climate_monitor.models import CandidateItem, MonitorRunResult
+    from scripts import run_climate_monitor as cli
+    report = tmp_path / "climate-monitor-2026-09-07.md"
+    def run_monitor(**kw):
+        report.write_text("Report remains intact\n")
+        return MonitorRunResult(report_date=kw["report_date"], report_path=str(report),
+            items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
+                                 summary="", source_name="Example", lane="website"),))
+    monkeypatch.setattr(cli, "run_monitor", run_monitor)
+    args = ["run_climate_monitor", "--date", "2026-09-07", "--source-dir", str(tmp_path),
+        "--no-sync", "--no-update-seen-state", "--article-evidence-loopback",
+        f"tests.fixtures.article_content.providers:{provider}"]
+    monkeypatch.setattr(sys, "argv", args + (["--json"] if json_mode else []))
+    cli.main()
+    output = capsys.readouterr().out
+    assert "article-evidence staging failed:" in output
+    if json_mode:
+        assert json.loads(output)["warnings"]
+    else:
+        assert f"Report written: {report}" in output
+    assert report.read_text() == "Report remains intact\n"
+    assert {p.name for p in tmp_path.iterdir()} == {report.name}

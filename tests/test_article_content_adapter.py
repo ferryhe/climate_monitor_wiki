@@ -2,10 +2,9 @@
 
 These tests use fake providers and do NOT touch the network, the production
 ``web_listening`` package, or the production Registry. The adapter MUST be
-honest about dependency status: when ``web_listening.contracts.article_content``
-is not importable the helper returns ``"unavailable"`` and every record is
-URL-only with explicit ``status="unavailable"`` and a populated
-``failure_reason``.
+honest about dependency status: without an importable public reader or explicit
+provider, every record is URL-only with ``status="unavailable"`` and a populated
+``failure_reason``. Explicit loopbacks always override dependency status.
 """
 
 from __future__ import annotations
@@ -21,6 +20,9 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+
+from climate_monitor import article_content_adapter as adapter
+from tests.fixtures.article_content import providers as loopbacks
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +168,7 @@ def test_fetch_returns_unavailable_record_when_dependency_missing(ensure_unavail
     assert record["selected_method"] is None
     assert record["content"] is None
     assert record["content_hash"] is None
-    assert record["summary_basis"] is None
+    assert record["summary_basis"] == "none"
     assert (
         record["failure_reason"]
         == "web_listening#70 article_content fallback policy not yet available"
@@ -174,28 +176,22 @@ def test_fetch_returns_unavailable_record_when_dependency_missing(ensure_unavail
     assert record["attempts"] == []
 
 
-def test_fetch_returns_unavailable_record_when_dependency_partial(force_partial):
-    """Partial status means contract present but no providers — must skip fetch."""
-
+def test_explicit_providers_override_partial_dependency(force_partial):
     from climate_monitor.article_content_adapter import fetch_article_content
 
-    sentinel_called = {"value": False}
+    provider = _FakeProvider()
+    record = fetch_article_content("aid-2", "https://example.org/partial", providers=(provider,))
+    assert provider.call_log == [("aid-2", "https://example.org/partial")]
+    assert record["status"] == "no_content"
 
-    def _should_not_run(article_id, url):
-        sentinel_called["value"] = True
-        return {}
 
-    record = fetch_article_content(
-        "aid-2",
-        "https://example.org/partial",
-        providers=(_should_not_run,),
-    )
-    assert sentinel_called["value"] is False, "providers must not be invoked when status=partial"
+def test_no_providers_with_partial_dependency_returns_unavailable_record(force_partial):
+    from climate_monitor.article_content_adapter import fetch_article_content
+
+    record = fetch_article_content("aid-2", "https://example.org/partial")
     assert record["status"] == "unavailable"
-    assert record["selected_method"] is None
     assert record["content"] is None
     assert record["content_hash"] is None
-    assert record["summary_basis"] is None
 
 
 def test_fetch_dispatches_to_provider_when_available(force_available):
@@ -316,7 +312,7 @@ def test_collect_evidence_unavailable_path_emits_honest_records(ensure_unavailab
         assert record["selected_method"] is None
         assert record["content"] is None
         assert record["content_hash"] is None
-        assert record["summary_basis"] is None
+        assert record["summary_basis"] == "none"
         assert (
             record["failure_reason"]
             == "web_listening#70 article_content fallback policy not yet available"
@@ -524,3 +520,256 @@ def test_run_climate_monitor_wires_article_evidence_artifact(tmp_path, monkeypat
     assert artifact["record_count"] == 1
     assert artifact["records"][0]["article_id"]  # non-empty
     assert artifact["records"][0]["requested_url"] == "https://example.org/climate"
+
+
+def test_url_only_summary_basis_is_none(ensure_unavailable):
+    from climate_monitor.article_content_adapter import fetch_article_content
+    assert fetch_article_content("a", "https://example.org/a")["summary_basis"] == "none"
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("present", "ok"), ("no_content", "no_content"), ("not_found", "failed"),
+    ("auth_required", "failed"), ("permission_denied", "failed"),
+    ("blocked", "failed"), ("interaction_required", "failed"),
+    ("failed_quality_gate", "failed"), ("error", "failed"), ("redirected", "no_content"),
+])
+def test_tool_result_status_mapping(status, expected):
+    payload = loopbacks.loopback_success_provider("a", "https://example.org/a")
+    payload.update(data_status=status, stop_reason="reader_runtime_error" if status == "error" else status)
+    record = adapter.map_tool_result_to_record("a", "https://example.org/a", None, payload)
+    assert record["status"] == expected
+    assert record["attempts"] == payload["data"]["attempts"]
+    assert record["selected_method"] == "web_http"
+    assert record["content_type"] == "text/html"
+    assert record["extra"]["extraction_metadata"]["status_code"] == 200
+    if expected == "ok":
+        assert record["content_ref"] == payload["data"]["content_ref"]
+        assert record["content_hash"] == payload["data"]["sha256"]
+        assert record["summary_basis"] == "page"
+    else:
+        assert record["content_ref"] is record["content_hash"] is record["content"] is None
+        assert record["summary_basis"] == "none"
+    if expected == "failed":
+        assert record["failure_reason"] == payload["stop_reason"]
+
+
+def test_preview_is_never_canonical_body():
+    records = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+        providers=(loopbacks.loopback_preview_only_provider,))
+    record = records[0]
+    assert record["content"] is None
+    assert record["summary_basis"] == "preview_only"
+    assert record["extra"]["content_status"] == "present_preview_only"
+    assert len(record["extra"]["truncated_preview"]) == 2000
+    full = loopbacks.in_process_resolver(record["content_ref"], record["content_hash"])
+    assert len(full) > 2000
+    assert hashlib.sha256(full).hexdigest() == record["content_hash"]
+
+
+def test_redirect_preserves_requested_and_final_urls():
+    record = adapter.fetch_article_content("a", "https://example.org/a",
+        providers=(loopbacks.loopback_redirect_provider,))
+    assert record["requested_url"] == "https://example.org/a"
+    assert record["final_url"] == "https://example.org/a/redirected"
+    assert record["extra"]["redirected"] is True
+    assert record["attempts"][-1]["redirected"] is True
+
+
+def test_safety_error_does_not_become_successful_redirect():
+    payload = loopbacks.loopback_redirect_provider("a", "https://example.org/a")
+    payload.update(data_status="error", stop_reason="unsafe_redirect")
+    record = adapter.map_tool_result_to_record("a", "https://example.org/a", None, payload)
+    assert record["status"] == "failed"
+    assert "redirected" not in record["extra"]
+
+
+@pytest.mark.parametrize("snippet", [None, "Input search evidence"])
+def test_snippet_only_comes_from_input(snippet):
+    def provider(a, u):
+        payload = loopbacks.loopback_no_content_provider(a, u)
+        payload["data"]["search_snippet"] = "Invented upstream text"
+        payload["data"]["snippet"] = "Invented upstream text"
+        return payload
+    record = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a",
+        "search_snippet": snippet}], providers=(provider,))[0]
+    assert record["summary_basis"] == ("search_snippet" if snippet else "none")
+    assert record["extra"].get("search_snippet") == snippet
+    assert "Invented" not in json.dumps(record)
+    assert record["content"] is None
+
+
+@pytest.mark.parametrize("provider,reason", [
+    (loopbacks.loopback_damaged_content_ref_provider, "content_ref_unresolvable"),
+    (loopbacks.loopback_hash_mismatch_provider, "content_hash_mismatch"),
+    (loopbacks.loopback_wrong_identity_provider, "wrong_article_id"),
+])
+def test_corrupt_batch_has_no_partial_write(tmp_path, provider, reason):
+    def mixed(a, u):
+        return loopbacks.loopback_success_provider(a, u) if a == "good" else provider(a, u)
+    mixed.content_resolver = loopbacks.in_process_resolver
+    with pytest.raises(adapter.ArticleContentAdapterError, match=reason):
+        adapter.run_article_evidence([
+            {"article_id": "good", "url": "https://example.org/good"},
+            {"article_id": "bad", "url": "https://example.org/bad"}],
+            providers=(mixed,), report_date="2026-09-07", source_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_wrong_requested_url_rejects_batch(tmp_path):
+    def provider(a, u):
+        payload = loopbacks.loopback_success_provider(a, u)
+        payload["data"]["requested_url"] = "https://wrong.example/"
+        return payload
+    with pytest.raises(adapter.ArticleContentAdapterError, match="wrong_requested_url"):
+        adapter.run_article_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+            providers=(provider,), report_date="2026-09-07", source_dir=tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("kind,reason", [
+    ("missing", "missing_output_identity"), ("extra", "extra_output_identity"),
+    ("duplicate", "duplicate_output_identity"), ("empty", "missing_output_identity"),
+])
+def test_output_set_mismatch_rejects_entire_artifact(tmp_path, monkeypatch, kind, reason):
+    inputs = [{"article_id": "a", "url": "https://example.org/a"},
+              {"article_id": "b", "url": "https://example.org/b"}]
+    original = adapter.collect_evidence
+    def corrupt(articles, **kw):
+        records = original(articles, providers=(loopbacks.loopback_no_content_provider,))
+        if kind == "missing":
+            records.pop()
+        elif kind == "extra":
+            records.append({**records[0], "article_id": "extra"})
+        elif kind == "duplicate":
+            records.append(dict(records[0]))
+        else:
+            records[0].update(article_id="", requested_url="")
+        return records
+    monkeypatch.setattr(adapter, "collect_evidence", corrupt)
+    with pytest.raises(adapter.ArticleContentAdapterError, match=reason):
+        adapter.run_article_evidence(inputs, report_date="2026-09-07", source_dir=tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_missing_input_identity_rejects_before_fetch(tmp_path):
+    provider = _FakeProvider()
+    with pytest.raises(adapter.ArticleContentAdapterError, match="missing_input_identity"):
+        adapter.run_article_evidence([{}], providers=(provider,),
+            report_date="2026-09-07", source_dir=tmp_path)
+    assert provider.call_log == []
+    assert not list(tmp_path.iterdir())
+
+
+def test_same_url_across_a_b_fetches_once():
+    provider = _FakeProvider()
+    records = adapter.collect_evidence([
+        {"article_id": "pillar-a", "url": "https://example.org/a?utm_source=mail"},
+        {"article_id": "pillar-b", "url": "https://example.org/a"}], providers=(provider,))
+    assert len(provider.call_log) == len(records) == 1
+    assert records[0]["article_id"] == "pillar-a"
+
+
+def test_one_id_cannot_fetch_two_urls():
+    provider = _FakeProvider()
+    with pytest.raises(adapter.ArticleContentAdapterError, match="conflicting_article_id"):
+        adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a"},
+            {"article_id": "a", "url": "https://example.org/b"}], providers=(provider,))
+    assert not provider.call_log
+
+
+def test_artifact_digest_survives_reserialization(tmp_path):
+    _, path = adapter.run_article_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+        providers=(loopbacks.loopback_success_provider,), report_date="2026-09-07", source_dir=tmp_path)
+    artifact = json.loads(path.read_text())
+    for record in artifact["records"]:
+        payload = {k: v for k, v in record.items() if k != "record_hash"}
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        assert hashlib.sha256((adapter.RECORD_DIGEST_VERSION + "\n" + canonical).encode()).hexdigest() == record["record_hash"]
+    hashes = json.dumps([r["record_hash"] for r in artifact["records"]], separators=(",", ":"))
+    assert hashlib.sha256((adapter.ARTICLE_EVIDENCE_DIGEST_VERSION + "\n" + hashes).encode()).hexdigest() == artifact["artifact_digest"]
+
+
+def test_default_public_provider_wraps_url_signature_and_tool_result(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    class ToolResult:
+        def model_dump(self):
+            payload = loopbacks.loopback_success_provider("a", "https://example.org/a")
+            payload["data"].pop("article_id")  # Not required by the upstream envelope.
+            return payload
+    def upstream(url):
+        calls.append(url)
+        return ToolResult()
+    module = SimpleNamespace(fetch_article_content=upstream,
+        _output_path=lambda output: "/upstream/default/article_content",
+        _read_evidence=lambda root, ref, digest: loopbacks.in_process_resolver(ref, digest))
+    original = adapter.importlib.import_module
+    monkeypatch.setattr(adapter.importlib, "import_module", lambda name:
+        module if name == "web_listening.blocks.article_content" else original(name))
+    assert adapter.check_dependencies() == "available"
+    artifact = adapter.build_article_evidence_artifact([
+        {"article_id": "a", "url": "https://example.org/a"}], report_date="2026-09-07")
+    assert calls == ["https://example.org/a"]
+    assert artifact["records"][0]["status"] == "ok"
+
+
+def test_explicit_provider_overrides_unavailable_and_default(monkeypatch):
+    monkeypatch.setattr(adapter, "check_dependencies", lambda: "unavailable")
+    monkeypatch.setattr(adapter, "_default_providers", lambda: pytest.fail("default provider invoked"))
+    record = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+        providers=(loopbacks.loopback_success_provider,))[0]
+    assert record["status"] == "ok"
+
+
+def test_unresolvable_default_ref_fails_closed(monkeypatch):
+    monkeypatch.setattr(adapter, "_import_public_reader", lambda: None)
+    with pytest.raises(adapter.ArticleContentAdapterError, match="content_ref_unresolvable"):
+        adapter.resolve_content_ref("missing", "0" * 64)
+
+
+def test_stealth_skip_attempt_stays_ordered():
+    record = adapter.fetch_article_content("a", "https://example.org/a",
+        providers=(loopbacks.loopback_stealth_skip_provider,))
+    assert [a["tool"] for a in record["attempts"]] == ["web_http", "cloakbrowser"]
+    assert record["attempts"][1]["skipped"] is True
+    assert record["status"] == "no_content"
+
+
+def test_failed_batch_preserves_previous_artifact(tmp_path):
+    path = tmp_path / "article-evidence.v1_2026-09-07.json"
+    path.write_text("previous artifact")
+    with pytest.raises(adapter.ArticleContentAdapterError, match="content_hash_mismatch"):
+        adapter.run_article_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+            providers=(loopbacks.loopback_hash_mismatch_provider,), report_date="2026-09-07", source_dir=tmp_path)
+    assert path.read_text() == "previous artifact"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_missing_provider_output_is_rejected(tmp_path):
+    with pytest.raises(adapter.ArticleContentAdapterError, match="invalid_tool_result"):
+        adapter.run_article_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+            providers=(lambda a, u: None,), report_date="2026-09-07", source_dir=tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_first_provider_is_the_only_provider_called():
+    def unexpected(a, u):
+        pytest.fail("consumer must not reimplement the upstream fallback chain")
+    record = adapter.fetch_article_content("a", "https://example.org/a",
+        providers=(loopbacks.loopback_failure_provider, unexpected))
+    assert record["status"] == "failed"
+    assert record["failure_reason"] == "reader_runtime_error"
+
+
+@pytest.mark.parametrize("code", ["content_ref_corrupt", "content_ref_hash_mismatch",
+                                  "capture_identity_mismatch", "capture_hash_mismatch"])
+def test_upstream_integrity_error_rejects_batch(tmp_path, code):
+    def provider(a, u):
+        payload = loopbacks.loopback_failure_provider(a, u)
+        payload["stop_reason"] = code
+        payload["error"]["code"] = code
+        return payload
+    with pytest.raises(adapter.ArticleContentAdapterError, match=code):
+        adapter.run_article_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+            providers=(provider,), report_date="2026-09-07", source_dir=tmp_path)
+    assert not list(tmp_path.iterdir())

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import json
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -22,6 +25,8 @@ def _stage_article_evidence(
     items,
     report_date: date,
     source_dir: Path,
+    providers=(),
+    manifest_path: str | Path | None = None,
 ) -> Path | None:
     """Stage the post-#91 unique-candidate evidence artifact.
 
@@ -35,17 +40,36 @@ def _stage_article_evidence(
 
     if not items:
         return None
-    unique_articles = [
-        {"article_id": "", "url": getattr(item, "url", ""), "title": getattr(item, "title", "")}
-        for item in items
-    ]
-    # Delegate to the adapter's public builder so the artifact stays in
-    # sync with the documented schema_version, dependency_status enum, and
-    # record_count/digest fields. Tests can monkeypatch
-    # ``run_climate_monitor.collect_evidence`` to swap provider behaviour
-    # without touching this builder call.
+    # Candidate selection already used read_manifest_items in the orchestrator.
+    # Join producer provenance here because CandidateItem carries source_item_id
+    # and source_name but has no run/status fields. Never rediscover candidates.
+    provenance = {}
+    if manifest_path:
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifests = payload if isinstance(payload, list) else [payload]
+        for manifest in manifests:
+            source = manifest.get("source") or {}
+            source_name = source.get("site_name") or source.get("source_id") or "Website"
+            for raw in manifest.get("discovered_items", []):
+                if raw.get("status") not in {"changed", "downloaded", "new", "updated"}:
+                    continue
+                provenance.setdefault((source_name, raw.get("item_id"), raw.get("url")), {
+                    "source_id": source.get("source_id"),
+                    "run_id": (raw.get("provenance") or {}).get("run_id") or (manifest.get("run") or {}).get("run_id"),
+                    "item_status": raw["status"],
+                })
+    unique_articles = []
+    for item in items:
+        raw = {"article_id": "", "url": item.url, "title": item.title,
+               "source_item_id": item.source_item_id, "source_name": item.source_name}
+        raw.update(provenance.get((item.source_name, item.source_item_id, item.url), {}))
+        # Candidate summaries/evidence snippets are not search_snippet inputs.
+        if getattr(item, "search_snippet", None):
+            raw["search_snippet"] = item.search_snippet
+        unique_articles.append(raw)
     artifact = build_article_evidence_artifact(
         unique_articles,
+        providers=providers,
         report_date=report_date.isoformat(),
     )
     return write_article_evidence_artifact(
@@ -60,6 +84,10 @@ def main() -> None:
     parser.add_argument("--date", default="")
     parser.add_argument("--manifest-fixture", default="")
     parser.add_argument("--research-fixture", default="")
+    parser.add_argument(
+        "--article-evidence-loopback", default="", metavar="MODULE:CALLABLE",
+        help="Inject an article-content provider for test/CI evidence staging.",
+    )
     parser.add_argument(
         "--article-changes-artifact",
         default="",
@@ -139,29 +167,46 @@ def main() -> None:
             parser.error("--authoring-response requires --production-weekly")
         result = run_monitor(**common)
 
-    if args.json:
-        print(result.to_json(), end="")
-        return
-
     # Issue #92 wiring: stage the post-#91 unique-candidate evidence artifact.
     # Steps 1-5 are not modified — this is a thin, additive stage. Failure to
     # stage must not break the report write.
-    if result.items and not args.json:
+    if result.items:
         try:
             from climate_monitor.config import load_run_config
-            config = load_run_config(args.run_config)
-            output_source_dir = Path(config.source_dir)
+            output_source_dir = (
+                Path(args.source_dir) if args.source_dir
+                else Path(load_run_config(args.run_config).source_dir)
+            )
             if not output_source_dir.is_absolute():
                 output_source_dir = Path.cwd() / output_source_dir
+            providers = ()
+            if args.article_evidence_loopback:
+                module_name, separator, callable_name = args.article_evidence_loopback.partition(":")
+                if not separator or not module_name or not callable_name:
+                    raise ValueError("--article-evidence-loopback requires module:callable")
+                provider = getattr(importlib.import_module(module_name), callable_name)
+                if not callable(provider):
+                    raise ValueError("--article-evidence-loopback target is not callable")
+                providers = (provider,)
             artifact_path = _stage_article_evidence(
                 items=result.items,
                 report_date=result.report_date,
                 source_dir=output_source_dir,
+                providers=providers,
+                manifest_path=args.manifest_fixture or None,
             )
-            if artifact_path is not None:
+            if artifact_path is not None and not args.json:
                 print(f"Article evidence: {artifact_path}")
         except Exception as exc:  # noqa: BLE001 - honest error surfacing
-            print(f"Warning: article-evidence staging failed: {exc}")
+            warning = f"article-evidence staging failed: {exc}"
+            if args.json:
+                result = replace(result, warnings=(*result.warnings, warning))
+            else:
+                print(f"Warning: {warning}")
+
+    if args.json:
+        print(result.to_json(), end="")
+        return
 
     if result.report_path:
         print(f"Report written: {result.report_path}")

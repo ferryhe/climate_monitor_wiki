@@ -1,0 +1,161 @@
+{
+  "schema_version": "web-listening-manifest.v1",
+  "manifest_id": "manifest-climate-92-v2",
+  "generated_at": "2026-09-07T00:00:00Z",
+  "producer": {
+    "name": "web-listening",
+    "contract_version": "web-listening-manifest.v1"
+  },
+  "source": {
+    "source_id": "climate-92",
+    "site_name": "Climate 92 fixture",
+    "site_url": "https://example.org/"
+  },
+  "run": {
+    "run_id": "run-92-6",
+    "parent_run_id": "6",
+    "run_type": "export_manifest"
+  },
+  "discovered_items": [
+    {
+      "item_id": "climate-92-html",
+      "item_type": "page",
+      "url": "https://example.org/climate-92/html",
+      "title": "Climate insurance flood risk",
+      "status": "new",
+      "item_state": "new",
+      "observed_at": "2026-09-07T00:00:00Z",
+      "content_type": "text/html",
+      "discovered_from": "https://example.org/climate-92/",
+      "parent_item_id": "climate-92-index",
+      "provenance": {
+        "source_id": "climate-92",
+        "run_id": "run-92-6",
+        "extraction_method": "http"
+      },
+      "metadata": {
+        "snapshot_id": 6,
+        "prior_snapshot_id": 5,
+        "source_run_id": 6,
+        "item_status": "new"
+      }
+    },
+    {
+      "item_id": "climate-92-no-pdf",
+      "item_type": "page_link",
+      "url": "https://example.org/climate-92/no-pdf",
+      "title": "Climate insurance transition pricing",
+      "status": "new",
+      "item_state": "new",
+      "observed_at": "2026-09-07T00:00:00Z",
+      "content_type": null,
+      "discovered_from": "https://example.org/climate-92/",
+      "parent_item_id": "climate-92-index",
+      "provenance": {
+        "source_id": "climate-92",
+        "run_id": "run-92-6",
+        "extraction_method": "http"
+      },
+      "metadata": {
+        "snapshot_id": 6,
+        "prior_snapshot_id": 5,
+        "source_run_id": 6,
+        "item_status": "new"
+      }
+    },
+    {
+      "item_id": "climate-92-bootstrap",
+      "item_type": "page_link",
+      "url": "https://example.org/climate-92/bootstrap",
+      "title": "Climate insurance baseline",
+      "status": "existing",
+      "item_state": "existing",
+      "observed_at": "2026-09-07T00:00:00Z",
+      "content_type": null,
+      "discovered_from": "https://example.org/climate-92/",
+      "parent_item_id": "climate-92-index",
+      "provenance": {
+        "source_id": "climate-92",
+        "run_id": "run-92-6",
+        "extraction_method": "http"
+      },
+      "metadata": {
+        "snapshot_id": 6,
+        "prior_snapshot_id": null,
+        "source_run_id": 6,
+        "item_status": "existing"
+      }
+    },
+    {
+      "item_id": "climate-92-increment",
+      "item_type": "page_link",
+      "url": "https://example.org/climate-92/increment",
+      "title": "Climate reinsurance catastrophe capital",
+      "status": "updated",
+      "item_state": "updated",
+      "observed_at": "2026-09-07T00:00:00Z",
+      "content_type": null,
+      "discovered_from": "https://example.org/climate-92/",
+      "parent_item_id": "climate-92-index",
+      "provenance": {
+        "source_id": "climate-92",
+        "run_id": "run-92-6",
+        "extraction_method": "http"
+      },
+      "metadata": {
+        "snapshot_id": 6,
+        "prior_snapshot_id": 5,
+        "source_run_id": 6,
+        "item_status": "updated"
+      }
+    },
+    {
+      "item_id": "climate-92-waiting",
+      "item_type": "page_link",
+      "url": "https://example.org/climate-92/waiting",
+      "title": "Climate insurance wildfire underwriting",
+      "status": "new",
+      "item_state": "new",
+      "observed_at": "2026-09-07T00:00:00Z",
+      "content_type": null,
+      "discovered_from": "https://example.org/climate-92/",
+      "parent_item_id": "climate-92-index",
+      "provenance": {
+        "source_id": "climate-92",
+        "run_id": "run-92-6",
+        "extraction_method": "http"
+      },
+      "metadata": {
+        "snapshot_id": 6,
+        "prior_snapshot_id": 4,
+        "source_run_id": 6,
+        "item_status": "new"
+      }
+    },
+    {
+      "item_id": "climate-92-removed",
+      "item_type": "page_link",
+      "url": "https://example.org/climate-92/removed",
+      "title": "Climate insurance removed article",
+      "status": "removed",
+      "item_state": "removed",
+      "observed_at": "2026-09-07T00:00:00Z",
+      "content_type": null,
+      "discovered_from": "https://example.org/climate-92/",
+      "parent_item_id": "climate-92-index",
+      "provenance": {
+        "source_id": "climate-92",
+        "run_id": "run-92-6",
+        "extraction_method": "http"
+      },
+      "metadata": {
+        "snapshot_id": 6,
+        "prior_snapshot_id": 5,
+        "source_run_id": 6,
+        "item_status": "removed"
+      }
+    }
+  ],
+  "downloaded_assets": [],
+  "warnings": []
+}
