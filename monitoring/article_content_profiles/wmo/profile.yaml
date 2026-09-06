@@ -1,0 +1,39 @@
+schema_version: acquisition-profile.v1
+profile_id: wmo-climate-monitor-default
+site_key: wmo
+generated_at: '2026-05-12T12:00:00Z'
+strategy: http-first-with-open-fallbacks
+default_adapter: web_http
+fallback_order:
+  - browser_rendered
+quality_gates:
+  min_words: 120
+  min_links: 3
+  min_document_links: 0
+  require_status_ok: true
+  blocked_markers:
+    - access denied
+    - captcha
+    - cloudflare
+    - enable javascript
+    - forbidden
+safety:
+  allowed_domains:
+    - wmo.int
+  allow_stealth_browser: false
+  require_authorized_access: false
+adapters:
+  - adapter: web_http
+    enabled: true
+    reason: Default low-cost HTTP capture for public wmo pages.
+    config:
+      timeout_seconds: 30
+    safety: {}
+  - adapter: browser_rendered
+    enabled: true
+    reason: Fallback for pages that need client-side rendering.
+    config:
+      wait_until: domcontentloaded
+    safety: {}
+notes:
+  - Climate monitor default profile for wmo; allowed_domains narrowed to wmo.int.

@@ -266,10 +266,19 @@ def extract_articles_from_changes(site_id, since_date):
             """,
             re.VERBOSE,
         )
+        # AC-3: heading markers may be 1-6 ``#`` (single ``#`` for h1) and
+        # may be followed by arbitrary non-bracket text before the
+        # ``[Title](URL)``. This recovers real-world WRI h1 lines such as
+        # ``+ # The [Best Defense](URL) Against 'Natural' Disasters...``.
+        # ``-`` and `` `` (context) lines are still anchored to start-of-string
+        # with the leading ``+``/``!``/list-marker group above so they remain
+        # rejected.
         _PLAIN_LINK_PATTERN = re.compile(
             r"""^!?\s*                # optional leading '!' + whitespace
                 (?:[>*+\-]\s+)?       # optional single list marker + whitespace
-                (?:\#{2,6}\s+)?       # optional leading 2-6 '#' heading markers
+                (?:\#{1,6}\s+)?       # optional leading 1-6 '#' heading markers (h1..h6)
+                (?:[^\[\n]*?\s+)?     # optional non-bracket prefix text between
+                                      # the heading and the link (e.g. 'The ')
                 \[([^\]]+)\]          # link text (captured group 1)
                 \(\s*(https?://[^\s\)]+)\s*\)  # link target URL (captured group 2)
             """,

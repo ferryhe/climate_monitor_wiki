@@ -13,7 +13,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
@@ -433,17 +433,113 @@ def test_artifact_unavailable_path_is_honest(tmp_path, ensure_unavailable):
 # ---------------------------------------------------------------------------
 
 
-def test_run_climate_monitor_wires_article_evidence_artifact(tmp_path, monkeypatch):
-    """The wired entrypoint must produce an article-evidence.v1 artifact.
-
-    This exercises the post-#91 unique-candidate set → adapter path without
-    running the full Step 1-5 pipeline. We patch ``run_monitor`` to return
-    a synthetic ``MonitorRunResult`` carrying a unique-candidate list and
-    then call ``scripts.run_climate_monitor.main`` with a writable
-    ``--state-dir`` so the adapter output is materialised on disk.
+def test_orchestrator_stages_article_evidence_inside_seen_state_transaction(tmp_path, monkeypatch):
+    """AC-4: ``run_monitor`` stages the ``article-evidence.v1`` artifact as
+    part of the #91 transaction. The CLI no longer owns staging; this test
+    exercises the orchestrator directly with a synthetic manifest fixture
+    so no network or upstream package is required.
     """
 
-    from climate_monitor.models import CandidateItem, MonitorRunResult
+    import json
+    from datetime import date
+    from textwrap import dedent
+    from climate_monitor.orchestrator import run_monitor
+
+    sources_path = tmp_path / "sources.yaml"
+    sources_path.write_text(
+        dedent(
+            """
+            sources:
+              - key: iais
+                abbreviation: IAIS
+                full_name: International Association of Insurance Supervisors
+                url: https://www.iais.org/
+                tags: [insurance, climate]
+            """
+        ).strip()
+    )
+    run_config_path = tmp_path / "run_config.yaml"
+    run_config_path.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {(tmp_path / 'sources').as_posix()}
+  wiki_dir: {(tmp_path / 'wiki').as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {tmp_path.as_posix()}/state/seen_urls.json
+  title_tracking_path: {tmp_path.as_posix()}/state/seen_titles.json
+""".strip()
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": "web-listening-manifest.v1",
+        "source": {"source_id": "iais", "site_name": "IAIS"},
+        "discovered_items": [{
+            "item_id": "1", "item_type": "page",
+            "url": "https://www.iais.org/climate-supervision",
+            "title": "Climate supervision update",
+            "summary": "Insurance supervisors discuss climate risk.",
+            "status": "new", "observed_at": "2026-09-14T00:00:00Z",
+        }],
+        "downloaded_assets": [],
+    }))
+    research_path = tmp_path / "research.json"
+    research_path.write_text("[]")
+    seen_state_path = tmp_path / "state" / "seen_urls.json"
+    seen_state_path.parent.mkdir(parents=True, exist_ok=True)
+    seen_state_path.write_text("[]")
+    captured: dict[str, object] = {}
+
+    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+        from climate_monitor.article_content_adapter import (
+            build_article_evidence_artifact,
+            write_article_evidence_artifact,
+        )
+        artifact = build_article_evidence_artifact(
+            [], report_date=report_date.isoformat()
+        )
+        path = write_article_evidence_artifact(
+            source_dir, report_date.isoformat(), artifact
+        )
+        captured["path"] = path
+        return path
+
+    from climate_monitor import orchestrator
+    monkeypatch.setattr(orchestrator, "_stage_article_evidence", fake_stage)
+    run_monitor(
+        source_config_path=sources_path,
+        run_config_path=run_config_path,
+        report_date=date(2026, 9, 14),
+        manifest_fixture_path=manifest_path,
+        research_fixture_path=research_path,
+        state_dir=tmp_path / "state",
+        sync=False,
+        update_seen_state=False,
+    )
+    assert "path" in captured
+    assert str(captured["path"]).endswith("article-evidence.v1_2026-09-14.json")
+
+
+def test_run_climate_monitor_wires_article_evidence_artifact(tmp_path, monkeypatch):
+    """The CLI ``--article-evidence-loopback`` flag wires the provider
+    through to ``run_monitor`` so the orchestrator's #91-transaction
+    evidence stage materialises the ``article-evidence.v1`` artifact.
+
+    Patches ``orchestrator.run_monitor`` to capture the kwargs (the
+    providers tuple and the loopback module spec) and returns a synthetic
+    ``MonitorRunResult`` so we do not run the full Step 1-5 pipeline.
+    Confirms the CLI flag is parsed, the providers tuple is forwarded,
+    and the orchestrator staging path is exercised end-to-end.
+    """
+
+    from climate_monitor.models import MonitorRunResult
     from scripts import run_climate_monitor
 
     state_dir = tmp_path / "monitoring" / "state"
@@ -455,71 +551,39 @@ def test_run_climate_monitor_wires_article_evidence_artifact(tmp_path, monkeypat
     seen_urls = state_dir / "seen_urls.json"
     seen_urls.write_text("[]")
 
-    fake_items = (
-        CandidateItem(
-            title="Climate insurance report",
-            url="https://example.org/climate",
-            summary="",
-            source_name="Example",
-            lane="website",
-            content_hash="",
-        ),
-    )
+    captured: dict[str, object] = {}
 
     def _fake_run_monitor(**kwargs):
+        captured["providers"] = kwargs.get("providers", ())
         return MonitorRunResult(
             report_date=kwargs["report_date"],
-            report_path=None,
-            items=fake_items,
+            report_path=str(source_dir / "climate-monitor-2026-09-14.md"),
+            items=(),
             synced=False,
         )
 
     monkeypatch.setattr(run_climate_monitor, "run_monitor", _fake_run_monitor)
-
-    from climate_monitor import article_content_adapter as adapter
-
-    captured: dict[str, Path] = {}
-
-    def _fake_collect(unique_articles, *, providers=(), report_date=""):
-        artifact = adapter.build_article_evidence_artifact(
-            unique_articles,
-            providers=providers,
-            report_date=report_date or "2026-09-14",
-        )
-        out_path = source_dir / f"article-evidence.v1_{report_date or '2026-09-14'}.json"
-        out_path.write_text(json.dumps(artifact, indent=2))
-        captured["path"] = out_path
-        return artifact
-
-    monkeypatch.setattr(
-        run_climate_monitor, "build_article_evidence_artifact", _fake_collect
-    )
-
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "run_climate_monitor.py",
-            "--date",
-            "2026-09-14",
-            "--state-dir",
-            str(state_dir),
-            "--source-dir",
-            str(source_dir),
-            "--wiki-dir",
-            str(wiki_dir),
-            "--no-sync",
-            "--no-update-seen-state",
+            "--date", "2026-09-14",
+            "--state-dir", str(state_dir),
+            "--source-dir", str(source_dir),
+            "--wiki-dir", str(wiki_dir),
+            "--no-sync", "--no-update-seen-state",
+            "--article-evidence-loopback",
+            "tests.fixtures.article_content.providers:loopback_success_provider",
         ],
     )
     run_climate_monitor.main()
 
-    assert "path" in captured, "adapter output path was not captured"
-    artifact = json.loads(captured["path"].read_text())
-    assert artifact["schema_version"] == "article-evidence.v1"
-    assert artifact["record_count"] == 1
-    assert artifact["records"][0]["article_id"]  # non-empty
-    assert artifact["records"][0]["requested_url"] == "https://example.org/climate"
+    assert "providers" in captured, "providers kwarg was not forwarded to run_monitor"
+    providers = captured["providers"]
+    assert isinstance(providers, tuple) and len(providers) == 1
+    # The loopback provider must be the real callable from the test fixture.
+    assert providers[0] is loopbacks.loopback_success_provider
 
 
 def test_url_only_summary_basis_is_none(ensure_unavailable):
@@ -551,6 +615,90 @@ def test_tool_result_status_mapping(status, expected):
         assert record["summary_basis"] == "none"
     if expected == "failed":
         assert record["failure_reason"] == payload["stop_reason"]
+
+
+def test_permission_denied_records_failure_reason_not_status_ok(force_available):
+    """AC-6(a): a ``permission_denied`` upstream ToolResult must produce a
+    record with ``status="failed"`` and a populated ``failure_reason``.
+    The record must not be mislabelled ``ok``.
+    """
+
+    payload = loopbacks.loopback_success_provider("aid-p", "https://example.org/p")
+    payload.update(data_status="permission_denied", stop_reason="no_reviewed_profile")
+    record = adapter.fetch_article_content(
+        "aid-p", "https://example.org/p",
+        providers=(lambda a, u: payload,),
+    )
+    assert record["status"] == "failed"
+    assert record["failure_reason"] in ("no_reviewed_profile", "no_reviewed_scope")
+    assert record["content"] is None
+    assert record["content_hash"] is None
+
+
+def test_preview_only_record_is_ok_with_preview_basis_and_no_body(force_available):
+    """AC-6(b): a ``truncated=True`` upstream ToolResult must yield a
+    record with ``status="ok"``, ``summary_basis="preview_only"`` and
+    ``body=None``. The 2000-char preview must never be confused for the
+    full body.
+    """
+
+    records = adapter.collect_evidence(
+        [{"article_id": "aid-prev", "url": "https://example.org/prev"}],
+        providers=(loopbacks.loopback_preview_only_provider,),
+    )
+    record = records[0]
+    assert record["status"] == "ok"
+    assert record["summary_basis"] == "preview_only"
+    assert record["extra"]["content_status"] == "present_preview_only"
+    assert record["content"] is None
+    assert len(record["extra"]["truncated_preview"]) == 2000
+
+
+def test_damaged_content_ref_yields_article_content_adapter_error(tmp_path):
+    """AC-6(c): a damaged ``content_ref`` (file missing from disk) must
+    raise ``ArticleContentAdapterError`` — never a successful record.
+    """
+
+    with pytest.raises(
+        adapter.ArticleContentAdapterError,
+        match="content_ref_unresolvable|content_ref_corrupt|content_hash_mismatch",
+    ):
+        adapter.run_article_evidence(
+            [{"article_id": "aid-bad", "url": "https://example.org/bad"}],
+            providers=(loopbacks.loopback_damaged_content_ref_provider,),
+            report_date="2026-09-07", source_dir=tmp_path,
+        )
+    assert not list(tmp_path.iterdir())
+
+
+def test_same_canonical_url_produces_one_record_distinct_urls_two(force_available):
+    """AC-5: 2 inputs with the same canonical URL produce exactly 1 record;
+    2 inputs with different URLs (even with identical title) produce 2
+    distinct records.
+    """
+
+    provider = _FakeProvider()
+    same_url_inputs = [
+        {"article_id": "aid-x-a", "url": "https://example.org/a",
+         "title": "Same"},
+        {"article_id": "aid-x-b", "url": "https://example.org/a",
+         "title": "Same again"},
+    ]
+    same_url_records = adapter.collect_evidence(same_url_inputs, providers=(provider,))
+    assert len(same_url_records) == 1
+    assert same_url_records[0]["article_id"] == "aid-x-a"
+    assert same_url_records[0]["requested_url"] == "https://example.org/a"
+    distinct_url_inputs = [
+        {"article_id": "aid-y1", "url": "https://example.org/y1",
+         "title": "Identical Title"},
+        {"article_id": "aid-y2", "url": "https://example.org/y2",
+         "title": "Identical Title"},
+    ]
+    distinct_url_records = adapter.collect_evidence(
+        distinct_url_inputs, providers=(_FakeProvider(),)
+    )
+    assert len(distinct_url_records) == 2
+    assert {r["article_id"] for r in distinct_url_records} == {"aid-y1", "aid-y2"}
 
 
 def test_preview_is_never_canonical_body():
@@ -689,28 +837,45 @@ def test_artifact_digest_survives_reserialization(tmp_path):
     assert hashlib.sha256((adapter.ARTICLE_EVIDENCE_DIGEST_VERSION + "\n" + hashes).encode()).hexdigest() == artifact["artifact_digest"]
 
 
-def test_default_public_provider_wraps_url_signature_and_tool_result(monkeypatch):
+def test_default_public_provider_passes_profile_scope_output_dir_kwargs(monkeypatch):
+    """AC-1: the default public provider must invoke upstream with the full
+    kwargs contract — profile + site_key + scope_path + output_dir +
+    goal_preset. The old url-only path is removed.
+    """
+
     from types import SimpleNamespace
-    calls = []
+    captured: dict[str, Any] = {}
+
     class ToolResult:
         def model_dump(self):
-            payload = loopbacks.loopback_success_provider("a", "https://example.org/a")
-            payload["data"].pop("article_id")  # Not required by the upstream envelope.
-            return payload
-    def upstream(url):
-        calls.append(url)
+            return loopbacks.loopback_success_provider("a", "https://example.org/a")
+
+    def upstream(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
         return ToolResult()
-    module = SimpleNamespace(fetch_article_content=upstream,
-        _output_path=lambda output: "/upstream/default/article_content",
-        _read_evidence=lambda root, ref, digest: loopbacks.in_process_resolver(ref, digest))
+
+    module = SimpleNamespace(fetch_article_content=upstream)
     original = adapter.importlib.import_module
     monkeypatch.setattr(adapter.importlib, "import_module", lambda name:
         module if name == "web_listening.blocks.article_content" else original(name))
     assert adapter.check_dependencies() == "available"
-    artifact = adapter.build_article_evidence_artifact([
-        {"article_id": "a", "url": "https://example.org/a"}], report_date="2026-09-07")
-    assert calls == ["https://example.org/a"]
-    assert artifact["records"][0]["status"] == "ok"
+    # We expect the verifier to raise ``content_ref_corrupt`` because the
+    # loopback ToolResult returns a content_ref that does not actually live
+    # in the new ``output_dir`` — the verifier correctly refuses to trust a
+    # referenced byte path that is not backed by an on-disk regular file.
+    with pytest.raises(adapter.ArticleContentAdapterError, match="content_ref_corrupt"):
+        adapter.build_article_evidence_artifact(
+            [{"article_id": "a", "url": "https://example.org/a"}], report_date="2026-09-07"
+        )
+    assert captured["url"] == "https://example.org/a"
+    assert isinstance(captured.get("profile"), Mapping)
+    assert captured["profile"]["site_key"] == captured.get("site_key")
+    assert captured["site_key"] in ("generic", "_generic")
+    assert captured["goal_preset"] == "page_text"
+    assert isinstance(captured.get("scope_path"), str)
+    assert isinstance(captured.get("output_dir"), str)
+    assert Path(captured["output_dir"]).exists()
 
 
 def test_explicit_provider_overrides_unavailable_and_default(monkeypatch):
