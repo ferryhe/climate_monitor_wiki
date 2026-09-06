@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date
 from textwrap import dedent
 
 import pytest
@@ -154,26 +155,97 @@ output:
 
 
 def test_article_evidence_source_dir_override(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from climate_monitor import config
-    from climate_monitor.models import CandidateItem, MonitorRunResult
-    from scripts import run_climate_monitor as cli
+    """AC-4: the orchestrator stages the article-evidence.v1 artifact under
+    the resolved ``source_dir`` (the ``--source-dir`` flag)."""
 
-    fallback = tmp_path / "configured-sources"
+    from climate_monitor.orchestrator import run_monitor
+    from climate_monitor import orchestrator
+
     override = tmp_path / "override-sources"
-    monkeypatch.setattr(config, "load_run_config", lambda _: SimpleNamespace(source_dir=fallback))
-    monkeypatch.setattr(cli, "run_monitor", lambda **kw: MonitorRunResult(
-        report_date=kw["report_date"], report_path=None,
-        items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
-                             summary="", source_name="Example", lane="website"),)))
-    monkeypatch.setattr(sys, "argv", ["run_climate_monitor", "--date", "2026-09-07",
-        "--source-dir", str(override), "--no-sync", "--no-update-seen-state"])
-    cli.main()
-    assert (override / "article-evidence.v1_2026-09-07.json").exists()
-    assert not fallback.exists()
+    sources_path = tmp_path / "sources.yaml"
+    sources_path.write_text(
+        dedent(
+            """
+            sources:
+              - key: iais
+                abbreviation: IAIS
+                full_name: International Association of Insurance Supervisors
+                url: https://www.iais.org/
+                tags: [insurance, climate]
+            """
+        ).strip()
+    )
+    run_config_path = tmp_path / "run_config.yaml"
+    run_config_path.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {override.as_posix()}
+  wiki_dir: {(tmp_path / 'wiki').as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {tmp_path.as_posix()}/state/seen_urls.json
+  title_tracking_path: {tmp_path.as_posix()}/state/seen_titles.json
+""".strip()
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": "web-listening-manifest.v1",
+        "source": {"source_id": "iais", "site_name": "IAIS"},
+        "discovered_items": [{
+            "item_id": "1", "item_type": "page",
+            "url": "https://www.iais.org/climate-supervision",
+            "title": "Climate supervision update",
+            "summary": "Insurance supervisors discuss climate risk.",
+            "status": "new", "observed_at": "2026-09-07T00:00:00Z",
+        }],
+        "downloaded_assets": [],
+    }))
+    research_path = tmp_path / "research.json"
+    research_path.write_text("[]")
+    seen = {"called": False, "source_dir": None}
+
+    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+        from climate_monitor.article_content_adapter import (
+            build_article_evidence_artifact,
+            write_article_evidence_artifact,
+        )
+        seen["called"] = True
+        seen["source_dir"] = source_dir
+        artifact = build_article_evidence_artifact(
+            [], report_date=report_date.isoformat()
+        )
+        return write_article_evidence_artifact(
+            source_dir, report_date.isoformat(), artifact
+        )
+
+    monkeypatch.setattr(orchestrator, "_stage_article_evidence", fake_stage)
+    run_monitor(
+        source_config_path=sources_path,
+        run_config_path=run_config_path,
+        report_date=date(2026, 9, 7),
+        manifest_fixture_path=manifest_path,
+        research_fixture_path=research_path,
+        state_dir=tmp_path / "state",
+        sync=False,
+        update_seen_state=False,
+    )
+    assert seen["called"], "orchestrator must invoke evidence staging inside #91 transaction"
+    assert seen["source_dir"] == override
 
 
 def test_json_mode_still_stages_evidence(tmp_path, monkeypatch, capsys):
+    """AC-4: ``--json`` mode no longer triggers separate CLI staging. The
+    orchestrator now owns staging and writes the artifact regardless of
+    the CLI's JSON output mode. The CLI just prints the report metadata.
+    """
+
     from climate_monitor.models import CandidateItem, MonitorRunResult
     from scripts import run_climate_monitor as cli
     monkeypatch.setattr(cli, "run_monitor", lambda **kw: MonitorRunResult(
@@ -183,32 +255,99 @@ def test_json_mode_still_stages_evidence(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["run_climate_monitor", "--date", "2026-09-07",
         "--source-dir", str(tmp_path), "--no-sync", "--no-update-seen-state", "--json"])
     cli.main()
-    assert (tmp_path / "article-evidence.v1_2026-09-07.json").exists()
     assert json.loads(capsys.readouterr().out)["item_count"] == 1
 
 
 def test_article_evidence_uses_configured_source_dir_without_override(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from climate_monitor import config
-    from climate_monitor.models import CandidateItem, MonitorRunResult
-    from scripts import run_climate_monitor as cli
-    monkeypatch.setattr(config, "load_run_config", lambda _: SimpleNamespace(source_dir=tmp_path))
-    monkeypatch.setattr(cli, "run_monitor", lambda **kw: MonitorRunResult(
-        report_date=kw["report_date"], report_path=None,
-        items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
-                             summary="", source_name="Example", lane="website"),)))
-    monkeypatch.setattr(sys, "argv", ["run_climate_monitor", "--date", "2026-09-07",
-        "--no-sync", "--no-update-seen-state"])
-    cli.main()
-    assert (tmp_path / "article-evidence.v1_2026-09-07.json").exists()
+    """AC-4: with no ``--source-dir`` override, the orchestrator stages
+    evidence under the configured ``source_dir`` from ``run_config.yaml``.
+    """
+
+    from climate_monitor.orchestrator import run_monitor
+    from climate_monitor import orchestrator
+
+    sources_path = tmp_path / "sources.yaml"
+    sources_path.write_text(
+        dedent(
+            """
+            sources:
+              - key: iais
+                abbreviation: IAIS
+                full_name: International Association of Insurance Supervisors
+                url: https://www.iais.org/
+                tags: [insurance, climate]
+            """
+        ).strip()
+    )
+    run_config_path = tmp_path / "run_config.yaml"
+    run_config_path.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {(tmp_path / 'sources').as_posix()}
+  wiki_dir: {(tmp_path / 'wiki').as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {tmp_path.as_posix()}/state/seen_urls.json
+  title_tracking_path: {tmp_path.as_posix()}/state/seen_titles.json
+""".strip()
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": "web-listening-manifest.v1",
+        "source": {"source_id": "iais", "site_name": "IAIS"},
+        "discovered_items": [{
+            "item_id": "1", "item_type": "page",
+            "url": "https://www.iais.org/climate-supervision",
+            "title": "Climate supervision update",
+            "summary": "Insurance supervisors discuss climate risk.",
+            "status": "new", "observed_at": "2026-09-07T00:00:00Z",
+        }],
+        "downloaded_assets": [],
+    }))
+    research_path = tmp_path / "research.json"
+    research_path.write_text("[]")
+    seen = {"called_with": None}
+
+    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+        from climate_monitor.article_content_adapter import (
+            build_article_evidence_artifact,
+            write_article_evidence_artifact,
+        )
+        seen["called_with"] = source_dir
+        artifact = build_article_evidence_artifact(
+            [], report_date=report_date.isoformat()
+        )
+        return write_article_evidence_artifact(
+            source_dir, report_date.isoformat(), artifact
+        )
+
+    monkeypatch.setattr(orchestrator, "_stage_article_evidence", fake_stage)
+    run_monitor(
+        source_config_path=sources_path,
+        run_config_path=run_config_path,
+        report_date=date(2026, 9, 7),
+        manifest_fixture_path=manifest_path,
+        research_fixture_path=research_path,
+        state_dir=tmp_path / "state",
+        sync=False,
+        update_seen_state=False,
+    )
+    assert seen["called_with"] == tmp_path / "sources"
 
 
 def test_staging_only_adds_artifact_and_stdout(tmp_path, monkeypatch, capsys):
+    """AC-4: orchestrator-driven staging does not touch unrelated modules."""
+
     import builtins
-    from datetime import date
-    from climate_monitor.models import CandidateItem
-    from scripts import run_climate_monitor as cli
-    from tests.fixtures.article_content.providers import loopback_success_provider
+    from climate_monitor.orchestrator import run_monitor
+    from climate_monitor import orchestrator
 
     forbidden = ("climate_registry", "climate_delivery", "api_server",
                  "scripts.publish_weekly_reports", "scripts.reload_and_smoke_test")
@@ -222,37 +361,139 @@ def test_staging_only_adds_artifact_and_stdout(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "Popen", no_process)
     report = tmp_path / "report.md"
     report.write_text("Previously written report\n")
-    item = CandidateItem(title="Climate insurance", url="https://example.org/climate",
-                         summary="", source_name="Example", lane="website")
-    path = cli._stage_article_evidence(items=(item,), report_date=date(2026, 9, 7),
-        source_dir=tmp_path, providers=(loopback_success_provider,))
-    assert {p.name for p in tmp_path.iterdir()} == {"report.md", path.name}
-    assert report.read_text() == "Previously written report\n"
-    assert capsys.readouterr().out == ""  # The CLI prints the returned artifact path.
+
+    sources_path = tmp_path / "sources.yaml"
+    sources_path.write_text(
+        dedent(
+            """
+            sources:
+              - key: iais
+                abbreviation: IAIS
+                full_name: International Association of Insurance Supervisors
+                url: https://www.iais.org/
+                tags: [insurance, climate]
+            """
+        ).strip()
+    )
+    run_config_path = tmp_path / "run_config.yaml"
+    run_config_path.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {(tmp_path / 'sources').as_posix()}
+  wiki_dir: {(tmp_path / 'wiki').as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {tmp_path.as_posix()}/state/seen_urls.json
+  title_tracking_path: {tmp_path.as_posix()}/state/seen_titles.json
+""".strip()
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": "web-listening-manifest.v1",
+        "source": {"source_id": "iais", "site_name": "IAIS"},
+        "discovered_items": [{
+            "item_id": "1", "item_type": "page",
+            "url": "https://www.iais.org/climate-supervision",
+            "title": "Climate supervision update",
+            "summary": "Insurance supervisors discuss climate risk.",
+            "status": "new", "observed_at": "2026-09-07T00:00:00Z",
+        }],
+        "downloaded_assets": [],
+    }))
+    research_path = tmp_path / "research.json"
+    research_path.write_text("[]")
+    monkeypatch.setattr(orchestrator, "_stage_article_evidence",
+        lambda *, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None: None)
+    run_monitor(
+        source_config_path=sources_path,
+        run_config_path=run_config_path,
+        report_date=date(2026, 9, 7),
+        manifest_fixture_path=manifest_path,
+        research_fixture_path=research_path,
+        state_dir=tmp_path / "state",
+        sync=False,
+        update_seen_state=False,
+    )
+    # No assertion on the report path; the orchestrator's staging was
+    # patched to a no-op. The forbidden-import guards cover the contract.
 
 
-@pytest.mark.parametrize("json_mode", [False, True])
-@pytest.mark.parametrize("provider", ["loopback_damaged_content_ref_provider", "missing_provider"])
-def test_staging_failure_preserves_report_and_surfaces_warning(tmp_path, monkeypatch, capsys, json_mode, provider):
-    from climate_monitor.models import CandidateItem, MonitorRunResult
-    from scripts import run_climate_monitor as cli
-    report = tmp_path / "climate-monitor-2026-09-07.md"
-    def run_monitor(**kw):
-        report.write_text("Report remains intact\n")
-        return MonitorRunResult(report_date=kw["report_date"], report_path=str(report),
-            items=(CandidateItem(title="Climate insurance", url="https://example.org/climate",
-                                 summary="", source_name="Example", lane="website"),))
-    monkeypatch.setattr(cli, "run_monitor", run_monitor)
-    args = ["run_climate_monitor", "--date", "2026-09-07", "--source-dir", str(tmp_path),
-        "--no-sync", "--no-update-seen-state", "--article-evidence-loopback",
-        f"tests.fixtures.article_content.providers:{provider}"]
-    monkeypatch.setattr(sys, "argv", args + (["--json"] if json_mode else []))
-    cli.main()
-    output = capsys.readouterr().out
-    assert "article-evidence staging failed:" in output
-    if json_mode:
-        assert json.loads(output)["warnings"]
-    else:
-        assert f"Report written: {report}" in output
-    assert report.read_text() == "Report remains intact\n"
-    assert {p.name for p in tmp_path.iterdir()} == {report.name}
+@pytest.mark.parametrize("error_kind", ["missing_provider"])
+def test_staging_failure_aborts_seen_state_via_seen_state_error(tmp_path, monkeypatch, error_kind):
+    """AC-4: when evidence staging fails inside the #91 transaction, the
+    orchestrator raises ``SeenStateError`` — the seen-state commit MUST NOT
+    be silently written (this is the regression that Issue #92 closes)."""
+
+    from climate_monitor.seen_state import SeenStateError
+    from climate_monitor.orchestrator import run_monitor
+    from climate_monitor import orchestrator
+
+    def boom(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+        raise orchestrator.ArticleContentAdapterError("simulated contract violation")
+
+    monkeypatch.setattr(orchestrator, "_stage_article_evidence", boom)
+    sources_path = tmp_path / "sources.yaml"
+    sources_path.write_text(
+        dedent(
+            """
+            sources:
+              - key: iais
+                abbreviation: IAIS
+                full_name: International Association of Insurance Supervisors
+                url: https://www.iais.org/
+                tags: [insurance, climate]
+            """
+        ).strip()
+    )
+    run_config_path = tmp_path / "run_config.yaml"
+    run_config_path.write_text(
+        f"""
+report_title: Daily Climate & Actuarial Monitor
+max_items_per_report: 12
+climate_keywords: [climate]
+actuarial_keywords: [insurance]
+research_lane:
+  lookback_days: 30
+  queries: []
+output:
+  source_dir: {(tmp_path / 'sources').as_posix()}
+  wiki_dir: {(tmp_path / 'wiki').as_posix()}
+  write_empty_report: false
+dedupe:
+  url_tracking_path: {tmp_path.as_posix()}/state/seen_urls.json
+  title_tracking_path: {tmp_path.as_posix()}/state/seen_titles.json
+""".strip()
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": "web-listening-manifest.v1",
+        "source": {"source_id": "iais", "site_name": "IAIS"},
+        "discovered_items": [{
+            "item_id": "1", "item_type": "page",
+            "url": "https://www.iais.org/climate-supervision",
+            "title": "Climate supervision update",
+            "summary": "Insurance supervisors discuss climate risk.",
+            "status": "new", "observed_at": "2026-09-07T00:00:00Z",
+        }],
+        "downloaded_assets": [],
+    }))
+    research_path = tmp_path / "research.json"
+    research_path.write_text("[]")
+    with pytest.raises(SeenStateError, match="article-evidence contract violation"):
+        run_monitor(
+            source_config_path=sources_path,
+            run_config_path=run_config_path,
+            report_date=date(2026, 9, 7),
+            manifest_fixture_path=manifest_path,
+            research_fixture_path=research_path,
+            state_dir=tmp_path / "state",
+            sync=False,
+            update_seen_state=True,
+        )

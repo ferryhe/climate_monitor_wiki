@@ -199,6 +199,34 @@ def test_ac4_bare_url_line_emits_article_with_title_basis_url(pillar_a_env):
         assert title_basis == "url"
 
 
+def test_wri_h1_heading_with_inline_link_extracts_url(pillar_a_env):
+    """AC-3: the exact WRI diff line from live Issue #92 must extract its URL.
+
+    The pre-fix baseline (``_PLAIN_LINK_PATTERN`` requires ``[Title](URL)``
+    immediately after ``#{2,6}\\s+``) returns 0 URLs for this line. The fix
+    allows ``#{1,6}`` (single ``#``) AND arbitrary non-bracket prefix text
+    between the heading marker and the link. ``-`` and `` `` lines remain
+    anchored to start-of-string and are still rejected.
+    """
+
+    database, state, output, _ = pillar_a_env
+    wri_line = (
+        "+# The [Best Defense]"
+        "(https://www.wri.org/insights/restoring-nature-fights-wildfires-heat-floods) "
+        "Against 'Natural' Disasters Is Nature Itself\n"
+    )
+    _insert_change(database, "new_content", wri_line)
+    payload = _run_main(database, state, output)
+    urls = {item["url"] for org in payload["articles"] for item in org["items"]}
+    assert (
+        "https://www.wri.org/insights/restoring-nature-fights-wildfires-heat-floods"
+        in urls
+    ), (
+        "WRI h1 heading with inline [Title](URL) must be recovered; got "
+        f"{urls!r}"
+    )
+
+
 def test_baseline_test_still_passes(pillar_a_env, reports_dir):
     """AC-3 cross-check: the existing baseline test pattern still passes
     unchanged. Mirrors the assertion from

@@ -11,7 +11,12 @@ from typing import Any, Mapping
 from scripts.sync_source_wiki import sync_source_wiki
 
 from .ai_filter import classify_candidate
-from .article_candidate_contract import validate_candidate
+from .article_candidate_contract import ArticleCandidate, validate_candidate
+from .article_content_adapter import (
+    ArticleContentAdapterError,
+    build_article_evidence_artifact,
+    write_article_evidence_artifact,
+)
 from .candidate_aggregation import (
     combine_current_artifacts,
     combine_runtime_items,
@@ -342,6 +347,109 @@ def _finish_source_checkpoints(
     )
 
 
+def _stage_article_evidence(
+    *,
+    candidates: tuple[ArticleCandidate, ...],
+    source_dir: Path,
+    report_date: date,
+    providers: tuple = (),
+    manifest_fixture_path: str | Path | None = None,
+) -> Path | None:
+    """Build + write the ``article-evidence.v1`` artifact as part of the
+    #91 transaction (AC-4).
+
+    Runs AFTER ``combined.candidates`` is built and BEFORE
+    ``prepare_seen_url_delta``. On ``ArticleContentAdapterError`` (or any
+    contract violation) the caller raises ``SeenStateError`` to abort the
+    seen-state commit. ``search_snippet`` is sourced from the candidate
+    origins only — never from any upstream ``snippet`` field — so search
+    snippet provenance is preserved.
+
+    Each candidate contributes the provenance that PR #99 surfaced for
+    issue #93 (``source_item_id``, ``source_name``, ``source_id``,
+    ``run_id``) — derived from the ``CandidateOrigin.metadata`` first
+    (the upstream producer manifest's ``item_id`` like
+    ``climate-92-html``) and falling back to ``input_artifact.artifact_id``
+    (the runtime artifact id like ``runtime-pillar-a_2026-09-07.json``)
+    only when the metadata chain does not carry it.
+    """
+
+    if not candidates:
+        return None
+    # ITEM 2 (Issue #92 reopened): load the producer manifest (if any)
+    # and join ``source_item_id`` (the producer manifest's per-item
+    # ``item_id`` like ``climate-92-html``) plus ``item_status`` /
+    # ``source_id`` / ``run_id`` per URL. The CandidateOrigin model
+    # does not carry these fields (PR #90 contract byte-stability);
+    # joining them from the manifest preserves the strict provenance
+    # contract without widening the CandidateOrigin schema. The
+    # manifest is read-only here; the writer never mutates it.
+    producer_provenance: dict[str, dict[str, Any]] = {}
+    if manifest_fixture_path:
+        try:
+            manifest_payload = json.loads(Path(manifest_fixture_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest_payload = None
+        if manifest_payload is not None:
+            manifests = manifest_payload if isinstance(manifest_payload, list) else [manifest_payload]
+            for manifest in manifests:
+                if not isinstance(manifest, dict):
+                    continue
+                source = manifest.get("source") or {}
+                source_id = source.get("source_id") or ""
+                run = manifest.get("run") or {}
+                run_id = run.get("run_id") or ""
+                for raw in manifest.get("discovered_items") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    url = str(raw.get("url") or "").strip()
+                    if not url:
+                        continue
+                    item_status = str(raw.get("status") or "").strip().lower() or None
+                    source_item_id = str(raw.get("item_id") or "").strip() or None
+                    producer_provenance.setdefault(url, {
+                        "source_item_id": source_item_id,
+                        "item_status": item_status,
+                        "source_id": source_id or None,
+                        "run_id": run_id or None,
+                    })
+    unique_articles: list[dict[str, Any]] = []
+    for candidate in candidates:
+        origin = next(
+            (origin for origin in candidate.origins
+             if origin.pillar == candidate.display_pillar),
+            candidate.origins[0],
+        )
+        # ITEM 2 (Issue #92 reopened): prefer the producer manifest's
+        # ``item_id`` (joined above as ``source_item_id``) when the
+        # manifest is available; fall back to the runtime artifact id
+        # only when the manifest has no matching row.
+        provenance = producer_provenance.get(candidate.url) or {}
+        producer_item_id = provenance.get("source_item_id") or origin.input_artifact.artifact_id
+        entry: dict[str, Any] = {
+            "article_id": candidate.article_id,
+            "url": candidate.url,
+            "title": candidate.title or "",
+            "source_name": origin.source,
+            "source_item_id": producer_item_id,
+        }
+        for key in ("item_status", "source_id", "run_id"):
+            value = provenance.get(key)
+            if value:
+                entry[key] = value
+        if origin.original_snippet:
+            entry["search_snippet"] = origin.original_snippet
+        unique_articles.append(entry)
+    artifact = build_article_evidence_artifact(
+        unique_articles,
+        report_date=report_date.isoformat(),
+        providers=providers,
+    )
+    return write_article_evidence_artifact(
+        source_dir, report_date.isoformat(), artifact
+    )
+
+
 def run_monitor(
     *,
     source_config_path: str | Path = "monitoring/supranational_sources.yaml",
@@ -363,6 +471,7 @@ def run_monitor(
     contract_version: str = "",
     repository_commit_sha: str = "",
     model_metadata: Mapping[str, Any] | None = None,
+    providers: tuple = (),
 ) -> MonitorRunResult:
     day = report_date or date.today()
     repo_root = Path.cwd()
@@ -721,6 +830,22 @@ def run_monitor(
         items=snapshot_items,
         report_sha256=hashlib.sha256(report_text.encode("utf-8")).hexdigest(),
     )
+    # AC-4: stage the ``article-evidence.v1`` artifact as part of the #91
+    # transaction. Runs AFTER ``combined.candidates`` is built and BEFORE
+    # ``prepare_seen_url_delta``. Failure (ArticleContentAdapterError or any
+    # contract violation) aborts the seen-state commit and rolls back.
+    try:
+        _stage_article_evidence(
+            candidates=combined.candidates,
+            source_dir=output_source_dir,
+            report_date=day,
+            providers=providers,
+            manifest_fixture_path=manifest_fixture_path,
+        )
+    except ArticleContentAdapterError as exc:
+        raise SeenStateError(
+            f"article-evidence contract violation: {exc}"
+        ) from exc
     # One atomic commit: the canonical Markdown and its semantic sidecar are
     # validated first and then published together, so neither can be updated
     # without the other. Semantics come from the single existing authoring
