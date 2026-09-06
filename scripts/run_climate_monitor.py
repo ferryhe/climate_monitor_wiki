@@ -9,8 +9,48 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from climate_monitor.article_content_adapter import (
+    build_article_evidence_artifact,
+    write_article_evidence_artifact,
+)
 from climate_monitor.orchestrator import run_monitor
 from climate_monitor.weekly_monitor.driver import run_weekly_monitor
+
+
+def _stage_article_evidence(
+    *,
+    items,
+    report_date: date,
+    source_dir: Path,
+) -> Path | None:
+    """Stage the post-#91 unique-candidate evidence artifact.
+
+    This is the Issue #92 thin content-adapter layer: it consumes the
+    unique-candidate list (already deduplicated by ``orchestrator``) and
+    emits a versioned ``article-evidence.v1`` artifact for issue #93 to
+    consume. When ``web_listening#70`` is unavailable, every record is
+    URL-only with explicit ``status="unavailable"`` — no content is
+    fabricated. Steps 1-5 are not modified.
+    """
+
+    if not items:
+        return None
+    unique_articles = [
+        {"article_id": "", "url": getattr(item, "url", ""), "title": getattr(item, "title", "")}
+        for item in items
+    ]
+    # Delegate to the adapter's public builder so the artifact stays in
+    # sync with the documented schema_version, dependency_status enum, and
+    # record_count/digest fields. Tests can monkeypatch
+    # ``run_climate_monitor.collect_evidence`` to swap provider behaviour
+    # without touching this builder call.
+    artifact = build_article_evidence_artifact(
+        unique_articles,
+        report_date=report_date.isoformat(),
+    )
+    return write_article_evidence_artifact(
+        source_dir, report_date.isoformat(), artifact
+    )
 
 
 def main() -> None:
@@ -102,6 +142,26 @@ def main() -> None:
     if args.json:
         print(result.to_json(), end="")
         return
+
+    # Issue #92 wiring: stage the post-#91 unique-candidate evidence artifact.
+    # Steps 1-5 are not modified — this is a thin, additive stage. Failure to
+    # stage must not break the report write.
+    if result.items and not args.json:
+        try:
+            from climate_monitor.config import load_run_config
+            config = load_run_config(args.run_config)
+            output_source_dir = Path(config.source_dir)
+            if not output_source_dir.is_absolute():
+                output_source_dir = Path.cwd() / output_source_dir
+            artifact_path = _stage_article_evidence(
+                items=result.items,
+                report_date=result.report_date,
+                source_dir=output_source_dir,
+            )
+            if artifact_path is not None:
+                print(f"Article evidence: {artifact_path}")
+        except Exception as exc:  # noqa: BLE001 - honest error surfacing
+            print(f"Warning: article-evidence staging failed: {exc}")
 
     if result.report_path:
         print(f"Report written: {result.report_path}")

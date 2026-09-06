@@ -242,6 +242,40 @@ def extract_articles_from_changes(site_id, since_date):
         ).fetchall()
 
         articles = []
+        # Match all four link forms on a single ``+`` diff line:
+        #   - heading-embedded ``#### [Title](URL)``
+        #   - ordinary paragraph ``[Title](URL)``
+        #   - list-item ``- [Title](URL)`` / ``* [Title](URL)``
+        #   - image-wrapped ``[![alt](image-url)](article-url)`` (outer URL wins)
+        # A leading ``!`` is the image marker on form 4; ``re.match`` anchors
+        # to start-of-string so diff-context (`` ``) and deletion (``-``)
+        # lines are never consumed.
+        #
+        # Order matters: the image-wrapped pattern is tried first so the
+        # outer URL is captured as the article target rather than the inner
+        # image URL.
+        _IMAGE_LINK_PATTERN = re.compile(
+            r"""^!?\s*                # optional leading '!' + whitespace
+                (?:[>*+\-]\s+)?       # optional single list marker + whitespace
+                (?:\#{2,6}\s+)?       # optional leading 2-6 '#' heading markers
+                \[!\[                # image-wrapped: open text-link + image-mark
+                [^\]]*\]             # image alt text
+                \(\s*(?:https?://[^\s\)]+)\s*\)  # image URL (discarded)
+                \]                   # close text-link for image
+                \(\s*(https?://[^\s\)]+)\s*\)    # outer article URL (captured)
+            """,
+            re.VERBOSE,
+        )
+        _PLAIN_LINK_PATTERN = re.compile(
+            r"""^!?\s*                # optional leading '!' + whitespace
+                (?:[>*+\-]\s+)?       # optional single list marker + whitespace
+                (?:\#{2,6}\s+)?       # optional leading 2-6 '#' heading markers
+                \[([^\]]+)\]          # link text (captured group 1)
+                \(\s*(https?://[^\s\)]+)\s*\)  # link target URL (captured group 2)
+            """,
+            re.VERBOSE,
+        )
+
         for row in rows:
             diff = row[0] or ""
             lines = diff.split('\n')
@@ -252,13 +286,42 @@ def extract_articles_from_changes(site_id, since_date):
                     continue
                 line = line[1:].strip()
 
-                # Pattern: #### [Title](URL)
-                m = re.match(r'^#{2,6}\s+\[([^\]]+)\]\((https?://[^\)]+)\)', line)
+                # Image-wrapped link first: outer URL is the article target.
+                img_match = _IMAGE_LINK_PATTERN.match(line)
+                if img_match:
+                    url = canonical_url(img_match.group(1))
+                    if not is_junk_url(url):
+                        # No usable title for image-wrapped lines; derive one
+                        # from the URL path so the record carries a non-empty
+                        # title and is not silently dropped (AC-4).
+                        path = url.split('/')[-1] if '/' in url else url
+                        path = re.sub(r'[-_]+', ' ', path)
+                        path = re.sub(r'\.(pdf|html?|aspx?|jsp)$', '', path)
+                        if len(path) >= 10:
+                            path = normalize_title(path)
+                            articles.append({"title": path[:80], "url": url})
+                    continue
+
+                m = _PLAIN_LINK_PATTERN.match(line)
                 if m:
                     title = m.group(1).strip()
                     url = canonical_url(m.group(2))
                     if not is_junk_url(url) and not is_junk_title(title):
                         articles.append({"title": title[:120], "url": url})
+                        continue
+
+                # AC-4: bare URL on a ``+`` line with no Markdown link must
+                # still produce a record rather than being silently dropped.
+                bare_match = re.match(r'^(https?://\S+)\s*$', line)
+                if bare_match:
+                    url = canonical_url(bare_match.group(1))
+                    if not is_junk_url(url):
+                        path = url.split('/')[-1] if '/' in url else url
+                        path = re.sub(r'[-_]+', ' ', path)
+                        path = re.sub(r'\.(pdf|html?|aspx?|jsp)$', '', path)
+                        if len(path) >= 10:
+                            path = normalize_title(path)
+                            articles.append({"title": path[:80], "url": url})
 
         # Also get new_links changes (just URLs, extract title from URL)
         rows = c.execute(
