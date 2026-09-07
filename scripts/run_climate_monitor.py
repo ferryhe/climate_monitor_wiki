@@ -331,9 +331,15 @@ def _derive_stats(records: list[dict], outcome: dict) -> dict:
         "failed": int(counts["failed"]) + int(counts["unresolved"]),
         "unresolved": int(counts["unresolved"]),
     }
+    # Per Issue #87 AC-3 ``failed`` already includes ``unresolved`` (see the
+    # derivation above), so the canonical 6-key total is just the four
+    # mutually-exclusive buckets plus ``failed``. Adding unresolved again
+    # here would double-count it and reject otherwise-valid outcomes such
+    # as ``updated=1, unchanged=0, blocked=0, failed=1, unresolved=1,
+    # total=3``.
     expected_total = (
         derived["updated"] + derived["unchanged"] + derived["blocked"]
-        + derived["failed"] + derived["unresolved"]
+        + derived["failed"]
     )
     if derived["total"] != expected_total:
         raise SystemExit(
@@ -355,6 +361,11 @@ def _derive_stats(records: list[dict], outcome: dict) -> dict:
         raise SystemExit(
             f"manifest blocked count {observed['blocked']} != outcome blocked {derived['blocked']}"
         )
+    # ``observed["failed"]`` counts both ``failed`` and
+    # ``acquisition_unresolved`` records because ``_attach_outcome_disposition``
+    # writes ``disposition: "failed"`` for both shapes (Issue #87 AC-3:
+    # ``failed = failed + unresolved``); this intentionally mirrors
+    # ``derived["failed"]`` above and must NOT be re-flagged as a mismatch.
     if (observed["failed"]) != derived["failed"]:
         raise SystemExit(
             f"manifest failed count {observed['failed']} != outcome failed+unresolved {derived['failed']}"
@@ -478,7 +489,12 @@ def _run_prepare(args, parser) -> int:
     snapshot_items = items_from_merged_candidates_with_carry(
         combined.candidates, carry_forward_candidates=(), carry_forward_items=()
     )
-    snapshot_path = candidate_item_snapshot_path(output_source_dir, report_date)
+    # Per Issue #87 spec: prepare writes ONLY to the staging dir; the
+    # orchestrator's #91 transaction materialises source artifacts during
+    # finalize, not prepare. The snapshot is copied into
+    # ``staging_dir/candidate_item_snapshot.json`` below for the
+    # finalize-side digest verification.
+    snapshot_path = candidate_item_snapshot_path(staging_dir, report_date)
     combined_sha = hashlib.sha256(combined_bytes).hexdigest()
     snapshot_payload, snapshot_bytes = build_candidate_item_snapshot(
         report_date=report_date,
@@ -722,10 +738,15 @@ def _run_finalize(args, parser) -> int:
     pillar_b_artifact.write_bytes(_canonical_bytes(pillar_b_payload) + b"\n")
     pillar_b_artifact_path = pillar_b_artifact
 
+    # The bundle pins ``report_date`` at prepare time; finalize must use the
+    # pinned date regardless of any CLI ``--report-date`` the operator passes
+    # so the orchestrator always sees the prepare-blessed date. Stale or
+    # missing CLI args must NOT silently swap the date.
+    finalized_report_date = date.fromisoformat(bundle["report_date"])
     return run_weekly_monitor(
         source_config_path=Path(args.source_config),
         run_config_path=Path(args.run_config),
-        report_date=date.fromisoformat(args.report_date) if args.report_date else None,
+        report_date=finalized_report_date,
         site_scopes_path=Path(args.site_scopes) if args.site_scopes else "",
         state_dir=Path(args.state_dir),
         source_dir=Path(args.source_dir) if args.source_dir else None,
