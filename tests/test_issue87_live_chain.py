@@ -52,6 +52,8 @@ def _prepare_env(workspace: Path, *, dry_run: bool = False,
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CLIMATE_", "REPORT_", "ARTICLE_",
                                 "STATS_", "AUTHORING_"))}
+    env["HERMES_INFERENCE_MODEL"] = "fixture-model"
+    env["HERMES_INFERENCE_PROVIDER"] = "fixture-provider"
     env["REPORT_DATE"] = REPORT_DATE
     env["PYTHONPATH"] = str(ROOT)
     for name in ("state_dir", "source_dir", "wiki_dir", "job_status_dir",
@@ -85,6 +87,7 @@ def _prepare_env(workspace: Path, *, dry_run: bool = False,
     env["CLIMATE_DRY_RUN_ROOT"] = str(workspace)
     if dry_run:
         env["CLIMATE_DRY_RUN"] = "1"
+        env["CLIMATE_DRY_RUN_OUTCOME_FIXTURE"] = "1"
         if fixture_dir is not None:
             env["CLIMATE_DRY_RUN_FIXTURE_DIR"] = str(fixture_dir)
     return env
@@ -350,15 +353,14 @@ def test_ac7_full_dry_run_chain_writes_report_and_no_seen(tmp_path):
 def _build_57_record_outcome(workspace: Path) -> Path:
     """Materialise one public outcome (acquisition-batch-result.v2) and one
     public manifest (web-listening-manifest.v1) under the workspace. The two
-    artifacts share the same run_id/source_id and contain 33 updated / 9
-    unchanged / 14 blocked / 1 failed / 0 unresolved = 57 records with
-    deterministic URLs."""
+    artifacts bind scope-run-2 to export run-2 / parent 2. The saved public
+    builder output counts 57 sources (33/9/14/1/0); the manifest holds 42
+    discovered articles from one retained source."""
     out_dir = workspace / "public"
     out_dir.mkdir(parents=True, exist_ok=True)
-    run_id = "rl-2026-09-07-0800"
+    run_id = "run-2"
     source_id = "iais-batch"
     manifest_items = []
-    outcome_records = []
     pillar_b_records = []
     counts = {"updated": 0, "unchanged": 0, "blocked": 0, "failed": 0}
     for i in range(57):
@@ -387,38 +389,22 @@ def _build_57_record_outcome(workspace: Path) -> Path:
                          "url": url, "discovered_at": "2026-09-07T08:00:00Z"}],
             "content_hash": hashlib.sha256(url.encode()).hexdigest(),
         })
-        outcome_records.append({
-            "final_url": url,
-            "requested_url": url,
-            "disposition": disposition,
-            "error_code": "blocked_403" if disposition == "blocked" else
-                          "acquisition_unresolved" if disposition == "failed" else None,
-            "acquisition_unresolved": disposition == "failed",
-            "title": title,
-            "summary": "IAIS published a climate insurance supervision update " + f"{i:03d}" + ".",
-            "summary_basis": "page" if disposition == "updated" else "search_result",
-            "title_basis": "upstream_artifact",
-            "display_pillar": "A" if i % 2 == 0 else "B",
-            "origins": [{"pillar": "A" if i % 2 == 0 else "B", "source": "iais", "url": url}],
-        })
         if i % 2 == 1:
             pillar_b_records.append({"url": url, "title": title,
                 "source": "web", "summary": f"IAIS published climate insurance update {i:03d}."})
     manifest = {
         "schema_version": "web-listening-manifest.v1",
-        "source": {"source_id": source_id, "site_name": "IAIS"},
-        "run": {"run_id": run_id, "started_at": "2026-09-07T08:00:00Z",
+        "manifest_id": "manifest-iais-batch-2",
+        "source": {"source_id": source_id, "site_name": "IAIS",
+                   "tree_seed_url": "https://www.iais.org/updates/000"},
+        "run": {"run_id": run_id, "parent_run_id": "2", "started_at": "2026-09-07T08:00:00Z",
                 "finished_at": "2026-09-07T08:05:00Z", "outcome_source": "climate-monitor"},
         "discovered_items": manifest_items,
     }
-    outcome = {
-        "schema_version": "acquisition-batch-result.v2",
-        "run": {"run_id": run_id, "source_id": source_id,
-                "finished_at": "2026-09-07T08:05:00Z"},
-        "counts": {"requested": 57, "updated": 33, "unchanged": 9,
-                   "blocked": 14, "failed": 1, "unresolved": 0},
-        "records": outcome_records,
-    }
+    outcome = json.loads((FIXTURE_DIR / "acquisition_batch_result.v2.57.json").read_text())
+    # Forty-two discovered articles belong to this successful source; source
+    # failures elsewhere in the batch do not create article records.
+    manifest["discovered_items"] = manifest_items[:42]
     (out_dir / "acquisition-batch-result.v2.json").write_text(json.dumps(outcome))
     (out_dir / "web-listening-manifest.v1.json").write_text(json.dumps(manifest))
     (out_dir / "pillar-b.json").write_text(json.dumps(pillar_b_records))
@@ -433,6 +419,7 @@ def _run_prepare(workspace: Path, env: dict, fixture: Path) -> Path:
     env["CLIMATE_PILLAR_B_ARTIFACT"] = str(fixture / "pillar-b.json")
     result = _call(CLI + [
         "--production-weekly", "--authoring-mode", "prepare",
+        "--article-evidence-loopback", "scripts.hermes_job:dry_run_unavailable_provider",
         "--report-date", REPORT_DATE,
         "--acquisition-batch", env["CLIMATE_OUTCOME_ARTIFACT"],
         "--web-listening-manifest", env["CLIMATE_MANIFEST_ARTIFACT"],

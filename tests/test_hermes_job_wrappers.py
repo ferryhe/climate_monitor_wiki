@@ -11,12 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def invoke(tmp_path, slot, *args, **overrides):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('CLIMATE_', 'REPORT_', 'ARTICLE_', 'STATS_', 'AUTHORING_'))}
-    env.update(REPO=str(ROOT), PYTHON=sys.executable, REPORT_DATE='2026-09-07')
+    env.update(REPO=str(ROOT), PYTHON=sys.executable, REPORT_DATE='2026-09-07',
+               HERMES_INFERENCE_MODEL='fixture-model', HERMES_INFERENCE_PROVIDER='fixture-provider')
     for key in ('STATE_DIR', 'SOURCE_DIR', 'WIKI_DIR', 'JOB_STATUS_DIR', 'DELIVERY_OUTPUT_DIR', 'DELIVERY_STATE_DIR', 'RUN_LEDGER_DIR', 'REPORTS_DIR'):
         path = tmp_path / key.lower()
         path.mkdir(exist_ok=True)
         env['CLIMATE_' + key] = str(path)
     env.update(overrides)
+    if env.get("CLIMATE_DRY_RUN") == "1":
+        env["CLIMATE_DRY_RUN_OUTCOME_FIXTURE"] = "1"
     before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*'))
     result = subprocess.run(['bash', str(ROOT / f'scripts/hermes_job_{slot}.sh'), *args], cwd=tmp_path, env=env, capture_output=True, text=True)
     after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*'))

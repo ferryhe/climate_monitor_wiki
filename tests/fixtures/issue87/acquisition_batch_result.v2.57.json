@@ -1,0 +1,466 @@
+{
+  "schema_version": "acquisition-batch-result.v2",
+  "run_id": "scope-run-2",
+  "authoritative_status": "completed",
+  "status": "partial",
+  "full_success": false,
+  "counts": {
+    "requested": 57,
+    "updated": 33,
+    "unchanged": 9,
+    "blocked": 14,
+    "failed": 1,
+    "unresolved": 0,
+    "valid_snapshots": 42,
+    "failed_evidence": 15,
+    "succeeded": 42
+  },
+  "dispositions": [
+    {
+      "task_id": "iais-batch",
+      "site_key": "iais-batch",
+      "requested_url": "https://www.iais.org/updates/000",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-iais-batch-2"
+    },
+    {
+      "task_id": "source-001",
+      "site_key": "source-001",
+      "requested_url": "https://www.iais.org/updates/001",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-001-2"
+    },
+    {
+      "task_id": "source-002",
+      "site_key": "source-002",
+      "requested_url": "https://www.iais.org/updates/002",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-002-2"
+    },
+    {
+      "task_id": "source-003",
+      "site_key": "source-003",
+      "requested_url": "https://www.iais.org/updates/003",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-003-2"
+    },
+    {
+      "task_id": "source-004",
+      "site_key": "source-004",
+      "requested_url": "https://www.iais.org/updates/004",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-004-2"
+    },
+    {
+      "task_id": "source-005",
+      "site_key": "source-005",
+      "requested_url": "https://www.iais.org/updates/005",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-005-2"
+    },
+    {
+      "task_id": "source-006",
+      "site_key": "source-006",
+      "requested_url": "https://www.iais.org/updates/006",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-006-2"
+    },
+    {
+      "task_id": "source-007",
+      "site_key": "source-007",
+      "requested_url": "https://www.iais.org/updates/007",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-007-2"
+    },
+    {
+      "task_id": "source-008",
+      "site_key": "source-008",
+      "requested_url": "https://www.iais.org/updates/008",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-008-2"
+    },
+    {
+      "task_id": "source-009",
+      "site_key": "source-009",
+      "requested_url": "https://www.iais.org/updates/009",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-009-2"
+    },
+    {
+      "task_id": "source-010",
+      "site_key": "source-010",
+      "requested_url": "https://www.iais.org/updates/010",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-010-2"
+    },
+    {
+      "task_id": "source-011",
+      "site_key": "source-011",
+      "requested_url": "https://www.iais.org/updates/011",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-011-2"
+    },
+    {
+      "task_id": "source-012",
+      "site_key": "source-012",
+      "requested_url": "https://www.iais.org/updates/012",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-012-2"
+    },
+    {
+      "task_id": "source-013",
+      "site_key": "source-013",
+      "requested_url": "https://www.iais.org/updates/013",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-013-2"
+    },
+    {
+      "task_id": "source-014",
+      "site_key": "source-014",
+      "requested_url": "https://www.iais.org/updates/014",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-014-2"
+    },
+    {
+      "task_id": "source-015",
+      "site_key": "source-015",
+      "requested_url": "https://www.iais.org/updates/015",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-015-2"
+    },
+    {
+      "task_id": "source-016",
+      "site_key": "source-016",
+      "requested_url": "https://www.iais.org/updates/016",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-016-2"
+    },
+    {
+      "task_id": "source-017",
+      "site_key": "source-017",
+      "requested_url": "https://www.iais.org/updates/017",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-017-2"
+    },
+    {
+      "task_id": "source-018",
+      "site_key": "source-018",
+      "requested_url": "https://www.iais.org/updates/018",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-018-2"
+    },
+    {
+      "task_id": "source-019",
+      "site_key": "source-019",
+      "requested_url": "https://www.iais.org/updates/019",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-019-2"
+    },
+    {
+      "task_id": "source-020",
+      "site_key": "source-020",
+      "requested_url": "https://www.iais.org/updates/020",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-020-2"
+    },
+    {
+      "task_id": "source-021",
+      "site_key": "source-021",
+      "requested_url": "https://www.iais.org/updates/021",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-021-2"
+    },
+    {
+      "task_id": "source-022",
+      "site_key": "source-022",
+      "requested_url": "https://www.iais.org/updates/022",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-022-2"
+    },
+    {
+      "task_id": "source-023",
+      "site_key": "source-023",
+      "requested_url": "https://www.iais.org/updates/023",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-023-2"
+    },
+    {
+      "task_id": "source-024",
+      "site_key": "source-024",
+      "requested_url": "https://www.iais.org/updates/024",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-024-2"
+    },
+    {
+      "task_id": "source-025",
+      "site_key": "source-025",
+      "requested_url": "https://www.iais.org/updates/025",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-025-2"
+    },
+    {
+      "task_id": "source-026",
+      "site_key": "source-026",
+      "requested_url": "https://www.iais.org/updates/026",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-026-2"
+    },
+    {
+      "task_id": "source-027",
+      "site_key": "source-027",
+      "requested_url": "https://www.iais.org/updates/027",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-027-2"
+    },
+    {
+      "task_id": "source-028",
+      "site_key": "source-028",
+      "requested_url": "https://www.iais.org/updates/028",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-028-2"
+    },
+    {
+      "task_id": "source-029",
+      "site_key": "source-029",
+      "requested_url": "https://www.iais.org/updates/029",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-029-2"
+    },
+    {
+      "task_id": "source-030",
+      "site_key": "source-030",
+      "requested_url": "https://www.iais.org/updates/030",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-030-2"
+    },
+    {
+      "task_id": "source-031",
+      "site_key": "source-031",
+      "requested_url": "https://www.iais.org/updates/031",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-031-2"
+    },
+    {
+      "task_id": "source-032",
+      "site_key": "source-032",
+      "requested_url": "https://www.iais.org/updates/032",
+      "disposition": "updated",
+      "reason": "scope.updated",
+      "artifact_id": "manifest-source-032-2"
+    },
+    {
+      "task_id": "source-033",
+      "site_key": "source-033",
+      "requested_url": "https://www.iais.org/updates/033",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-033-2"
+    },
+    {
+      "task_id": "source-034",
+      "site_key": "source-034",
+      "requested_url": "https://www.iais.org/updates/034",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-034-2"
+    },
+    {
+      "task_id": "source-035",
+      "site_key": "source-035",
+      "requested_url": "https://www.iais.org/updates/035",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-035-2"
+    },
+    {
+      "task_id": "source-036",
+      "site_key": "source-036",
+      "requested_url": "https://www.iais.org/updates/036",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-036-2"
+    },
+    {
+      "task_id": "source-037",
+      "site_key": "source-037",
+      "requested_url": "https://www.iais.org/updates/037",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-037-2"
+    },
+    {
+      "task_id": "source-038",
+      "site_key": "source-038",
+      "requested_url": "https://www.iais.org/updates/038",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-038-2"
+    },
+    {
+      "task_id": "source-039",
+      "site_key": "source-039",
+      "requested_url": "https://www.iais.org/updates/039",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-039-2"
+    },
+    {
+      "task_id": "source-040",
+      "site_key": "source-040",
+      "requested_url": "https://www.iais.org/updates/040",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-040-2"
+    },
+    {
+      "task_id": "source-041",
+      "site_key": "source-041",
+      "requested_url": "https://www.iais.org/updates/041",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-source-041-2"
+    },
+    {
+      "task_id": "source-042",
+      "site_key": "source-042",
+      "requested_url": "https://www.iais.org/updates/042",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-043",
+      "site_key": "source-043",
+      "requested_url": "https://www.iais.org/updates/043",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-044",
+      "site_key": "source-044",
+      "requested_url": "https://www.iais.org/updates/044",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-045",
+      "site_key": "source-045",
+      "requested_url": "https://www.iais.org/updates/045",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-046",
+      "site_key": "source-046",
+      "requested_url": "https://www.iais.org/updates/046",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-047",
+      "site_key": "source-047",
+      "requested_url": "https://www.iais.org/updates/047",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-048",
+      "site_key": "source-048",
+      "requested_url": "https://www.iais.org/updates/048",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-049",
+      "site_key": "source-049",
+      "requested_url": "https://www.iais.org/updates/049",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-050",
+      "site_key": "source-050",
+      "requested_url": "https://www.iais.org/updates/050",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-051",
+      "site_key": "source-051",
+      "requested_url": "https://www.iais.org/updates/051",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-052",
+      "site_key": "source-052",
+      "requested_url": "https://www.iais.org/updates/052",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-053",
+      "site_key": "source-053",
+      "requested_url": "https://www.iais.org/updates/053",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-054",
+      "site_key": "source-054",
+      "requested_url": "https://www.iais.org/updates/054",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-055",
+      "site_key": "source-055",
+      "requested_url": "https://www.iais.org/updates/055",
+      "disposition": "blocked",
+      "reason": "scope.blocked"
+    },
+    {
+      "task_id": "source-056",
+      "site_key": "source-056",
+      "requested_url": "https://www.iais.org/updates/056",
+      "disposition": "failed",
+      "reason": "scope.failed"
+    }
+  ],
+  "summary": {
+    "checked": 57,
+    "succeeded": 42,
+    "failed": 15
+  }
+}
