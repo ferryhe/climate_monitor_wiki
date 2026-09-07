@@ -293,7 +293,11 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path):
     assert "sk-test-secret" not in encoded
 
 
-def test_cli_production_weekly_requires_authoring_response_at_parse_time():
+def test_cli_production_weekly_requires_authoring_mode_at_parse_time():
+    """Issue #87: --production-weekly now requires --authoring-mode
+    {prepare,finalize}; the legacy --authoring-response/--article-evidence/
+    --stats triple is no longer accepted because the same-run chain must
+    build its own bundle from #67 outcome + manifest + Pillar B."""
     completed = subprocess.run(
         [sys.executable, "scripts/run_climate_monitor.py", "--production-weekly"],
         check=False,
@@ -302,7 +306,7 @@ def test_cli_production_weekly_requires_authoring_response_at_parse_time():
     )
 
     assert completed.returncode == 2
-    assert "--production-weekly requires --authoring-response" in completed.stderr
+    assert "--production-weekly requires --authoring-mode" in completed.stderr
     assert "production weekly driver requires an authoring response file" not in completed.stderr
 
 

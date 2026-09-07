@@ -117,6 +117,23 @@ def dispatch(command, slot, day, dry_run):
         except Exception:
             return 2
         return 0 if dry_run else run(command)
+    if slot == 'monitor':
+        # Issue #87 AC-1: the production monitor slot runs the same-run
+        # chain in two phases. ``prepare`` materialises the staging
+        # bundle + v2 authoring request from #67 outcome + manifest +
+        # Pillar B; ``finalize`` consumes that bundle + exactly one
+        # authoring response and commits the #91 transaction. The
+        # command list carries both phases; this dispatcher threads
+        # them in order. Production expects the LLM response to be at
+        # ``CLIMATE_AUTHORING_RESPONSE`` between the two phases
+        # (already produced by the Hermes 08:00 agent before this
+        # wrapper is invoked).
+        rc = 0
+        for phase in command:
+            phase_rc = run(phase)
+            if phase_rc:
+                return phase_rc
+        return 0
     return run(command)
 
 
@@ -126,37 +143,146 @@ def dry_run_unavailable_provider(article_id, url):
     return {'status': 'unavailable', 'article_id': article_id, 'requested_url': url}
 
 
-def monitor_command(day, *, dry_run):
-    # There is no executable, same-run #67 outcome -> #92 evidence -> #93
-    # response producer in this wrapper. Never substitute unrelated files or
-    # infer site counts from candidate URLs. Real provisioning remains blocked.
-    response = path_env('AUTHORING_RESPONSE')
-    evidence = path_env('ARTICLE_EVIDENCE')
-    stats = path_env('CLIMATE_STATS_PATH')
-    from climate_monitor.weekly_monitor.driver import _emit_authoring_request, _candidate_items_from_evidence
-    from climate_monitor.weekly_monitor.authoring_contract import load_authoring_response, validate_authoring_response
-    from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_prompt
-    from climate_monitor.taxonomy import load_article_taxonomy
-    evidence_data = json.loads(evidence.read_text())
-    stats_data = json.loads(stats.read_text())
-    request = _emit_authoring_request(article_evidence=evidence_data, stats=stats_data,
-                                     report_date=date.fromisoformat(day), prompt=load_weekly_monitor_prompt())
-    validate_authoring_response(_candidate_items_from_evidence(request, evidence_data),
-                                load_authoring_response(response), taxonomy=load_article_taxonomy(), request=request)
-    if not dry_run:
-        raise Blocked('live_acquisition_contract_unavailable')
-    fixture = path_env('CLIMATE_DRY_RUN_FIXTURE_DIR', directory=True)
-    manifest = fixture / 'iais_minimal_manifest.json'
-    if not manifest.is_file():
-        raise Blocked('missing_dry_run_manifest')
-    command = [sys.executable, str(ROOT / 'scripts/run_climate_monitor.py'), '--production-weekly',
-               '--date', day, '--authoring-response', str(response), '--article-evidence', str(evidence),
-               '--stats', json.dumps(stats_data), '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider', '--manifest-fixture', str(manifest), '--no-update-seen-state', '--no-sync', '--json']
-    for flag, env in [('state-dir', 'CLIMATE_STATE_DIR'), ('source-dir', 'CLIMATE_SOURCE_DIR'), ('wiki-dir', 'CLIMATE_WIKI_DIR')]:
-        command += ['--' + flag, str(path_env(env, directory=True))]
-    for name, env in [('source-config', 'CLIMATE_SOURCE_CONFIG'), ('run-config', 'CLIMATE_RUN_CONFIG'), ('site-scopes', 'CLIMATE_SITE_SCOPES')]:
-        command += ['--' + name, str(path_env(env))]
+def _monitor_prepare_cli_command(day: str, *, staging_dir: Path) -> list[str]:
+    """Build only the prepare CLI command for the preflight path.
+
+    Preflight validates binding and validator-consistent inputs without
+    touching the staging bundle or the authoring response (those are
+    consumed by the finalize phase, which the operator runs after the
+    LLM step). The preflight path therefore resolves only the three
+    upstream artifacts and the staging directory; the authoring
+    response and bundle are not required for the preflight itself.
+    """
+    outcome_path = path_env("CLIMATE_OUTCOME_ARTIFACT")
+    manifest_path = path_env("CLIMATE_MANIFEST_ARTIFACT")
+    pillar_b_path = path_env("CLIMATE_PILLAR_B_ARTIFACT")
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/run_climate_monitor.py"),
+        "--production-weekly",
+        "--authoring-mode", "prepare",
+        "--report-date", day,
+        "--acquisition-batch", str(outcome_path),
+        "--web-listening-manifest", str(manifest_path),
+        "--pillar-b-artifact", str(pillar_b_path),
+        "--staging-dir", str(staging_dir),
+        "--article-evidence-loopback", "scripts.hermes_job:dry_run_unavailable_provider",
+    ]
+    for flag, env, directory in [
+        ("state-dir", "CLIMATE_STATE_DIR", True),
+        ("source-dir", "CLIMATE_SOURCE_DIR", True),
+        ("wiki-dir", "CLIMATE_WIKI_DIR", True),
+        ("source-config", "CLIMATE_SOURCE_CONFIG", False),
+        ("run-config", "CLIMATE_RUN_CONFIG", False),
+        ("site-scopes", "CLIMATE_SITE_SCOPES", False),
+    ]:
+        command += ["--" + flag, str(path_env(env, directory=directory))]
     return command
+
+
+def _monitor_cli_command(
+    day: str,
+    *,
+    mode: str,
+    staging_dir: Path,
+    response: Path | None = None,
+    dry_run: bool,
+) -> list[str]:
+    """Build the ``run_climate_monitor.py --production-weekly`` command for
+    the ``prepare`` (build staging bundle + emit v2 authoring request) and
+    ``finalize`` (consume prepared bundle + one authoring response, run
+    the #91 transaction) phases of the same-run chain.
+
+    The production monitor is the only authoritative entrypoint; this
+    wrapper is a thin Hermes adapter that resolves required paths and
+    threads them through the same CLI. The operator never assembles the
+    AUTHORING_RESPONSE / ARTICLE_EVIDENCE / CLIMATE_STATS_PATH triple;
+    the prepare phase builds the bundle from #67 outcome + manifest +
+    Pillar B and the finalize phase consumes only the prepared bundle
+    plus exactly one authoring response.
+    """
+    if mode not in {"prepare", "finalize"}:
+        raise Blocked(f"unknown monitor authoring mode: {mode!r}")
+    outcome_path = path_env("CLIMATE_OUTCOME_ARTIFACT")
+    manifest_path = path_env("CLIMATE_MANIFEST_ARTIFACT")
+    pillar_b_path = path_env("CLIMATE_PILLAR_B_ARTIFACT")
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/run_climate_monitor.py"),
+        "--production-weekly",
+        "--authoring-mode", mode,
+        "--report-date", day,
+        "--acquisition-batch", str(outcome_path),
+        "--web-listening-manifest", str(manifest_path),
+        "--pillar-b-artifact", str(pillar_b_path),
+        "--staging-dir", str(staging_dir),
+        "--article-evidence-loopback", "scripts.hermes_job:dry_run_unavailable_provider",
+    ]
+    if mode == "finalize":
+        if response is None:
+            response = path_env("CLIMATE_AUTHORING_RESPONSE")
+        command += ["--authoring-response", str(response)]
+    for flag, env, directory in [
+        ("state-dir", "CLIMATE_STATE_DIR", True),
+        ("source-dir", "CLIMATE_SOURCE_DIR", True),
+        ("wiki-dir", "CLIMATE_WIKI_DIR", True),
+        ("source-config", "CLIMATE_SOURCE_CONFIG", False),
+        ("run-config", "CLIMATE_RUN_CONFIG", False),
+        ("site-scopes", "CLIMATE_SITE_SCOPES", False),
+    ]:
+        command += ["--" + flag, str(path_env(env, directory=directory))]
+    return command
+
+
+def monitor_command(day, *, dry_run):
+    """Build the two-phase monitor command sequence for the production
+    monitor slot.
+
+    The Hermes 08:00 monitor job invokes this command once. ``prepare``
+    materialises the staging bundle + v2 authoring request from the
+    public #67 outcome + manifest + Pillar B inputs. ``finalize``
+    consumes that bundle plus exactly one authoring response (already
+    produced by the Hermes agent at ``CLIMATE_AUTHORING_RESPONSE``) and
+    commits the #91 transaction.
+
+    The wrapper never assembles a triple of AUTHORING_RESPONSE /
+    ARTICLE_EVIDENCE / CLIMATE_STATS_PATH inputs by hand; it only
+    resolves the three public upstream artifacts plus the staging
+    directory and delegates to the same CLI in both phases.
+    Production (non-dry-run) execution is permitted once the public
+    artifacts and the prepared bundle plus the LLM-produced response
+    exist; the wrapper itself never invokes a synthetic fixture or
+    hand-fills stats.
+    """
+    staging_dir = path_env("CLIMATE_STAGING_DIR", directory=True, exists=False)
+    prepare_command = _monitor_cli_command(
+        day, mode="prepare", staging_dir=staging_dir, dry_run=dry_run
+    )
+    finalize_command = _monitor_cli_command(
+        day,
+        mode="finalize",
+        staging_dir=staging_dir,
+        dry_run=dry_run,
+    )
+    return [prepare_command, finalize_command]
+
+
+def finalize_command(day, *, dry_run):
+    """Build the finalize CLI command for the same-run chain.
+
+    The finalize slot consumes the staging bundle produced by the
+    prepare slot plus exactly one authoring response and commits the
+    #91 atomic transaction (final report + seen-state commit). This
+    wrapper delegates to the same production CLI in
+    ``--authoring-mode finalize`` so there is exactly one
+    authoring-validation path in the codebase.
+    """
+    staging_dir = path_env("CLIMATE_STAGING_DIR", directory=True)
+    if not (staging_dir / "bundle.json").is_file():
+        raise Blocked("missing_prepared_bundle")
+    return [_monitor_cli_command(
+        day, mode="finalize", staging_dir=staging_dir, dry_run=dry_run
+    )]
 
 
 def publisher_command(day, *, dry_run):
@@ -248,7 +374,19 @@ def main(argv=None):
                         'CLIMATE_REPORTS_DIR', 'CLIMATE_REGISTRY_DB', 'CLIMATE_REGISTRY_BACKUP_DIR', 'CLIMATE_REGISTRY_LOCK'):
                 if os.environ.get(key) and not Path(os.environ[key]).resolve().is_relative_to(workspace):
                     raise Blocked('dry_run_path_outside_workspace')
-        command = globals()[args.slot + '_command'](day, dry_run=dry_run)
+        if args.slot == "monitor":
+            # Preflight validates only the prepare phase. The full
+            # monitor_command would also build the finalize command,
+            # which needs the LLM-produced authoring response that is
+            # not yet on disk when preflight runs.
+            staging_for_preflight = path_env(
+                "CLIMATE_STAGING_DIR", directory=True, exists=False
+            )
+            command = [_monitor_prepare_cli_command(
+                day, staging_dir=staging_for_preflight
+            )]
+        else:
+            command = globals()[args.slot + "_command"](day, dry_run=dry_run)
         if args.preflight:
             print(json.dumps({'status': 'preflight_passed', 'slot': args.slot, 'scheduled_for': day + 'T' + SCHEDULE[args.slot] + ':00Z', 'dry_run': dry_run}))
             return 0

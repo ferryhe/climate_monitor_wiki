@@ -249,7 +249,7 @@ def test_collect_evidence_emits_exactly_one_record_per_unique_article_id(force_a
         {"article_id": "aid-2", "url": "https://example.org/b", "title": "B"},
     ]
     provider = _FakeProvider()
-    records = collect_evidence(inputs, providers=(provider,))
+    records, _ = collect_evidence(inputs, providers=(provider,))
     assert len(records) == 2
     article_ids = [r["article_id"] for r in records]
     assert article_ids == ["aid-1", "aid-2"]
@@ -267,7 +267,7 @@ def test_collect_evidence_distinct_urls_with_identical_title_remain_distinct(
         {"article_id": "aid-1", "url": "https://example.org/a", "title": "Same"},
         {"article_id": "aid-2", "url": "https://example.org/b", "title": "Same"},
     ]
-    records = collect_evidence(inputs, providers=(_FakeProvider(),))
+    records, _ = collect_evidence(inputs, providers=(_FakeProvider(),))
     assert [r["article_id"] for r in records] == ["aid-1", "aid-2"]
     assert records[0]["article_id"] != records[1]["article_id"]
 
@@ -281,7 +281,7 @@ def test_collect_evidence_three_inputs_produce_three_records_in_input_order(
         {"article_id": f"aid-{i}", "url": f"https://example.org/{i}", "title": f"T{i}"}
         for i in range(3)
     ]
-    records = collect_evidence(inputs, providers=(_FakeProvider(),))
+    records, _ = collect_evidence(inputs, providers=(_FakeProvider(),))
     assert [r["article_id"] for r in records] == ["aid-0", "aid-1", "aid-2"]
     # Every record has a deterministic content_hash (even when None content).
     for record in records:
@@ -305,7 +305,7 @@ def test_collect_evidence_unavailable_path_emits_honest_records(ensure_unavailab
         {"article_id": "aid-1", "url": "https://example.org/a"},
         {"article_id": "aid-2", "url": "https://example.org/b"},
     ]
-    records = collect_evidence(inputs, providers=())
+    records, _ = collect_evidence(inputs, providers=())
     assert len(records) == 2
     for record in records:
         assert record["status"] == "unavailable"
@@ -324,7 +324,7 @@ def test_collect_evidence_provider_runtime_error_still_emits_record(force_availa
 
     inputs = [{"article_id": "aid-x", "url": "https://example.org/x"}]
     provider = _FakeProvider(raises=RuntimeError("boom"))
-    records = collect_evidence(inputs, providers=(provider,))
+    records, _ = collect_evidence(inputs, providers=(provider,))
     assert len(records) == 1
     assert records[0]["status"] == "failed"
     assert "RuntimeError" in (records[0]["failure_reason"] or "")
@@ -642,7 +642,7 @@ def test_preview_only_record_is_ok_with_preview_basis_and_no_body(force_availabl
     full body.
     """
 
-    records = adapter.collect_evidence(
+    records, _ = adapter.collect_evidence(
         [{"article_id": "aid-prev", "url": "https://example.org/prev"}],
         providers=(loopbacks.loopback_preview_only_provider,),
     )
@@ -684,7 +684,7 @@ def test_same_canonical_url_produces_one_record_distinct_urls_two(force_availabl
         {"article_id": "aid-x-b", "url": "https://example.org/a",
          "title": "Same again"},
     ]
-    same_url_records = adapter.collect_evidence(same_url_inputs, providers=(provider,))
+    same_url_records, _ = adapter.collect_evidence(same_url_inputs, providers=(provider,))
     assert len(same_url_records) == 1
     assert same_url_records[0]["article_id"] == "aid-x-a"
     assert same_url_records[0]["requested_url"] == "https://example.org/a"
@@ -694,7 +694,7 @@ def test_same_canonical_url_produces_one_record_distinct_urls_two(force_availabl
         {"article_id": "aid-y2", "url": "https://example.org/y2",
          "title": "Identical Title"},
     ]
-    distinct_url_records = adapter.collect_evidence(
+    distinct_url_records, _ = adapter.collect_evidence(
         distinct_url_inputs, providers=(_FakeProvider(),)
     )
     assert len(distinct_url_records) == 2
@@ -702,7 +702,7 @@ def test_same_canonical_url_produces_one_record_distinct_urls_two(force_availabl
 
 
 def test_preview_is_never_canonical_body():
-    records = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a"}],
+    records, _ = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a"}],
         providers=(loopbacks.loopback_preview_only_provider,))
     record = records[0]
     assert record["content"] is None
@@ -739,7 +739,7 @@ def test_snippet_only_comes_from_input(snippet):
         payload["data"]["snippet"] = "Invented upstream text"
         return payload
     record = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a",
-        "search_snippet": snippet}], providers=(provider,))[0]
+        "search_snippet": snippet}], providers=(provider,))[0][0]
     assert record["summary_basis"] == ("search_snippet" if snippet else "none")
     assert record["extra"].get("search_snippet") == snippet
     assert "Invented" not in json.dumps(record)
@@ -783,7 +783,7 @@ def test_output_set_mismatch_rejects_entire_artifact(tmp_path, monkeypatch, kind
               {"article_id": "b", "url": "https://example.org/b"}]
     original = adapter.collect_evidence
     def corrupt(articles, **kw):
-        records = original(articles, providers=(loopbacks.loopback_no_content_provider,))
+        records, output_dirs = original(articles, providers=(loopbacks.loopback_no_content_provider,))
         if kind == "missing":
             records.pop()
         elif kind == "extra":
@@ -792,7 +792,7 @@ def test_output_set_mismatch_rejects_entire_artifact(tmp_path, monkeypatch, kind
             records.append(dict(records[0]))
         else:
             records[0].update(article_id="", requested_url="")
-        return records
+        return records, output_dirs
     monkeypatch.setattr(adapter, "collect_evidence", corrupt)
     with pytest.raises(adapter.ArticleContentAdapterError, match=reason):
         adapter.run_article_evidence(inputs, report_date="2026-09-07", source_dir=tmp_path)
@@ -810,7 +810,7 @@ def test_missing_input_identity_rejects_before_fetch(tmp_path):
 
 def test_same_url_across_a_b_fetches_once():
     provider = _FakeProvider()
-    records = adapter.collect_evidence([
+    records, _ = adapter.collect_evidence([
         {"article_id": "pillar-a", "url": "https://example.org/a?utm_source=mail"},
         {"article_id": "pillar-b", "url": "https://example.org/a"}], providers=(provider,))
     assert len(provider.call_log) == len(records) == 1
@@ -882,7 +882,7 @@ def test_explicit_provider_overrides_unavailable_and_default(monkeypatch):
     monkeypatch.setattr(adapter, "check_dependencies", lambda: "unavailable")
     monkeypatch.setattr(adapter, "_default_providers", lambda: pytest.fail("default provider invoked"))
     record = adapter.collect_evidence([{"article_id": "a", "url": "https://example.org/a"}],
-        providers=(loopbacks.loopback_success_provider,))[0]
+        providers=(loopbacks.loopback_success_provider,))[0][0]
     assert record["status"] == "ok"
 
 

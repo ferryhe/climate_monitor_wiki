@@ -444,6 +444,7 @@ def _stage_article_evidence(
         unique_articles,
         report_date=report_date.isoformat(),
         providers=providers,
+        data_root=source_dir,
     )
     return write_article_evidence_artifact(
         source_dir, report_date.isoformat(), artifact

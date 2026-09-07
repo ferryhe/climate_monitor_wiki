@@ -20,7 +20,9 @@ def test_full_chain_and_production_snapshots(tmp_path):
 def test_full_chain_all_four_consumers(tmp_path):
     from scripts.dryrun_full_pipeline import run_chain
     result = run_chain(tmp_path)
-    assert result['stages'] == ['A/B', 'evidence', 'authoring', 'MD/sidecar', 'PDF', 'delivery-dry-run', 'publisher-no-push-plan', 'registry-dry-run']
+    assert result['stages'] == ['A/B', 'evidence', 'authoring', 'MD/sidecar',
+        'PDF', 'delivery-dry-run', 'publisher-no-push-plan',
+        'CLI prepare+finalize', 'registry-dry-run']
     assert result['unique_urls'] == 3
     assert result['database_sha256_before'] == result['database_sha256_after']
     assert result['tamper_rejected'] is True
