@@ -182,8 +182,12 @@ def test_production_wrapper_plans_without_preexisting_response(tmp_path, monkeyp
     assert command[command.index('--model-provider') + 1] == 'openai-codex'
 
 
-@pytest.mark.parametrize('reply', ['valid', 'absent', 'invalid'])
-def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypatch, reply):
+@pytest.mark.parametrize('capability', ['query-file', 'query'])
+@pytest.mark.parametrize('reply', [
+    'valid', 'absent', 'invalid', 'failed', 'timeout', 'argv_limit',
+    'help_failed', 'help_unknown', 'help_timeout', 'help_unavailable',
+])
+def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypatch, reply, capability):
     import sys
     from argparse import Namespace
     from scripts import hermes_job
@@ -195,7 +199,7 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
     payload = json.loads(mp.read_text())
     for item in payload['discovered_items']:
         item['summary'] = 'Climate insurance supervision risk evidence.'
-        item['title'] = 'Climate insurance supervision risk update'
+        item['title'] = 'Climate insurance supervision risk update $(literal) `literal`'
     mp.write_text(json.dumps(payload))
     bp.write_text(json.dumps([{'url': 'https://www.iais.org/pillar-b-climate-risk',
         'title': 'Climate insurance supervision research', 'source': 'web',
@@ -221,16 +225,38 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
         assert args.model_provider == 'openai-codex'
         return finalize(args, parser)
     def hermes(command, **kwargs):
+        if command == ['hermes', 'chat', '--help']:
+            events.append('help')
+            if reply == 'help_timeout':
+                raise subprocess.TimeoutExpired(command, 30)
+            if reply == 'help_unavailable':
+                raise FileNotFoundError('hermes')
+            return Namespace(returncode=2 if reply == 'help_failed' else 0,
+                stdout='--quiet' if reply == 'help_unknown' else (
+                    '-q QUERY, --query QUERY\n' + ('--query-file PATH\n' if capability == 'query-file' else '')), stderr='')
         assert (staging / 'v2_authoring_request.json').is_file()
         assert not (staging / 'authoring_response.json').exists()
         events.append('author')
         assert command[command.index('--model') + 1] == 'gpt-6-astra'
         assert command[command.index('--provider') + 1] == 'openai-codex'
-        assert command[command.index('--query-file') + 1] == '-'
+        if capability == 'query-file':
+            assert command[command.index('--query-file') + 1] == '-'
+            instruction = kwargs['input']
+            assert instruction not in command
+        else:
+            assert '--query-file' not in command
+            instruction = command[command.index('--query') + 1]
+            assert kwargs.get('input') is None
+        assert not kwargs.get('shell', False)
+        assert '$(literal) `literal`' in instruction
+        if reply == 'timeout':
+            raise subprocess.TimeoutExpired(command, 1800)
+        if reply == 'argv_limit':
+            import errno
+            raise OSError(errno.E2BIG, 'Argument list too long')
         assert command[command.index('--toolsets') + 1] == 'none'
-        assert kwargs['input'] not in command
         request = json.loads((staging / 'v2_authoring_request.json').read_text())
-        assert request['request_sha256'] in kwargs['input']
+        assert request['request_sha256'] in instruction
         assert len(request['articles']) == 4
         assert any(a['url'].endswith('/pillar-b-climate-risk') for a in request['articles'])
         response = dict(schema_version=AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
@@ -241,7 +267,7 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
                 'summary_basis': 'search_snippet' if item['evidence']['search_snippet'] else 'none',
                 'evidence_hash': None, 'categories': ['Supervision & Disclosure'],
                 'keywords': ['climate', 'insurance', 'supervision']} for item in request['articles']])
-        return Namespace(returncode=0, stdout=('Warning: Unknown toolsets: none\n' + json.dumps(response) + '\n') if reply == 'valid' else
+        return Namespace(returncode=1 if reply == 'failed' else 0, stdout=('Warning: Unknown toolsets: none\n' + json.dumps(response) + '\n') if reply == 'valid' else
                          ('' if reply == 'absent' else '{}'), stderr='\nsession_id: 20260907_204029_4993a5\n')
     monkeypatch.setattr(monitor, '_run_prepare', tracked_prepare)
     monkeypatch.setattr(monitor, '_run_finalize', tracked_finalize)
@@ -260,13 +286,14 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
         '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider'])
     if reply == 'valid':
         monitor.main()
-        assert events == ['prepare', 'author', 'finalize']
+        assert events == ['prepare', 'help', 'author', 'finalize']
         assert list((tmp_path / 'sources').glob('climate-monitor-*.md'))
     else:
         with pytest.raises(SystemExit):
             monitor.main()
-        assert events == ['prepare', 'author']
+        assert events == (['prepare', 'help'] if reply.startswith('help_') else ['prepare', 'help', 'author'])
         assert not list((tmp_path / 'sources').glob('*.md'))
+        assert not (staging / 'authoring_response.json').exists()
 
 
 def test_saved_batch_fixture_is_the_public_v2_contract():
@@ -344,7 +371,7 @@ def test_missing_authoring_identity_stops_before_prepare(tmp_path, monkeypatch):
             staging_dir=str(tmp_path), model='', model_provider=''), None)
 
 
-@pytest.mark.parametrize('fixture_index', [0, 1])
+@pytest.mark.parametrize('fixture_index', [0, 1, 2])
 def test_dependency_free_saved_fixtures_match_public_model(fixture_index):
     from issue87_outcome_fixture import FIXTURES, validate_fixture
     contract = pytest.importorskip('web_listening.contracts.acquisition_batch')
@@ -353,10 +380,11 @@ def test_dependency_free_saved_fixtures_match_public_model(fixture_index):
         raw).model_dump(mode='json', exclude_none=True)
 
 
+@pytest.mark.parametrize('fixture_index', [0, 2])
 @pytest.mark.parametrize('mutation', ['missing_summary', 'wrong_count', 'extra', 'boolean_count'])
-def test_dependency_free_fixture_rejects_changed_payload(mutation):
+def test_dependency_free_fixture_rejects_changed_payload(mutation, fixture_index):
     from issue87_outcome_fixture import FIXTURES, validate_fixture
-    payload = json.loads(FIXTURES[0].read_text())
+    payload = json.loads(FIXTURES[fixture_index].read_text())
     if mutation == 'missing_summary':
         del payload['summary']
     elif mutation == 'wrong_count':
@@ -414,7 +442,7 @@ def test_dependency_free_fixture_cannot_read_outside_workspace(dependency_free_o
 
 def test_installed_public_model_wins_over_fixture_seam(tmp_path, monkeypatch):
     import runpy
-    op, _, _ = public_inputs(tmp_path)  # real producer output outside the allowlist
+    op, _, _ = public_inputs(tmp_path)  # installed validation must take precedence
     monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(tmp_path))
@@ -461,3 +489,130 @@ def test_manifest_fallback_origin_matches_display_pillar(pillar):
     assert record['origins'] == [{'pillar': pillar or 'A', 'source': 'wri', 'url': item['url']}]
     item['origins'] = [{'pillar': 'B', 'source': 'explicit-source', 'url': item['url']}]
     assert monitor._collect_same_run_records({}, manifest)[0]['origins'] == item['origins']
+
+
+@pytest.fixture
+def real_wri_inputs(tmp_path, monkeypatch):
+    import shutil
+    root = tmp_path.resolve()
+    inputs = root / 'inputs'
+    shutil.copytree(monitor.ROOT / 'tests/fixtures/issue87/wri_repro', inputs)
+    monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(root))
+    return inputs
+
+
+def test_real_wri_export_preserves_anchor_occurrences_and_source_counts(real_wri_inputs):
+    import hashlib
+    from climate_monitor.article_candidate_contract import adapt_article_changes
+    root = real_wri_inputs
+    # Owner package: issue #87 comment 5575020496, ISSUE87_WRI_REPRO_DATA_V1.
+    provenance = json.loads((root / 'PROVENANCE.json').read_text())
+    assert provenance['bundled_manifest_sha256'] == '4424b337737a881dcb06b231ca083f057c4a4270bb9bfaa6bcd75735df5344ad'
+    assert provenance['outcome_sha256'] == '65164ec97027dcac3e8da0b9932d5b5b67761d8b7757c6c4d6bac59e29d2c809'
+    assert hashlib.sha256((root / 'manifest.json').read_bytes()).hexdigest() == provenance['bundled_manifest_sha256']
+    assert hashlib.sha256((root / 'acquisition-batch-result.v2.json').read_bytes()).hexdigest() == provenance['outcome_sha256']
+    outcome, manifest, _, records, stats = monitor._read_prepare_inputs(
+        root / 'acquisition-batch-result.v2.json', root / 'manifest.json', root / 'pillar_b.empty.json')
+    assert len(manifest['discovered_items']) == 164
+    assert stats == dict(total=1, updated=0, unchanged=1, blocked=0, failed=0, unresolved=0)
+    projected = monitor._outcome_to_article_changes(outcome, manifest, records, '2026-09-07')
+    assert projected['new_articles'] == 164
+    urls = [row['url'] for group in projected['articles'] for row in group['items']]
+    assert sorted(map(monitor.canonical_url, urls)) == sorted(monitor.canonical_url(item['url']) for item in manifest['discovered_items'])
+    anchors = [url for url in urls if monitor.canonical_url(url) == 'https://www.wri.org/insights']
+    assert len(anchors) == 8
+    raw_urls = [origin['url'] for record in records for origin in record['origins']]
+    assert 'https://www.wri.org/insights#latest-insights=' in raw_urls
+    assert 'https://www.wri.org/insights#main-content=' in raw_urls
+    reversed_manifest = {**manifest, 'discovered_items': list(reversed(manifest['discovered_items']))}
+    reversed_records = monitor._attach_outcome_disposition(
+        monitor._collect_same_run_records(outcome, reversed_manifest), outcome)
+    assert monitor._outcome_to_article_changes(outcome, reversed_manifest, reversed_records, '2026-09-07') == projected
+    candidates = adapt_article_changes(projected, artifact_id='wri-repro', artifact_sha256='a' * 64)
+    assert len(candidates) == 154
+    assert len(candidates) == len({monitor.canonical_url(item['url']) for item in manifest['discovered_items']})
+    insights = next(c for c in candidates if c.canonical_url == 'https://www.wri.org/insights')
+    assert len(insights.origins) == 8
+    assert sum(len(c.origins) for c in candidates) == 164
+
+
+def test_duplicate_source_evidence_preserves_metadata_and_origins(tmp_path, monkeypatch):
+    from climate_monitor.article_candidate_contract import adapt_article_changes
+    # Synthetic metadata unit case using the existing public-input helper.
+    # The unchanged real export is tested above.
+    op, mp, _ = public_inputs(tmp_path)
+    outcome, manifest = monitor._read_outcome(op), monitor._read_manifest(mp)
+    anchors = manifest['discovered_items']
+    for item, suffix in zip(anchors, ['', '#latest-insights=', '#main-content=']):
+        item['url'] = 'https://www.wri.org/insights' + suffix
+    anchors[0].update(title='Climate evidence', summary='Useful page summary',
+                      origins=[{'pillar': 'A', 'source': 'wri', 'url': anchors[0]['url']},
+                               {'pillar': 'A', 'source': 'second-origin', 'url': anchors[0]['url']}])
+    anchors[1].update(title='Another climate title', summary='Other summary', summary_basis='search_result')
+    records = monitor._attach_outcome_disposition(monitor._collect_same_run_records(outcome, manifest), outcome)
+    projected = monitor._outcome_to_article_changes(outcome, manifest, records, '2026-09-07')
+    candidates = adapt_article_changes(projected, artifact_id='wri-repro', artifact_sha256='a' * 64)
+    monkeypatch.setattr(monitor, 'build_article_evidence_artifact', lambda inputs, **kw: inputs)
+    assert len(candidates) == 1
+    assert len(candidates[0].origins) == 4
+    assert monitor.canonical_url(candidates[0].url) == 'https://www.wri.org/insights'
+    inputs = monitor._build_evidence_payload(records, candidates)
+    evidence = next(item for item in inputs if item['article_id'] == 'https://www.wri.org/insights')
+    assert evidence['search_snippet']
+    assert {'wri', 'second-origin'} <= {o['source'] for o in evidence['origins']}
+    assert {'Useful page summary', 'Other summary'} <= {o.get('original_summary') for o in evidence['origins']}
+    assert {'Climate evidence', 'Another climate title'} <= {o.get('original_title') for o in evidence['origins']}
+    assert monitor._build_evidence_payload(list(reversed(records)), candidates) == inputs
+
+
+def test_real_wri_full_prepare_with_unavailable_body_provider(tmp_path, monkeypatch, real_wri_inputs):
+    import hashlib
+    import sys
+    # The exact saved outcome is available without upstream only inside the
+    # explicit temporary dry run. Installed public validation still wins.
+    inputs = real_wri_inputs
+    staging = tmp_path / 'staging'
+    monkeypatch.setattr(sys, 'argv', ['run_climate_monitor.py', '--production-weekly',
+        '--authoring-mode', 'prepare', '--report-date', '2026-09-07',
+        '--acquisition-batch', str(inputs / 'acquisition-batch-result.v2.json'),
+        '--web-listening-manifest', str(inputs / 'manifest.json'),
+        '--pillar-b-artifact', str(inputs / 'pillar_b.empty.json'),
+        '--staging-dir', str(staging), '--state-dir', str(tmp_path / 'state'),
+        '--source-dir', str(tmp_path / 'sources'), '--wiki-dir', str(tmp_path / 'wiki'),
+        '--no-sync', '--no-update-seen-state',
+        '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider'])
+    monitor.main()
+    bundle = monitor._read_staging_bundle(staging)
+    monitor._verify_staging_digest(staging, bundle)
+    request = json.loads((staging / 'v2_authoring_request.json').read_text())
+    manifest = json.loads((inputs / 'manifest.json').read_text())
+    assert len(manifest['discovered_items']) == 164
+    assert hashlib.sha256((inputs / 'manifest.json').read_bytes()).hexdigest() == '4424b337737a881dcb06b231ca083f057c4a4270bb9bfaa6bcd75735df5344ad'
+    assert request['stats'] == dict(total=1, updated=0, unchanged=1, blocked=0, failed=0, unresolved=0)
+    expected_urls = {monitor.canonical_url(item['url']) for item in manifest['discovered_items']}
+    assert len(request['articles']) == 154
+    assert len(request['articles']) == len(expected_urls)
+    assert {monitor.canonical_url(item['url']) for item in request['articles']} == expected_urls
+    raw_origins = [o for article in request['articles'] for o in article['origins'] if o.get('source_item_id')]
+    assert len(raw_origins) == 164
+    assert sum('%2e' in o['url'].lower() for o in raw_origins) == 49
+    assert {o['url'] for o in raw_origins} == {item['url'] for item in manifest['discovered_items']}
+    for item in manifest['discovered_items']:
+        origin = next(o for o in raw_origins if o['source_item_id'] == item['item_id'])
+        assert origin['provenance'] == item['provenance']
+        assert origin['metadata'] == item['metadata']
+    assert bundle['public_artifacts']['pillar_b_artifact']['count'] == 0
+    assert not (staging / 'authoring_response.json').exists()
+    assert not list((tmp_path / 'sources').glob('*.md'))
+
+
+def test_projection_normalizes_path_without_changing_transport_query_or_fragment():
+    raw = 'https://www.wri.org/index%2ephp/?token=a%2Fb&label=a%20b&utm_source=kept#latest'
+    record = {'final_url': raw, 'requested_url': raw, 'disposition': 'unchanged',
+              'origins': [{'source': 'wri', 'url': raw}], 'title': ''}
+    projected = monitor._outcome_to_article_changes({}, {}, [record], '2026-09-07')
+    assert projected['articles'][0]['items'][0]['url'] == (
+        'https://www.wri.org/index.php/?token=a%2Fb&label=a%20b&utm_source=kept#latest')
+    assert record['origins'][0]['url'] == raw
