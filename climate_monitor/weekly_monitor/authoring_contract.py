@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from datetime import date
@@ -17,10 +18,32 @@ AUTHORING_CONTRACT_VERSION = "weekly-monitor-authoring.v1"
 AUTHORING_REQUEST_SCHEMA_VERSION = "weekly-monitor-authoring-request.v1"
 AUTHORING_RESPONSE_SCHEMA_VERSION = "weekly-monitor-authoring-response.v1"
 
+# Issue #93 evidence-based authoring: a single repository-owned pass that
+# carries per-article evidence (article content / search snippet / none) and
+# validates the response against the request's deterministic identity and
+# the same summary-basis rules. v1 readers/fixtures keep working unchanged.
+AUTHORING_CONTRACT_VERSION_V2 = "weekly-monitor-authoring.v2"
+AUTHORING_REQUEST_SCHEMA_VERSION_V2 = "weekly-monitor-authoring-request.v2"
+AUTHORING_RESPONSE_SCHEMA_VERSION_V2 = "weekly-monitor-authoring-response.v2"
+
+_VALID_SUMMARY_BASIS = frozenset(
+    {"article_content", "search_snippet", "page", "search_result",
+     "change_event", "upstream_artifact", "legacy_v1"}
+)
+
 _RESPONSE_FIELDS = frozenset(
     {"schema_version", "contract_version", "article_count", "articles"}
 )
 _ARTICLE_FIELDS = frozenset({"article_id", "semantics"})
+
+_V2_RESPONSE_FIELDS = frozenset(
+    {"schema_version", "contract_version", "request_sha256",
+     "article_count", "articles", "executive_summary", "stats"}
+)
+_V2_ARTICLE_AUTHORED_FIELDS = frozenset(
+    {"relevant", "summary", "summary_basis", "evidence_hash",
+     "categories", "keywords"}
+)
 
 
 class AuthoringContractError(ValueError):
@@ -53,9 +76,29 @@ def build_authoring_request(
     items: Sequence[CandidateItem],
     prompt: LoadedPrompt,
     taxonomy: ArticleTaxonomy | None = None,
+    article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    stats: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Build a single authoring request.
+
+    When ``article_evidence`` is provided the v2 contract is used: the
+    request carries per-article URL/origins/display_pillar/title/title_basis,
+    evidence (status / attempts / selected_method / content_type /
+    content_ref / content_hash / search_snippet), summary_basis, code-
+    computed stats, and the prompt/taxonomy identity. Otherwise the v1
+    contract is used unchanged so existing readers and fixtures keep working.
+    """
     selected = taxonomy or load_article_taxonomy()
     ordered = _ordered_items(items)
+    if article_evidence is not None:
+        return _build_evidence_request(
+            report_date=report_date,
+            ordered=ordered,
+            prompt=prompt,
+            taxonomy=selected,
+            article_evidence=article_evidence,
+            stats=stats or {},
+        )
     return {
         "schema_version": AUTHORING_REQUEST_SCHEMA_VERSION,
         "contract_version": AUTHORING_CONTRACT_VERSION,
@@ -80,7 +123,19 @@ def validate_authoring_response(
     response: Mapping[str, Any],
     *,
     taxonomy: ArticleTaxonomy | None = None,
+    request: Mapping[str, Any] | None = None,
 ) -> AuthoringValidationResult:
+    """Validate a single authoring response.
+
+    v2 responses are dispatched to ``_validate_evidence_response`` and must
+    carry their originating request so the validator can rebind the response
+    article identities to the exact input set, deterministic stats, and the
+    basis rules. v1 responses follow the original strict contract.
+    """
+    if response.get("schema_version") == AUTHORING_RESPONSE_SCHEMA_VERSION_V2:
+        return _validate_evidence_response(
+            items, response, taxonomy=taxonomy, request=request
+        )
     selected = taxonomy or load_article_taxonomy()
     ordered = _ordered_items(items)
     expected_ids = tuple(article_identity(item) for item in ordered)
@@ -199,3 +254,360 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise AuthoringContractError("authoring response contains duplicate JSON keys")
         result[key] = value
     return result
+
+
+# ---------------------------------------------------------------------------
+# v2: evidence-based authoring (Issue #93)
+# ---------------------------------------------------------------------------
+
+
+def _canonical_json_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, ensure_ascii=False, allow_nan=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _normalize_records(
+    article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    if isinstance(article_evidence, Mapping):
+        records = article_evidence.get("records")
+    else:
+        records = article_evidence
+    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
+        raise AuthoringContractError("article evidence records must be a list")
+    out: list[Mapping[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise AuthoringContractError("article evidence record must be an object")
+        out.append(record)
+    return out
+
+
+def _build_evidence_request(
+    *,
+    report_date: date,
+    ordered: Sequence[CandidateItem],
+    prompt: LoadedPrompt,
+    taxonomy: ArticleTaxonomy,
+    article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    stats: Mapping[str, Any],
+) -> dict[str, Any]:
+    records = _normalize_records(article_evidence)
+    by_url: dict[str, Mapping[str, Any]] = {}
+    for record in records:
+        # Identity is keyed by canonical_url(final_url) when available (matches
+        # the article identity URL used by ``kept`` items); fall back to
+        # canonical_url(requested_url) for redirects and pre-redirect records.
+        identity_url = canonical_url(
+            str(record.get("final_url") or record.get("requested_url") or "")
+        )
+        if not identity_url:
+            raise AuthoringContractError("article evidence has missing URL identity")
+        if identity_url in by_url:
+            raise AuthoringContractError("article evidence has duplicate URL identity")
+        by_url[identity_url] = record
+
+    articles: list[dict[str, Any]] = []
+    for item in ordered:
+        canonical = _canonical_identity_url(item)
+        record = by_url.pop(canonical, None)
+        if record is None:
+            raise AuthoringContractError("missing article evidence identity")
+        extra_obj = record.get("extra")
+        extra = extra_obj if isinstance(extra_obj, Mapping) else {}
+        origins_raw = record.get("origins") or []
+        if not isinstance(origins_raw, list):
+            raise AuthoringContractError("article evidence origins must be a list")
+        origins: list[dict[str, Any]] = []
+        for entry in origins_raw:
+            if not isinstance(entry, Mapping):
+                raise AuthoringContractError("article evidence origin must be an object")
+            origins.append({key: value for key, value in entry.items()})
+        article_evidence_block = {
+            "status": record.get("status"),
+            "attempts": record.get("attempts"),
+            "selected_method": record.get("selected_method"),
+            "content_type": record.get("content_type"),
+            "content_ref": record.get("content_ref"),
+            "content_hash": record.get("content_hash"),
+            "search_snippet": extra.get("search_snippet"),
+            # upstream summary_basis is informational only; the response
+            # authoritatively declares the authored basis it used.
+            "upstream_summary_basis": record.get("summary_basis"),
+        }
+        # display_pillar fallback: explicit record value wins; otherwise
+        # "A wins when any A origin exists, B otherwise" per the candidate
+        # contract. This avoids mis-rendering cross-pillar merges when the
+        # evidence record omits display_pillar.
+        explicit_pillar = record.get("display_pillar")
+        if explicit_pillar not in {None, "A", "B"}:
+            raise AuthoringContractError("display_pillar must be A or B")
+        if explicit_pillar in {"A", "B"}:
+            display_pillar = explicit_pillar
+        else:
+            origins_pillars = {
+                entry.get("pillar")
+                for entry in origins
+                if isinstance(entry, Mapping)
+            }
+            if "A" in origins_pillars:
+                display_pillar = "A"
+            else:
+                display_pillar = "B" if item.lane == "research" else "A"
+        if display_pillar not in {"A", "B"}:
+            raise AuthoringContractError("display_pillar must be A or B")
+        record_title = record.get("title")
+        title = str(record_title) if record_title else item.title
+        title_basis = record.get("title_basis") or (
+            "url" if title == item.url else "upstream_artifact"
+        )
+        if title_basis not in {"page", "search_result", "upstream_artifact", "url"}:
+            raise AuthoringContractError("title_basis must be one of page/search_result/upstream_artifact/url")
+        articles.append(
+            {
+                "article_id": article_identity(item),
+                "url": item.url,
+                "canonical_url": canonical,
+                "origins": origins,
+                "display_pillar": display_pillar,
+                "title": title,
+                "title_basis": title_basis,
+                "evidence": article_evidence_block,
+            }
+        )
+    if by_url:
+        raise AuthoringContractError("unknown article evidence identity")
+
+    payload: dict[str, Any] = {
+        "schema_version": AUTHORING_REQUEST_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "report_date": report_date.isoformat(),
+        "prompt": {
+            "id": prompt.prompt_id,
+            "version": prompt.version,
+            "sha256": prompt.sha256,
+        },
+        "taxonomy": {
+            "schema_version": taxonomy.schema_version,
+            "taxonomy_id": taxonomy.taxonomy_id,
+            "sha256": taxonomy.sha256,
+            "allowed_categories": [category.label for category in taxonomy.categories],
+        },
+        "stats": dict(stats),
+        "articles": articles,
+    }
+    payload["request_sha256"] = _canonical_json_digest(
+        _identity_only_payload(payload)
+    )
+    return payload
+
+
+def _identity_only_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the request payload reduced to the identity-binding fields.
+
+    ``classifier`` is excluded because the pre-classifier metadata
+    (climate_signal, actuarial_signal, etc.) is an internal artifact of
+    ``classify_candidate`` that may differ across two shell-based views of
+    the same evidence. Per-article evidence and contract integrity are
+    enforced by the strict field-by-field comparison in
+    :func:`_validate_evidence_response`; ``request_sha256`` only needs to
+    bind the response to the input set, prompt, taxonomy, stats, and evidence.
+    """
+
+    articles: list[dict[str, Any]] = []
+    for article in payload.get("articles", []):
+        articles.append(
+            {
+                "article_id": article.get("article_id"),
+                "url": article.get("url"),
+                "canonical_url": article.get("canonical_url"),
+                "origins": article.get("origins"),
+                "display_pillar": article.get("display_pillar"),
+                "title": article.get("title"),
+                "title_basis": article.get("title_basis"),
+                "evidence": article.get("evidence"),
+            }
+        )
+    return {
+        "schema_version": payload.get("schema_version"),
+        "contract_version": payload.get("contract_version"),
+        "report_date": payload.get("report_date"),
+        "prompt": payload.get("prompt"),
+        "taxonomy": payload.get("taxonomy"),
+        "stats": payload.get("stats"),
+        "articles": articles,
+    }
+
+
+def _validate_evidence_response(
+    items: Sequence[CandidateItem],
+    response: Mapping[str, Any],
+    *,
+    taxonomy: ArticleTaxonomy | None,
+    request: Mapping[str, Any] | None,
+) -> AuthoringValidationResult:
+    if request is None or request.get("schema_version") != AUTHORING_REQUEST_SCHEMA_VERSION_V2:
+        raise AuthoringContractError("v2 authoring response requires its request")
+    if set(response) != _V2_RESPONSE_FIELDS:
+        raise AuthoringContractError("unexpected or missing v2 authoring response fields")
+    if response.get("contract_version") != AUTHORING_CONTRACT_VERSION_V2:
+        raise AuthoringContractError("unsupported authoring contract_version")
+    if response.get("request_sha256") != request.get("request_sha256"):
+        raise AuthoringContractError("authoring request identity was mutated")
+    if response.get("stats") != request.get("stats"):
+        raise AuthoringContractError("authoring deterministic stats were mutated")
+
+    raw_articles = response.get("articles")
+    if not isinstance(raw_articles, list):
+        raise AuthoringContractError("authoring response articles must be a list")
+    article_count = response.get("article_count")
+    if type(article_count) is not int or article_count < 0:
+        raise AuthoringContractError("authoring response article_count must be a non-negative integer")
+    if article_count != len(raw_articles):
+        raise AuthoringContractError("authoring response article_count does not match articles")
+
+    requested = request.get("articles")
+    if not isinstance(requested, list):
+        raise AuthoringContractError("invalid v2 authoring request articles")
+    request_by_id: dict[str, Mapping[str, Any]] = {}
+    for article in requested:
+        if not isinstance(article, Mapping):
+            raise AuthoringContractError("v2 authoring request article must be an object")
+        identity = article.get("article_id")
+        if not isinstance(identity, str) or not identity:
+            raise AuthoringContractError("v2 authoring request article_id must be a non-empty string")
+        if identity in request_by_id:
+            raise AuthoringContractError("duplicate article identity in v2 authoring request")
+        request_by_id[identity] = article
+
+    selected = taxonomy or load_article_taxonomy()
+    ordered = _ordered_items(items)
+    expected_ids = tuple(article_identity(item) for item in ordered)
+    if len(set(expected_ids)) != len(expected_ids):
+        raise AuthoringContractError("final selected articles contain a duplicate article identity")
+
+    # The v2 contract binds the response to the exact articles selected for
+    # authoring (kept set), not to the full evidence set the driver emitted.
+    # When kept ⊂ request, the response may cover only kept.
+    kept_ids = set(expected_ids)
+    request_ids = set(request_by_id)
+    if not kept_ids.issubset(request_ids):
+        raise AuthoringContractError(
+            "v2 authoring request does not contain every selected article"
+        )
+    if article_count < len(kept_ids):
+        raise AuthoringContractError("missing article identity in authoring response")
+    if article_count > len(kept_ids):
+        raise AuthoringContractError("unknown article identity in authoring response")
+
+    response_by_id: dict[str, Mapping[str, Any]] = {}
+    for article in raw_articles:
+        if not isinstance(article, Mapping):
+            raise AuthoringContractError("authoring article must be an object")
+        identity = article.get("article_id")
+        if not isinstance(identity, str) or not identity:
+            raise AuthoringContractError("authoring article_id must be a non-empty string")
+        if identity in response_by_id:
+            raise AuthoringContractError("duplicate article identity in authoring response")
+        expected = request_by_id.get(identity)
+        if expected is None:
+            raise AuthoringContractError("unknown article identity in authoring response")
+        unexpected = set(article) - set(expected) - _V2_ARTICLE_AUTHORED_FIELDS
+        if unexpected:
+            raise AuthoringContractError("unexpected v2 authoring article fields")
+        missing = (set(expected) | _V2_ARTICLE_AUTHORED_FIELDS) - set(article)
+        if missing:
+            raise AuthoringContractError("missing v2 authoring article fields")
+        for key, value in expected.items():
+            if article.get(key) != value:
+                raise AuthoringContractError(
+                    f"authoring article input or evidence was mutated: key={key!r} "
+                    f"expected={value!r} got={article.get(key)!r}"
+                )
+        response_by_id[identity] = article
+
+    if set(response_by_id) != kept_ids:
+        raise AuthoringContractError("missing article identity in authoring response")
+
+    accepted: list[CandidateItem] = []
+    accepted_ids: list[str] = []
+    for item, identity in zip(ordered, expected_ids):
+        article = response_by_id[identity]
+        if type(article.get("relevant")) is not bool:
+            raise AuthoringContractError("authoring relevance must be boolean")
+        summary = article.get("summary")
+        basis = article.get("summary_basis")
+        evidence_hash = article.get("evidence_hash")
+        evidence = article["evidence"]
+
+        if basis == "none":
+            if summary not in {None, ""}:
+                raise AuthoringContractError("summary_basis none cannot carry summary evidence")
+            if evidence_hash is not None:
+                raise AuthoringContractError("summary_basis none cannot carry summary evidence")
+            validated_summary = ""
+        elif basis == "article_content":
+            if evidence.get("status") != "ok" or not evidence.get("content_ref"):
+                raise AuthoringContractError("article_content summary lacks content evidence")
+            if evidence_hash != evidence.get("content_hash"):
+                raise AuthoringContractError("article_content summary hash mismatch")
+            if not isinstance(summary, str) or not summary.strip():
+                raise AuthoringContractError("article_content summary must be non-empty")
+            validated_summary = summary
+        elif basis == "search_snippet":
+            if not evidence.get("search_snippet"):
+                raise AuthoringContractError("search_snippet summary lacks snippet evidence")
+            if evidence_hash is not None:
+                raise AuthoringContractError("search_snippet summary cannot pretend to be content")
+            if not isinstance(summary, str) or not summary.strip():
+                raise AuthoringContractError("search_snippet summary must be non-empty")
+            validated_summary = summary
+        elif basis in _VALID_SUMMARY_BASIS:
+            if not isinstance(summary, str) or not summary.strip():
+                raise AuthoringContractError("summary_basis summary must be non-empty")
+            validated_summary = summary
+        else:
+            raise AuthoringContractError("unsupported summary_basis")
+
+        if not article["relevant"]:
+            # Irrelevant items keep their audit record but never enter the
+            # accepted set, so their summary/basis are reported as-is.
+            continue
+
+        # Taxonomy validation remains the authority. URL-only relevant records
+        # use a temporary validation summary, then retain an honestly empty one.
+        taxonomy_summary = validated_summary or "Relevant URL retained without summary evidence."
+        try:
+            bundle = validate_semantic_bundle(
+                {
+                    "schema_version": "article-semantic-bundle.v1",
+                    "taxonomy_id": selected.taxonomy_id,
+                    "taxonomy_sha256": selected.sha256,
+                    "summary": taxonomy_summary,
+                    "categories": article.get("categories"),
+                    "keywords": article.get("keywords"),
+                },
+                taxonomy=selected,
+            )
+        except ValueError as exc:
+            raise AuthoringContractError("semantic bundle failed taxonomy validation") from exc
+        bundle["summary"] = validated_summary
+        accepted.append(
+            replace(
+                item,
+                summary=validated_summary,
+                categories=tuple(bundle["categories"]),
+                keywords=tuple(bundle["keywords"]),
+                semantics=bundle,
+            )
+        )
+        accepted_ids.append(identity)
+
+    return AuthoringValidationResult(
+        items=tuple(accepted),
+        article_identities=tuple(accepted_ids),
+        article_count=len(accepted),
+    )

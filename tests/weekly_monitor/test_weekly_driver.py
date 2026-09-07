@@ -18,8 +18,12 @@ from climate_monitor.semantic_bundle import article_identity, semantic_sidecar_p
 from climate_monitor.taxonomy import DEFAULT_TAXONOMY_ID, DEFAULT_TAXONOMY_SHA256
 from climate_monitor.weekly_monitor.authoring_contract import (
     AUTHORING_CONTRACT_VERSION,
+    AUTHORING_CONTRACT_VERSION_V2,
+    AUTHORING_REQUEST_SCHEMA_VERSION_V2,
     AUTHORING_RESPONSE_SCHEMA_VERSION,
+    AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
     AuthoringContractError,
+    build_authoring_request,
 )
 from climate_monitor.weekly_monitor.driver import DRIVER_VERSION, run_weekly_monitor
 from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_prompt
@@ -358,3 +362,230 @@ def test_cli_production_weekly_path_uses_repo_prompt_without_printing_prompt_or_
     assert "sk-test-secret-not-output" not in completed.stdout
     assert "You are the Weekly Climate" not in completed.stdout
     assert str(tmp_path) not in encoded
+
+
+def test_weekly_driver_v2_path_emits_request_and_validates_response(tmp_path):
+    """AC-6: the production driver is the single caller of the request emitter
+    and the response validator/apply. v2 evidence is required and the response
+    is bound to it."""
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    authoring = tmp_path / "authoring_response.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    state = tmp_path / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+    _write_manifest(manifest)
+
+    item = _item()
+    body = "Honest climate insurance article body."
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    article_evidence = {
+        "records": [
+            {
+                "article_id": article_identity(item),
+                "requested_url": item.url,
+                "final_url": item.url,
+                "title": item.title,
+                "status": "ok",
+                "attempts": [{"tool": "http"}],
+                "selected_method": "http",
+                "content_type": "text/html",
+                "content_ref": f"memory:{digest}",
+                "content_hash": digest,
+                "summary_basis": "page",
+                "title_basis": "upstream_artifact",
+                "display_pillar": "A",
+                "origins": [{"pillar": "A", "source": item.source_name, "url": item.url}],
+                "extra": {},
+            }
+        ]
+    }
+    stats = {"checked": 1, "succeeded": 1, "failed": 0}
+    authoring.write_text(json.dumps(_response([item])) + "\n", encoding="utf-8")
+    with pytest.raises(AuthoringContractError, match="v2 evidence path requires a v2"):
+        # The default _response() returns a v1 envelope; the v2 driver must
+        # reject mismatched schemas before any artifact is written.
+        run_weekly_monitor(
+            source_config_path=source_config,
+            run_config_path=run_config,
+            report_date=date(2026, 5, 18),
+            manifest_fixture_path=manifest,
+            state_dir=state,
+            authoring_response_path=authoring,
+            sync=False,
+            repository_commit_sha="c" * 40,
+            article_evidence=article_evidence,
+            stats=stats,
+        )
+
+    # Now build a matching v2 response and confirm the driver emits and
+    # validates without touching the production checkout.
+    from climate_monitor.weekly_monitor.authoring_contract import (
+        build_authoring_request,
+    )
+    from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_prompt
+    prompt = load_weekly_monitor_prompt()
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[item],
+        prompt=prompt,
+        article_evidence=article_evidence,
+        stats=stats,
+    )
+    response_article = json.loads(json.dumps(request["articles"][0]))
+    response_article.update(
+        {
+            "relevant": True,
+            "summary": "Honest content summary.",
+            "summary_basis": "article_content",
+            "evidence_hash": digest,
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    v2_response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": request["request_sha256"],
+        "article_count": 1,
+        "articles": [response_article],
+        "executive_summary": "1 checked; 1 succeeded; 0 failed.",
+        "stats": stats,
+    }
+    authoring.write_text(json.dumps(v2_response) + "\n", encoding="utf-8")
+    result = run_weekly_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 18),
+        manifest_fixture_path=manifest,
+        state_dir=state,
+        authoring_response_path=authoring,
+        sync=False,
+        repository_commit_sha="d" * 40,
+        article_evidence=article_evidence,
+        stats=stats,
+    )
+    payload = json.loads(result.to_json())
+    provenance = payload["provenance"]
+    assert provenance["driver"]["contract_version"] == AUTHORING_CONTRACT_VERSION_V2
+
+
+def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):
+    """AC-6: the production CLI actually wires --article-evidence + --stats
+    through to the driver's v2 request emitter and validator. Without this,
+    the CLI silently falls back to v1 even though the driver supports v2."""
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    authoring = tmp_path / "authoring_response.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    state = tmp_path / "state"
+    article_evidence_path = tmp_path / "article_evidence.json"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+    _write_manifest(manifest)
+
+    item = _item(title="Climate insurance supervision update for actuarial risk")
+    body = "Honest climate insurance article body."
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    aid = article_identity(item)
+    article_evidence = {
+        "schema_version": "article-evidence.v1",
+        "report_date": "2026-05-18",
+        "generated_at": "",
+        "dependency_status": {},
+        "record_count": 1,
+        "records": [
+            {
+                "article_id": aid,
+                "requested_url": item.url,
+                "final_url": item.url,
+                "title": item.title,
+                "status": "ok",
+                "attempts": [{"tool": "http"}],
+                "selected_method": "http",
+                "content_type": "text/html",
+                "content_ref": f"memory:{digest}",
+                "content_hash": digest,
+                "summary_basis": "page",
+                "title_basis": "upstream_artifact",
+                "display_pillar": "A",
+                "origins": [
+                    {"pillar": "A", "source": item.source_name, "url": item.url}
+                ],
+                "extra": {},
+            }
+        ],
+        "artifact_digest": "0" * 64,
+    }
+    article_evidence_path.write_text(json.dumps(article_evidence), encoding="utf-8")
+
+    stats = {"checked": 1, "succeeded": 1, "failed": 0}
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[item],
+        prompt=load_weekly_monitor_prompt(),
+        article_evidence=article_evidence,
+        stats=stats,
+    )
+    response_article = json.loads(json.dumps(request["articles"][0]))
+    response_article.update(
+        {
+            "relevant": True,
+            "summary": "Honest content summary.",
+            "summary_basis": "article_content",
+            "evidence_hash": digest,
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    v2_response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": request["request_sha256"],
+        "article_count": 1,
+        "articles": [response_article],
+        "executive_summary": "1 checked; 1 succeeded; 0 failed.",
+        "stats": stats,
+    }
+    authoring.write_text(json.dumps(v2_response), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_climate_monitor.py",
+            "--production-weekly",
+            "--source-config",
+            str(source_config),
+            "--run-config",
+            str(run_config),
+            "--date",
+            "2026-05-18",
+            "--manifest-fixture",
+            str(manifest),
+            "--state-dir",
+            str(state),
+            "--source-dir",
+            str(source_dir),
+            "--wiki-dir",
+            str(wiki_dir),
+            "--authoring-response",
+            str(authoring),
+            "--article-evidence",
+            str(article_evidence_path),
+            "--stats",
+            json.dumps(stats),
+            "--no-sync",
+            "--no-update-seen-state",
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["provenance"]["driver"]["contract_version"] == AUTHORING_CONTRACT_VERSION_V2

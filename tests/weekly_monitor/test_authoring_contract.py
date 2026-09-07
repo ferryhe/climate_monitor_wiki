@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from datetime import date
 from pathlib import Path
@@ -17,6 +19,9 @@ from climate_monitor.taxonomy import (
 )
 from climate_monitor.weekly_monitor.authoring_contract import (
     AUTHORING_CONTRACT_VERSION,
+    AUTHORING_CONTRACT_VERSION_V2,
+    AUTHORING_REQUEST_SCHEMA_VERSION_V2,
+    AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
     AUTHORING_RESPONSE_SCHEMA_VERSION,
     AuthoringContractError,
     build_authoring_request,
@@ -48,6 +53,41 @@ def _item(**overrides) -> CandidateItem:
     }
     payload.update(overrides)
     return CandidateItem(**payload)
+
+
+def _evidence_record(
+    *,
+    item: CandidateItem,
+    title_basis: str = "upstream_artifact",
+    display_pillar: str = "A",
+    summary_basis: str = "page",
+    status: str = "ok",
+    content: str | None = "Complete climate insurance article evidence.",
+    content_ref: str | None = None,
+    content_hash: str | None = None,
+    extra: dict | None = None,
+    origins: list[dict] | None = None,
+) -> dict:
+    body = content if content is not None else ""
+    digest = hashlib.sha256(body.encode()).hexdigest() if body else None
+    return {
+        "article_id": article_identity(item),
+        "requested_url": item.url,
+        "final_url": item.url,
+        "status": status,
+        "attempts": [{"tool": "http"}] if status == "ok" else [],
+        "selected_method": "http" if status == "ok" else None,
+        "content_type": "text/html" if status == "ok" else None,
+        "content_ref": content_ref or (f"memory:{digest}" if digest else None),
+        "content_hash": content_hash or digest,
+        "summary_basis": summary_basis,
+        "title_basis": title_basis,
+        "display_pillar": display_pillar,
+        "origins": origins
+        or [{"pillar": display_pillar, "source": item.source_name, "url": item.url}],
+        "content": body,
+        "extra": extra or {},
+    }
 
 
 def test_authoring_schemas_are_valid_and_accept_valid_values():
@@ -169,5 +209,311 @@ def test_invalid_authoring_responses_fail_closed(fixture_name: str, message: str
 def test_response_constants_match_taxonomy_identity():
     assert AUTHORING_RESPONSE_SCHEMA_VERSION == "weekly-monitor-authoring-response.v1"
     assert AUTHORING_CONTRACT_VERSION == "weekly-monitor-authoring.v1"
+    assert AUTHORING_RESPONSE_SCHEMA_VERSION_V2 == "weekly-monitor-authoring-response.v2"
+    assert AUTHORING_REQUEST_SCHEMA_VERSION_V2 == "weekly-monitor-authoring-request.v2"
+    assert AUTHORING_CONTRACT_VERSION_V2 == "weekly-monitor-authoring.v2"
     assert DEFAULT_TAXONOMY_ID == "climate-actuarial-v1"
     assert DEFAULT_TAXONOMY_SHA256 == load_article_taxonomy().sha256
+
+
+def test_evidence_authoring_v2_binds_basis_identity_and_stats():
+    item = _item(summary="", content_hash="")
+    prompt = load_weekly_monitor_prompt()
+    body = "Complete climate insurance article evidence."
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    evidence = {
+        "records": [
+            _evidence_record(
+                item=item,
+                content=body,
+                content_hash=digest,
+                content_ref=f"memory:{digest}",
+            )
+        ]
+    }
+    stats = {"checked": 57, "succeeded": 54, "failed": 3}
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[item],
+        prompt=prompt,
+        article_evidence=evidence,
+        stats=stats,
+    )
+    assert request["schema_version"] == AUTHORING_REQUEST_SCHEMA_VERSION_V2
+    article = request["articles"][0]
+    assert article["evidence"]["content_hash"] == digest
+    assert article["evidence"]["content_ref"] == f"memory:{digest}"
+    assert article["display_pillar"] == "A"
+    assert article["origins"] == [
+        {"pillar": "A", "source": item.source_name, "url": item.url}
+    ]
+    assert request["stats"] == stats
+    response_article = copy.deepcopy(article)
+    response_article.update(
+        {
+            "relevant": True,
+            "summary": "Evidence-backed climate insurance summary.",
+            "summary_basis": "article_content",
+            "evidence_hash": digest,
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": request["request_sha256"],
+        "article_count": 1,
+        "articles": [response_article],
+        "executive_summary": "57 checked; 54 succeeded; 3 failed.",
+        "stats": stats,
+    }
+    result = validate_authoring_response([item], response, request=request)
+    assert result.items[0].summary == "Evidence-backed climate insurance summary."
+    assert result.items[0].semantics["summary"] == "Evidence-backed climate insurance summary."
+
+    # Mutation categories: each one must fail closed. The "mutated" message
+    # covers request-identity/evidence tampering; "missing"/"duplicate"
+    # cover identity-set violations.
+    for description, mutate in (
+        ("mutated-url", lambda v: v["articles"][0].__setitem__(
+            "url", "https://evil.invalid"
+        )),
+        ("mutated-hash", lambda v: v["articles"][0]["evidence"].__setitem__(
+            "content_hash", "0" * 64
+        )),
+        ("mutated-identity", lambda v: v.__setitem__(
+            "request_sha256", "0" * 64
+        )),
+        ("missing-id", lambda v: v["articles"].pop(0)),
+        ("extra-fields", lambda v: v.__setitem__(
+            "articles", list(v["articles"]) + [v["articles"][0]]
+        )),
+    ):
+        changed = copy.deepcopy(response)
+        mutate(changed)
+        with pytest.raises(AuthoringContractError):
+            validate_authoring_response([item], changed, request=request)
+
+    # Stats are deterministic input; mutating them fails with a specific
+    # message so the validator reports the right category.
+    changed = copy.deepcopy(response)
+    changed["stats"] = {**stats, "failed": 4}
+    with pytest.raises(AuthoringContractError, match="stats"):
+        validate_authoring_response([item], changed, request=request)
+
+    # article_count larger than the input set is rejected as unknown ID.
+    changed = copy.deepcopy(response)
+    changed["article_count"] = 2
+    with pytest.raises(AuthoringContractError, match="article_count"):
+        validate_authoring_response([item], changed, request=request)
+
+
+def test_evidence_authoring_v2_handles_snippet_and_irrelevant():
+    item = _item(summary="")
+    prompt = load_weekly_monitor_prompt()
+    evidence = {
+        "records": [
+            _evidence_record(
+                item=item,
+                status="ok",
+                content="Honest climate insurance article body.",
+                summary_basis="search_snippet",
+                extra={"search_snippet": "Snippet excerpt for IAIS guidance."},
+            )
+        ]
+    }
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[item],
+        prompt=prompt,
+        article_evidence=evidence,
+        stats={"checked": 1, "succeeded": 1, "failed": 0},
+    )
+    article = copy.deepcopy(request["articles"][0])
+    article.update(
+        {
+            "relevant": True,
+            "summary": "Snippet excerpt for IAIS guidance.",
+            "summary_basis": "search_snippet",
+            "evidence_hash": None,
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": request["request_sha256"],
+        "article_count": 1,
+        "articles": [article],
+        "executive_summary": "",
+        "stats": request["stats"],
+    }
+    result = validate_authoring_response([item], response, request=request)
+    assert result.items and result.items[0].summary == "Snippet excerpt for IAIS guidance."
+
+    # Snippet evidence_hash must remain None (snippet cannot pretend to be
+    # content). Anything else is rejected.
+    fraud = copy.deepcopy(response)
+    fraud["articles"][0]["evidence_hash"] = "f" * 64
+    with pytest.raises(AuthoringContractError, match="cannot pretend to be content"):
+        validate_authoring_response([item], fraud, request=request)
+
+    # article_content evidence with a mismatching evidence_hash is rejected.
+    content_evidence = {
+        "records": [
+            _evidence_record(
+                item=item,
+                status="ok",
+                content="Honest climate insurance article body.",
+            )
+        ]
+    }
+    content_request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[item],
+        prompt=prompt,
+        article_evidence=content_evidence,
+        stats={"checked": 1, "succeeded": 1, "failed": 0},
+    )
+    content_article = copy.deepcopy(content_request["articles"][0])
+    digest = hashlib.sha256(b"Honest climate insurance article body.").hexdigest()
+    content_article.update(
+        {
+            "relevant": True,
+            "summary": "Honest content summary.",
+            "summary_basis": "article_content",
+            "evidence_hash": "0" * 64,
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    content_response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": content_request["request_sha256"],
+        "article_count": 1,
+        "articles": [content_article],
+        "executive_summary": "",
+        "stats": content_request["stats"],
+    }
+    with pytest.raises(AuthoringContractError, match="hash mismatch"):
+        validate_authoring_response([item], content_response, request=content_request)
+
+    # Irrelevant record: no item enters the accepted set. The validator still
+    # binds the article fields, so the irrelevant entry uses summary_basis
+    # "none" with empty summary.
+    irrelevant = copy.deepcopy(response)
+    irrelevant["articles"][0]["relevant"] = False
+    irrelevant["articles"][0]["summary"] = ""
+    irrelevant["articles"][0]["summary_basis"] = "none"
+    irrelevant["articles"][0]["evidence_hash"] = None
+    irrelevant["executive_summary"] = ""
+    irrelevant_result = validate_authoring_response(
+        [item], irrelevant, request=request
+    )
+    assert irrelevant_result.items == ()
+    assert irrelevant_result.article_count == 0
+
+
+def test_evidence_authoring_v2_url_only_relevant_keeps_link_drops_summary():
+    item = _item(summary="", url="https://example.org/only-url", lane="website")
+    prompt = load_weekly_monitor_prompt()
+    evidence = {
+        "records": [
+            _evidence_record(
+                item=item,
+                status="unavailable",
+                content=None,
+                content_hash=None,
+                content_ref=None,
+                summary_basis="none",
+            )
+        ]
+    }
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[item],
+        prompt=prompt,
+        article_evidence=evidence,
+        stats={"checked": 1, "succeeded": 0, "failed": 1},
+    )
+    article = copy.deepcopy(request["articles"][0])
+    article.update(
+        {
+            "relevant": True,
+            "summary": "",
+            "summary_basis": "none",
+            "evidence_hash": None,
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": request["request_sha256"],
+        "article_count": 1,
+        "articles": [article],
+        "executive_summary": "",
+        "stats": request["stats"],
+    }
+    result = validate_authoring_response([item], response, request=request)
+    assert len(result.items) == 1
+    assert result.items[0].summary == ""
+
+    # none must not carry any summary.
+    bogus = copy.deepcopy(response)
+    bogus["articles"][0]["summary"] = "fabricated"
+    with pytest.raises(AuthoringContractError, match="none"):
+        validate_authoring_response([item], bogus, request=request)
+
+
+def test_evidence_authoring_v2_rejects_pillar_title_basis_outside_allowlist():
+    item = _item()
+    prompt = load_weekly_monitor_prompt()
+    evidence = {
+        "records": [
+            _evidence_record(item=item, display_pillar="C")
+        ]
+    }
+    with pytest.raises(AuthoringContractError, match="display_pillar"):
+        build_authoring_request(
+            report_date=date(2026, 5, 18),
+            items=[item],
+            prompt=prompt,
+            article_evidence=evidence,
+        )
+
+    bad_basis = {
+        "records": [
+            _evidence_record(item=item, title_basis="bogus")
+        ]
+    }
+    with pytest.raises(AuthoringContractError, match="title_basis"):
+        build_authoring_request(
+            report_date=date(2026, 5, 18),
+            items=[item],
+            prompt=prompt,
+            article_evidence=bad_basis,
+        )
+
+
+def test_evidence_authoring_v2_dedupes_same_canonical_url_in_evidence():
+    item = _item()
+    prompt = load_weekly_monitor_prompt()
+    duplicate = {
+        "records": [
+            _evidence_record(item=item),
+            _evidence_record(item=item, status="unavailable", content=None,
+                             content_hash=None, content_ref=None),
+        ]
+    }
+    with pytest.raises(AuthoringContractError, match="duplicate"):
+        build_authoring_request(
+            report_date=date(2026, 5, 18),
+            items=[item],
+            prompt=prompt,
+            article_evidence=duplicate,
+        )

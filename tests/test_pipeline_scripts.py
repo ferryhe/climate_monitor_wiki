@@ -627,6 +627,103 @@ def test_step5_null_category_falls_back_to_general(reports_dir):
     assert (reports_dir / "climate-monitor-2026-09-14.json").exists()
 
 
+def test_step5_uses_explicit_pillar_and_summary_basis(reports_dir):
+    """Issue #93 (transferred from #95): source labels are not pillar evidence,
+    and summary_basis="none" never renders summary prose."""
+    report_date = "2026-09-14"
+    write_json(reports_dir / f"filtered_{report_date}.json", {
+        "total_input": 3, "relevant": 3, "non_relevant": 0,
+        "items": [
+            {"title": "Explicit A from web",
+             "url": "https://example.org/a",
+             "canonical_url": "https://example.org/a",
+             "article_id": "a" * 64,
+             "title_basis": "search_result",
+             "source": "web",
+             "display_pillar": "A",
+             "origins": [{"pillar": "A", "source": "web"}],
+             "category": "general",
+             "categories": ["general"],
+             "summary": "Grounded snippet summary.",
+             "summary_basis": "search_snippet",
+             # AC-4: snippet evidence_hash must be None per the v2 contract.
+             "evidence_hash": None,
+             "keywords": []},
+            {"title": "Explicit B from publisher",
+             "url": "https://example.org/b",
+             "canonical_url": "https://example.org/b",
+             "article_id": "b" * 64,
+             "title_basis": "page",
+             "source": "Example Publisher",
+             "display_pillar": "B",
+             "origins": [{"pillar": "B", "source": "Example Publisher"}],
+             "category": "general",
+             "categories": ["general"],
+             "summary": "This must not render.",
+             "summary_basis": "none",
+             "keywords": []},
+            # Same title, different canonical URL: must render twice and not
+            # collapse. Pre-#93 the step5 dedupe by URL was already correct;
+            # this case pins the regression.
+            {"title": "Shared title",
+             "url": "https://example.org/c1",
+             "canonical_url": "https://example.org/c1",
+             "article_id": "c" * 64,
+             "title_basis": "page",
+             "source": "OrgC",
+             "display_pillar": "A",
+             "origins": [{"pillar": "A", "source": "OrgC"}],
+             "category": "general",
+             "categories": ["general"],
+             "summary": "First canonical entry.",
+             "summary_basis": "page",
+             "keywords": []},
+            {"title": "Shared title",
+             "url": "https://example.org/c2",
+             "canonical_url": "https://example.org/c2",
+             "article_id": "d" * 64,
+             "title_basis": "page",
+             "source": "OrgC",
+             "display_pillar": "A",
+             "origins": [{"pillar": "A", "source": "OrgC"}],
+             "category": "general",
+             "categories": ["general"],
+             "summary": "Second canonical entry.",
+             "summary_basis": "page",
+             "keywords": []},
+        ],
+    })
+    write_json(reports_dir / f"hermes_assessments_{report_date}.json",
+               {"assessments": [], "executive_summary": ""})
+    result = run_script("step5_build_md.py", "--date", report_date,
+                        "--allow-future", "--allow-offcycle",
+                        env_extra={"CLIMATE_REPORTS_DIR": str(reports_dir)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = (reports_dir / f"climate-monitor-{report_date}.md").read_text()
+    pillar_a, pillar_b = report.split("## Pillar B", 1)
+    assert "Explicit A from web" in pillar_a
+    assert "Explicit B from publisher" in pillar_b
+    assert "This must not render." not in report
+    assert "First canonical entry." in report
+    assert "Second canonical entry." in report
+    sidecar = json.loads(
+        (reports_dir / f"climate-monitor-{report_date}.json").read_text()
+    )
+    by_url = {
+        item["url"]: item
+        for values in sidecar["categories"].values()
+        for item in values
+    }
+    assert by_url["https://example.org/a"]["summary_basis"] == "search_snippet"
+    # AC-4: snippet evidence_hash must be None per the v2 contract.
+    assert by_url["https://example.org/a"]["evidence_hash"] is None
+    assert by_url["https://example.org/a"]["display_pillar"] == "A"
+    assert by_url["https://example.org/b"]["summary"] == ""
+    assert by_url["https://example.org/b"]["display_pillar"] == "B"
+    assert by_url["https://example.org/c1"]["canonical_url"] == "https://example.org/c1"
+    assert by_url["https://example.org/c2"]["canonical_url"] == "https://example.org/c2"
+
+
 @pytest.mark.parametrize("script", [
     "step2_save_state.py", "step3_aggregate.py", "step3_filter.py",
     "step5_build_md.py", "step6_render_pdf.py", "step7b_extract_conferences.py",
