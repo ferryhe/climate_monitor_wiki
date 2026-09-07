@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import date
@@ -28,7 +27,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = ROOT / ".venv" / "bin" / "python"
+# Use the same interpreter that runs the test so the e2e works under CI
+# without depending on a project-local ``.venv``.
+PYTHON = sys.executable
 
 DATE = date(2026, 9, 14)
 DATE_STR = DATE.isoformat()
@@ -78,7 +79,9 @@ def _write_filtered(sources: Path):
          "summary": "Honest content summary.",
          "summary_basis": "article_content",
          "evidence_hash": digest, "keywords": ["climate", "insurance", "capital"]},
-        # Snippet-summary (search_snippet)
+        # Snippet-summary (search_snippet) — evidence_hash must be None
+        # per AC-4; the v2 validator rejects snippet evidence carrying a
+        # content-style hash.
         {"article_id": "b" * 64, "title": "Climate snippet article",
          "title_basis": "search_result", "url": "https://example.org/snippet",
          "canonical_url": "https://example.org/snippet",
@@ -88,7 +91,7 @@ def _write_filtered(sources: Path):
          "category": "general", "categories": ["general"],
          "summary": "Grounded snippet summary.",
          "summary_basis": "search_snippet",
-         "evidence_hash": "1" * 64, "keywords": ["climate", "insurance", "risk"]},
+         "evidence_hash": None, "keywords": ["climate", "insurance", "risk"]},
         # URL-only (none)
         {"article_id": "c" * 64, "title": "URL-only article",
          "title_basis": "search_result", "url": "https://example.org/url-only",

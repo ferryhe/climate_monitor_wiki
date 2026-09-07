@@ -646,7 +646,8 @@ def test_step5_uses_explicit_pillar_and_summary_basis(reports_dir):
              "categories": ["general"],
              "summary": "Grounded snippet summary.",
              "summary_basis": "search_snippet",
-             "evidence_hash": "1" * 64,
+             # AC-4: snippet evidence_hash must be None per the v2 contract.
+             "evidence_hash": None,
              "keywords": []},
             {"title": "Explicit B from publisher",
              "url": "https://example.org/b",
@@ -714,7 +715,8 @@ def test_step5_uses_explicit_pillar_and_summary_basis(reports_dir):
         for item in values
     }
     assert by_url["https://example.org/a"]["summary_basis"] == "search_snippet"
-    assert by_url["https://example.org/a"]["evidence_hash"] == "1" * 64
+    # AC-4: snippet evidence_hash must be None per the v2 contract.
+    assert by_url["https://example.org/a"]["evidence_hash"] is None
     assert by_url["https://example.org/a"]["display_pillar"] == "A"
     assert by_url["https://example.org/b"]["summary"] == ""
     assert by_url["https://example.org/b"]["display_pillar"] == "B"

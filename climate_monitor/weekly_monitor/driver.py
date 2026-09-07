@@ -138,8 +138,21 @@ def _emit_authoring_request(
     report_date: date | None,
     prompt: Any,
 ) -> Mapping[str, Any] | None:
-    if not article_evidence:
+    if article_evidence is None:
         return None
+    if not article_evidence:
+        # An empty (but not None) evidence payload is a misuse: the caller
+        # asked for v2 but provided no records. Fail closed rather than
+        # silently fall back to v1.
+        raise ValueError(
+            "v2 authoring path received empty article_evidence; "
+            "supply records or omit the article_evidence argument to "
+            "use the v1 path"
+        )
+    if stats is None:
+        raise ValueError(
+            "v2 authoring path requires stats (checked/succeeded/failed)"
+        )
     if report_date is None:
         raise ValueError("v2 authoring request requires an explicit report_date")
     request = build_authoring_request(

@@ -298,7 +298,12 @@ def _build_evidence_request(
     records = _normalize_records(article_evidence)
     by_url: dict[str, Mapping[str, Any]] = {}
     for record in records:
-        identity_url = canonical_url(str(record.get("requested_url") or ""))
+        # Identity is keyed by canonical_url(final_url) when available (matches
+        # the article identity URL used by ``kept`` items); fall back to
+        # canonical_url(requested_url) for redirects and pre-redirect records.
+        identity_url = canonical_url(
+            str(record.get("final_url") or record.get("requested_url") or "")
+        )
         if not identity_url:
             raise AuthoringContractError("article evidence has missing URL identity")
         if identity_url in by_url:
@@ -333,9 +338,25 @@ def _build_evidence_request(
             # authoritatively declares the authored basis it used.
             "upstream_summary_basis": record.get("summary_basis"),
         }
-        display_pillar = record.get("display_pillar") or (
-            "B" if item.lane == "research" else "A"
-        )
+        # display_pillar fallback: explicit record value wins; otherwise
+        # "A wins when any A origin exists, B otherwise" per the candidate
+        # contract. This avoids mis-rendering cross-pillar merges when the
+        # evidence record omits display_pillar.
+        explicit_pillar = record.get("display_pillar")
+        if explicit_pillar not in {None, "A", "B"}:
+            raise AuthoringContractError("display_pillar must be A or B")
+        if explicit_pillar in {"A", "B"}:
+            display_pillar = explicit_pillar
+        else:
+            origins_pillars = {
+                entry.get("pillar")
+                for entry in origins
+                if isinstance(entry, Mapping)
+            }
+            if "A" in origins_pillars:
+                display_pillar = "A"
+            else:
+                display_pillar = "B" if item.lane == "research" else "A"
         if display_pillar not in {"A", "B"}:
             raise AuthoringContractError("display_pillar must be A or B")
         record_title = record.get("title")
@@ -477,7 +498,6 @@ def _validate_evidence_response(
         raise AuthoringContractError(
             "v2 authoring request does not contain every selected article"
         )
-    extra_request_ids = request_ids - kept_ids
     if article_count < len(kept_ids):
         raise AuthoringContractError("missing article identity in authoring response")
     if article_count > len(kept_ids):

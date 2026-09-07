@@ -573,7 +573,14 @@ def main() -> int:
                 "title_basis": item.get("title_basis"),
                 "summary": _rendered_summary(item),
                 "summary_basis": item.get("summary_basis", "legacy_v1"),
-                "evidence_hash": item.get("evidence_hash") or item.get("content_hash"),
+                # Only article_content summaries carry a real evidence hash.
+                # search_snippet / none must never pretend to be content, so
+                # the fallback to content_hash is gated on summary_basis.
+                "evidence_hash": (
+                    item.get("evidence_hash") or item.get("content_hash")
+                )
+                if item.get("summary_basis") == "article_content"
+                else item.get("evidence_hash"),
                 "categories": item_category_labels(item, cat),
                 "keywords": item.get("keywords", []),
                 "source": item.get("source", ""),
