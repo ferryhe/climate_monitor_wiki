@@ -1,8 +1,22 @@
 # Weekly cadence: how the daily pipeline was adapted
 
+Current operations caveat (2026-09-07 audit): the four climate cron jobs and
+runtime configuration are not provisioned. Monday 08/09/10/10:30 UTC means
+16/17/18/18:30 CST in Hermes (Asia/Shanghai); never change the global timezone.
+Each `scripts/hermes_job_*.sh --preflight` is read-only and fails closed on
+missing configuration. Production monitor acquisition remains blocked until
+the same-run outcome/evidence/authoring link is executable. Fixtures require
+`CLIMATE_DRY_RUN=1` plus `CLIMATE_DRY_RUN_FIXTURE_DIR` and an isolated
+`CLIMATE_DRY_RUN_ROOT`. Render has no shared source for local scheduler evidence;
+`/api/job-status` remains HTTP 503 `not_configured`. Issue #87 stays OPEN until
+a normal Monday run matches through delivery, reviewed publication, deployment
+and Registry. See PIPELINE_REFERENCE.md for the intended wrapper contracts;
+historical job IDs below are not proof of current provisioning.
+
+
 The repo was originally built around a **daily** monitor (April 2026,
 `sources/climate-monitor-YYYY-MM-DD.md`, one file per calendar day). The live
-monitoring job now runs **weekly** (Mondays 08:00 UTC). This document records
+intended monitoring cadence is **weekly** (Mondays 08:00 UTC). This document records
 what changed and why.
 
 ## What "daily" assumed

@@ -482,7 +482,8 @@ def load_registry_selection_snapshot(database: Path, source_dir: Path) -> Regist
 
 
 def plan_selection(
-    payload: dict[str, Any], *, historical_urls: Iterable[str], allow_offcycle: bool = False
+    payload: dict[str, Any], *, historical_urls: Iterable[str], allow_offcycle: bool = False,
+    reject_duplicate_titles: bool = True,
 ) -> dict[str, Any]:
     """Return a deterministic safe-ID-only plan for already validated candidates."""
 
@@ -509,7 +510,7 @@ def plan_selection(
                 else "cross_pillar_canonical_url"
             )
             disposition = "rejected"
-        elif title_owner is not None:
+        elif reject_duplicate_titles and title_owner is not None:
             disposition, reason = "rejected", "same_run_canonical_title"
         elif url_key in historical:
             disposition, reason = "rejected", "historical_url_seen"

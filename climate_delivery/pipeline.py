@@ -158,6 +158,7 @@ def run_delivery(
     config_path: Path,
     *,
     dry_run: bool = False,
+    expected_report_sha256: str | None = None,
     smtp_factory=None,
     clock=None,
     allow_offcycle: bool = False,
@@ -175,6 +176,8 @@ def run_delivery(
     report = parse_weekly_report(
         report_path, raw=report_bytes, allow_offcycle=allow_offcycle
     )
+    if expected_report_sha256 is not None and report.sha256 != expected_report_sha256:
+        raise InputError("report SHA does not match expected monitor identity")
     config = load_delivery_config(config_path)
 
     # The 09:00 delivery consumes the SAME SHA-bound semantic sidecar that the

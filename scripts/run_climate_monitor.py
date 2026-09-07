@@ -172,6 +172,7 @@ def main() -> None:
             model=args.model,
             temperature=args.temperature,
             max_output_tokens=args.max_output_tokens,
+            providers=_parse_loopback_provider(args.article_evidence_loopback),
             article_evidence=article_evidence_payload,
             stats=stats_payload,
         )

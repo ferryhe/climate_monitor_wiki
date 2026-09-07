@@ -12,7 +12,7 @@ below run in order every Monday UTC and each writes a slot in
 | # | UTC | Slot            | Entry point                                              | What it does                                                                                                                          |
 |---|-----|-----------------|----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
 | 1 | 08  | `monitor`       | `scripts/run_climate_monitor.py --production-weekly`     | Calls `climate_monitor.weekly_monitor.driver.run_weekly_monitor` → `climate_monitor.orchestrator.run_monitor`. Writes the Monday report, semantic sidecar, combined candidates, and article-evidence artifact; stages the pending URL delta. |
-| 2 | 09  | `email`         | `climate_delivery` pipeline (`scripts/record_weekly_run.py` → email + PDF) | Renders the PDF, writes the manifest, and sends the retained weekly email to the existing four recipients. |
+| 2 | 09  | `email`         | `python -m climate_delivery.cli run` (absolute report/output/state/config paths) | Renders the PDF, writes the manifest, and sends the retained weekly email to the existing four recipients. |
 | 3 | 10  | `publisher`     | `scripts/weekly_wiki_refresh.sh` → `scripts/publish_weekly_reports.py` | Isolated-clone rolling-PR publisher. Never touches the production checkout. Updates the `codex/hermes-weekly-monitor` PR branch only. Human review + merge + server/Render deploy are separate, human-controlled steps. |
 | 4 | 10:30 | `registry`     | `scripts/weekly_registry_refresh.py`                     | Draft, **disabled by default**. Scheduled only after the validated-fallback deployment and a controlled exact-sync round-trip complete. |
 
@@ -238,29 +238,62 @@ The RAG system uses wiki pages as context for answering questions about reports.
 
 All LLM prompts are stored in `PIPELINE_CONFIG.md` for easy modification without code changes.
 
-## Hermes job wrappers (AC-10)
+## Hermes job wrappers (AC-1/3/10)
 
-Each of the four Monday UTC slots above is wrapped by a thin `hermes_job_*.sh`
-script that:
+The four `scripts/hermes_job_*.sh` wrappers resolve an absolute repository and
+interpreter and invoke `scripts/hermes_job.py` from any working directory.
+`--preflight` validates paths and contracts without dispatch or writes. All
+runtime paths must be explicit, absolute and already provisioned. No wrapper
+reads `.env`. Child output is suppressed to keep recipients and SMTP errors
+out of scheduler logs.
 
-1. Resolves inputs from explicit environment variables (`$CLIMATE_REPORTS_DIR`,
-   `$CLIMATE_RUN_LEDGER_DIR`, `$CLIMATE_JOB_STATUS_DIR`, `$CLIMATE_SOURCE_DIR`,
-   `$CLIMATE_WIKI_DIR`, `$CLIMATE_FIXTURE_DIR`). No path is hardcoded to
-   `/home/ubuntu/*`; the production checkout at `/opt/climate_monitor_wiki` is
-   the only filesystem anchor.
-2. Invokes the slot's actual entry point (no inline logic).
-3. Writes a strictly-validated `scheduler-status.json` slot via
-   `climate_monitor/scheduler_status.py update_slot(name, state, …)` so
-   `/api/job-status` reports the live state of every job.
+The monitor requires `AUTHORING_RESPONSE`, `ARTICLE_EVIDENCE` and
+`CLIMATE_STATS_PATH`. It validates the v2 contract, then fails closed with
+`live_acquisition_contract_unavailable` for production: the executable same-run
+#67 outcome → #92 evidence → #93 response link is not provisioned. Staging
+unrelated JSON does not clear this gate; counts must never be inferred from URLs.
 
-| Wrapper                              | Slot      | Entry point invoked                                                    | Default state on success |
-|--------------------------------------|-----------|------------------------------------------------------------------------|--------------------------|
-| `scripts/hermes_job_monitor.sh`      | `monitor` | `python scripts/run_climate_monitor.py --production-weekly …`          | `completed`              |
-| `scripts/hermes_job_email.sh`        | `email`   | `python scripts/record_weekly_run.py` (climate_delivery pipeline)      | `completed`              |
-| `scripts/hermes_job_publisher.sh`    | `publisher` | `bash scripts/weekly_wiki_refresh.sh`                                 | `completed`              |
-| `scripts/hermes_job_registry.sh`     | `registry` | (none — dry-run path)                                                 | `not_dispatched` (disabled gate) |
+Fixtures require both `CLIMATE_DRY_RUN=1` and `CLIMATE_DRY_RUN_FIXTURE_DIR`.
+Dry-run output/state paths must be within an explicit existing
+`CLIMATE_DRY_RUN_ROOT` under `/tmp`. There is no automatic fixture fallback.
+The monitor additionally requires existing `CLIMATE_STATE_DIR`,
+`CLIMATE_SOURCE_DIR` and `CLIMATE_WIKI_DIR`, plus absolute existing
+`CLIMATE_SOURCE_CONFIG`, `CLIMATE_RUN_CONFIG` (weekly report title), and
+`CLIMATE_SITE_SCOPES` configuration files. Library daily defaults are unchanged.
 
-`scripts/hermes_job_monitor.sh` falls back to a pre-staged article-evidence +
-stats fixture at `$CLIMATE_FIXTURE_DIR` when the live `web_listening` outcome
-is not available (controlled dry-run path). It does **not** read `.env`, push
-to git, or reload the API server.
+Email uses `python -m climate_delivery.cli run --report PATH --output-dir PATH
+--state-dir PATH --config PATH`, with absolute paths from `CLIMATE_REPORT_PATH`,
+`CLIMATE_DELIVERY_OUTPUT_DIR`, `CLIMATE_DELIVERY_STATE_DIR` and
+`CLIMATE_DELIVERY_CONFIG`. A completed same-date monitor slot and latest ledger
+report SHA are required. `load_delivery_config` supplies exactly four recipients
+and resolves required SMTP settings. The delivery pipeline validates the sidecar,
+generates and validates its content-addressed PDF before SMTP dispatch.
+
+Publisher requires `CLIMATE_REPORTS_DIR`, `CLIMATE_RUN_LEDGER_DIR`, and, for
+production, `CLIMATE_PUBLISH_LOCK`. It validates the selected report before
+invoking the absolute `scripts/publish_weekly_reports.py`. Its dry-run is the
+existing pending-report validator's no-push plan, not publication.
+
+Registry requires `CLIMATE_REGISTRY_ENABLE=1` and
+`CLIMATE_HUMAN_MERGE_DEPLOY_VERIFIED=1`, plus `CLIMATE_EXPECTED_REPORT_SHA256`,
+`CLIMATE_SOURCE_DIR`, `CLIMATE_REGISTRY_DB`, `CLIMATE_DELIVERY_OUTPUT_DIR`,
+`CLIMATE_REGISTRY_BACKUP_DIR`, `CLIMATE_REGISTRY_LOCK`, and
+`CLIMATE_RUN_LEDGER_DIR`. It invokes `scripts/weekly_registry_refresh.py`;
+`CLIMATE_DRY_RUN=1` passes `--dry-run` and stops before capture, promotion or reload.
+An eligible current-week dry-run records `registry_dry_run_exit_N` only in its
+isolated status directory, with `not_dispatched`; pre-slot/historical rehearsals
+return the code in stdout without falsifying a scheduled occurrence.
+Production additionally requires `CLIMATE_REGISTRY_WRITE_ENABLE=1`, `API_BASE_URL`
+and `SITE_HOST`. The existing runner verifies deployed corpus, publisher ledger,
+artifact and DB identity. A blocked or dry-run Registry is never full completion.
+
+All wrappers require `REPORT_DATE` (Monday, UTC semantics) and an external
+`CLIMATE_JOB_STATUS_DIR`. These snapshots are local-only evidence. Render has
+no shared source and `/api/job-status` remains 503 `not_configured`; see
+[the status contract](docs/job-status.md). The 2026-09-07 audit found no climate
+jobs/config/runtime on this host. The intended schedule is not a provisioning claim.
+
+Hermes local timezone is Asia/Shanghai: Monday 08/09/10/10:30 UTC maps to
+16/17/18/18:30 CST (`0 16 * * 1`, `0 17 * * 1`, `0 18 * * 1`, `30 18 * * 1`).
+Read back each job's timezone and command before scheduling. Do not change the
+global timezone. Local 08:23 CST is 00:23 UTC, before the monitor window.

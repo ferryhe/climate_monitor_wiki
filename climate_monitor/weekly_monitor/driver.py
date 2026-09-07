@@ -57,6 +57,7 @@ def run_weekly_monitor(
     # ``article-evidence.v1`` envelope) or a raw sequence of records.
     article_evidence: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     stats: Mapping[str, Any] | None = None,
+    providers: tuple = (),
 ):
     if authoring_response_path is None:
         raise ValueError("production weekly driver requires an authoring response file")
@@ -139,6 +140,7 @@ def run_weekly_monitor(
             max_output_tokens=max_output_tokens,
         ),
         stats=validated_v2_stats,
+        providers=providers,
     )
 
 

@@ -824,6 +824,9 @@ def run_monitor(
         dedup_notes=dedup_notes,
         sites_monitored=len(sources),
         warnings=website_warnings,
+        **({"weekly_stats": dict(stats), "executive_summary": authoring_response["executive_summary"]}
+           if stats is not None and authoring_response is not None
+           and authoring_response.get("schema_version") == "weekly-monitor-authoring-response.v2" else {}),
     )
     snapshot_by_canonical = {
         canonical_url(item.url): item for item in classified

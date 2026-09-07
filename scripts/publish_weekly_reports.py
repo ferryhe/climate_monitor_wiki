@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from climate_monitor.dedupe import canonical_url  # noqa: E402
+from climate_monitor.semantic_bundle import semantic_sidecar_path, verify_semantic_sidecar  # noqa: E402
 from climate_monitor.run_ledger import (  # noqa: E402
     LedgerError,
     ReportIdentity,
@@ -239,11 +240,17 @@ def validate_pending_reports(
             )
             for index, article in enumerate(report.articles, 1)
         )
+        verified_semantics = semantic_sidecar_path(report.path).exists()
+        if verified_semantics:
+            # #91 URL identity is authoritative for SHA-bound authored bundles.
+            # Historical callers without that contract retain title deduplication.
+            verify_semantic_sidecar(report.path)
         try:
             plan = plan_selection(
                 candidate_payload(report.report_date, candidates),
                 historical_urls=historical_urls,
                 allow_offcycle=allow_offcycle,
+                reject_duplicate_titles=not verified_semantics,
             )
         except RegistryInputError as exc:
             raise PublishError(f"pending report candidate contract is invalid: {report.path.name}") from exc
