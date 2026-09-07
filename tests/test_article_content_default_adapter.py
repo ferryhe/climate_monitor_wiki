@@ -102,7 +102,10 @@ def _run_upstream_default_adapter(work_dir: str) -> dict:
         ]
         out_dir = Path({work_dir!r})
         out_dir.mkdir(parents=True, exist_ok=True)
-        records = collect_evidence(per_url_inputs)
+        # P2: collect_evidence returns (records, output_dirs); this
+        # subprocess script only inspects the records tuple, so the
+        # companion output_dirs dict is discarded here intentionally.
+        records, _output_dirs = collect_evidence(per_url_inputs)
         result = {{
             "count": len(records),
             "article_ids": [r["article_id"] for r in records],

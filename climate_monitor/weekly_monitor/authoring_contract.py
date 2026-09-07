@@ -493,23 +493,37 @@ def _validate_evidence_response(
 
     selected = taxonomy or load_article_taxonomy()
     ordered = _ordered_items(items)
-    expected_ids = tuple(article_identity(item) for item in ordered)
+    # Issue #87 AC-2 + AC-3: the v2 contract binds the response to the
+    # exact articles emitted in the request (the full kept set from
+    # ``article-evidence.v1``), not to the orchestrator's classified
+    # subset. ``items`` may be a strict subset (the orchestrator caps at
+    # ``max_items_per_report``); the response must mirror every request
+    # article so the validator cannot accept a truncated response.
+    request_ids = set(request_by_id)
+    expected_ids = tuple(
+        identity for identity in (article.get("article_id") for article in requested)
+        if isinstance(identity, str) and identity in request_ids
+    )
     if len(set(expected_ids)) != len(expected_ids):
         raise AuthoringContractError("final selected articles contain a duplicate article identity")
 
-    # The v2 contract binds the response to the exact articles selected for
-    # authoring (kept set), not to the full evidence set the driver emitted.
-    # When kept ⊂ request, the response may cover only kept.
-    kept_ids = set(expected_ids)
+    # The v2 contract binds the response to the exact articles emitted in
+    # the request. The response must cover every request article and may
+    # not include extras. The orchestrator's classified ``kept`` subset is
+    # accepted only when it equals the full request article set; when
+    # ``items`` is a strict subset of the request, the validator fails
+    # closed rather than silently downgrading the contract.
     request_ids = set(request_by_id)
-    if not kept_ids.issubset(request_ids):
+    kept_ids = set(expected_ids)
+    if kept_ids != request_ids:
         raise AuthoringContractError(
-            "v2 authoring request does not contain every selected article"
+            "v2 authoring request does not cover the selected items; "
+            "the response must mirror every request article"
         )
-    if article_count < len(kept_ids):
-        raise AuthoringContractError("missing article identity in authoring response")
-    if article_count > len(kept_ids):
-        raise AuthoringContractError("unknown article identity in authoring response")
+    if article_count != len(kept_ids):
+        raise AuthoringContractError(
+            "authoring response article_count does not match the request article set"
+        )
 
     response_by_id: dict[str, Mapping[str, Any]] = {}
     for article in raw_articles:

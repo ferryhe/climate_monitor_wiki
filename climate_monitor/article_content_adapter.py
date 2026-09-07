@@ -449,14 +449,21 @@ def _build_per_source_provider_callable(
     return public_reader
 
 
-def _default_providers() -> tuple[Callable[..., Any], ...]:
+def _default_providers(*, data_root: str | Path | None = None) -> tuple[Callable[..., Any], ...]:
     """Default public path that wires the upstream contract with profile + scope.
 
     Returns a 1-tuple containing a callable that, on each invocation, picks
     a per-source profile fixture and a per-call ``MonitorScopePlan`` YAML,
-    builds an isolated ``/tmp/article_content/<uuid>`` directory, and calls
+    builds an isolated per-call output directory, and calls
     ``module.fetch_article_content(url, profile=..., site_key=...,
     scope_path=..., output_dir=..., goal_preset="page_text")``.
+
+    Per-call ``output_dir`` resolves to ``<data_root>/.cache/article_content/<uuid>``
+    when ``data_root`` is provided (P1: keeps evidence artifacts inside the
+    resolved data root so the staging transaction can roll them back as part
+    of the #91 atomic write). When ``data_root`` is ``None`` (legacy callers,
+    dryruns, and existing tests), the per-call directory stays under
+    ``tempfile.gettempdir()/article_content/<uuid>``.
 
     The returned callable exposes ``.output_dir`` so that
     ``resolve_content_ref`` can read the bytes from disk when the upstream
@@ -467,6 +474,13 @@ def _default_providers() -> tuple[Callable[..., Any], ...]:
     if module is None or not callable(getattr(module, "fetch_article_content", None)):
         return ()
     site_scopes = _load_site_scopes()
+    # Resolve the per-call parent directory once per provider instance so
+    # concurrent calls inside the same run share one ``.cache/article_content``
+    # bucket but each call still gets an isolated ``<uuid>`` leaf (P1).
+    if data_root is not None:
+        cache_root = Path(data_root) / ".cache" / "article_content"
+    else:
+        cache_root = Path(tempfile.gettempdir()) / "article_content"
 
     def public_reader(article_id: str, url: str) -> Any:
         host = (urlparse(url).netloc or "").strip().lower()
@@ -498,7 +512,7 @@ def _default_providers() -> tuple[Callable[..., Any], ...]:
             else matched_key
         )
         # Isolated output_dir per call so concurrent calls never share artifacts.
-        output_dir = Path(tempfile.gettempdir()) / "article_content" / uuid.uuid4().hex
+        output_dir = cache_root / uuid.uuid4().hex
         output_dir.mkdir(parents=True, exist_ok=True)
         _build_scope_yaml(url, site_scope, output_dir, site_key=str(profile_site_key or matched_key))
         # Surface the per-call output_dir BEFORE invoking upstream so
@@ -756,7 +770,8 @@ def collect_evidence(
     unique_articles: Iterable[Mapping[str, Any]],
     *,
     providers: Sequence[ProviderCallable] = (),
-) -> list[dict[str, Any]]:
+    data_root: str | Path | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Fetch once per canonical URL, preserve input order, reject invalid batches.
 
     The provider may carry ``.output_dir`` (set by the default public
@@ -764,17 +779,31 @@ def collect_evidence(
     loopback test fixtures). When neither is present, ``resolve_content_ref``
     falls back to inline ``content`` verification only — no second artifact
     store is created in climate.
+
+    Returns a ``(records, output_dirs)`` tuple so callers (notably
+    ``build_article_evidence_artifact``) can re-run ``_verify_batch`` with
+    the exact per-record ``output_dirs`` captured here (P2: the second
+    verify must see the same on-disk path the first verify used; otherwise
+    ``resolve_content_ref`` falls back to inline-only verification and
+    silently loses the portability guarantee that ``content_ref`` was
+    written to disk).
     """
     articles = _collect_unique_articles(unique_articles)
-    providers = providers or _default_providers()
+    # When ``data_root`` is supplied, the per-call ``output_dir`` parent is
+    # anchored inside ``<data_root>/.cache/article_content/`` (P1). The
+    # default providers here already build that anchor — we forward the
+    # kwarg so this function stays the single source of truth.
+    providers = providers or _default_providers(data_root=data_root)
     resolver = getattr(providers[0], "content_resolver", None) if providers else None
     records = []
     output_dirs: dict[str, str] = {}
     for article in articles:
         # The default public reader updates ``provider.output_dir`` to the
-        # per-call ``/tmp/article_content/<uuid>`` directory before invoking
-        # upstream. Snapshot it AFTER the call so verification reads from the
-        # exact same on-disk path that produced ``content_ref``.
+        # per-call ``<data_root>/.cache/article_content/<uuid>`` (or the
+        # legacy ``/tmp/article_content/<uuid>`` when ``data_root`` is None)
+        # directory before invoking upstream. Snapshot it AFTER the call so
+        # verification reads from the exact same on-disk path that produced
+        # ``content_ref``.
         record = fetch_article_content(article["article_id"], article["url"],
             providers=providers, snippet_input=article.get("search_snippet"))
         per_record_output_dir = (
@@ -791,7 +820,7 @@ def collect_evidence(
     _verify_batch(records, articles, content_resolver=resolver, output_dirs=output_dirs or None)
     for record in records:
         record["record_hash"] = _record_digest(record)
-    return records
+    return records, output_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -858,14 +887,31 @@ def build_article_evidence_artifact(
     providers: Sequence[ProviderCallable] = (),
     report_date: str,
     generated_at: str | None = None,
+    data_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Build (in memory) the versioned article-evidence.v1 artifact."""
+    """Build (in memory) the versioned article-evidence.v1 artifact.
+
+    When ``data_root`` is provided, the per-call ``output_dir`` for any
+    default public provider is anchored inside ``<data_root>/.cache/``
+    (P1). ``collect_evidence`` is responsible for the first
+    ``_verify_batch``; this function re-runs ``_verify_batch`` with the
+    same per-record ``output_dirs`` it captured, so any default-public
+    record that was verified on disk in the first pass is verified the
+    same way in the second pass (P2).
+    """
 
     dependency_status = check_dependencies()
     articles = _collect_unique_articles(unique_articles)
-    records = collect_evidence(articles, providers=providers)
+    records, output_dirs = collect_evidence(
+        articles, providers=providers, data_root=data_root
+    )
     resolver = getattr(providers[0], "content_resolver", None) if providers else None
-    _verify_batch(records, articles, content_resolver=resolver)
+    _verify_batch(
+        records,
+        articles,
+        content_resolver=resolver,
+        output_dirs=output_dirs or None,
+    )
     artifact: dict[str, Any] = {
         "schema_version": ARTICLE_EVIDENCE_SCHEMA_VERSION,
         "report_date": report_date,
