@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 
 DOCUMENT_JSON_FIELDS = (
@@ -104,6 +104,12 @@ class MonitorRunResult:
     report_sha256: str = ""
     semantics_path: str | None = None
     provenance: dict[str, Any] | None = None
+    # Issue #87 AC-2: when the v2 authoring path validated a 6-key stats dict
+    # (``total/updated/unchanged/blocked/failed/unresolved``) the driver pins
+    # the canonical mapping here so downstream consumers (Hermes wrappers,
+    # 09:00 climate_delivery, AC-5 dry-run) can report 57/42/15 without
+    # re-validating. ``None`` for non-v2 callers.
+    stats: Mapping[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -119,6 +125,8 @@ class MonitorRunResult:
         }
         if self.provenance is not None:
             payload["provenance"] = _json_value(self.provenance)
+        if self.stats is not None:
+            payload["stats"] = _json_value(self.stats)
         return payload
 
     def to_json(self) -> str:

@@ -231,7 +231,14 @@ def test_evidence_authoring_v2_binds_basis_identity_and_stats():
             )
         ]
     }
-    stats = {"checked": 57, "succeeded": 54, "failed": 3}
+    stats = {
+        "total": 57,
+        "updated": 54,
+        "unchanged": 0,
+        "blocked": 0,
+        "failed": 3,
+        "unresolved": 0,
+    }
     request = build_authoring_request(
         report_date=date(2026, 5, 18),
         items=[item],
@@ -265,7 +272,7 @@ def test_evidence_authoring_v2_binds_basis_identity_and_stats():
         "request_sha256": request["request_sha256"],
         "article_count": 1,
         "articles": [response_article],
-        "executive_summary": "57 checked; 54 succeeded; 3 failed.",
+        "executive_summary": "57 total; 54 updated; 0 unchanged; 0 blocked; 3 failed; 0 unresolved.",
         "stats": stats,
     }
     result = validate_authoring_response([item], response, request=request)
@@ -298,7 +305,7 @@ def test_evidence_authoring_v2_binds_basis_identity_and_stats():
     # Stats are deterministic input; mutating them fails with a specific
     # message so the validator reports the right category.
     changed = copy.deepcopy(response)
-    changed["stats"] = {**stats, "failed": 4}
+    changed["stats"] = {**stats, "failed": 4, "total": 58}
     with pytest.raises(AuthoringContractError, match="stats"):
         validate_authoring_response([item], changed, request=request)
 
@@ -328,7 +335,7 @@ def test_evidence_authoring_v2_handles_snippet_and_irrelevant():
         items=[item],
         prompt=prompt,
         article_evidence=evidence,
-        stats={"checked": 1, "succeeded": 1, "failed": 0},
+        stats={"total": 1, "updated": 1, "unchanged": 0, "blocked": 0, "failed": 0, "unresolved": 0},
     )
     article = copy.deepcopy(request["articles"][0])
     article.update(
@@ -375,7 +382,7 @@ def test_evidence_authoring_v2_handles_snippet_and_irrelevant():
         items=[item],
         prompt=prompt,
         article_evidence=content_evidence,
-        stats={"checked": 1, "succeeded": 1, "failed": 0},
+        stats={"total": 1, "updated": 1, "unchanged": 0, "blocked": 0, "failed": 0, "unresolved": 0},
     )
     content_article = copy.deepcopy(content_request["articles"][0])
     digest = hashlib.sha256(b"Honest climate insurance article body.").hexdigest()
@@ -437,7 +444,7 @@ def test_evidence_authoring_v2_url_only_relevant_keeps_link_drops_summary():
         items=[item],
         prompt=prompt,
         article_evidence=evidence,
-        stats={"checked": 1, "succeeded": 0, "failed": 1},
+        stats={"total": 1, "updated": 0, "unchanged": 0, "blocked": 0, "failed": 1, "unresolved": 0},
     )
     article = copy.deepcopy(request["articles"][0])
     article.update(

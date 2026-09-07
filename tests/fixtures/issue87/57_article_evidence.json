@@ -1,0 +1,41 @@
+{
+  "records": [
+    {
+      "article_id": "iais-climate-supervision-2026",
+      "attempts": [
+        {
+          "tool": "http"
+        }
+      ],
+      "content_hash": "ac119cb24d47aa5c40536abfbd4191ef8fa683a57fd20486a1224bcaacc80721",
+      "content_ref": "memory:ac119cb24d47aa5c40536abfbd4191ef8fa683a57fd20486a1224bcaacc80721",
+      "content_type": "text/html",
+      "display_pillar": "A",
+      "final_url": "https://www.iais.org/climate-supervision",
+      "origins": [
+        {
+          "pillar": "A",
+          "source": "iais",
+          "url": "https://www.iais.org/climate-supervision"
+        },
+        {
+          "pillar": "A",
+          "source": "adb",
+          "url": "https://www.adb.org/news/asia-climate-resilience-2026"
+        },
+        {
+          "pillar": "A",
+          "source": "wri-mirror",
+          "url": "https://www.wri.org/insights/restoring-nature-fights-wildfires-heat-floods"
+        }
+      ],
+      "requested_url": "https://www.iais.org/climate-supervision",
+      "selected_method": "http",
+      "status": "ok",
+      "summary_basis": "article_content",
+      "title": "IAIS climate supervision update",
+      "title_basis": "upstream_artifact"
+    }
+  ],
+  "schema_version": "article-evidence.v1"
+}

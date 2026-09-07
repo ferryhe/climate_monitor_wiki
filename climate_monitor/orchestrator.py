@@ -473,6 +473,11 @@ def run_monitor(
     repository_commit_sha: str = "",
     model_metadata: Mapping[str, Any] | None = None,
     providers: tuple = (),
+    # Issue #87 AC-2: the v2 driver validates the 6-key stats dict on the
+    # authoring response and forwards the canonical mapping here. ``None`` for
+    # non-v2 callers. The orchestrator pins it onto ``MonitorRunResult.stats``
+    # on every successful return path that has the response context.
+    stats: Mapping[str, int] | None = None,
 ) -> MonitorRunResult:
     day = report_date or date.today()
     repo_root = Path.cwd()
@@ -586,6 +591,7 @@ def run_monitor(
                 report_sha256=recovered_commit["report_sha256"],
                 semantics_path=str(sidecar_path),
                 provenance=provenance,
+                stats=stats,
             )
 
     if pending_day != day or not update_seen_state:
@@ -766,6 +772,7 @@ def run_monitor(
             report_sha256=existing_commit["report_sha256"],
             semantics_path=str(existing_commit["sidecar_path"]),
             provenance=provenance,
+            stats=stats,
         )
 
     dedup_notes = [*_history_notes(combined.history_skips), *invalid_notes]
@@ -805,6 +812,7 @@ def run_monitor(
             dedup_notes=tuple(dedup_notes),
             warnings=tuple(website_warnings),
             synced=False,
+            stats=stats,
         )
 
     output_source_dir.mkdir(parents=True, exist_ok=True)
@@ -908,4 +916,5 @@ def run_monitor(
         report_sha256=commit["report_sha256"],
         semantics_path=str(sidecar_path),
         provenance=provenance,
+        stats=stats,
     )

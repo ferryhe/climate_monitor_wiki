@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -403,7 +404,14 @@ def test_weekly_driver_v2_path_emits_request_and_validates_response(tmp_path):
             }
         ]
     }
-    stats = {"checked": 1, "succeeded": 1, "failed": 0}
+    stats = {
+        "total": 1,
+        "updated": 1,
+        "unchanged": 0,
+        "blocked": 0,
+        "failed": 0,
+        "unresolved": 0,
+    }
     authoring.write_text(json.dumps(_response([item])) + "\n", encoding="utf-8")
     with pytest.raises(AuthoringContractError, match="v2 evidence path requires a v2"):
         # The default _response() returns a v1 envelope; the v2 driver must
@@ -452,7 +460,7 @@ def test_weekly_driver_v2_path_emits_request_and_validates_response(tmp_path):
         "request_sha256": request["request_sha256"],
         "article_count": 1,
         "articles": [response_article],
-        "executive_summary": "1 checked; 1 succeeded; 0 failed.",
+        "executive_summary": "1 total; 1 updated; 0 unchanged; 0 blocked; 0 failed; 0 unresolved.",
         "stats": stats,
     }
     authoring.write_text(json.dumps(v2_response) + "\n", encoding="utf-8")
@@ -524,7 +532,14 @@ def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):
     }
     article_evidence_path.write_text(json.dumps(article_evidence), encoding="utf-8")
 
-    stats = {"checked": 1, "succeeded": 1, "failed": 0}
+    stats = {
+        "total": 1,
+        "updated": 1,
+        "unchanged": 0,
+        "blocked": 0,
+        "failed": 0,
+        "unresolved": 0,
+    }
     request = build_authoring_request(
         report_date=date(2026, 5, 18),
         items=[item],
@@ -549,7 +564,7 @@ def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):
         "request_sha256": request["request_sha256"],
         "article_count": 1,
         "articles": [response_article],
-        "executive_summary": "1 checked; 1 succeeded; 0 failed.",
+        "executive_summary": "1 total; 1 updated; 0 unchanged; 0 blocked; 0 failed; 0 unresolved.",
         "stats": stats,
     }
     authoring.write_text(json.dumps(v2_response), encoding="utf-8")
@@ -589,3 +604,181 @@ def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):
     )
     payload = json.loads(completed.stdout)
     assert payload["provenance"]["driver"]["contract_version"] == AUTHORING_CONTRACT_VERSION_V2
+
+
+# ---------------------------------------------------------------------------
+# Issue #87 AC-2: the v2 authoring response carries the canonical 6-key stats
+# dict (total/updated/unchanged/blocked/failed/unresolved) and the driver
+# exposes the validated mapping on ``MonitorRunResult.stats``. The mapping
+# ``total == updated + unchanged + blocked + failed + unresolved`` is enforced
+# by the validator before any artifact is written.
+# ---------------------------------------------------------------------------
+
+
+def _v2_evidence_record(
+    item: CandidateItem,
+    *,
+    body: str,
+    summary_basis: str = "article_content",
+    extra: dict | None = None,
+    status: str = "ok",
+    origins: tuple[dict, ...] | None = None,
+) -> dict:
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    record = {
+        "article_id": article_identity(item),
+        "requested_url": item.url,
+        "final_url": item.url,
+        "title": item.title,
+        "status": status,
+        "attempts": [{"tool": "http"}],
+        "selected_method": "http" if status == "ok" else None,
+        "content_type": "text/html" if status == "ok" else None,
+        "content_ref": f"memory:{digest}" if status == "ok" else None,
+        "content_hash": digest if status == "ok" else None,
+        "summary_basis": summary_basis,
+        "title_basis": "upstream_artifact",
+        "display_pillar": "A",
+        "origins": list(origins)
+        if origins is not None
+        else [{"pillar": "A", "source": item.source_name, "url": item.url}],
+        "extra": extra or {},
+    }
+    if status != "ok":
+        record["failure_reason"] = "auth_required"
+    return record
+
+
+def test_v2_authoring_response_exposes_canonical_57_42_15_split(tmp_path):
+    """AC-2: feeding a v2 response with literal counts {updated:33, unchanged:9,
+    blocked:14, failed:1, unresolved:0, total:57} makes the driver expose the
+    validated mapping on ``MonitorRunResult.stats``. The canonical
+    ``57 / 42 succeeded (33 updated + 9 unchanged) / 15 failed (14 blocked +
+    1 failed)`` split is what the orchestrator and downstream consumers read.
+
+    The v2 authoring contract enforces the deterministic sum
+    ``total == updated + unchanged + blocked + failed + unresolved`` before any
+    artifact is written.
+
+    The orchestrator keeps ``max_items_per_report`` of the manifest-fixture
+    candidates; we author a single kept article here and bind the response's
+    ``stats`` dict to the canonical 57-record split. The split is what the
+    driver validates, exposes, and that downstream consumers (Hermes
+    wrappers, 09:00 climate_delivery, AC-5 dry-run) read.
+    """
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    authoring = tmp_path / "authoring_response.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    state = tmp_path / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+    _write_manifest(manifest)
+
+    stats = {
+        "total": 57,
+        "updated": 33,
+        "unchanged": 9,
+        "blocked": 14,
+        "failed": 1,
+        "unresolved": 0,
+    }
+
+    # One kept item (the manifest fixture only declares one). The kept set
+    # binds to the request via article_identity; the canonical 6-key stats
+    # dict is validated independently by the driver.
+    items = [_item()]
+    records = [_v2_evidence_record(items[0], body="Body 0")]
+    article_evidence = {"records": records}
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=items,
+        prompt=load_weekly_monitor_prompt(),
+        article_evidence=article_evidence,
+        stats=stats,
+    )
+
+    response_article = json.loads(json.dumps(request["articles"][0]))
+    response_article.update(
+        {
+            "relevant": True,
+            "summary": "Honest content summary.",
+            "summary_basis": "article_content",
+            "evidence_hash": items[0].url
+            and hashlib.sha256(b"Body 0").hexdigest(),
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+
+    v2_response = {
+        "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+        "request_sha256": request["request_sha256"],
+        "article_count": 1,
+        "articles": [response_article],
+        "executive_summary": (
+            f"{stats['total']} total; {stats['updated']} updated; "
+            f"{stats['unchanged']} unchanged; {stats['blocked']} blocked; "
+            f"{stats['failed']} failed; {stats['unresolved']} unresolved."
+        ),
+        "stats": stats,
+    }
+    authoring.write_text(json.dumps(v2_response), encoding="utf-8")
+
+    # Mutation guard: the driver fails closed when the deterministic sum is
+    # tampered with, even though all 6 keys are present.
+    with pytest.raises(AuthoringContractError, match="stats.total"):
+        tampered = copy.deepcopy(v2_response)
+        tampered["stats"] = {**stats, "total": stats["total"] + 1}
+        tampered_path = tmp_path / "tampered.json"
+        tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+        run_weekly_monitor(
+            source_config_path=source_config,
+            run_config_path=run_config,
+            report_date=date(2026, 5, 18),
+            manifest_fixture_path=manifest,
+            state_dir=state,
+            authoring_response_path=tampered_path,
+            sync=False,
+            repository_commit_sha="e" * 40,
+            article_evidence=article_evidence,
+            stats=stats,
+        )
+
+    result = run_weekly_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 18),
+        manifest_fixture_path=manifest,
+        state_dir=state,
+        authoring_response_path=authoring,
+        sync=False,
+        repository_commit_sha="f" * 40,
+        article_evidence=article_evidence,
+        stats=stats,
+    )
+
+    payload = json.loads(result.to_json())
+
+    # The driver's exposed stats are exactly the canonical 6-key dict the
+    # response carried; the orchestrator must not silently drop the keys.
+    assert payload["stats"] == {
+        "total": 57,
+        "updated": 33,
+        "unchanged": 9,
+        "blocked": 14,
+        "failed": 1,
+        "unresolved": 0,
+    }
+    # 57 / 42 succeeded (33 updated + 9 unchanged) / 15 failed
+    # (14 blocked + 1 failed) with 0 unresolved (not double-counted).
+    succeeded = payload["stats"]["updated"] + payload["stats"]["unchanged"]
+    failed = payload["stats"]["blocked"] + payload["stats"]["failed"]
+    assert succeeded == 42
+    assert failed == 15
+    assert payload["stats"]["total"] == succeeded + failed + payload["stats"]["unresolved"]
+    assert payload["stats"]["total"] == 57
+    assert payload["stats"]["unresolved"] == 0

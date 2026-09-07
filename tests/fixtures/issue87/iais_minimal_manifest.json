@@ -1,0 +1,33 @@
+{
+  "schema_version": "web-listening-manifest.v1",
+  "source": {
+    "source_id": "iais",
+    "site_name": "IAIS"
+  },
+  "discovered_items": [
+    {
+      "item_id": "iais-2026-09-07-1",
+      "item_type": "page",
+      "url": "https://www.iais.org/climate-supervision",
+      "title": "Climate supervision update",
+      "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
+      "status": "new",
+      "observed_at": "2026-09-07T08:00:00Z",
+      "semantics": {
+        "summary": "IAIS published a climate supervision update relevant to insurance supervisors.",
+        "categories": ["Supervision & Disclosure"],
+        "keywords": ["climate", "insurance"],
+        "climate_signal": "physical_risk",
+        "actuarial_signal": "insurance_risk",
+        "evidence_hash": "ac119cb24d47aa5c40536abfbd4191ef8fa683a57fd20486a1224bcaacc80721",
+        "display_pillar": "A",
+        "title_basis": "page",
+        "summary_basis": "article_content",
+        "origins": [
+          {"pillar": "A", "source": "iais", "url": "https://www.iais.org/climate-supervision"}
+        ]
+      }
+    }
+  ],
+  "downloaded_assets": []
+}

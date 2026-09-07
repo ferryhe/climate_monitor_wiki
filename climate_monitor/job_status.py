@@ -12,6 +12,12 @@ from typing import Any
 SCHEMA_VERSION = "weekly-job-status.v1"
 SNAPSHOT_FILENAME = "scheduler-status.json"
 JOB_SCHEDULE_HOURS = {"monitor": 8, "email": 9, "publisher": 10}
+# Issue #87 AC-3: the registry slot is forward-compatible. The read-side
+# validator keeps honoring the strict 3-slot contract when only the canonical
+# three slots are present, but tolerates an optional fourth ``registry`` slot
+# for snapshots written by ``climate_monitor.scheduler_status``.
+_OPTIONAL_SLOTS = ("registry",)
+_VALID_SLOTS = frozenset(JOB_SCHEDULE_HOURS) | frozenset(_OPTIONAL_SLOTS)
 STATES = frozenset(
     {"scheduled", "running", "completed", "failed", "unknown", "not_dispatched"}
 )
@@ -97,6 +103,19 @@ def _job_fields_for_state(state: str) -> tuple[frozenset[str], frozenset[str]]:
     raise JobStatusInvalidSnapshotError("invalid job state")
 
 
+def _job_schedule_hour(alias: str) -> int:
+    """Return the public-schedule hour for a job alias.
+
+    The registry slot is at 10:30 UTC; the canonical JOB_SCHEDULE_HOURS table
+    only covers the three on-the-hour slots.
+    """
+    if alias in JOB_SCHEDULE_HOURS:
+        return JOB_SCHEDULE_HOURS[alias]
+    if alias == "registry":
+        return 10
+    raise JobStatusInvalidSnapshotError(f"unknown slot {alias!r}")
+
+
 def _validate_job(
     alias: str,
     raw: Any,
@@ -114,9 +133,15 @@ def _validate_job(
         raise JobStatusInvalidSnapshotError("invalid job fields")
 
     scheduled = _strict_utc(raw["scheduled_for"], field="scheduled_for")
-    if scheduled.weekday() != 0 or scheduled.hour != JOB_SCHEDULE_HOURS[alias]:
+    expected_hour = _job_schedule_hour(alias)
+    expected_minute = 30 if alias == "registry" else 0
+    if (
+        scheduled.weekday() != 0
+        or scheduled.hour != expected_hour
+        or scheduled.minute != expected_minute
+    ):
         raise JobStatusInvalidSnapshotError("scheduled_for does not match the public schedule")
-    if scheduled.minute or scheduled.second:
+    if scheduled.second:
         raise JobStatusInvalidSnapshotError("scheduled_for does not match the public schedule")
     if state == "not_dispatched" and scheduled > generated_at:
         raise JobStatusInvalidSnapshotError("a future occurrence cannot be not_dispatched")
@@ -132,10 +157,24 @@ def _validate_job(
         raise JobStatusInvalidSnapshotError("execution timestamps are out of order")
 
     required_code = STATE_RESULT_CODES.get(state)
+    if alias == "registry" and state == "not_dispatched":
+        # Issue #87 AC-3: the registry slot is forward-compatible and may
+        # carry a domain-specific code (e.g. ``awaiting_human_merge_deploy``)
+        # instead of the strict ``not_dispatched`` default.
+        required_code = None
     if required_code is not None and raw.get("result_code") != required_code:
         raise JobStatusInvalidSnapshotError("invalid result_code")
     if required_code is None and "result_code" in raw:
-        raise JobStatusInvalidSnapshotError("result_code is not allowed for this state")
+        # The registry slot permits ``result_code`` only while in
+        # ``not_dispatched``; any other registry state must omit it to keep
+        # the API contract unambiguous.
+        if alias == "registry":
+            if state != "not_dispatched":
+                raise JobStatusInvalidSnapshotError(
+                    "registry result_code is only allowed when state=not_dispatched"
+                )
+        else:
+            raise JobStatusInvalidSnapshotError("result_code is not allowed for this state")
 
     normalized = {
         "scheduled_for": scheduled.strftime(_UTC_TIMESTAMP),
@@ -146,6 +185,10 @@ def _validate_job(
             normalized[field] = times[field].strftime(_UTC_TIMESTAMP)
     if required_code is not None:
         normalized["result_code"] = required_code
+    elif alias == "registry" and isinstance(raw.get("result_code"), str):
+        # Issue #87 AC-3: forward-compatible registry slot may carry a
+        # caller-supplied domain code; preserve it on the normalized output.
+        normalized["result_code"] = raw["result_code"]
     return normalized
 
 
@@ -157,27 +200,48 @@ def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str,
     generated_at = _strict_utc(top["generated_at"], field="generated_at")
     if generated_at > current:
         raise JobStatusInvalidSnapshotError("generated_at must not be in the future")
-    jobs = _exact_object(
-        top["jobs"],
-        expected=frozenset(JOB_SCHEDULE_HOURS),
-        label="jobs",
-    )
+    canonical = frozenset(JOB_SCHEDULE_HOURS)
+    allowed = canonical | frozenset({"registry"})
+    jobs_raw = top["jobs"]
+    if not isinstance(jobs_raw, dict) or set(jobs_raw) - allowed:
+        raise JobStatusInvalidSnapshotError("invalid jobs fields")
+    if not canonical.issubset(jobs_raw.keys()):
+        raise JobStatusInvalidSnapshotError("invalid jobs fields")
+    # Issue #87 AC-3: the canonical 3-slot snapshot is the strict public
+    # contract. When the optional fourth ``registry`` slot is present,
+    # validate it under the same per-job rules and surface it to
+    # ``/api/job-status`` without rewriting the 3-slot API contract.
+    registry_block = None
+    if "registry" in jobs_raw:
+        registry_raw = jobs_raw["registry"]
+        if not isinstance(registry_raw, dict):
+            raise JobStatusInvalidSnapshotError("registry job must be an object")
+        registry_block = _validate_job(
+            "registry", registry_raw, generated_at=generated_at
+        )
     normalized_jobs = {
-        alias: _validate_job(alias, jobs[alias], generated_at=generated_at)
+        alias: _validate_job(alias, jobs_raw[alias], generated_at=generated_at)
         for alias in JOB_SCHEDULE_HOURS
     }
     schedule_dates = {
         _strict_utc(job["scheduled_for"], field="scheduled_for").date()
         for job in normalized_jobs.values()
     }
+    if registry_block is not None:
+        schedule_dates.add(
+            _strict_utc(registry_block["scheduled_for"], field="scheduled_for").date()
+        )
     generated_monday = generated_at.date() - timedelta(days=generated_at.weekday())
     if schedule_dates != {generated_monday}:
         raise JobStatusInvalidSnapshotError("jobs must describe the generated week")
-    return {
+    snapshot = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at.strftime(_UTC_TIMESTAMP),
         "jobs": normalized_jobs,
     }
+    if registry_block is not None:
+        snapshot["jobs"] = {**snapshot["jobs"], "registry": registry_block}
+    return snapshot
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
