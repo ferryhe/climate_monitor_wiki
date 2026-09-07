@@ -469,6 +469,14 @@ def _validate_evidence_response(
     if article_count != len(raw_articles):
         raise AuthoringContractError("authoring response article_count does not match articles")
 
+    # Issue #87 AC-2: enforce the canonical 6-key v2 stats shape (total/updated/
+    # unchanged/blocked/failed/unresolved) and the deterministic mapping
+    # ``total == updated + unchanged + blocked + failed + unresolved`` on every
+    # v2 response. The driver repeats this validation before invoking the
+    # orchestrator so ``MonitorRunResult.stats`` exposes the validated 57/42/15
+    # split even if downstream validation is skipped.
+    _validate_v2_stats_shape(response.get("stats"))
+
     requested = request.get("articles")
     if not isinstance(requested, list):
         raise AuthoringContractError("invalid v2 authoring request articles")
@@ -611,3 +619,66 @@ def _validate_evidence_response(
         article_identities=tuple(accepted_ids),
         article_count=len(accepted),
     )
+
+
+# ---------------------------------------------------------------------------
+# v2 stats shape (Issue #87 AC-2)
+# ---------------------------------------------------------------------------
+
+V2_STATS_FIELDS = (
+    "total",
+    "updated",
+    "unchanged",
+    "blocked",
+    "failed",
+    "unresolved",
+)
+
+
+def _validate_v2_stats_shape(raw: Any) -> dict[str, int]:
+    """Validate the canonical 6-key v2 stats shape and the deterministic sum.
+
+    Every v2 authoring response must carry exactly the keys
+    ``{total, updated, unchanged, blocked, failed, unresolved}``. All values
+    must be non-negative integers and ``total`` must equal
+    ``updated + unchanged + blocked + failed + unresolved``.
+
+    Returns the validated dict so callers can pin it on a result object
+    (the driver writes it onto ``MonitorRunResult.stats``).
+    """
+
+    if not isinstance(raw, Mapping):
+        raise AuthoringContractError("v2 authoring response stats must be an object")
+    keys = set(raw)
+    expected = frozenset(V2_STATS_FIELDS)
+    if keys != expected:
+        unexpected = keys - expected
+        missing = expected - keys
+        detail: list[str] = []
+        if missing:
+            detail.append(f"missing={sorted(missing)}")
+        if unexpected:
+            detail.append(f"unexpected={sorted(unexpected)}")
+        raise AuthoringContractError(
+            "v2 authoring response stats must declare the canonical 6-key shape: "
+            + ", ".join(detail)
+        )
+    normalized: dict[str, int] = {}
+    for field in V2_STATS_FIELDS:
+        value = raw[field]
+        if type(value) is not int or value < 0:
+            raise AuthoringContractError(
+                f"v2 authoring response stats.{field} must be a non-negative integer"
+            )
+        normalized[field] = value
+    total = sum(
+        normalized[field]
+        for field in ("updated", "unchanged", "blocked", "failed", "unresolved")
+    )
+    if normalized["total"] != total:
+        raise AuthoringContractError(
+            "v2 authoring response stats.total must equal "
+            "updated + unchanged + blocked + failed + unresolved "
+            f"(got total={normalized['total']}, components_sum={total})"
+        )
+    return normalized

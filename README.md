@@ -172,9 +172,11 @@ python scripts/run_climate_monitor.py --date "$REPORT_DATE"
 Hermes is the sole report generator. There is no GitHub Actions generator. An emergency manual run is performed only on the controlled server with the existing monitor and rolling-PR publisher.
 
 Pipeline internals are documented in [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md)
-(architecture, step contracts, date logic, dedup, MD report structure) and
-[PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) (cron schedule and editable LLM
-prompts).
+(architecture, single production chain, hermes job wrappers, dedup, MD report
+structure) and [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) (the four-job weekly
+schedule + retained LLM prompt templates). The numbered `stepN_*.py` scripts
+on disk are **compatibility fallbacks only** — they are referenced by the
+on-disk step-parser and step-script tests but are not scheduled.
 
 ## Deploy on Render
 

@@ -1,62 +1,81 @@
 # Pipeline Configuration
 
-## Pipeline jobs (10 scheduled + 1 post-deploy)
+The repository runs **one** weekly pipeline today: a four-slot Hermеs cron
+sequence anchored to the single production driver path. The numbered
+`stepN_*.py` scripts are kept on disk for test compatibility only
+(`tests/test_step1_pillar_a_parser.py`, `tests/test_pipeline_scripts.py`)
+and are **not** scheduled.
 
-| # | Time | Name | Type | Schedule | Prompt Config |
-|---|---|---|---|---|---|
-| 1 | 08:00 | Pillar A Site Check | Script | 0 8 * * 1 | N/A |
-| 2 | 08:15 | Pillar B Web Search | LLM | 15 8 * * 1 | PIPELINE_CONFIG.md § Step 2 |
-| 3 | 08:30 | Aggregate Report | Script | 30 8 * * 1 | N/A |
-| 4 | 08:32 | Extract Conferences | Script | 32 8 * * 1 | N/A |
-| 5 | 08:35 | Hermes Relevance + Classification | LLM | 35 8 * * 1 | PIPELINE_CONFIG.md § Step 3b |
-| 5b | 08:37 | Apply Assessments Filter | Script | 37 8 * * 1 | N/A |
-| 6 | 09:00 | Build Markdown Report | Script | 0 9 * * 1 | N/A |
-| 7 | 09:15 | Render PDF | Script | 15 9 * * 1 | N/A |
-| 8 | 09:30 | Send Email | LLM | 30 9 * * 1 | PIPELINE_CONFIG.md § Step 7 |
-| 10 | 10:00 | Publish Wiki PR | Script | 0 10 * * 1 | N/A |
-| 9 | Post-deploy | Sync Registry | Script | Deployment gate | N/A |
+## Weekly schedule (authoritative)
 
-## Data Flow
+| # | UTC | Slot        | Hermеs wrapper                            | Entry point invoked                                                  | Result                                                  |
+|---|-----|-------------|--------------------------------------------|----------------------------------------------------------------------|---------------------------------------------------------|
+| 1 | 08  | `monitor`   | `scripts/hermes_job_monitor.sh`           | `python scripts/run_climate_monitor.py --production-weekly …`        | Monday report Markdown + sidecar + URL-state commit    |
+| 2 | 09  | `email`     | `scripts/hermes_job_email.sh`             | `python scripts/record_weekly_run.py` (climate_delivery pipeline)    | PDF + manifest + retained email to the four recipients  |
+| 3 | 10  | `publisher` | `scripts/hermes_job_publisher.sh`         | `bash scripts/weekly_wiki_refresh.sh`                                 | Rolling `codex/hermes-weekly-monitor` PR update         |
+| 4 | 10:30 | `registry` | `scripts/hermes_job_registry.sh`          | (dry-run only)                                                        | `not_dispatched` until merge + deploy gate is satisfied |
+
+Each Hermes wrapper writes one slot of `scheduler-status.json` (read by
+`GET /api/job-status`) via `climate_monitor/scheduler_status.py
+update_slot(name, state, …)`. The publisher slot is 2h after monitor so the
+report exists before ingest; preserve that gap if you ever re-schedule.
+
+## Data Flow (single chain)
 
 ```
-Step 1: Pillar A ──────────────→ article_changes_{DATE}.json
-Step 2: Pillar B ──────────────→ pillar_b_{DATE}.json
-                                      │
-Step 2 (state save) ──────────→ article_state.json (dedup baseline)
-                                      │
-Step 3: Aggregate ────────────→ aggregated_{DATE}.json
-                                      │
-Step 7b: Extract Conferences ──→ conferences_{DATE}.json
-                                      │
-Step 3b: Hermes LLM ────────→ hermes_assessments_{DATE}.json
-                                      │
-Step 3f: Filter (08:37) ──────→ filtered_{DATE}.json
-                                      │
-Step 5: Build MD ────────────→ climate-monitor-{DATE}.md (SINGLE SOURCE OF TRUTH)
-                                      │
-                                      ├──→ Step 6: Render PDF ──→ climate-monitor-{DATE}.pdf
-                                      ├──→ Step 7: Send Email
-                                      └──→ Step 9: Publish rolling PR
-                                                   │
-                                                   ▼
-                                      review + merge into GitHub main
-                                                   │
-                                      ┌────────────┴────────────┐
-                                      ▼                         ▼
-                               server deploy              Render deploy
-                                      │
-                                      ▼
-                         Step 8: Sync deployed Registry → article-registry.sqlite3
+Hermes cron
+   │
+   ├─ 08:00  scripts/hermes_job_monitor.sh
+   │         └─ scripts/run_climate_monitor.py --production-weekly
+   │              └─ climate_monitor.weekly_monitor.driver.run_weekly_monitor
+   │                   └─ climate_monitor.orchestrator.run_monitor
+   │                         ├── climate-monitor-{DATE}.md          (Markdown + sidecar)
+   │                         ├── climate-monitor-{DATE}.json       (combined candidates)
+   │                         ├── article-evidence.v1_{DATE}.json   (AC-1 #93 path)
+   │                         └── pending-seen-url delta            (atomic two-phase)
+   │
+   ├─ 09:00  scripts/hermes_job_email.sh
+   │         └─ climate_delivery pipeline
+   │              ├── climate-monitor-{DATE}.pdf
+   │              ├── manifest + briefing JSON
+   │              └── email to the four retained recipients
+   │
+   ├─ 10:00  scripts/hermes_job_publisher.sh
+   │         └─ scripts/weekly_wiki_refresh.sh
+   │              └─ scripts/publish_weekly_reports.py
+   │                   ├── isolated clone of origin/main
+   │                   ├── wiki/ regenerated via sync_source_wiki
+   │                   └── codex/hermes-weekly-monitor rolling PR update (CAS rollback)
+   │
+   └─ 10:30  scripts/hermes_job_registry.sh  [DISABLED — log only]
 ```
 
-The numeric script names are retained for compatibility, but publication now
-precedes the post-deploy Registry sync. Neither script writes generated report
-content directly into the production checkout. GitHub `main` is the common
-content source for the controlled server and Render.
+The numeric script names are retained for compatibility, but publication
+now precedes the post-deploy Registry sync. Neither script writes
+generated report content directly into the production checkout. GitHub
+`main` is the common content source for the controlled server and Render.
 
 ## Prompt Templates
 
-All Hermes prompts are stored in `PIPELINE_CONFIG.md` for easy modification without code changes.
+Hermes LLM prompts that remain in active use are listed below. The legacy
+"Step 2 / Step 3b / Step 7" prompt blocks are retained for compatibility
+with the still-on-disk step scripts but are **not** invoked by the single
+production chain above.
+
+### Monitor (v2 evidence authoring)
+
+The 08:00 monitor runs the v2 authoring path when the orchestrator has
+staged an `article-evidence.v1_{DATE}.json` artifact. The driver emits
+the v2 authoring request that binds the response to the deterministic
+stats dict `{"total": N, "updated": …, "unchanged": …, "blocked": …,
+"failed": …, "unresolved": …}` (N must equal `updated + unchanged +
+blocked + failed + unresolved`). The driver validates the mapping before
+the orchestrator writes any artifact; `MonitorRunResult.stats` exposes
+the validated counts (the canonical `57/42/15` split).
+
+### Email (09:00, climate_delivery pipeline)
+
+```
 
 ### Step 2: Pillar B Web Search
 

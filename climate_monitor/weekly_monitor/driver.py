@@ -16,6 +16,7 @@ from .authoring_contract import (
     AUTHORING_REQUEST_SCHEMA_VERSION_V2,
     AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
     AuthoringContractError,
+    _validate_v2_stats_shape,
     build_authoring_request,
     load_authoring_response,
     validate_authoring_response,
@@ -76,6 +77,7 @@ def run_weekly_monitor(
         report_date=report_date,
         prompt=prompt,
     )
+    validated_v2_stats: Mapping[str, int] | None = None
     if pre_request is not None:
         response_schema = response.get("schema_version")
         if response_schema != AUTHORING_RESPONSE_SCHEMA_VERSION_V2:
@@ -83,6 +85,14 @@ def run_weekly_monitor(
                 "v2 evidence path requires a v2 authoring response, "
                 f"got {response_schema!r}"
             )
+        # Issue #87 AC-2: validate the canonical 6-key stats shape and the
+        # deterministic mapping ``total == updated + unchanged + blocked +
+        # failed + unresolved`` on the v2 response before the orchestrator
+        # writes any artifact. The driver pins the validated mapping on
+        # ``MonitorRunResult.stats`` so downstream consumers (Hermes
+        # wrappers, 09:00 climate_delivery, AC-5 dry-run) can report the
+        # 57/42/15 split without re-validating.
+        validated_v2_stats = _validate_v2_stats_shape(response.get("stats"))
         # The strict v2 contract binds the response to the emitted request
         # identity, deterministic stats, and summary_basis rules. The driver
         # performs the validation here so AC-6 (production driver actually
@@ -128,6 +138,7 @@ def run_weekly_monitor(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
         ),
+        stats=validated_v2_stats,
     )
 
 
@@ -155,6 +166,11 @@ def _emit_authoring_request(
         )
     if report_date is None:
         raise ValueError("v2 authoring request requires an explicit report_date")
+    # Issue #87 AC-2: the v2 authoring path requires the canonical 6-key
+    # stats dict (total/updated/unchanged/blocked/failed/unresolved). The
+    # driver validates it once here so the emitted request carries the same
+    # mapping the response must match.
+    _validate_v2_stats_shape(stats)
     request = build_authoring_request(
         report_date=report_date,
         items=_candidate_items_from_evidence(None, article_evidence),

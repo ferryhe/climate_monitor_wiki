@@ -1,0 +1,14 @@
+{
+  "_note": "Real v2 response is built at runtime by the dry-run script via build_authoring_request so request_sha256 stays consistent. The fixture exists only for documentation; the dry-run script ignores this file.",
+  "_placeholder": true,
+  "contract_version": "weekly-monitor-authoring.v2",
+  "schema_version": "weekly-monitor-authoring-response.v2",
+  "stats": {
+    "blocked": 14,
+    "failed": 1,
+    "total": 57,
+    "unchanged": 9,
+    "unresolved": 0,
+    "updated": 33
+  }
+}
