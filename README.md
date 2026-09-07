@@ -1,5 +1,19 @@
 # Climate Monitor Wiki
 
+Current operations caveat (2026-09-07 audit): the four climate cron jobs and
+runtime configuration are not provisioned. Monday 08/09/10/10:30 UTC means
+16/17/18/18:30 CST in Hermes (Asia/Shanghai); never change the global timezone.
+Each `scripts/hermes_job_*.sh --preflight` is read-only and fails closed on
+missing configuration. Production monitor acquisition remains blocked until
+the same-run outcome/evidence/authoring link is executable. Fixtures require
+`CLIMATE_DRY_RUN=1` plus `CLIMATE_DRY_RUN_FIXTURE_DIR` and an isolated
+`CLIMATE_DRY_RUN_ROOT`. Render has no shared source for local scheduler evidence;
+`/api/job-status` remains HTTP 503 `not_configured`. Issue #87 stays OPEN until
+a normal Monday run matches through delivery, reviewed publication, deployment
+and Registry. See PIPELINE_REFERENCE.md for the intended wrapper contracts;
+historical job IDs below are not proof of current provisioning.
+
+
 A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research, compiled weekly from automated monitoring.
 
 ## Web + Obsidian Surfaces
@@ -117,7 +131,7 @@ The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/sou
 
 ## Automated Climate Monitor
 
-The scheduled Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. At 09:00 UTC, the retained Weekly Climate Email (PDF highlights) job is the only delivery-artifact producer and sends the result to the existing four recipients. At 10:00 UTC, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
+The intended Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. At 09:00 UTC, the intended Weekly Climate Email (PDF highlights) job is the only delivery-artifact producer and sends the result to the existing four recipients. At 10:00 UTC, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
 
 The deployed application includes a tested Monday 10:30 Weekly Registry Sync
 runner, DB-first Article Detail enrichment, and exact backup/restore. The Hermes

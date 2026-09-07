@@ -11,14 +11,25 @@ and are **not** scheduled.
 | # | UTC | Slot        | Hermes wrapper                            | Entry point invoked                                                  | Result                                                  |
 |---|-----|-------------|--------------------------------------------|----------------------------------------------------------------------|---------------------------------------------------------|
 | 1 | 08  | `monitor`   | `scripts/hermes_job_monitor.sh`           | `python scripts/run_climate_monitor.py --production-weekly …`        | Monday report Markdown + sidecar + URL-state commit    |
-| 2 | 09  | `email`     | `scripts/hermes_job_email.sh`             | `python scripts/record_weekly_run.py` (climate_delivery pipeline)    | PDF + manifest + retained email to the four recipients  |
+| 2 | 09  | `email`     | `scripts/hermes_job_email.sh`             | `python -m climate_delivery.cli run`    | PDF + manifest + retained email to the four recipients  |
 | 3 | 10  | `publisher` | `scripts/hermes_job_publisher.sh`         | `bash scripts/weekly_wiki_refresh.sh`                                 | Rolling `codex/hermes-weekly-monitor` PR update         |
-| 4 | 10:30 | `registry` | `scripts/hermes_job_registry.sh`          | (dry-run only)                                                        | `not_dispatched` until merge + deploy gate is satisfied |
+| 4 | 10:30 | `registry` | `scripts/hermes_job_registry.sh`          | `scripts/weekly_registry_refresh.py` (explicit gates)                                                        | `not_dispatched` until merge + deploy gate is satisfied |
 
-Each Hermes wrapper writes one slot of `scheduler-status.json` (read by
-`GET /api/job-status`) via `climate_monitor/scheduler_status.py
+Each dispatched production wrapper writes local-only `scheduler-status.json` via `climate_monitor/scheduler_status.py
 update_slot(name, state, …)`. The publisher slot is 2h after monitor so the
 report exists before ingest; preserve that gap if you ever re-schedule.
+
+Hermes uses Asia/Shanghai local time. Configure Monday local cron expressions
+`0 16 * * 1`, `0 17 * * 1`, `0 18 * * 1`, `30 18 * * 1` for these UTC slots.
+The manifest records this mapping; it is not an installed job inventory.
+The 2026-09-07 audit found no climate jobs or runtime config. Render has no shared
+source for the local snapshot; `/api/job-status` remains 503 `not_configured`.
+
+Every wrapper supports read-only `--preflight`. Explicit paths, dry-run isolation,
+and the production acquisition blocker are documented in
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#hermes-job-wrappers-ac-1310).
+Fixtures require `CLIMATE_DRY_RUN=1` plus `CLIMATE_DRY_RUN_FIXTURE_DIR` and isolated
+`CLIMATE_DRY_RUN_ROOT`; production never falls back to a fixture.
 
 ## Data Flow (single chain)
 
@@ -47,7 +58,7 @@ Hermes cron
    │                   ├── wiki/ regenerated via sync_source_wiki
    │                   └── codex/hermes-weekly-monitor rolling PR update (CAS rollback)
    │
-   └─ 10:30  scripts/hermes_job_registry.sh  [DISABLED — log only]
+   └─ 10:30  scripts/hermes_job_registry.sh  [DISABLED by default; explicit human gate]
 ```
 
 The numeric script names are retained for compatibility, but publication
@@ -73,9 +84,10 @@ blocked + failed + unresolved`). The driver validates the mapping before
 the orchestrator writes any artifact; `MonitorRunResult.stats` exposes
 the validated counts (the canonical `57/42/15` split).
 
-### Email (09:00, climate_delivery pipeline)
+### Email (09:00 UTC, climate_delivery pipeline)
 
-```
+Use the email wrapper with four absolute paths and a verified monitor identity.
+Configuration and preflight are documented in PIPELINE_REFERENCE.md.
 
 ### Step 2: Pillar B Web Search
 

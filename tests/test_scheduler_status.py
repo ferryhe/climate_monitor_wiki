@@ -194,6 +194,9 @@ def test_update_slot_atomic_replacement(tmp_path, monkeypatch):
     """AC-3: the writer replaces the snapshot atomically so concurrent
     readers observe either the pre-update snapshot or the post-update
     snapshot, never a partial / truncated JSON file."""
+    # The fixture occurrence must precede the observer clock in every runtime.
+    monkeypatch.setattr(scheduler_status, "_now_utc", lambda: "2026-09-07T11:00:00Z")
+    monkeypatch.setattr(scheduler_status, "_aware_now", lambda: datetime(2026, 9, 7, 11, tzinfo=timezone.utc))
     directory = tmp_path / "status"
     directory.mkdir()
     monkeypatch.setenv("CLIMATE_JOB_STATUS_DIR", str(directory))
@@ -376,3 +379,25 @@ def test_update_slot_passes_error_reason_via_result_code(tmp_path, monkeypatch):
     # The free-form error text must never be written to disk.
     assert "error_reason" not in on_disk["jobs"]["monitor"]
     assert "evidence loopback returned" not in json.dumps(on_disk)
+
+
+def test_registry_isolated_dry_run_records_exit_without_claiming_sync(tmp_path, monkeypatch, capsys):
+    import scripts.hermes_job as job
+    import sys
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 7, 11, tzinfo=timezone.utc)
+    monkeypatch.setattr(job, 'datetime', Clock)
+    monkeypatch.setattr(scheduler_status, '_now_utc', lambda: '2026-09-07T11:00:00Z')
+    monkeypatch.setattr(scheduler_status, '_aware_now', lambda: datetime(2026, 9, 7, 11, tzinfo=timezone.utc))
+    monkeypatch.setenv('REPORT_DATE', '2026-09-07')
+    monkeypatch.setenv('CLIMATE_JOB_STATUS_DIR', str(tmp_path))
+    monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(tmp_path))
+    monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
+    monkeypatch.setattr(job, 'registry_command', lambda *_args, **_kwargs: [sys.executable, '-c', 'raise SystemExit(7)'])
+    assert job.main(['registry']) == 7
+    payload = _read_snapshot(tmp_path)
+    assert payload['jobs']['registry'] == {'state': 'not_dispatched',
+        'scheduled_for': '2026-09-07T10:30:00Z', 'result_code': 'registry_dry_run_exit_7'}
+    assert 'registry_exit_7' in capsys.readouterr().out

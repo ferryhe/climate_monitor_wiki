@@ -69,7 +69,7 @@ def _document_metadata_lines(item: Any) -> list[str]:
     return lines
 
 
-def _render_item(index: int, item: Any) -> str:
+def _render_item(index: int, item: Any, *, weekly: bool = False) -> str:
     title = str(_item_value(item, "title"))
     published = str(_item_value(item, "published") or _item_value(item, "detected_at") or "Unknown")
     categories = _metadata_values(item, "categories")
@@ -95,6 +95,15 @@ def _render_item(index: int, item: Any) -> str:
         keywords = tuple(label.casefold() for label in categories)
     category_text = ", ".join(categories)
     keyword_text = ", ".join(keywords)
+    if weekly:
+        return "\n".join([
+            f"- **{title}**",
+            f"  - **Categories:** {category_text}",
+            f"  - {_item_value(item, 'summary')}",
+            f"  - **Keywords:** {keyword_text}",
+            f"  🔗 {_item_value(item, 'url')}",
+            "",
+        ])
     actuarial = "Yes" if bool(_item_value(item, "actuarial_related", False)) else "No"
     relevance_reason = str(_item_value(item, "relevance_reason", "") or "Matched monitor criteria.")
     evidence_snippet = str(_item_value(item, "evidence_snippet", "") or "")
@@ -139,7 +148,29 @@ def render_report(
     dedup_notes: list[str],
     sites_monitored: int,
     warnings: list[str],
+    weekly_stats: dict[str, int] | None = None,
+    executive_summary: str = "",
 ) -> str:
+    if weekly_stats is not None:
+        # Only the strict v2 driver supplies these validated acquisition counts.
+        from .weekly_monitor.authoring_contract import _validate_v2_stats_shape
+        from .semantic_bundle import render_order
+        counts = _validate_v2_stats_shape(weekly_stats)
+        succeeded = counts["updated"] + counts["unchanged"]
+        failed = counts["blocked"] + counts["failed"] + counts["unresolved"]
+        lines = [f"# {title}", f"**Report Date:** {report_date.isoformat()}", "",
+                 "## Executive Summary", "",
+                 f"- Sites checked: **{counts['total']}**, succeeded: **{succeeded}**, failed: **{failed}**",
+                 "", executive_summary, ""]
+        for pillar in ("A", "B"):
+            lines += [f"## Pillar {pillar}", ""]
+            for index, item in enumerate(render_order(items), 1):
+                item_pillar = "B" if _item_value(item, "lane") == "research" else "A"
+                if item_pillar == pillar:
+                    lines.append(_render_item(index, item, weekly=True))
+        lines += ["## Original Links", ""]
+        lines += [f"- {_item_value(item, 'url')}" for item in items]
+        return "\n".join(lines) + "\n"
     website_items = [item for item in items if _item_value(item, "lane") == "website"]
     document_items = [item for item in items if _item_value(item, "lane") == "document"]
     research_items = [item for item in items if _item_value(item, "lane") == "research"]

@@ -370,7 +370,11 @@ def serialize_sidecar(payload: Mapping[str, Any]) -> bytes:
 
 
 def rendered_article_urls(report_text: str) -> list[str]:
-    return _REPORT_URL_LINE.findall(report_text)
+    canonical = _REPORT_URL_LINE.findall(report_text)
+    if canonical:
+        return canonical
+    # Strict weekly v2 rendering uses the existing delivery/publisher link form.
+    return re.findall(r"^  🔗 (https?://\S+)\r?$", report_text, re.MULTILINE)
 
 
 def _verify_payload(payload: Any, *, report_bytes: bytes, report_path: Path) -> dict[str, Any]:

@@ -62,6 +62,7 @@ def _parser() -> Parser:
     run.add_argument("--state-dir", type=Path, required=True)
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--expected-report-sha256")
     run.add_argument(
         "--allow-offcycle",
         action="store_true",
@@ -138,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 state_dir,
                 config_path,
                 dry_run=args.dry_run,
+                expected_report_sha256=args.expected_report_sha256,
                 allow_offcycle=args.allow_offcycle,
             )
         elif args.command == "backfill":

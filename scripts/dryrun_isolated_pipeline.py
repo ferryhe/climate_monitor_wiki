@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated dry-run driver for the climate_monitor_wiki single chain.
+"""Isolated v2 contract check; use dryrun_full_pipeline.py for all consumers.
 
 Verifies the canonical 57-record v2 contract and the deterministic
 mapping (33 updated + 9 unchanged + 14 blocked + 1 failed + 0 unresolved
@@ -241,11 +241,11 @@ def main() -> int:
     stats = json.loads(stats_path.read_text(encoding="utf-8"))
     article_evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
 
-    print("[dryrun] PASS contract validation (AC-2 57/42/15 mapping)")
     _driver_validation_pass(stats, article_evidence["records"])
+    print("[dryrun] PASS contract validation (AC-2 57/42/15 mapping)")
 
-    print("[dryrun] PASS tamper guard (deterministic sum enforced)")
     _tamper_guard_pass(stats, article_evidence["records"])
+    print("[dryrun] PASS tamper guard (deterministic sum enforced)")
 
     # Informational: confirm production HEAD is untouched.
     prod_root = Path("/opt/climate_monitor_wiki")
@@ -256,7 +256,7 @@ def main() -> int:
             text=True,
             check=False,
         ).stdout.strip()
-        print(f"[dryrun] production HEAD (untouched): {head}")
+        print(f"[dryrun] production HEAD (read-only observation; not an unchanged-state proof): {head}")
 
     succeeded_count = stats["updated"] + stats["unchanged"]
     failed_count = stats["blocked"] + stats["failed"]
@@ -266,7 +266,7 @@ def main() -> int:
         f"failed={failed_count} (blocked+failed), "
         f"unresolved={stats['unresolved']} (not double-counted)"
     )
-    print("[dryrun] PASS")
+    print("[dryrun] CONTRACT PASS (not a full-chain verification)")
     return 0
 
 

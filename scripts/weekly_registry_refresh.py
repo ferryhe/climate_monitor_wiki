@@ -36,6 +36,8 @@ def _parser() -> argparse.ArgumentParser:
         description="Draft 10:30 weekly Registry sync, reload, and verification runner."
     )
     parser.add_argument("--date", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--expected-report-sha256")
     parser.add_argument("--source-dir", required=True, type=Path)
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--artifact-root", required=True, type=Path)
@@ -575,8 +577,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             or args.request_timeout <= 0
         ):
             raise _JobError("invalid_runtime_options")
+        dry_result = _run_sync(args, dry_run=True, expected_report_sha256=args.expected_report_sha256) if args.expected_report_sha256 else _run_sync(args, dry_run=True)
+        if args.expected_report_sha256 and dry_result["report_sha256"] != args.expected_report_sha256:
+            raise _JobError("sync_identity_changed")
+        if args.dry_run:
+            if dry_result["database_sha256_before"] != dry_result["database_sha256_after"]:
+                raise _JobError("dry_run_database_changed")
+            print(json.dumps(dry_result, sort_keys=True, separators=(",", ":")))
+            return 0
         normalized_base = _base_url(args.base_url, args.expected_api_host)
-        dry_result = _run_sync(args, dry_run=True)
         live_result = _run_sync(
             args,
             dry_run=False,

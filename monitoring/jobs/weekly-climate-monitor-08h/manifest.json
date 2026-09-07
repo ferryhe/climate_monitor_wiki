@@ -50,5 +50,27 @@
     "does_not_store_credentials": true,
     "does_not_store_host_paths_except_exact_prompt_artifact": true,
     "does_not_replace_hermes": true
+  },
+  "weekly_schedule": {
+    "monitor": {
+      "timezone": "Asia/Shanghai",
+      "cron": "0 16 * * 1",
+      "utc": "08:00"
+    },
+    "email": {
+      "timezone": "Asia/Shanghai",
+      "cron": "0 17 * * 1",
+      "utc": "09:00"
+    },
+    "publisher": {
+      "timezone": "Asia/Shanghai",
+      "cron": "0 18 * * 1",
+      "utc": "10:00"
+    },
+    "registry": {
+      "timezone": "Asia/Shanghai",
+      "cron": "30 18 * * 1",
+      "utc": "10:30"
+    }
   }
 }
