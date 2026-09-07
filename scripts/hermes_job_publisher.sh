@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hermеs cron wrapper for the 10:00 UTC Monday publisher slot.
+# Hermes cron wrapper for the 10:00 UTC Monday publisher slot.
 #
 # Calls scripts/weekly_wiki_refresh.sh (isolated clone + rolling PR).
 # Reads env: REPORT_DATE, CLIMATE_RUN_LEDGER_DIR, CLIMATE_REPORTS_DIR,

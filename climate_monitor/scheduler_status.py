@@ -390,12 +390,18 @@ def _atomic_write(target: Path, payload: Mapping[str, Any]) -> None:
                 temp_path_str = None
             except (OSError, ValueError):
                 # The host kernel may accept dir_fd in open but not in rename.
-                # Resolve the basename to an absolute path and retry.
+                # Resolve the basename to an absolute path and retry. The
+                # throw-away descriptor used to walk ``/proc/self/fd/<n>`` must
+                # be closed before the rename to avoid an FD leak across
+                # repeated updates.
                 cleanup_temp.append(temp_path_str)
-                resolved = (
-                    Path("/proc/self/fd")
-                    / str(os.open(temp_path_str, os.O_RDONLY, dir_fd=directory_descriptor))
-                ).resolve()
+                fd_for_resolve = os.open(
+                    temp_path_str, os.O_RDONLY, dir_fd=directory_descriptor
+                )
+                try:
+                    resolved = (Path("/proc/self/fd") / str(fd_for_resolve)).resolve()
+                finally:
+                    _close_quietly(fd_for_resolve)
                 os.rename(str(resolved), target)
                 temp_path_str = None
     finally:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hermеs cron wrapper for the 08:00 UTC Monday monitor slot.
+# Hermes cron wrapper for the 08:00 UTC Monday monitor slot.
 #
 # Reads env: REPORT_DATE, CLIMATE_SITE_SCOPES (yaml), CLIMATE_STATE_DIR,
 # CLIMATE_SOURCE_DIR, CLIMATE_WIKI_DIR, CLIMATE_JOB_STATUS_DIR, optionally

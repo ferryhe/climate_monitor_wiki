@@ -1,6 +1,6 @@
 # Pipeline Configuration
 
-The repository runs **one** weekly pipeline today: a four-slot Hermеs cron
+The repository runs **one** weekly pipeline today: a four-slot Hermes cron
 sequence anchored to the single production driver path. The numbered
 `stepN_*.py` scripts are kept on disk for test compatibility only
 (`tests/test_step1_pillar_a_parser.py`, `tests/test_pipeline_scripts.py`)
@@ -8,7 +8,7 @@ and are **not** scheduled.
 
 ## Weekly schedule (authoritative)
 
-| # | UTC | Slot        | Hermеs wrapper                            | Entry point invoked                                                  | Result                                                  |
+| # | UTC | Slot        | Hermes wrapper                            | Entry point invoked                                                  | Result                                                  |
 |---|-----|-------------|--------------------------------------------|----------------------------------------------------------------------|---------------------------------------------------------|
 | 1 | 08  | `monitor`   | `scripts/hermes_job_monitor.sh`           | `python scripts/run_climate_monitor.py --production-weekly …`        | Monday report Markdown + sidecar + URL-state commit    |
 | 2 | 09  | `email`     | `scripts/hermes_job_email.sh`             | `python scripts/record_weekly_run.py` (climate_delivery pipeline)    | PDF + manifest + retained email to the four recipients  |

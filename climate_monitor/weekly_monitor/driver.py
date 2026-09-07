@@ -162,7 +162,8 @@ def _emit_authoring_request(
         )
     if stats is None:
         raise ValueError(
-            "v2 authoring path requires stats (checked/succeeded/failed)"
+            "v2 authoring path requires the canonical 6-key stats shape "
+            "(total/updated/unchanged/blocked/failed/unresolved)"
         )
     if report_date is None:
         raise ValueError("v2 authoring request requires an explicit report_date")

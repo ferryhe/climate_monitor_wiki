@@ -165,7 +165,15 @@ def _validate_job(
     if required_code is not None and raw.get("result_code") != required_code:
         raise JobStatusInvalidSnapshotError("invalid result_code")
     if required_code is None and "result_code" in raw:
-        if alias != "registry":
+        # The registry slot permits ``result_code`` only while in
+        # ``not_dispatched``; any other registry state must omit it to keep
+        # the API contract unambiguous.
+        if alias == "registry":
+            if state != "not_dispatched":
+                raise JobStatusInvalidSnapshotError(
+                    "registry result_code is only allowed when state=not_dispatched"
+                )
+        else:
             raise JobStatusInvalidSnapshotError("result_code is not allowed for this state")
 
     normalized = {

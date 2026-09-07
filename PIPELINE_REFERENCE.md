@@ -5,7 +5,7 @@ editable LLM prompts, see [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md).
 
 ## Single production chain (authoritative)
 
-The weekly pipeline is **one** Hermеs-scheduled driver path. The four jobs
+The weekly pipeline is **one** Hermes-scheduled driver path. The four jobs
 below run in order every Monday UTC and each writes a slot in
 `scheduler-status.json` (read by `GET /api/job-status`):
 

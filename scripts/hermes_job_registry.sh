@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hermеs cron wrapper for the 10:30 UTC Monday Registry slot.
+# Hermes cron wrapper for the 10:30 UTC Monday Registry slot.
 #
 # The Registry run only fires after a successful human merge + deploy of
 # the publisher's rolling branch. Until that gate clears, this wrapper

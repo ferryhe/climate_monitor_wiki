@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Hermеs cron wrapper for the 09:00 UTC Monday email/PDF slot.
+# Hermes cron wrapper for the 09:00 UTC Monday email/PDF slot.
 #
 # Reads env: REPORT_DATE, CLIMATE_SOURCE_DIR, CLIMATE_DELIVERY_OUTPUT_DIR,
-# CLIMATE_JOB_STATUS_DIR, CLIMATE_DELIV_RE_SUMMARY_OUT (path).
+# CLIMATE_JOB_STATUS_DIR. Invokes the climate_delivery pipeline in
+# normal production mode (the pipeline owns its own dry-run flags).
 # Writes the scheduler-status snapshot via scripts/scheduler_status.py.
-# Does NOT push, reload the API, or send live email in default mode.
+# Does NOT push, reload the API, or read .env.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

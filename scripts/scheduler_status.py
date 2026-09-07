@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI wrapper around ``climate_monitor.scheduler_status.update_slot``.
 
-The Hermеs cron wrappers in ``scripts/hermes_job_*.sh`` shell out to this
+The Hermes cron wrappers in ``scripts/hermes_job_*.sh`` shell out to this
 script after each runnable step so ``GET /api/job-status`` reflects the
 real scheduler state instead of fabricating a value.
 
