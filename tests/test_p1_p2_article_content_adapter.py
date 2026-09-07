@@ -1,9 +1,8 @@
 """Regression tests for Issue #87 P1 + P2 — live-chain recovery.
 
-P1 (CRITICAL): the default reader ``output_dir`` must live inside the #91
-transaction data root so the upstream ``web_listening.blocks.article_content``
-scope validator accepts it. When ``data_root`` is ``None`` the legacy
-``<tmpdir>/article_content/<uuid>`` layout is preserved.
+P1: the default reader output directory must live under the actual upstream
+runtime data root. Explicit roots must stay within that root; the climate
+source directory and unrelated system temporary directories are not authority.
 
 P2 (CRITICAL): ``build_article_evidence_artifact`` must thread the per-record
 ``output_dirs`` captured by ``collect_evidence`` into its second
@@ -20,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import re
 import sys
-import tempfile
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -129,7 +127,7 @@ class _FakeUpstreamModule:
 
 
 @pytest.fixture()
-def fake_upstream(monkeypatch):
+def fake_upstream(monkeypatch, tmp_path):
     """Inject a fake upstream module via the public reader import point.
 
     The adapter's ``_default_providers`` calls ``_import_public_reader``
@@ -139,6 +137,12 @@ def fake_upstream(monkeypatch):
     """
     module = _FakeUpstreamModule()
     monkeypatch.setattr(adapter, "_import_public_reader", lambda: module)
+    from types import SimpleNamespace
+    module.runtime_data_dir = lambda: tmp_path
+    monkeypatch.setattr(adapter, "_load_site_scopes", lambda: {
+        "fixture": SimpleNamespace(seed_urls=("https://example.org/",))})
+    monkeypatch.setattr(adapter, "_prepare_public_configuration", lambda url, key, output:
+                        (SimpleNamespace(site_key=key, model_dump=lambda **kwargs: {"site_key": key}), output / "scope.yaml"))
     return module
 
 
@@ -169,22 +173,20 @@ def test_p1_data_root_threads_into_default_reader(fake_upstream, tmp_path):
     assert artifact["records"][0]["status"] == "ok"
 
 
-def test_p1_data_root_none_keeps_tmpdir_default(fake_upstream, tmp_path):
-    """P1 backwards-compat: with ``data_root=None``, the per-call
-    ``output_dir`` falls back to ``<tmpdir>/article_content/<uuid>`` so
-    dry-run / test paths are unchanged."""
+def test_p1_data_root_none_uses_upstream_runtime_root(fake_upstream, tmp_path):
+    """Without an explicit root, artifacts use the upstream runtime root."""
     artifact = adapter.build_article_evidence_artifact(
         [{"article_id": "aid-p1-b", "url": "https://example.org/p1b"}],
         report_date="2026-09-07",
     )
     assert len(fake_upstream.calls) == 1
     observed = Path(fake_upstream.calls[0]["output_dir"])
-    tmp_root = Path(tempfile.gettempdir()).resolve()
-    assert observed.parent.parent.resolve() == tmp_root
+    tmp_root = Path(fake_upstream.runtime_data_dir()).resolve()
+    assert observed.parent.parent.parent.resolve() == tmp_root
     assert observed.parent.name == "article_content"
     assert re.fullmatch(r"[0-9a-f]{32}", observed.name)
-    # The leaf directory should NOT be under a tmp_root/.cache subtree.
-    assert ".cache" not in observed.parts
+    # The runtime default uses the same bounded .cache subtree.
+    assert observed.parent.parent.name == ".cache"
     assert artifact["record_count"] == 1
     assert artifact["records"][0]["status"] == "ok"
 
@@ -290,10 +292,8 @@ def test_p2_long_body_ref_only_real_shape(fake_upstream):
     assert artifact["artifact_digest"]
 
 
-def test_p2_no_data_root_falls_back_to_tmpdir(fake_upstream):
-    """P2 backwards-compat: with ``data_root=None``, the multi-record
-    ref-only shape still succeeds and ``output_dirs`` are under the
-    legacy ``<tmpdir>/article_content/<uuid>`` location."""
+def test_p2_no_data_root_uses_upstream_runtime_root(fake_upstream):
+    """Ref-only records still verify under the upstream runtime root."""
     inputs = [
         {"article_id": "aid-legacy-a", "url": "https://example.org/legacy-a"},
         {"article_id": "aid-legacy-b", "url": "https://example.org/legacy-b"},
@@ -303,10 +303,23 @@ def test_p2_no_data_root_falls_back_to_tmpdir(fake_upstream):
     )
     assert artifact["record_count"] == 2
     assert {r["status"] for r in artifact["records"]} == {"ok"}
-    # The per-call output_dirs must be under the legacy tmpdir layout.
-    tmp_root = Path(tempfile.gettempdir()).resolve()
+    # The per-call output_dirs must be under the upstream runtime data root.
+    tmp_root = Path(fake_upstream.runtime_data_dir()).resolve()
     for call in fake_upstream.calls:
         observed = Path(call["output_dir"]).resolve()
-        assert observed.parent.parent.resolve() == tmp_root
+        assert observed.parent.parent.parent.resolve() == tmp_root
         assert observed.parent.name == "article_content"
-        assert ".cache" not in observed.parts
+        assert observed.parent.parent.name == ".cache"
+
+
+def test_authoring_can_retain_verified_ref_only_content(fake_upstream):
+    artifact = adapter.build_article_evidence_artifact(
+        [{"article_id": "body", "url": "https://example.org/long-body"}],
+        report_date="2026-09-07", include_verified_content=True)
+    record = artifact["records"][0]
+    assert record["status"] == "ok"
+    assert record["content"]
+    assert record["record_hash"] == adapter._record_digest(record)
+    assert hashlib.sha256(record["content"].encode()).hexdigest() == record["content_hash"]
+    output = Path(fake_upstream.calls[0]["output_dir"])
+    assert record["content"].encode() == (output / record["content_ref"]).read_bytes()

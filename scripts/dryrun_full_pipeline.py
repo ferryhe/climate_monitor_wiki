@@ -220,29 +220,27 @@ recipients:
     # outcome counts to that shape (1 updated + 1 failed).
     cli_outcome = {
         'schema_version': 'acquisition-batch-result.v2',
-        'run': {'run_id': 'dryrun-full-pipeline', 'source_id': 'iais-batch',
-                'finished_at': day + 'T08:05:00Z'},
+        'run_id': 'scope-run-2', 'authoritative_status': 'completed',
+        'status': 'partial', 'full_success': False,
         'counts': {'requested': 2, 'updated': 1, 'unchanged': 0,
-                   'blocked': 0, 'failed': 1, 'unresolved': 0},
-        'records': [{
-            'final_url': r['url'], 'requested_url': r['url'],
-            'disposition': 'updated', 'title': r['title'],
-            'summary': r['summary'], 'summary_basis': 'page',
-            'title_basis': 'upstream_artifact', 'display_pillar': 'A',
-            'origins': [{'pillar': 'A', 'source': 'web', 'url': r['url']}],
-        } for r in records[:1]] + [{
-            'final_url': r['url'], 'requested_url': r['url'],
-            'disposition': 'failed', 'error_code': 'dryrun_no_content',
-            'acquisition_unresolved': True, 'title': r['title'],
-            'summary': r['summary'], 'summary_basis': 'page',
-            'title_basis': 'upstream_artifact', 'display_pillar': 'A',
-            'origins': [{'pillar': 'A', 'source': 'web', 'url': r['url']}],
-        } for r in records[1:]],
+                   'blocked': 0, 'failed': 1, 'unresolved': 0,
+                   'valid_snapshots': 1, 'failed_evidence': 1, 'succeeded': 1},
+        'summary': {'checked': 2, 'succeeded': 1, 'failed': 1},
+        'dispositions': [
+            {'task_id': 'iais-batch', 'site_key': 'iais-batch',
+             'requested_url': records[0]['url'], 'disposition': 'updated',
+             'reason': 'scope.changed', 'artifact_id': 'manifest-iais-batch-2'},
+            {'task_id': 'other-source', 'site_key': 'other-source',
+             'requested_url': records[1]['url'], 'disposition': 'failed',
+             'reason': 'scope.run_failed'},
+        ],
     }
     cli_manifest = {
         'schema_version': 'web-listening-manifest.v1',
-        'source': {'source_id': 'iais-batch', 'site_name': 'Synthetic fixture'},
-        'run': {'run_id': 'dryrun-full-pipeline',
+        'manifest_id': 'manifest-iais-batch-2',
+        'source': {'source_id': 'iais-batch', 'site_name': 'Synthetic fixture',
+                   'tree_seed_url': records[0]['url']},
+        'run': {'run_id': 'run-2', 'parent_run_id': '2',
                 'started_at': day + 'T08:00:00Z',
                 'finished_at': day + 'T08:05:00Z',
                 'outcome_source': 'climate-monitor'},
@@ -270,6 +268,8 @@ recipients:
     cli_manifest_path.write_text(json.dumps(cli_manifest))
     cli_pillar_b_path.write_text(json.dumps(records))
     cli_env = {**os.environ, 'PYTHONPATH': str(ROOT), 'REPORT_DATE': day,
+               'HERMES_INFERENCE_MODEL': 'fixture-model',
+               'HERMES_INFERENCE_PROVIDER': 'fixture-provider',
                'CLIMATE_STATE_DIR': str(cli_state),
                'CLIMATE_SOURCE_DIR': str(cli_sources),
                'CLIMATE_WIKI_DIR': str(cli_wiki),
@@ -278,6 +278,7 @@ recipients:
                'CLIMATE_SITE_SCOPES': str(ROOT / 'monitoring' / 'site_scopes.yaml')}
     cli = [sys.executable, str(ROOT / 'scripts' / 'run_climate_monitor.py')]
     prep = subprocess.run(cli + ['--production-weekly', '--authoring-mode', 'prepare',
+        '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider',
         '--report-date', day,
         '--acquisition-batch', str(cli_outcome_path),
         '--web-listening-manifest', str(cli_manifest_path),
@@ -316,6 +317,7 @@ recipients:
     cli_response_path = staging_dir / 'authoring_response.json'
     cli_response_path.write_text(json.dumps(response_for_cli))
     fin = subprocess.run(cli + ['--production-weekly', '--authoring-mode', 'finalize',
+        '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider',
         '--report-date', day,
         '--staging-dir', str(staging_dir),
         '--authoring-response', str(cli_response_path),

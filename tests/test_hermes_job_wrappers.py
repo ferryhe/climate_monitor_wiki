@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def invoke(tmp_path, slot, *args, **overrides):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('CLIMATE_', 'REPORT_', 'ARTICLE_', 'STATS_', 'AUTHORING_'))}
-    env.update(REPO=str(ROOT), PYTHON=sys.executable, REPORT_DATE='2026-09-07')
+    env.update(REPO=str(ROOT), PYTHON=sys.executable, REPORT_DATE='2026-09-07',
+               HERMES_INFERENCE_MODEL='fixture-model', HERMES_INFERENCE_PROVIDER='fixture-provider')
     for key in ('STATE_DIR', 'SOURCE_DIR', 'WIKI_DIR', 'JOB_STATUS_DIR', 'DELIVERY_OUTPUT_DIR', 'DELIVERY_STATE_DIR', 'RUN_LEDGER_DIR', 'REPORTS_DIR'):
         path = tmp_path / key.lower()
         path.mkdir(exist_ok=True)

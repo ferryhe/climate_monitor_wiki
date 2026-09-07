@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import stat
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,10 +21,6 @@ from urllib.parse import urlparse
 import yaml
 
 logger = logging.getLogger(__name__)
-
-PROFILES_ROOT = Path(__file__).resolve().parent.parent / "monitoring" / "article_content_profiles"
-GENERIC_PROFILE_NAME = "_generic"
-
 
 ARTICLE_EVIDENCE_SCHEMA_VERSION = "article-evidence.v1"
 ARTICLE_EVIDENCE_DIGEST_VERSION = "article-evidence-digest.v1"
@@ -290,20 +285,8 @@ def resolve_content_ref(content_ref, content_hash, *, output_dir=None) -> bytes:
 # Default public provider (AC-1)
 # ---------------------------------------------------------------------------
 
-# Per-source profile fixture resolver: maps a URL host to the source_key
-# profile shipped under ``monitoring/article_content_profiles/<site_key>/``.
-# Built once per call from the loaded climate ``monitoring/site_scopes.yaml``.
-_HOST_TO_PROFILE: dict[str, Path] | None = None
-
-
 def _load_site_scopes() -> dict[str, Any]:
-    """Return the loaded climate ``SiteScope`` list (one entry per source_key).
-
-    The file lives at ``monitoring/site_scopes.yaml`` and uses the climate
-    schema, not the upstream ``MonitorScopePlan`` schema; the per-source
-    fixture list here is the only place that maps a URL host to a profile
-    fixture under ``monitoring/article_content_profiles/<source_key>/``.
-    """
+    """Load the configured source identities used to select reviewed Site Skills."""
 
     from .config import load_site_scopes  # local import to avoid cycle
 
@@ -311,234 +294,112 @@ def _load_site_scopes() -> dict[str, Any]:
     return {scope.source_key: scope for scope in load_site_scopes(scopes_path)}
 
 
-def _host_to_profile_map() -> dict[str, Path]:
-    """Return ``{host_lower -> profile_path}`` built from the per-source fixtures."""
+def _prepare_public_configuration(url: str, site_key: str, output_dir: Path):
+    """Resolve reviewed upstream configuration and compile its exact bindings.
 
-    global _HOST_TO_PROFILE
-    if _HOST_TO_PROFILE is not None:
-        return _HOST_TO_PROFILE
-    mapping: dict[str, Path] = {}
-    if PROFILES_ROOT.exists():
-        for profile_path in PROFILES_ROOT.glob("*/profile.yaml"):
-            key = profile_path.parent.name
-            if key == GENERIC_PROFILE_NAME:
-                continue
-            try:
-                payload = yaml.safe_load(profile_path.read_text())
-            except yaml.YAMLError:
-                continue
-            if not isinstance(payload, Mapping):
-                continue
-            domains = (
-                ((payload.get("safety") or {}).get("allowed_domains") or [])
-                if isinstance(payload.get("safety"), Mapping)
-                else []
-            )
-            for host in domains:
-                if isinstance(host, str) and host:
-                    mapping[host.strip().lower()] = profile_path
-    _HOST_TO_PROFILE = mapping
-    return mapping
-
-
-def _resolve_profile_path(url: str) -> Path:
-    """Pick the per-source profile YAML for a URL; fall back to the Pillar B
-    generic profile when no source_key matches the host. The generic profile
-    uses ``allowed_domains=["example.org"]`` and is the narrowest defensible
-    default authority — never ``*``."""
-
-    host = (urlparse(url).netloc or "").strip().lower()
-    mapping = _host_to_profile_map()
-    if host and host in mapping:
-        return mapping[host]
-    return PROFILES_ROOT / GENERIC_PROFILE_NAME / "profile.yaml"
-
-
-def _build_scope_yaml(
-    url: str,
-    site_scope: Mapping[str, Any] | None,
-    output_dir: Path,
-    *,
-    site_key: str | None = None,
-) -> Path:
-    """Materialize a per-call ``MonitorScopePlan`` YAML at ``<output_dir>/scope.yaml``.
-
-    The upstream ``fetch_article_content`` requires ``scope.seed_url == url``,
-    so each call writes a fresh scope file with the requested URL as
-    ``seed_url``. ``allowed_page_prefixes`` are derived from the climate
-    ``SiteScope.include_patterns`` for the same source_key.
+    Public registry validation and plan compilation own authority. No generated
+    profile or fallback reader can enlarge the reviewed Site Skill policy.
     """
+    from web_listening.site_skill_registry import (
+        default_registry_root, list_site_skills, resolve_site_skill_contract,
+    )
+    from web_listening.blocks.acquisition_profile import AcquisitionProfile
+    from web_listening.blocks.monitor_scope_planner import (
+        MonitorScopePlan, compute_semantic_scope_fingerprint, render_yaml_text,
+    )
+    from web_listening.blocks.acquisition_execution_plan import compile_acquisition_execution_plan
+    from web_listening.executors.registry import default_preview_registry
 
-    allowed_prefixes: list[str] = []
-    seed_url = url
-    homepage_url = url
-    resolved_site_key = site_key or "_generic"
-    if isinstance(site_scope, Mapping):
-        resolved_site_key = str(site_scope.get("source_key") or resolved_site_key)
-        seeds = list(site_scope.get("seed_urls") or [])
-        if seeds:
-            seed_url = seeds[0]
-            homepage_url = seeds[0]
-        for pattern in site_scope.get("include_patterns") or ():
-            normalized = str(pattern).strip()
-            if normalized.startswith("/"):
-                allowed_prefixes.append(normalized.rstrip("/") or "/")
-    payload: dict[str, Any] = {
-        "scope_fingerprint": "",
-        "site_key": resolved_site_key,
-        "display_name": resolved_site_key,
-        "catalog": "climate-monitor-wiki",
-        "generated_at": "2026-05-12T12:00:00Z",
-        "selection_review_status": "approved",
-        "selection_mode": "manual",
-        "business_goal": "climate-monitor-default",
-        "seed_url": url,
-        "homepage_url": homepage_url,
-        "fetch_mode": "http",
-        "fetch_config_json": {},
-        "tree_strategy": "selected_scope",
-        "tree_budget_profile": "selected_scope_default",
-        "file_scope_mode": "site_root",
-        "allowed_page_prefixes": allowed_prefixes,
-        "allowed_file_prefixes": [],
-        "selected_focus_prefixes": [],
-        "excluded_page_prefixes": [],
-        "deferred_page_prefixes": [],
-        "excluded_categories": [],
-        "max_depth": 2,
-        "max_pages": 8,
-        "max_files": 8,
-        "based_on": {},
-        "selection_summary": {},
-        "notes": ["Climate monitor default scope plan; seed_url set per call."],
+    matches = [item for item in list_site_skills()
+               if item["site_key"] == site_key and item["valid"]]
+    if len(matches) != 1:
+        raise ValueError("no unambiguous reviewed Site Skill")
+    selected = matches[0]
+    skill = resolve_site_skill_contract(
+        site_key=site_key, version=selected["version"],
+        package_sha256=selected["package_sha256"])
+    package = default_registry_root() / site_key / selected["version"]
+    # The reviewed recipe names its own profile; do not substitute climate's
+    # historical ungoverned profile fixtures.
+    recipes = [recipe for recipe in skill.manifest.recipes
+               if recipe.executor_id == "web_http"]
+    if len(recipes) != 1:
+        raise ValueError("no unambiguous reviewed article recipe")
+    recipe = recipes[0]
+    profile_payload = yaml.safe_load((package / recipe.profile_ref).read_text(encoding="utf-8"))
+    # Catalog packages carry registry metadata alongside AcquisitionProfile.
+    # Match upstream test_catalog_site_skill_workflow's public model preparation;
+    # safety.allowed_domains and all runtime policy fields remain validated.
+    profile_payload.pop("allowed_domains", None)
+    profile = AcquisitionProfile.model_validate(profile_payload, strict=True)
+    registry = default_preview_registry()
+    from datetime import datetime, timezone
+    bindings = {
+        "acquisition_profile_id": profile.profile_id,
+        "site_skill_version": skill.manifest.version,
+        "site_skill_package_sha256": skill.package_sha256,
+        "site_skill_recipe_id": recipe.recipe_id,
+        "site_skill_script_sha256": skill.script_sha256[recipe.entrypoint],
+        "executor_version": registry.metadata[recipe.executor_id].version,
     }
+    scope = MonitorScopePlan(
+        scope_fingerprint="", site_key=site_key, display_name=site_key,
+        catalog="climate-monitor-wiki", generated_at=datetime.now(timezone.utc).isoformat(),
+        selection_review_status="approved", selection_mode="manual",
+        business_goal="Read the selected climate article", seed_url=url, homepage_url=url,
+        fetch_mode="http", fetch_config_json={}, tree_strategy="selected_scope",
+        tree_budget_profile="selected_scope_default", file_scope_mode="site_root",
+        allowed_page_prefixes=[urlparse(url).path or "/"], allowed_file_prefixes=[],
+        max_depth=1, max_pages=1, max_files=1, based_on=bindings,
+    )
     scope_path = output_dir / "scope.yaml"
-    scope_path.write_text(yaml.safe_dump(payload, sort_keys=False))
-    return scope_path
+    scope.scope_fingerprint = compute_semantic_scope_fingerprint(scope)
+    compile_acquisition_execution_plan(scope, profile, skill, registry)
+    scope_path.write_text(render_yaml_text(scope), encoding="utf-8")
+    return profile, scope_path
 
 
-def _build_per_source_provider_callable(
-    *, module: Any, profile_path: Path, url: str, site_key: str, output_dir: Path
-) -> Callable[..., Any]:
-    """Return the ``fetch(article_id, url)`` callable that wires the public
-    contract with profile, scope_path, and an isolated output_dir.
-
-    The bound ``output_dir`` is what ``resolve_content_ref`` later reads
-    when verifying ``content_ref`` on disk.
-    """
-
-    def public_reader(article_id: str, target_url: str) -> Any:
-        # The default path always passes a profile (loaded from disk) plus
-        # the materialized scope plan; the adapter stays a per-call argument
-        # assembler rather than re-implementing the upstream public contract.
-        profile_payload = yaml.safe_load(profile_path.read_text())
-        return module.fetch_article_content(
-            target_url,
-            profile=profile_payload,
-            site_key=site_key,
-            scope_path=str(output_dir / "scope.yaml"),
-            output_dir=str(output_dir),
-            goal_preset="page_text",
-        )
-
-    # The adapter reads these attributes to thread output_dir into the
-    # portable ``resolve_content_ref``.
-    public_reader.output_dir = str(output_dir)  # type: ignore[attr-defined]
-    public_reader.profile_path = str(profile_path)  # type: ignore[attr-defined]
-    public_reader.site_key = site_key  # type: ignore[attr-defined]
-    return public_reader
-
-
-def _default_providers(*, data_root: str | Path | None = None) -> tuple[Callable[..., Any], ...]:
-    """Default public path that wires the upstream contract with profile + scope.
-
-    Returns a 1-tuple containing a callable that, on each invocation, picks
-    a per-source profile fixture and a per-call ``MonitorScopePlan`` YAML,
-    builds an isolated per-call output directory, and calls
-    ``module.fetch_article_content(url, profile=..., site_key=...,
-    scope_path=..., output_dir=..., goal_preset="page_text")``.
-
-    Per-call ``output_dir`` resolves to ``<data_root>/.cache/article_content/<uuid>``
-    when ``data_root`` is provided (P1: keeps evidence artifacts inside the
-    resolved data root so the staging transaction can roll them back as part
-    of the #91 atomic write). When ``data_root`` is ``None`` (legacy callers,
-    dryruns, and existing tests), the per-call directory stays under
-    ``tempfile.gettempdir()/article_content/<uuid>``.
-
-    The returned callable exposes ``.output_dir`` so that
-    ``resolve_content_ref`` can read the bytes from disk when the upstream
-    ToolResult returns ``data.content_ref`` + ``data.sha256``.
-    """
-
+def _default_providers(*, data_root: str | Path | None = None, site_key: str | None = None) -> tuple[Callable[..., Any], ...]:
+    """Use upstream configuration, its runtime data root, and the public reader."""
     module = _import_public_reader()
     if module is None or not callable(getattr(module, "fetch_article_content", None)):
         return ()
     site_scopes = _load_site_scopes()
-    # Resolve the per-call parent directory once per provider instance so
-    # concurrent calls inside the same run share one ``.cache/article_content``
-    # bucket but each call still gets an isolated ``<uuid>`` leaf (P1).
-    if data_root is not None:
-        cache_root = Path(data_root) / ".cache" / "article_content"
-    else:
-        cache_root = Path(tempfile.gettempdir()) / "article_content"
+    runtime_root = Path(module.runtime_data_dir()).resolve()
+    root = Path(data_root).resolve() if data_root is not None else runtime_root
+    cache_root = root / ".cache" / "article_content"
 
     def public_reader(article_id: str, url: str) -> Any:
-        host = (urlparse(url).netloc or "").strip().lower()
-        # Match the per-source profile by URL host; fall back to the
-        # Pillar B generic when no source_key matches.
-        matched_key: str | None = None
-        site_scope: Mapping[str, Any] | None = None
-        for key, scope in site_scopes.items():
-            seed_urls = list(scope.seed_urls or ())
-            hosts = {(urlparse(seed).netloc or "").strip().lower() for seed in seed_urls}
-            if host and host in hosts:
-                matched_key = key
-                site_scope = scope
-                break
-        if matched_key is None:
-            matched_key = GENERIC_PROFILE_NAME
-            site_scope = None
-        profile_path = _resolve_profile_path(url)
-        if not profile_path.exists():
-            return _unavailable_record(
-                article_id=article_id, url=url, failure_reason="no_reviewed_profile"
-            ).to_dict()
-        # Read the profile payload once per call so the upstream site_key
-        # matches the profile's reviewed site_key (upstream rejects mismatches).
-        profile_payload = yaml.safe_load(profile_path.read_text())
-        profile_site_key = (
-            profile_payload.get("site_key")
-            if isinstance(profile_payload, Mapping)
-            else matched_key
-        )
-        # Isolated output_dir per call so concurrent calls never share artifacts.
-        output_dir = cache_root / uuid.uuid4().hex
-        output_dir.mkdir(parents=True, exist_ok=True)
-        _build_scope_yaml(url, site_scope, output_dir, site_key=str(profile_site_key or matched_key))
-        # Surface the per-call output_dir BEFORE invoking upstream so
-        # ``collect_evidence`` can read the same path used to write
-        # ``content_ref`` when verifying bytes via ``resolve_content_ref``.
-        public_reader.output_dir = str(output_dir)  # type: ignore[attr-defined]
-        public_reader.site_key = profile_site_key or matched_key  # type: ignore[attr-defined]
         try:
+            if not root.is_relative_to(runtime_root):
+                raise ValueError("data_root must be inside the upstream runtime data root")
+            if site_key is not None:
+                if site_key not in site_scopes:
+                    raise ValueError("no_reviewed_scope: unknown source identity")
+                selected_site = site_key
+            else:
+                host = (urlparse(url).hostname or "").lower()
+                matches = [key for key, scope in site_scopes.items()
+                           if host in {(urlparse(seed).hostname or "").lower()
+                                       for seed in scope.seed_urls or ()}]
+                if len(matches) != 1:
+                    raise ValueError("no_reviewed_scope: no unambiguous matching source")
+                selected_site = matches[0]
+            output_dir = cache_root / uuid.uuid4().hex
+            output_dir.mkdir(parents=True, exist_ok=True)
+            profile, scope_path = _prepare_public_configuration(url, selected_site, output_dir)
+            public_reader.output_dir = str(output_dir)
+            public_reader.site_key = profile.site_key
             return module.fetch_article_content(
-                url,
-                profile=profile_payload,
-                site_key=profile_site_key,
-                scope_path=str(output_dir / "scope.yaml"),
-                output_dir=str(output_dir),
-                goal_preset="page_text",
-            )
-        except Exception as exc:  # upstream failure → honest failed record
+                url, profile=profile.model_dump(mode="json"), site_key=profile.site_key,
+                scope_path=str(scope_path), output_dir=str(output_dir), goal_preset="page_text")
+        except Exception as exc:
             return _unavailable_record(
                 article_id=article_id, url=url,
-                failure_reason=f"{type(exc).__name__}: {exc}",
-            ).to_dict()
+                failure_reason=f"{type(exc).__name__}: {exc}").to_dict()
 
-    # Surface the output_dir so resolve_content_ref can read from disk.
-    public_reader.output_dir = None  # type: ignore[attr-defined]
-    public_reader.profile_path = None  # type: ignore[attr-defined]
-    public_reader.site_key = None  # type: ignore[attr-defined]
+    public_reader.output_dir = None
+    public_reader.site_key = None
     return (public_reader,)
 
 
@@ -793,14 +654,16 @@ def collect_evidence(
     # anchored inside ``<data_root>/.cache/article_content/`` (P1). The
     # default providers here already build that anchor — we forward the
     # kwarg so this function stays the single source of truth.
-    providers = providers or _default_providers(data_root=data_root)
+    explicit_providers = providers
     resolver = getattr(providers[0], "content_resolver", None) if providers else None
     records = []
     output_dirs: dict[str, str] = {}
     for article in articles:
+        providers = explicit_providers or _default_providers(
+            data_root=data_root, site_key=article.get("site_key") or article.get("source_id"))
         # The default public reader updates ``provider.output_dir`` to the
         # per-call ``<data_root>/.cache/article_content/<uuid>`` (or the
-        # legacy ``/tmp/article_content/<uuid>`` when ``data_root`` is None)
+        # upstream runtime data root when ``data_root`` is None)
         # directory before invoking upstream. Snapshot it AFTER the call so
         # verification reads from the exact same on-disk path that produced
         # ``content_ref``.
@@ -810,6 +673,8 @@ def collect_evidence(
             getattr(providers[0], "output_dir", None) if providers else None
         )
         if isinstance(record, dict):
+            record.update({key: article[key] for key in
+                           ("title", "title_basis", "origins", "display_pillar") if key in article})
             record.setdefault("extra", {}).update({key: article[key] for key in
                 ("source_item_id", "source_name", "source_id", "run_id", "item_status") if key in article})
         if per_record_output_dir and isinstance(record, dict) and record.get("status") == "ok":
@@ -888,6 +753,7 @@ def build_article_evidence_artifact(
     report_date: str,
     generated_at: str | None = None,
     data_root: str | Path | None = None,
+    include_verified_content: bool = False,
 ) -> dict[str, Any]:
     """Build (in memory) the versioned article-evidence.v1 artifact.
 
@@ -912,6 +778,21 @@ def build_article_evidence_artifact(
         content_resolver=resolver,
         output_dirs=output_dirs or None,
     )
+    if include_verified_content:
+        for record in records:
+            if record.get("status") != "ok":
+                continue
+            output_dir = output_dirs.get(record["article_id"])
+            if output_dir is not None:
+                body = resolve_content_ref(record["content_ref"], record["content_hash"],
+                                           output_dir=output_dir)
+                record["content"] = body.decode("utf-8")
+            elif resolver is not None:
+                body = resolver(record["content_ref"], record["content_hash"])
+                if hashlib.sha256(body).hexdigest() != record["content_hash"]:
+                    raise ArticleContentAdapterError("content_ref_hash_mismatch")
+                record["content"] = body.decode("utf-8")
+            record["record_hash"] = _record_digest(record)
     artifact: dict[str, Any] = {
         "schema_version": ARTICLE_EVIDENCE_SCHEMA_VERSION,
         "report_date": report_date,

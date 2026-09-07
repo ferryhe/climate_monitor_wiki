@@ -11,11 +11,8 @@ Fix B: ``_run_prepare`` must write ``candidate_item_snapshot`` into
 Fix C: ``_run_finalize`` must read the report date from the bundle,
        not from the operator's CLI ``--report-date``.
 
-The companion finding (``observed["failed"]`` is the sum of
-``failed`` and ``acquisition_unresolved``) is intentional per Issue
-#87 AC-3 and is exercised end-to-end through the existing AC-7 test;
-that code path now carries an explanatory comment in
-``run_climate_monitor.py``.
+Counts are validated against upstream source dispositions. Discovered
+articles do not have to occur one-for-one with those dispositions.
 """
 from __future__ import annotations
 
@@ -91,7 +88,8 @@ def test_derive_stats_does_not_double_count_unresolved():
         "failed": 1,
         "unresolved": 1,
     }
-    outcome = {"counts": counts, "records": []}
+    outcome = {"counts": counts, "dispositions": [
+        {"disposition": name} for name in ("updated", "failed", "unresolved")]}
     records = _records_for_outcome(
         counts, dispositions=["updated", "failed", "failed"],
     )
@@ -125,18 +123,8 @@ def test_derive_stats_full_dry_run_fixture_passes():
         manifest = json.loads(
             (fixture_dir / "web-listening-manifest.v1.json").read_text()
         )
-        # Build records consistent with the outcome's dispositions.
-        outcome_records = outcome.get("records") or []
-        disposition_by_url = {
-            r.get("final_url"): r.get("disposition") for r in outcome_records
-        }
-        records = []
-        for item in manifest.get("discovered_items") or []:
-            url = item.get("final_url")
-            records.append({
-                **item,
-                "disposition": disposition_by_url.get(url),
-            })
+        from scripts.run_climate_monitor import _collect_same_run_records, _attach_outcome_disposition
+        records = _attach_outcome_disposition(_collect_same_run_records(outcome, manifest), outcome)
         # Must not raise.
         stats = _derive_stats(records, outcome)
         assert stats["total"] == 57
@@ -259,6 +247,7 @@ def _run_prepare_only(workspace: Path, env: dict, fixture: Path) -> Path:
     env["CLIMATE_PILLAR_B_ARTIFACT"] = str(fixture / "pillar-b.json")
     result = _call(CLI + [
         "--production-weekly", "--authoring-mode", "prepare",
+        "--article-evidence-loopback", "scripts.hermes_job:dry_run_unavailable_provider",
         "--report-date", REPORT_DATE,
         "--acquisition-batch", env["CLIMATE_OUTCOME_ARTIFACT"],
         "--web-listening-manifest", env["CLIMATE_MANIFEST_ARTIFACT"],

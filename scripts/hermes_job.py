@@ -117,23 +117,6 @@ def dispatch(command, slot, day, dry_run):
         except Exception:
             return 2
         return 0 if dry_run else run(command)
-    if slot == 'monitor':
-        # Issue #87 AC-1: the production monitor slot runs the same-run
-        # chain in two phases. ``prepare`` materialises the staging
-        # bundle + v2 authoring request from #67 outcome + manifest +
-        # Pillar B; ``finalize`` consumes that bundle + exactly one
-        # authoring response and commits the #91 transaction. The
-        # command list carries both phases; this dispatcher threads
-        # them in order. Production expects the LLM response to be at
-        # ``CLIMATE_AUTHORING_RESPONSE`` between the two phases
-        # (already produced by the Hermes 08:00 agent before this
-        # wrapper is invoked).
-        rc = 0
-        for phase in command:
-            phase_rc = run(phase)
-            if phase_rc:
-                return phase_rc
-        return 0
     return run(command)
 
 
@@ -156,6 +139,11 @@ def _monitor_prepare_cli_command(day: str, *, staging_dir: Path) -> list[str]:
     outcome_path = path_env("CLIMATE_OUTCOME_ARTIFACT")
     manifest_path = path_env("CLIMATE_MANIFEST_ARTIFACT")
     pillar_b_path = path_env("CLIMATE_PILLAR_B_ARTIFACT")
+    from scripts.run_climate_monitor import _read_prepare_inputs
+    try:
+        _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path)
+    except (SystemExit, ValueError, KeyError, TypeError) as exc:
+        raise Blocked("invalid_acquisition_contract") from exc
     command = [
         sys.executable,
         str(ROOT / "scripts/run_climate_monitor.py"),
@@ -166,7 +154,6 @@ def _monitor_prepare_cli_command(day: str, *, staging_dir: Path) -> list[str]:
         "--web-listening-manifest", str(manifest_path),
         "--pillar-b-artifact", str(pillar_b_path),
         "--staging-dir", str(staging_dir),
-        "--article-evidence-loopback", "scripts.hermes_job:dry_run_unavailable_provider",
     ]
     for flag, env, directory in [
         ("state-dir", "CLIMATE_STATE_DIR", True),
@@ -201,7 +188,7 @@ def _monitor_cli_command(
     Pillar B and the finalize phase consumes only the prepared bundle
     plus exactly one authoring response.
     """
-    if mode not in {"prepare", "finalize"}:
+    if mode not in {"prepare", "finalize", "run"}:
         raise Blocked(f"unknown monitor authoring mode: {mode!r}")
     outcome_path = path_env("CLIMATE_OUTCOME_ARTIFACT")
     manifest_path = path_env("CLIMATE_MANIFEST_ARTIFACT")
@@ -216,8 +203,14 @@ def _monitor_cli_command(
         "--web-listening-manifest", str(manifest_path),
         "--pillar-b-artifact", str(pillar_b_path),
         "--staging-dir", str(staging_dir),
-        "--article-evidence-loopback", "scripts.hermes_job:dry_run_unavailable_provider",
     ]
+    if mode in {"run", "finalize"}:
+        from scripts.run_climate_monitor import _resolve_authoring_identity
+        try:
+            model, provider = _resolve_authoring_identity()
+        except SystemExit as exc:
+            raise Blocked("missing_authoring_model_provider") from exc
+        command += ["--model", model, "--model-provider", provider]
     if mode == "finalize":
         if response is None:
             response = path_env("CLIMATE_AUTHORING_RESPONSE")
@@ -235,36 +228,9 @@ def _monitor_cli_command(
 
 
 def monitor_command(day, *, dry_run):
-    """Build the two-phase monitor command sequence for the production
-    monitor slot.
-
-    The Hermes 08:00 monitor job invokes this command once. ``prepare``
-    materialises the staging bundle + v2 authoring request from the
-    public #67 outcome + manifest + Pillar B inputs. ``finalize``
-    consumes that bundle plus exactly one authoring response (already
-    produced by the Hermes agent at ``CLIMATE_AUTHORING_RESPONSE``) and
-    commits the #91 transaction.
-
-    The wrapper never assembles a triple of AUTHORING_RESPONSE /
-    ARTICLE_EVIDENCE / CLIMATE_STATS_PATH inputs by hand; it only
-    resolves the three public upstream artifacts plus the staging
-    directory and delegates to the same CLI in both phases.
-    Production (non-dry-run) execution is permitted once the public
-    artifacts and the prepared bundle plus the LLM-produced response
-    exist; the wrapper itself never invokes a synthetic fixture or
-    hand-fills stats.
-    """
+    """Delegate one complete authoring sequence to the production CLI."""
     staging_dir = path_env("CLIMATE_STAGING_DIR", directory=True, exists=False)
-    prepare_command = _monitor_cli_command(
-        day, mode="prepare", staging_dir=staging_dir, dry_run=dry_run
-    )
-    finalize_command = _monitor_cli_command(
-        day,
-        mode="finalize",
-        staging_dir=staging_dir,
-        dry_run=dry_run,
-    )
-    return [prepare_command, finalize_command]
+    return _monitor_cli_command(day, mode="run", staging_dir=staging_dir, dry_run=dry_run)
 
 
 def finalize_command(day, *, dry_run):
@@ -375,16 +341,13 @@ def main(argv=None):
                 if os.environ.get(key) and not Path(os.environ[key]).resolve().is_relative_to(workspace):
                     raise Blocked('dry_run_path_outside_workspace')
         if args.slot == "monitor":
-            # Preflight validates only the prepare phase. The full
-            # monitor_command would also build the finalize command,
-            # which needs the LLM-produced authoring response that is
-            # not yet on disk when preflight runs.
+            # Read-only preflight consumes the same upstream contract as
+            # prepare. The production command owns the later authoring turn.
             staging_for_preflight = path_env(
                 "CLIMATE_STAGING_DIR", directory=True, exists=False
             )
-            command = [_monitor_prepare_cli_command(
-                day, staging_dir=staging_for_preflight
-            )]
+            _monitor_prepare_cli_command(day, staging_dir=staging_for_preflight)
+            command = monitor_command(day, dry_run=dry_run)
         else:
             command = globals()[args.slot + "_command"](day, dry_run=dry_run)
         if args.preflight:

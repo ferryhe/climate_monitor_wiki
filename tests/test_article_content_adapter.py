@@ -75,13 +75,13 @@ class _FakeProvider:
 def ensure_unavailable(monkeypatch):
     """Force the dependency probe to report ``"unavailable"``.
 
-    The current production state has no installed ``web_listening`` package,
-    so this is the real-world default. We make it explicit anyway.
+    Isolate both import boundaries, regardless of the installed package.
     """
 
     import climate_monitor.article_content_adapter as adapter
 
     monkeypatch.setattr(adapter, "_import_web_listening_contract", lambda: None)
+    monkeypatch.setattr(adapter, "_import_public_reader", lambda: None)
 
 
 @pytest.fixture()
@@ -121,6 +121,7 @@ def force_partial(monkeypatch):
         return article_content
 
     monkeypatch.setattr(adapter, "_import_web_listening_contract", _importer)
+    monkeypatch.setattr(adapter, "_import_public_reader", lambda: None)
     return article_content
 
 
@@ -837,7 +838,7 @@ def test_artifact_digest_survives_reserialization(tmp_path):
     assert hashlib.sha256((adapter.ARTICLE_EVIDENCE_DIGEST_VERSION + "\n" + hashes).encode()).hexdigest() == artifact["artifact_digest"]
 
 
-def test_default_public_provider_passes_profile_scope_output_dir_kwargs(monkeypatch):
+def test_default_public_provider_passes_profile_scope_output_dir_kwargs(monkeypatch, tmp_path):
     """AC-1: the default public provider must invoke upstream with the full
     kwargs contract — profile + site_key + scope_path + output_dir +
     goal_preset. The old url-only path is removed.
@@ -855,7 +856,12 @@ def test_default_public_provider_passes_profile_scope_output_dir_kwargs(monkeypa
         captured.update(kwargs)
         return ToolResult()
 
-    module = SimpleNamespace(fetch_article_content=upstream)
+    module = SimpleNamespace(fetch_article_content=upstream, runtime_data_dir=lambda: tmp_path)
+    monkeypatch.setattr(adapter, "_load_site_scopes", lambda: {
+        "generic": SimpleNamespace(seed_urls=("https://example.org/",))})
+    profile = SimpleNamespace(site_key="generic", model_dump=lambda **kwargs: {"site_key": "generic"})
+    monkeypatch.setattr(adapter, "_prepare_public_configuration", lambda url, key, output:
+                        (profile, output / "scope.yaml"))
     original = adapter.importlib.import_module
     monkeypatch.setattr(adapter.importlib, "import_module", lambda name:
         module if name == "web_listening.blocks.article_content" else original(name))
