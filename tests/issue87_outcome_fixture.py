@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 
 FIXTURES = tuple(Path(__file__).with_name('fixtures').joinpath('issue87', name) for name in (
-    'acquisition_batch_result.v2.57.json', 'acquisition_batch_result.v2.2.json'))
+    'acquisition_batch_result.v2.57.json', 'acquisition_batch_result.v2.2.json',
+    'wri_repro/acquisition-batch-result.v2.json'))
 
 
 def _unique_object(pairs):

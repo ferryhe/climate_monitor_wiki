@@ -371,7 +371,7 @@ def test_missing_authoring_identity_stops_before_prepare(tmp_path, monkeypatch):
             staging_dir=str(tmp_path), model='', model_provider=''), None)
 
 
-@pytest.mark.parametrize('fixture_index', [0, 1])
+@pytest.mark.parametrize('fixture_index', [0, 1, 2])
 def test_dependency_free_saved_fixtures_match_public_model(fixture_index):
     from issue87_outcome_fixture import FIXTURES, validate_fixture
     contract = pytest.importorskip('web_listening.contracts.acquisition_batch')
@@ -380,10 +380,11 @@ def test_dependency_free_saved_fixtures_match_public_model(fixture_index):
         raw).model_dump(mode='json', exclude_none=True)
 
 
+@pytest.mark.parametrize('fixture_index', [0, 2])
 @pytest.mark.parametrize('mutation', ['missing_summary', 'wrong_count', 'extra', 'boolean_count'])
-def test_dependency_free_fixture_rejects_changed_payload(mutation):
+def test_dependency_free_fixture_rejects_changed_payload(mutation, fixture_index):
     from issue87_outcome_fixture import FIXTURES, validate_fixture
-    payload = json.loads(FIXTURES[0].read_text())
+    payload = json.loads(FIXTURES[fixture_index].read_text())
     if mutation == 'missing_summary':
         del payload['summary']
     elif mutation == 'wrong_count':
@@ -441,7 +442,7 @@ def test_dependency_free_fixture_cannot_read_outside_workspace(dependency_free_o
 
 def test_installed_public_model_wins_over_fixture_seam(tmp_path, monkeypatch):
     import runpy
-    op, _, _ = public_inputs(tmp_path)  # real producer output outside the allowlist
+    op, _, _ = public_inputs(tmp_path)  # installed validation must take precedence
     monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(tmp_path))
@@ -490,10 +491,22 @@ def test_manifest_fallback_origin_matches_display_pillar(pillar):
     assert monitor._collect_same_run_records({}, manifest)[0]['origins'] == item['origins']
 
 
-def test_real_wri_export_preserves_anchor_occurrences_and_source_counts():
+@pytest.fixture
+def real_wri_inputs(tmp_path, monkeypatch):
+    import shutil
+    root = tmp_path.resolve()
+    inputs = root / 'inputs'
+    shutil.copytree(monitor.ROOT / 'tests/fixtures/issue87/wri_repro', inputs)
+    monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(root))
+    return inputs
+
+
+def test_real_wri_export_preserves_anchor_occurrences_and_source_counts(real_wri_inputs):
     import hashlib
     from climate_monitor.article_candidate_contract import adapt_article_changes
-    root = monitor.ROOT / 'tests/fixtures/issue87/wri_repro'
+    root = real_wri_inputs
     # Owner package: issue #87 comment 5575020496, ISSUE87_WRI_REPRO_DATA_V1.
     provenance = json.loads((root / 'PROVENANCE.json').read_text())
     assert provenance['bundled_manifest_sha256'] == '4424b337737a881dcb06b231ca083f057c4a4270bb9bfaa6bcd75735df5344ad'
@@ -554,15 +567,12 @@ def test_duplicate_source_evidence_preserves_metadata_and_origins(tmp_path, monk
     assert monitor._build_evidence_payload(list(reversed(records)), candidates) == inputs
 
 
-def test_real_wri_full_prepare_with_unavailable_body_provider(tmp_path, monkeypatch):
+def test_real_wri_full_prepare_with_unavailable_body_provider(tmp_path, monkeypatch, real_wri_inputs):
     import hashlib
     import sys
-    import shutil
-    fixture = monitor.ROOT / 'tests/fixtures/issue87/wri_repro'
-    # Copy all inputs unchanged out of tests/fixtures; use the normal production
-    # path guard and only the existing explicit body-provider test seam.
-    inputs = tmp_path / 'inputs'
-    shutil.copytree(fixture, inputs)
+    # The exact saved outcome is available without upstream only inside the
+    # explicit temporary dry run. Installed public validation still wins.
+    inputs = real_wri_inputs
     staging = tmp_path / 'staging'
     monkeypatch.setattr(sys, 'argv', ['run_climate_monitor.py', '--production-weekly',
         '--authoring-mode', 'prepare', '--report-date', '2026-09-07',
