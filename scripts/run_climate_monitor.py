@@ -8,6 +8,7 @@ import os
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -254,12 +255,11 @@ def _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path):
 def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
     """Project every manifest ``discovered_item`` to a same-run evidence record.
 
-    Only items that the manifest bound to the same upstream run as the
-    acquisition outcome survive; missing URLs or duplicate canonical URLs
-    fail closed. Records are deterministically ordered by canonical URL so
-    bundle digests are stable across re-prepares.
+    Keep discovery occurrences until adapt_article_changes/merge_candidates
+    merges their URL identities, retaining every origin. Stable ordering also
+    makes the projected artifact row identities independent of export order.
     """
-    by_canonical: dict[str, dict] = {}
+    records: list[dict] = []
     for raw in manifest.get("discovered_items") or []:
         if not isinstance(raw, dict):
             continue
@@ -269,11 +269,23 @@ def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
         canonical = canonical_url(url)
         if not canonical:
             raise SystemExit(f"manifest item url has no canonical form: {url!r}")
-        if canonical in by_canonical:
-            raise SystemExit(f"manifest duplicate canonical url: {canonical}")
         final_url = str(raw.get("final_url") or url)
         display_pillar = raw.get("display_pillar") or "A"
-        by_canonical[canonical] = {
+        origins = raw.get("origins") or [{"pillar": display_pillar, "source": manifest["source"]["source_id"], "url": url}]
+        origins = [dict(origin) for origin in origins]
+        for origin in origins:
+            for field, value in (
+                ("original_title", raw.get("title")),
+                ("title_basis", (raw.get("title_basis") or "upstream_artifact") if raw.get("title") else None),
+                ("original_summary", raw.get("summary")),
+                ("summary_basis", (raw.get("summary_basis") or "page") if raw.get("summary") else None),
+                ("source_item_id", raw.get("item_id")), ("discovered_at", raw.get("observed_at")),
+                ("provenance", raw.get("provenance")), ("metadata", raw.get("metadata")),
+                ("content_hash", raw.get("content_hash")),
+            ):
+                if value:
+                    origin.setdefault(field, value)
+        records.append({
             "source_id": manifest["source"]["source_id"],
             "final_url": final_url,
             "requested_url": url,
@@ -282,11 +294,10 @@ def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
             "summary_basis": raw.get("summary_basis") or "page",
             "title_basis": raw.get("title_basis") or "upstream_artifact",
             "display_pillar": display_pillar,
-            "origins": raw.get("origins") or [{"pillar": display_pillar, "source": manifest["source"]["source_id"], "url": url}],
+            "origins": sorted(origins, key=_canonical_bytes),
             "content_hash": raw.get("content_hash") or "",
-        }
-    ordered = sorted(by_canonical.values(), key=lambda r: canonical_url(r["final_url"]))
-    return ordered
+        })
+    return sorted(records, key=lambda r: (canonical_url(r["final_url"]), _canonical_bytes(r)))
 
 
 def _attach_outcome_disposition(records: list[dict], outcome: dict) -> list[dict]:
@@ -347,12 +358,21 @@ def _outcome_to_article_changes(outcome: dict, manifest: dict,
     kept = by_disposition["updated"] + by_disposition["unchanged"]
     groups: dict[str, list[dict]] = {}
     for record in kept:
-        source = ((record.get("origins") or [{}])[0] or {}).get("source") or "unknown"
-        groups.setdefault(source, []).append({
-            "title": record.get("title") or "",
-            "url": record.get("final_url") or record.get("requested_url"),
-            "categories": ["climate_supervision"],
-        })
+        url = record.get("final_url") or record.get("requested_url")
+        parsed = urlparse(url)
+        path = urlparse(canonical_url(url)).path
+        if parsed.path.endswith("/") and not path.endswith("/"):
+            path += "/"
+        # Use the shared canonical path, retaining transport query/fragment bytes
+        # and the trailing separator. Raw discovery URLs remain in origins.
+        url = parsed._replace(path=path).geturl()
+        for origin in record.get("origins") or [{}]:
+            source = origin.get("source") or "unknown"
+            groups.setdefault(source, []).append({
+                "title": origin.get("original_title") or record.get("title") or "",
+                "url": url,
+                "categories": ["climate_supervision"],
+            })
     articles: list[dict] = []
     for org, items in sorted(groups.items()):
         articles.append({"org": org, "items": items})
@@ -366,7 +386,7 @@ def _outcome_to_article_changes(outcome: dict, manifest: dict,
         "sites_with_changes": len(groups),
         "orgs_with_articles": len(groups),
         "baseline_urls": 0,
-        "new_articles": len(kept),
+        "new_articles": sum(len(items) for items in groups.values()),
         "seen_before": 0,
         "generated_at": f"{report_date}T08:05:00Z",
         "articles": articles,
@@ -382,21 +402,27 @@ def _build_evidence_payload(records: list[dict], candidates, *, data_root=None, 
     orchestrator uses, so AC-2 (the existing public adapter) is honoured
     without a parallel implementation.
     """
-    by_url = {canonical_url(record["final_url"]): record for record in records}
+    by_url: dict[str, list[dict]] = {}
+    for record in sorted(records, key=_canonical_bytes):
+        by_url.setdefault(canonical_url(record["final_url"]), []).append(record)
     inputs: list[dict] = []
     for candidate in candidates:
-        source = by_url.get(candidate.canonical_url, {})
-        snippet = source.get("summary") or next(
+        sources = by_url.get(candidate.canonical_url, [])
+        source = next(iter(sources), {})
+        title_source = next((item for item in sources if item.get("title")), {})
+        snippet = next((item["summary"] for item in sources if item.get("summary")), "") or next(
             (origin.original_snippet or origin.original_summary for origin in candidate.origins
              if origin.original_snippet or (origin.summary_basis == "search_result" and origin.original_summary)), "")
         inputs.append({
             "article_id": candidate.canonical_url,
             "source_id": source.get("source_id"),
             "url": candidate.url,
-            "title": candidate.title or "",
-            "title_basis": next(origin.title_basis for origin in candidate.origins
-                                if origin.pillar == candidate.display_pillar),
-            "origins": [origin.model_dump(mode="json", exclude_none=True) for origin in candidate.origins],
+            "title": candidate.title or title_source.get("title", ""),
+            "title_basis": candidate.title_basis if candidate.title else title_source.get("title_basis"),
+            # Canonical candidate lineage plus the original discovery metadata:
+            # no last-record-wins loss of alternate titles, summaries or sources.
+            "origins": [origin.model_dump(mode="json", exclude_none=True) for origin in candidate.origins]
+                       + [origin for item in sources for origin in item["origins"]],
             "display_pillar": candidate.display_pillar,
             "search_snippet": snippet,
         })
@@ -786,13 +812,31 @@ def _run_authoring_sequence(args, parser) -> int:
         "send messages, or change files.\n"
         + json.dumps({"request": request, "evidence": evidence}, ensure_ascii=False)
     )
-    command = ["hermes", "chat", "--query-file", "-", "--quiet", "--toolsets", "none"]
+    # Probe capabilities without an authoring turn; never retry a failed turn.
+    try:
+        help_result = subprocess.run(["hermes", "chat", "--help"], text=True,
+                                     capture_output=True, cwd=ROOT, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit("Hermes authoring capabilities unavailable") from exc
+    if help_result.returncode:
+        raise SystemExit("Hermes authoring capabilities unavailable")
+    import re
+    options = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", help_result.stdout))
+    if "--query-file" in options:
+        query_args, stdin = ["--query-file", "-"], instruction
+    elif "--query" in options:
+        # argv is passed directly, with no shell or truncation. An OS argv-size
+        # failure is caught below and aborts without retrying or finalizing.
+        query_args, stdin = ["--query", instruction], None
+    else:
+        raise SystemExit("Hermes authoring query capability unavailable")
+    command = ["hermes", "chat", *query_args, "--quiet", "--toolsets", "none"]
     if args.model:
         command += ["--model", args.model]
     if args.model_provider:
         command += ["--provider", args.model_provider]
     try:
-        completed = subprocess.run(command, input=instruction, text=True,
+        completed = subprocess.run(command, input=stdin, text=True,
                                    capture_output=True, cwd=ROOT, timeout=1800)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SystemExit("Hermes authoring unavailable") from exc

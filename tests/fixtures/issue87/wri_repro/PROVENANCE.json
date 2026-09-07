@@ -1,0 +1,13 @@
+{
+  "climate_sha": "e654b2cd511441ba4e7d88800e9aa11967f662a0",
+  "web_sha": "89940fea711feb8fc98d7a4233e6cfb922fb8af1",
+  "original_manifest_sha256": "29cb791587b5a02aeaa0f149132f9914e7685641f2de0e466219e5a940bef6e0",
+  "bundled_manifest_sha256": "4424b337737a881dcb06b231ca083f057c4a4270bb9bfaa6bcd75735df5344ad",
+  "outcome_sha256": "65164ec97027dcac3e8da0b9932d5b5b67761d8b7757c6c4d6bac59e29d2c809",
+  "retained_discovered_items": 164,
+  "removed_fields": [
+    "deprecated",
+    "extensions"
+  ],
+  "note": "All discovered_items, run, source, manifest_id, artifacts and other public fields are unchanged as JSON values. Removed only duplicate acquisition/raw-HTML envelopes. Outcome bytes are identical. Empty Pillar B isolates the URL merge defect; it is not a fabricated search result."
+}

@@ -1,0 +1,5079 @@
+{
+  "schema_version": "web-listening-manifest.v1",
+  "manifest_id": "manifest-wri-2",
+  "generated_at": "2026-09-07T16:06:36.732186Z",
+  "producer": {
+    "name": "web-listening",
+    "version": "3.2.0",
+    "command": "web-listening export-manifest --scope-path scope.yaml",
+    "contract_version": "web-listening-manifest.v1"
+  },
+  "artifact_root": ".",
+  "run": {
+    "run_id": "run-2",
+    "run_type": "export_manifest",
+    "started_at": "2026-09-07T16:06:36.022230Z",
+    "completed_at": "2026-09-07T16:06:36.475748Z",
+    "input_paths": [
+      "scope.yaml"
+    ],
+    "output_paths": [
+      "manifest.json",
+      "manifest.yaml",
+      "manifest.md"
+    ],
+    "idempotency_key": "wri|legacy-value|2",
+    "parent_run_id": "2",
+    "scope_path": "scope.yaml",
+    "selection_path": null,
+    "parameters": {
+      "scope_fingerprint": "legacy-value",
+      "fetch_mode": "http",
+      "max_depth": 1,
+      "max_pages": 1,
+      "max_files": 1
+    }
+  },
+  "job": null,
+  "source": {
+    "source_id": "wri",
+    "site_url": "https://www.wri.org/",
+    "site_name": "wri",
+    "scope_profile": "selected_scope_default",
+    "tree_seed_url": "https://www.wri.org/insights",
+    "tree_page_prefixes": [
+      "/"
+    ],
+    "tree_file_prefixes": [
+      "/"
+    ],
+    "catalog_key": "dev"
+  },
+  "status": {
+    "state": "completed",
+    "stage": "export_manifest",
+    "counts": {
+      "discovered_items": 164,
+      "downloaded_assets": 0,
+      "changed_items": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    "message": "Manifest exported for downstream document conversion."
+  },
+  "artifacts": {
+    "reports": [
+      {
+        "artifact_id": "document-manifest-markdown",
+        "kind": "document_manifest_markdown",
+        "path": "manifest.md",
+        "media_type": "text/markdown",
+        "sha256": "88157dd8cf686ed0957bb67423047b40392c36a75986dfd9e9a5e3a66492399f",
+        "created_at": "2026-09-07T16:06:36.732186Z",
+        "provenance": {
+          "source_id": "wri",
+          "run_id": "run-2",
+          "input_artifacts": [
+            "scope.yaml"
+          ],
+          "parent_item_id": null,
+          "observed_at": "2026-09-07T16:06:36.475748Z",
+          "extraction_method": "export_manifest"
+        }
+      }
+    ],
+    "structured_exports": [
+      {
+        "artifact_id": "web-listening-manifest-json",
+        "kind": "web_listening_manifest_json",
+        "path": "manifest.json",
+        "media_type": "application/json",
+        "sha256": null,
+        "created_at": "2026-09-07T16:06:36.732186Z",
+        "provenance": {
+          "source_id": "wri",
+          "run_id": "run-2",
+          "input_artifacts": [
+            "scope.yaml"
+          ],
+          "parent_item_id": null,
+          "observed_at": "2026-09-07T16:06:36.475748Z",
+          "extraction_method": "export_manifest"
+        }
+      }
+    ],
+    "compatibility_exports": [
+      {
+        "artifact_id": "document-manifest-yaml",
+        "kind": "document_manifest_yaml",
+        "path": "manifest.yaml",
+        "media_type": "application/x-yaml",
+        "sha256": "c4e5b4ed9202d7b5d00c982b266269cc0b3e2bf07fe40ebd7ac689bca1769f59",
+        "created_at": "2026-09-07T16:06:36.732186Z",
+        "provenance": {
+          "source_id": "wri",
+          "run_id": "run-2",
+          "input_artifacts": [
+            "scope.yaml"
+          ],
+          "parent_item_id": null,
+          "observed_at": "2026-09-07T16:06:36.475748Z",
+          "extraction_method": "export_manifest"
+        }
+      },
+      {
+        "artifact_id": "document-manifest-markdown",
+        "kind": "document_manifest_markdown",
+        "path": "manifest.md",
+        "media_type": "text/markdown",
+        "sha256": "88157dd8cf686ed0957bb67423047b40392c36a75986dfd9e9a5e3a66492399f",
+        "created_at": "2026-09-07T16:06:36.732186Z",
+        "provenance": {
+          "source_id": "wri",
+          "run_id": "run-2",
+          "input_artifacts": [
+            "scope.yaml"
+          ],
+          "parent_item_id": null,
+          "observed_at": "2026-09-07T16:06:36.475748Z",
+          "extraction_method": "export_manifest"
+        }
+      }
+    ]
+  },
+  "discovered_items": [
+    {
+      "item_id": "item-ee2d864830d7ff44",
+      "item_type": "page_link",
+      "url": "https://africa.wri.org?utm_source=wri-org&utm_medium=wri-org-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-1c6c4ba58aae9318",
+      "item_type": "page_link",
+      "url": "https://brasil.wri.org?utm_source=wri-org-website&utm_medium=wri-org-website-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-4ef6f2360f8cb056",
+      "item_type": "page_link",
+      "url": "https://bsky.app/profile/worldresources.bsky.social",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-a308a3a072f24ffc",
+      "item_type": "page_link",
+      "url": "https://careers.wri.org",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-3cf4eb08c8865e87",
+      "item_type": "page_link",
+      "url": "https://es.wri.org/wri-colombia?utm_source=wri-org-website&utm_medium=wri-org-website-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-bd7a4320875cd7d6",
+      "item_type": "page_link",
+      "url": "https://es.wri.org/wri-mexico?utm_source=wri-org-website&utm_medium=wri-org-website-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-18ebfa6db364b08f",
+      "item_type": "page_link",
+      "url": "https://giving.wri.org/campaign/694046/donate",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-570db8e0a1915f97",
+      "item_type": "page_link",
+      "url": "https://giving.wri.org/give/406206/#%21%2Fdonation%2Fcheckout%3Fc_src=webite&c_src2=footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-72f0bcf815741e27",
+      "item_type": "page_link",
+      "url": "https://grist.org/wildfires/study-monster-wildfires-spain-france-attribution/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b6f737f4d1b2f374",
+      "item_type": "page_link",
+      "url": "https://id.wri.org?utm_source=wri-org-website&utm_medium=wri-org-website-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-de237796e6308cf6",
+      "item_type": "file_link",
+      "url": "https://secure.ethicspoint.com/domain/media/en/gui/72880/code.pdf",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-37e1a999b3d2f3e9",
+      "item_type": "page_link",
+      "url": "https://twitter.com/worldresources",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-a741b39102064c7a",
+      "item_type": "page_link",
+      "url": "https://wri-india.org?utm_source=wri-org-website&utm_medium=wri-org-website-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-9670fc9ea6e4fd61",
+      "item_type": "page_link",
+      "url": "https://wri.ethicspoint.com",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-fec2d58f817ac9ab",
+      "item_type": "page_link",
+      "url": "https://wri.ethicspoint.com/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-dd771f05e51a70d6",
+      "item_type": "page_link",
+      "url": "https://www.facebook.com/worldresources/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-bb79c7e8bcea3aa3",
+      "item_type": "page_link",
+      "url": "https://www.instagram.com/worldresources/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-499506221e5ee4ab",
+      "item_type": "page_link",
+      "url": "https://www.linkedin.com/company/world-resources-institute/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f743d26ccc3153bb",
+      "item_type": "page_link",
+      "url": "https://www.theguardian.com/world/2026/aug/02/western-europe-wildfire-crisis-retreats-greece-evacuates-hundreds-athens",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-582db3552413cd02",
+      "item_type": "page_link",
+      "url": "https://www.threads.net/@worldresources",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-4466b107c7f84b5a",
+      "item_type": "page_link",
+      "url": "https://www.wri.org.cn?utm_source=wri-org-website&utm_medium=wri-org-website-footer-link",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-8fed121f8db29aa0",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f89c03df66e78af1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/about/contact",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-ac8986c4e3b0bfcb",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/about/experts-staff",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b811b0bfcb063035",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/about/financials",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7b16921a81ff2091",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/about/legal-notices",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-5426e3f4f8c102b9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/about/privacy-policy",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-46f0b7fa7a3182c9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/accessibility",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-78bd30af707b6767",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/africa",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d29997ee3b85ea65",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/asia",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c5f46fdbb24dd8b7",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/careers",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-9fa2d3f535703504",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/cities",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-23b4807c12a3fe85",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/climate",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-fc7f49255f700b3d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/climate/climate-resilience",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-5689fd3dc80a8bfd",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/10510",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-9ffc3b6c36932557",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/18861",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-545a1497485aab79",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/222",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c8c998a6f2f20597",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/226",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-02c73a23dad5289d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/227",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-e614d560b702bb6c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/4422",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-134b35ddc84c080f",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/53",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c11034e6b58c530f",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/56",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7bdf1313a2a51131",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/73",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-0cf6d9e5c36d8f28",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/74",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d54a985c2d3fa4c9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/9640",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f6c79d7c43f666aa",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/content-filter/remove",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-0da3ccd374803995",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/data",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-18d2b1971928229b",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/economics",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-1f677a00b8b30874",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/energy",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d5f0c20f6e719a6b",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/equitable-development",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-0f3999a6e4ebe51e",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/events",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-78e8b84b7a9d20a9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/finance",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-50d45edd6a423d9e",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/food",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f35cfa4e19215633",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/forests",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-32eb992c6dcd73a3",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/freshwater",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-6847fa4ec5247504",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/freshwater/water-security",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-8815b59893444aab",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c9195e86d2bd3c0b",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d74c2eb360954c83",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about/board-directors",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f60204484069cebf",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about/contact",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-644bcd83ad78d20f",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about/financials",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-e74d6ab25c6bbd25",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about/history",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d003a07da69aed9f",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about/mission-values",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-040a8072fa93374c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/about/procurement-opportunities",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b756d72e4c023907",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/africa",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-51f76523076edb02",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/asia",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7b474fd1a0dbc542",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/careers",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c2b30ec5f0bea23d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/cities",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-4c6f84dc765d8da4",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/climate",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-56bc21d015e37b50",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/donate",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-cbd3ddee1f517f07",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/economics",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-fabbd74007e319a4",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/energy",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-19963c11c9098bcf",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/equitable-development",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b67bff547755081d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/events",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b38567d809412588",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/finance",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d4e080962bceb271",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/food",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-046bdefa20d55720",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/forests",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-22020645cb39a718",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/freshwater",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-5b8efb51ed4d1372",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/initiatives/global-restoration-initiative",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c60896cd1e18ba5c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/insights/countries-scaling-renewable-energy-fastest",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-3c438558702bbd6b",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/insights/encampment-wyoming-forest-restoration-clean-water-fund",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d3d065cec176be48",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/insights/pastoralists-are-protecting-many-worlds-remaining-rangelands",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-ec342119422e9228",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/insights/restoring-nature-fights-wildfires-heat-floods",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-2fe1cbb5c7ba0dd8",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/join-us",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-482178bc706d11ba",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/latin-america",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f939d5a2d47c0057",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/news",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-8b6c839921102cc8",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/north-america",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-a216624f7a39c61d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/ocean",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-6e00b3e92681bcf1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/our-approach",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-3d71f4b281d79bdf",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/our-approach/managing-for-results",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-2c5bc4c60aab4d79",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/our-work",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c540679f0895b221",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/resources",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c69a2c9ec61b1de0",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/strategic-plan",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-276e3be22209be3c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/support",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-6ccd497f0ae89ad1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/sustainability-wri",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-82315efcacc9b9b1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/top-outcomes",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f3d7f9c0ce1d81e9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2Ephp/wri-europe",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-149a6712b57ca498",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/cities",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-cdc898852b4c0f80",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/energy",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b0e851640583abd5",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/equitable-development",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-58a5644ed879e9b4",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/insights/agrivoltaics-on-farm-solar-food-clean-energy",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-866a97fee1607107",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/insights/electric-school-buses-vehicle-to-grid-technology",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-4e6c562a2f4f621b",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/insights/food-energy-resilience-iran-war",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d66c0526c6d0547a",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/insights/renewable-electricity-your-questions-answered",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-3dab11ddeca326c3",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/index%2ephp/insights/us-data-center-growth-impacts",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d5566d60ac56022d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/initiatives",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-e5fdd6104adcb227",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/initiatives/clean-energy-supply",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-78ba2cb294028d32",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/initiatives/global-restoration-initiative",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-a21275af8aaf1f0c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-e003b52bcc94eb0f",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#latest-insights=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-910a2fdea68944f0",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#main-content=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f0f6bb6904146444",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#scroll=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-274711dd7c2a031c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#tab-1=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-3b84e8816120e754",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#tab-2=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7f8281b6e4a185ce",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#tab-3=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d3b55ede0d20f11d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights#tab-4=",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-dc364aa0d5053bb1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/4-charts-explain-greenhouse-gas-emissions-countries-and-sectors",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-6da24a82b2c15059",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/agrivoltaics-on-farm-solar-food-clean-energy",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-4df793adc8750c42",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/clean-energy-restrictions-driving-up-energy-costs",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-c226dff94ef94339",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/countries-scaling-renewable-energy-fastest",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-adb44d8b1a9863cc",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/direct-air-capture-resource-considerations-and-costs-carbon-removal",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-346f3d5cbcd5be50",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/electric-school-buses-vehicle-to-grid-technology",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-74203270c96690d7",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/electrification-explained",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-946b9a4f3b6db228",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/encampment-wyoming-forest-restoration-clean-water-fund",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-10f2af680ccf20bf",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/europes-heat-and-air-conditioning-dilemma",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-8bf10502a8f4b033",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/explain-eu-deforestation-regulation",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-cf86be4ee2f789d1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/explainers",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-bf645d27a1083f8b",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/global-trends-forest-fires",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-ac0ffd062a8d377d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/iran-war-clean-energy-benefits",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b592a48b5e23fb56",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/iran-war-water-crisis-middle-east",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7c709fd7c77c1cc1",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/most-read",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d131fb71289dafcd",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/ocean-warming-climate-change-impacts",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-1099ba7a8cdccc10",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/paris-agreement-next-decade",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-08a11747fd8fe792",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/renewable-electricity-your-questions-answered",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-e82bd913e2b4691e",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/restorations-success-goes-beyond-counting-trees",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-afcc7d8cf8b69b10",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/restoring-nature-fights-wildfires-heat-floods",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-f5aebd83fc03ea9e",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/shenzhen-china-near-zero-carbon-communities",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-0bb0700ee3c7c673",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/strategies-achieve-climate-mitigation-adaptation-simultaneously",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-0eb111e6b4e4d334",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights/super-el-nino-impacts-explained",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-da946619107c84e9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=0",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-dd0c923027f1c8e3",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=1",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-612b3cc2329963c2",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=2",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-3eef6ec949510efa",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=288",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-106271cc66814b2c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=3",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-81a6307813e24e78",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=4",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-465527a1b815ecc0",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=5",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-e5bc225adcaf459a",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=6",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-9d15e6a1235c5a01",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=7",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-beeec5d5c359f3b7",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/insights?page=8",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b79e4c2ad37bcb68",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/internships",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-504101ed2b22bd0d",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/join-us",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-215eb28b3e8f644c",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/latin-america",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7ff965bcf6342fc5",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/media-contacts",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-5c50cf81946aefc9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/news",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-9df08f6ba84af130",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/north-america",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-83390fed8ed4c787",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/ocean",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-82d1d5054581e09a",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/our-work",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-fd706d2f042c9c4e",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/research",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-975de7fd0a19a0f3",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/resources",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b876aebba3f51cb9",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/resources/type/insights-50",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-5ce7a289757eb650",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/resources/type/insights-50?query=&sort_by=created",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-b8c0022d5394a4e4",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/support",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-d4dc7db8566e9ee2",
+      "item_type": "page_link",
+      "url": "https://www.wri.org/wri-europe",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    },
+    {
+      "item_id": "item-7924e5895e1cdedf",
+      "item_type": "page_link",
+      "url": "https://www.youtube.com/WorldResourcesInst",
+      "title": null,
+      "status": "existing",
+      "item_state": "existing",
+      "discovered_from": "https://www.wri.org/insights",
+      "parent_item_id": "item-a21275af8aaf1f0c",
+      "observed_at": "2026-09-07T16:06:36.321421Z",
+      "provenance": {
+        "source_id": "wri",
+        "run_id": "run-2",
+        "input_artifacts": [
+          "scope.yaml"
+        ],
+        "parent_item_id": "item-a21275af8aaf1f0c",
+        "observed_at": "2026-09-07T16:06:36.321421Z",
+        "extraction_method": "http"
+      },
+      "content_type": null,
+      "http_status": null,
+      "checksum": null,
+      "metadata": {
+        "page_url": "https://www.wri.org/insights",
+        "snapshot_id": 2,
+        "source_run_id": 2,
+        "prior_snapshot_id": 1
+      }
+    }
+  ],
+  "downloaded_assets": [],
+  "provenance": {
+    "source_id": "wri",
+    "run_id": "run-2",
+    "input_artifacts": [
+      "scope.yaml"
+    ],
+    "parent_item_id": null,
+    "observed_at": "2026-09-07T16:06:36.475748Z",
+    "extraction_method": "export_manifest"
+  },
+  "errors": [],
+  "metadata": {}
+}

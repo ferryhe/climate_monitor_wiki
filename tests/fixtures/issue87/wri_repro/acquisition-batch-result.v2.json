@@ -1,0 +1,33 @@
+{
+  "schema_version": "acquisition-batch-result.v2",
+  "run_id": "scope-run-2",
+  "authoritative_status": "completed",
+  "status": "succeeded",
+  "full_success": true,
+  "counts": {
+    "requested": 1,
+    "updated": 0,
+    "unchanged": 1,
+    "blocked": 0,
+    "failed": 0,
+    "unresolved": 0,
+    "valid_snapshots": 1,
+    "failed_evidence": 0,
+    "succeeded": 1
+  },
+  "dispositions": [
+    {
+      "task_id": "wri",
+      "site_key": "wri",
+      "requested_url": "https://www.wri.org/insights",
+      "disposition": "unchanged",
+      "reason": "scope.unchanged",
+      "artifact_id": "manifest-wri-2"
+    }
+  ],
+  "summary": {
+    "checked": 1,
+    "succeeded": 1,
+    "failed": 0
+  }
+}

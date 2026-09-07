@@ -67,3 +67,29 @@ def test_dedupe_items_keeps_semantic_query_differences():
 
     assert [item.url for item in kept] == [item.url for item in items]
     assert notes == []
+
+
+def test_canonical_url_decodes_only_ascii_unreserved_path_escapes():
+    assert canonical_url('https://example.com/index%2Ephp/%41%7a%30%2d%5F%7e') == (
+        'https://example.com/index.php/Az0-_~')
+    assert canonical_url('https://example.com/index%2ephp') == canonical_url('https://example.com/index.php')
+    # Reserved/non-ASCII escapes retain their bytes and case; no recursive decoding.
+    path = '/%2F/%2f/%3F/%23/%25/%252E/%C3%A9/%ZZ'
+    assert canonical_url('https://example.com' + path) == 'https://example.com' + path
+    # Path normalization must not decode the host or reinterpret opaque query data.
+    assert canonical_url('https://exa%6Dple.com/index%2ephp?token=a%2Fb%252Ec%26d%3De') == (
+        'https://exa%6dple.com/index.php?token=a%2Fb%252Ec%26d%3De')
+
+
+def test_canonical_path_normalization_does_not_bypass_strict_url_safety():
+    import pytest
+    from climate_monitor.article_candidate_contract import _validate_url
+    for url in ('https://example.com/%2e%2e/private', 'https://127.000.0.1/index%2ephp',
+                'file:///index%2ephp', 'https://user:pass@example.com/index%2ephp',
+                'https://exa%6Dple.com/index.php', 'https://example.com/%2fprivate'):
+        with pytest.raises(ValueError):
+            _validate_url(canonical_url(url))
+    # The strict validator itself still rejects raw encoded-unreserved URLs.
+    with pytest.raises(ValueError):
+        _validate_url('https://example.com/index%2Ephp')
+    _validate_url(canonical_url('https://example.com/index%2Ephp'))

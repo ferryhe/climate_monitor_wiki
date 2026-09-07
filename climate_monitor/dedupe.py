@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 TRACKING_PREFIXES = ("utm_",)
 TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+ASCII_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
 CandidateT = TypeVar("CandidateT")
 
@@ -17,7 +18,16 @@ def canonical_url(url: str) -> str:
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
         if key.lower() not in TRACKING_KEYS and not key.lower().startswith(TRACKING_PREFIXES)
     ]
-    normalized_path = parsed.path.rstrip("/") or parsed.path
+    # RFC 3986 unreserved path escapes have the same URL identity as their
+    # literal characters. Leave reserved escapes, query handling and authority
+    # unchanged; strict candidate validation still owns URL safety.
+    path = re.sub(
+        r"%([0-9a-fA-F]{2})",
+        lambda match: chr(int(match[1], 16))
+        if chr(int(match[1], 16)) in ASCII_UNRESERVED else match[0],
+        parsed.path,
+    )
+    normalized_path = path.rstrip("/") or path
     return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), normalized_path, "", urlencode(query), ""))
 
 
