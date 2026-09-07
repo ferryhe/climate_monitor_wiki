@@ -87,6 +87,7 @@ def _prepare_env(workspace: Path, *, dry_run: bool = False,
     env["CLIMATE_DRY_RUN_ROOT"] = str(workspace)
     if dry_run:
         env["CLIMATE_DRY_RUN"] = "1"
+        env["CLIMATE_DRY_RUN_OUTCOME_FIXTURE"] = "1"
         if fixture_dir is not None:
             env["CLIMATE_DRY_RUN_FIXTURE_DIR"] = str(fixture_dir)
     return env

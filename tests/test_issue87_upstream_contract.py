@@ -342,3 +342,109 @@ def test_missing_authoring_identity_stops_before_prepare(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match='model.*provider'):
         monitor._run_authoring_sequence(SimpleNamespace(
             staging_dir=str(tmp_path), model='', model_provider=''), None)
+
+
+@pytest.mark.parametrize('fixture_index', [0, 1])
+def test_dependency_free_saved_fixtures_match_public_model(fixture_index):
+    from issue87_outcome_fixture import FIXTURES, validate_fixture
+    contract = pytest.importorskip('web_listening.contracts.acquisition_batch')
+    raw = FIXTURES[fixture_index].read_text()
+    assert validate_fixture(raw) == contract.AcquisitionBatchResultV2.model_validate_json(
+        raw).model_dump(mode='json', exclude_none=True)
+
+
+@pytest.mark.parametrize('mutation', ['missing_summary', 'wrong_count', 'extra', 'boolean_count'])
+def test_dependency_free_fixture_rejects_changed_payload(mutation):
+    from issue87_outcome_fixture import FIXTURES, validate_fixture
+    payload = json.loads(FIXTURES[0].read_text())
+    if mutation == 'missing_summary':
+        del payload['summary']
+    elif mutation == 'wrong_count':
+        payload['counts']['requested'] = 56
+    elif mutation == 'boolean_count':
+        payload['counts']['unresolved'] = False
+    else:
+        payload['extra'] = 'unapproved'
+    with pytest.raises(ValueError):
+        validate_fixture(json.dumps(payload))
+
+
+@pytest.fixture
+def dependency_free_outcome(tmp_path, monkeypatch):
+    import builtins
+    from issue87_outcome_fixture import FIXTURES
+    original_import = builtins.__import__
+    def without_upstream(name, *args, **kwargs):
+        if name == 'web_listening.contracts.acquisition_batch':
+            raise ModuleNotFoundError("No module named 'web_listening'", name='web_listening')
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', without_upstream)
+    monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(tmp_path))
+    path = tmp_path / 'outcome.json'
+    path.write_text(FIXTURES[0].read_text())
+    return path
+
+
+def test_dependency_free_outcome_is_explicit_and_strict(dependency_free_outcome, monkeypatch):
+    path = dependency_free_outcome
+    assert monitor._read_outcome(path)['counts']['requested'] == 57
+    payload = json.loads(path.read_text())
+    del payload['summary']
+    path.write_text(json.dumps(payload))
+    with pytest.raises(SystemExit, match='invalid public'):
+        monitor._read_outcome(path)
+    monkeypatch.delenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE')
+    with pytest.raises(ModuleNotFoundError):
+        monitor._read_outcome(path)
+
+
+def test_dependency_free_fixture_is_forbidden_in_production(dependency_free_outcome, monkeypatch):
+    monkeypatch.delenv('CLIMATE_DRY_RUN')
+    with pytest.raises(SystemExit, match='isolated temporary dry run'):
+        monitor._read_outcome(dependency_free_outcome)
+
+
+def test_dependency_free_fixture_cannot_read_outside_workspace(dependency_free_outcome, monkeypatch):
+    monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(dependency_free_outcome.parent / 'other'))
+    with pytest.raises(SystemExit, match='isolated temporary dry run'):
+        monitor._read_outcome(dependency_free_outcome)
+
+
+def test_installed_public_model_wins_over_fixture_seam(tmp_path, monkeypatch):
+    import runpy
+    op, _, _ = public_inputs(tmp_path)  # real producer output outside the allowlist
+    monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
+    monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(tmp_path))
+    monkeypatch.setattr(runpy, 'run_path', lambda *args: pytest.fail('fixture fallback used'))
+    assert monitor._read_outcome(op)['run_id'] == 'scope-run-2'
+
+
+@pytest.mark.parametrize('escape', ['run', 'sync', 'provider', 'output'])
+def test_dependency_free_cli_cannot_author_or_escape(dependency_free_outcome, monkeypatch, escape):
+    import sys
+    root = dependency_free_outcome.parent
+    argv = ['run_climate_monitor.py', '--production-weekly', '--authoring-mode', 'prepare',
+            '--report-date', '2026-09-07', '--acquisition-batch', str(dependency_free_outcome),
+            '--web-listening-manifest', str(root / 'manifest.json'),
+            '--pillar-b-artifact', str(root / 'pillar-b.json'), '--staging-dir', str(root / 'staging'),
+            '--source-dir', str(root / 'sources'), '--state-dir', str(root / 'state'),
+            '--wiki-dir', str(root / 'wiki'), '--no-sync',
+            '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider']
+    if escape == 'run':
+        argv[argv.index('--authoring-mode') + 1] = 'run'
+    elif escape == 'sync':
+        argv.remove('--no-sync')
+    elif escape == 'provider':
+        argv[-1] = ''
+    else:
+        argv[argv.index('--source-dir') + 1] = str(monitor.ROOT / 'sources')
+    monkeypatch.setattr(sys, 'argv', argv)
+    monkeypatch.setattr(monitor, '_run_prepare', lambda *args: pytest.fail('prepare ran'))
+    monkeypatch.setattr(monitor, '_run_authoring_sequence', lambda *args: pytest.fail('author ran'))
+    with pytest.raises(SystemExit) as error:
+        monitor.main()
+    assert error.value.code == 2
+    assert not (root / 'staging').exists()

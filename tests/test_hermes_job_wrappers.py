@@ -18,6 +18,8 @@ def invoke(tmp_path, slot, *args, **overrides):
         path.mkdir(exist_ok=True)
         env['CLIMATE_' + key] = str(path)
     env.update(overrides)
+    if env.get("CLIMATE_DRY_RUN") == "1":
+        env["CLIMATE_DRY_RUN_OUTCOME_FIXTURE"] = "1"
     before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*'))
     result = subprocess.run(['bash', str(ROOT / f'scripts/hermes_job_{slot}.sh'), *args], cwd=tmp_path, env=env, capture_output=True, text=True)
     after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*'))

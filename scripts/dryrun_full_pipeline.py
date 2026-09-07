@@ -268,6 +268,8 @@ recipients:
     cli_manifest_path.write_text(json.dumps(cli_manifest))
     cli_pillar_b_path.write_text(json.dumps(records))
     cli_env = {**os.environ, 'PYTHONPATH': str(ROOT), 'REPORT_DATE': day,
+               'CLIMATE_DRY_RUN': '1', 'CLIMATE_DRY_RUN_ROOT': str(workspace),
+               'CLIMATE_DRY_RUN_OUTCOME_FIXTURE': '1',
                'HERMES_INFERENCE_MODEL': 'fixture-model',
                'HERMES_INFERENCE_PROVIDER': 'fixture-provider',
                'CLIMATE_STATE_DIR': str(cli_state),

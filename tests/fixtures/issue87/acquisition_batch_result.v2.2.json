@@ -1,0 +1,40 @@
+{
+  "schema_version": "acquisition-batch-result.v2",
+  "run_id": "scope-run-2",
+  "authoritative_status": "completed",
+  "status": "partial",
+  "full_success": false,
+  "counts": {
+    "requested": 2,
+    "updated": 1,
+    "unchanged": 0,
+    "blocked": 0,
+    "failed": 1,
+    "unresolved": 0,
+    "valid_snapshots": 1,
+    "failed_evidence": 1,
+    "succeeded": 1
+  },
+  "dispositions": [
+    {
+      "task_id": "iais-batch",
+      "site_key": "iais-batch",
+      "requested_url": "https://example.org/climate-insurance-body",
+      "disposition": "updated",
+      "reason": "scope.changed",
+      "artifact_id": "manifest-iais-batch-2"
+    },
+    {
+      "task_id": "other-source",
+      "site_key": "other-source",
+      "requested_url": "https://example.org/climate-insurance-snippet",
+      "disposition": "failed",
+      "reason": "scope.run_failed"
+    }
+  ],
+  "summary": {
+    "checked": 2,
+    "succeeded": 1,
+    "failed": 1
+  }
+}

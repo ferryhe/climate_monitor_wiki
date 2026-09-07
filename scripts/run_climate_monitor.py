@@ -138,9 +138,36 @@ def _enforce_production_env_fixture(env: os._Environ | dict) -> None:
             )
 
 
+def _outcome_fixture_root(path: Path | None = None) -> Path | None:
+    """An explicit dependency-free fixture seam, confined to a temporary dry run."""
+    if not os.environ.get("CLIMATE_DRY_RUN_OUTCOME_FIXTURE"):
+        return None
+    import tempfile
+    raw_root = os.environ.get("CLIMATE_DRY_RUN_ROOT", "")
+    root = Path(raw_root).resolve()
+    temp = Path(tempfile.gettempdir()).resolve()
+    if (os.environ.get("CLIMATE_DRY_RUN_OUTCOME_FIXTURE") != "1"
+            or os.environ.get("CLIMATE_DRY_RUN") != "1"
+            or not raw_root or not Path(raw_root).is_absolute()
+            or root == temp or not root.is_relative_to(temp)
+            or (path is not None and not path.resolve().is_relative_to(root))):
+        raise SystemExit("outcome fixture requires an isolated temporary dry run")
+    return root
+
+
 def _read_outcome(path: Path) -> dict:
-    from web_listening.contracts.acquisition_batch import AcquisitionBatchResultV2
+    fixture_root = _outcome_fixture_root(path)
     try:
+        try:
+            from web_listening.contracts.acquisition_batch import AcquisitionBatchResultV2
+        except ModuleNotFoundError as exc:
+            if exc.name != "web_listening" or fixture_root is None:
+                raise
+            # No schema substitute: the test-only helper accepts two exact saved
+            # public payloads. Installed upstream always owns validation above.
+            import runpy
+            validate = runpy.run_path(str(ROOT / "tests/issue87_outcome_fixture.py"))["validate_fixture"]
+            return validate(path.read_text(encoding="utf-8"))
         return AcquisitionBatchResultV2.model_validate_json(
             path.read_text(encoding="utf-8")
         ).model_dump(mode="json")
@@ -915,6 +942,15 @@ def main() -> None:
             )
 
     _enforce_production_env_fixture(os.environ)
+
+    fixture_root = _outcome_fixture_root()
+    if fixture_root is not None:
+        if (args.authoring_mode not in {"prepare", "finalize"} or not args.no_sync
+                or args.article_evidence_loopback != "scripts.hermes_job:dry_run_unavailable_provider"):
+            parser.error("outcome fixture is only for offline prepare/finalize tests")
+        for value in (args.staging_dir, args.source_dir, args.state_dir, args.wiki_dir):
+            if not value or not Path(value).resolve().is_relative_to(fixture_root):
+                parser.error("outcome fixture output paths must stay inside the dry-run root")
 
     if args.authoring_mode == "run":
         return _run_authoring_sequence(args, parser)
