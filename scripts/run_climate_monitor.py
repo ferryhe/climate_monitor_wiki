@@ -272,6 +272,7 @@ def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
         if canonical in by_canonical:
             raise SystemExit(f"manifest duplicate canonical url: {canonical}")
         final_url = str(raw.get("final_url") or url)
+        display_pillar = raw.get("display_pillar") or "A"
         by_canonical[canonical] = {
             "source_id": manifest["source"]["source_id"],
             "final_url": final_url,
@@ -280,8 +281,8 @@ def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
             "summary": raw.get("summary") or "",
             "summary_basis": raw.get("summary_basis") or "page",
             "title_basis": raw.get("title_basis") or "upstream_artifact",
-            "display_pillar": raw.get("display_pillar") or "A",
-            "origins": raw.get("origins") or [{"pillar": "A", "source": manifest["source"]["source_id"], "url": url}],
+            "display_pillar": display_pillar,
+            "origins": raw.get("origins") or [{"pillar": display_pillar, "source": manifest["source"]["source_id"], "url": url}],
             "content_hash": raw.get("content_hash") or "",
         }
     ordered = sorted(by_canonical.values(), key=lambda r: canonical_url(r["final_url"]))

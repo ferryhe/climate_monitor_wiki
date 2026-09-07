@@ -448,3 +448,16 @@ def test_dependency_free_cli_cannot_author_or_escape(dependency_free_outcome, mo
         monitor.main()
     assert error.value.code == 2
     assert not (root / 'staging').exists()
+
+
+@pytest.mark.parametrize('pillar', ['A', 'B', None])
+def test_manifest_fallback_origin_matches_display_pillar(pillar):
+    item = {'url': 'https://example.org/article'}
+    if pillar is not None:
+        item['display_pillar'] = pillar
+    manifest = {'source': {'source_id': 'wri'}, 'discovered_items': [item]}
+    record = monitor._collect_same_run_records({}, manifest)[0]
+    assert record['display_pillar'] == (pillar or 'A')
+    assert record['origins'] == [{'pillar': pillar or 'A', 'source': 'wri', 'url': item['url']}]
+    item['origins'] = [{'pillar': 'B', 'source': 'explicit-source', 'url': item['url']}]
+    assert monitor._collect_same_run_records({}, manifest)[0]['origins'] == item['origins']

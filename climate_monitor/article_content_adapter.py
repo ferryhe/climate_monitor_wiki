@@ -566,7 +566,13 @@ def verify_record(record, *, inputs_index, content_resolver=None, output_dir=Non
         if not digest:
             raise ArticleContentAdapterError("content_ref_unresolvable")
         inline = record.get("content")
-        if content_resolver is not None:
+        if ref is None and inline is not None:
+            # Upstream may retain a complete inline body if writing its artifact
+            # failed. It still needs the same SHA and identity verification.
+            body = inline.encode("utf-8") if isinstance(inline, str) else inline
+            if not isinstance(body, bytes):
+                raise ArticleContentAdapterError("content_ref_unresolvable")
+        elif content_resolver is not None:
             # Path 1: explicit resolver (test/CI seam).
             if not ref:
                 raise ArticleContentAdapterError("content_ref_unresolvable")
@@ -783,11 +789,11 @@ def build_article_evidence_artifact(
             if record.get("status") != "ok":
                 continue
             output_dir = output_dirs.get(record["article_id"])
-            if output_dir is not None:
+            if output_dir is not None and record.get("content_ref") is not None:
                 body = resolve_content_ref(record["content_ref"], record["content_hash"],
                                            output_dir=output_dir)
                 record["content"] = body.decode("utf-8")
-            elif resolver is not None:
+            elif resolver is not None and record.get("content_ref") is not None:
                 body = resolver(record["content_ref"], record["content_hash"])
                 if hashlib.sha256(body).hexdigest() != record["content_hash"]:
                     raise ArticleContentAdapterError("content_ref_hash_mismatch")

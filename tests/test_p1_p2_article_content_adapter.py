@@ -323,3 +323,44 @@ def test_authoring_can_retain_verified_ref_only_content(fake_upstream):
     assert hashlib.sha256(record["content"].encode()).hexdigest() == record["content_hash"]
     output = Path(fake_upstream.calls[0]["output_dir"])
     assert record["content"].encode() == (output / record["content_ref"]).read_bytes()
+
+
+@pytest.mark.parametrize('storage', ['output_dir', 'resolver'])
+def test_authoring_retains_inline_without_ref(tmp_path, monkeypatch, storage):
+    body = 'Verified inline climate evidence.'
+    def provider(aid, url):
+        return {'status': 'ok', 'article_id': aid, 'requested_url': url,
+                'content': body, 'content_ref': None,
+                'content_hash': hashlib.sha256(body.encode()).hexdigest()}
+    if storage == 'output_dir':
+        provider.output_dir = str(tmp_path)
+    else:
+        provider.content_resolver = lambda *args: pytest.fail('resolved absent reference')
+    monkeypatch.setattr(adapter, 'resolve_content_ref',
+                        lambda *args, **kwargs: pytest.fail('resolved absent reference'))
+    artifact = adapter.build_article_evidence_artifact(
+        [{'article_id': 'inline', 'url': 'https://example.org/inline'}],
+        providers=(provider,), report_date="2026-09-07", include_verified_content=True)
+    record = artifact['records'][0]
+    assert record['content'] == body
+    assert record['content_ref'] is None
+    assert record['content_hash'] == hashlib.sha256(body.encode()).hexdigest()
+    assert record['record_hash'] == adapter._record_digest(record)
+    assert artifact['artifact_digest'] == adapter._artifact_digest(artifact['records'])
+
+
+@pytest.mark.parametrize('corruption', ['hash', 'identity', 'referenced_file'])
+def test_authoring_inline_still_requires_integrity(tmp_path, corruption):
+    body = 'Verified inline climate evidence.'
+    (tmp_path / 'body.txt').write_text('Different file bytes')
+    def provider(aid, url):
+        return {'status': 'ok', 'article_id': aid,
+                'requested_url': 'https://example.org/wrong' if corruption == 'identity' else url,
+                'content': body, 'content_ref': 'body.txt' if corruption == 'referenced_file' else None,
+                'content_hash': '0' * 64 if corruption == 'hash' else hashlib.sha256(body.encode()).hexdigest()}
+    provider.output_dir = str(tmp_path)
+    with pytest.raises(adapter.ArticleContentAdapterError, match=(
+            'wrong_requested_url' if corruption == 'identity' else 'content_hash_mismatch')):
+        adapter.build_article_evidence_artifact(
+            [{'article_id': 'inline', 'url': 'https://example.org/inline'}],
+            providers=(provider,), report_date="2026-09-07", include_verified_content=True)
