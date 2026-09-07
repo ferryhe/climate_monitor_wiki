@@ -577,7 +577,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             or args.request_timeout <= 0
         ):
             raise _JobError("invalid_runtime_options")
-        normalized_base = _base_url(args.base_url, args.expected_api_host)
         dry_result = _run_sync(args, dry_run=True, expected_report_sha256=args.expected_report_sha256) if args.expected_report_sha256 else _run_sync(args, dry_run=True)
         if args.expected_report_sha256 and dry_result["report_sha256"] != args.expected_report_sha256:
             raise _JobError("sync_identity_changed")
@@ -586,6 +585,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise _JobError("dry_run_database_changed")
             print(json.dumps(dry_result, sort_keys=True, separators=(",", ":")))
             return 0
+        normalized_base = _base_url(args.base_url, args.expected_api_host)
         live_result = _run_sync(
             args,
             dry_run=False,

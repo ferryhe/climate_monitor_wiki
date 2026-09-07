@@ -37,7 +37,9 @@ def path_env(name, *, directory=False, exists=True):
         raise Blocked('production_fixture_path_forbidden')
     if exists and not (path.is_dir() if directory else path.is_file()):
         raise Blocked('unavailable_' + name)
-    if not exists and not path.parent.is_dir():
+    if not exists and directory and path.exists() and not path.is_dir():
+        raise Blocked('unavailable_' + name)
+    if not exists and not directory and not path.parent.is_dir():
         raise Blocked('unavailable_' + name)
     return path
 
@@ -69,8 +71,8 @@ def email_command(day, *, dry_run):
     from climate_delivery.paths import validate_run_paths
     from climate_monitor.semantic_bundle import verify_semantic_sidecar
     report = path_env('CLIMATE_REPORT_PATH')
-    output = path_env('CLIMATE_DELIVERY_OUTPUT_DIR', directory=True)
-    state = path_env('CLIMATE_DELIVERY_STATE_DIR', directory=True)
+    output = path_env('CLIMATE_DELIVERY_OUTPUT_DIR', directory=True, exists=False)
+    state = path_env('CLIMATE_DELIVERY_STATE_DIR', directory=True, exists=False)
     config = path_env('CLIMATE_DELIVERY_CONFIG')
     validate_run_paths(report, output, state, config)
     if parse_weekly_report(report).report_date != day:

@@ -51,6 +51,29 @@ def _argv(tmp_path):
     ]
 
 
+@pytest.mark.parametrize('base_url', ['', 'https://climate.example'])
+def test_dry_run_does_not_require_live_api_configuration(tmp_path, monkeypatch, capsys, base_url):
+    monkeypatch.setenv('API_BASE_URL', base_url)
+    monkeypatch.delenv('SITE_HOST', raising=False)
+    calls = []
+
+    def sync(args, *, dry_run, **kwargs):
+        calls.append(dry_run)
+        assert dry_run
+        return _sync_payload(dry_run=True)
+
+    monkeypatch.setattr(refresh, '_run_sync', sync)
+    argv = _argv(tmp_path)[:-4]
+    assert refresh.main(argv + ['--dry-run']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['dry_run'] is True
+    assert result['database_sha256_before'] == result['database_sha256_after']
+    assert calls == [True]
+    assert refresh.main(argv) == 1
+    assert json.loads(capsys.readouterr().out)['kind'] == 'invalid_base_url'
+    assert False not in calls
+
+
 def _sync_payload(*, dry_run: bool, status: str = "ok"):
     performed = not dry_run and status == "ok"
     return {

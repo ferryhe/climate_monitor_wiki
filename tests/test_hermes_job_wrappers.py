@@ -96,6 +96,41 @@ def test_f2_email_plan_uses_public_cli_and_checks_identity(tmp_path, monkeypatch
         job.email_command('2026-08-10', dry_run=False)
 
 
+def test_email_preflight_accepts_uncreated_delivery_roots(tmp_path, monkeypatch, capsys):
+    import json
+    from scripts import hermes_job as job
+    from test_climate_delivery_pipeline import delivery_report, configure_env
+    from test_climate_delivery_email import config_file
+
+    configure_env(monkeypatch)
+    report = delivery_report(tmp_path)
+    status = tmp_path / 'status'
+    status.mkdir()
+    monkeypatch.setenv('REPORT_DATE', '2026-08-10')
+    monkeypatch.setenv('CLIMATE_REPORT_PATH', str(report))
+    monkeypatch.setenv('CLIMATE_DELIVERY_CONFIG', str(config_file(tmp_path)))
+    monkeypatch.setenv('CLIMATE_JOB_STATUS_DIR', str(status))
+    roots = [tmp_path / 'new-output' / 'output', tmp_path / 'new-state' / 'state']
+    for name, root in zip(('CLIMATE_DELIVERY_OUTPUT_DIR', 'CLIMATE_DELIVERY_STATE_DIR'), roots):
+        monkeypatch.setenv(name, str(root))
+    checked = []
+    monkeypatch.setattr(job, 'verify_monitor', lambda report, day: checked.append((report, day)))
+    assert job.main(['email', '--preflight']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'preflight_passed'
+    assert checked == [(report, '2026-08-10')]
+    assert all(not root.parent.exists() for root in roots)
+    for name in ('CLIMATE_DELIVERY_OUTPUT_DIR', 'CLIMATE_DELIVERY_STATE_DIR'):
+        with monkeypatch.context() as patch:
+            patch.setenv(name, str(report))
+            with pytest.raises(job.Blocked, match='unavailable_' + name):
+                job.email_command('2026-08-10', dry_run=True)
+    for name in ('CLIMATE_REPORT_PATH', 'CLIMATE_DELIVERY_CONFIG'):
+        with monkeypatch.context() as patch:
+            patch.setenv(name, str(tmp_path / 'missing-file'))
+            with pytest.raises(job.Blocked, match='unavailable_' + name):
+                job.email_command('2026-08-10', dry_run=True)
+
+
 def test_f9_registry_runner_has_true_dry_run(tmp_path, monkeypatch, capsys):
     import scripts.weekly_registry_refresh as refresh
     from test_weekly_registry_refresh import _argv, _sync_payload
