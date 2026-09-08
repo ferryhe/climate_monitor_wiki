@@ -220,7 +220,11 @@ def test_weekly_driver_fails_before_artifacts_seen_state_or_sync_on_invalid_auth
     assert not wiki_dir.exists()
 
 
-def test_weekly_driver_json_result_records_safe_provenance(tmp_path):
+@pytest.mark.parametrize("provider,model", [
+    ("openai", "gpt-5-mini"),
+    ("nous", "meituan/longcat-2.0:free"),
+])
+def test_weekly_driver_json_result_records_safe_provenance(tmp_path, provider, model):
     source_config = tmp_path / "sources.yaml"
     run_config = tmp_path / "run_config.yaml"
     manifest = tmp_path / "manifest.json"
@@ -243,8 +247,8 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path):
         authoring_response_path=authoring,
         sync=False,
         repository_commit_sha="b" * 40,
-        model_provider="openai",
-        model="gpt-5-mini",
+        model_provider=provider,
+        model=model,
         temperature=0.2,
         max_output_tokens=4000,
     )
@@ -278,8 +282,8 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path):
         "identities": [article_identity(item)],
     }
     assert provenance["model"] == {
-        "provider": "openai",
-        "model": "gpt-5-mini",
+        "provider": provider,
+        "model": model,
         "settings": {"max_output_tokens": 4000, "temperature": 0.2},
     }
     Draft202012Validator(
@@ -509,7 +513,7 @@ def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):
         "schema_version": "article-evidence.v1",
         "report_date": "2026-05-18",
         "generated_at": "",
-        "dependency_status": {},
+        "dependency_status": "available",
         "record_count": 1,
         "records": [
             {
@@ -534,6 +538,13 @@ def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):
         ],
         "artifact_digest": "0" * 64,
     }
+    # This path now retains the producer artifact instead of fetching it
+    # again, so use real hashes and the complete producer schema.
+    from climate_monitor.article_content_adapter import _artifact_digest, _record_digest
+    record = article_evidence["records"][0]
+    record.update(content=body, failure_reason=None)
+    record["record_hash"] = _record_digest(record)
+    article_evidence["artifact_digest"] = _artifact_digest(article_evidence["records"])
     article_evidence_path.write_text(json.dumps(article_evidence), encoding="utf-8")
 
     stats = {
@@ -664,8 +675,7 @@ def test_v2_authoring_response_exposes_canonical_57_42_15_split(tmp_path):
     ``total == updated + unchanged + blocked + failed + unresolved`` before any
     artifact is written.
 
-    The orchestrator keeps ``max_items_per_report`` of the manifest-fixture
-    candidates; we author a single kept article here and bind the response's
+    We author the single manifest-fixture article here and bind the response's
     ``stats`` dict to the canonical 57-record split. The split is what the
     driver validates, exposes, and that downstream consumers (Hermes
     wrappers, 09:00 climate_delivery, AC-5 dry-run) read.

@@ -2,11 +2,19 @@
 
 This module builds and incrementally updates a SQLite registry from the Markdown
 reports already in `sources/`. It also provides a deterministic read-only
-candidate-selection plan and a Publisher safety gate. This repository still
-does not change the 08:00 Hermes monitor, rewrite canonical Markdown, or create
-or modify any scheduled job.
+candidate-selection plan and a Publisher safety gate. This module does not
+generate or rewrite canonical Markdown, or create or modify scheduled jobs.
+See [the current module map](../PIPELINE_REFERENCE.md) for its place after
+reviewed publication and deployment.
 
 ## Boundaries
+
+`climate_registry.contract` validates exact read contracts for schemas 3, 4, 5
+and 6 and reports the actual version. New migrations/candidates target v6.
+Schema v4 introduced validated fallback resolutions; v5 added article semantic
+storage, and v6 added its report binding and relational constraints. Older
+supported snapshots remain read-only compatibility inputs; readers never migrate
+them implicitly.
 
 - Code, migrations, tests, and this contract live in Git.
 - Runtime SQLite files, WAL/SHM companions, and generated audit output do not.
@@ -89,7 +97,7 @@ The update contract is append-only:
 ## Read-only candidate planning and Publisher gate
 
 `plan-selection` evaluates a bounded producer candidate document against an
-exact, synchronized supported Registry snapshot (v3 or v4 during rollout):
+exact, synchronized supported Registry snapshot (v3, v4, v5 or v6):
 
 ```bash
 python -m climate_registry plan-selection \
@@ -159,9 +167,12 @@ is only a representation of canonical Markdown; it is never evidence that the
 external article body changed. Historical canonical URLs therefore remain
 rejected regardless of a rewritten report title or summary.
 
-The weekly Publisher always applies the same-run URL/title and publication
+The weekly Publisher applies the same-run URL and publication
 policy gate to authoritative reports not yet present in `main`, before copying,
 staging, committing, pushing, or operating a PR. It does not rewrite a report.
+For a verified SHA-bound semantic sidecar, it disables duplicate-title rejection:
+distinct canonical URLs may share a title. Legacy reports retain the stricter
+same-title rejection described for the default selection policy above.
 Every recognized Pillar item must have exactly one associated explicit valid
 HTTP(S) source-link marker; missing, orphaned, multiple, or ambiguous links fail
 closed. The validated report SHA is checked again after the temporary-clone
@@ -409,9 +420,9 @@ CLIMATE_REGISTRY_DB=/external/path/article-registry.sqlite3
 ```
 
 The path must resolve outside the repository. If it is absent, unavailable, or
-not at exact schema version 3 or 4, `/api/registry/status` returns HTTP 503 with a stable
+not at a supported exact schema version (3, 4, 5 or 6), `/api/registry/status` returns HTTP 503 with a stable
 machine reason while Chat, the Wiki, and `/api/health` remain available. A valid
-v3 or v4 database, including an empty one, returns HTTP 200 and reports its actual
+supported database, including an empty one, returns HTTP 200 and reports its actual
 version. The application never creates,
 migrates, replaces, or repairs this database. Every request opens a fresh
 SQLite URI connection using `mode=ro&immutable=1` and `query_only`, so an atomic
@@ -441,22 +452,21 @@ For the container, use `docker-compose.registry.yml` with
 `CLIMATE_REGISTRY_HOST_DIR` pointing to the external directory. The override
 sets `CLIMATE_REGISTRY_DB=/registry/article-registry.sqlite3` and
 mounts the directory read-only. The mounted main database must be self-contained
-and validated at exact schema v3 or v4; checkpoint/reconcile it before deployment so the
+and validated against its exact supported schema; checkpoint/reconcile it before deployment so the
 reader never depends on WAL, SHM, or journal sidecars. See
 [`deployment.md`](deployment.md#optional-read-only-article-registry) for the
 status matrix, permissions, smoke tests, and rollback procedure.
 
-The first operational adoption still requires a separate owner-approved server
-procedure to install a production database and make it readable at the
-configured external path. The website and Publisher can read an explicitly
+Installation or replacement of a production database uses the controlled server
+procedure and an explicit external path. The website and Publisher can read an explicitly
 configured snapshot, but this module does not set host configuration, change a
 Hermes prompt, create a scheduled job, or run an update/capture operation.
 
-The deployed DB-first candidate transaction for a future exact-date weekly
-update is documented in
-[`weekly-registry-automation.md`](weekly-registry-automation.md). That feature
-adds `weekly-sync` and a tested, disabled 10:30 runner draft; the Hermes job is
-still not created. The exact-date Publisher ledger repair is complete and
-valid; the remaining production gate is deployment of this validated-fallback
-change followed by the controlled exact sync and API/DB/hash verification
-described there.
+The DB-first `weekly-sync` candidate transaction and validated fallback/semantic
+imports are documented in
+[`weekly-registry-automation.md`](weekly-registry-automation.md). The existing
+Registry wrapper uses the same runner and explicit report/deployment gates.
+The latest SSH inventory still has legacy Step jobs; use
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#verification-and-cutover) for
+current deployment, full-chain, unique-schedule and normal-run completion gates.
+The completed August Publisher ledger repair remains historical evidence.

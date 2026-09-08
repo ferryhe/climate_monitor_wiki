@@ -27,7 +27,6 @@ def _config() -> RunConfig:
         actuarial_keywords=("insurance", "capital", "supervision"),
         research_queries=("climate insurance report",),
         research_lookback_days=30,
-        max_items_per_report=12,
         source_dir="sources",
         wiki_dir="wiki",
         write_empty_report=False,

@@ -138,7 +138,7 @@
         "model": {
           "type": "string",
           "maxLength": 120,
-          "pattern": "^[^\\\\/:\\r\\n\\t]*$"
+          "pattern": "^(?:[^\\\\/:\\r\\n\\t]*|[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?)$"
         },
         "settings": {
           "type": "object",

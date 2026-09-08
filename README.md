@@ -1,20 +1,14 @@
 # Climate Monitor Wiki
 
-Current operations caveat (2026-09-07 audit): the four climate cron jobs and
-runtime configuration are not provisioned. Monday 08/09/10/10:30 UTC means
-16/17/18/18:30 CST in Hermes (Asia/Shanghai); never change the global timezone.
-Each `scripts/hermes_job_*.sh --preflight` is read-only and fails closed on
-missing configuration. Production monitor acquisition remains blocked until
-the same-run outcome/evidence/authoring link is executable. Fixtures require
-`CLIMATE_DRY_RUN=1` plus `CLIMATE_DRY_RUN_FIXTURE_DIR` and an isolated
-`CLIMATE_DRY_RUN_ROOT`. Render has no shared source for local scheduler evidence;
-`/api/job-status` remains HTTP 503 `not_configured`. Issue #87 stays OPEN until
-a normal Monday run matches through delivery, reviewed publication, deployment
-and Registry. See PIPELINE_REFERENCE.md for the intended wrapper contracts;
-historical job IDs below are not proof of current provisioning.
-
-
 A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research, compiled weekly from automated monitoring.
+
+**Status, 2026-09-08:** the URL-by-URL monitor and editable discovery/relevance
+prompts are implemented and tested in the SSH sandbox. Production still uses
+the legacy Step jobs; the four-slot deployment below has not been switched on.
+Issue #87 was closed by the owner; its closure is not deployment evidence.
+Pillar B publication-date enforcement, a complete run over the configured sites,
+and controlled deployment/scheduler verification remain cutover gates. See
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover).
 
 ## Web + Obsidian Surfaces
 
@@ -29,17 +23,13 @@ This repo exposes the monitoring corpus through three web tabs plus an Obsidian 
   Both graph modes are precomputed by the API so the workspace can render quickly without rebuilding the graph client-side.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
 
-See [docs/project-closeout.md](docs/project-closeout.md) for the operator guide,
-module map, API/CLI audit, scheduled-job boundaries, and closeout record.
+See [docs/ui-surfaces.md](docs/ui-surfaces.md) for the operator interfaces and
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md) for the current module map,
+entrypoints and scheduled-job boundaries.
 
-This task is based on `origin/main` at `cf19da8`. Do not infer the currently
-deployed commit from this document; confirm it in the controlled deployment
-runbook. The production Registry and Article Detail behavior is healthy. The
-legacy Publisher record has already been repaired and validates with its formal
-identity. Two controlled captures observed 21 successes and four deterministic
-publisher-wall 403 failures; their candidates were not promoted and the live DB
-remained byte-for-byte unchanged. The remaining gate is deployment of validated
-fallback coverage, a controlled exact sync, and creation of the disabled 10:30 job.
+Use current `origin/main` for development and inspect the server checkout and
+runtime before deployment. Superseded handoffs remain available in Git history;
+they are not a current job inventory or a deployment baseline.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
 Chat now also exposes three answer modes:
@@ -129,68 +119,90 @@ python scripts/reload_and_smoke_test.py --date "$REPORT_DATE"
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
 
-## Automated Climate Monitor
+## Modular weekly monitor
 
-The intended Hermes monitor reads `monitoring/supranational_sources.yaml`, uses `web_listening` as the external acquisition layer, filters climate-related and actuarial-relevant items, and writes a Monday-dated report to its authoritative report directory. At 09:00 UTC, the intended Weekly Climate Email (PDF highlights) job is the only delivery-artifact producer and sends the result to the existing four recipients. At 10:00 UTC, `scripts/weekly_wiki_refresh.sh` invokes the isolated publisher: it clones the latest `origin/main` into a temporary directory, imports all unpublished weekly reports, regenerates the wiki, validates the result, and updates the fixed `codex/hermes-weekly-monitor` pull-request branch.
+The canonical URL is the article identity. Pillar A and Pillar B describe how a
+URL was discovered; the combined record retains every origin and source name.
+Titles are metadata: different URLs with the same title remain separate articles.
 
-The deployed application includes a tested Monday 10:30 Weekly Registry Sync
-runner, DB-first Article Detail enrichment, and exact backup/restore. The Hermes
-task is still unconfigured and unverified. The exact 2026-08-17 legacy Publisher
-record repair is complete and valid. After this validated-fallback change is
-merged and deployed, `weekly-sync` must pass an exact controlled sync and API/DB
-hash verification before the task is created disabled. The
-tracked `article_metadata/` JSON remains a compatibility fallback rather than a
-weekly generated artifact. The system must not be called `PRODUCTION COMPLETE`
-until the disabled 10:30 task is separately validated and enabled and at least
-one normal Monday cycle has been observed.
+| Module | Program/package | Responsibility |
+|---|---|---|
+| Site acquisition (Pillar A) | External `web_listening` public batch/export APIs | Site monitoring, governed readers and same-run outcome/manifest artifacts |
+| Discovery (Pillar B) | Hermes tools + `weekly_monitor/prompt_loader.py` | Execute the editable search task and save candidates; the renderer itself does not search |
+| Prepare and queue | `scripts/run_climate_monitor.py` | Validate inputs, merge URLs, freeze evidence, run/resume each URL serially |
+| Candidate identity | `climate_monitor/article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | Canonical URLs, merged origins and artifact identities |
+| Evidence adapter | `climate_monitor/article_content_adapter.py` | Consume upstream public content results, preserve attempts/status/hashes and distinguish body, snippet and no evidence |
+| Optional page titles | `climate_monitor/article_title.py` | Extract the current page H1/title offline, preserving capitalization |
+| Authoring rules and validation | `climate_monitor/weekly_monitor/`, `climate_monitor/taxonomy.py` | Compose relevance rules, validate both relevance decisions, summary, categories and keywords |
+| Report/state transaction | `climate_monitor/orchestrator.py`, `seen_state.py` | Finalize the validated Markdown, sidecar, candidate evidence and URL history |
+| Delivery | `climate_delivery/` | Reuse the executive narrative, render PDF/manifest and perform retained email delivery |
+| Publication | `scripts/publish_weekly_reports.py` | Regenerate wiki in an isolated clone and update the rolling content PR |
+| Registry and application | `climate_registry/`, `agentic_wiki/`, `api_server.py` | Post-deploy Registry sync, historical reports, retrieval and web API |
 
-The next Registry candidate uses schema v4 append-only capture resolutions for
-the narrow case of a publisher bot-wall HTTP 403. A resolution records coverage,
-not fabricated fetched content: Article Detail still uses one complete bundle
-in the order DB enrichment → JSON annotation → SHA-matched report metadata.
-Timeouts, DNS failures, 5xx responses, malformed/incomplete fallback data, and
-identity mismatches block promotion. No Browserbase/proxy/CAPTCHA-bypass path is
-part of this design.
+### New flow
 
-The production checkout is never used as a generation workspace. Publication is deliberately split into **generate → rolling PR → human merge → server deploy** so production `main` stays clean and can be fast-forwarded safely.
+This diagram describes the implemented monitor and intended downstream cutover.
+Acquisition and search must supply current artifacts before the monitor runs;
+the monitor does not automatically perform Pillar B search.
 
-Isolated local fixture run (all generated state, sources, and wiki pages stay
-outside the checkout):
-
-```bash
-DRY_RUN_DIR="$(mktemp -d)"
-CLIMATE_WIKI_CADENCE=weekly \
-python scripts/run_climate_monitor.py \
-  --date 2026-05-18 \
-  --manifest-fixture monitoring/fixtures/web_listening_manifest_sample.json \
-  --research-fixture monitoring/fixtures/research_results_sample.json \
-  --state-dir "$DRY_RUN_DIR/state" \
-  --source-dir "$DRY_RUN_DIR/sources" \
-  --wiki-dir "$DRY_RUN_DIR/wiki" \
-  --no-update-seen-state
-echo "Fixture outputs: $DRY_RUN_DIR"
+```mermaid
+flowchart TD
+    A["Pillar A: web_listening<br/>same-run outcome + manifest"] --> P
+    B["Pillar B: Hermes search<br/>editable search prompt"] --> P
+    P["Prepare: run_climate_monitor.py<br/>canonical URL merge + frozen evidence"] --> T
+    T["Optional article_title helper<br/>verified page H1/title"] --> Q
+    Q["Existing driver: serial URL queue"] --> U
+    U["One fresh Hermes context per URL<br/>climate AND actuarial relevance<br/>summary + categories + keywords"] --> V
+    V["Validate and save this URL result"] --> N{"All URLs complete?"}
+    N -->|more URLs| Q
+    N -->|failed URL| R["Keep successful checkpoints<br/>resume unfinished URLs"]
+    R --> Q
+    N -->|yes| E["One executive-summary invocation<br/>qualified article summaries only"]
+    E --> F["Finalize: weekly_monitor + orchestrator<br/>Markdown + sidecar + URL-state transaction"]
+    F --> D["climate_delivery<br/>PDF + manifest + email"]
+    F --> W["Isolated publisher<br/>rolling content PR"]
+    W --> M["Review + merge + controlled deploy"]
+    M --> G["climate_registry<br/>gated weekly sync"]
 ```
 
-For an intentional live, mutating run on the controlled server, choose the
-Monday report date, install or point to `web_listening`, then opt in explicitly:
+Each URL sees only its own evidence. The relevance rules are maintained
+separately but included in the same invocation as summary, categories and
+keywords. There is no article-count cap. A failed URL does not stop the queue;
+it blocks finalization until repaired. Resume revalidates successful checkpoints
+and reuses frozen evidence. The executive summary has a separate checkpoint.
+See [the runtime limitation](PIPELINE_CONFIG.md#monitor-v2-evidence-authoring):
+one Hermes invocation is not a guarantee of one provider API request after a
+stream failure.
 
-```bash
-REPORT_DATE="<new Monday, YYYY-MM-DD>"
-WEB_LISTENING_PROJECT_PATH=../web_listening \
-CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1 \
-CLIMATE_MONITOR_ENABLE_LIVE_RESEARCH=1 \
-CLIMATE_WIKI_CADENCE=weekly \
-python scripts/run_climate_monitor.py --date "$REPORT_DATE"
-```
+### Module configuration
 
-Hermes is the sole report generator. There is no GitHub Actions generator. An emergency manual run is performed only on the controlled server with the existing monitor and rolling-PR publisher.
+- Search wording: `monitoring/jobs/weekly-climate-monitor-08h/prompts/pillar-b-search-v1.prompt.md`.
+- Relevance rules: the same directory's `article-relevance-v1.prompt.md`.
+- Categories/semantic constraints: `monitoring/taxonomies/article_categories_v1.yaml`, validated against its versioned identity.
+- Page titles: `python -m climate_monitor.article_title saved-page.html`; disable in the monitor with `--no-page-titles` on a fresh prepare.
+- Article/executive response instructions currently remain in the existing CLI;
+  the pinned `weekly-monitor-v1.prompt.md` retains its contract/provenance role.
+  Not every prompt section has been externalized.
 
-Pipeline internals are documented in [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md)
-(architecture, single production chain, hermes job wrappers, dedup, MD report
-structure) and [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) (the four-job weekly
-schedule + retained LLM prompt templates). The numbered `stepN_*.py` scripts
-on disk are **compatibility fallbacks only** — they are referenced by the
-on-disk step-parser and step-script tests but are not scheduled.
+Keep these modules in the existing driver path. Reuse upstream public acquisition
+APIs rather than copying reader policy into climate code. Remove imports, old
+branches and configuration made unused by a replacement. Retire legacy Step
+entrypoints only after their scheduler callers are disabled and equivalent
+coverage is verified; the 2026-09-08 audit still found them enabled.
+
+### Run and deployment references
+
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md) owns the detailed program/artifact
+map, executable monitor command, resume behavior, compatibility boundary and
+cutover evidence. [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) owns editable prompts,
+runtime configuration and the intended Monday 08:00/09:00/10:00/10:30 UTC schedule.
+Hermes uses Asia/Shanghai, so these are 16:00/17:00/18:00/18:30 local time.
+
+The 09:00 delivery path owns the PDF/manifest and retained email. Publication
+uses **generate → isolated rolling PR → review/merge → deploy**. Registry sync
+requires that deployed report identity and explicit write gates. Generation
+must use external state/output directories, leaving production `main` clean.
+Hermes is the sole report generator; there is no GitHub Actions generator.
 
 ## Deploy on Render
 
@@ -274,6 +286,8 @@ Coverage today focuses on:
 - rolling date-window summary coverage such as `past 7 days`
 - `/api/config` metadata needed by graph/dataview
 - showcase root HTML contract for the chat and Obsidian tabs
+- canonical URL/history selection, frozen evidence and serial authoring recovery
+- editable prompts, page titles, uncapped reports and bound delivery semantics
 
 Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details live in [docs/ui-surfaces.md](docs/ui-surfaces.md).
 
@@ -294,9 +308,8 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ## Reports
 
-26 source-backed report pages are present: 20 legacy daily reports from April,
-one June report, and five weekly reports from **2026-07-27 through 2026-08-24**.
-Source files in `sources/` contain the original report content. Weekly rendering
+The report inventory is maintained in [wiki/index.md](wiki/index.md), with
+original report content in [sources/](sources/). Weekly rendering
 shows only dates with a real source report and never manufactures gap pages.
 
 ## Key Topics
@@ -313,8 +326,14 @@ shows only dates with a real source report and never manufactures gap pages.
 
 ## Data Sources
 
-Monitoring reports are sourced from 14 high-priority organizations such as
-IAIS, ISSB, EIOPA, and Swiss Re, plus 5 rotating normal-priority organizations
-per run via automated monitoring.
+Pillar A consumes the configured `web_listening` sites and their reviewed
+acquisition scopes. Pillar B uses the editable search prompt to discover
+additional articles. See [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) for configuration
+ownership. A report's checked-site count comes from its actual upstream outcome,
+not a fixed inventory or the number of discovered articles.
 
-_Last updated: 2026-09-03_
+Generated previews and audit output belong in the ignored `/output/` directory
+or external runtime storage. Canonical `sources/`, derived `wiki/`, and intentional
+test fixtures remain tracked.
+
+_Operational documentation updated: 2026-09-08_

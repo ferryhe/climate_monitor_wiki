@@ -7,10 +7,14 @@ content database, or replacement for the Article Registry.
 The repo-owned 10:00 Publisher wrapper records its own outcome after the rolling
 PR transaction and production-checkout integrity check have completed. The
 repository now contains a strict weekly monitor driver and prompt provenance
-contract, but the live 08:00 producer still belongs to Hermes until a separately
-authorized cutover is performed. This application cannot truthfully reconstruct
-Hermes' 57-source results or registry revision from generated Markdown; Monitor
-producer wiring and live scheduler changes remain separate concerns.
+contract. The same-run prepare/serial-authoring/finalize producer wiring is
+implemented, while the 2026-09-08 SSH inventory still showed the legacy Step
+schedule. Source outcomes and Registry-revision evidence must come from upstream
+artifacts, not from generated Markdown or a fixed configured-site count.
+The monitor CLI does not append a monitor run-ledger attempt; its runtime producer
+integration must be verified before enabling the downstream email slot that
+requires that identity. Implementation and live scheduler cutover are separate evidence; see
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
 
 ## Attempt contract
 
@@ -69,8 +73,8 @@ Rules:
   `failed` has at least one source and no updated/unchanged outcomes. These
   constraints do not apply when source-level evidence is absent.
 - `report` and `registry_revision` are optional evidence. A producer must not
-  invent them. In particular, the app's 34-source YAML is not a substitute for
-  the upstream 57-site registry revision.
+  invent them. In particular, the app's source YAML is not a substitute for
+  the actual upstream site-registry revision or run outcomes.
 - For a Publisher success, `report` is mandatory. `report_id` must equal
   `climate-monitor-<report_date>` and therefore derives the one canonical
   filename `climate-monitor-<report_date>.md`; `sha256` is computed over that

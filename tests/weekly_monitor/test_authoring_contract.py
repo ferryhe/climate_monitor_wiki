@@ -279,12 +279,23 @@ def test_evidence_authoring_v2_binds_basis_identity_and_stats():
     assert result.items[0].summary == "Evidence-backed climate insurance summary."
     assert result.items[0].semantics["summary"] == "Evidence-backed climate insurance summary."
 
+    # Finalize rebuilds candidates from discovery, where the title may still be
+    # a URL. Use the immutable prepared page title, never a model-invented title.
+    from dataclasses import replace
+    url_only_item = replace(item, title=item.url)
+    titled = validate_authoring_response([url_only_item], response, request=request)
+    assert titled.items[0].title == article["title"] == item.title
+    assert titled.article_identities == result.article_identities
+
     # Mutation categories: each one must fail closed. The "mutated" message
     # covers request-identity/evidence tampering; "missing"/"duplicate"
     # cover identity-set violations.
     for description, mutate in (
         ("mutated-url", lambda v: v["articles"][0].__setitem__(
             "url", "https://evil.invalid"
+        )),
+        ("mutated-title", lambda v: v["articles"][0].__setitem__(
+            "title", "Model-invented replacement title"
         )),
         ("mutated-hash", lambda v: v["articles"][0]["evidence"].__setitem__(
             "content_hash", "0" * 64
@@ -524,3 +535,48 @@ def test_evidence_authoring_v2_dedupes_same_canonical_url_in_evidence():
             prompt=prompt,
             article_evidence=duplicate,
         )
+
+
+def test_redirect_targets_do_not_replace_candidate_url_identities():
+    from climate_monitor.weekly_monitor.driver import _candidate_items_from_evidence
+
+    items = [
+        _item(url="https://example.org/climate-policy", title="Climate policy"),
+        _item(url="https://example.org/insurance", title="Insurance research"),
+    ]
+    evidence = {"records": [_evidence_record(item=item) for item in items]}
+    for record in evidence["records"]:
+        record["final_url"] = "https://example.org/landing"
+    before = copy.deepcopy(evidence)
+    shells = _candidate_items_from_evidence(None, evidence)
+    assert {item.url for item in shells} == {item.url for item in items}
+    request = build_authoring_request(
+        report_date=date(2026, 9, 7), items=shells,
+        prompt=load_weekly_monitor_prompt(), article_evidence=evidence,
+        stats={"total": 2, "updated": 2, "unchanged": 0,
+               "blocked": 0, "failed": 0, "unresolved": 0},
+    )
+    assert {article["url"] for article in request["articles"]} == {item.url for item in items}
+    assert len({article["article_id"] for article in request["articles"]}) == 2
+    for article in request["articles"]:
+        assert article["origins"][0]["url"] == article["url"]
+    assert evidence == before
+
+
+def test_v2_selected_subset_receives_its_own_url_summary():
+    items = [_item(url=f'https://example.org/climate-{index}') for index in range(3)]
+    request = build_authoring_request(report_date=date(2026, 9, 7), items=items,
+        prompt=load_weekly_monitor_prompt(),
+        article_evidence={'records': [_evidence_record(item=item) for item in items]},
+        stats={'total': 1, 'updated': 1, 'unchanged': 0, 'blocked': 0, 'failed': 0, 'unresolved': 0})
+    response = dict(schema_version=AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+        contract_version=AUTHORING_CONTRACT_VERSION_V2, request_sha256=request['request_sha256'],
+        stats=request['stats'], article_count=3, executive_summary='',
+        articles=[{**article, 'relevant': True, 'summary': f"Own summary for {article['url']}.",
+            'summary_basis': 'article_content', 'evidence_hash': article['evidence']['content_hash'],
+            'categories': ['Supervision & Disclosure'], 'keywords': ['insurance', 'supervision', 'disclosure']}
+            for article in request['articles']])
+    selected = items[-1]
+    result = validate_authoring_response([selected], response, request=request)
+    assert result.items[0].summary == f'Own summary for {selected.url}.'
+    assert result.article_identities == (article_identity(selected),)

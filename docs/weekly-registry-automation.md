@@ -1,14 +1,15 @@
 # Weekly Registry and Article Detail automation
 
-This document defines the supported application-side contract for the proposed
-Monday 10:30 Registry update. The base runner is deployed; this validated-
-fallback change still requires merge and deployment. The Hermes job is
-deliberately **not installed or enabled**. The legacy Publisher identity
-repair is complete and valid. Two controlled capture candidates observed 21
-successes and four deterministic publisher-wall 403 failures; neither promoted,
-and the live DB remained byte-for-byte unchanged. No
-production database, delivery state, recipient configuration, or email job is
-modified.
+This document defines the application-side contract for the target Monday
+10:30 UTC Registry update. The implementation includes validated fallback and
+semantic import support. The 2026-09-08 SSH audit still found the legacy Step
+schedule, with the new four-slot schedule not installed. Current deployment gates
+are maintained in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
+
+The August legacy Publisher identity repair is complete. Its two controlled
+capture candidates observed 21 successes and four publisher-wall 403 failures;
+neither promoted. Those counts describe historical evidence, not expected
+results for every new run. This document itself changes no production state.
 
 ## Production sequence and ownership
 
@@ -21,14 +22,15 @@ The intended sequence is:
   -> summary.json + PDF + manifest
   -> email to the existing four recipients
 10:00 Publisher
-  -> sources/ + wiki/ + successful publisher ledger
-10:30 Weekly Registry Sync (intended; no job installed)
+  -> isolated content PR + publisher ledger
+  -> human review/merge + controlled deployment of sources/ and wiki/
+10:30 Weekly Registry Sync (target; blocked until exact deployment is verified)
   -> candidate Registry update + target-only capture/enrichment
   -> atomic Registry promotion -> reload -> read-only API verification
 ```
 
-The 09:00 job remains enabled and is the only delivery-artifact producer. Its
-email delivery to the existing four recipients is intentional. The proposed
+The 09:00 slot is the sole delivery-artifact producer in this target schedule.
+Email delivery to the existing four recipients is retained. The proposed
 10:30 job consumes its content-addressed artifact read-only; it never invokes
 delivery code, reads recipient configuration, sends mail, or changes delivery
 state. Registry/article automation is not yet configured in Hermes and must not
@@ -41,9 +43,10 @@ The chosen design is **Registry DB first, with the existing per-article JSON and
 SHA-matched report metadata as whole-bundle compatibility fallbacks**. Registry
 schema v4 adds append-only `article_capture_resolutions` audit rows; it does not
 turn fallback metadata into fetched content or enrichment. During rollout the
-reader accepts exact v3 and exact v4 databases and reports the actual version.
-Only the outer weekly candidate is migrated from v3 to v4 before atomic
-promotion, so the live v3 database and a v3 backup remain readable.
+reader accepts exact v3, v4, v5 and v6 contracts and reports the actual version.
+Current candidates migrate to v6 before atomic promotion. V5 introduced article
+semantic storage and v6 added report binding/relational constraints. Older
+supported live snapshots and backups remain readable without reader-side mutation.
 
 The two stores are not identical. Legacy annotation JSON records a reviewed
 evidence choice; Registry enrichment records deterministic output for a fetched
@@ -284,27 +287,26 @@ the exact rollback source. Stable statuses are `would_repair`, `repaired`,
 `already_valid`, `preflight_failed`, `validation_failed`, and `lock_conflict`;
 preflight, validation, and lock failures use distinct nonzero exits.
 
-For the staged deployment, exact dry-run/apply/weekly-sync/disabled-job sequence
-and the required 2026-08-17 SHA, see
-[`deployment.md`](deployment.md#ledger-contract-rollout-and-1030-gate).
+For the historical repair sequence and its required 2026-08-17 SHA, see
+[`deployment.md`](deployment.md#historical-ledger-contract-rollout-august-2026).
+Do not reapply that completed repair as part of a new deployment.
 
 ## Future adoption checklist
 
-This PR itself stops before deployment or scheduling. A separately authorized
-production adoption should:
+The current production adoption sequence is:
 
-1. merge the validated-fallback change and deploy the resulting latest `main` from a
-   clean checkout;
-2. retain the existing 08:00 Monitor, enabled 09:00 Email/PDF job and four
-   recipients, and the 10:00 Publisher schedule/rolling-PR behavior; deploy the
-   repo-owned Publisher ledger recorder as the sole recorder and remove or
-   disable any legacy external flat-record writer;
+1. pass the current input/full-chain gates and deploy the reviewed exact commits,
+   preserving any unmerged server changes before updating checkouts;
+2. use the unique target schedule and repo-owned wrappers, retaining the four
+   email recipients and rolling-PR publication. Disable replaced legacy callers
+   at cutover and retain one Publisher ledger recorder;
 3. confirm the explicit external DB/artifact/ledger/backup paths and permissions;
 4. retain the completed exact-date legacy-ledger repair evidence; do not reapply it;
-5. pass exact-date weekly-sync dry-run and a controlled formal sync. Expect
-   21 captured, four real failed 403s, four validated fallbacks and zero
-   unresolved, or a no-op if those exact resolutions are already current;
-6. create the 10:30 Hermes job disabled, validate it, and enable it only under a
-   further separate authorization; and
+5. verify reviewed content is merged/deployed, then pass same-report weekly-sync
+   dry-run and controlled sync. Keep captured, failed, validated-fallback and
+   unresolved counts distinct; unresolved articles block promotion;
+6. stage the Registry wrapper disabled and validate command/path/timezone readback.
+   Monday 10:30 UTC is `30 18 * * 1` in Asia/Shanghai. Enable the unique schedule
+   under the owner's cutover authorization only after its gates pass; and
 7. observe at least one normal Monday before calling Registry/article metadata
    weekly automation production-complete.

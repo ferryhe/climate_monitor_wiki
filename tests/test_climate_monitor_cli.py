@@ -10,6 +10,35 @@ from textwrap import dedent
 import pytest
 
 
+def test_print_pillar_b_prompt_is_read_only_and_loads_template(tmp_path, monkeypatch, capsys):
+    from scripts import run_climate_monitor as monitor
+    def forbidden(*args, **kwargs):
+        raise AssertionError("prompt preview must not execute the monitor or a subprocess")
+    monkeypatch.setattr(monitor, "run_monitor", forbidden)
+    monkeypatch.setattr(monitor, "run_weekly_monitor", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    destination = tmp_path / "new reports" / "pillar_b.json"
+    monkeypatch.setattr(sys, "argv", ["run_climate_monitor.py", "--print-pillar-b-prompt",
+        "--report-date", "2026-09-07", "--pillar-b-artifact", str(destination), "--json"])
+    monitor.main()
+    output = json.loads(capsys.readouterr().out)
+    assert output["prompt_id"] == "pillar_b_search"
+    assert "2026-06-07 through 2026-09-07" in output["prompt"]
+    assert output["path"].endswith("pillar-b-search-v1.prompt.md")
+    assert not destination.parent.exists()
+
+
+@pytest.mark.parametrize("options", [[], ["--report-date", "2026-09-07"],
+    ["--report-date", "not-a-date", "--pillar-b-artifact", "/tmp/b.json"],
+    ["--production-weekly"]])
+def test_print_pillar_b_prompt_requires_explicit_inputs_and_no_execution(monkeypatch, options):
+    from scripts import run_climate_monitor as monitor
+    monkeypatch.setattr(sys, "argv", ["run_climate_monitor.py", "--print-pillar-b-prompt", *options])
+    with pytest.raises(SystemExit) as exc:
+        monitor.main()
+    assert exc.value.code == 2
+
+
 def test_run_climate_monitor_json_outputs_fixture_dry_run_result(tmp_path):
     source_config = tmp_path / "sources.yaml"
     run_config = tmp_path / "run_config.yaml"
@@ -211,7 +240,8 @@ dedupe:
     research_path.write_text("[]")
     seen = {"called": False, "source_dir": None}
 
-    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None, prepared_evidence=None):
+        assert prepared_evidence is None
         from climate_monitor.article_content_adapter import (
             build_article_evidence_artifact,
             write_article_evidence_artifact,
@@ -315,7 +345,8 @@ dedupe:
     research_path.write_text("[]")
     seen = {"called_with": None}
 
-    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None, prepared_evidence=None):
+        assert prepared_evidence is None
         from climate_monitor.article_content_adapter import (
             build_article_evidence_artifact,
             write_article_evidence_artifact,
@@ -410,7 +441,7 @@ dedupe:
     research_path = tmp_path / "research.json"
     research_path.write_text("[]")
     monkeypatch.setattr(orchestrator, "_stage_article_evidence",
-        lambda *, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None: None)
+        lambda *, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None, prepared_evidence=None: None)
     run_monitor(
         source_config_path=sources_path,
         run_config_path=run_config_path,
@@ -435,7 +466,8 @@ def test_staging_failure_aborts_seen_state_via_seen_state_error(tmp_path, monkey
     from climate_monitor.orchestrator import run_monitor
     from climate_monitor import orchestrator
 
-    def boom(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+    def boom(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None, prepared_evidence=None):
+        assert prepared_evidence is None
         raise orchestrator.ArticleContentAdapterError("simulated contract violation")
 
     monkeypatch.setattr(orchestrator, "_stage_article_evidence", boom)

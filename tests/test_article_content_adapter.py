@@ -498,7 +498,8 @@ dedupe:
     seen_state_path.write_text("[]")
     captured: dict[str, object] = {}
 
-    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None):
+    def fake_stage(*, candidates, source_dir, report_date, providers=(), manifest_fixture_path=None, prepared_evidence=None):
+        assert prepared_evidence is None
         from climate_monitor.article_content_adapter import (
             build_article_evidence_artifact,
             write_article_evidence_artifact,

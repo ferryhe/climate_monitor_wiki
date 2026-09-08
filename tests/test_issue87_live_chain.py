@@ -346,9 +346,10 @@ def test_ac7_full_dry_run_chain_writes_report_and_no_seen(tmp_path):
     sidecar = report[0].with_name(report[0].stem + ".semantics.json")
     assert sidecar.is_file(), f"expected {sidecar} to exist"
     assert not (tmp_path / "state_dir" / "seen_urls.json").exists()
-    stdout_lines = [line for line in finalize.stdout.splitlines() if line]
-    parsed = json.loads(stdout_lines[-1]) if stdout_lines else {}
-    assert "stats" in parsed or "report_path" in parsed or "items" in parsed or "completed" in finalize.stdout or finalize.returncode == 0
+    parsed = json.loads(finalize.stdout)
+    assert parsed["report_path"] == report[0].name
+    assert parsed["report_sha256"] == hashlib.sha256(report[0].read_bytes()).hexdigest()
+    assert parsed["stats"]["total"] == 57
 
 
 # ---------------------------------------------------------------------------
@@ -477,8 +478,7 @@ def _build_v2_response(stats: dict, records: list[dict], *, request_sha: str) ->
         if canonical:
             evidence_by_canonical[canonical] = record
     response_articles = []
-    # The orchestrator caps the report at ``max_items_per_report`` (12);
-    # the response must mirror exactly the kept set. Emit one response
+    # The response covers every candidate without an article cap. Emit one response
     # article per request article, in order, so the validator's
     # article_count == kept_ids invariant holds for the dry-run shape.
     for article in request["articles"]:

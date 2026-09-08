@@ -42,18 +42,14 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # if absent
 .venv/bin/python -m pytest -q
 ```
 
-**Branch from current `origin/main`.** This task baseline is `cf19da8`; confirm
-the deployed commit during the controlled runbook instead of relying on a stale
-documentation hash. Registry/article enrichment is live, and the
-10:00 Publisher's legacy ledger record has been repaired and now carries the
-validated structured identity required by `weekly-sync`. Controlled capture
-twice produced 21 successes plus four deterministic 403 bot-wall failures;
-neither candidate was promoted and the live DB stayed unchanged. Final
-production completion is gated on deploying validated fallback coverage,
-running a controlled exact sync, then configuring and observing the 10:30
-Weekly Registry Sync. PR #24 (`0587228`) and the old
-`feat/weekly-cadence-and-https-deployment` branch are historical and must not be
-used as branch bases.
+**Branch from current `origin/main`.** Confirm the checkout and deployed commit
+before changing code or scheduling jobs; do not use a historical task hash as the
+baseline. The 2026-09-08 SSH audit found the legacy Step jobs still enabled.
+The serial URL monitor is implemented and sandbox-tested, but the four-slot
+schedule and full production cycle are not yet verified. Issue #87 was closed
+by the owner; do not reopen it or treat its closure as deployment proof.
+Current evidence and remaining gates are in
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover).
 
 `.env` (gitignored, `chmod 600`, repo root) holds `RELOAD_TOKEN`,
 `OPENAI_API_KEY`, and `SITE_HOST` — the host address used in the health-check
@@ -78,7 +74,9 @@ endpoint → Caddy fronts it over HTTPS.
 
 | Path | Role |
 |---|---|
-| `climate_monitor/` | Report generation: research, dedupe, report writer |
+| `climate_monitor/` | Canonical URL candidates, upstream evidence adapter, optional titles, authoring validation, report/state transaction |
+| `climate_monitor/weekly_monitor/` | Versioned prompt loading and v1/v2 request/response validation |
+| `monitoring/` | Source/run config, editable discovery/relevance prompts, pinned taxonomy |
 | `agentic_wiki/` | RAG retrieval and answer synthesis (`wiki_agent.py` is the core) |
 | `climate_registry/` | Historical Registry, DB-first enrichment, weekly candidate sync and exact restore |
 | `climate_delivery/` | 09:00 summary/PDF/manifest production and retained email delivery |
@@ -92,16 +90,17 @@ endpoint → Caddy fronts it over HTTPS.
 ### Entrypoints
 
 ```bash
-scripts/run_climate_monitor.py     # generate a new report (calls out to LLM/web)
+scripts/run_climate_monitor.py     # same-run prepare -> serial URL authoring -> executive -> finalize
 scripts/ingest_weekly_reports.py   # sources/ <- monitoring output, then sync
 scripts/publish_weekly_reports.py  # isolated-clone rolling-PR publisher
 scripts/sync_source_wiki.py        # regenerate wiki/ pages + index
 scripts/weekly_wiki_refresh.sh     # locked Hermes wrapper around the publisher
 scripts/reload_and_smoke_test.py   # post-deploy verification
-scripts/weekly_registry_refresh.py # tested 10:30 draft; not scheduled
+scripts/weekly_registry_refresh.py # gated post-deploy Registry sync
 ```
 
-`weekly_wiki_refresh.sh` is the one the weekly Hermes job runs. It does not
+The target publisher wrapper delegates to the existing isolated publisher.
+`weekly_wiki_refresh.sh` also remains its locked compatibility entrypoint. It does not
 modify the production checkout or reload the app: it publishes generated files
 from a temporary clone to the fixed `codex/hermes-weekly-monitor` pull-request
 branch. Merge and deployment are separate, human-controlled steps.
@@ -131,8 +130,7 @@ in this repo trace back to leftover daily assumptions.
   directory also contains manual re-runs on other weekdays that duplicate the
   same week. `--allow-offcycle` overrides.
 
-Read `docs/weekly-cadence.md` and `docs/weekly-migration-remaining-work.md`
-before touching cadence logic.
+Read `docs/weekly-cadence.md` before touching cadence logic.
 
 ---
 
@@ -160,8 +158,11 @@ before touching cadence logic.
 node --check showcase/app.js           # frontend has no build step
 ```
 
-Registry-automation verification on 2026-08-18 collected 913 tests and
-completed with 899 passed / 14 environment-specific skips on Windows.
+Record the tested revision, environment, pass count and skips in the PR evidence.
+See `PIPELINE_REFERENCE.md` for dated SSH results. Re-run applicable tests for new
+changes; a historical test result is
+not a fixed expected suite size. Fixtures and single-site rehearsals do not prove
+a complete production run.
 
 For anything touching the running service:
 
@@ -224,45 +225,44 @@ See `docs/deployment.md`.
 
 ---
 
-## Scheduled jobs
+## Modules and scheduling
 
-| Job | ID | Schedule (UTC) | Status |
-|---|---|---|---|
-| Weekly Climate & Actuarial Monitor | `f5259a8ec2d9` | Mon 08:00 | Confirmed |
-| Weekly Climate Email (PDF highlights) | Not recorded here | Mon 09:00 | Enabled and retained |
-| Weekly Climate Wiki Publisher | `dccb79cd69bc` | Mon 10:00 | Confirmed |
-| Weekly Registry Sync | Not configured | Mon 10:30 | Awaiting validated-fallback deployment and controlled exact sync |
+Read [README.md](README.md#modular-weekly-monitor) for module ownership and the
+flowchart, [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md) for program/artifact
+contracts and [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) for editable configuration.
+Keep those as the current references rather than copying prompts or runbooks.
 
-The publisher runs 2h after the monitor so the report exists before ingest. If
-you change one schedule, preserve that gap. It updates one rolling PR; it does
-not deploy or write to the production checkout.
+- `web_listening` owns governed acquisition and reader policy; consume its public
+  outcomes/manifests and content interfaces. Do not add another crawler here.
+- `scripts/run_climate_monitor.py` owns the existing prepare/run/finalize queue.
+  One URL gets an independent context, with relevance and authoring in the same
+  invocation. The separate executive invocation sees qualified summaries only.
+- Relevance and Pillar B search wording are independent prompt files. The page
+  title helper is an optional pure module. Preserve their existing input/output
+  contracts and checkpoint bindings when changing them.
+- Remove code/configuration made unused by a replacement. Do not add duplicate
+  entrypoints, fallback implementations or copied prompts. Old Step scripts are
+  still referenced by the last observed schedule and tests; retire their callers
+  and verify replacement coverage before deleting them.
 
-These are **Hermes cron jobs** (this host's scheduler), not GitHub Actions.
-Inspect with the Hermes `cronjob` tool: `cronjob action=list`.
+The target Monday UTC slots are monitor 08:00, email 09:00, publisher 10:00 and
+Registry 10:30. Hermes uses Asia/Shanghai: 16:00, 17:00, 18:00 and 18:30 local.
+Preserve the two-hour monitor/publisher gap. These are **Hermes jobs**, not GitHub
+Actions. The 2026-09-08 audit found 12 legacy Step jobs enabled and no installed
+four-slot sequence. Always read back live jobs and timezone before a cutover.
 
-The 09:00 job is the only delivery-artifact producer. Its email delivery is also
-intentionally retained for the existing four recipients. Do not confuse the
-historical backfill's no-email guarantee with the normal scheduled email path.
+The 09:00 `climate_delivery` path owns the PDF/manifest and retained email to the
+existing four recipients. Publisher updates a rolling PR in an isolated clone.
+Registry requires exact deployed report identity and explicit enable/write gates,
+including verified merge/deploy. A dry-run or `not_dispatched` status is not a
+completed sync. `/api/job-status` needs an actual local scheduler snapshot;
+Render has no shared snapshot source and reports `not_configured` without one.
 
-The distinct 10:30 Weekly Registry Sync implementation is deployed, but its
-Hermes job is not configured or verified. The legacy 2026-08-17 Publisher
-record repair is complete and validates; the remaining controlled sync must
-resolve the observed 21-success/4-403 coverage before promotion. It updates the external Registry DB;
-DB-first Article Detail no longer requires a weekly `article_metadata` JSON
-producer, and the tracked JSON remains a compatibility fallback. Do not claim
-`PRODUCTION COMPLETE` until validated-fallback code is deployed, weekly-sync and
-API/DB hashes are validated, and the 10:30 task has been
-created and observed completing a normal weekly run. Do not
-invent its job ID or treat `/api/job-status` v1 as proof that it exists.
-
-Registry schema v4 adds append-only validated fallback resolutions only for an
-exact latest `failed/http_error/403/no-content-version` publisher bot wall. It
-does not fabricate successful fetches, content, or enrichment. Weekly coverage
-must keep real failed, validated-fallback, and unresolved counts separate; any
-unresolved article blocks promotion. A fallback is one complete JSON bundle or,
-when JSON is truly absent for the URL, one complete SHA-matched report bundle—
-never a cross-source splice. Do not add Browserbase, proxy rotation, or CAPTCHA
-bypass as a substitute. The API continues to read DB enrichment → JSON → report.
+Registry schema v4 validated fallback covers only the exact eligible publisher
+403/no-content-version case. Keep successful, validated-fallback and unresolved
+coverage separate; unresolved coverage blocks promotion. Use one complete
+SHA-matched bundle, never fabricated fetch success or a cross-source splice.
+The API reads DB enrichment → JSON → report.
 
 ### No GitHub report generator
 
@@ -273,32 +273,20 @@ monitor and rolling-PR publisher, with the same Monday report validation.
 
 ---
 
-## Remaining work (the next agent's backlog)
+## Current completion boundary
 
-`docs/weekly-migration-remaining-work.md` is the backlog, but **verify before
-trusting it** — it lists phases that have since landed. Re-check each against
-the code rather than assuming it is current.
+The same-run acquisition/evidence/response path, canonical URL aggregation,
+resumable serial authoring, uncapped report output, optional page titles and
+editable discovery/relevance prompts are implemented. Do not redo those based
+on a historical issue report. The current production gates are listed in
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover), including
+Pillar B date/search-success enforcement and a full real-site run.
 
-Already landed — do **not** redo:
-
-- **Week-window parsing** (`Phase 2`) is **fixed**. Verified: `past 2 weeks` →
-  14 dates, `last 3 weeks` → 21, `past 4 weeks` → 28. Earlier docs describing
-  these as returning 0 dates are stale.
-- **Single automated generator and rolling-PR publication** — see above.
-- **Runtime latest-date aliases** (`Phase 4`) — `latest` and `today` expand from
-  `kb.latest_date`; no corpus date is hardcoded into retrieval aliases.
-- **Weekly Chat coverage and prompt starters** (`Phase 5`) — rolling windows
-  report only real corpus dates, and the API/frontend presets use 4-week,
-  12-week, insurer-implication, and latest-report wording.
-- **Weekly Registry implementation** — `weekly-sync`, DB-first Article Detail,
-  exact backup/restore, and the tested 10:30 runner draft are merged and the
-  Registry code is deployed. The exact-date legacy repair is complete;
-  validated-fallback deployment, controlled weekly-sync validation, scheduler
-  configuration, and a normal observed run remain.
-
-Deliberately **not** done: renaming the `"daily"` document type — it is
-load-bearing across ranking, `app.js`, CSS, and the Obsidian plugin contract, so
-a rename is wide, breaking, and low-reward (Phase 3).
+Superseded handoffs and closeout reports remain in Git history; their job IDs,
+task hashes, issue-state statements and sample counts are not current operating
+instructions. Weekly rendering still emits only real report dates; runtime
+aliases come from the corpus.
+The legacy `daily` document type remains load-bearing and is not renamed.
 
 ---
 

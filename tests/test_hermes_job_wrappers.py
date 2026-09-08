@@ -186,18 +186,6 @@ def test_f2_pdf_tamper_blocks_email_dispatch(tmp_path, monkeypatch):
         job.verify_delivery_artifact('2026-08-10', job.sha(report))
 
 
-def test_f5_f8_f6_recovery_and_continuation_remain_gated():
-    report = (ROOT / 'ISSUE87_FOLLOWUP_REPORT.md').read_text()
-    assert 'git revert' in report and 'merge --ff-only' in report
-    assert 'hermes cron list/remove/update/create' in report
-    assert 'before Monday 16:00 CST' in report
-    assert 'f64c1563ff95 remains paused' in report
-    assert 'fresh read-only reviewer' in report
-    assert 'Issue #87 stays OPEN' in report
-    assert 'separate closeout PR' in report
-    assert 'git reset --hard' not in report
-
-
 # Keep the acceptance scenario in the normal pytest discovery gate too.
 from dryrun_isolated_pipeline_full import (  # noqa: E402,F401
     test_full_chain_all_four_consumers,

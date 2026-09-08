@@ -5,7 +5,11 @@ The wiki runs as two containers behind Caddy. The public site is available at
 private IP remains available for internal health checks with Caddy's internal
 CA.
 
-Current host IP: **172.31.10.77**
+The addresses below are recorded installation examples. For an existing server,
+read the deployed `SITE_HOST` and record the current commit and service state;
+do not infer live configuration from this document. Current pipeline cutover
+gates and wrapper ownership are in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md)
+and [PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md).
 
 ## Stack
 
@@ -20,6 +24,9 @@ article annotations are read per Registry request. Neither content-only change
 requires an image rebuild.
 
 ## First run
+
+Initial installation only: the following creates `.env`. Do not run it during
+an existing-production update, where configuration and tokens must be preserved.
 
 ```bash
 cd /home/ubuntu/climate_monitor_wiki
@@ -124,11 +131,16 @@ case, path reserved-encoding, transport, `www`, and non-default-port
 distinctions. Query ordering remains distinct, but the inherited query
 parse/re-encode treats `%2F` and `/`, `%20` and `+`, and `?flag` and `?flag=`
 as equivalent.
-The Publisher rejects same-pillar or cross-pillar canonical URL duplicates,
-exact normalized-title duplicates, and publication-ineligible root/topic
+The Publisher rejects same-pillar or cross-pillar canonical URL duplicates
+and publication-ineligible root/topic
 pages. Multiple pending reports share an in-memory history overlay. Existing
 reports already in `main` are not revalidated, so a clean no-op remains a
 clean no-op.
+
+Legacy reports also reject exact normalized-title duplicates. When a report has
+a verified SHA-bound semantic sidecar, the Publisher uses canonical URL identity
+and permits distinct URLs with the same title. Current Registry migrations target
+v6; supported older read contracts are not silently migrated by publication.
 
 Registry-backed history checks are opt-in and use a separate host-process
 variable (not the web container variable):
@@ -140,7 +152,8 @@ bash scripts/weekly_wiki_refresh.sh
 
 The wrapper passes `--registry-database` only when that value is non-empty. It
 does not source `.env`, guess or print the path, or use `CLIMATE_REGISTRY_DB`.
-The configured exact schema-v6 database must be an immutable, sidecar-free snapshot
+The configured database must satisfy an exact supported schema contract
+(v3, v4, v5 or v6) and be an immutable, sidecar-free snapshot
 whose report filename/SHA identities exactly match `origin/main`'s `sources/`.
 It is opened with SQLite read-only URI and `query_only`; a missing, corrupt,
 wrong-schema, contract-broken, or out-of-sync snapshot stops publication before
@@ -212,7 +225,8 @@ docker compose -f docker-compose.yml config --quiet
 ```
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
-It must be a complete exact schema-v6 main database with no dependency on WAL, SHM,
+It must be a complete main database satisfying an exact supported schema contract
+(v3, v4, v5 or v6), with no dependency on WAL, SHM,
 or rollback-journal sidecars. Perform the publisher/copyright review first and
 set articles without public full-text rights to `metadata_only` in the offline
 candidate database. The deterministic preflight rejects relative, missing, or
@@ -228,7 +242,8 @@ chmod 0750 "$CLIMATE_REGISTRY_HOST_DIR"
 chmod 0640 "$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
 ```
 
-Expected results are user version `6`, `ok` from both checks, no rows from
+Expected results are the actual supported snapshot version (3, 4, 5 or 6;
+new migrated candidates use 6), `ok` from both checks, no rows from
 `foreign_key_check`, and no sidecar files. Keep the host directory and file
 owner-writable by the approved standalone update/capture operator; align the
 group/read bits with the container's read identity and do not make them public.
@@ -263,7 +278,7 @@ Status contract:
 
 | Condition | HTTP | Safe reason |
 |---|---:|---|
-| Valid exact schema v6, including an empty Registry | 200 | `available: true` and actual version |
+| Valid exact schema v3/v4/v5/v6, including an empty Registry | 200 | `available: true` and actual version |
 | No Registry configured | 503 | `not_configured` |
 | Missing, unreadable, or corrupt main database | 503 | `database_unavailable` |
 | Path inside the checkout or not absolute | 503 | `invalid_location` |
@@ -379,7 +394,7 @@ contract, API responses, atomic replacement procedure, and security boundary.
 This application phase creates no exporter, systemd timer, Hermes job, or
 snapshot. App-only deployment or rollback rebuilds/recreates only Wiki and then
 restarts Caddy so it resolves the recreated app container; it does not alter the
-confirmed 08:00/09:00/10:00 jobs. It also does not create or verify the 10:30
+existing scheduler jobs. It also does not create or verify the 10:30
 Weekly Registry Sync job, which remains a separate production-completion gate.
 
 ## Future weekly Registry sync
@@ -390,14 +405,16 @@ created or enabled by this repository. See
 [`weekly-registry-automation.md`](weekly-registry-automation.md) for the DB/JSON
 precedence decision, explicit paths, dry-run, exit codes, exact backup/restore
 boundary, API verification, and the disabled Hermes job draft. Deployment must
-keep the enabled 09:00 Email/PDF producer and its four existing recipients
+retain the 09:00 Email/PDF responsibility and its four existing recipients
 unchanged; the Registry runner never sends mail.
 
-## Ledger-contract rollout and 10:30 gate
+## Historical ledger-contract rollout (August 2026)
 
-This is a server runbook only. Repository development must not execute these
-steps against production. This task baseline is `origin/main` at `cf19da8`;
-confirm and record the actual deployed commit at run time.
+Stages A–D retain the August rollout and exact-date repair evidence. The old
+baseline `cf19da8`, capture counts and deployment expectations are historical,
+not current pending work or instructions to replay against production. Do not
+reapply the completed repair. For a new cutover use the reviewed current commits,
+actual server inventory and gates in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
 
 ### Stage A — deploy validated fallback coverage
 
@@ -487,11 +504,14 @@ and atomic promotion, or a safe no-op (exit `6`) if those exact resolutions are
 already current. Verify DB hashes, fetch/resolution audit rows, API provenance,
 Historical Report/PDF views, and absence of email or delivery-state access.
 
-### Stage E — create disabled, then authorize enablement
+### Current scheduling gate
 
-Only after Stages A–D pass may the server agent create `Weekly Climate Registry
-Sync` at `30 10 * * 1`. It must initially remain disabled and must not be run.
-Validate the disabled command, working directory, explicit paths, environment,
-and alerting. Enablement and the first real execution require separate owner
-authorization. Observe at least one normal Monday cycle before declaring
-`PRODUCTION COMPLETE`.
+After the current full-chain gates pass, use the existing
+`scripts/hermes_job_registry.sh` wrapper with the explicit environment described
+in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#hermes-job-wrappers-ac-1310).
+The target is Monday **10:30 UTC**, which is **18:30 Asia/Shanghai** and
+`30 18 * * 1` in this Hermes scheduler. Read back the timezone, command and paths;
+do not change the global timezone or preserve an obsolete job merely by its ID.
+Stage the replacement disabled, then switch the unique schedule under the owner's
+cutover authorization after validation. Observe a normal Monday cycle before
+claiming production completion.

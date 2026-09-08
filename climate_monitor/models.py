@@ -48,7 +48,6 @@ class RunConfig:
     actuarial_keywords: tuple[str, ...]
     research_queries: tuple[str, ...]
     research_lookback_days: int
-    max_items_per_report: int
     source_dir: str
     wiki_dir: str
     write_empty_report: bool

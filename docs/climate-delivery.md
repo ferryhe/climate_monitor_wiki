@@ -15,10 +15,11 @@ The intended separation is:
 4. The website can later consume `summary.json` and `manifest.json`; it does not
    own SMTP delivery.
 
-The existing 09:00 Hermes job is **enabled and intentionally retained**. It is
-the only production automation authorized to create delivery artifacts, and it
-also owns delivery of the PDF highlights email to the existing four recipients.
-The deployed Registry sync implementation is a separate 10:30 concern: it
+The 09:00 slot retains responsibility for delivery artifacts and PDF email to
+the existing four recipients. This table describes module responsibilities;
+the 2026-09-08 SSH inventory still showed 12 legacy Step jobs, not the installed
+four-slot target. See [current deployment status](../PIPELINE_REFERENCE.md).
+Registry sync is a separate 10:30 concern: it
 consumes the already validated artifact read-only and does not create or send
 mail, change recipients, or mutate delivery state. Its Hermes job is not yet
 configured or verified, so the project must not be described as
@@ -50,11 +51,15 @@ layouts with exit code 2. The report must:
   otherwise contract-invalid sidecar aborts delivery outright. There is no
   Markdown-scrape fallback and no model/LLM call on the delivery path.
 
-Extraction is deterministic. The content executive summary contains three or
-four sentences derived from report counts, representative report titles, and a
-fixed set of climate/actuarial theme-keyword categories. Process bullets from
-the source Executive Summary are kept separately as monitoring notes. The
-module does not enrich the report with network or model calls.
+Extraction is deterministic. When the report contains a narrative Executive
+Summary, delivery reuses it in the briefing and PDF. Older reports without a
+narrative use the existing three-or-four-sentence extractive fallback based on
+report counts, representative titles and fixed themes. Monitoring/process
+bullets remain separate from the narrative. The module makes no network or model
+call to enrich report content.
+The serial producer requests and validates prose paragraphs before checkpointing
+the executive response; a list response fails that stage and is resumable without
+repeating completed article calls.
 
 ## Server-only configuration
 

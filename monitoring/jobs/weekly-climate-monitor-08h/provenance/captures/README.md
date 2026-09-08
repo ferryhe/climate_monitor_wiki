@@ -4,11 +4,12 @@ This directory is reserved for redacted provenance captures that document what
 was observed during controlled parity or cutover work.
 
 `hermes-job-f5259a8ec2d9.redacted.json` records sanitized metadata from the
-externally verified live Hermes cron-job JSON: public job identity, UTC cron
+externally verified Hermes cron-job JSON as observed at capture time: public job identity, UTC cron
 expression, file size/hash/counts, safe runtime shape, and prompt
-hashes/lengths. The capture file does not embed the prompt body; the exact
-captured prompt text is versioned separately at
-`../../prompts/weekly-monitor-v1.prompt.md`.
+hashes/lengths. The capture file does not embed the prompt body. The repository
+prompt is versioned at `../../prompts/weekly-monitor-v1.prompt.md` with its current
+hash in adjacent metadata. Later reviewed prompt changes mean that current hash
+differs from the capture's historical hash; do not treat them as the same bytes.
 
 The raw `job-08h-monitor.json` was provided as a local attachment for
 inspection, but it is intentionally not committed. This remains separate from
@@ -27,5 +28,10 @@ use:
 snapshots/<capture-id>.snapshot.redacted.json
 ```
 
+No redacted snapshots are currently checked in. Create that directory only when
+adding an actual authorized capture; no placeholder file is required.
+
 Files here are provenance only. They are not active executable config, and this
 directory must not contain `job-08h-monitor.json`.
+Current command/timezone readback, not a historical capture, establishes which
+jobs are actually installed.

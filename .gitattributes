@@ -1,3 +1,5 @@
 monitoring/taxonomies/*.yaml text eol=lf
 monitoring/schemas/*.json text eol=lf
 monitoring/jobs/weekly-climate-monitor-08h/prompts/*.prompt.md text eol=lf
+tests/fixtures/issue87/pillar_b_sample_16.json text eol=lf
+tests/fixtures/issue87/wri_repro/*.json text eol=lf

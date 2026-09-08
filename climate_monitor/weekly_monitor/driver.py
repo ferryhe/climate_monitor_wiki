@@ -141,6 +141,10 @@ def run_weekly_monitor(
         ),
         stats=validated_v2_stats,
         providers=providers,
+        prepared_article_evidence=(
+            article_evidence if isinstance(article_evidence, Mapping)
+            and article_evidence.get("schema_version") == "article-evidence.v1" else None
+        ),
     )
 
 
@@ -211,7 +215,8 @@ def _candidate_items_from_evidence(
     for record in records:
         if not isinstance(record, Mapping):
             continue
-        url = str(record.get("final_url") or record.get("requested_url") or "").strip()
+        # Match the original candidate, including when acquisition redirects.
+        url = str(record.get("requested_url") or record.get("final_url") or "").strip()
         canonical = canonical_url(url)
         if not canonical or canonical in seen:
             continue
@@ -275,6 +280,13 @@ def _safe_public_label(value: str, *, field: str) -> str:
     lowered = cleaned.casefold()
     if len(cleaned) > 120 or any(word in lowered for word in _SECRET_WORDS) or "sk-" in lowered:
         raise ValueError(f"{field} is not safe public metadata")
+    # Provider model IDs use an optional namespace and variant, e.g.
+    # meituan/longcat-2.0:free. They are public identities, not file paths.
+    if field == "model" and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?"
+        r"(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?", cleaned
+    ):
+        return cleaned
     if any(marker in cleaned for marker in ("\\", "/", ":", "\n", "\r", "\t")):
         raise ValueError(f"{field} must not contain paths or control characters")
     return cleaned

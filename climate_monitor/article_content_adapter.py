@@ -760,6 +760,7 @@ def build_article_evidence_artifact(
     generated_at: str | None = None,
     data_root: str | Path | None = None,
     include_verified_content: bool = False,
+    title_extractor: Callable[[str], tuple[str, str] | None] | None = None,
 ) -> dict[str, Any]:
     """Build (in memory) the versioned article-evidence.v1 artifact.
 
@@ -770,6 +771,10 @@ def build_article_evidence_artifact(
     same per-record ``output_dirs`` it captured, so any default-public
     record that was verified on disk in the first pass is verified the
     same way in the second pass (P2).
+
+    With ``include_verified_content``, callers may plug in a pure
+    ``title_extractor``. It reads only the verified HTML and records the title
+    source before record/artifact hashing; discovery origins remain unchanged.
     """
 
     dependency_status = check_dependencies()
@@ -798,6 +803,16 @@ def build_article_evidence_artifact(
                 if hashlib.sha256(body).hexdigest() != record["content_hash"]:
                     raise ArticleContentAdapterError("content_ref_hash_mismatch")
                 record["content"] = body.decode("utf-8")
+            if title_extractor is not None and "html" in (record.get("content_type") or "").lower():
+                title = title_extractor(record.get("content") or "")
+                if title is not None:
+                    extra = record.setdefault("extra", {})
+                    extra["page_title_evidence"] = {
+                        "source": title[1], "content_hash": record["content_hash"],
+                        "discovery_title": record.get("title"),
+                        "discovery_title_basis": record.get("title_basis"),
+                    }
+                    record["title"], record["title_basis"] = title[0], "page"
             record["record_hash"] = _record_digest(record)
     artifact: dict[str, Any] = {
         "schema_version": ARTICLE_EVIDENCE_SCHEMA_VERSION,
@@ -831,6 +846,33 @@ def write_article_evidence_artifact(
     temporary.write_text(payload, encoding="utf-8")
     temporary.replace(destination)
     return destination
+
+
+def validate_retained_article_evidence(
+    artifact: Mapping[str, Any], *, report_date: str, urls: Iterable[str]
+) -> None:
+    """Validate the prepared artifact for reuse at commit, without acquisition."""
+    from jsonschema import Draft202012Validator, ValidationError
+    from .dedupe import canonical_url
+
+    try:
+        Draft202012Validator(ARTICLE_EVIDENCE_SCHEMA).validate(artifact)
+    except ValidationError as exc:
+        raise ArticleContentAdapterError("retained evidence schema mismatch") from exc
+    records = artifact["records"]
+    expected = {canonical_url(url) for url in urls}
+    actual = {canonical_url(record["requested_url"] or "") for record in records}
+    if (artifact["report_date"] != report_date or artifact["record_count"] != len(records)
+            or len(records) != len(expected) or actual != expected):
+        raise ArticleContentAdapterError("retained evidence date or candidate mismatch")
+    for record in records:
+        if record["record_hash"] != _record_digest(record):
+            raise ArticleContentAdapterError("retained evidence record hash mismatch")
+        body = record.get("content")
+        if isinstance(body, str) and body and hashlib.sha256(body.encode("utf-8")).hexdigest() != record["content_hash"]:
+            raise ArticleContentAdapterError("retained evidence content hash mismatch")
+    if artifact["artifact_digest"] != _artifact_digest(records):
+        raise ArticleContentAdapterError("retained evidence artifact digest mismatch")
 
 
 def run_article_evidence(

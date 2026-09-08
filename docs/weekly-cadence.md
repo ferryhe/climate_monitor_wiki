@@ -1,17 +1,11 @@
 # Weekly cadence: how the daily pipeline was adapted
 
-Current operations caveat (2026-09-07 audit): the four climate cron jobs and
-runtime configuration are not provisioned. Monday 08/09/10/10:30 UTC means
-16/17/18/18:30 CST in Hermes (Asia/Shanghai); never change the global timezone.
-Each `scripts/hermes_job_*.sh --preflight` is read-only and fails closed on
-missing configuration. Production monitor acquisition remains blocked until
-the same-run outcome/evidence/authoring link is executable. Fixtures require
-`CLIMATE_DRY_RUN=1` plus `CLIMATE_DRY_RUN_FIXTURE_DIR` and an isolated
-`CLIMATE_DRY_RUN_ROOT`. Render has no shared source for local scheduler evidence;
-`/api/job-status` remains HTTP 503 `not_configured`. Issue #87 stays OPEN until
-a normal Monday run matches through delivery, reviewed publication, deployment
-and Registry. See PIPELINE_REFERENCE.md for the intended wrapper contracts;
-historical job IDs below are not proof of current provisioning.
+Current status (2026-09-08 SSH audit): the same-run monitor is implemented and
+sandbox-tested; production still has 12 enabled legacy Step jobs. The target
+four-slot schedule is not installed. Issue #87 is owner-closed. Current wrapper
+contracts and cutover gates live in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
+Monday 08/09/10/10:30 UTC means 16/17/18/18:30 in Hermes's Asia/Shanghai timezone.
+This page records cadence behavior, not proof of production dispatch.
 
 
 The repo was originally built around a **daily** monitor (April 2026,
@@ -99,19 +93,23 @@ window's latest report is included.
 Four tests were added for weekly behaviour: no gap-filling, placeholder pruning,
 `--keep-sourceless`, and a regression guard that daily cadence still fills gaps.
 
-Suite: **112 passed**.
+The cadence-migration suite at that time completed with **112 passed**.
 
 ## Scheduling
 
-Two jobs, deliberately separated so a monitoring failure cannot corrupt the wiki:
+The original migration separated two responsibilities so monitoring failure
+could not corrupt the wiki:
 
 | Job | Schedule | Does |
 |---|---|---|
 | Weekly Climate & Actuarial Monitor (`f5259a8ec2d9`) | Mon 08:00 UTC | crawls 57 sites, writes `data/reports/climate-monitor-<date>.md` |
 | Weekly Climate Wiki Publisher (`dccb79cd69bc`) | Mon 10:00 UTC | validates/imports reports in a temporary clone and updates a rolling PR |
 
-The 2-hour offset gives the monitor room to finish (~6 min of crawling, plus
-retries) before the publisher reads its output. If `main` already contains all
+This table is a historical capture, including its job IDs and source count.
+For the current four-slot target and actual server inventory see
+[PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md). Preserve the 2-hour monitor/publisher
+offset, but verify completion from the same-run artifacts rather than an old
+crawl-duration estimate. If `main` already contains all
 eligible Monday reports, publication is a no-op.
 
 The publisher runs `scripts/weekly_wiki_refresh.sh`. A host `flock` prevents
@@ -121,6 +119,15 @@ reload the app, restart containers, or deploy anything.
 The complete production flow is: **Hermes generate → rolling PR → human merge
 → separate server deploy**. The production checkout remains clean and tracks
 `origin/main` throughout generation.
+
+## Optional wording cleanup
+
+The daily-to-weekly correctness work is complete. Remaining cosmetic candidates
+are user-visible `Daily` legend labels in `showcase/index.html`/`showcase/app.js`
+and daily wording in report-title defaults or CLI help. These are not production
+cutover gates. Review compatibility tests before changing defaults; retain the
+library's daily cadence and the internal `daily` document type used by retrieval,
+the frontend and the Obsidian plugin.
 
 ## No GitHub report generator
 

@@ -1,88 +1,158 @@
 # Pipeline Configuration
 
-The repository runs **one** weekly pipeline today: a four-slot Hermes cron
-sequence anchored to the single production driver path. The numbered
-`stepN_*.py` scripts are kept on disk for test compatibility only
-(`tests/test_step1_pillar_a_parser.py`, `tests/test_pipeline_scripts.py`)
-and are **not** scheduled.
+The repository defines a four-slot weekly Hermes sequence anchored to the
+single production driver path. This is the intended deployment, not proof
+that the server has switched to it. The 2026-09-08 SSH audit still found
+12 enabled legacy Step jobs and no installed four-slot sequence. Keep that
+deployment distinction until the live chain passes and the scheduler is switched.
 
-## Weekly schedule (authoritative)
+## Weekly schedule (deployment target)
 
 | # | UTC | Slot        | Hermes wrapper                            | Entry point invoked                                                  | Result                                                  |
 |---|-----|-------------|--------------------------------------------|----------------------------------------------------------------------|---------------------------------------------------------|
 | 1 | 08  | `monitor`   | `scripts/hermes_job_monitor.sh`           | `python scripts/run_climate_monitor.py --production-weekly …`        | Monday report Markdown + sidecar + URL-state commit    |
 | 2 | 09  | `email`     | `scripts/hermes_job_email.sh`             | `python -m climate_delivery.cli run`    | PDF + manifest + retained email to the four recipients  |
-| 3 | 10  | `publisher` | `scripts/hermes_job_publisher.sh`         | `bash scripts/weekly_wiki_refresh.sh`                                 | Rolling `codex/hermes-weekly-monitor` PR update         |
+| 3 | 10  | `publisher` | `scripts/hermes_job_publisher.sh`         | `flock` + `python scripts/publish_weekly_reports.py`                   | Rolling `codex/hermes-weekly-monitor` PR update         |
 | 4 | 10:30 | `registry` | `scripts/hermes_job_registry.sh`          | `scripts/weekly_registry_refresh.py` (explicit gates)                                                        | `not_dispatched` until merge + deploy gate is satisfied |
 
 Each dispatched production wrapper writes local-only `scheduler-status.json` via `climate_monitor/scheduler_status.py
 update_slot(name, state, …)`. The publisher slot is 2h after monitor so the
 report exists before ingest; preserve that gap if you ever re-schedule.
+`weekly_wiki_refresh.sh` remains a compatible direct Publisher wrapper; the
+scheduled slot delegates directly to the same Python publisher under its lock.
 
 Hermes uses Asia/Shanghai local time. Configure Monday local cron expressions
 `0 16 * * 1`, `0 17 * * 1`, `0 18 * * 1`, `30 18 * * 1` for these UTC slots.
 The manifest records this mapping; it is not an installed job inventory.
-The 2026-09-07 audit found no climate jobs or runtime config. Render has no shared
-source for the local snapshot; `/api/job-status` remains 503 `not_configured`.
+The 2026-09-08 server audit found no four-slot scheduler snapshot;
+`/api/job-status` returned 503 `not_configured`.
 
 Every wrapper supports read-only `--preflight`. Explicit paths, dry-run isolation,
-and the production acquisition blocker are documented in
+and the same-run input and remaining cutover gates are documented in
 [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#hermes-job-wrappers-ac-1310).
 Fixtures require `CLIMATE_DRY_RUN=1` plus `CLIMATE_DRY_RUN_FIXTURE_DIR` and isolated
 `CLIMATE_DRY_RUN_ROOT`; production never falls back to a fixture.
 
-## Data Flow (single chain)
+## Configuration ownership
 
-```
-Hermes cron
-   │
-   ├─ 08:00  scripts/hermes_job_monitor.sh
-   │         └─ scripts/run_climate_monitor.py --production-weekly
-   │              └─ climate_monitor.weekly_monitor.driver.run_weekly_monitor
-   │                   └─ climate_monitor.orchestrator.run_monitor
-   │                         ├── climate-monitor-{DATE}.md          (Markdown + sidecar)
-   │                         ├── climate-monitor-{DATE}.json       (combined candidates)
-   │                         ├── article-evidence.v1_{DATE}.json   (AC-1 #93 path)
-   │                         └── pending-seen-url delta            (atomic two-phase)
-   │
-   ├─ 09:00  scripts/hermes_job_email.sh
-   │         └─ climate_delivery pipeline
-   │              ├── climate-monitor-{DATE}.pdf
-   │              ├── manifest + briefing JSON
-   │              └── email to the four retained recipients
-   │
-   ├─ 10:00  scripts/hermes_job_publisher.sh
-   │         └─ scripts/weekly_wiki_refresh.sh
-   │              └─ scripts/publish_weekly_reports.py
-   │                   ├── isolated clone of origin/main
-   │                   ├── wiki/ regenerated via sync_source_wiki
-   │                   └── codex/hermes-weekly-monitor rolling PR update (CAS rollback)
-   │
-   └─ 10:30  scripts/hermes_job_registry.sh  [DISABLED by default; explicit human gate]
-```
+Use the [flowchart](README.md#new-flow) and
+[program/artifact map](PIPELINE_REFERENCE.md#program-and-artifact-map) for the
+single monitor path. `scripts/hermes_job.py` only resolves runtime paths and
+delegates to the existing public entrypoints.
 
-The numeric script names are retained for compatibility, but publication
-now precedes the post-deploy Registry sync. Neither script writes
-generated report content directly into the production checkout. GitHub
-`main` is the common content source for the controlled server and Render.
+| Configuration | Owner / edit location |
+|---|---|
+| Source inventory and site scopes | `monitoring/supranational_sources.yaml`, `monitoring/site_scopes.yaml` |
+| Run options | `monitoring/run_config.yaml`; external state/output paths for real runs |
+| Search and relevance wording | The two prompt files below, loaded by `weekly_monitor/prompt_loader.py` |
+| Categories and semantic limits | `monitoring/taxonomies/article_categories_v1.yaml`; update its version/hash and validators together |
+| Model, provider, Hermes executable | Explicit monitor options/runtime environment; secrets remain in the existing Hermes auth store |
+| Report date, upstream artifacts, staging and downstream paths | Wrapper environment described in PIPELINE_REFERENCE.md |
+| Live schedule | Hermes on the controlled server; the repository manifest is a deployment specification |
+
+Do not duplicate these definitions in new workflow scripts or cron prompt text.
+The old numeric Step callers remain until the verified scheduler cutover.
 
 ## Prompt Templates
 
-Hermes LLM prompts that remain in active use are listed below. The legacy
-"Step 2 / Step 3b / Step 7" prompt blocks are retained for compatibility
-with the still-on-disk step scripts but are **not** invoked by the single
-production chain above.
+Editable prompts live under
+`monitoring/jobs/weekly-climate-monitor-08h/prompts/`: `pillar-b-search-v1.prompt.md`
+controls search, and `article-relevance-v1.prompt.md` controls the subsequent
+per-URL relevance decision. The old Step 3b/Step 7 tasks are legacy compatibility paths; their inline
+prompts are not the authority for the new monitor.
 
 ### Monitor (v2 evidence authoring)
 
-The 08:00 monitor runs the v2 authoring path when the orchestrator has
-staged an `article-evidence.v1_{DATE}.json` artifact. The driver emits
-the v2 authoring request that binds the response to the deterministic
+Per-URL relevance rules live in
+`monitoring/jobs/weekly-climate-monitor-08h/prompts/article-relevance-v1.prompt.md`.
+The driver embeds them in the same request that produces the summary, categories
+and keywords. An excluded URL returns empty summary fields; there is no separate
+classifier request. Rules are included in each checkpoint's input hash. Use fresh
+staging after changing rules, so completed results are not reused under new rules.
+
+Page titles are extracted offline from the verified HTML during prepare by
+`climate_monitor.article_title.extract_page_title`: article/main H1, other visible
+H1, Open Graph title, then HTML title. Original capitalization is preserved. When
+none exists, retain the discovery title (or the honest URL fallback). The adapter
+records the title source and original body hash without changing discovery origins.
+Finalize uses the immutable request title; the model cannot replace it.
+
+The helper is optional: pass `--no-page-titles` to the existing monitor to disable
+it on a fresh prepare/run. Library callers can pass a pure `title_extractor` to
+`build_article_evidence_artifact(..., include_verified_content=True)` or omit it.
+For standalone use: `python -m climate_monitor.article_title saved-page.html`.
+It neither fetches URLs nor invokes a model.
+
+The monitor's `hermes` on `PATH` must support `chat --query-file -` for UTF-8
+stdin. Hermes `v2026.9.7` (`2237be355906fbe6065ce1815711eee52b2d646e`)
+has been checked with a 9.6 MB stdin payload in the server sandbox. The older
+`03fa32c` runtime does not support this channel: `--query -` submits a literal
+dash and leaves stdin unread. The monitor rejects that runtime before authoring;
+it never puts the full evidence in argv. Validate the selected runtime in isolation
+before changing the production job's environment.
+
+HTML evidence is retained unchanged and checked against its source content hash.
+For authoring, the monitor reuses `web_listening.blocks.normalizer.normalize_html`
+to send the complete Markdown body with its source hash; it does not impose a
+text cutoff. Each article invocation receives only one URL's evidence.
+
+`--authoring-mode run` prepares once, then processes URLs serially. Each URL
+returns two relevance decisions plus summary, summary basis, evidence hash,
+categories and keywords. The application computes climate AND actuarial/insurance
+relevance and validates each result before atomically saving it in
+`STAGING/url_authoring/`. The existing v2 validator and final response shape remain
+authoritative; immutable article identities and provenance are bound by code.
+Finalization uses the validated v2 model relevance decision without applying the
+legacy keyword filter again. Every qualifying article is rendered; there is no
+report article cap. The executive summary covers all qualifying article summaries.
+PDF delivery reuses the monitor's narrative executive summary. Older reports
+with monitoring bullets only retain the existing deterministic summary fallback.
+
+Rerun the same command with the same staging directory to resume. Completed URL
+results are revalidated and reused; failed or interrupted URLs are attempted
+again. Prepare does not reacquire evidence on resume.
+Finalize validates and reuses that same prepared evidence artifact (date, URL
+set, record hashes and content hashes); it does not crawl the articles again.
+With `--json`, stdout contains one final result object. Per-URL progress goes to
+stderr, so wrappers can parse the result without mixing it with progress lines.
+For a parse or validation failure, the fresh request includes only that item's
+previous validation error alongside its original task and evidence. The base
+input identity stays pinned, and the exact attempt request has its own SHA-256.
+Changed source files, report date, model/provider, prompt, taxonomy or output locations require fresh
+staging. A failed URL does not prevent the remaining URLs from running, but any
+unfinished URL prevents executive authoring and finalization.
+
+After every URL completes, a separate call receives only the verified summaries
+of relevant articles and produces the executive summary. With no qualifying
+summaries, it remains empty and no summary call is made. Its result is checkpointed
+too, so summary failure does not rerun articles. The final v2 response, report and
+seen-state transaction are committed only through the existing finalize path.
+
+Each invocation uses `--max-turns 1 --reasoning none --ignore-rules` and
+`HERMES_STREAM_RETRIES=0`; its dedicated Hermes configuration should use
+`agent.api_max_retries: 1`. These controls are **not proof of one API call**:
+the pinned runtime still requests a final summary after a partial stream exhausts
+the iteration budget. An isolated runtime reproduction made three API calls.
+The application bounds each invocation with `--authoring-timeout` (default 180
+seconds) and records failure per URL. This is N independent URL invocations plus
+one summary invocation, not a whole-week single model call. Raw attempts are
+retained beside checkpoints. Only one complete JSON code fence is accepted as
+response framing; malformed JSON, extra prose and invalid semantics still fail.
+Production cutover requires a complete real run and verified runtime behavior.
+Hermes must be able to renew credentials through its normal locked auth store.
+A read-only auth mount can run until the current token expires, then fail while
+saving renewal state; this occurred during the server sandbox test. Keep auth
+renewal in Hermes rather than adding a second mechanism to the monitor driver.
+
+The 08:00 CLI prepares frozen `article_evidence.json` and `stats.json` in its
+staging directory before URL authoring. Its v2 request binds the response to
+that retained evidence and the deterministic
 stats dict `{"total": N, "updated": …, "unchanged": …, "blocked": …,
 "failed": …, "unresolved": …}` (N must equal `updated + unchanged +
 blocked + failed + unresolved`). The driver validates the mapping before
 the orchestrator writes any artifact; `MonitorRunResult.stats` exposes
-the validated counts (the canonical `57/42/15` split).
+the validated counts. The total is the actual upstream site count; the
+single-site WRI sandbox showed `1 requested / 1 unchanged`, not 57 sites.
 
 ### Email (09:00 UTC, climate_delivery pipeline)
 
@@ -91,84 +161,65 @@ Configuration and preflight are documented in PIPELINE_REFERENCE.md.
 
 ### Step 2: Pillar B Web Search
 
-```
-Run Pillar B web search for climate-actuarial intelligence.
+Edit the query list, source preferences and selection wording in
+`monitoring/jobs/weekly-climate-monitor-08h/prompts/pillar-b-search-v1.prompt.md`.
+Keep its `${report_date}`, `${window_start}`, `${search_start}`, `${search_end}`
+and `${output_path_json}` placeholders. Literal dollar signs use `$$`.
+The renderer computes three calendar months from the explicit report date;
+it does not use the machine's current date or a copied year.
 
-Use web_search tool with these queries (run all):
-1. "climate change actuarial risk insurance disclosure {YEAR}"
-2. "IFRS S2 ISSB climate disclosure actuary {YEAR}"
-3. "parametric insurance climate adaptation {YEAR}"
-4. "climate risk scenario actuarial {YEAR}"
+View the exact task through the existing driver (no search or writes):
 
-Base each summary strictly on the search result snippet for that URL; if the
-snippet is empty or uninformative, leave summary as "".
-
-Save to: data/reports/pillar_b_{REPORT_DATE}.json
-Format: [{{"title":"...","url":"...","source":"web","summary":"..."}}]
+```bash
+python scripts/run_climate_monitor.py --print-pillar-b-prompt \
+  --report-date "$REPORT_DATE" --pillar-b-artifact "$CLIMATE_PILLAR_B_ARTIFACT"
 ```
 
-### Step 3b: Hermes Relevance Filter + Classification
+The report date and absolute output path must come from the current run's
+configuration. Add `--json` to inspect the rendered prompt, source path and SHA.
 
-```
-Step 3b: Hermes LLM relevance filter + classification + summary generation.
+At deployment, the Hermes search task should retain only this fixed instruction:
+resolve the current run's explicit report date/output path; run the command
+above; read its stdout in full and perform that search task using Hermes tools.
+Do not copy the rendered query list back into cron. This keeps changes to the
+template effective on the next invocation without editing cron again.
 
-Read: data/reports/aggregated_{REPORT_DATE}.json
-Also read: data/reports/conferences_{REPORT_DATE}.json (if exists, pre-extracted conference articles)
+The command renders instructions; Hermes still owns search and saving the
+four-field Pillar B array. The target monitor consumes that array through
+`--pillar-b-artifact`; this helper does not introduce a second search service.
+Production cron has **not** been switched to this loader. Its current task still
+contains the old year-only prompt; change it during the controlled deployment.
 
-For each article, assess if it is TRULY relevant to BOTH climate change AND actuarial risk.
+The new prompt requires date verification, but the current four-field consumer
+still lacks publication-date evidence and a deterministic three-month gate.
+That known acceptance gap must be fixed separately before claiming freshness
+validation passes. Search/template tests alone do not establish it.
 
-Use web_search to verify articles if needed.
+### Remaining prompt boundaries
 
-For each article, provide:
-- relevant: true/false (must be about BOTH climate AND actuarial/insurance topics)
-- categories: an ordered list of one or more of the categories below. The
-  FIRST element is the primary category used for report sectioning; later
-  elements are secondary themes. Order by relevance, most relevant first.
-  * climate_disclosure (reporting standards, ISSB, IFRS S2, TCFD)
-  * scenario_analysis (stress testing, ORSA, modelling)
-  * catastrophe_natcat (natural disasters, floods, droughts, storms)
-  * adaptation_resilience (adaptation, resilience, protection gap)
-  * mitigation_energy (renewable, decarbonization, net zero)
-  * parametric_insurance (index insurance, cat bonds, weather derivatives)
-  * financial_risk (solvency, banking stability, systemic risk)
-  * health_mortality (mortality, morbidity, longevity)
-  * regulation_standards (regulation, supervision, compliance)
-  * biodiversity_nature (biodiversity, nature, ecosystem)
-  * conference (conference, meeting, workshop, seminar, event)
-  * general (climate-related but not specific)
-- category: must equal categories[0] (kept for compatibility)
-- summary: 2-4 sentences explaining the article's key points for actuaries
-- keywords: 3-5 specific terms from article content
+The article/executive response instructions currently live in
+`_URL_AUTHORING_PROMPT` and `_EXECUTIVE_AUTHORING_PROMPT` in the existing
+`scripts/run_climate_monitor.py`. Their structured output is validated by
+`weekly_monitor/authoring_contract.py` and `taxonomy.py`. The pinned
+`weekly-monitor-v1.prompt.md` remains a versioned contract/provenance artifact;
+it is not a second whole-week request in the serial authoring path.
 
-INTEGRITY RULES (mandatory):
-1. summary MUST be "" (empty) unless you actually fetched the article content
-   with web_search / web_extract and the summary is grounded in that fetched
-   content. Never summarize from the title alone.
-2. Do not invent keywords that do not appear in the fetched content or the
-   title. If you did not fetch the article, limit keywords to terms present
-   in the title.
-3. If you cannot verify relevance from the title alone, fetch the article
-   before marking it relevant.
+Search discovers candidates and retains factual excerpts. It does not create
+final report summaries, classifications or keywords. Relevance rules are separate
+configuration but run in the same per-URL request as those outputs. No classifier
+agent or second classifier call is needed. Further prompt extraction belongs to
+one focused change in this existing loader, not a new parallel service.
 
-Also generate a 4-paragraph executive summary STRUCTURED BY CATEGORY:
-1. Overall findings (total articles, key themes)
-2. Category analysis (for each category with articles: category name, what issues are covered)
-3. Actuarial implications (what this means for actuaries)
-4. Recommendations for the working group
+### Latest Pillar B verification
 
-Save results to: data/reports/hermes_assessments_{REPORT_DATE}.json
-```
+The 2026-09-08 SSH sandbox run used the rendered prompt for the 2026-09-07 report:
+four required queries succeeded, four recent candidates were emitted, and three
+remained after manual topic review. The output passed the existing four-field
+consumer. This verifies a real search, not automated publication-date enforcement.
 
-### Step 7: Email
-
-```
-Send the weekly climate monitoring email.
-
-Read: data/reports/climate-monitor-{REPORT_DATE}.md
-PDF: climate_delivery_artifacts/{REPORT_DATE}/{SHA}/climate-monitor-{REPORT_DATE}.pdf
-
-Send email with:
-- Subject: Weekly Climate & Actuarial Monitor — {REPORT_DATE}
-- Body: Executive Summary from MD + link to PDF
-- Attachment: PDF
-```
+Search errors must not overwrite results with an empty array. The first rehearsal
+exposed a read-only dependency-cache failure and an incorrect empty result; the
+prompt was strengthened and the sandbox cache fixed before the successful rerun.
+The consumer still needs a machine-checked search-success/date-evidence contract
+before production cutover. Detailed evidence and limitations are listed in
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover).

@@ -25,6 +25,20 @@ Current automated coverage includes:
 - showcase root HTML containing `Historical Reports`, `Chat`, and `Obsidian` workspaces
 - exact-date weekly Registry dry-run, candidate promotion, rollback/restore,
   DB-first metadata precedence, and the unscheduled 10:30 runner contract
+- canonical URL identity, history selection and same-date carry-forward
+- frozen evidence and strict prepare/authoring/finalize input binding
+- independent per-URL authoring, validated checkpoints, completed replay and
+  recovery after interrupted report/history commits
+- uncapped qualifying output, editable relevance/search prompts, page-title
+  extraction and executive-summary reuse in delivery
+
+The integration coverage lives in `tests/test_issue87_upstream_contract.py`,
+`tests/test_issue87_live_chain.py`, `tests/test_candidate_aggregation.py` and
+the authoring/delivery tests. Run the full suite both with the pinned upstream
+package and in an environment where `web_listening` is absent; record skips
+separately. Fixtures and passing tests do not prove a full configured-site run
+or production scheduling. Dated SSH evidence and remaining live gates are in
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#verification-and-cutover).
 
 ## Manual QA
 

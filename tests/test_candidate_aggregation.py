@@ -1612,7 +1612,7 @@ def test_current_artifact_replay_preserves_snapshot_item_with_shared_b_overlay(
     ]
 
 
-def test_orchestrator_snapshot_covers_non_rendered_combined_items(tmp_path, monkeypatch):
+def test_orchestrator_preserves_all_eligible_items_despite_legacy_cap(tmp_path, monkeypatch):
     sources, config, source_dir, _, state_dir = _write_modern_config(tmp_path)
     config.write_text(
         config.read_text(encoding="utf-8").replace(
@@ -1645,7 +1645,7 @@ def test_orchestrator_snapshot_covers_non_rendered_combined_items(tmp_path, monk
         sync=False,
     )
 
-    assert len(result.items) == 1
+    assert {item.url for item in result.items} == {first.url, second.url}
     combined = combined_candidates_path(source_dir, "2026-09-07")
     snapshot_items = verify_candidate_item_snapshot(
         candidate_item_snapshot_path(source_dir, "2026-09-07"),

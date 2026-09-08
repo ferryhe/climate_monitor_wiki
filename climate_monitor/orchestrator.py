@@ -15,6 +15,7 @@ from .article_candidate_contract import ArticleCandidate, validate_candidate
 from .article_content_adapter import (
     ArticleContentAdapterError,
     build_article_evidence_artifact,
+    validate_retained_article_evidence,
     write_article_evidence_artifact,
 )
 from .candidate_aggregation import (
@@ -323,6 +324,38 @@ def _carry_forward_runtime_items(
     return (*rendered, *items_from_current_candidates(remaining))
 
 
+def resolve_seen_urls_path(config: RunConfig, state_dir: str | Path) -> Path:
+    root = Path.cwd()
+    state_root = _resolve_path(state_dir, root=root)
+    if state_root != _resolve_path(DEFAULT_STATE_DIR, root=root):
+        return state_root / "seen_urls.json"
+    return _resolve_path(config.seen_urls_path, root=root)
+
+
+def read_candidate_history(
+    source_dir: Path, report_date: date, seen_urls_path: Path, *,
+    retain_all_same_date: bool = False,
+):
+    """Shared read-only selection boundary for prepare and finalization."""
+    context = _same_date_report_context(
+        report_path=_source_file_path(source_dir, report_date),
+        candidate_path=combined_candidates_path(source_dir, report_date),
+        snapshot_path=candidate_item_snapshot_path(source_dir, report_date),
+        report_date=report_date,
+    )
+    candidates, items, same_date_urls = (), (), set()
+    if context is not None:
+        sidecar, combined, snapshot = context
+        candidates = tuple(validate_candidate(item) for item in combined["items"])
+        items = _carry_forward_runtime_items(sidecar, combined, snapshot)
+        same_date_urls = {article["canonical_url"] for article in sidecar["articles"]}
+        if retain_all_same_date:
+            # The serial response covers excluded articles too. Retain that
+            # exact URL set when replaying its own completed same-date report.
+            same_date_urls.update(candidate.canonical_url for candidate in candidates)
+    return context, candidates, items, same_date_urls, load_seen_urls(seen_urls_path)
+
+
 def _rendered_items_from_snapshot(
     sidecar: Mapping[str, Any],
     snapshot_items: tuple[CandidateItem, ...] | None,
@@ -354,6 +387,7 @@ def _stage_article_evidence(
     report_date: date,
     providers: tuple = (),
     manifest_fixture_path: str | Path | None = None,
+    prepared_evidence: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Build + write the ``article-evidence.v1`` artifact as part of the
     #91 transaction (AC-4).
@@ -374,6 +408,12 @@ def _stage_article_evidence(
     only when the metadata chain does not carry it.
     """
 
+    if prepared_evidence is not None:
+        validate_retained_article_evidence(
+            prepared_evidence, report_date=report_date.isoformat(),
+            urls=(candidate.url for candidate in candidates),
+        )
+        return write_article_evidence_artifact(source_dir, report_date.isoformat(), prepared_evidence)
     if not candidates:
         return None
     # ITEM 2 (Issue #92 reopened): load the producer manifest (if any)
@@ -478,6 +518,7 @@ def run_monitor(
     # non-v2 callers. The orchestrator pins it onto ``MonitorRunResult.stats``
     # on every successful return path that has the response context.
     stats: Mapping[str, int] | None = None,
+    prepared_article_evidence: Mapping[str, Any] | None = None,
 ) -> MonitorRunResult:
     day = report_date or date.today()
     repo_root = Path.cwd()
@@ -497,9 +538,7 @@ def run_monitor(
     output_path = _source_file_path(output_source_dir, day)
     candidate_path = combined_candidates_path(output_source_dir, day)
     snapshot_path = candidate_item_snapshot_path(output_source_dir, day)
-    seen_urls_path = _resolve_path(config.seen_urls_path, root=repo_root)
-    if state_root != _resolve_path(DEFAULT_STATE_DIR, root=repo_root):
-        seen_urls_path = state_root / "seen_urls.json"
+    seen_urls_path = resolve_seen_urls_path(config, state_dir)
     if (article_changes_artifact_path is None) != (pillar_b_artifact_path is None):
         raise ValueError(
             "article_changes_artifact_path and pillar_b_artifact_path must be supplied together"
@@ -597,34 +636,15 @@ def run_monitor(
     if pending_day != day or not update_seen_state:
         recover_pending_commit(output_path)
 
-    same_date_context = _same_date_report_context(
-        report_path=output_path,
-        candidate_path=candidate_path,
-        snapshot_path=snapshot_path,
-        report_date=day,
+    (same_date_context, carry_forward_candidates, carry_forward_items,
+     same_date_urls, canonical_seen_urls) = read_candidate_history(
+        output_source_dir, day, seen_urls_path,
+        retain_all_same_date=prepared_article_evidence is not None,
     )
     has_same_date_report = same_date_context is not None
-    carry_forward_candidates = ()
-    carry_forward_items = ()
-    same_date_snapshot_items = None
-    same_date_urls: set[str] = set()
+    same_date_snapshot_items = same_date_context[2] if same_date_context else None
     if same_date_context is not None:
-        (
-            same_date_sidecar,
-            same_date_candidates,
-            same_date_snapshot_items,
-        ) = same_date_context
-        carry_forward_candidates = tuple(
-            validate_candidate(item) for item in same_date_candidates["items"]
-        )
-        carry_forward_items = _carry_forward_runtime_items(
-            same_date_sidecar,
-            same_date_candidates,
-            same_date_snapshot_items,
-        )
-        same_date_urls = {
-            article["canonical_url"] for article in same_date_sidecar["articles"]
-        }
+        same_date_sidecar = same_date_context[0]
     if not has_same_date_report:
         candidate_path.unlink(missing_ok=True)
         snapshot_path.unlink(missing_ok=True)
@@ -634,7 +654,6 @@ def run_monitor(
         if resolved_site_scopes_path.exists():
             site_scopes = {scope.source_key: scope for scope in load_site_scopes(resolved_site_scopes_path)}
 
-    canonical_seen_urls = load_seen_urls(seen_urls_path)
     seen_urls = canonical_seen_urls - same_date_urls
 
     source_checkpoints_active = False
@@ -776,9 +795,19 @@ def run_monitor(
         )
 
     dedup_notes = [*_history_notes(combined.history_skips), *invalid_notes]
-    classified = [classify_candidate(item, config) for item in merged_items]
-    relevant = [item for item in classified if item.climate_related and item.actuarial_related]
-    kept = relevant[: config.max_items_per_report]
+    evidence_authoring = (
+        authoring_response is not None
+        and authoring_response.get("schema_version") == "weekly-monitor-authoring-response.v2"
+    )
+    if evidence_authoring:
+        # The validated per-URL model decision is the relevance authority.
+        # A second keyword gate would discard synonyms or body-only findings.
+        classified = list(merged_items)
+        kept = classified
+    else:
+        classified = [classify_candidate(item, config) for item in merged_items]
+        relevant = [item for item in classified if item.climate_related and item.actuarial_related]
+        kept = relevant
 
     if authoring_response is not None:
         authored = validate_authoring_response(
@@ -855,6 +884,7 @@ def run_monitor(
             report_date=day,
             providers=providers,
             manifest_fixture_path=manifest_fixture_path,
+            prepared_evidence=prepared_article_evidence,
         )
     except ArticleContentAdapterError as exc:
         raise SeenStateError(

@@ -1,19 +1,20 @@
-# Article content adapter (Issue #92)
+# Article content adapter
 
-The adapter consumes the orchestrator's selected, URL-deduplicated candidates
-and stages `article-evidence.v1_<date>.json` beside the report for Issue #93.
-It retains PR #98's public functions and schema constant. Acquisition and
+The adapter acquires and verifies evidence for canonical URL candidates before
+authoring. Production prepare freezes that evidence in staging; finalize reuses
+it and verifies the date, URL set and hashes without recrawling. Acquisition and
 fallback policy belong to the public upstream article reader.
 
 ## Producer path
 
-The canonical integration run uses `--manifest-fixture` with the #67 producer's
-`web-listening-manifest.v1` export (`discovered_items`). The existing
-`climate_monitor.web_listening_adapter.read_manifest_items` seeds the
-orchestrator, which filters and deduplicates candidates before staging. The
-producer owns acquisition-batch-result.v2 acquisition state and its manifest
-export; this consumer does not parse that batch envelope as a manifest.
-The historical SQLite/diff parser remains a compatibility entrypoint.
+Production uses the existing CLI's `--production-weekly --authoring-mode run`
+with a matching `acquisition-batch-result.v2`, `web-listening-manifest.v1` export
+and Pillar B artifact. Prepare applies the same URL/history selection used by
+finalize. The producer owns acquisition state and its manifest export; this
+consumer does not parse the batch envelope as a manifest. See
+[the executable run/resume contract](../PIPELINE_REFERENCE.md#run-and-resume).
+`--manifest-fixture` and the historical SQLite/diff parser are compatibility
+entrypoints, not the live production recipe.
 
 The consumer imports no upstream Crawler, Storage, or diff implementation and
 maintains no producer checkpoint state. Staging joins manifest provenance onto
@@ -57,7 +58,10 @@ Explicit `providers=` always wins, including when the dependency probe reports
 `partial` or `unavailable`. Only `providers[0](article_id, url)` is called; the
 consumer does not attempt subsequent providers. Without injection the adapter
 wraps `web_listening.blocks.article_content.fetch_article_content(url)`, whose
-public signature takes a URL and keyword options, not an article ID.
+public signature takes a URL and keyword options, not an article ID. It uses
+upstream public configuration/profile APIs to bind the reviewed site skill,
+profile and scope, with the output directory inside the upstream runtime data
+root. The reader receives that original output directory and governed binding.
 
 `check_dependencies()` reports `available` when that public reader is importable.
 It retains the older contract-module/`PROVIDERS` probe for compatibility
@@ -74,9 +78,9 @@ compatibility input. Identity fields, if supplied by the provider, must exactly
 match the call. Upstream `data.sha256` becomes `content_hash`; legacy
 `content_hash` is accepted when `sha256` is absent.
 
-`resolve_content_ref(ref, hash)` delegates to upstream
-`_read_evidence(_output_path(None), ref, hash)`, matching its default output
-location and three-argument signature. Missing resolver support raises
+`resolve_content_ref(ref, hash, output_dir=...)` resolves evidence beneath the
+original output directory and verifies its SHA-256; it does not call private
+upstream resolver functions. An unresolvable reference raises
 `ArticleContentAdapterError("content_ref_unresolvable")`. Tests may replace
 `resolve_content_ref` or attach `content_resolver(ref, hash) -> bytes` to an
 explicit provider. The registered loopbacks use an in-process resolver and
@@ -87,7 +91,7 @@ they are test fixtures, not durable production references.
 
 | Upstream data_status | Evidence status | Summary basis / failure |
 | --- | --- | --- |
-| present | ok | page; reference and SHA-256 required |
+| present | ok | page; SHA-verified full inline body or resolvable reference |
 | present, truncated=true | ok | preview_only; extra.content_status=present_preview_only |
 | no_content | no_content | none; content/ref/hash are null |
 | not_found | failed | upstream stop_reason |
@@ -105,10 +109,19 @@ ordered attempts. A differing final URL on a non-failure, non-safety result sets
 `extra.redirected=true` and marks the final attempt `redirected=true` when one
 exists. Safety failures retain their failed status.
 
-The upstream `full_text` (legacy `content`) may populate `content` only for an
-untruncated successful read. A 2,000-character `truncated_preview` never becomes
-the body: `content=null`, `summary_basis=preview_only`, and the complete body's
-reference/hash remain available. Verification always rereads the complete bytes.
+The upstream `full_text` (legacy `content`) may populate `content` for an
+untruncated successful read, including a complete hash-verified inline body
+without `content_ref`. A `truncated_preview` never becomes the complete body.
+Ref-only verification preserves the original per-record output directory or
+injected resolver. `include_verified_content=True`, used during production
+prepare, retains the verified complete bytes for later offline authoring.
+
+The optional `title_extractor` uses `climate_monitor.article_title` on verified
+HTML to preserve the page's heading and capitalization, recording title
+provenance without changing body hashes or origins. It makes no fetch or model
+call. A fresh prepare can disable it with `--no-page-titles`. Authoring normalizes
+the complete retained HTML through the public upstream normalizer without an
+arbitrary text cutoff.
 
 A snippet-only result requires a nonempty **input** `search_snippet`. It stays in
 `extra.search_snippet` with `summary_basis=search_snippet`; it does not become
@@ -125,8 +138,9 @@ different URLs is rejected before any fetch. Inputs without a URL/usable identit
 are rejected rather than silently omitted.
 
 Before writing, `verify_record` checks input membership and requested URL. Every
-`ok` record must resolve its reference to bytes whose SHA-256 equals
-`content_hash`; an embedded full body must equal those bytes. The batch must
+`ok` record must have complete bytes whose SHA-256 equals `content_hash`, either
+inline or through the retained resolver/output directory. When both are present,
+the inline body must equal the resolved bytes. The batch must
 contain exactly one record for every unique input. Damaged references, hash or
 identity mismatches, missing/extra/duplicate outputs, and malformed results raise
 `ArticleContentAdapterError` and reject the **whole batch**. A preceding good
@@ -149,7 +163,14 @@ The artifact carries schema version, report date, generated-at (empty unless
 explicitly supplied), dependency status, record count, records, and digest.
 `ARTICLE_EVIDENCE_SCHEMA` is the co-located JSON Schema for downstream validation.
 
-## Driver wiring and local smoke
+## Production wiring and compatibility smoke
+
+Production evidence acquisition and validation happen before any model request.
+Invalid retained evidence blocks authoring/finalization; a previously written
+report does not turn that failure into a warning. Per-URL model failures are
+checkpointed by the existing CLI queue and retried only for unfinished URLs.
+
+The following behavior and command cover the older manifest-fixture path:
 
 `--source-dir` takes precedence over `load_run_config(...).source_dir`; an empty
 CLI value falls back to the configured directory. Staging occurs after report

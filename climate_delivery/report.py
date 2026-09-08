@@ -47,6 +47,7 @@ class WeeklyReport:
     monitoring_notes: tuple[str, ...]
     highlights: tuple[Highlight, ...]
     original_links: tuple[str, ...]
+    executive_summary: tuple[str, ...] = ()
 
 
 def _section(text: str, required: str) -> str:
@@ -73,6 +74,18 @@ def _clean_markdown(value: str) -> str:
 
 def _bullets(section: str) -> tuple[str, ...]:
     return tuple(_clean_markdown(match.group(1)) for match in re.finditer(r"^\s*-\s+(.+?)\s*$", section, re.MULTILINE))
+
+
+def _narrative(section: str) -> tuple[str, ...]:
+    # Legacy reports contain monitoring bullets only. New monitor reports add
+    # prose after the count line; preserve every paragraph, even without a
+    # blank line between the counts and the first narrative sentence.
+    prose = "\n".join(
+        "" if re.match(r"^\s*[-*]\s+", line) else line
+        for line in section.splitlines()
+    )
+    paragraphs = (_clean_markdown(part) for part in re.split(r"\n\s*\n", prose))
+    return tuple(part for part in paragraphs if part)
 
 
 def _metadata_values(value: str) -> tuple[str, ...]:
@@ -231,4 +244,5 @@ def parse_weekly_report(
         monitoring_notes=_bullets(executive),
         highlights=highlights,
         original_links=links,
+        executive_summary=_narrative(executive),
     )
