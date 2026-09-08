@@ -77,6 +77,23 @@ def test_weekly_report_is_strictly_validated_and_summary_is_deterministic(tmp_pa
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_delivery_reuses_monitor_narrative_in_summary_and_pdf(tmp_path):
+    paragraphs = [
+        "Flood risk changes require updated insurance pricing assumptions.",
+        "Supervisors should compare capital resilience under climate scenarios.",
+    ]
+    text = REPORT.replace("- One deterministic observation.", "\n\n".join(paragraphs))
+    report = parse_weekly_report(report_file(tmp_path, text=text))
+    summary = build_summary(report)
+    assert summary["executive_summary"] == paragraphs
+    assert report.executive_summary == tuple(paragraphs)
+    output = tmp_path / "same-summary.pdf"
+    render_pdf(summary, output)
+    pdf_text = " ".join(" ".join(page.extract_text().split()) for page in PdfReader(output).pages)
+    assert all(paragraph in pdf_text for paragraph in paragraphs)
+    assert "This week's report contains" not in pdf_text
+
+
 def test_weekly_report_preserves_explicitly_unknown_site_counts(tmp_path):
     text = REPORT.replace(
         "Sites checked: **3**, succeeded: **2**, failed: **1**",

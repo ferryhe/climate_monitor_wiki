@@ -3,16 +3,32 @@
 This directory contains repository-owned management artifacts for the Monday
 08:00 UTC Weekly Climate & Actuarial Monitor.
 
-The active runtime remains Hermes-owned. Files here are prompt, contract,
-driver, documentation, and provenance-capture references for a future web
-backend management project. They are not a live scheduler config.
+The repository owns the production-capable prepare/serial-authoring/finalize
+CLI, editable prompts and strict contracts. Hermes supplies model execution and
+host scheduling; `web_listening` owns acquisition. These files are not live
+scheduler configuration. Current operations are documented in
+[PIPELINE_REFERENCE.md](../../../PIPELINE_REFERENCE.md) and
+[PIPELINE_CONFIG.md](../../../PIPELINE_CONFIG.md).
+
+The 2026-09-08 SSH audit found 12 legacy Step jobs; the new four-slot schedule
+had not been installed. Historical captures below do not prove current job IDs.
 
 Key files:
 
 - `manifest.json` describes the repo-owned artifact set.
-- `prompts/weekly-monitor-v1.prompt.md` is the exact captured production
-  prompt body.
+- `prompts/weekly-monitor-v1.prompt.md` is the pinned legacy compatibility
+  contract, derived from the captured prompt with later reviewed changes. Its
+  current hash is pinned in metadata; the original capture retains its own hash.
+  Its old quota, host paths and tools
+  are historical bytes, not the executing serial queue's instructions.
 - `prompts/weekly-monitor-v1.meta.json` pins prompt identity and SHA-256.
+- `prompts/article-relevance-v1.prompt.md` supplies relevance rules included in
+  each URL's joint decision/summary/categories/keywords request.
+- `prompts/pillar-b-search-v1.prompt.md` is the editable discovery task, rendered
+  for an explicit report date through the existing prompt loader and CLI.
+- `scripts/run_climate_monitor.py` at the repository root owns the independent
+  URL queue, checkpoints, executive invocation and finalize handoff. The library
+  driver validates completed responses; it does not launch a competing queue.
 - `contracts/*.schema.json` define portable request, response, and provenance
   shapes. Runtime Python validation is stricter where identity binding matters.
 - `driver/driver.v1.json` describes the repo-owned CLI driver metadata, not a

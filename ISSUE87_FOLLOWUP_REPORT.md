@@ -1,4 +1,11 @@
-# Issue #87 follow-up handoff — Refs #87
+# Issue #87 follow-up handoff — historical record
+
+> Status note, 2026-09-08: the owner has closed #87. The same-run blocker
+> described below was subsequently implemented and sandbox-tested. This file
+> preserves the original handoff and its test-referenced recovery instructions;
+> its issue-state, host-path and scheduler claims describe that earlier audit.
+> Use [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover)
+> for current evidence, remaining production gates and the modular workflow.
 
 Issue #87 stays OPEN. This is an implementation handoff, not production completion.
 The manager owns commit/push/PR/review/merge. No production email, publisher push,

@@ -151,10 +151,14 @@ promote that title to the candidate display title and does not claim page
 evidence. A non-empty upstream string remains available on the origin.
 
 `adapt_pillar_b()` reads the current array of exactly
-`{title, url, source, summary}` rows. The current producer declares
-`source: "web"`; other values fail. Search titles and non-empty summaries are
+`{title, url, source, summary}` rows. `source` is a nonempty, trimmed publisher
+or institution name retained verbatim; the adapter supplies `pillar: "B"`
+independently. Search titles and non-empty summaries are
 retained with `search_result` basis. Since the Pillar B array has no timestamp,
 the caller supplies `discovered_at` without requiring an upstream shape change.
+That timestamp is not publication-date evidence. The editable discovery prompt
+and remaining machine-checked freshness/search-success gate are described in
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#identity-dates-and-report-format).
 
 For both current shapes, an exactly empty `title` string means that title
 evidence is absent and maps to null candidate/origin title fields and bases.

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from calendar import monthrange
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
+from string import Template
 
 
 JOB_ROOT = (
@@ -13,6 +16,16 @@ JOB_ROOT = (
     / "weekly-climate-monitor-08h"
 )
 DEFAULT_WEEKLY_MONITOR_PROMPT_META_PATH = JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json"
+DEFAULT_ARTICLE_RELEVANCE_PATH = JOB_ROOT / "prompts" / "article-relevance-v1.prompt.md"
+DEFAULT_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v1.prompt.md"
+
+
+def load_article_relevance_rules(path: str | Path | None = None) -> str:
+    """Rules are embedded in the existing URL request and its checkpoint hash."""
+    rules = Path(path or DEFAULT_ARTICLE_RELEVANCE_PATH).read_text(encoding="utf-8").strip()
+    if not rules:
+        raise ValueError("article relevance rules are empty")
+    return rules
 
 
 @dataclass(frozen=True)
@@ -22,6 +35,39 @@ class LoadedPrompt:
     path: Path
     raw_bytes: bytes
     sha256: str
+
+
+def load_pillar_b_search_prompt(
+    report_date: date, output_path: str | Path, *, path: str | Path | None = None,
+) -> LoadedPrompt:
+    """Render the editable search task; no search, inference, or file writes.
+
+    The window is three calendar months anchored to the report date, with
+    month-end clamping. The publisher date still needs downstream validation.
+    """
+    destination = Path(output_path)
+    if not destination.is_absolute():
+        raise ValueError("Pillar B output path must be absolute")
+    month_index = report_date.year * 12 + report_date.month - 1 - 3
+    year, month = divmod(month_index, 12)
+    month += 1
+    start = date(year, month, min(report_date.day, monthrange(year, month)[1]))
+    prompt_path = Path(path) if path is not None else DEFAULT_PILLAR_B_SEARCH_PATH
+    template = prompt_path.read_text(encoding="utf-8")
+    values = {"report_date": report_date.isoformat(), "window_start": start.isoformat(),
+              "search_start": (start - timedelta(days=1)).isoformat(),
+              "search_end": (report_date + timedelta(days=1)).isoformat(),
+              "output_path_json": json.dumps(str(destination), ensure_ascii=False)}
+    # A missing placeholder would silently turn the live search into a stale
+    # copied task. Keep the date window and destination bound by the renderer.
+    if any("${" + key + "}" not in template for key in values):
+        raise ValueError("Pillar B template must retain its date/window/output placeholders")
+    try:
+        raw = Template(template).substitute(values).encode("utf-8")
+    except (ValueError, KeyError) as exc:
+        raise ValueError("Pillar B template has invalid or unknown placeholders") from exc
+    return LoadedPrompt(prompt_id="pillar_b_search", version="v1", path=prompt_path,
+                        raw_bytes=raw, sha256=hashlib.sha256(raw).hexdigest())
 
 
 def load_weekly_monitor_prompt(

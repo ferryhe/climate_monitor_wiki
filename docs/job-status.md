@@ -8,12 +8,14 @@ The API defines the application-side read contract. It does not create
 an exporter, systemd timer, Hermes hook, scheduled job, or production snapshot.
 The observer/exporter remains a separately reviewed server operation.
 
-The 2026-09-07 controller audit found no climate cron jobs or local runtime
-provisioning. The wrappers write local-only evidence. Render has no shared source
+The 2026-09-08 SSH audit found 12 enabled legacy Step jobs on the real server;
+the target four-slot wrapper schedule was not installed. The wrappers write
+local-only evidence. Render has no shared source
 for those files and remains HTTP 503 `not_configured`. Setting a path on Render
 alone cannot transport the snapshot; do not request an unavailable mounted volume.
 The existing deployed `/api/update-status` and Registry API expose their own
 available evidence; they do not prove Hermes dispatch. No new transport is added.
+See [current cutover status](../PIPELINE_REFERENCE.md#verification-and-cutover).
 
 The optional Registry slot uses Monday 10:30 UTC. The three canonical slots stay
 08:00, 09:00 and 10:00 UTC. Hermes uses Asia/Shanghai: configure their local cron

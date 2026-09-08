@@ -74,7 +74,9 @@ def run_chain(workspace):
     ``run_weekly_monitor`` call. Production hashes are unchanged.
     """
     from climate_monitor.candidate_aggregation import combine_current_artifacts, items_from_merged_candidates_with_carry
-    from climate_monitor.article_content_adapter import build_article_evidence_artifact
+    from climate_monitor.article_content_adapter import (
+        build_article_evidence_artifact, _record_digest, _artifact_digest,
+    )
     from climate_monitor.semantic_bundle import article_identity, verify_semantic_sidecar
     from climate_monitor.weekly_monitor.driver import run_weekly_monitor
     from climate_monitor.weekly_monitor.authoring_contract import AuthoringContractError
@@ -124,6 +126,8 @@ def run_chain(workspace):
         candidate = next(c for c in combined.candidates if c.canonical_url == record['requested_url'])
         record.update(title=title, title_basis='upstream_artifact', display_pillar=candidate.display_pillar,
                       origins=[{'pillar': o.pillar, 'url': candidate.canonical_url, 'source': 'Example Org'} for o in candidate.origins])
+        record['record_hash'] = _record_digest(record)
+    evidence['artifact_digest'] = _artifact_digest(evidence['records'])
     stages.append('evidence')
     stats = {'total': 3, 'updated': 1, 'unchanged': 0, 'blocked': 0, 'failed': 2, 'unresolved': 0}
     response = _build_v2_response(stats, evidence['records'])

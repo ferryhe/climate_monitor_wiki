@@ -4,8 +4,52 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from datetime import date
+
+import pytest
 
 from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_prompt
+from climate_monitor.weekly_monitor.prompt_loader import load_pillar_b_search_prompt, DEFAULT_PILLAR_B_SEARCH_PATH
+
+
+@pytest.mark.parametrize("day,start", [
+    ("2026-09-07", "2026-06-07"), ("2026-05-31", "2026-02-28"),
+    ("2024-05-31", "2024-02-29"), ("2026-01-31", "2025-10-31"),
+])
+def test_search_prompt_uses_report_date_calendar_window_and_exact_path(tmp_path, day, start):
+    destination = tmp_path / "reports with spaces" / "pillar_b.json"
+    prompt = load_pillar_b_search_prompt(date.fromisoformat(day), destination)
+    text = prompt.raw_bytes.decode("utf-8")
+    assert f"Article date window: {start} through {day}, inclusive" in text
+    assert json.dumps(str(destination), ensure_ascii=False) in text
+    assert "${" not in text
+    assert prompt.sha256 == hashlib.sha256(prompt.raw_bytes).hexdigest()
+    assert not destination.parent.exists()
+    if day == "2026-09-07":
+        assert "after:2026-06-06 before:2026-09-08" in text
+
+
+def test_search_prompt_reads_edits_each_time_and_rejects_stale_template(tmp_path):
+    template = tmp_path / "search.prompt.md"
+    template.write_bytes(DEFAULT_PILLAR_B_SEARCH_PATH.read_bytes())
+    args = (date(2026, 9, 7), tmp_path / "pillar_b.json")
+    before = load_pillar_b_search_prompt(*args, path=template)
+    text = template.read_text(encoding="utf-8").replace("## Search queries", "## Search queries\n\nAdditional focus: mortality risk.")
+    template.write_text(text, encoding="utf-8")
+    after = load_pillar_b_search_prompt(*args, path=template)
+    assert "Additional focus: mortality risk." in after.raw_bytes.decode()
+    assert before.sha256 != after.sha256
+    template.write_text(text.replace("${report_date}", "2026-09-07"), encoding="utf-8")
+    with pytest.raises(ValueError, match="placeholders"):
+        load_pillar_b_search_prompt(*args, path=template)
+    template.write_text(text + "\n${misspelled_date}", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown placeholders"):
+        load_pillar_b_search_prompt(*args, path=template)
+
+
+def test_search_prompt_rejects_implicit_relative_destination():
+    with pytest.raises(ValueError, match="absolute"):
+        load_pillar_b_search_prompt(date(2026, 9, 7), "pillar_b.json")
 
 
 ROOT = Path(__file__).resolve().parents[2]

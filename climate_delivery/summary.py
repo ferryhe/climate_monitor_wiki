@@ -127,7 +127,7 @@ def build_summary(report: WeeklyReport) -> dict[str, Any]:
                 "failed": report.failed,
             },
         },
-        "executive_summary": _content_executive_summary(report),
+        "executive_summary": list(report.executive_summary) or _content_executive_summary(report),
         "monitoring_notes": [
             item for item in report.monitoring_notes if not item.casefold().startswith("sites checked:")
         ],

@@ -137,7 +137,6 @@ def load_run_config(path: str | Path) -> RunConfig:
             str(value).strip() for value in research.get("queries", []) if str(value).strip()
         ),
         research_lookback_days=int(research.get("lookback_days", 30)),
-        max_items_per_report=int(payload.get("max_items_per_report", 12)),
         source_dir=str(output.get("source_dir", "sources")),
         wiki_dir=str(output.get("wiki_dir", "wiki")),
         write_empty_report=bool(output.get("write_empty_report", False)),

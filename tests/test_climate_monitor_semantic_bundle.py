@@ -203,15 +203,16 @@ def test_sidecar_articles_correspond_one_to_one_with_the_rendered_markdown(tmp_p
     assert [article["position"] for article in payload["articles"]] == list(range(1, len(sidecar_urls) + 1))
 
 
-def test_only_finally_selected_articles_receive_semantics(tmp_path):
-    result, _ = _run(tmp_path, max_items=1, manifest_count=3)
+def test_all_eligible_articles_receive_semantics_despite_legacy_cap(tmp_path):
+    result, _ = _run(tmp_path, max_items=1, manifest_count=15)
     report_path = Path(result.report_path)
     payload = json.loads(semantic_sidecar_path(report_path).read_text(encoding="utf-8"))
 
-    assert len(result.items) == 1
-    assert payload["article_count"] == 1
+    # Fifteen monitored pages plus the research fixture all reach the report.
+    assert len(result.items) == 16
+    assert payload["article_count"] == 16
     assert REPORT_URL_LINE.findall(report_path.read_text(encoding="utf-8")) == [
-        payload["articles"][0]["url"]
+        article["url"] for article in payload["articles"]
     ]
 
 

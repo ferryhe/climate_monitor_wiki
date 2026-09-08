@@ -167,7 +167,8 @@ def test_load_run_config_reads_keywords_and_output_paths(tmp_path):
     config = load_run_config(path)
 
     assert config.report_title == "Daily Climate & Actuarial Monitor"
-    assert config.max_items_per_report == 7
+    # Legacy input cannot reintroduce a report article cap.
+    assert not hasattr(config, "max_items_per_report")
     assert config.climate_keywords == ("climate", "flood")
     assert config.actuarial_keywords == ("insurance", "reserving")
     assert config.research_queries == ("climate insurance report",)

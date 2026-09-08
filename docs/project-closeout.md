@@ -1,4 +1,11 @@
-# Production readiness and operator guide
+# Historical operator audit — 2026-08-18
+
+This is the retained August handoff, not the current operating authority.
+Its baseline, job IDs, test counts and pending-work statements describe that
+audit. Current module ownership, serial authoring and deployment gates are in
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md) and
+[PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md). Current UI guidance is in
+[ui-surfaces.md](ui-surfaces.md).
 
 **Status:** `LEDGER REPAIR COMPLETE — VALIDATED FALLBACK DEPLOYMENT/SYNC PENDING`
 
@@ -9,10 +16,8 @@ do not infer it from the historical record below.
 
 **Audit date:** 2026-08-18
 
-This is the current handoff document for the application. Historical design
-reports remain useful background, but they are not the operating authority.
-The source-of-truth runbooks are `docs/deployment.md`,
-`docs/weekly-cadence.md`, and the module-specific documents linked below.
+The following sections preserve the original audit and its supporting evidence.
+Do not use the historical module map or rollout status to select today's entrypoint.
 
 ## 1. What the project does
 

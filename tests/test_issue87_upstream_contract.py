@@ -135,7 +135,8 @@ def test_default_reader_uses_real_governed_configuration(tmp_path, monkeypatch, 
     assert result['records'][0]['status'] != 'unavailable'
 
 
-def test_prepare_threads_configured_upstream_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("no_page_titles", [False, True])
+def test_prepare_threads_configured_upstream_root(tmp_path, monkeypatch, no_page_titles):
     monkeypatch.delenv('WL_DATA_DIR', raising=False)
     from argparse import Namespace
     op, mp, bp = public_inputs(tmp_path)
@@ -153,8 +154,9 @@ def test_prepare_threads_configured_upstream_root(tmp_path, monkeypatch):
                      pillar_b_artifact=str(bp), staging_dir=str(tmp_path / 'staging'),
                      source_dir=str(tmp_path / 'sources'), state_dir=str(tmp_path / 'state'),
                      report_date='2026-09-07', run_config=str(config),
-                     article_evidence_loopback='', json=False)
+                     article_evidence_loopback='', json=False, no_page_titles=no_page_titles)
     monitor._run_prepare(args, None)
+    assert captured[0]['title_extractor'] is (None if no_page_titles else monitor.extract_page_title)
     assert captured[0]['data_root'] == tmp_path / 'upstream-data'
 
 
@@ -187,7 +189,7 @@ def test_production_wrapper_plans_without_preexisting_response(tmp_path, monkeyp
     'valid', 'absent', 'invalid', 'failed', 'timeout', 'argv_limit',
     'help_failed', 'help_unknown', 'help_timeout', 'help_unavailable',
 ])
-def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypatch, reply, capability):
+def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monkeypatch, reply, capability):
     import sys
     from argparse import Namespace
     from scripts import hermes_job
@@ -233,40 +235,47 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
                 raise FileNotFoundError('hermes')
             return Namespace(returncode=2 if reply == 'help_failed' else 0,
                 stdout='--quiet' if reply == 'help_unknown' else (
-                    '-q QUERY, --query QUERY\n' + ('--query-file PATH\n' if capability == 'query-file' else '')), stderr='')
+                    '-q QUERY, --query QUERY\n--max-turns N\n--reasoning EFFORT\n--ignore-rules\n' + ('--query-file PATH\n' if capability == 'query-file' else '')), stderr='')
         assert (staging / 'v2_authoring_request.json').is_file()
         assert not (staging / 'authoring_response.json').exists()
         events.append('author')
         assert command[command.index('--model') + 1] == 'gpt-6-astra'
         assert command[command.index('--provider') + 1] == 'openai-codex'
-        # 03fa32c exposes only --query; the entrypoint always delivers the full
-        # instruction over stdin via ``--query -`` and never uses --query-file
-        # (even when the local help advertises it), so argv never carries the
-        # instruction and no argv-size E2BIG can occur.
-        assert '--query-file' not in command
-        assert command[command.index('--query') + 1] == '-'
+        assert capability == 'query-file'
+        assert '--query' not in command
+        assert command[command.index('--query-file') + 1] == '-'
         instruction = kwargs['input']
+        assert kwargs['encoding'] == 'utf-8'
+        assert kwargs['env']['HERMES_STREAM_RETRIES'] == '0'
+        assert command[command.index('--max-turns') + 1] == '1'
+        assert command[command.index('--reasoning') + 1] == 'none'
         assert instruction not in command
         assert not kwargs.get('shell', False)
-        assert '$(literal) `literal`' in instruction
+        payload = json.loads(instruction.split('\nINPUT_JSON:\n', 1)[1])
         if reply == 'timeout':
-            raise subprocess.TimeoutExpired(command, 1800)
+            raise subprocess.TimeoutExpired(command, 180)
         if reply == 'argv_limit':
             import errno
             raise OSError(errno.E2BIG, 'Argument list too long')
         assert command[command.index('--toolsets') + 1] == 'none'
         request = json.loads((staging / 'v2_authoring_request.json').read_text())
-        assert request['request_sha256'] in instruction
         assert len(request['articles']) == 4
         assert any(a['url'].endswith('/pillar-b-climate-risk') for a in request['articles'])
-        response = dict(schema_version=AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
-            contract_version=AUTHORING_CONTRACT_VERSION_V2, request_sha256=request['request_sha256'],
-            stats=request['stats'], executive_summary='Climate supervision developments.',
-            article_count=len(request['articles']), articles=[{**item, 'relevant': True,
-                'summary': 'Climate insurance supervision risk evidence.' if item['evidence']['search_snippet'] else '',
-                'summary_basis': 'search_snippet' if item['evidence']['search_snippet'] else 'none',
-                'evidence_hash': None, 'categories': ['Supervision & Disclosure'],
-                'keywords': ['climate', 'insurance', 'supervision']} for item in request['articles']])
+        if payload['task'] == 'article':
+            assert 'articles' not in payload
+            assert payload['evidence']['requested_url'] == payload['article']['url']
+            for other in request['articles']:
+                if other['url'] != payload['article']['url']:
+                    assert other['url'] not in instruction
+            snippet = payload['evidence']['search_snippet']
+            response = dict(climate_related=True, actuarial_related=True,
+                summary='Climate insurance supervision risk evidence.' if snippet else '',
+                summary_basis='search_snippet' if snippet else 'none', evidence_hash=None,
+                categories=['Supervision & Disclosure'], keywords=['insurance', 'supervision', 'disclosure'])
+        else:
+            assert payload['task'] == 'executive_summary'
+            assert all(set(item) == {'url', 'title', 'summary', 'categories', 'keywords'} for item in payload['articles'])
+            response = {'executive_summary': 'Climate supervision developments.'}
         return Namespace(returncode=1 if reply == 'failed' else 0, stdout=('Warning: Unknown toolsets: none\n' + json.dumps(response) + '\n') if reply == 'valid' else
                          ('' if reply == 'absent' else '{}'), stderr='\nsession_id: 20260907_204029_4993a5\n')
     monkeypatch.setattr(monitor, '_run_prepare', tracked_prepare)
@@ -284,14 +293,14 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
         '--source-dir', str(tmp_path / 'sources'), '--state-dir', str(tmp_path / 'state'),
         '--wiki-dir', str(tmp_path / 'wiki'), '--no-sync', '--no-update-seen-state',
         '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider'])
-    if reply == 'valid':
+    if reply == 'valid' and capability == 'query-file':
         monitor.main()
-        assert events == ['prepare', 'help', 'author', 'finalize']
+        assert events == ['prepare', 'help'] + ['author'] * 5 + ['finalize']
         assert list((tmp_path / 'sources').glob('climate-monitor-*.md'))
     else:
         with pytest.raises(SystemExit):
             monitor.main()
-        assert events == (['prepare', 'help'] if reply.startswith('help_') else ['prepare', 'help', 'author'])
+        assert events == (['prepare', 'help'] if reply.startswith('help_') or capability == 'query' else ['prepare', 'help'] + ['author'] * 4)
         assert not list((tmp_path / 'sources').glob('*.md'))
         assert not (staging / 'authoring_response.json').exists()
 
@@ -314,6 +323,281 @@ def test_existing_response_stops_before_prepare_or_author(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match='already exists'):
         monitor._run_authoring_sequence(SimpleNamespace(staging_dir=str(staging)), None)
     assert response.read_text() == '{}'
+
+
+@pytest.fixture
+def serial_authoring_run(tmp_path, monkeypatch):
+    import sys
+    import subprocess
+    op, mp, bp = public_inputs(tmp_path)
+    manifest = json.loads(mp.read_text())
+    for index, entry in enumerate(manifest['discovered_items']):
+        entry.update(title=f'Climate insurance risk {index}',
+                     summary=f'Evidence paragraph {index} about insurance climate supervision.')
+    mp.write_text(json.dumps(manifest))
+    staging = tmp_path / 'staging'
+    monkeypatch.setattr(sys, 'argv', ['run_climate_monitor.py', '--production-weekly',
+        '--authoring-mode', 'run', '--model', 'test-model', '--model-provider', 'test-provider',
+        '--report-date', '2026-09-07', '--acquisition-batch', str(op),
+        '--web-listening-manifest', str(mp), '--pillar-b-artifact', str(bp),
+        '--staging-dir', str(staging), '--source-dir', str(tmp_path / 'sources'),
+        '--state-dir', str(tmp_path / 'state'), '--wiki-dir', str(tmp_path / 'wiki'),
+        '--no-sync', '--no-update-seen-state',
+        '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider'])
+    state = SimpleNamespace(calls=[], failed=set(), invalid=set(), crash=None,
+                            exclude=set(), executive_fail=False, executive_bullets=False,
+                            staging=staging, source=mp)
+    original_run = subprocess.run
+    def invoke(command, **kwargs):
+        if command[0] != 'hermes':
+            return original_run(command, **kwargs)
+        if command[-1] == '--help':
+            return SimpleNamespace(returncode=0, stdout='--query-file --max-turns --reasoning --ignore-rules', stderr='')
+        payload = json.loads(kwargs['input'].split('\nINPUT_JSON:\n', 1)[1])
+        if payload['task'] == 'article':
+            url = payload['article']['url']
+            state.calls.append(url)
+            if url == state.crash:
+                raise KeyboardInterrupt()
+            if url in state.failed:
+                raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+            # A URL invocation must not contain its neighbours' evidence.
+            index = int(url.rsplit('-', 1)[1])
+            assert f'Evidence paragraph {index}' in kwargs['input']
+            assert all(f'Evidence paragraph {other}' not in kwargs['input']
+                       for other in range(3) if other != index)
+            raw = dict(climate_related=True, actuarial_related=url not in state.exclude,
+                summary=f'Insurance supervision finding {index} addresses climate risk disclosure.',
+                summary_basis='search_snippet', evidence_hash=None,
+                categories=['Supervision & Disclosure'], keywords=['insurance', 'supervision', 'disclosure'])
+            if url in state.invalid:
+                raw['summary_basis'] = 'article_content'
+        else:
+            state.calls.append('executive')
+            assert 'evidence' not in payload
+            assert all(article['url'] not in state.exclude for article in payload['articles'])
+            if state.executive_fail:
+                return SimpleNamespace(returncode=0, stdout='{}', stderr='\nsession_id: 20260908_100000_abcdef\n')
+            raw = {'executive_summary': 'Insurance supervision findings address climate disclosure risk.'}
+            if state.executive_bullets:
+                raw['executive_summary'] = '- Flood losses affect insurance pricing.\n- Climate scenarios affect reserves.'
+        return SimpleNamespace(returncode=0, stdout=json.dumps(raw), stderr='\nsession_id: 20260908_100000_abcdef\n')
+    monkeypatch.setattr(subprocess, 'run', invoke)
+    return state
+
+
+@pytest.mark.parametrize('failure_kind', ['timeout', 'invalid_response'])
+def test_serial_url_failure_isolated_and_resume_skips_successes(serial_authoring_run, monkeypatch, failure_kind):
+    run = serial_authoring_run
+    url = 'https://www.wri.org/insights/climate-1'
+    (run.failed if failure_kind == 'timeout' else run.invalid).add(url)
+    with pytest.raises(SystemExit, match='URL authoring incomplete: 1 failed'):
+        monitor.main()
+    assert len(run.calls) == 3 and 'executive' not in run.calls
+    assert not (run.staging / 'authoring_response.json').exists()
+    assert not list((run.staging.parent / 'sources').glob('*.md'))
+    bundle_before = (run.staging / 'bundle.json').read_bytes()
+    saved = [json.loads(p.read_text()) for p in (run.staging / 'url_authoring').glob('*.json')
+             if '.attempt-' not in p.name]
+    assert sorted(p['status'] for p in saved) == ['completed', 'completed', 'failed']
+    run.failed.clear(); run.invalid.clear(); run.calls.clear()
+    monkeypatch.setattr(monitor, '_run_prepare', lambda *a: pytest.fail('resume must not reacquire evidence'))
+    monitor.main()
+    assert run.calls == [url, 'executive']
+    assert (run.staging / 'bundle.json').read_bytes() == bundle_before
+    response = json.loads((run.staging / 'authoring_response.json').read_text())
+    assert response['article_count'] == 3
+    assert list((run.staging.parent / 'sources').glob('*.md'))
+
+
+def test_serial_process_interruption_retains_completed_urls(serial_authoring_run, monkeypatch):
+    run = serial_authoring_run
+    run.crash = 'https://www.wri.org/insights/climate-1'
+    with pytest.raises(KeyboardInterrupt):
+        monitor.main()
+    assert len(run.calls) == 2
+    first = run.calls[0]
+    run.crash = None; run.calls.clear()
+    monkeypatch.setattr(monitor, '_run_prepare', lambda *a: pytest.fail('prepare repeated'))
+    monitor.main()
+    assert first not in run.calls and len(run.calls) == 3
+
+
+@pytest.mark.parametrize('failure_kind', ['missing_field', 'bullet_summary'])
+def test_executive_failure_resumes_only_executive_and_excludes_irrelevant(serial_authoring_run, failure_kind):
+    run = serial_authoring_run
+    run.exclude.add('https://www.wri.org/insights/climate-0')
+    run.executive_fail = failure_kind == 'missing_field'
+    run.executive_bullets = failure_kind == 'bullet_summary'
+    with pytest.raises(SystemExit, match='executive authoring incomplete'):
+        monitor.main()
+    assert len(run.calls) == 4
+    assert not (run.staging / 'authoring_response.json').exists()
+    assert not list((run.staging.parent / 'sources').glob('*.md'))
+    run.executive_fail = run.executive_bullets = False
+    run.calls.clear()
+    monitor.main()
+    assert run.calls == ['executive']
+    response = json.loads((run.staging / 'authoring_response.json').read_text())
+    assert sum(article['relevant'] for article in response['articles']) == 2
+    from climate_delivery.report import parse_weekly_report
+    from climate_delivery.summary import build_summary
+    report = parse_weekly_report(run.staging.parent / 'sources/climate-monitor-2026-09-07.md')
+    assert build_summary(report)['executive_summary'] == [response['executive_summary']]
+
+
+def test_serial_resume_rejects_changed_source_before_model(serial_authoring_run):
+    run = serial_authoring_run
+    run.failed.add('https://www.wri.org/insights/climate-1')
+    with pytest.raises(SystemExit, match='URL authoring incomplete'):
+        monitor.main()
+    payload = json.loads(run.source.read_text());payload['discovered_items'][0]['summary'] = 'changed evidence'
+    run.source.write_text(json.dumps(payload));run.calls.clear()
+    with pytest.raises(SystemExit, match='source changed'):
+        monitor.main()
+    assert run.calls == []
+
+
+def test_serial_model_decision_is_not_discarded_by_legacy_keyword_gate(serial_authoring_run):
+    run = serial_authoring_run
+    payload = json.loads(run.source.read_text())
+    for index, entry in enumerate(payload['discovered_items']):
+        # Drought/index cover can be relevant without the literal words in
+        # monitoring/run_config.yaml's climate and actuarial keyword lists.
+        entry.update(title='Rainfall-index protection',
+                     summary=f'Evidence paragraph {index}: Contracts transfer drought losses to carriers.')
+    run.source.write_text(json.dumps(payload))
+    monitor.main()
+    reports = list((run.staging.parent / 'sources').glob('*.md'))
+    assert len(reports) == 1
+    report = reports[0].read_text()
+    assert all(f'https://www.wri.org/insights/climate-{index}' in report for index in range(3))
+
+
+def test_serial_finalize_reuses_exact_prepared_evidence_without_acquisition(serial_authoring_run, monkeypatch):
+    import climate_monitor.orchestrator as orchestrator
+    from climate_monitor.article_content_adapter import validate_retained_article_evidence, ArticleContentAdapterError
+    run = serial_authoring_run
+    monkeypatch.setattr(orchestrator, 'build_article_evidence_artifact',
+                        lambda *a, **kw: pytest.fail('finalize must not reacquire evidence'))
+    monitor.main()
+    original = json.loads((run.staging / 'article_evidence.json').read_text())
+    retained = json.loads((run.staging.parent / 'sources' / 'article-evidence.v1_2026-09-07.json').read_text())
+    assert retained == original
+    urls = [row['requested_url'] for row in retained['records']]
+    with pytest.raises(ArticleContentAdapterError, match='candidate mismatch'):
+        validate_retained_article_evidence(retained, report_date='2026-09-07', urls=urls[:-1])
+    retained['records'][0]['failure_reason'] = 'changed after prepare'
+    with pytest.raises(ArticleContentAdapterError, match='record hash mismatch'):
+        validate_retained_article_evidence(retained, report_date='2026-09-07', urls=urls)
+
+
+def test_serial_json_mode_emits_one_final_result_and_separate_progress(serial_authoring_run, monkeypatch, capsys):
+    import sys
+    monkeypatch.setattr(sys, 'argv', [*sys.argv, '--json'])
+    monitor.main()
+    output = capsys.readouterr()
+    result = json.loads(output.out)
+    assert result['provenance']['final_articles']['count'] == 3
+    assert result['stats']['total'] == 1
+    assert 'prepare_ok' in output.err and '"processed": 3' in output.err
+
+
+def test_serial_v2_keeps_all_qualified_articles_despite_legacy_cap(serial_authoring_run, monkeypatch, capsys):
+    import sys
+    config = serial_authoring_run.staging.parent / 'uncapped.yaml'
+    config.write_text((monitor.ROOT / 'monitoring/run_config.yaml').read_text() + '\nmax_items_per_report: 1\n')
+    monkeypatch.setattr(sys, 'argv', [*sys.argv, '--run-config', str(config), '--json'])
+    monitor.main()
+    result = json.loads(capsys.readouterr().out)
+    assert result['item_count'] == result['provenance']['final_articles']['count'] == 3
+
+
+@pytest.mark.parametrize('seen_count', [1, 3])
+def test_serial_history_is_applied_before_authoring(serial_authoring_run, seen_count):
+    run = serial_authoring_run
+    state = run.staging.parent / 'state'
+    state.mkdir()
+    seen = [f'https://www.wri.org/insights/climate-{i}' for i in range(seen_count)]
+    (state / 'seen_urls.json').write_text(json.dumps(seen))
+    monitor.main()
+    request = json.loads((run.staging / 'v2_authoring_request.json').read_text())
+    response = json.loads((run.staging / 'authoring_response.json').read_text())
+    evidence = json.loads((run.staging / 'article_evidence.json').read_text())
+    assert len(request['articles']) == response['article_count'] == evidence['record_count'] == 3 - seen_count
+    assert not set(seen).intersection(run.calls)
+    assert run.calls.count('executive') == (1 if seen_count < 3 else 0)
+
+
+def test_serial_history_change_rejected_before_resuming_model(serial_authoring_run):
+    run = serial_authoring_run
+    run.failed.add('https://www.wri.org/insights/climate-1')
+    with pytest.raises(SystemExit, match='URL authoring incomplete'):
+        monitor.main()
+    state = run.staging.parent / 'state'
+    state.mkdir(exist_ok=True)
+    (state / 'seen_urls.json').write_text(json.dumps(['https://www.wri.org/insights/climate-0']))
+    run.calls.clear()
+    with pytest.raises(SystemExit, match='history selection changed'):
+        monitor.main()
+    assert run.calls == []
+
+
+def test_serial_committed_rerun_retains_excluded_checkpoint(serial_authoring_run, monkeypatch):
+    import sys
+    run = serial_authoring_run
+    monkeypatch.setattr(sys, 'argv', [arg for arg in sys.argv if arg != '--no-update-seen-state'])
+    run.exclude.add('https://www.wri.org/insights/climate-0')
+    monitor.main()
+    assert (run.staging.parent / 'state/seen_urls.json').is_file()
+    report = run.staging.parent / 'sources/climate-monitor-2026-09-07.md'
+    report_before = report.read_bytes()
+    run.calls.clear()
+    monitor.main()
+    assert run.calls == []
+    assert report.read_bytes() == report_before
+    response = json.loads((run.staging / 'authoring_response.json').read_text())
+    assert response['article_count'] == 3
+    assert sum(a['relevant'] for a in response['articles']) == 2
+
+
+def test_serial_fresh_prepare_keeps_same_date_carry(serial_authoring_run, monkeypatch):
+    import sys
+    run = serial_authoring_run
+    monitor.main()
+    manifest = json.loads(run.source.read_text())
+    manifest['discovered_items'] = manifest['discovered_items'][1:]
+    run.source.write_text(json.dumps(manifest))
+    staging = run.staging.parent / 'incremental-staging'
+    argv = list(sys.argv)
+    argv[argv.index('--staging-dir') + 1] = str(staging)
+    argv[argv.index('--authoring-mode') + 1] = 'prepare'
+    monkeypatch.setattr(sys, 'argv', argv)
+    monitor.main()
+    request = json.loads((staging / 'v2_authoring_request.json').read_text())
+    assert len(request['articles']) == 3
+    assert any(a['url'].endswith('climate-0') for a in request['articles'])
+
+
+def test_serial_resumes_interrupted_report_state_commit(serial_authoring_run, monkeypatch):
+    import sys
+    import climate_monitor.orchestrator as orchestrator
+    run = serial_authoring_run
+    monkeypatch.setattr(sys, 'argv', [arg for arg in sys.argv if arg != '--no-update-seen-state'])
+    commit = orchestrator.commit_seen_url_delta
+    def interrupted(*args, **kwargs):
+        raise RuntimeError('interrupted before history commit')
+    monkeypatch.setattr(orchestrator, 'commit_seen_url_delta', interrupted)
+    with pytest.raises(RuntimeError, match='interrupted before history commit'):
+        monitor.main()
+    report = run.staging.parent / 'sources/climate-monitor-2026-09-07.md'
+    before = report.read_bytes()
+    run.calls.clear()
+    monkeypatch.setattr(orchestrator, 'commit_seen_url_delta', commit)
+    monitor.main()
+    assert run.calls == []
+    assert report.read_bytes() == before
+    assert len(json.loads((run.staging.parent / 'state/seen_urls.json').read_text())) == 3
 
 
 def test_partial_public_outcome_is_rejected_by_shared_boundary(tmp_path):

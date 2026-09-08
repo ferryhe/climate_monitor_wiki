@@ -1,7 +1,6 @@
 schema_version: climate-monitor-run-config.v1
 report_title: Daily Climate & Actuarial Monitor
 default_language: en
-max_items_per_report: 12
 website_lane:
   enabled: true
   default_fetch_mode: http

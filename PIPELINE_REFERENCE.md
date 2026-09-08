@@ -1,242 +1,180 @@
 # Climate Monitor Pipeline — Reference
 
-Complete reference for the weekly climate/actuarial monitoring pipeline. For
-editable LLM prompts, see [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md).
+The program and artifact map for the modular weekly pipeline. See
+[README.md](README.md#new-flow) for the flowchart and
+[PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) for editable prompts and scheduling.
 
-## Single production chain (authoritative)
+## Implementation and deployment status
 
-The weekly pipeline is **one** Hermes-scheduled driver path. The four jobs
-below run in order every Monday UTC and each writes a slot in
-`scheduler-status.json` (read by `GET /api/job-status`):
+As of the 2026-09-08 SSH audit, the same-run prepare → serial URL authoring →
+executive summary → finalize path is implemented and sandbox-tested. Production
+still has 12 enabled legacy Step jobs. The four-slot wrappers are a deployment
+target, not a live inventory. Issue #87 is owner-closed; historical handoffs that
+say it must stay open do not override that decision.
 
-| # | UTC | Slot            | Entry point                                              | What it does                                                                                                                          |
-|---|-----|-----------------|----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
-| 1 | 08  | `monitor`       | `scripts/run_climate_monitor.py --production-weekly`     | Calls `climate_monitor.weekly_monitor.driver.run_weekly_monitor` → `climate_monitor.orchestrator.run_monitor`. Writes the Monday report, semantic sidecar, combined candidates, and article-evidence artifact; stages the pending URL delta. |
-| 2 | 09  | `email`         | `python -m climate_delivery.cli run` (absolute report/output/state/config paths) | Renders the PDF, writes the manifest, and sends the retained weekly email to the existing four recipients. |
-| 3 | 10  | `publisher`     | `scripts/weekly_wiki_refresh.sh` → `scripts/publish_weekly_reports.py` | Isolated-clone rolling-PR publisher. Never touches the production checkout. Updates the `codex/hermes-weekly-monitor` PR branch only. Human review + merge + server/Render deploy are separate, human-controlled steps. |
-| 4 | 10:30 | `registry`     | `scripts/weekly_registry_refresh.py`                     | Draft, **disabled by default**. Scheduled only after the validated-fallback deployment and a controlled exact-sync round-trip complete. |
+The library entry `weekly_monitor.driver.run_weekly_monitor` validates a completed
+response and delegates to the orchestrator. The production CLI owns preparation
+and the serial model queue before invoking that library. These are layers of one
+path, not competing report generators.
 
-The 2-hour gap between monitor (08:00) and publisher (10:00) is deliberate so
-the report exists before ingest. Each slot writes its own state via
-`scripts/hermes_job_<slot>.sh` (see [AC-10](#hermes-job-wrappers-ac-10)).
+## Program and artifact map
 
-The repository no longer schedules a 10-step pipeline of independent cron
-entries. Any pre-existing `step[1-9]*.py` script in `scripts/` is retained for
-**compatibility** (referenced by `tests/test_step1_pillar_a_parser.py`,
-`tests/test_pipeline_scripts.py`, and the legacy hermes fallback path) and is
-**not part of the single production chain** invoked today.
-
-### Pipeline architecture (single chain)
-
-```
-Weekly Monday UTC (Hermes cron, four slots)
-
-08:00  monitor    run_climate_monitor.py --production-weekly
-                  └── climate_monitor.weekly_monitor.driver.run_weekly_monitor
-                          └── climate_monitor.orchestrator.run_monitor
-                                  ├── Markdown + semantic sidecar + combined candidates
-                                  ├── article-evidence.v1_{DATE}.json (AC-1 #93 path)
-                                  └── pending-seen-url delta (atomic two-phase)
-
-09:00  email      climate_delivery pipeline
-                  ├── climate-monitor-{DATE}.pdf (manifest + briefing JSON)
-                  └── email sent to the four retained recipients
-
-10:00  publisher  weekly_wiki_refresh.sh  →  publish_weekly_reports.py
-                  ├── isolated clone of origin/main
-                  ├── wiki/ regenerated via sync_source_wiki
-                  ├── codex/hermes-weekly-monitor rolling PR updated
-                  └── CAS rollback if main moved during the lease
-
-10:30  registry   weekly_registry_refresh.py  [DISABLED — awaiting merge + deploy gate]
-```
-
-## Steps Detail
-
-The numbered `stepN_*.py` scripts are **compatibility fallbacks** (referenced
-by `tests/test_step1_pillar_a_parser.py`, `tests/test_pipeline_scripts.py`,
-and the legacy hermes fallback path). They are **not** scheduled and **not**
-invoked by the single production chain above. They are retained so the
-on-disk tests that import them continue to validate the legacy artifact
-contract and so any future controlled run can reproduce the legacy flow.
-
-| Legacy script               | Used by                                       | Notes |
-|-----------------------------|-----------------------------------------------|-------|
-| `scripts/step1_pillar_a.py` | `tests/test_step1_pillar_a_parser.py`         | Parses the legacy SQLite Pillar A changes table. |
-| `scripts/step2_save_state.py` | `tests/test_pipeline_scripts.py`            | Commits the pending URL delta with explicit `--commit-pending`. |
-| `scripts/step3_aggregate.py`  | `tests/test_pipeline_scripts.py`            | Pre-driver merge of Pillar A + Pillar B by canonical URL. |
-| `scripts/step3_filter.py`     | `tests/test_pipeline_scripts.py`            | Applies the legacy Hermes assessments (or keyword fallback). |
-| `scripts/step5_build_md.py`   | `tests/test_pipeline_scripts.py`            | Recoverably commits Markdown + combined-candidates evidence. |
-| `scripts/step6_render_pdf.py` | (compatibility only)                         | Pre-`climate_delivery` PDF renderer. |
-| `scripts/step7b_extract_conferences.py` | (compatibility only)              | Pre-extracts conference articles from the aggregated JSON. |
-| `scripts/step8_sync_registry.py` | (compatibility only)                      | Pre-driver Registry DB sync. |
-| `scripts/step9_update_website.py` | (compatibility only)                    | Pre-driver delegation entry point. |
-
-Do not schedule these scripts. Do not assume any of them is running on the
-controlled server. Their only producer of authoritative weekly output today
-is the single production chain above.
-
-## Key Files
-
-| File | Location | Purpose |
+| Stage | Owner / public entry | Input → output |
 |---|---|---|
-| `run_climate_monitor.py` | `scripts/` | **Authoritative** entry point. `--production-weekly` invokes the single driver path. |
-| `publish_weekly_reports.py` | `scripts/` | **Authoritative** publisher. Clones `origin/main` into a temp dir, regenerates wiki, updates the rolling PR branch only. |
-| `weekly_wiki_refresh.sh` | `scripts/` | Hermes wrapper around `publish_weekly_reports.py`. The lock and isolated-clone are the load-bearing parts. |
-| `record_weekly_run.py` | `scripts/` | 09:00 wrapper around the `climate_delivery` pipeline. |
-| `weekly_registry_refresh.py` | `scripts/` | 10:30 draft (disabled by default). |
-| `weekly_monitor/driver.py` | `climate_monitor/` | `run_weekly_monitor` — the single v1/v2 driver path. |
-| `weekly_monitor/authoring_contract.py` | `climate_monitor/` | v1/v2 authoring request + response validation. v2 binds the response to the article-evidence envelope and exposes the 6-key stats (total/updated/unchanged/blocked/failed/unresolved) so the orchestrator and downstream scripts can report 57/42/15 splits. |
-| `orchestrator.py` | `climate_monitor/` | `run_monitor` — the core report renderer, dedup, sidecar, and atomic URL-state transaction. |
-| `seen_state.py` | `climate_monitor/` | Two-phase canonical URL history commit. The pending delta is staged before any artifact is written and committed only when the bundle validates. |
-| `job_status.py` | `climate_monitor/` | Read-side: validates `scheduler-status.json` written by `climate_monitor/scheduler_status.py`. |
-| `scheduler_status.py` | `climate_monitor/` | Write-side: `update_slot(name, state, …)` invoked by the four Hermes job wrappers. |
-| `hermes_job_monitor.sh` … `hermes_job_registry.sh` | `scripts/` | Four thin Hermes wrappers; each writes a single slot to `scheduler-status.json`. |
-| `step1_pillar_a.py` … `step9_update_website.py` | `scripts/` | **Compatibility only.** Not invoked by the single production chain. |
-| `PIPELINE_CONFIG.md` | repo root | The four-job weekly schedule + retained LLM prompt templates. |
+| Pillar A acquisition | External `web_listening` batch/export APIs | Configured sites → matching `acquisition-batch-result.v2` and `web-listening-manifest.v1` |
+| Pillar B discovery | Hermes `web_search` / `web_extract`; `prompt_loader.load_pillar_b_search_prompt` | Explicit report date + editable template → candidate JSON array |
+| Prepare | `scripts/run_climate_monitor.py --production-weekly --authoring-mode prepare` | Outcome + manifest + Pillar B → `bundle.json`, `combined.json`, `candidate_item_snapshot.json`, `article_evidence.json`, `stats.json`, `v2_authoring_request.json` in staging |
+| Identity/merge | `article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | URL-bearing records → one canonical identity, all origins, source metadata |
+| Evidence | `article_content_adapter.build_article_evidence_artifact` | Public governed upstream result → content/ref, attempts, fetch status, hash and explicit snippet/none fallback |
+| Optional title extraction | `article_title.extract_page_title` | Verified HTML → main/article H1, other H1, Open Graph or HTML title, preserving case |
+| URL authoring | Existing CLI `--authoring-mode run` | One URL's frozen evidence → two booleans, summary, basis, evidence hash, categories, keywords; validated checkpoint in `url_authoring/` |
+| Executive authoring | Same CLI after every URL completes | Qualified summaries → `executive_authoring.json`; no invocation for an empty qualified set |
+| Finalize | Same CLI `--authoring-mode finalize`; `weekly_monitor.driver`, `orchestrator` | Prepared bundle + validated v2 response → report Markdown, semantic sidecar, candidates/evidence, URL history transaction |
+| Delivery | `python -m climate_delivery.cli run` | Validated report → briefing, content-addressed PDF/manifest and retained email |
+| Publication | `publish_weekly_reports.py`, `weekly_wiki_refresh.sh` | Unpublished reports → isolated clone, regenerated `sources/`/`wiki/`, rolling content PR |
+| Deployment | `reload_and_smoke_test.py` and controlled deployment runbook | Reviewed/merged content and code → deployed corpus and verified API |
+| Registry | `weekly_registry_refresh.py`, `climate_registry.weekly` | Exact deployed report + delivery identity → candidate sync, coverage checks, backup/promotion |
+| Web / retrieval | `api_server.py`, `agentic_wiki/`, `showcase/` | Published corpus + Registry → historical reports, article details, cited chat |
 
-## Date Logic
+Module paths without a directory prefix are under `climate_monitor/`. Upstream
+reader policy belongs to `web_listening`; climate does not implement a second
+HTTP/browser/stealth crawler. A policy refusal remains a terminal acquisition
+outcome. Available snippets are explicitly labelled, and a URL with no evidence
+cannot acquire an invented summary.
 
-Every script accepts `--date`. Steps 6/9 default to `last_monday()`; step 8
-requires an explicit deployed report date, and the other steps default to
-today's date. The cron jobs always pass the report date explicitly, and step1
-anchors its query window on that date.
+HTML is retained with its original content hash. The authoring view uses the
+complete `web_listening.blocks.normalizer.normalize_html` Markdown result;
+there is no arbitrary text cutoff. The offline title helper neither fetches nor
+calls a model. `--no-page-titles` disables it on a fresh prepare.
 
-## Dedup Mechanism
+## Run and resume
 
-### article_state.json
-- Stores previously committed canonical URLs for Pillar A + B.
-- Step 1 neither filters against nor writes this file; it collects all valid
-  current discoveries in its unchanged artifact shape.
-- Step 3 performs the canonical-URL history split after the A/B merge and
-  stages a pending delta bound to the report date and combined-candidate digest.
-  If a complete same-date report exists, its canonical combined evidence stays
-  untouched and its validated candidate items are carried into the shared merge
-  with incremental current input. The next complete candidate evidence is then
-  staged for Step 5 promotion.
-- Step 5 validates and recoverably promotes Markdown, report JSON, and the
-  matching combined evidence as one bundle without changing Markdown format.
-  A custom Step 3 `--combined-output PATH` is continued with Step 5 and Step 2
-  by passing that same path as `--combined PATH`.
-- Only `step2_save_state.py --commit-pending`, after the final Markdown and
-  report evidence exist, verifies that exact bundle and updates this file.
-- A pending delta for another date is never overwritten. Commit that bound
-  date first; `--no-update-seen-state` leaves the pending and canonical files
-  unchanged.
+Provision the upstream artifacts and complete Pillar B search first. The monitor
+consumes those files; `--print-pillar-b-prompt` only renders a task for Hermes.
+Use one explicit Monday date and absolute external paths throughout a run:
 
-### Registry DB
-- Stores Monday reports by default; non-Monday (offcycle) manual re-runs are
-  accepted only with an explicit `--allow-offcycle` opt-in on the registry
-  CLI (`plan-selection`, `weekly-sync`) and the step scripts
-- Sync is append-only via `climate_registry plan-update`/`update` with SHA conflict checks
-
-## Data Flow
-
-The data flow today is **the single production chain** at the top of this
-document. The diagram below is the historic pre-driver view retained for
-compatibility; it does not run today.
-
-```
-  ┌───────────────────────────────────────────────────────────────┐
-  │  compatibility-only legacy flow (not invoked in production)   │
-  │                                                               │
-  │  Step 1: Pillar A   ───→ article_changes_{DATE}.json          │
-  │  Step 2: Pillar B   ───→ pillar_b_{DATE}.json                 │
-  │  Step 2 (state)     ───→ article_state.json (dedup baseline)  │
-  │  Step 3: Aggregate  ───→ aggregated_{DATE}.json               │
-  │  Step 7b: Conferences ──→ conferences_{DATE}.json             │
-  │  Step 3b: Hermes    ───→ hermes_assessments_{DATE}.json       │
-  │  Step 3f: Filter    ───→ filtered_{DATE}.json                 │
-  │  Step 5: Build MD   ───→ climate-monitor-{DATE}.md            │
-  │         └──→ Step 6: Render PDF  ──→ climate-monitor-{DATE}.pdf│
-  │         └──→ Step 7: Send Email                               │
-  │         └──→ Step 9: Publish rolling PR                       │
-  │                  └─→ review + merge into GitHub main          │
-  │                       └─→ server deploy  /  Render deploy     │
-  │                            └─→ Step 8: Sync deployed Registry │
-  └───────────────────────────────────────────────────────────────┘
+```bash
+python scripts/run_climate_monitor.py --production-weekly \
+  --authoring-mode run --report-date "$REPORT_DATE" \
+  --acquisition-batch "$CLIMATE_OUTCOME_ARTIFACT" \
+  --web-listening-manifest "$CLIMATE_MANIFEST_ARTIFACT" \
+  --pillar-b-artifact "$CLIMATE_PILLAR_B_ARTIFACT" \
+  --staging-dir "$CLIMATE_STAGING_DIR" \
+  --state-dir "$CLIMATE_STATE_DIR" --source-dir "$CLIMATE_SOURCE_DIR" \
+  --wiki-dir "$CLIMATE_WIKI_DIR" \
+  --source-config "$CLIMATE_SOURCE_CONFIG" --run-config "$CLIMATE_RUN_CONFIG" \
+  --site-scopes "$CLIMATE_SITE_SCOPES" \
+  --model "$MODEL" --model-provider "$MODEL_PROVIDER" --json
 ```
 
-For the actual production flow see the **Single production chain
-(authoritative)** section above. The numeric script names above are
-retained for test compatibility; publication now precedes the post-deploy
-Registry sync, and neither script writes generated report content directly
-into the production checkout. GitHub `main` is the common content source for
-the controlled server and Render.
+This is an executing command, not preflight. Sandbox runs must supply isolated
+output/state paths. `--no-sync --no-update-seen-state` suppress wiki sync and URL
+history promotion for monitor-only rehearsals; they do not disable network/model
+calls. Explicit fixture runs require the dry-run controls below.
 
-## MD Report Structure (Single Source of Truth)
+- Each URL has a fresh Hermes context, limited to its own evidence. Relevance
+  rules are included in the same invocation as summary/categories/keywords.
+- The application computes climate AND actuarial/insurance relevance. A false
+  decision has empty summary fields. Finalize does not reapply the old keyword
+  filter to validated v2 decisions.
+- Each result is validated and atomically checkpointed. A failed URL is recorded
+  and the queue continues; any unfinished URL blocks executive authoring and
+  finalization. There is no article-count cap.
+- Resume with the same command/staging. Completed results are revalidated and
+  reused. Inputs, model/provider, prompt, taxonomy, title policy and destinations
+  must still match; changed inputs require fresh staging.
+- Prepare and finalize share history filtering and same-date carry-forward.
+  Staging binds the effective candidate URL set and history destination; a
+  history change that alters selection stops resume before model work. A
+  completed run can replay its own same-date candidates, including rejected
+  articles, without another model invocation. Pending report/history commits
+  recover through the existing transaction before normal selection resumes.
+- Executive authoring has its own checkpoint. Finalize reuses the prepared
+  evidence and verifies date, URL set and hashes without recrawling.
+  The executive response must be prose paragraphs; lists/headings are rejected
+  before checkpoint completion so delivery cannot mistake findings for legacy
+  monitoring bullets. Resume then repeats only executive authoring.
+- Progress is stderr; `--json` stdout is one final result. Hermes runtime retry
+  limitations and stdin compatibility are documented in PIPELINE_CONFIG.md.
 
-```
-# 🌡️ Weekly Climate & Actuarial Monitor (Supranational Orgs)
+## Identity, dates and report format
 
-**Report Date:** {DATE}
-**Generated:** {TIMESTAMP}
-**Scope:** 57 supranational organization sites monitored
+Pillar A/B are discovery origins, not separate namespaces. `source` is an
+institution/website name; `pillar` carries A or B. Canonical URL merging keeps all
+origins. Titles are never deduplication keys. URL history commits only with the
+validated final report bundle; interrupted work cannot mark unfinished articles
+as processed.
 
----
+Site counts come from the upstream outcome, not the number of articles or the
+configured source list. `total = updated + unchanged + blocked + failed +
+unresolved`. The WRI sandbox input had **one** requested site and **one** unchanged
+site; 164 discovery rows do not mean 164 checked sites. Never copy fixture counts
+such as 57/42/15 into a live report.
 
-## 📋 Executive Summary
+Pillar B's prompt uses the three-calendar-month window ending on the explicit
+report date. Its existing consumer still accepts only `title`, `url`, `source`,
+`summary`; the discovery timestamp is not a publication date. The missing
+machine-checked date/search-success contract remains a production cutover gate.
 
-- Sites checked: **{CHECKED}**, succeeded: **{SUCCEEDED}**, failed: **{FAILED}**
-- Monitored window: last 7 days
-- Pillar B search window: last 3 months
-- Total detected changes: **N** → After relevance filter: **M**
+Markdown retains the existing weekly contract: report identity and monitoring
+counts, executive narrative, Pillar A/B sections grouped by primary category,
+article titles, ordered categories, summaries, keywords and original links.
+The semantic sidecar binds structured metadata to that report. Delivery reuses
+the narrative executive summary; old bullet-only reports retain their existing
+extractive fallback. Taxonomy is owned by
+`monitoring/taxonomies/article_categories_v1.yaml`, not a duplicate label list in
+a cron prompt. The legacy `daily` document type and library cadence default remain
+load-bearing; weekly operation is explicit.
 
-{4-paragraph executive summary from Hermes LLM}
+## Legacy scripts and cleanup
 
----
+`step1_pillar_a.py`, `step2_save_state.py`, `step3_aggregate.py`, the Step 3b/filter
+scripts, `step5_build_md.py`, `step6_render_pdf.py`,
+`step7b_extract_conferences.py`, `step8_sync_registry.py` and
+`step9_update_website.py` remain compatibility/rollback entrypoints. The last SSH
+inventory still found legacy jobs enabled, so they cannot yet be described as
+unused or deleted safely.
 
-## Pillar A — Climate & Actuarial Site Changes
+After the unique new schedule is verified, disable old scheduler callers, check
+remaining imports/tests and remove obsolete code/configuration made redundant by
+the replacement. Keep historical reports and required compatibility contracts.
+Do not add a parallel driver, copied reader stack or duplicate prompt definition.
+`ISSUE87_FOLLOWUP_REPORT.md` is retained as a historical acceptance record used by
+tests; its old status statements are not current operations instructions.
 
-### {Category} ({count})
+## Verification and cutover
 
-- **{Title}**
-  - **Categories:** {Primary}, {Secondary}, ...
-  - {Summary (2-4 sentences)}
-  - **Keywords:** {keyword1}, {keyword2}, ...
-  🔗 {URL}
+Evidence as of 2026-09-08:
 
----
+- Final reviewed implementation with the pinned upstream installed: full SSH
+  sandbox pytest **1769 passed / 5 skipped**, with three existing warnings.
+  Compilation, shell/JavaScript syntax and whitespace checks passed. Independent
+  code and Markdown reviews passed after history/resume and executive-delivery
+  regressions were fixed.
+- A separate clean environment verified `web_listening` was absent: full suite
+  **1696 passed / 78 skipped**, with three existing warnings. Dependency
+  consistency passed. Environment-dependent skips are not live acquisition proof.
+- The single-site WRI-derived input exercised 163 unique URLs and produced a
+  22-article PDF preview. It did not cover the full configured site list; its
+  older Pillar B input was reused, so it is not a freshness proof.
+- Fresh Hermes Pillar B search completed all four required queries and returned
+  four candidates dated June 8, June 9, June 30 and July 9 for the June 7–September
+  7 window. Manual review retained three; the IAIS market article only briefly
+  mentioned climate. This was a discovery test, not a new whole-report run.
+- A first search run failed because the sandbox dependency cache was read-only,
+  yet wrote `[]` with exit 0. A writable sandbox cache fixed tool execution. The
+  prompt now distinguishes tool failure from zero results; deterministic success
+  and date validation are still required.
 
-## Pillar B — Climate & Actuarial Intelligence (last 3 months)
-
-### {Category} ({count})
-
-- **{Title}**
-  - **Categories:** {Primary}, {Secondary}, ...
-  - {Summary}
-  - **Keywords:** ...
-  🔗 {URL}
-
----
-
-## 🔗 Original Links
-
-- {URL1}
-- {URL2}
-...
-```
-
-### Categories contract
-
-Every article carries an ordered `categories` list (first element = primary
-display category) plus a derived `category` field equal to `categories[0]` for
-compatibility. Sections group articles by the primary category only; the
-`Categories:` line and the JSON sidecar emit the full ordered list.
-
-## Web Interface
-
-The web interface (wiki) displays the full MD content for each report:
-- Full executive summary
-- All articles grouped by category
-- Each article shows: title, categories, summary, keywords, URL
-- Tags for search/filtering
-
-The RAG system uses wiki pages as context for answering questions about reports.
-
-## Prompt Configuration
-
-All LLM prompts are stored in `PIPELINE_CONFIG.md` for easy modification without code changes.
+Before production cutover: complete those input gates; pin both repos and a
+compatible Hermes runtime; verify the monitor run-ledger producer required by
+email; run all configured sites with real Pillar B discovery;
+validate monitor → delivery dry-run → publisher no-push → Registry dry-run with
+the same report identity. Then merge/deploy the reviewed code, switch to the unique
+four-slot schedule, read back each command/timezone and observe a normal weekly
+cycle. Only then retire old jobs and temporary worktrees, retaining a rollback
+point. A passing fixture, owner-closed issue or scheduled reminder is not evidence
+that this sequence has completed.
 
 ## Hermes job wrappers (AC-1/3/10)
 
@@ -247,11 +185,13 @@ runtime paths must be explicit, absolute and already provisioned. No wrapper
 reads `.env`. Child output is suppressed to keep recipients and SMTP errors
 out of scheduler logs.
 
-The monitor requires `AUTHORING_RESPONSE`, `ARTICLE_EVIDENCE` and
-`CLIMATE_STATS_PATH`. It validates the v2 contract, then fails closed with
-`live_acquisition_contract_unavailable` for production: the executable same-run
-#67 outcome → #92 evidence → #93 response link is not provisioned. Staging
-unrelated JSON does not clear this gate; counts must never be inferred from URLs.
+The monitor requires `CLIMATE_OUTCOME_ARTIFACT`, `CLIMATE_MANIFEST_ARTIFACT`,
+`CLIMATE_PILLAR_B_ARTIFACT` and `CLIMATE_STAGING_DIR`. The wrapper invokes the
+existing CLI with `--authoring-mode run`: prepare, serial URL authoring,
+executive authoring and finalize. It resolves model/provider through the existing
+monitor configuration. Operators do not assemble unrelated response/evidence/stats
+files. The previous `live_acquisition_contract_unavailable` placeholder has been
+replaced by the executable same-run path; invalid or mismatched inputs still fail.
 
 Fixtures require both `CLIMATE_DRY_RUN=1` and `CLIMATE_DRY_RUN_FIXTURE_DIR`.
 Dry-run output/state paths must be within an explicit existing
@@ -268,6 +208,10 @@ Email uses `python -m climate_delivery.cli run --report PATH --output-dir PATH
 report SHA are required. `load_delivery_config` supplies exactly four recipients
 and resolves required SMTP settings. The delivery pipeline validates the sidecar,
 generates and validates its content-addressed PDF before SMTP dispatch.
+The monitor CLI returns report/provenance data but does not append that monitor
+ledger attempt itself. The runtime producer integration must be connected and
+verified in the same-run rehearsal; a successful monitor scheduler snapshot alone
+cannot satisfy the email gate.
 
 Publisher requires `CLIMATE_REPORTS_DIR`, `CLIMATE_RUN_LEDGER_DIR`, and, for
 production, `CLIMATE_PUBLISH_LOCK`. It validates the selected report before
@@ -290,8 +234,8 @@ artifact and DB identity. A blocked or dry-run Registry is never full completion
 All wrappers require `REPORT_DATE` (Monday, UTC semantics) and an external
 `CLIMATE_JOB_STATUS_DIR`. These snapshots are local-only evidence. Render has
 no shared source and `/api/job-status` remains 503 `not_configured`; see
-[the status contract](docs/job-status.md). The 2026-09-07 audit found no climate
-jobs/config/runtime on this host. The intended schedule is not a provisioning claim.
+[the status contract](docs/job-status.md). The 2026-09-08 SSH audit found 12 enabled legacy Step jobs on the real server;
+the four-slot target was not installed. The intended schedule is not a provisioning claim.
 
 Hermes local timezone is Asia/Shanghai: Monday 08/09/10/10:30 UTC maps to
 16/17/18/18:30 CST (`0 16 * * 1`, `0 17 * * 1`, `0 18 * * 1`, `30 18 * * 1`).

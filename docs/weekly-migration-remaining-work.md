@@ -1,5 +1,10 @@
 # Weekly migration: remaining work
 
+Scope: this page covers the earlier daily-to-weekly UI/default migration only.
+It is not the current production backlog; see
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#verification-and-cutover).
+The library's daily default and internal `daily` document type remain unchanged.
+
 **Backlog of the daily → weekly switch.** All correctness phases (date
 windows, runtime latest-date aliases, weekly-density prompt starters, single
 generator, isolated publisher) are implemented on `main`. Only cosmetic

@@ -271,8 +271,10 @@ def render_pdf(
     for item in summary["executive_summary"]:
         story.append(Paragraph(_safe(item), styles["body"]))
     story.append(Spacer(1, 3 * mm))
-    story.extend(_section_header("Monitoring Snapshot", styles))
-    story.extend([_monitoring_snapshot(summary, styles), Spacer(1, 3 * mm)])
+    story.append(KeepTogether([
+        *_section_header("Monitoring Snapshot", styles),
+        _monitoring_snapshot(summary, styles), Spacer(1, 3 * mm),
+    ]))
     for item in summary.get("monitoring_notes", []):
         story.append(Paragraph(f"* {_safe(item)}", styles["body"]))
     if summary.get("monitoring_notes"):

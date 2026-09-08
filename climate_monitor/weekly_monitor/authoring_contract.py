@@ -298,11 +298,11 @@ def _build_evidence_request(
     records = _normalize_records(article_evidence)
     by_url: dict[str, Mapping[str, Any]] = {}
     for record in records:
-        # Identity is keyed by canonical_url(final_url) when available (matches
-        # the article identity URL used by ``kept`` items); fall back to
-        # canonical_url(requested_url) for redirects and pre-redirect records.
+        # Keep the URL identity assigned before acquisition. Different inputs
+        # may redirect to the same landing page; the target is fetch metadata,
+        # not permission to merge their candidates or lose their origins.
         identity_url = canonical_url(
-            str(record.get("final_url") or record.get("requested_url") or "")
+            str(record.get("requested_url") or record.get("final_url") or "")
         )
         if not identity_url:
             raise AuthoringContractError("article evidence has missing URL identity")
@@ -496,8 +496,7 @@ def _validate_evidence_response(
     # Issue #87 AC-2 + AC-3: the v2 contract binds the response to the
     # exact articles emitted in the request (the full kept set from
     # ``article-evidence.v1``), not to the orchestrator's classified
-    # subset. ``items`` may be a strict subset (the orchestrator caps at
-    # ``max_items_per_report``); the response must mirror every request
+    # subset. ``items`` may be a strict subset for a consumer; the response must mirror every request
     # article so the validator cannot accept a truncated response.
     request_ids = set(request_by_id)
     expected_ids = tuple(
@@ -556,7 +555,12 @@ def _validate_evidence_response(
 
     accepted: list[CandidateItem] = []
     accepted_ids: list[str] = []
-    for item, identity in zip(ordered, expected_ids):
+    for item in ordered:
+        # Final rendering may select a subset of the full URL request. Bind by
+        # URL identity, never by that subset's position in the original batch.
+        identity = article_identity(item)
+        if identity not in response_by_id:
+            raise AuthoringContractError("selected article is missing from the authoring request")
         article = response_by_id[identity]
         if type(article.get("relevant")) is not bool:
             raise AuthoringContractError("authoring relevance must be boolean")
@@ -620,6 +624,9 @@ def _validate_evidence_response(
         accepted.append(
             replace(
                 item,
+                title=article["title"] or item.title,
+                climate_related=True,
+                actuarial_related=True,
                 summary=validated_summary,
                 categories=tuple(bundle["categories"]),
                 keywords=tuple(bundle["keywords"]),

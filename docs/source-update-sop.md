@@ -1,5 +1,9 @@
 # Source Update SOP
 
+For automated report production and module ownership, start with
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md). This SOP covers source
+publication and preserves append-mostly report history.
+
 Use this workflow whenever `sources/` changes so the app, Dataview, and chat all stay in sync.
 
 ## Manual source-edit flow
