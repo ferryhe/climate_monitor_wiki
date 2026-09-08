@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+from pillar_b_fixture import discovery_fixture
 
 from scripts import run_climate_monitor as monitor
 
@@ -23,7 +24,7 @@ def public_inputs(tmp_path):
                     {'item_id': f'page-{i}', 'url': f'https://www.wri.org/insights/climate-{i}',
                      'title': f'Climate risk {i}', 'status': 'existing'} for i in range(3)]}
     paths = [tmp_path / name for name in ('outcome.json', 'manifest.json', 'pillar-b.json')]
-    for path, payload in zip(paths, (outcome, manifest, [])):
+    for path, payload in zip(paths, (outcome, manifest, discovery_fixture())):
         path.write_text(json.dumps(payload))
     return paths
 
@@ -72,7 +73,7 @@ def test_public_identity_requires_matching_seed_before_staging(tmp_path, monkeyp
     with pytest.raises(SystemExit, match='identity'):
         monitor._run_prepare(SimpleNamespace(
             acquisition_batch=str(op), web_listening_manifest=str(mp),
-            pillar_b_artifact=str(bp), staging_dir=str(tmp_path / 'staging')), None)
+            pillar_b_artifact=str(bp), staging_dir=str(tmp_path / 'staging'), report_date='2026-09-07'), None)
     assert not (tmp_path / 'staging').exists()
 
 
@@ -167,6 +168,7 @@ def test_production_wrapper_plans_without_preexisting_response(tmp_path, monkeyp
         'CLIMATE_STAGING_DIR': tmp_path / 'staging', 'CLIMATE_OUTCOME_ARTIFACT': op,
         'CLIMATE_MANIFEST_ARTIFACT': mp, 'CLIMATE_PILLAR_B_ARTIFACT': bp,
         'CLIMATE_STATE_DIR': tmp_path, 'CLIMATE_SOURCE_DIR': tmp_path, 'CLIMATE_WIKI_DIR': tmp_path,
+        'CLIMATE_RUN_LEDGER_DIR': tmp_path,
         'CLIMATE_SOURCE_CONFIG': monitor.ROOT / 'monitoring/supranational_sources.yaml',
         'CLIMATE_RUN_CONFIG': monitor.ROOT / 'monitoring/run_config.yaml',
         'CLIMATE_SITE_SCOPES': monitor.ROOT / 'monitoring/site_scopes.yaml',
@@ -203,9 +205,9 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
         item['summary'] = 'Climate insurance supervision risk evidence.'
         item['title'] = 'Climate insurance supervision risk update $(literal) `literal`'
     mp.write_text(json.dumps(payload))
-    bp.write_text(json.dumps([{'url': 'https://www.iais.org/pillar-b-climate-risk',
+    bp.write_text(json.dumps(discovery_fixture([{'url': 'https://www.iais.org/pillar-b-climate-risk',
         'title': 'Climate insurance supervision research', 'source': 'web',
-        'summary': 'Climate insurance supervision risk evidence.'}]))
+        'summary': 'Climate insurance supervision risk evidence.'}])))
     staging = tmp_path / 'staging'
     events = []
     driver = monitor.run_weekly_monitor
@@ -781,6 +783,7 @@ def real_wri_inputs(tmp_path, monkeypatch):
     root = tmp_path.resolve()
     inputs = root / 'inputs'
     shutil.copytree(monitor.ROOT / 'tests/fixtures/issue87/wri_repro', inputs)
+    (inputs / 'pillar_b.discovery.json').write_text(json.dumps(discovery_fixture()))
     monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(root))
@@ -862,7 +865,7 @@ def test_real_wri_full_prepare_with_unavailable_body_provider(tmp_path, monkeypa
         '--authoring-mode', 'prepare', '--report-date', '2026-09-07',
         '--acquisition-batch', str(inputs / 'acquisition-batch-result.v2.json'),
         '--web-listening-manifest', str(inputs / 'manifest.json'),
-        '--pillar-b-artifact', str(inputs / 'pillar_b.empty.json'),
+        '--pillar-b-artifact', str(inputs / 'pillar_b.discovery.json'),
         '--staging-dir', str(staging), '--state-dir', str(tmp_path / 'state'),
         '--source-dir', str(tmp_path / 'sources'), '--wiki-dir', str(tmp_path / 'wiki'),
         '--no-sync', '--no-update-seen-state',

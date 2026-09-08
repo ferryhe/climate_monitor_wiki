@@ -22,7 +22,7 @@ path, not competing report generators.
 | Stage | Owner / public entry | Input → output |
 |---|---|---|
 | Pillar A acquisition | External `web_listening` batch/export APIs | Configured sites → matching `acquisition-batch-result.v2` and `web-listening-manifest.v1` |
-| Pillar B discovery | Hermes `web_search` / `web_extract`; `prompt_loader.load_pillar_b_search_prompt` | Explicit report date + editable template → candidate JSON array |
+| Pillar B discovery | Hermes `web_search` / `web_extract`; `prompt_loader`, `pillar_b_discovery` | Explicit report date + editable template → validated `pillar-b-discovery.v1` envelope |
 | Prepare | `scripts/run_climate_monitor.py --production-weekly --authoring-mode prepare` | Outcome + manifest + Pillar B → `bundle.json`, `combined.json`, `candidate_item_snapshot.json`, `article_evidence.json`, `stats.json`, `v2_authoring_request.json` in staging |
 | Identity/merge | `article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | URL-bearing records → one canonical identity, all origins, source metadata |
 | Evidence | `article_content_adapter.build_article_evidence_artifact` | Public governed upstream result → content/ref, attempts, fetch status, hash and explicit snippet/none fallback |
@@ -111,10 +111,17 @@ unresolved`. The WRI sandbox input had **one** requested site and **one** unchan
 site; 164 discovery rows do not mean 164 checked sites. Never copy fixture counts
 such as 57/42/15 into a live report.
 
-Pillar B's prompt uses the three-calendar-month window ending on the explicit
-report date. Its existing consumer still accepts only `title`, `url`, `source`,
-`summary`; the discovery timestamp is not a publication date. The missing
-machine-checked date/search-success contract remains a production cutover gate.
+Pillar B uses the three-calendar-month window ending on the explicit report date.
+Production prepare and wrapper preflight require `pillar-b-discovery.v1`: the
+matching report date, every current prompt query marked completed exactly once,
+and articles with `title`, `url`, `source`, `summary`, `published_date` and
+`date_evidence` (`url`, `text`). Missing, old or future publication dates and
+evidence from a different article are rejected before staging. Date evidence is
+a retained producer assertion; the validator does not infer or independently
+prove a date from a URL. An empty result still requires all completed searches.
+Historical four-field arrays remain readable by the legacy candidate adapter;
+production prepare does not accept them. Candidate origins point to the original
+envelope's `/articles/N` row and retain its SHA, including publication evidence.
 
 Markdown retains the existing weekly contract: report identity and monitoring
 counts, executive narrative, Pillar A/B sections grouped by primary category,
@@ -147,6 +154,22 @@ documents rather than retaining another active-looking copy.
 
 Evidence as of 2026-09-08:
 
+- Runtime/discovery/handoff follow-up: full SSH sandbox suite **1791 passed /
+  5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**
+  without it. Both runs retained the three existing warnings. The full-chain
+  harness now calls the real monitor ledger producer and checks its report SHA.
+- The stable project runtime is Python 3.12 with web_listening `89940fea` and
+  official Hermes v0.21.1 `2237be3`, including its pinned Firecrawl extra. A real
+  isolated stdin request passed the production quiet-response parser. The global
+  Hermes gateway was not replaced.
+- Live dated Pillar B discovery completed all four required tool queries. The
+  validator rejected one article whose date evidence referred to another page;
+  after verification and exclusion, five articles passed for June 7–September 7.
+  This tests the discovery gate; it is not a complete configured-site canary.
+- Delivery and status mounts are connected on the server. Update status returns
+  200; job status reports `snapshot_unavailable` because the four-slot schedule
+  has not run. Historical PDF backfill still skips August 31 (incomplete article
+  artifacts) and September 3 (invalid canonical Markdown); sources are preserved.
 - Reviewed runtime implementation before documentation pruning, with the pinned
   upstream installed: full SSH
   sandbox pytest **1769 passed / 5 skipped**, with three existing warnings.
@@ -166,12 +189,12 @@ Evidence as of 2026-09-08:
   mentioned climate. This was a discovery test, not a new whole-report run.
 - A first search run failed because the sandbox dependency cache was read-only,
   yet wrote `[]` with exit 0. A writable sandbox cache fixed tool execution. The
-  prompt now distinguishes tool failure from zero results; deterministic success
-  and date validation are still required.
+  prompt now distinguishes tool failure from zero results. Production now also
+  validates the completed-query and dated-article envelope before staging.
 
-Before production cutover: complete those input gates; pin both repos and a
-compatible Hermes runtime; verify the monitor run-ledger producer required by
-email; run all configured sites with real Pillar B discovery;
+Before production cutover: deploy the reviewed dated-discovery and monitor-ledger
+integration, use the verified Python 3.12/Hermes runtime, and run all configured
+sites with real Pillar B discovery;
 validate monitor → delivery dry-run → publisher no-push → Registry dry-run with
 the same report identity. Then merge/deploy the reviewed code, switch to the unique
 four-slot schedule, read back each command/timezone and observe a normal weekly
@@ -211,10 +234,11 @@ Email uses `python -m climate_delivery.cli run --report PATH --output-dir PATH
 report SHA are required. `load_delivery_config` supplies exactly four recipients
 and resolves required SMTP settings. The delivery pipeline validates the sidecar,
 generates and validates its content-addressed PDF before SMTP dispatch.
-The monitor CLI returns report/provenance data but does not append that monitor
-ledger attempt itself. The runtime producer integration must be connected and
-verified in the same-run rehearsal; a successful monitor scheduler snapshot alone
-cannot satisfy the email gate.
+The wrapper requests the CLI's JSON result, verifies its report date and SHA
+against the committed Markdown/sidecar, and appends the monitor ledger attempt
+before marking the scheduler slot completed. It requires an external existing
+`CLIMATE_RUN_LEDGER_DIR`. Failed or malformed results cannot produce a success
+identity. Dry runs validate the result without appending a production attempt.
 
 Publisher requires `CLIMATE_REPORTS_DIR`, `CLIMATE_RUN_LEDGER_DIR`, and, for
 production, `CLIMATE_PUBLISH_LOCK`. It validates the selected report before

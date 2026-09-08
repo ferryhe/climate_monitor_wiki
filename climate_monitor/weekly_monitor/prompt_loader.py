@@ -43,15 +43,12 @@ def load_pillar_b_search_prompt(
     """Render the editable search task; no search, inference, or file writes.
 
     The window is three calendar months anchored to the report date, with
-    month-end clamping. The publisher date still needs downstream validation.
+    month-end clamping. The production consumer validates the dated envelope.
     """
     destination = Path(output_path)
     if not destination.is_absolute():
         raise ValueError("Pillar B output path must be absolute")
-    month_index = report_date.year * 12 + report_date.month - 1 - 3
-    year, month = divmod(month_index, 12)
-    month += 1
-    start = date(year, month, min(report_date.day, monthrange(year, month)[1]))
+    start = pillar_b_window_start(report_date)
     prompt_path = Path(path) if path is not None else DEFAULT_PILLAR_B_SEARCH_PATH
     template = prompt_path.read_text(encoding="utf-8")
     values = {"report_date": report_date.isoformat(), "window_start": start.isoformat(),
@@ -68,6 +65,23 @@ def load_pillar_b_search_prompt(
         raise ValueError("Pillar B template has invalid or unknown placeholders") from exc
     return LoadedPrompt(prompt_id="pillar_b_search", version="v1", path=prompt_path,
                         raw_bytes=raw, sha256=hashlib.sha256(raw).hexdigest())
+
+
+def pillar_b_window_start(report_date: date) -> date:
+    month_index = report_date.year * 12 + report_date.month - 1 - 3
+    year, month = divmod(month_index, 12)
+    month += 1
+    return date(year, month, min(report_date.day, monthrange(year, month)[1]))
+
+
+def pillar_b_search_queries(report_date: date) -> list[str]:
+    """Use the editable prompt as the only query-set definition."""
+    text = load_pillar_b_search_prompt(report_date, DEFAULT_PILLAR_B_SEARCH_PATH.resolve()).raw_bytes.decode("utf-8")
+    section = text.split("## Search queries\n", 1)[1].split("\n## ", 1)[0]
+    queries = [line[2:].strip() for line in section.splitlines() if line.startswith("- ")]
+    if not queries or len(queries) != len(set(queries)):
+        raise ValueError("Pillar B search queries must be non-empty and unique")
+    return queries
 
 
 def load_weekly_monitor_prompt(

@@ -270,7 +270,15 @@ recipients:
     cli_pillar_b_path = workspace / 'cli_pillar_b.json'
     cli_outcome_path.write_text(json.dumps(cli_outcome))
     cli_manifest_path.write_text(json.dumps(cli_manifest))
-    cli_pillar_b_path.write_text(json.dumps(records))
+    from climate_monitor.weekly_monitor.prompt_loader import pillar_b_search_queries
+    cli_pillar_b_path.write_text(json.dumps({
+        'schema_version': 'pillar-b-discovery.v1', 'report_date': day,
+        'searches': [{'query': query, 'status': 'completed'}
+                     for query in pillar_b_search_queries(date.fromisoformat(day))],
+        'articles': [dict(record, published_date=day,
+                          date_evidence={'url': record['url'], 'text': f'Synthetic publication: {day}'})
+                     for record in records],
+    }))
     cli_env = {**os.environ, 'PYTHONPATH': str(ROOT), 'REPORT_DATE': day,
                'CLIMATE_DRY_RUN': '1', 'CLIMATE_DRY_RUN_ROOT': str(workspace),
                'CLIMATE_DRY_RUN_OUTCOME_FIXTURE': '1',
@@ -339,6 +347,19 @@ recipients:
     cli_reports = list(cli_sources.glob('climate-monitor-*.md'))
     assert cli_reports, 'CLI finalize did not produce a report'
     cli_sha = digest(cli_reports[0])
+    # Exercise the real monitor ledger producer with the CLI's verified result,
+    # in this isolated workspace only. No hand-written monitor success record.
+    monitor_ledger = workspace / 'monitor-ledger'; monitor_ledger.mkdir()
+    recorded = subprocess.run([sys.executable, '-c',
+        'import json,sys; from scripts.hermes_job import record_monitor_result; '
+        'record_monitor_result(sys.argv[1], json.load(sys.stdin), 0, dry_run=False)', day],
+        input=fin.stdout, text=True, capture_output=True, timeout=30, cwd=ROOT,
+        env={**cli_env, 'CLIMATE_RUN_LEDGER_DIR': str(monitor_ledger)})
+    assert recorded.returncode == 0, recorded.stderr
+    from climate_monitor.run_ledger import RunLedgerReader
+    attempt = RunLedgerReader(monitor_ledger, repository_root=ROOT).status()['stages']['monitor']['last_attempt']
+    assert attempt['report']['sha256'] == cli_sha
+    stages.append('monitor-ledger')
     # Production hashes are unchanged: the CLI-driven SHA must equal the
     # in-process SHA. The CLI's staging bundle intentionally overrides
     # the URL set, so SHA equality is only asserted when both ran on

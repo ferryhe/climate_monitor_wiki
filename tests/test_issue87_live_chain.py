@@ -27,6 +27,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from pillar_b_fixture import discovery_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT
@@ -414,7 +415,7 @@ def _build_57_record_outcome(workspace: Path) -> Path:
     manifest["discovered_items"] = manifest_items[:42]
     (out_dir / "acquisition-batch-result.v2.json").write_text(json.dumps(outcome))
     (out_dir / "web-listening-manifest.v1.json").write_text(json.dumps(manifest))
-    (out_dir / "pillar-b.json").write_text(json.dumps(pillar_b_records))
+    (out_dir / "pillar-b.json").write_text(json.dumps(discovery_fixture(pillar_b_records)))
     return out_dir
 
 

@@ -202,11 +202,20 @@ def _read_manifest(path: Path) -> dict:
     return payload
 
 
-def _read_pillar_b(path: Path) -> list:
+def _read_pillar_b(path: Path, *, report_date: str | None = None) -> list | dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, list):
+    if report_date is not None or isinstance(payload, dict):
+        from climate_monitor.weekly_monitor.pillar_b_discovery import validate_discovery
+        try:
+            entries = validate_discovery(payload, report_date=date.fromisoformat(
+                report_date if report_date is not None else payload.get("report_date", "")))
+        except (ValueError, TypeError) as exc:
+            raise SystemExit(str(exc)) from exc
+    elif isinstance(payload, list):
+        entries = payload
+    else:
         raise SystemExit(f"pillar-b artifact {path} must be a list")
-    for entry in payload:
+    for entry in entries:
         if not isinstance(entry, dict) or not entry.get("url"):
             raise SystemExit("pillar-b artifact entries must be objects with a url")
         # Preflight enforces the same Pillar B source contract as the real
@@ -260,12 +269,12 @@ def _verify_same_run_identity(outcome: dict, manifest: dict) -> None:
         raise SystemExit("cross-run source identity: scope seed differs")
 
 
-def _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path):
+def _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path, *, report_date=None):
     """Read-only validation shared by prepare and Hermes preflight."""
     outcome = _read_outcome(outcome_path)
     manifest = _read_manifest(manifest_path)
-    pillar_b = _read_pillar_b(pillar_b_path)
     _verify_same_run_identity(outcome, manifest)
+    pillar_b = _read_pillar_b(pillar_b_path, report_date=report_date)
     records = _attach_outcome_disposition(_collect_same_run_records(outcome, manifest), outcome)
     return outcome, manifest, pillar_b, records, _derive_stats(records, outcome)
 
@@ -487,7 +496,7 @@ def _verify_candidate_selection(args, bundle):
         return
     paths = [Path(bundle["public_artifacts"][key]["path"]) for key in
              ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact")]
-    outcome, manifest, pillar_b, records, _ = _read_prepare_inputs(*paths)
+    outcome, manifest, pillar_b, records, _ = _read_prepare_inputs(*paths, report_date=bundle["report_date"])
     _, _, current = _select_authoring_candidates(
         args, date.fromisoformat(bundle["report_date"]), *paths,
         outcome, manifest, pillar_b, records)
@@ -508,7 +517,7 @@ def _run_prepare(args, parser) -> int:
         dry_run=dry_run,
     )
     outcome, manifest, pillar_b, records, stats = _read_prepare_inputs(
-        outcome_path, manifest_path, pillar_b_path)
+        outcome_path, manifest_path, pillar_b_path, report_date=args.report_date)
     staging_dir.mkdir(parents=True, exist_ok=True)
     import yaml
     config = yaml.safe_load(Path(args.run_config).read_text(encoding="utf-8")) or {}
@@ -596,7 +605,7 @@ def _run_prepare(args, parser) -> int:
             "pillar_b_artifact": {
                 "path": str(pillar_b_path),
                 "sha256": hashlib.sha256(pillar_b_path.read_bytes()).hexdigest(),
-                "count": len(pillar_b),
+                "count": len(pillar_b["articles"]),
             },
         },
         "prompt": {

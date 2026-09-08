@@ -184,16 +184,19 @@ above; read its stdout in full and perform that search task using Hermes tools.
 Do not copy the rendered query list back into cron. This keeps changes to the
 template effective on the next invocation without editing cron again.
 
-The command renders instructions; Hermes still owns search and saving the
-four-field Pillar B array. The target monitor consumes that array through
+The command renders instructions; Hermes owns search and saving the
+`pillar-b-discovery.v1` envelope. The target monitor consumes it through
 `--pillar-b-artifact`; this helper does not introduce a second search service.
 Production cron has **not** been switched to this loader. Its current task still
 contains the old year-only prompt; change it during the controlled deployment.
 
-The new prompt requires date verification, but the current four-field consumer
-still lacks publication-date evidence and a deterministic three-month gate.
-That known acceptance gap must be fixed separately before claiming freshness
-validation passes. Search/template tests alone do not establish it.
+The production consumer validates the report date, exact completed query set,
+three-month publication window and non-empty date evidence for the same article.
+The legacy four-field array is not sufficient for production. Keep the
+`## Search queries` heading and its unique query bullets: the validator reads
+that section directly, so there is no second query list to maintain.
+The date excerpt must come from that article or its source-backed search result;
+passing the schema alone does not prove the publisher's claim.
 
 ### Remaining prompt boundaries
 
@@ -220,6 +223,8 @@ consumer. This verifies a real search, not automated publication-date enforcemen
 Search errors must not overwrite results with an empty array. The first rehearsal
 exposed a read-only dependency-cache failure and an incorrect empty result; the
 prompt was strengthened and the sandbox cache fixed before the successful rerun.
-The consumer still needs a machine-checked search-success/date-evidence contract
-before production cutover. Detailed evidence and limitations are listed in
+The new consumer adds the machine-checked query/date-evidence contract. Its live
+test rejected a result that borrowed a date from a different publisher page.
+The selected Hermes search backend also needs its pinned optional dependency
+installed before running in a read-only sandbox. Detailed evidence is listed in
 [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover).
