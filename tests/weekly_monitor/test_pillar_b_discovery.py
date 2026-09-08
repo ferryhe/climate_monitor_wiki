@@ -8,6 +8,26 @@ import pytest
 from climate_monitor.article_candidate_contract import adapt_pillar_b
 from climate_monitor.weekly_monitor.pillar_b_discovery import validate_discovery
 from climate_monitor.weekly_monitor.prompt_loader import pillar_b_search_queries
+
+
+@pytest.mark.parametrize("heading", ["", "## Queries", "## Search queries\n## Search queries"])
+def test_edited_prompt_requires_one_named_query_section(monkeypatch, heading):
+    from types import SimpleNamespace
+    from climate_monitor.weekly_monitor import prompt_loader
+    monkeypatch.setattr(prompt_loader, "load_pillar_b_search_prompt", lambda *args:
+                        SimpleNamespace(raw_bytes=(heading + "\n- climate insurance\n").encode()))
+    with pytest.raises(ValueError, match="exactly one ## Search queries"):
+        pillar_b_search_queries(date(2026, 9, 7))
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_edited_query_section_supports_line_endings(monkeypatch, newline):
+    from types import SimpleNamespace
+    from climate_monitor.weekly_monitor import prompt_loader
+    text = newline.join(["## Search queries", "- climate insurance", "## Output", "- unrelated"])
+    monkeypatch.setattr(prompt_loader, "load_pillar_b_search_prompt", lambda *args:
+                        SimpleNamespace(raw_bytes=text.encode()))
+    assert pillar_b_search_queries(date(2026, 9, 7)) == ["climate insurance"]
 from scripts.run_climate_monitor import _read_pillar_b
 
 DAY = date(2026, 9, 7)

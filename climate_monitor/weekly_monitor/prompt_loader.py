@@ -77,9 +77,14 @@ def pillar_b_window_start(report_date: date) -> date:
 def pillar_b_search_queries(report_date: date) -> list[str]:
     """Use the editable prompt as the only query-set definition."""
     text = load_pillar_b_search_prompt(report_date, DEFAULT_PILLAR_B_SEARCH_PATH.resolve()).raw_bytes.decode("utf-8")
-    section = text.split("## Search queries\n", 1)[1].split("\n## ", 1)[0]
-    queries = [line[2:].strip() for line in section.splitlines() if line.startswith("- ")]
-    if not queries or len(queries) != len(set(queries)):
+    lines = text.splitlines()
+    headings = [i for i, line in enumerate(lines) if line.strip() == "## Search queries"]
+    if len(headings) != 1:
+        raise ValueError("Pillar B prompt must contain exactly one ## Search queries section")
+    section = lines[headings[0] + 1:]
+    end = next((i for i, line in enumerate(section) if line.startswith("## ")), len(section))
+    queries = [line[2:].strip() for line in section[:end] if line.startswith("- ")]
+    if not queries or any(not query for query in queries) or len(queries) != len(set(queries)):
         raise ValueError("Pillar B search queries must be non-empty and unique")
     return queries
 

@@ -111,6 +111,18 @@ unresolved`. The WRI sandbox input had **one** requested site and **one** unchan
 site; 164 discovery rows do not mean 164 checked sites. Never copy fixture counts
 such as 57/42/15 into a live report.
 
+For a full scan, the existing `--acquisition-batch` path can contain an array of
+original public v2 scope outcomes, and `--web-listening-manifest` an array of their
+original v1 exports. Keep a distinct upstream task identity for each requested
+seed, even when several seeds belong to one organization. The driver delegates
+count aggregation to the upstream public contract and checks each export's own
+parent run, source, seed and artifact identity. Every successful scope needs
+exactly one export; terminal failures need none. Do not replace these identities
+with a fabricated common parent run. Single-scope object inputs remain supported.
+The monitoring total counts requested entries, which can exceed the number of
+organizations. `failed` and `unresolved` remain separate buckets. Empty Pillar A
+discovery produces an empty candidate list, with no placeholder article.
+
 Pillar B uses the three-calendar-month window ending on the explicit report date.
 Production prepare and wrapper preflight require `pillar-b-discovery.v1`: the
 matching report date, every current prompt query marked completed exactly once,

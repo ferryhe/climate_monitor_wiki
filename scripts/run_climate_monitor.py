@@ -164,7 +164,7 @@ def _outcome_fixture_root(path: Path | None = None) -> Path | None:
     return root
 
 
-def _read_outcome(path: Path) -> dict:
+def _read_outcomes(path: Path) -> list[dict]:
     fixture_root = _outcome_fixture_root(path)
     try:
         try:
@@ -176,18 +176,41 @@ def _read_outcome(path: Path) -> dict:
             # public payloads. Installed upstream always owns validation above.
             import runpy
             validate = runpy.run_path(str(ROOT / "tests/issue87_outcome_fixture.py"))["validate_fixture"]
-            return validate(path.read_text(encoding="utf-8"))
-        return AcquisitionBatchResultV2.model_validate_json(
-            path.read_text(encoding="utf-8")
-        ).model_dump(mode="json")
+            return [validate(path.read_text(encoding="utf-8"))]
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        entries = payload if isinstance(payload, list) else [payload]
+        if not entries:
+            raise ValueError("acquisition batch must contain at least one outcome")
+        return [AcquisitionBatchResultV2.model_validate_json(
+            json.dumps(entry)).model_dump(mode="json") for entry in entries]
     except ValueError as exc:
         raise SystemExit("invalid public acquisition-batch-result.v2") from exc
 
 
-def _read_manifest(path: Path) -> dict:
+def _aggregate_outcomes(outcomes: list[dict]) -> dict:
+    if len(outcomes) == 1:
+        return outcomes[0]
+    from web_listening.contracts.acquisition_batch import aggregate_batch_result_v2
+    tasks = [item["task_id"] for result in outcomes for item in result["dispositions"]]
+    if len(tasks) != len(set(tasks)):
+        raise SystemExit("acquisition collection contains duplicate task identities")
+    return aggregate_batch_result_v2(outcomes)
+
+
+def _read_outcome(path: Path) -> dict:
+    return _aggregate_outcomes(_read_outcomes(path))
+
+
+def _read_manifest(path: Path) -> dict | list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    for entry in payload if isinstance(payload, list) else [payload]:
+        _validate_manifest(entry)
+    return payload
+
+
+def _validate_manifest(payload) -> None:
     if not isinstance(payload, dict):
-        raise SystemExit(f"web-listening manifest {path} must be an object")
+        raise SystemExit("web-listening manifest must be an object")
     if payload.get("schema_version") != "web-listening-manifest.v1":
         raise SystemExit(
             f"web-listening manifest schema_version must be web-listening-manifest.v1, "
@@ -199,7 +222,6 @@ def _read_manifest(path: Path) -> dict:
     discovered = payload.get("discovered_items")
     if not isinstance(discovered, list):
         raise SystemExit("web-listening manifest discovered_items must be a list")
-    return payload
 
 
 def _read_pillar_b(path: Path, *, report_date: str | None = None) -> list | dict:
@@ -271,21 +293,56 @@ def _verify_same_run_identity(outcome: dict, manifest: dict) -> None:
 
 def _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path, *, report_date=None):
     """Read-only validation shared by prepare and Hermes preflight."""
-    outcome = _read_outcome(outcome_path)
+    outcomes = _read_outcomes(outcome_path)
+    outcome = _aggregate_outcomes(outcomes)
     manifest = _read_manifest(manifest_path)
-    _verify_same_run_identity(outcome, manifest)
+    if isinstance(manifest, list):
+        _verify_collection_identity(outcomes, manifest)
+    else:
+        _verify_same_run_identity(outcome, manifest)
     pillar_b = _read_pillar_b(pillar_b_path, report_date=report_date)
     records = _attach_outcome_disposition(_collect_same_run_records(outcome, manifest), outcome)
     return outcome, manifest, pillar_b, records, _derive_stats(records, outcome)
 
 
-def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
+def _verify_collection_identity(outcomes: list[dict], manifests: list[dict]) -> None:
+    """Bind every retained scope export before aggregating its discoveries.
+
+    The collection contains original public payloads, never a synthetic export
+    with an invented common parent. Terminal failures need no article export.
+    """
+    successful = [(result, item) for result in outcomes for item in result["dispositions"]
+                  if item["disposition"] in {"updated", "unchanged"}]
+    expected = [item.get("artifact_id") for _, item in successful]
+    actual = [manifest.get("manifest_id") for manifest in manifests]
+    if (any(not item for item in expected + actual)
+            or len(set(expected)) != len(expected) or len(set(actual)) != len(actual)
+            or set(expected) != set(actual)):
+        raise SystemExit("cross-run export identity: collection must contain every successful export exactly once")
+    by_artifact = {item["artifact_id"]: result for result, item in successful}
+    for manifest in manifests:
+        _verify_same_run_identity(by_artifact[manifest["manifest_id"]], manifest)
+
+
+def _manifest_identity(manifest: dict | list[dict]) -> dict:
+    if isinstance(manifest, list):
+        return {"scope_runs": [_manifest_identity(item) for item in manifest]}
+    return {"run_id": manifest["run"]["run_id"],
+            "parent_run_id": manifest["run"]["parent_run_id"],
+            "source_id": manifest["source"]["source_id"]}
+
+
+def _collect_same_run_records(outcome: dict, manifest: dict | list[dict]) -> list[dict]:
     """Project every manifest ``discovered_item`` to a same-run evidence record.
 
     Keep discovery occurrences until adapt_article_changes/merge_candidates
     merges their URL identities, retaining every origin. Stable ordering also
     makes the projected artifact row identities independent of export order.
     """
+    if isinstance(manifest, list):
+        return sorted([record for item in manifest
+                       for record in _collect_same_run_records(outcome, item)],
+                      key=lambda r: (canonical_url(r["final_url"]), _canonical_bytes(r)))
     records: list[dict] = []
     for raw in manifest.get("discovered_items") or []:
         if not isinstance(raw, dict):
@@ -314,6 +371,7 @@ def _collect_same_run_records(outcome: dict, manifest: dict) -> list[dict]:
                     origin.setdefault(field, value)
         records.append({
             "source_id": manifest["source"]["source_id"],
+            "manifest_id": manifest.get("manifest_id"),
             "final_url": final_url,
             "requested_url": url,
             "title": raw.get("title") or "",
@@ -333,9 +391,11 @@ def _attach_outcome_disposition(records: list[dict], outcome: dict) -> list[dict
     One source may discover many articles; discovered URLs are not fetch counts.
     """
     by_source = {item["site_key"]: item for item in outcome["dispositions"]}
+    by_artifact = {item["artifact_id"]: item for item in outcome["dispositions"]
+                   if item.get("artifact_id")}
     enriched = []
     for record in records:
-        item = by_source[record["source_id"]]
+        item = by_artifact.get(record.get("manifest_id")) or by_source[record["source_id"]]
         unresolved = item["disposition"] == "unresolved"
         enriched.append({**record,
             "disposition": "failed" if unresolved else item["disposition"],
@@ -360,7 +420,7 @@ def _derive_stats(records: list[dict], outcome: dict) -> dict:
     return {
         "total": counts["requested"], "updated": counts["updated"],
         "unchanged": counts["unchanged"], "blocked": counts["blocked"],
-        "failed": counts["failed"] + counts["unresolved"], "unresolved": counts["unresolved"],
+        "failed": counts["failed"], "unresolved": counts["unresolved"],
     }
 
 
@@ -403,10 +463,6 @@ def _outcome_to_article_changes(outcome: dict, manifest: dict,
     articles: list[dict] = []
     for org, items in sorted(groups.items()):
         articles.append({"org": org, "items": items})
-    if not articles:
-        articles = [{"org": "no_retained_records",
-                     "items": [{"title": "", "url": "https://www.iais.org/no-retained-records",
-                                 "categories": ["climate_supervision"]}]}]
     return {
         "date": report_date,
         "pillar": "A",
@@ -593,14 +649,11 @@ def _run_prepare(args, parser) -> int:
                 "path": str(outcome_path),
                 "sha256": hashlib.sha256(outcome_path.read_bytes()).hexdigest(),
                 "run_id": outcome["run_id"],
-                "source_id": manifest["source"]["source_id"],
             },
             "web_listening_manifest": {
                 "path": str(manifest_path),
                 "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-                "run_id": manifest["run"]["run_id"],
-                "parent_run_id": manifest["run"]["parent_run_id"],
-                "source_id": ((manifest.get("source") or {}).get("source_id")),
+                **_manifest_identity(manifest),
             },
             "pillar_b_artifact": {
                 "path": str(pillar_b_path),
@@ -791,11 +844,8 @@ def _run_finalize(args, parser) -> MonitorRunResult:
     outcome_path = Path(bundle["public_artifacts"]["acquisition_batch"]["path"])
     manifest_path = Path(bundle["public_artifacts"]["web_listening_manifest"]["path"])
     pillar_b_path = Path(bundle["public_artifacts"]["pillar_b_artifact"]["path"])
-    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    pillar_b_payload = json.loads(pillar_b_path.read_text(encoding="utf-8"))
-    records = _collect_same_run_records(outcome, manifest)
-    records = _attach_outcome_disposition(records, outcome)
+    outcome, manifest, pillar_b_payload, records, _ = _read_prepare_inputs(
+        outcome_path, manifest_path, pillar_b_path, report_date=bundle["report_date"])
     pillar_a_payload = _outcome_to_article_changes(outcome, manifest, records, bundle["report_date"])
     source_dir = Path(args.source_dir).resolve()
     article_changes_artifact = source_dir / f"article_changes_{bundle['report_date']}.json"
