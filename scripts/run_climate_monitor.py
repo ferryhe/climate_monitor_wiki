@@ -50,7 +50,7 @@ from climate_monitor.candidate_snapshot import (
     serialize_candidate_item_snapshot as _serialize_candidate_snapshot,
     validate_candidate_item_snapshot,
 )
-from climate_monitor.models import CandidateItem
+from climate_monitor.models import CandidateItem, MonitorRunResult
 from climate_monitor.seen_state import _write_atomic, pending_seen_url_delta_path
 
 
@@ -709,7 +709,7 @@ def _verify_staging_digest(staging_dir: Path, bundle: dict) -> None:
         )
 
 
-def _run_finalize(args, parser) -> int:
+def _run_finalize(args, parser) -> MonitorRunResult:
     """Consume the prepared bundle + exactly one authoring response.
 
     Every identity binding the prepare step established is re-checked here:
@@ -1072,7 +1072,7 @@ def _verify_authoring_resume(args, staging, bundle):
     _write_atomic(path, _canonical_bytes(identity))
 
 
-def _run_authoring_sequence(args, parser) -> int:
+def _run_authoring_sequence(args, parser) -> MonitorRunResult:
     """Prepare once, process/resume URLs serially, summarize, then finalize."""
     import subprocess
     from contextlib import redirect_stdout
