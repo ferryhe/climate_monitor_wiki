@@ -340,7 +340,7 @@ def combine_candidate_collections(
 
 def combine_current_artifacts(
     pillar_a_payload: Mapping[str, Any],
-    pillar_b_payload: Sequence[Mapping[str, Any]],
+    pillar_b_payload: Sequence[Mapping[str, Any]] | Mapping[str, Any],
     *,
     report_date: str,
     pillar_a_artifact_id: str,
@@ -353,6 +353,8 @@ def combine_current_artifacts(
 ) -> CombinedCandidatesResult:
     if pillar_a_payload.get("date") != report_date:
         raise CandidateContractError("article_changes date does not match report_date")
+    if isinstance(pillar_b_payload, dict) and pillar_b_payload.get("report_date") != report_date:
+        raise CandidateContractError("pillar_b date does not match report_date")
     pillar_a = adapt_article_changes(
         pillar_a_payload,
         artifact_id=pillar_a_artifact_id,

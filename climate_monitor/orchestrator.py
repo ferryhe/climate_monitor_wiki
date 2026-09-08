@@ -680,7 +680,7 @@ def run_monitor(
         current_input_count = sum(
             len(group["items"])
             for group in article_changes_payload["articles"]
-        ) + len(pillar_b_payload)
+        ) + len(pillar_b_payload["articles"] if isinstance(pillar_b_payload, dict) else pillar_b_payload)
         merged_items = list(
             items_from_merged_candidates_with_carry(
                 combined.candidates,

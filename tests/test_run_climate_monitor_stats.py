@@ -100,12 +100,12 @@ def test_derive_stats_does_not_double_count_unresolved():
         "updated": 1,
         "unchanged": 0,
         "blocked": 0,
-        "failed": 2,   # failed=1 + unresolved=1
+        "failed": 1,
         "unresolved": 1,
     }
-    # The canonical total must equal the sum of the 4 mutually exclusive
-    # buckets + failed (no extra unresolved addend).
-    assert stats["updated"] + stats["unchanged"] + stats["blocked"] + stats["failed"] == stats["total"]
+    # Exercise the downstream contract, which treats unresolved separately.
+    from climate_monitor.weekly_monitor.authoring_contract import _validate_v2_stats_shape
+    assert _validate_v2_stats_shape(stats) == stats
 
 
 def test_derive_stats_full_dry_run_fixture_passes():

@@ -11,9 +11,11 @@ contract. The same-run prepare/serial-authoring/finalize producer wiring is
 implemented, while the 2026-09-08 SSH inventory still showed the legacy Step
 schedule. Source outcomes and Registry-revision evidence must come from upstream
 artifacts, not from generated Markdown or a fixed configured-site count.
-The monitor CLI does not append a monitor run-ledger attempt; its runtime producer
-integration must be verified before enabling the downstream email slot that
-requires that identity. Implementation and live scheduler cutover are separate evidence; see
+The monitor wrapper consumes the production CLI's JSON result and appends a
+monitor attempt after verifying the report date, SHA and semantic sidecar.
+This happens before the scheduler marks the monitor complete. Email verifies
+both records against the report it is about to deliver. Dry runs do not append
+production success records. Implementation and live scheduler cutover are separate evidence; see
 [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
 
 ## Attempt contract

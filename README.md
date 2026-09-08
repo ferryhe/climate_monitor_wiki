@@ -6,7 +6,8 @@ A structured, interlinked knowledge base on climate risk, natural catastrophe in
 prompts are implemented and tested in the SSH sandbox. Production still uses
 the legacy Step jobs; the four-slot deployment below has not been switched on.
 Issue #87 was closed by the owner; its closure is not deployment evidence.
-Pillar B publication-date enforcement, a complete run over the configured sites,
+Pillar B now validates dated search evidence, and the monitor wrapper records
+the report identity required by email. A complete run over the configured sites
 and controlled deployment/scheduler verification remain cutover gates. See
 [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover).
 
@@ -128,7 +129,7 @@ Titles are metadata: different URLs with the same title remain separate articles
 | Module | Program/package | Responsibility |
 |---|---|---|
 | Site acquisition (Pillar A) | External `web_listening` public batch/export APIs | Site monitoring, governed readers and same-run outcome/manifest artifacts |
-| Discovery (Pillar B) | Hermes tools + `weekly_monitor/prompt_loader.py` | Execute the editable search task and save candidates; the renderer itself does not search |
+| Discovery (Pillar B) | Hermes tools + `weekly_monitor/prompt_loader.py`, `pillar_b_discovery.py` | Execute the editable search task; validate completed queries, report date and article publication evidence |
 | Prepare and queue | `scripts/run_climate_monitor.py` | Validate inputs, merge URLs, freeze evidence, run/resume each URL serially |
 | Candidate identity | `climate_monitor/article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | Canonical URLs, merged origins and artifact identities |
 | Evidence adapter | `climate_monitor/article_content_adapter.py` | Consume upstream public content results, preserve attempts/status/hashes and distinguish body, snippet and no evidence |
@@ -148,7 +149,7 @@ the monitor does not automatically perform Pillar B search.
 ```mermaid
 flowchart TD
     A["Pillar A: web_listening<br/>same-run outcome + manifest"] --> P
-    B["Pillar B: Hermes search<br/>editable search prompt"] --> P
+    B["Pillar B: Hermes search<br/>completed queries + dated article evidence"] --> P
     P["Prepare: run_climate_monitor.py<br/>canonical URL merge + frozen evidence"] --> T
     T["Optional article_title helper<br/>verified page H1/title"] --> Q
     Q["Existing driver: serial URL queue"] --> U
@@ -159,7 +160,8 @@ flowchart TD
     R --> Q
     N -->|yes| E["One executive-summary invocation<br/>qualified article summaries only"]
     E --> F["Finalize: weekly_monitor + orchestrator<br/>Markdown + sidecar + URL-state transaction"]
-    F --> D["climate_delivery<br/>PDF + manifest + email"]
+    F --> L["Hermes wrapper verifies report hash + sidecar<br/>append monitor ledger, then complete slot"]
+    L --> D["climate_delivery<br/>PDF + manifest + email"]
     F --> W["Isolated publisher<br/>rolling content PR"]
     W --> M["Review + merge + controlled deploy"]
     M --> G["climate_registry<br/>gated weekly sync"]

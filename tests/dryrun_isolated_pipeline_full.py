@@ -22,7 +22,7 @@ def test_full_chain_all_four_consumers(tmp_path):
     result = run_chain(tmp_path)
     assert result['stages'] == ['A/B', 'evidence', 'authoring', 'MD/sidecar',
         'PDF', 'delivery-dry-run', 'publisher-no-push-plan',
-        'CLI prepare+finalize', 'registry-dry-run']
+        'monitor-ledger', 'CLI prepare+finalize', 'registry-dry-run']
     assert result['unique_urls'] == 3
     assert result['database_sha256_before'] == result['database_sha256_after']
     assert result['tamper_rejected'] is True

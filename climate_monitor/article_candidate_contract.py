@@ -747,14 +747,21 @@ def adapt_article_changes(
 
 
 def adapt_pillar_b(
-    payload: Sequence[Mapping[str, Any]],
+    payload: Sequence[Mapping[str, Any]] | Mapping[str, Any],
     *,
     artifact_id: str,
     artifact_sha256: str,
     discovered_at: str,
 ) -> list[ArticleCandidate]:
-    """Read the current ``pillar_b_DATE.json`` array without mutation."""
+    """Read a dated production envelope or historical four-field array."""
 
+    row_prefix = ""
+    if isinstance(payload, dict):
+        from .weekly_monitor.pillar_b_discovery import validate_discovery, ARTICLE_FIELDS
+        from datetime import date
+        articles = validate_discovery(payload, report_date=date.fromisoformat(payload.get("report_date", "")))
+        payload = [{key: item[key] for key in ARTICLE_FIELDS} for item in articles]
+        row_prefix = "/articles"
     if not isinstance(payload, list):
         raise CandidateContractError("pillar_b artifact must be a JSON array")
     try:
@@ -787,7 +794,7 @@ def adapt_pillar_b(
             "source": source,
             "url": url,
             "input_artifact": artifact.model_dump(mode="json"),
-            "row": f"/{index}",
+            "row": f"{row_prefix}/{index}",
             "discovered_at": discovered_at,
         }
         if title:

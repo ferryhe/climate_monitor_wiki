@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import secrets
 import subprocess
 import sys
 
@@ -105,6 +106,21 @@ def dispatch(command, slot, day, dry_run):
             return 127
     if not command:
         return 0
+    if slot == 'monitor':
+        try:
+            child = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+            rc = child.returncode
+            result = json.loads(child.stdout) if rc == 0 else None
+        except (OSError, ValueError):
+            rc, result = 2, None
+        try:
+            # The report and its committed sidecar must match the driver's
+            # result before the scheduler can mark this attempt completed.
+            record_monitor_result(day, result, rc, dry_run=dry_run)
+        except Exception:
+            return 2
+        return rc
     if slot == 'email':
         expected = command[command.index('--expected-report-sha256') + 1]
         # Produce and verify the PDF with the public CLI before the sending CLI.
@@ -118,6 +134,37 @@ def dispatch(command, slot, day, dry_run):
             return 2
         return 0 if dry_run else run(command)
     return run(command)
+
+
+def record_monitor_result(day, result, rc, *, dry_run):
+    """Append the existing ledger contract after the production driver exits."""
+    from climate_monitor.run_ledger import append_attempt, build_report_identity
+    from climate_monitor.semantic_bundle import verify_semantic_sidecar
+
+    finished = datetime.now(timezone.utc)
+    attempt = {
+        'schema_version': 'weekly-run-attempt.v1',
+        'attempt_id': f'{finished:%Y%m%dt%H%M%Sz}-monitor-{secrets.token_hex(4)}',
+        'stage': 'monitor', 'report_date': day, 'scheduled_for': day + 'T08:00:00Z',
+        'finished_at': finished.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'status': 'failed', 'result_code': f'monitor_exit_{rc}',
+    }
+    if rc == 0:
+        report = path_env('CLIMATE_SOURCE_DIR', directory=True) / f'climate-monitor-{day}.md'
+        identity = build_report_identity(report_date=day, filename=report.name, sha256=sha(report))
+        if (not isinstance(result, dict) or result.get('report_date') != day
+                or result.get('report_path') != report.name
+                or result.get('report_sha256') != identity.sha256):
+            raise Blocked('monitor_result_identity_mismatch')
+        verify_semantic_sidecar(report)
+        from climate_monitor.weekly_monitor.authoring_contract import _validate_v2_stats_shape
+        stats = _validate_v2_stats_shape(result.get('stats'))
+        attempt.update(report=identity.as_record(), result_code='report_written',
+                       status='partial' if stats['failed'] + stats['blocked'] + stats['unresolved'] else 'success')
+    # Dry-run validation exercises the same identity checks but never appends
+    # success to the live ledger or makes a production scheduler slot complete.
+    if not dry_run:
+        append_attempt(path_env('CLIMATE_RUN_LEDGER_DIR', directory=True), attempt, repository_root=ROOT)
 
 
 def dry_run_unavailable_provider(article_id, url):
@@ -141,7 +188,7 @@ def _monitor_prepare_cli_command(day: str, *, staging_dir: Path) -> list[str]:
     pillar_b_path = path_env("CLIMATE_PILLAR_B_ARTIFACT")
     from scripts.run_climate_monitor import _read_prepare_inputs
     try:
-        _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path)
+        _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path, report_date=day)
     except (SystemExit, ValueError, KeyError, TypeError) as exc:
         raise Blocked("invalid_acquisition_contract") from exc
     command = [
@@ -230,7 +277,10 @@ def _monitor_cli_command(
 def monitor_command(day, *, dry_run):
     """Delegate one complete authoring sequence to the production CLI."""
     staging_dir = path_env("CLIMATE_STAGING_DIR", directory=True, exists=False)
-    return _monitor_cli_command(day, mode="run", staging_dir=staging_dir, dry_run=dry_run)
+    ledger = path_env('CLIMATE_RUN_LEDGER_DIR', directory=True)
+    if ledger.is_relative_to(ROOT):
+        raise Blocked('ledger_requires_external_directory')
+    return _monitor_cli_command(day, mode="run", staging_dir=staging_dir, dry_run=dry_run) + ['--json']
 
 
 def finalize_command(day, *, dry_run):
