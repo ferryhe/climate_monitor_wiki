@@ -130,8 +130,7 @@ in this repo trace back to leftover daily assumptions.
   directory also contains manual re-runs on other weekdays that duplicate the
   same week. `--allow-offcycle` overrides.
 
-Read `docs/weekly-cadence.md` and `docs/weekly-migration-remaining-work.md`
-before touching cadence logic.
+Read `docs/weekly-cadence.md` before touching cadence logic.
 
 ---
 
@@ -283,10 +282,10 @@ on a historical issue report. The current production gates are listed in
 [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover), including
 Pillar B date/search-success enforcement and a full real-site run.
 
-`docs/weekly-migration-remaining-work.md` and `ISSUE87_FOLLOWUP_REPORT.md` retain
-historical context. Their old job IDs, task hashes, issue-state statements and
-fixed sample counts are not current operating instructions. Weekly rendering
-still emits only real report dates; runtime aliases come from the corpus.
+Superseded handoffs and closeout reports remain in Git history; their job IDs,
+task hashes, issue-state statements and sample counts are not current operating
+instructions. Weekly rendering still emits only real report dates; runtime
+aliases come from the corpus.
 The legacy `daily` document type remains load-bearing and is not renamed.
 
 ---

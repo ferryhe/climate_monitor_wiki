@@ -120,6 +120,15 @@ The complete production flow is: **Hermes generate → rolling PR → human merg
 → separate server deploy**. The production checkout remains clean and tracks
 `origin/main` throughout generation.
 
+## Optional wording cleanup
+
+The daily-to-weekly correctness work is complete. Remaining cosmetic candidates
+are user-visible `Daily` legend labels in `showcase/index.html`/`showcase/app.js`
+and daily wording in report-title defaults or CLI help. These are not production
+cutover gates. Review compatibility tests before changing defaults; retain the
+library's daily cadence and the internal `daily` document type used by retrieval,
+the frontend and the Obsidian plugin.
+
 ## No GitHub report generator
 
 The competing GitHub Actions generator was deleted. Hermes is the only report

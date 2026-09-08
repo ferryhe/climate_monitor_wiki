@@ -23,12 +23,13 @@ This repo exposes the monitoring corpus through three web tabs plus an Obsidian 
   Both graph modes are precomputed by the API so the workspace can render quickly without rebuilding the graph client-side.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
 
-See [docs/project-closeout.md](docs/project-closeout.md) for the historical operator audit,
-module map, API/CLI audit, scheduled-job boundaries, and closeout record.
+See [docs/ui-surfaces.md](docs/ui-surfaces.md) for the operator interfaces and
+[PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md) for the current module map,
+entrypoints and scheduled-job boundaries.
 
 Use current `origin/main` for development and inspect the server checkout and
-runtime before deployment. Historical closeout reports describe their own dated
-audits; they are not a current job inventory or a deployment baseline.
+runtime before deployment. Superseded handoffs remain available in Git history;
+they are not a current job inventory or a deployment baseline.
 
 The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as `contextPath`, so retrieval can prioritize the current page during chat.
 Chat now also exposes three answer modes:

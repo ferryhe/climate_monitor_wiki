@@ -28,6 +28,9 @@ use:
 snapshots/<capture-id>.snapshot.redacted.json
 ```
 
+No redacted snapshots are currently checked in. Create that directory only when
+adding an actual authorized capture; no placeholder file is required.
+
 Files here are provenance only. They are not active executable config, and this
 directory must not contain `job-08h-monitor.json`.
 Current command/timezone readback, not a historical capture, establishes which

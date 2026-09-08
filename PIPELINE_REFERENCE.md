@@ -139,20 +139,23 @@ After the unique new schedule is verified, disable old scheduler callers, check
 remaining imports/tests and remove obsolete code/configuration made redundant by
 the replacement. Keep historical reports and required compatibility contracts.
 Do not add a parallel driver, copied reader stack or duplicate prompt definition.
-`ISSUE87_FOLLOWUP_REPORT.md` is retained as a historical acceptance record used by
-tests; its old status statements are not current operations instructions.
+Superseded issue handoffs, closeout audits and completed migration plans are
+available in Git history. Keep current instructions in these module/runbook
+documents rather than retaining another active-looking copy.
 
 ## Verification and cutover
 
 Evidence as of 2026-09-08:
 
-- Final reviewed implementation with the pinned upstream installed: full SSH
+- Reviewed runtime implementation before documentation pruning, with the pinned
+  upstream installed: full SSH
   sandbox pytest **1769 passed / 5 skipped**, with three existing warnings.
   Compilation, shell/JavaScript syntax and whitespace checks passed. Independent
   code and Markdown reviews passed after history/resume and executive-delivery
   regressions were fixed.
-- A separate clean environment verified `web_listening` was absent: full suite
-  **1696 passed / 78 skipped**, with three existing warnings. Dependency
+- After removing four unused Markdown files and their obsolete text-only test,
+  a separate clean environment verified `web_listening` was absent: full suite
+  **1695 passed / 78 skipped**, with three existing warnings. Dependency
   consistency passed. Environment-dependent skips are not live acquisition proof.
 - The single-site WRI-derived input exercised 163 unique URLs and produced a
   22-article PDF preview. It did not cover the full configured site list; its
