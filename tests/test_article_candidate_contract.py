@@ -843,13 +843,16 @@ def test_adapters_reject_malformed_shapes_totals_and_issue_88_change_events():
             artifact_sha256="e" * 64,
         )
 
-    with pytest.raises(CandidateContractError):
-        adapt_pillar_b(
-            [{"title": "x", "url": "https://example.org/x", "source": "wire", "summary": ""}],
-            artifact_id="pillar_b.json",
-            artifact_sha256="f" * 64,
-            discovered_at="2026-09-07T08:20:00Z",
-        )
+    # Pillar B ``source`` is an institution/website name, not a literal "web"
+    # keyword; any non-empty institution source (e.g. "wire") is accepted and
+    # preserved on the candidate origin.
+    (wire_candidate,) = adapt_pillar_b(
+        [{"title": "x", "url": "https://example.org/x", "source": "wire", "summary": ""}],
+        artifact_id="pillar_b.json",
+        artifact_sha256="f" * 64,
+        discovered_at="2026-09-07T08:20:00Z",
+    )
+    assert wire_candidate.origins[0].source == "wire"
 
 
 def test_schemas_meta_validate_and_all_fixtures_have_expected_disposition():

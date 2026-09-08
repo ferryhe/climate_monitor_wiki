@@ -1,0 +1,23 @@
+{
+  "artifact_id": "pillar_b_20260907.json",
+  "path": "/tmp/issue87-pr106-repro/pillar_b_20260907.json",
+  "sha256": "e07388cb37c8d258b7555325cca751a7d36b967ea290821370728a95febd2c6c",
+  "size_bytes": 6532,
+  "row_count": 16,
+  "sources": [
+    "American Academy of Actuaries",
+    "CIA-ICA",
+    "California Department of Insurance",
+    "Ceres",
+    "EY",
+    "IAA",
+    "IFRS Foundation",
+    "Mapfre",
+    "McDermott Will & Emery",
+    "NCEL",
+    "ORF Online",
+    "SOA",
+    "SOA Research Institute",
+    "World Economic Forum"
+  ]
+}

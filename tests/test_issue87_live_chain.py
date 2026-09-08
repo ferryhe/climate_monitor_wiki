@@ -55,7 +55,13 @@ def _prepare_env(workspace: Path, *, dry_run: bool = False,
     env["HERMES_INFERENCE_MODEL"] = "fixture-model"
     env["HERMES_INFERENCE_PROVIDER"] = "fixture-provider"
     env["REPORT_DATE"] = REPORT_DATE
-    env["PYTHONPATH"] = str(ROOT)
+    # Keep the ambient PYTHONPATH (which carries the installed pydantic /
+    # web_listening dependencies under the active test runner) so the spawned
+    # ``run_climate_monitor.py`` subprocess can import them, with ROOT first.
+    ambient_pythonpath = os.environ.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(ROOT), ambient_pythonpath) if p
+    )
     for name in ("state_dir", "source_dir", "wiki_dir", "job_status_dir",
                  "delivery_output_dir", "delivery_state_dir",
                  "run_ledger_dir", "reports_dir", "registry_db_dir",
