@@ -23,16 +23,29 @@ from climate_monitor.article_candidate_contract import (
 )
 from scripts import run_climate_monitor as monitor
 
-REPRO_FILE = Path("/tmp/issue87-pr106-repro/pillar_b_20260907.json")
-REPRO_SHA256 = "e07388cb37c8d258b7555325cca751a7d36b967ea290821370728a95febd2c6c"
+# Committed 16-row Pillar B fixture (byte-identical to the real producer
+# output captured on 2026-09-07 by issue #87 owner, ZIP
+# `85c1492c…`). Living inside the repo so CI exercises the AC-1 contract on
+# every run; if this file disappears or drifts from the owner SHA, the
+# tests must fail, not silently skip.
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "issue87" / "pillar_b_sample_16.json"
+FIXTURE_RELATIVE_ID = "pillar_b_sample_16.json"
+OWNER_FIXTURE_SHA256 = "e07388cb37c8d258b7555325cca751a7d36b967ea290821370728a95febd2c6c"
 
 
-def _read_repro() -> list[dict]:
-    if not REPRO_FILE.is_file():
-        pytest.skip("byte-identical Pillar B repro file is not present")
-    raw = REPRO_FILE.read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == REPRO_SHA256
-    return json.loads(raw)
+def _read_fixture() -> tuple[list[dict], bytes]:
+    if not FIXTURE_PATH.is_file():
+        pytest.fail(
+            f"committed Pillar B fixture missing: {FIXTURE_PATH} "
+            "(AC-1 regression coverage requires the 16-row sample in-tree)"
+        )
+    raw = FIXTURE_PATH.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != OWNER_FIXTURE_SHA256:
+        pytest.fail(
+            f"committed Pillar B fixture SHA drifted from owner ZIP: "
+            f"{FIXTURE_PATH} (expected {OWNER_FIXTURE_SHA256})"
+        )
+    return json.loads(raw), raw
 
 
 # ---------------------------------------------------------------------------
@@ -41,44 +54,58 @@ def _read_repro() -> list[dict]:
 
 
 def test_ac1_consumer_accepts_institution_sources_and_preserves_provenance():
-    payload = _read_repro()
-    raw = REPRO_FILE.read_bytes()
-    artifact_sha = hashlib.sha256(raw).hexdigest()
+    payload, raw = _read_fixture()
+    fixture_sha = hashlib.sha256(raw).hexdigest()
     candidates = adapt_pillar_b(
         payload,
-        artifact_id=REPRO_FILE.name,
-        artifact_sha256=artifact_sha,
+        artifact_id=FIXTURE_RELATIVE_ID,
+        artifact_sha256=fixture_sha,
         discovered_at="2026-09-07T00:00:00Z",
     )
     # 16 rows -> 16 distinct-URL candidates, no accidental merge/drop.
     assert len(candidates) == 16
 
-    expected_sources = {item["source"] for item in payload}
-    assert "California Department of Insurance" in expected_sources
-    assert "Ceres" in expected_sources
-    # Institution source value is preserved verbatim on the candidate origin.
-    assert {c.origins[0].source for c in candidates} == expected_sources
+    # ``merge_candidates`` deterministically orders candidates by canonical
+    # URL, so the output index is NOT the input row index. We therefore assert
+    # the (row, source) multiset as a whole: every input row appears in exactly
+    # one candidate's origins with its original source value, and no extra rows
+    # leak through. A naive ``set`` comparison would let a permutation of wrong
+    # sources still pass; pinning the multiset closes that hole (Copilot
+    # review feedback on PR #107).
+    expected_pairs = sorted(
+        (f"/{i}", item["source"]) for i, item in enumerate(payload)
+    )
+    actual_pairs = sorted(
+        (origin.row, origin.source)
+        for candidate in candidates
+        for origin in candidate.origins
+    )
+    assert actual_pairs == expected_pairs
+    assert "California Department of Insurance" in {s for _, s in actual_pairs}
+    assert "Ceres" in {s for _, s in actual_pairs}
 
-    # Producer provenance survives: every origin pins the exact input artifact
-    # identity and keeps the original 16 row pointers /0../15.
-    rows = {c.origins[0].row for c in candidates}
-    assert rows == {f"/{i}" for i in range(16)}
+    # Every candidate origin pins the committed fixture identity and keeps the
+    # 16-row row pointer space /0../15.
+    assert {origin.row for c in candidates for origin in c.origins} == {
+        f"/{i}" for i in range(16)
+    }
     for candidate in candidates:
-        origin = candidate.origins[0]
-        assert origin.pillar == "B"
-        assert origin.input_artifact.artifact_id == REPRO_FILE.name
-        assert origin.input_artifact.sha256 == artifact_sha
+        for origin in candidate.origins:
+            assert origin.pillar == "B"
+            assert origin.input_artifact.artifact_id == FIXTURE_RELATIVE_ID
+            assert origin.input_artifact.sha256 == fixture_sha
 
 
-def test_ac1_preflight_and_consumer_parity_on_real_producer_file():
-    payload = _read_repro()
-    # Both the preflight reader and the real consumer accept the byte-identical
-    # 16-row producer file (institution sources), so they no longer disagree.
-    assert len(monitor._read_pillar_b(REPRO_FILE)) == 16
+def test_ac1_preflight_and_consumer_parity_on_committed_fixture():
+    payload, raw = _read_fixture()
+    fixture_sha = hashlib.sha256(raw).hexdigest()
+    # Both the preflight reader and the real consumer accept the same 16-row
+    # fixture (institution sources), so they no longer disagree.
+    assert len(monitor._read_pillar_b(FIXTURE_PATH)) == 16
     assert len(adapt_pillar_b(
         payload,
-        artifact_id=REPRO_FILE.name,
-        artifact_sha256=REPRO_SHA256,
+        artifact_id=FIXTURE_RELATIVE_ID,
+        artifact_sha256=fixture_sha,
         discovered_at="2026-09-07T00:00:00Z",
     )) == 16
 
