@@ -201,6 +201,16 @@ def _read_pillar_b(path: Path) -> list:
     for entry in payload:
         if not isinstance(entry, dict) or not entry.get("url"):
             raise SystemExit("pillar-b artifact entries must be objects with a url")
+        # Preflight enforces the same Pillar B source contract as the real
+        # consumer (``adapt_pillar_b``): ``source`` is the producer's
+        # institution/website name and must be a non-empty, trimmed string.
+        # This closes the mismatch where preflight accepted an institution
+        # ``source`` while the consumer rejected it (or vice versa).
+        source = entry.get("source")
+        if not isinstance(source, str) or not source or source != source.strip():
+            raise SystemExit(
+                "pillar-b artifact entries must declare a non-empty, trimmed source"
+            )
     return payload
 
 
@@ -783,6 +793,44 @@ def _parse_hermes_quiet_response(stdout: str, stderr: str):
     return json.loads(response)
 
 
+def _hermes_authoring_invocation(
+    help_stdout: str,
+    instruction: str,
+    *,
+    model: str = "",
+    provider: str = "",
+) -> tuple[list[str], str]:
+    """Return the argv-safe ``hermes chat`` command for one authoring turn.
+
+    Server hermes 03fa32c exposes ONLY ``--query`` (no ``--query-file``) --
+    Boss's SSH audit, issue comment 5575930257. The composed weekly authoring
+    instruction is ~9.6 MB (v2 request ~270 KB + article evidence ~9.3 MB),
+    far beyond Linux MAX_ARG_STRLEN (~128 KiB per argv element), so the full
+    instruction must never ride argv. ``--query -`` is the argv-safe channel:
+    the single ``-`` marker asks hermes to read the single query from stdin,
+    so argv stays tiny while the full instruction flows through the subprocess
+    stdin pipe.
+
+    ``--query-file`` is deliberately NOT probed: 03fa32c does not advertise
+    it, and probing it would silently fall back to argv on the real server,
+    reintroducing E2BIG.
+
+    Returns ``(command, stdin)``. ``stdin`` is always the full ``instruction``
+    (never truncated, shrunk, or split) and ``instruction`` never appears as an
+    argv element.
+    """
+    import re
+    options = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", help_stdout))
+    if "--query" not in options:
+        raise SystemExit("Hermes authoring query capability unavailable")
+    command = ["hermes", "chat", "--query", "-", "--quiet", "--toolsets", "none"]
+    if model:
+        command += ["--model", model]
+    if provider:
+        command += ["--provider", provider]
+    return command, instruction
+
+
 def _run_authoring_sequence(args, parser) -> int:
     """The production CLI owns prepare → one Hermes turn → finalize."""
     import subprocess
@@ -820,21 +868,15 @@ def _run_authoring_sequence(args, parser) -> int:
         raise SystemExit("Hermes authoring capabilities unavailable") from exc
     if help_result.returncode:
         raise SystemExit("Hermes authoring capabilities unavailable")
-    import re
-    options = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", help_result.stdout))
-    if "--query-file" in options:
-        query_args, stdin = ["--query-file", "-"], instruction
-    elif "--query" in options:
-        # argv is passed directly, with no shell or truncation. An OS argv-size
-        # failure is caught below and aborts without retrying or finalizing.
-        query_args, stdin = ["--query", instruction], None
-    else:
-        raise SystemExit("Hermes authoring query capability unavailable")
-    command = ["hermes", "chat", *query_args, "--quiet", "--toolsets", "none"]
-    if args.model:
-        command += ["--model", args.model]
-    if args.model_provider:
-        command += ["--provider", args.model_provider]
+    command, stdin = _hermes_authoring_invocation(
+        help_result.stdout, instruction,
+        model=args.model, provider=args.model_provider,
+    )
+    # Persist the exact composed instruction so the bytes sent to the model are
+    # auditable; the byte budget of this argv-safe path is the on-disk size of
+    # this file (the full instruction also flows over the subprocess stdin pipe).
+    query_path = staging / "hermes_authoring_query.txt"
+    query_path.write_text(instruction, encoding="utf-8")
     try:
         completed = subprocess.run(command, input=stdin, text=True,
                                    capture_output=True, cwd=ROOT, timeout=1800)

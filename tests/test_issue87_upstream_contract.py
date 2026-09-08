@@ -239,14 +239,14 @@ def test_production_cli_prepares_authors_once_then_finalizes(tmp_path, monkeypat
         events.append('author')
         assert command[command.index('--model') + 1] == 'gpt-6-astra'
         assert command[command.index('--provider') + 1] == 'openai-codex'
-        if capability == 'query-file':
-            assert command[command.index('--query-file') + 1] == '-'
-            instruction = kwargs['input']
-            assert instruction not in command
-        else:
-            assert '--query-file' not in command
-            instruction = command[command.index('--query') + 1]
-            assert kwargs.get('input') is None
+        # 03fa32c exposes only --query; the entrypoint always delivers the full
+        # instruction over stdin via ``--query -`` and never uses --query-file
+        # (even when the local help advertises it), so argv never carries the
+        # instruction and no argv-size E2BIG can occur.
+        assert '--query-file' not in command
+        assert command[command.index('--query') + 1] == '-'
+        instruction = kwargs['input']
+        assert instruction not in command
         assert not kwargs.get('shell', False)
         assert '$(literal) `literal`' in instruction
         if reply == 'timeout':

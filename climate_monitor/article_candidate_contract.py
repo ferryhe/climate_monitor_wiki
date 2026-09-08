@@ -771,9 +771,14 @@ def adapt_pillar_b(
             item["title"], field="title", maximum=MAX_TITLE, allow_empty=True
         )
         url = _adapter_text(item["url"], field="url", maximum=MAX_URL)
+        # Pillar B ``source`` is the producer's institution/website name (e.g.
+        # "California Department of Insurance", "Ceres"), not a literal "web"
+        # keyword. The consumer keeps that value verbatim as the origin source
+        # so provenance survives into the candidate; a non-empty trimmed string
+        # is the only requirement (enforced by ``_adapter_text``). Preflight
+        # enforces the identical rule (see ``scripts/run_climate_monitor.py``
+        # ``_read_pillar_b``).
         source = _adapter_text(item["source"], field="source", maximum=500)
-        if source != "web":
-            raise CandidateContractError("pillar_b source must be web")
         summary = _adapter_text(
             item["summary"], field="summary", maximum=MAX_SUMMARY, allow_empty=True
         )
