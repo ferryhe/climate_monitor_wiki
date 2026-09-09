@@ -18,10 +18,13 @@
 (climate-wiki-site) {
 	encode gzip zstd
 
-	# Security headers are set by the application (api_server.py). Caddy's
-	# `header` directive appends rather than replaces, so re-declaring them
-	# here emitted every header twice. Use `>` (set) so the proxy value
-	# replaces the upstream one, keeping exactly one copy of each.
+	# Security headers are set by the application (api_server.py). Re-declaring
+	# them here without a modifier emitted every header twice, because the
+	# directive ran before `reverse_proxy` copied the upstream headers in.
+	# `>` is Caddy's DEFER modifier: it postpones the header operation until
+	# after the proxy has copied upstream headers, so the deferred Set
+	# replaces the upstream value instead of coexisting with it. Do NOT drop
+	# the `>` — without it the duplicate headers come back.
 	header > Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
 	header > X-Content-Type-Options "nosniff"
 	header > X-Frame-Options "DENY"

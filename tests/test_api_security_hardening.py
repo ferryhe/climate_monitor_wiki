@@ -99,30 +99,38 @@ def test_docs_tests_restore_module_state(monkeypatch):
     ENABLE_DOCS deleted, leaving docs permanently disabled in-process even when
     the pre-test environment had them enabled.
     """
-    for pre_state in (None, "1"):
-        if pre_state is None:
+    original = os.environ.get("ENABLE_DOCS")
+    try:
+        for pre_state in (None, "1"):
+            if pre_state is None:
+                monkeypatch.delenv("ENABLE_DOCS", raising=False)
+            else:
+                monkeypatch.setenv("ENABLE_DOCS", pre_state)
+            importlib.reload(api_server)
+            expected = _docs_enabled_in_env()
+            assert api_server._ENABLE_DOCS is expected
+
+            # Run both docs tests against this pre-state.
+            test_docs_disabled_by_default(monkeypatch)
+            assert os.environ.get("ENABLE_DOCS") == pre_state
+            assert api_server._ENABLE_DOCS is expected, (
+                "docs-disabled test leaked module state"
+            )
+
+            test_docs_enabled_when_explicitly_opted_in(monkeypatch)
+            assert os.environ.get("ENABLE_DOCS") == pre_state
+            assert api_server._ENABLE_DOCS is expected, (
+                "docs-enabled test leaked module state"
+            )
+    finally:
+        # This test must honour the very invariant it asserts: restore the
+        # ORIGINAL environment value before the final reload, so the module is
+        # not left contradicting the environment pytest restores on teardown.
+        if original is None:
             monkeypatch.delenv("ENABLE_DOCS", raising=False)
         else:
-            monkeypatch.setenv("ENABLE_DOCS", pre_state)
+            monkeypatch.setenv("ENABLE_DOCS", original)
         importlib.reload(api_server)
-        expected = _docs_enabled_in_env()
-        assert api_server._ENABLE_DOCS is expected
-
-        # Run both docs tests against this pre-state.
-        test_docs_disabled_by_default(monkeypatch)
-        assert os.environ.get("ENABLE_DOCS") == pre_state
-        assert api_server._ENABLE_DOCS is expected, (
-            "docs-disabled test leaked module state"
-        )
-
-        test_docs_enabled_when_explicitly_opted_in(monkeypatch)
-        assert os.environ.get("ENABLE_DOCS") == pre_state
-        assert api_server._ENABLE_DOCS is expected, (
-            "docs-enabled test leaked module state"
-        )
-
-    monkeypatch.delenv("ENABLE_DOCS", raising=False)
-    importlib.reload(api_server)
 
 
 def test_chat_message_content_is_required():
