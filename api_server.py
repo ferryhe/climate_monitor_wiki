@@ -43,34 +43,62 @@ WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
 SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
 ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadata")
 
+# In production, disable Swagger/OpenAPI documentation to reduce attack surface.
+# These are development conveniences, not required for the public site.
+_ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").strip().lower() in {"1", "true", "yes"}
+
 app = FastAPI(
     title="Climate Monitor Wiki Agent",
     description="Agentic RAG API over the Climate Monitor Obsidian wiki.",
     version="0.1.0",
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
 )
+
+# CORS: the application is same-origin served. No cross-origin clients exist.
+# Wildcard origins are intentionally NOT used. If a legitimate cross-origin
+# client emerges, add its explicit origin rather than opening to all.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[],
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept", "X-Reload-Token"],
 )
 
 responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
 RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
 
+# --- Input validation constants ---
+MAX_MESSAGE_LENGTH = 8000          # Maximum characters per user message
+MAX_MESSAGES = 50                  # Maximum messages in history
+MAX_REQUEST_BYTES = 200 * 1024     # Maximum request body size (200 KB)
+
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
-    content: str
+    content: str = Field(default="", max_length=MAX_MESSAGE_LENGTH)
 
 
 class ChatRequest(BaseModel):
-    message: str | None = None
+    message: str | None = Field(default=None, max_length=MAX_MESSAGE_LENGTH)
     messages: list[ChatMessage] = Field(default_factory=list)
     context_path: str | None = Field(default=None, alias="contextPath")
     language: Literal["en"] = "en"
     answer_mode: Literal["brief", "detailed", "executive"] = Field(default="detailed", alias="answerMode")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Apply security headers to every response as defense-in-depth."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+    return response
 
 
 @app.get("/api/health")
@@ -83,9 +111,24 @@ def robots() -> str:
     return "User-agent: *\nDisallow: /\n"
 
 
+def _public_config() -> dict:
+    """Return a sanitized configuration for public consumption.
+
+    Removes internal-only fields:
+    - obsidian_plugin (contains localhost server URL)
+    - github_blob_base_url (internal repository path)
+    - retrieval_corpora (internal infrastructure detail)
+    """
+    full = responder.config()
+    # Remove fields that expose internal implementation details
+    for key in ("obsidian_plugin", "github_blob_base_url", "retrieval_corpora"):
+        full.pop(key, None)
+    return full
+
+
 @app.get("/api/config")
 def config() -> dict:
-    return responder.config()
+    return _public_config()
 
 
 @app.get("/api/update-status", response_model=None)
@@ -309,11 +352,18 @@ def reload_wiki(request: Request, x_reload_token: str | None = Header(default=No
         )
 
     responder.kb.reload()
-    return responder.config()
+    return _public_config()
 
 
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict:
+    # Enforce message count limit
+    if len(request.messages) > MAX_MESSAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many messages. Maximum is {MAX_MESSAGES}.",
+        )
+
     messages = [item.model_dump() for item in request.messages]
     question = (request.message or "").strip()
     if not question:
