@@ -23,3 +23,6 @@ climate_delivery_artifacts/
 !.obsidian/plugins/
 .obsidian/plugins/*
 !.obsidian/plugins/climate-agent-chat/
+
+# Local pre-change config backups
+Caddyfile.pre-hardening-*
