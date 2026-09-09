@@ -18,6 +18,13 @@
 (climate-wiki-site) {
 	encode gzip zstd
 
+	# Security headers applied to all responses.
+	header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+	header X-Content-Type-Options "nosniff"
+	header X-Frame-Options "DENY"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+	header Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
 	reverse_proxy wiki:8501 {
 		health_uri /api/config
 		health_interval 30s
