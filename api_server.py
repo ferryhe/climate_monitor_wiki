@@ -78,7 +78,10 @@ MAX_REQUEST_BYTES = 200 * 1024     # Maximum request body size (200 KB)
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
-    content: str = Field(default="", max_length=MAX_MESSAGE_LENGTH)
+    # `content` is required, as it was before the hardening pass. Only a
+    # maximum length is added here; do not give this a default, which would
+    # silently accept message objects with no content at all.
+    content: str = Field(max_length=MAX_MESSAGE_LENGTH)
 
 
 class ChatRequest(BaseModel):
