@@ -18,12 +18,21 @@
 (climate-wiki-site) {
 	encode gzip zstd
 
-	# Security headers applied to all responses.
-	header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
-	header X-Content-Type-Options "nosniff"
-	header X-Frame-Options "DENY"
-	header Referrer-Policy "strict-origin-when-cross-origin"
-	header Permissions-Policy "geolocation=(), microphone=(), camera=()"
+	# Security headers are set by the application (api_server.py). Caddy's
+	# `header` directive appends rather than replaces, so re-declaring them
+	# here emitted every header twice. Use `>` (set) so the proxy value
+	# replaces the upstream one, keeping exactly one copy of each.
+	header > Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+	header > X-Content-Type-Options "nosniff"
+	header > X-Frame-Options "DENY"
+	header > Referrer-Policy "strict-origin-when-cross-origin"
+	header > Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+	# Edge enforcement of the body cap. The application also checks a declared
+	# Content-Length, but that cannot see chunked bodies; Caddy can.
+	request_body {
+		max_size 200KB
+	}
 
 	reverse_proxy wiki:8501 {
 		health_uri /api/config
