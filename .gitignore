@@ -26,3 +26,6 @@ climate_delivery_artifacts/
 
 # Local pre-change config backups
 Caddyfile.pre-hardening-*
+
+# Runtime article-content cache (generated artifacts)
+data/.cache/

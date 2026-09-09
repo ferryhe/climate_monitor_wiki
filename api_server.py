@@ -90,6 +90,28 @@ class ChatRequest(BaseModel):
 
 
 @app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    """Reject oversized request bodies before they reach a route handler.
+
+    Pydantic already bounds individual chat fields, but without this an
+    unbounded body could still be buffered. Only a declared Content-Length is
+    checked here; chunked/streaming uploads are not used by this API.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
+        if declared > MAX_REQUEST_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Request body too large. Maximum is {MAX_REQUEST_BYTES} bytes."},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def security_headers(request: Request, call_next):
     """Apply security headers to every response as defense-in-depth."""
     response = await call_next(request)

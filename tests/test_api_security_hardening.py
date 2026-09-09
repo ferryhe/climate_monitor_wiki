@@ -4,7 +4,7 @@ Covers the behaviours introduced alongside the CORS / input-limit /
 config-sanitization / docs-disable changes in `api_server.py`.
 """
 
-from api_server import MAX_MESSAGE_LENGTH, MAX_MESSAGES, app
+from api_server import MAX_MESSAGE_LENGTH, MAX_MESSAGES, MAX_REQUEST_BYTES, app
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -63,6 +63,17 @@ def test_chat_accepts_normal_request():
     body = response.json()
     assert body["text"]
     assert body["agent_mode"] == "offline"
+
+
+def test_oversized_request_body_rejected():
+    oversized = b"x" * (MAX_REQUEST_BYTES + 1)
+    response = client.post(
+        "/api/chat",
+        content=oversized,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
 
 
 def test_reload_requires_token():
