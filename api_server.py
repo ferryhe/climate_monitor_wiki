@@ -115,13 +115,15 @@ def _public_config() -> dict:
     """Return a sanitized configuration for public consumption.
 
     Removes internal-only fields:
-    - obsidian_plugin (contains localhost server URL)
-    - github_blob_base_url (internal repository path)
-    - retrieval_corpora (internal infrastructure detail)
+    - obsidian_plugin (contains an internal localhost server URL)
+    - retrieval_corpora (internal corpus/infrastructure detail)
+
+    `github_blob_base_url` is intentionally retained: the repository is public
+    and the frontend's source links are built from it.
     """
     full = responder.config()
     # Remove fields that expose internal implementation details
-    for key in ("obsidian_plugin", "github_blob_base_url", "retrieval_corpora"):
+    for key in ("obsidian_plugin", "retrieval_corpora"):
         full.pop(key, None)
     return full
 

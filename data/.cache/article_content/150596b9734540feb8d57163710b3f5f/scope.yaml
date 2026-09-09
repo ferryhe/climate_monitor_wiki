@@ -1,0 +1,35 @@
+scope_fingerprint: "03648bd89b936c06cd68d7dbfde66dca0d073839bc40922bac03af1aa317fdfa"
+site_key: "iais"
+display_name: "iais"
+catalog: "climate-monitor-wiki"
+generated_at: "2026-09-09T17:31:50.346286+00:00"
+selection_review_status: "approved"
+selection_mode: "manual"
+business_goal: "Read the selected climate article"
+seed_url: "https://www.iais.org/climate-supervision-1"
+homepage_url: "https://www.iais.org/climate-supervision-1"
+fetch_mode: "http"
+fetch_config_json: {}
+tree_strategy: "selected_scope"
+tree_budget_profile: "selected_scope_default"
+file_scope_mode: "site_root"
+allowed_page_prefixes:
+  - "/climate-supervision-1"
+allowed_file_prefixes: []
+scope_id: null
+selected_focus_prefixes: []
+excluded_page_prefixes: []
+deferred_page_prefixes: []
+excluded_categories: []
+max_depth: 1
+max_pages: 1
+max_files: 1
+based_on:
+  acquisition_profile_id: "iais-catalog-http"
+  site_skill_version: "1.0.0"
+  site_skill_package_sha256: "8fddeb37b67509d3d9a7037a420da359a19ba16ca50cb9486901e805726ab8c1"
+  site_skill_recipe_id: "catalog-http"
+  site_skill_script_sha256: "3051b574fd36078709c31a323aedbeea914d7afd492ff7ebc365ea067b167eb2"
+  executor_version: "1.0.0"
+selection_summary: {}
+notes: []
