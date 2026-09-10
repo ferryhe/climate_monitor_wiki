@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import importlib
 import json
@@ -41,7 +42,13 @@ from climate_monitor.candidate_aggregation import (
 )
 from climate_monitor.article_content_adapter import (
     build_article_evidence_artifact,
+    validate_retained_article_evidence,
     write_article_evidence_artifact,
+)
+from climate_registry.acquisition import (
+    freeze_acquisition_for_report,
+    load_acquisition_batch,
+    store_acquisition_batch,
 )
 from climate_monitor.dedupe import canonical_url
 from climate_monitor.candidate_snapshot import (
@@ -130,6 +137,43 @@ def _enforce_production_paths(paths: list[Path], *, dry_run: bool) -> None:
     for path in paths:
         if _production_path_is_fixture(path):
             raise SystemExit(_PRODUCTION_FIXTURE_FORBIDDEN_REASON)
+
+
+def _store_restart_and_freeze_registry_acquisition(
+    *, database: str, input_path: str, batch_id: str, report_date: str,
+    manifest: dict | list[dict] | None = None, pillar_b: dict | None = None,
+) -> tuple[dict, dict]:
+    """Durably ingest, reopen, and freeze one exact pre-report batch."""
+    try:
+        path = Path(input_path).resolve(strict=True)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Registry acquisition input must be a JSON object")
+        if payload.get("batch_id") != batch_id:
+            raise ValueError("Registry acquisition input batch_id does not match the requested batch")
+        if payload.get("report_date") != report_date:
+            raise ValueError("Registry acquisition input report_date does not match the report")
+        completeness = None
+        if manifest is not None or pillar_b is not None:
+            if manifest is None or pillar_b is None:
+                raise ValueError("complete upstream acquisition manifest inputs must be paired")
+            completeness = _validate_registry_acquisition_completeness(
+                payload, manifest, pillar_b
+            )
+        stored = store_acquisition_batch(database, payload)
+        # These reads reopen SQLite and prove authoring uses durable state.
+        load_acquisition_batch(database, batch_id)
+        frozen = freeze_acquisition_for_report(database, batch_id, report_date=report_date)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Registry store-before-freeze failed: {exc}") from exc
+    identity = {
+        "input_path": str(path),
+        "input_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "store_summary": stored,
+    }
+    if completeness is not None:
+        identity["completeness"] = completeness
+    return frozen, identity
 
 
 def _enforce_production_env_fixture(env: os._Environ | dict) -> None:
@@ -224,13 +268,21 @@ def _validate_manifest(payload) -> None:
         raise SystemExit("web-listening manifest discovered_items must be a list")
 
 
-def _read_pillar_b(path: Path, *, report_date: str | None = None) -> list | dict:
+def _read_pillar_b(
+    path: Path, *, report_date: str | None = None, allow_incomplete: bool = False
+) -> list | dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if report_date is not None or isinstance(payload, dict):
         from climate_monitor.weekly_monitor.pillar_b_discovery import validate_discovery
         try:
-            entries = validate_discovery(payload, report_date=date.fromisoformat(
-                report_date if report_date is not None else payload.get("report_date", "")))
+            entries = validate_discovery(
+                payload,
+                report_date=date.fromisoformat(
+                    report_date if report_date is not None else payload.get("report_date", "")
+                ),
+                allow_incomplete=allow_incomplete,
+                retain_ineligible=allow_incomplete,
+            )
         except (ValueError, TypeError) as exc:
             raise SystemExit(str(exc)) from exc
     elif isinstance(payload, list):
@@ -264,6 +316,112 @@ def _canonical_bytes(payload: dict | list) -> bytes:
                        sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _registry_occurrence_key(
+    *, kind: object, discovery_ref: object, search_ref: object,
+    source: object, url: object,
+) -> tuple[str, str, str | None, str, str]:
+    if kind not in {"site", "search"}:
+        raise ValueError("complete upstream acquisition manifest has an invalid discovery kind")
+    if (not isinstance(discovery_ref, str) or not discovery_ref.strip()
+            or not isinstance(source, str) or not source.strip()
+            or not isinstance(url, str) or not url.strip()):
+        raise ValueError("complete upstream acquisition manifest has an invalid occurrence identity")
+    normalized = canonical_url(url)
+    if not normalized:
+        raise ValueError("complete upstream acquisition manifest has an invalid occurrence URL")
+    if search_ref is not None and (not isinstance(search_ref, str) or not search_ref.strip()):
+        raise ValueError("complete upstream acquisition manifest has an invalid search identity")
+    return str(kind), discovery_ref, search_ref, source, normalized
+
+
+def _expected_registry_occurrences(manifest: dict | list[dict], pillar_b: dict) -> Counter:
+    manifests = manifest if isinstance(manifest, list) else [manifest]
+    expected: Counter = Counter()
+    for export in manifests:
+        source_id = (export.get("source") or {}).get("source_id")
+        for item in export.get("discovered_items") or []:
+            if not isinstance(item, dict):
+                raise ValueError("complete upstream acquisition manifest contains a non-object site item")
+            item_id = item.get("item_id")
+            origins = item.get("origins") or [{"source": source_id}]
+            if not isinstance(origins, list) or not origins:
+                raise ValueError("complete upstream acquisition manifest has no site origin")
+            for index, origin in enumerate(origins):
+                if not isinstance(origin, dict):
+                    raise ValueError("complete upstream acquisition manifest has an invalid site origin")
+                ref = item_id if index == 0 else f"{item_id}#origin-{index + 1}"
+                expected[_registry_occurrence_key(
+                    kind="site", discovery_ref=ref, search_ref=None,
+                    source=origin.get("source") or source_id, url=item.get("url"),
+                )] += 1
+    for article in pillar_b.get("articles") or []:
+        expected[_registry_occurrence_key(
+            kind="search", discovery_ref=article.get("result_ref"),
+            search_ref=article.get("search_ref"), source=article.get("source"),
+            url=article.get("url"),
+        )] += 1
+    return expected
+
+
+def _validate_registry_acquisition_completeness(
+    payload: dict, manifest: dict | list[dict], pillar_b: dict,
+) -> dict:
+    """Bind every public discovery/search occurrence to one fetch observation."""
+    if not isinstance(payload, dict) or not isinstance(pillar_b, dict):
+        raise ValueError("complete upstream acquisition manifest requires object payloads")
+    if (payload.get("report_date") != pillar_b.get("report_date")
+            or payload.get("date_policy") != pillar_b.get("date_policy")
+            or payload.get("search_decision") != pillar_b.get("search_decision")
+            or payload.get("searches") != pillar_b.get("searches")):
+        raise ValueError(
+            "Registry input does not match the complete upstream acquisition manifest searches/date policy"
+        )
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError("complete upstream acquisition manifest requires Registry items")
+    actual: Counter = Counter()
+    observations: list[dict] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            raise ValueError("complete upstream acquisition manifest contains a non-object Registry item")
+        actual[_registry_occurrence_key(
+            kind=item.get("discovery_kind"), discovery_ref=item.get("discovery_ref"),
+            search_ref=item.get("discovery_search_ref"), source=item.get("source"),
+            url=item.get("url"),
+        )] += 1
+        evidence = item.get("evidence") or {}
+        observations.append({
+            "occurrence": list(_registry_occurrence_key(
+                kind=item.get("discovery_kind"), discovery_ref=item.get("discovery_ref"),
+                search_ref=item.get("discovery_search_ref"), source=item.get("source"),
+                url=item.get("url"),
+            )),
+            "selected": item.get("selected"),
+            "fetch_status": evidence.get("status"),
+            "material_status": evidence.get("classification"),
+            "processing_status": item.get("processing_status"),
+            "content_hash": evidence.get("content_hash"),
+        })
+    expected = _expected_registry_occurrences(manifest, pillar_b)
+    if actual != expected:
+        missing = list((expected - actual).elements())
+        extra = list((actual - expected).elements())
+        raise ValueError(
+            "Registry input does not match the complete upstream acquisition manifest "
+            f"(missing={len(missing)}, extra={len(extra)})"
+        )
+    identity = {
+        "schema_version": "registry-acquisition-completeness.v1",
+        "site_occurrence_count": sum(count for key, count in expected.items() if key[0] == "site"),
+        "search_occurrence_count": sum(count for key, count in expected.items() if key[0] == "search"),
+        "search_attempt_count": len(payload.get("searches") or []),
+        "fetch_processing_observation_count": len(observations),
+        "observations": sorted(observations, key=_canonical_bytes),
+    }
+    identity["manifest_sha256"] = _canonical_digest(identity)
+    return identity
+
+
 def _verify_same_run_identity(outcome: dict, manifest: dict) -> None:
     """Enforce that the public outcome and manifest come from the same upstream run.
 
@@ -291,7 +449,10 @@ def _verify_same_run_identity(outcome: dict, manifest: dict) -> None:
         raise SystemExit("cross-run source identity: scope seed differs")
 
 
-def _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path, *, report_date=None):
+def _read_prepare_inputs(
+    outcome_path, manifest_path, pillar_b_path, *, report_date=None,
+    allow_incomplete_pillar_b=False,
+):
     """Read-only validation shared by prepare and Hermes preflight."""
     outcomes = _read_outcomes(outcome_path)
     outcome = _aggregate_outcomes(outcomes)
@@ -300,7 +461,12 @@ def _read_prepare_inputs(outcome_path, manifest_path, pillar_b_path, *, report_d
         _verify_collection_identity(outcomes, manifest)
     else:
         _verify_same_run_identity(outcome, manifest)
-    pillar_b = _read_pillar_b(pillar_b_path, report_date=report_date)
+    pillar_b = _read_pillar_b(
+        pillar_b_path, report_date=report_date,
+        allow_incomplete=allow_incomplete_pillar_b,
+    )
+    if report_date is not None and not isinstance(pillar_b, dict):
+        raise SystemExit("production Pillar B input must use the v2 envelope")
     records = _attach_outcome_disposition(_collect_same_run_records(outcome, manifest), outcome)
     return outcome, manifest, pillar_b, records, _derive_stats(records, outcome)
 
@@ -529,6 +695,7 @@ def _select_authoring_candidates(args, report_date, outcome_path, manifest_path,
         pillar_b_artifact_sha256=hashlib.sha256(pillar_b_path.read_bytes()).hexdigest(),
         pillar_b_discovered_at=f"{report_date.isoformat()}T00:00:00Z",
         seen_urls=seen - same_date_urls, carry_forward_candidates=carried,
+        pillar_b_allow_incomplete=bool(args.registry_database),
     )
     items = items_from_merged_candidates_with_carry(
         combined.candidates, carry_forward_candidates=carried,
@@ -552,7 +719,10 @@ def _verify_candidate_selection(args, bundle):
         return
     paths = [Path(bundle["public_artifacts"][key]["path"]) for key in
              ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact")]
-    outcome, manifest, pillar_b, records, _ = _read_prepare_inputs(*paths, report_date=bundle["report_date"])
+    outcome, manifest, pillar_b, records, _ = _read_prepare_inputs(
+        *paths, report_date=bundle["report_date"],
+        allow_incomplete_pillar_b=bool(args.registry_database),
+    )
     _, _, current = _select_authoring_candidates(
         args, date.fromisoformat(bundle["report_date"]), *paths,
         outcome, manifest, pillar_b, records)
@@ -573,7 +743,11 @@ def _run_prepare(args, parser) -> int:
         dry_run=dry_run,
     )
     outcome, manifest, pillar_b, records, stats = _read_prepare_inputs(
-        outcome_path, manifest_path, pillar_b_path, report_date=args.report_date)
+        outcome_path, manifest_path, pillar_b_path, report_date=args.report_date,
+        allow_incomplete_pillar_b=bool(args.registry_database),
+    )
+    if not isinstance(pillar_b, dict):
+        raise SystemExit("production Pillar B input must use the v2 envelope")
     staging_dir.mkdir(parents=True, exist_ok=True)
     import yaml
     config = yaml.safe_load(Path(args.run_config).read_text(encoding="utf-8")) or {}
@@ -599,10 +773,44 @@ def _run_prepare(args, parser) -> int:
     combined, snapshot_items, history_selection = _select_authoring_candidates(
         args, report_date, outcome_path, manifest_path, pillar_b_path,
         outcome, manifest, pillar_b, records)
-    evidence_payload = _build_evidence_payload(
-        records, combined.candidates, data_root=data_root,
-        providers=_parse_loopback_provider(args.article_evidence_loopback),
-        report_date=args.report_date, page_titles=not args.no_page_titles)
+    registry_identity = None
+    if args.registry_database:
+        try:
+            evidence_payload, ingestion_identity = _store_restart_and_freeze_registry_acquisition(
+                database=args.registry_database,
+                input_path=args.registry_acquisition_input,
+                batch_id=args.registry_acquisition_batch_id,
+                report_date=report_date.isoformat(),
+                manifest=manifest,
+                pillar_b=pillar_b,
+            )
+            expected_urls = {canonical_url(candidate.canonical_url) for candidate in combined.candidates}
+            actual_urls = {canonical_url(record["requested_url"])
+                           for record in evidence_payload["records"]}
+            if expected_urls != actual_urls:
+                raise ValueError(
+                    "Registry acquisition selection does not match the frozen candidate set"
+                )
+            validate_retained_article_evidence(
+                evidence_payload,
+                report_date=report_date.isoformat(),
+                urls=expected_urls,
+            )
+            registry_identity = {
+                "database": str(Path(args.registry_database).resolve()),
+                "batch_id": args.registry_acquisition_batch_id,
+                "content_version_ids": sorted(
+                    record["content_version_id"] for record in evidence_payload["records"]
+                ),
+                "ingestion": ingestion_identity,
+            }
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"Registry acquisition handoff failed: {exc}") from exc
+    else:
+        evidence_payload = _build_evidence_payload(
+            records, combined.candidates, data_root=data_root,
+            providers=_parse_loopback_provider(args.article_evidence_loopback),
+            report_date=args.report_date, page_titles=not args.no_page_titles)
     combined_bytes = serialize_combined_candidates(combined.artifact)
 
     # Per Issue #87 spec: prepare writes ONLY to the staging dir; the
@@ -677,6 +885,9 @@ def _run_prepare(args, parser) -> int:
         "history_selection": history_selection,
         "request_sha256": request["request_sha256"],
     }
+    if registry_identity is not None:
+        bundle_payload["registry_acquisition"] = registry_identity
+        bundle_payload["staging_digest_inputs"].append("registry_acquisition")
     digest_inputs: dict[str, bytes] = {
         "combined": combined_bytes,
         "snapshot": snapshot_path.read_bytes(),
@@ -686,6 +897,8 @@ def _run_prepare(args, parser) -> int:
         "identity": _canonical_bytes(bundle_payload["public_artifacts"]),
         "history": _canonical_bytes(history_selection),
     }
+    if registry_identity is not None:
+        digest_inputs["registry_acquisition"] = _canonical_bytes(registry_identity)
     digest = hashlib.sha256(
         b"".join(digest_inputs[key] for key in sorted(digest_inputs))
     ).hexdigest()
@@ -760,6 +973,8 @@ def _verify_staging_digest(staging_dir: Path, bundle: dict) -> None:
             data = _canonical_bytes(bundle.get("public_artifacts") or {})
         elif key == "history":
             data = _canonical_bytes(bundle.get("history_selection") or {})
+        elif key == "registry_acquisition":
+            data = _canonical_bytes(bundle.get("registry_acquisition") or {})
         else:
             raise SystemExit(f"unknown staging digest input: {key!r}")
         parts.append(data)
@@ -1269,6 +1484,18 @@ def main() -> None:
     parser.add_argument("--acquisition-batch", default="",
                         help="Path to the public acquisition-batch-result.v2 artifact "
                              "emitted by the upstream #67 producer.")
+    parser.add_argument(
+        "--registry-database", default="",
+        help="Registry SQLite database containing a completed pre-report acquisition batch.",
+    )
+    parser.add_argument(
+        "--registry-acquisition-batch-id", default="",
+        help="Exact immutable Registry acquisition batch to freeze for report evidence.",
+    )
+    parser.add_argument(
+        "--registry-acquisition-input", default="",
+        help="Complete pre-report-acquisition-batch.v1 JSON to store durably before freeze.",
+    )
     parser.add_argument("--web-listening-manifest", default="",
                         help="Path to the public web-listening-manifest.v1 artifact "
                              "emitted by the upstream #67 producer.")
@@ -1332,6 +1559,13 @@ def main() -> None:
 
     if args.authoring_mode and not args.production_weekly:
         parser.error("--authoring-mode requires --production-weekly")
+    registry_values = (args.registry_database, args.registry_acquisition_batch_id,
+                       args.registry_acquisition_input)
+    if any(registry_values) and not all(registry_values):
+        parser.error("--registry-database, --registry-acquisition-batch-id, and "
+                     "--registry-acquisition-input must be supplied together")
+    if args.registry_database and args.authoring_mode not in {"prepare", "run"}:
+        parser.error("Registry acquisition handoff is only valid for prepare/run")
     if args.authoring_mode and args.article_evidence:
         parser.error("--authoring-mode supersedes --article-evidence / --stats; "
                      "the staging bundle carries the canonical evidence and stats")
@@ -1374,6 +1608,11 @@ def main() -> None:
     _enforce_production_env_fixture(os.environ)
 
     fixture_root = _outcome_fixture_root()
+    if (args.authoring_mode in {"prepare", "run"} and fixture_root is None
+            and not all(registry_values)):
+        parser.error("production prepare/run requires the Registry store-before-freeze "
+                     "arguments: --registry-database, --registry-acquisition-batch-id, "
+                     "--registry-acquisition-input")
     if fixture_root is not None:
         if (args.authoring_mode not in {"prepare", "finalize"} or not args.no_sync
                 or args.article_evidence_loopback != "scripts.hermes_job:dry_run_unavailable_provider"):

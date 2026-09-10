@@ -9,10 +9,15 @@ reviewed publication and deployment.
 
 ## Boundaries
 
-`climate_registry.contract` validates exact read contracts for schemas 3, 4, 5
-and 6 and reports the actual version. New migrations/candidates target v6.
+`climate_registry.contract` validates exact read contracts for schemas 3 through
+8 and reports the actual version. New migrations/candidates target v8.
 Schema v4 introduced validated fallback resolutions; v5 added article semantic
-storage, and v6 added its report binding and relational constraints. Older
+storage, v6 added its report binding and relational constraints, and v7 added
+durable pre-report acquisition batches. Migration v8 adds
+`acquisition_items.resolved_by_fetch_id` plus the trigger and index that ensure a
+failed fetch observation can be resolved only by a successful fetch for the same
+article. Acquisition writes require exactly schema 8; a v7 database is rejected
+with an instruction to migrate instead of failing later at SQL execution. Earlier
 supported snapshots remain read-only compatibility inputs; readers never migrate
 them implicitly.
 
@@ -97,7 +102,7 @@ The update contract is append-only:
 ## Read-only candidate planning and Publisher gate
 
 `plan-selection` evaluates a bounded producer candidate document against an
-exact, synchronized supported Registry snapshot (v3, v4, v5 or v6):
+exact, synchronized supported Registry snapshot (v3 through v8):
 
 ```bash
 python -m climate_registry plan-selection \
@@ -285,6 +290,67 @@ validation checks those triggers, critical foreign-key ownership, and the table
 and column order of the required history-query indexes. It also rejects an
 article whose current body pointer belongs to a different article, even if a
 writer bypassed the normal update trigger.
+
+Migration 7 adds immutable, report-independent pre-authoring acquisition data:
+
+- `acquisition_batches` binds one `report_date` to the startup-frozen date-policy
+  anchor and distinguishes attempted search from justified `no_search`;
+- `acquisition_searches` stores each true attempt, its batch-unique `search_ref`,
+  engine, status/error, result references, and budget;
+- `acquisition_items` binds search discoveries through `search_id` plus the
+  returned result reference, retains deterministic merged origin JSON, exact
+  article/content/fetch IDs, selection and processing states, and distinct
+  managed `content_ref` and raw-snapshot reference/hash provenance.
+
+The Python acquisition API is `store_acquisition_batch`,
+`load_acquisition_batch`, and `freeze_acquisition_for_report`. A v1 batch must
+include `report_date`, resolved `date_policy`, search decision/attempts, and all
+items. `selected` is an explicit JSON boolean and cannot be omitted or coerced.
+Every real fetch stores at least one structured attempt with a non-empty `engine`
+or `tool`, a known status, and valid optional timestamp/HTTP/error details; only
+explicit `unavailable` or `deferred` observations may use an empty attempt list.
+Search attempts require a timezone-qualified RFC 3339 timestamp, unique trimmed
+result references, and a non-empty integer budget map. Search items include
+`discovery_search_ref`; site items set it to null and use the public manifest
+`item_id` as `discovery_ref` (`item_id#origin-N` for additional origins on one
+manifest item). Successful full-content evidence requires separate managed
+content and raw-snapshot references plus the raw hash.
+Same URL/body observations merge while retaining origins; conflicting selected
+bodies fail closed. If one origin fails and another origin succeeds for the same
+canonical URL, the successful exact body wins, failed attempts remain in history,
+and the failed origin is marked `resolved_by_success`. Pending/failed processing,
+snippets, failed fetches without such a successful fallback, or failed searches
+require `completed_at: null` and block normal report freeze.
+`allow_unresolved=True` is diagnostic only.
+
+Operators migrate an existing Registry with the normal `plan-update` then
+`update` commands above. Acquisition writers require the database argument to be
+an absolute canonical regular-file path and share the update replacement lock;
+do not write through symlinks or bypass the `.lock` file. Normal production
+`prepare`/`run` requires all three arguments:
+
+```bash
+--registry-database /external/path/article-registry.sqlite3 \
+--registry-acquisition-batch-id "$BATCH_ID" \
+--registry-acquisition-input /external/path/pre-report-acquisition-batch.v1.json
+```
+
+The driver validates the input batch/date identity and compares a complete
+occurrence manifest against the same-run public web-listening and Pillar B
+artifacts before the first write. Every site `item_id`/origin, search result,
+search attempt (including failures), and Registry fetch/processing observation
+is counted and hashed into `registry-acquisition-completeness.v1`; missing,
+extra, duplicated, or substituted occurrences fail closed. It then stores the
+complete batch, reopens it from SQLite, and only then freezes exact selected
+content versions for authoring. A failed Pillar B search is intentionally read
+through this storage phase, persisted with `completed_at: null`, and rejected by
+freeze before any authoring request is staged. `publication_date`, its evidence,
+`date_status`, and `update_status` are identity-bound into the authoring request
+and rendered in the weekly Markdown (unknown publication dates remain explicitly
+unknown rather than falling back to discovery time); all selected and unselected
+(including `unchanged`) dispositions remain in `acquisition_dispositions`.
+A different report date requires a new immutable/reselected batch; an existing
+batch is never rebound. The isolated dry-run fixture seam remains Registry-free.
 
 Migration 3 is populated by the separately invoked capture/enrichment command:
 

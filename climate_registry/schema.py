@@ -489,6 +489,146 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         DROP TABLE article_semantics_v5;
         """,
     ),
+    (
+        7,
+        "pre_report_acquisition_batches",
+        """
+        CREATE TABLE acquisition_batches (
+            batch_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL CHECK (schema_version = 'pre-report-acquisition-batch.v1'),
+            report_date TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            date_policy_json TEXT NOT NULL,
+            search_decision TEXT NOT NULL CHECK (search_decision IN ('attempted', 'no_search')),
+            no_search_reason TEXT,
+            payload_sha256 TEXT NOT NULL CHECK (
+                length(payload_sha256) = 64 AND payload_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            frozen_at TEXT,
+            CHECK ((search_decision = 'no_search' AND length(trim(no_search_reason)) > 0)
+                OR (search_decision = 'attempted' AND no_search_reason IS NULL))
+        );
+
+        CREATE TABLE acquisition_searches (
+            search_id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES acquisition_batches(batch_id),
+            ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+            search_ref TEXT NOT NULL CHECK (length(trim(search_ref)) > 0),
+            query TEXT NOT NULL CHECK (length(trim(query)) > 0),
+            engine TEXT NOT NULL CHECK (length(trim(engine)) > 0),
+            status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+            attempted_at TEXT NOT NULL,
+            result_refs_json TEXT NOT NULL,
+            budget_json TEXT NOT NULL,
+            error_message TEXT,
+            CHECK ((status = 'success' AND error_message IS NULL)
+                OR (status = 'failed' AND length(trim(error_message)) > 0)),
+            UNIQUE (batch_id, ordinal),
+            UNIQUE (batch_id, search_ref)
+        );
+
+        CREATE TABLE acquisition_items (
+            acquisition_item_id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES acquisition_batches(batch_id),
+            ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+            article_id TEXT NOT NULL REFERENCES articles(article_id),
+            raw_url TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            discovered_at TEXT NOT NULL,
+            discovery_kind TEXT NOT NULL CHECK (discovery_kind IN ('site', 'search')),
+            discovery_ref TEXT NOT NULL,
+            origins_json TEXT NOT NULL,
+            search_id TEXT REFERENCES acquisition_searches(search_id),
+            publication_date TEXT,
+            publication_date_evidence_json TEXT,
+            date_status TEXT NOT NULL CHECK (date_status IN ('eligible', 'outside_window', 'unknown_pending_review')),
+            selection_status TEXT NOT NULL CHECK (selection_status IN ('selected', 'unselected')),
+            selection_reason TEXT NOT NULL,
+            update_status TEXT NOT NULL CHECK (update_status IN ('baseline', 'content_changed', 'unchanged', 'failed')),
+            material_status TEXT NOT NULL CHECK (material_status IN ('full_content', 'snippet', 'error')),
+            fetch_id TEXT NOT NULL UNIQUE REFERENCES article_fetches(fetch_id),
+            content_version_id TEXT REFERENCES article_content_versions(content_version_id),
+            content_ref TEXT,
+            raw_snapshot_ref TEXT,
+            raw_snapshot_sha256 TEXT,
+            attempts_json TEXT NOT NULL,
+            processing_status TEXT NOT NULL CHECK (processing_status IN ('pending', 'complete', 'failed')),
+            processing_error TEXT,
+            FOREIGN KEY (article_id, content_version_id)
+                REFERENCES article_content_versions(article_id, content_version_id),
+            UNIQUE (batch_id, ordinal)
+        );
+
+        CREATE TRIGGER acquisition_batches_are_append_only_update
+        BEFORE UPDATE ON acquisition_batches BEGIN
+            SELECT RAISE(ABORT, 'acquisition batches are append-only');
+        END;
+        CREATE TRIGGER acquisition_batches_are_append_only_delete
+        BEFORE DELETE ON acquisition_batches BEGIN
+            SELECT RAISE(ABORT, 'acquisition batches are append-only');
+        END;
+        CREATE TRIGGER acquisition_searches_are_append_only_update
+        BEFORE UPDATE ON acquisition_searches BEGIN
+            SELECT RAISE(ABORT, 'acquisition searches are append-only');
+        END;
+        CREATE TRIGGER acquisition_searches_are_append_only_delete
+        BEFORE DELETE ON acquisition_searches BEGIN
+            SELECT RAISE(ABORT, 'acquisition searches are append-only');
+        END;
+        CREATE TRIGGER acquisition_items_are_append_only_update
+        BEFORE UPDATE ON acquisition_items BEGIN
+            SELECT RAISE(ABORT, 'acquisition items are append-only');
+        END;
+        CREATE TRIGGER acquisition_items_are_append_only_delete
+        BEFORE DELETE ON acquisition_items BEGIN
+            SELECT RAISE(ABORT, 'acquisition items are append-only');
+        END;
+
+        CREATE INDEX idx_acquisition_searches_batch_status
+            ON acquisition_searches(batch_id, status, ordinal);
+        CREATE INDEX idx_acquisition_items_batch_selection
+            ON acquisition_items(batch_id, selection_status, ordinal);
+        CREATE INDEX idx_acquisition_items_article_discovered
+            ON acquisition_items(article_id, discovered_at DESC);
+        CREATE INDEX idx_acquisition_items_content_version
+            ON acquisition_items(content_version_id);
+        """,
+    ),
+    (
+        8,
+        "resolved_acquisition_fetch_observations",
+        """
+        ALTER TABLE acquisition_items ADD COLUMN resolved_by_fetch_id TEXT
+            REFERENCES article_fetches(fetch_id);
+
+        CREATE TRIGGER acquisition_item_resolution_is_valid_insert
+        BEFORE INSERT ON acquisition_items
+        WHEN NEW.resolved_by_fetch_id IS NOT NULL
+             AND (
+                 NOT EXISTS (
+                     SELECT 1 FROM article_fetches own
+                     WHERE own.fetch_id = NEW.fetch_id
+                       AND own.article_id = NEW.article_id
+                       AND own.fetch_status = 'failed'
+                 )
+                 OR NOT EXISTS (
+                     SELECT 1 FROM article_fetches resolution
+                     WHERE resolution.fetch_id = NEW.resolved_by_fetch_id
+                       AND resolution.article_id = NEW.article_id
+                       AND resolution.fetch_status = 'success'
+                 )
+             )
+        BEGIN
+            SELECT RAISE(ABORT, 'acquisition resolution must link failed and successful fetches for one article');
+        END;
+
+        CREATE INDEX idx_acquisition_items_resolution
+            ON acquisition_items(resolved_by_fetch_id);
+        """,
+    ),
 )
 
 

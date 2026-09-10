@@ -8,9 +8,6 @@ missing_url_notes:
   - abbreviation: FAO
     full_name: Food and Agriculture Organization of the United Nations
     note: Missing website link in source spreadsheet.
-  - abbreviation: UN Water
-    full_name: UN-Water
-    note: Missing website link in source spreadsheet.
 sources:
   - key: iais
     abbreviation: IAIS
@@ -216,3 +213,15 @@ sources:
     url: https://www.wto.org/
     high_priority: false
     tags: [trade]
+  - key: unwater
+    abbreviation: UN-Water
+    full_name: United Nations Water
+    url: https://www.unwater.org/
+    high_priority: false
+    tags: [water, climate, resilience]
+  - key: carbonpool
+    abbreviation: CarbonPool
+    full_name: CarbonPool
+    url: https://www.carbonpool.earth/
+    high_priority: false
+    tags: [insurance, carbon-markets, climate]

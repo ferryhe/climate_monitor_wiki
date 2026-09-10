@@ -96,14 +96,27 @@ def _render_item(index: int, item: Any, *, weekly: bool = False) -> str:
     category_text = ", ".join(categories)
     keyword_text = ", ".join(keywords)
     if weekly:
-        return "\n".join([
+        weekly_published = str(_item_value(item, "published") or "Unknown")
+        date_status = str(_item_value(item, "acquisition_date_status") or "")
+        update_status = str(_item_value(item, "acquisition_update_status") or "")
+        lines = [
             f"- **{title}**",
             f"  - **Categories:** {category_text}",
             f"  - {_item_value(item, 'summary')}",
             f"  - **Keywords:** {keyword_text}",
             f"  🔗 {_item_value(item, 'url')}",
-            "",
-        ])
+            f"  - **Published:** {weekly_published}",
+        ]
+        if date_status:
+            lines.append(f"  - **Publication date:** {date_status}")
+        if update_status:
+            lines.append(f"  - **Acquisition update:** {update_status}")
+        if not _item_value(item, "published") and date_status == "unknown_pending_review":
+            lines.append(
+                "  - **Date note:** Publication date unknown; discovery time is not a publication date."
+            )
+        lines.append("")
+        return "\n".join(lines)
     actuarial = "Yes" if bool(_item_value(item, "actuarial_related", False)) else "No"
     relevance_reason = str(_item_value(item, "relevance_reason", "") or "Matched monitor criteria.")
     evidence_snippet = str(_item_value(item, "evidence_snippet", "") or "")
@@ -130,6 +143,11 @@ def _render_item(index: int, item: Any, *, weekly: bool = False) -> str:
             f"**Evidence:** {evidence_snippet} <br>",
         ]
     )
+    update_status = str(_item_value(item, "acquisition_update_status") or "")
+    if update_status:
+        lines.append(f"**Acquisition update:** {update_status} <br>")
+    if not _item_value(item, "published") and _item_value(item, "detected_at"):
+        lines.append("**Date note:** Publication date unknown; displaying discovery time. <br>")
     lines.extend(_document_metadata_lines(item))
     lines.extend(
         [

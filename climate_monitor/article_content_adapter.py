@@ -96,7 +96,84 @@ ARTICLE_EVIDENCE_SCHEMA: dict[str, Any] = {
                     "summary_basis": {"type": ["string", "null"]},
                     "failure_reason": {"type": ["string", "null"]},
                     "record_hash": {"type": "string"},
+                    # Registry-backed evidence extends the compatible v1
+                    # record with identity-bound acquisition semantics.
+                    "content": {"type": ["string", "null"]},
+                    "content_version_id": {"type": "string"},
+                    "title": {"type": ["string", "null"]},
+                    # Origin payloads predate the registry extension and have
+                    # multiple producer-owned shapes. Keep those legacy shapes
+                    # compatible while explicitly declaring the record field.
+                    "origins": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                    "acquisition": {
+                        "type": "object",
+                        "required": [
+                            "discovered_at", "publication_date",
+                            "publication_date_evidence", "date_status",
+                            "update_status",
+                        ],
+                        "properties": {
+                            "discovered_at": {"type": "string"},
+                            "publication_date": {"type": ["string", "null"]},
+                            "publication_date_evidence": {
+                                "type": ["object", "null"]
+                            },
+                            "date_status": {
+                                "enum": [
+                                    "eligible", "outside_window",
+                                    "unknown_pending_review",
+                                ]
+                            },
+                            "update_status": {
+                                "enum": [
+                                    "baseline", "content_changed", "unchanged",
+                                    "failed",
+                                ]
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                    "extra": {"type": "object"},
                 },
+            },
+        },
+        "acquisition_dispositions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "requested_url", "canonical_url", "discovered_at",
+                    "publication_date", "publication_date_evidence",
+                    "date_status", "update_status", "selection_status",
+                    "material_status", "resolved_by_fetch_id",
+                ],
+                "properties": {
+                    "requested_url": {"type": "string"},
+                    "canonical_url": {"type": "string"},
+                    "discovered_at": {"type": "string"},
+                    "publication_date": {"type": ["string", "null"]},
+                    "publication_date_evidence": {"type": ["object", "null"]},
+                    "date_status": {
+                        "enum": [
+                            "eligible", "outside_window",
+                            "unknown_pending_review",
+                        ]
+                    },
+                    "update_status": {
+                        "enum": [
+                            "baseline", "content_changed", "unchanged", "failed",
+                        ]
+                    },
+                    "selection_status": {"enum": ["selected", "unselected"]},
+                    "resolved_by_fetch_id": {"type": ["string", "null"]},
+                    "material_status": {
+                        "enum": ["full_content", "snippet", "error"]
+                    },
+                },
+                "additionalProperties": False,
             },
         },
         "artifact_digest": {"type": "string"},

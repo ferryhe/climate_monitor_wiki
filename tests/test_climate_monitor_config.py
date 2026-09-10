@@ -104,22 +104,24 @@ def test_load_sources_registry_contains_excel_url_rows_and_missing_url_notes():
     payload = yaml.safe_load(Path(registry_path).read_text(encoding="utf-8"))
     sources = load_sources(registry_path)
 
-    assert len(sources) == 34
-    assert len(payload["missing_url_notes"]) == 3
+    assert len(sources) == 36
+    assert len(payload["missing_url_notes"]) == 2
     assert {note["abbreviation"] for note in payload["missing_url_notes"]} == {
         "A2ii",
         "FAO",
-        "UN Water",
+
     }
     assert all(source.url.startswith(("https://", "http://")) for source in sources)
-    assert {source.key for source in sources} >= {"iais", "iea", "ipcc", "wto"}
+    assert {source.key for source in sources} >= {
+        "iais", "iea", "ipcc", "wto", "unwater", "carbonpool"
+    }
 
 
 def test_site_scopes_registry_covers_every_url_bearing_source():
     source_keys = {source.key for source in load_sources("monitoring/supranational_sources.yaml")}
     scopes = load_site_scopes("monitoring/site_scopes.yaml")
 
-    assert len(scopes) == 34
+    assert len(scopes) == 36
     assert {scope.source_key for scope in scopes} == source_keys
 
 

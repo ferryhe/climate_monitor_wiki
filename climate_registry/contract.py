@@ -68,6 +68,22 @@ REQUIRED_TABLE_COLUMNS = {
         "categories_json", "keywords_json", "taxonomy_id", "taxonomy_raw_sha256",
         "bundle_sha256", "validated_at",
     },
+    "acquisition_batches": {
+        "batch_id", "schema_version", "report_date", "started_at", "completed_at", "date_policy_json",
+        "search_decision", "no_search_reason", "payload_sha256", "frozen_at",
+    },
+    "acquisition_searches": {
+        "search_id", "batch_id", "ordinal", "search_ref", "query", "engine", "status", "attempted_at",
+        "result_refs_json", "budget_json", "error_message",
+    },
+    "acquisition_items": {
+        "acquisition_item_id", "batch_id", "ordinal", "article_id", "raw_url",
+        "source_name", "title", "summary", "discovered_at", "discovery_kind",
+        "discovery_ref", "origins_json", "search_id", "publication_date", "publication_date_evidence_json", "date_status",
+        "selection_status", "selection_reason", "update_status", "material_status", "fetch_id",
+        "content_version_id", "content_ref", "raw_snapshot_ref", "raw_snapshot_sha256", "attempts_json",
+        "processing_status", "processing_error", "resolved_by_fetch_id",
+    },
 }
 
 # Tables introduced per migration. The contract is validated per deployed
@@ -75,13 +91,15 @@ REQUIRED_TABLE_COLUMNS = {
 # newer database is never rejected for carrying one.
 _V4_TABLES = frozenset({"article_capture_resolutions"})
 _V5_TABLES = frozenset({"article_semantics"})
+_V7_TABLES = frozenset({"acquisition_batches", "acquisition_searches", "acquisition_items"})
 
-V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES
-V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES
-V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES
+V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES
+V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES
 V6_TABLES = V5_TABLES
+V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -91,13 +109,17 @@ def _required_tables(version: int) -> frozenset[str]:
         return V4_TABLES
     if version == 5:
         return V5_TABLES
-    return V6_TABLES
+    if version == 6:
+        return V6_TABLES
+    return V7_TABLES
 
 
 def _required_columns(table: str, version: int) -> set[str]:
     columns = set(REQUIRED_TABLE_COLUMNS[table])
     if table == "article_semantics" and version == 5:
         columns.remove("report_id")
+    if table == "acquisition_items" and version < 8:
+        columns.remove("resolved_by_fetch_id")
     return columns
 
 REQUIRED_FOREIGN_KEYS = {
@@ -148,6 +170,19 @@ REQUIRED_FOREIGN_KEYS = {
         ("reports", ("report_id", "report_sha256"), ("report_id", "report_sha256")),
         ("report_appearances", ("report_id", "article_id"), ("report_id", "article_id")),
     },
+    "acquisition_searches": {
+        ("acquisition_batches", ("batch_id",), ("batch_id",)),
+    },
+    "acquisition_items": {
+        ("acquisition_batches", ("batch_id",), ("batch_id",)),
+        ("acquisition_searches", ("search_id",), ("search_id",)),
+        ("articles", ("article_id",), ("article_id",)),
+        ("article_fetches", ("fetch_id",), ("fetch_id",)),
+        ("article_fetches", ("resolved_by_fetch_id",), ("fetch_id",)),
+        ("article_content_versions", ("content_version_id",), ("content_version_id",)),
+        ("article_content_versions", ("article_id", "content_version_id"),
+         ("article_id", "content_version_id")),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -164,6 +199,13 @@ REQUIRED_TRIGGERS = frozenset(
         "article_capture_resolutions_validate_insert",
         "article_capture_resolutions_are_append_only_update",
         "article_capture_resolutions_are_append_only_delete",
+        "acquisition_batches_are_append_only_update",
+        "acquisition_batches_are_append_only_delete",
+        "acquisition_searches_are_append_only_update",
+        "acquisition_searches_are_append_only_delete",
+        "acquisition_items_are_append_only_update",
+        "acquisition_items_are_append_only_delete",
+        "acquisition_item_resolution_is_valid_insert",
     }
 )
 
@@ -179,6 +221,11 @@ REQUIRED_INDEXES = frozenset(
         "idx_capture_resolutions_report_article",
         "idx_capture_resolutions_fetch",
         "idx_reports_id_sha256",
+        "idx_acquisition_searches_batch_status",
+        "idx_acquisition_items_batch_selection",
+        "idx_acquisition_items_article_discovered",
+        "idx_acquisition_items_content_version",
+        "idx_acquisition_items_resolution",
     }
 )
 
@@ -269,16 +316,25 @@ GOLDEN_CONTRACTS = {
 
 
 def _required_triggers(version: int) -> frozenset[str]:
+    names = REQUIRED_TRIGGERS
+    if version < 8:
+        names = names - {"acquisition_item_resolution_is_valid_insert"}
+    if version < 7:
+        names = frozenset(name for name in names if not name.startswith("acquisition_"))
     if version == 3:
-        return frozenset(
-            name for name in REQUIRED_TRIGGERS
+        names = frozenset(
+            name for name in names
             if not name.startswith("article_capture_resolutions_")
         )
-    return REQUIRED_TRIGGERS
+    return names
 
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version < 8:
+        names = names - {"idx_acquisition_items_resolution"}
+    if version < 7:
+        names = frozenset(name for name in names if not name.startswith("idx_acquisition_"))
     if version < 6:
         names = frozenset(name for name in names if name != "idx_reports_id_sha256")
     if version == 3:
@@ -294,6 +350,8 @@ def _required_foreign_keys(
     keys = set(REQUIRED_FOREIGN_KEYS.get(table, set()))
     if table == "article_semantics" and version < 6:
         keys.clear()
+    if table == "acquisition_items" and version < 8:
+        keys.discard(("article_fetches", ("resolved_by_fetch_id",), ("fetch_id",)))
     return keys
 
 

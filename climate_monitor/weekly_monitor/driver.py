@@ -236,6 +236,10 @@ def _candidate_items_from_evidence(
             source_name="",
             lane=lane,
             content_hash=str(record.get("content_hash") or ""),
+            published=str((record.get("acquisition") or {}).get("publication_date") or ""),
+            detected_at=str((record.get("acquisition") or {}).get("discovered_at") or ""),
+            acquisition_date_status=str((record.get("acquisition") or {}).get("date_status") or ""),
+            acquisition_update_status=str((record.get("acquisition") or {}).get("update_status") or ""),
         )
         shells.append(shell)
     return tuple(shells)
