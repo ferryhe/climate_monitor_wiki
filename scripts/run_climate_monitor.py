@@ -62,6 +62,11 @@ from climate_monitor.models import CandidateItem, MonitorRunResult
 from climate_monitor.seen_state import _write_atomic, pending_seen_url_delta_path
 
 
+PREPARE_BUNDLE_SCHEMA = "climate-monitor-prepare-bundle.v2"
+LEGACY_PREPARE_BUNDLE_SCHEMA = "climate-monitor-prepare-bundle.v1"
+AUTHORING_PROMPT_NAMES = ("article_summary", "relevance", "executive_summary")
+
+
 def _bound_taxonomy(binding: dict) -> ArticleTaxonomy:
     """Resolve and validate the taxonomy reference frozen into a binding."""
     reference = (binding.get("definition") or {}).get("taxonomy") or {}
@@ -1004,7 +1009,7 @@ def _run_prepare(args, parser) -> int:
 
     taxonomy = task_taxonomy or load_article_taxonomy()
     bundle_payload = {
-        "schema_version": "climate-monitor-prepare-bundle.v1",
+        "schema_version": PREPARE_BUNDLE_SCHEMA,
         "report_date": report_date.isoformat(),
         "staging_digest_inputs": [
             "combined", "snapshot", "evidence", "stats", "request", "identity", "history",
@@ -1105,6 +1110,27 @@ def _run_prepare(args, parser) -> int:
         print(f"Prepare: stats {stats}")
 
 
+def _validate_frozen_authoring_prompts(bundle: Mapping[str, object]) -> None:
+    prompts = bundle.get("authoring_prompts")
+    if not isinstance(prompts, Mapping):
+        raise SystemExit("staging bundle lacks frozen authoring prompts; use fresh prepare")
+    for name in AUTHORING_PROMPT_NAMES:
+        component = prompts.get(name)
+        if not isinstance(component, Mapping):
+            raise SystemExit(f"staging bundle lacks frozen {name} prompt; use fresh prepare")
+        if any(
+            not isinstance(component.get(field), str) or not component[field]
+            for field in ("version", "text", "sha256", "path")
+        ):
+            raise SystemExit(f"staging bundle has invalid frozen {name} prompt; use fresh prepare")
+        try:
+            _loaded_authoring_component(component)
+        except SystemExit as exc:
+            raise SystemExit(
+                f"staging bundle has invalid frozen {name} prompt; use fresh prepare"
+            ) from exc
+
+
 def _read_staging_bundle(staging_dir: Path) -> dict:
     bundle_path = staging_dir / "bundle.json"
     if not bundle_path.is_file():
@@ -1115,11 +1141,17 @@ def _read_staging_bundle(staging_dir: Path) -> dict:
         raise SystemExit(f"staging bundle is unreadable: {exc}")
     if not isinstance(bundle, dict):
         raise SystemExit("staging bundle must be an object")
-    if bundle.get("schema_version") != "climate-monitor-prepare-bundle.v1":
+    schema_version = bundle.get("schema_version")
+    if schema_version == LEGACY_PREPARE_BUNDLE_SCHEMA:
         raise SystemExit(
-            f"staging bundle schema_version must be climate-monitor-prepare-bundle.v1, "
-            f"got {bundle.get('schema_version')!r}"
+            "staging bundle v1 predates frozen authoring prompts; use fresh prepare"
         )
+    if schema_version != PREPARE_BUNDLE_SCHEMA:
+        raise SystemExit(
+            f"staging bundle schema_version must be {PREPARE_BUNDLE_SCHEMA}, "
+            f"got {schema_version!r}"
+        )
+    _validate_frozen_authoring_prompts(bundle)
     return bundle
 
 
@@ -1388,7 +1420,7 @@ def _frozen_authoring_components(
     from climate_monitor.management import load_active_prompt
 
     components: dict[str, dict[str, str]] = {}
-    for name in ("article_summary", "relevance", "executive_summary"):
+    for name in AUTHORING_PROMPT_NAMES:
         if binding is None:
             component = load_active_prompt(name)
         else:

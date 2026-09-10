@@ -919,6 +919,44 @@ def test_unbound_authoring_components_are_frozen_before_config_drift(
     assert loaded.path == source
 
 
+def test_legacy_prepare_bundle_requires_fresh_staging(tmp_path):
+    from scripts import run_climate_monitor as monitor
+
+    (tmp_path / "bundle.json").write_text(
+        json.dumps({"schema_version": "climate-monitor-prepare-bundle.v1"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="predates frozen authoring prompts.*fresh prepare"):
+        monitor._read_staging_bundle(tmp_path)
+
+
+def test_prepare_bundle_validates_frozen_prompt_hashes_on_read(tmp_path):
+    from scripts import run_climate_monitor as monitor
+
+    component = {
+        "version": "v1",
+        "text": "original prompt",
+        "sha256": hashlib.sha256(b"original prompt").hexdigest(),
+        "path": str(tmp_path / "task.json"),
+    }
+    prompts = {
+        name: dict(component)
+        for name in ("article_summary", "relevance", "executive_summary")
+    }
+    prompts["relevance"]["text"] = "tampered"
+    (tmp_path / "bundle.json").write_text(
+        json.dumps({
+            "schema_version": "climate-monitor-prepare-bundle.v2",
+            "authoring_prompts": prompts,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="invalid frozen relevance prompt.*fresh prepare"):
+        monitor._read_staging_bundle(tmp_path)
+
+
 def test_resume_cannot_store_or_freeze_cumulative_over_budget_evidence(tmp_path, monkeypatch):
     from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
     import scripts.run_agent_acquisition as runner
