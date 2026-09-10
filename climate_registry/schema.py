@@ -627,6 +627,104 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
 
         CREATE INDEX idx_acquisition_items_resolution
             ON acquisition_items(resolved_by_fetch_id);
+
+        """,
+    ),
+    (
+        9,
+        "reconcilable_unfrozen_acquisition_batches",
+        """
+        DROP TRIGGER acquisition_batches_are_append_only_update;
+        DROP TRIGGER acquisition_searches_are_append_only_update;
+        DROP TRIGGER acquisition_items_are_append_only_update;
+
+        CREATE TRIGGER acquisition_batches_reconcile_before_freeze
+        BEFORE UPDATE ON acquisition_batches
+        WHEN OLD.frozen_at IS NOT NULL
+          OR NEW.batch_id IS NOT OLD.batch_id
+          OR NEW.schema_version IS NOT OLD.schema_version
+          OR NEW.report_date IS NOT OLD.report_date
+          OR NEW.started_at IS NOT OLD.started_at
+          OR NEW.date_policy_json IS NOT OLD.date_policy_json
+          OR NEW.search_decision IS NOT OLD.search_decision
+          OR NEW.no_search_reason IS NOT OLD.no_search_reason
+          OR (NEW.frozen_at IS NOT NULL AND (
+                NEW.completed_at IS NOT OLD.completed_at
+                OR NEW.payload_sha256 IS NOT OLD.payload_sha256
+             ))
+        BEGIN
+            SELECT RAISE(ABORT, 'frozen or immutable acquisition batch fields cannot change');
+        END;
+
+        CREATE TRIGGER acquisition_searches_reconcile_failures_only
+        BEFORE UPDATE ON acquisition_searches
+        WHEN OLD.status != 'failed'
+          OR NEW.status != 'success'
+          OR NEW.search_id IS NOT OLD.search_id
+          OR NEW.batch_id IS NOT OLD.batch_id
+          OR NEW.ordinal IS NOT OLD.ordinal
+          OR NEW.search_ref IS NOT OLD.search_ref
+          OR NEW.query IS NOT OLD.query
+          OR NEW.engine IS NOT OLD.engine
+          OR EXISTS (
+              SELECT 1 FROM acquisition_batches batch
+              WHERE batch.batch_id = OLD.batch_id AND batch.frozen_at IS NOT NULL
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'only unresolved searches in an unfrozen batch may be reconciled');
+        END;
+
+        CREATE TRIGGER acquisition_items_reconcile_resolution_only
+        BEFORE UPDATE ON acquisition_items
+        WHEN OLD.resolved_by_fetch_id IS NOT NULL
+          OR NEW.resolved_by_fetch_id IS NULL
+          OR NEW.acquisition_item_id IS NOT OLD.acquisition_item_id
+          OR NEW.batch_id IS NOT OLD.batch_id
+          OR NEW.ordinal IS NOT OLD.ordinal
+          OR NEW.article_id IS NOT OLD.article_id
+          OR NEW.raw_url IS NOT OLD.raw_url
+          OR NEW.source_name IS NOT OLD.source_name
+          OR NEW.title IS NOT OLD.title
+          OR NEW.summary IS NOT OLD.summary
+          OR NEW.discovered_at IS NOT OLD.discovered_at
+          OR NEW.discovery_kind IS NOT OLD.discovery_kind
+          OR NEW.discovery_ref IS NOT OLD.discovery_ref
+          OR NEW.origins_json IS NOT OLD.origins_json
+          OR NEW.search_id IS NOT OLD.search_id
+          OR NEW.publication_date IS NOT OLD.publication_date
+          OR NEW.publication_date_evidence_json IS NOT OLD.publication_date_evidence_json
+          OR NEW.date_status IS NOT OLD.date_status
+          OR NEW.selection_status IS NOT OLD.selection_status
+          OR NEW.selection_reason IS NOT OLD.selection_reason
+          OR NEW.update_status IS NOT OLD.update_status
+          OR NEW.material_status IS NOT OLD.material_status
+          OR NEW.fetch_id IS NOT OLD.fetch_id
+          OR NEW.content_version_id IS NOT OLD.content_version_id
+          OR NEW.content_ref IS NOT OLD.content_ref
+          OR NEW.raw_snapshot_ref IS NOT OLD.raw_snapshot_ref
+          OR NEW.raw_snapshot_sha256 IS NOT OLD.raw_snapshot_sha256
+          OR NEW.attempts_json IS NOT OLD.attempts_json
+          OR NEW.processing_status IS NOT OLD.processing_status
+          OR NEW.processing_error IS NOT OLD.processing_error
+          OR NOT EXISTS (
+              SELECT 1 FROM article_fetches own
+              WHERE own.fetch_id = NEW.fetch_id
+                AND own.article_id = NEW.article_id
+                AND own.fetch_status = 'failed'
+          )
+          OR NOT EXISTS (
+              SELECT 1 FROM article_fetches resolution
+              WHERE resolution.fetch_id = NEW.resolved_by_fetch_id
+                AND resolution.article_id = NEW.article_id
+                AND resolution.fetch_status = 'success'
+          )
+          OR EXISTS (
+              SELECT 1 FROM acquisition_batches batch
+              WHERE batch.batch_id = OLD.batch_id AND batch.frozen_at IS NOT NULL
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'only unresolved item resolution in an unfrozen batch may change');
+        END;
         """,
     ),
 )

@@ -26,6 +26,30 @@ def test_search_prompt_defaults_to_unlimited_policy_and_exact_path(tmp_path, day
     assert not destination.parent.exists()
 
 
+def test_managed_search_prompt_reports_task_definition_provenance(tmp_path, monkeypatch):
+    from climate_monitor import management
+
+    task_path = tmp_path / "managed-task.json"
+    template = DEFAULT_PILLAR_B_SEARCH_PATH.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        management,
+        "load_active_prompt",
+        lambda name: {
+            "version": "managed-v7",
+            "text": template,
+            "sha256": hashlib.sha256(template.encode()).hexdigest(),
+            "path": str(task_path),
+        },
+    )
+
+    prompt = load_pillar_b_search_prompt(
+        date(2026, 9, 7), tmp_path / "pillar-b.json"
+    )
+
+    assert prompt.path == task_path
+    assert prompt.version == "managed-v7"
+
+
 def test_search_prompt_renders_optional_inclusive_date_window(tmp_path):
     destination = tmp_path / "pillar_b.json"
     prompt = load_pillar_b_search_prompt(

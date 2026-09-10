@@ -771,7 +771,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 8
+    ).status()["schema_version"] == 9
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository

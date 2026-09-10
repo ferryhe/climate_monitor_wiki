@@ -83,6 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           node --check showcase/app.js
+          node --check management_ui/manage.js
 
       - name: Check pull request whitespace
         if: github.event_name == 'pull_request'
@@ -141,6 +142,7 @@ jobs:
           import climate_delivery
           import climate_monitor
           import climate_registry
+          import web_listening
           from climate_monitor.taxonomy import (
               DEFAULT_TAXONOMY_ID,
               DEFAULT_TAXONOMY_SHA256,
@@ -158,6 +160,9 @@ jobs:
           assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID
           assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256
           assert len(taxonomy.categories) == 8
+          assert metadata.version("hermes-agent") == "0.20.5"
+          assert metadata.version("web-listening") == "3.2.0"
+          assert __import__("shutil").which("hermes")
           assert int(version_parts[0]) == 4 and int(version_parts[1]) >= 23
 
           print(

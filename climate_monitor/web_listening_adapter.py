@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
@@ -212,6 +214,126 @@ def collect_website_items(
         except Exception as exc:
             warnings.append(f"Source failure for {source.key}: {exc}")
     return items, warnings
+
+
+def collect_website_items_with_evidence(
+    sources: list[MonitorSource],
+    *,
+    state_dir: Path,
+    site_scopes: dict[str, SiteScope] | list[SiteScope] | tuple[SiteScope, ...] | None = None,
+) -> tuple[list[CandidateItem], list[str], dict[str, Any]]:
+    """Collect sites and expose the adapter's stored, hash-bound evidence.
+
+    The legacy two-value API intentionally remains unchanged. Managed runs use
+    this API so snapshot validity, disposition, and artifact identity originate
+    at the acquisition adapter rather than being guessed from candidate rows.
+    """
+    state_dir = Path(state_dir)
+    scopes = _scope_by_source_key(site_scopes)
+    artifact_dir = state_dir / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    all_items: list[CandidateItem] = []
+    all_warnings: list[str] = []
+    source_results: list[dict[str, Any]] = []
+    discard_staged_source_checkpoints(state_dir)
+    for source in sources:
+        started = time.monotonic()
+        observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        scope = scopes.get(source.key)
+        seeds = _seed_urls(source, scope)
+        items, warnings = collect_source_items(
+            source=source, state_dir=state_dir, scope=scope,
+            stage_checkpoint=True, update_checkpoint=True,
+        )
+        snapshots: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+        for seed in seeds:
+            checkpoint_path = _checkpoint_stage_path(_state_path(state_dir, source, seed))
+            valid = checkpoint_path.is_file()
+            checkpoint_sha256 = None
+            if valid:
+                checkpoint_bytes = checkpoint_path.read_bytes()
+                checkpoint_sha256 = hashlib.sha256(checkpoint_bytes).hexdigest()
+                snapshots.append({
+                    "seed_url": seed, "path": str(checkpoint_path.resolve()),
+                    "sha256": checkpoint_sha256,
+                    "checkpoint": json.loads(checkpoint_bytes),
+                })
+            related = [warning for warning in warnings if seed in warning]
+            attempts.append({
+                "engine": _scope_fetch_mode("http", scope),
+                "status": "success" if valid else "failed",
+                "attempted_at": observed_at, "requested_url": seed,
+                "error": None if valid else ("; ".join(related) or "no valid snapshot was stored"),
+                "checkpoint_sha256": checkpoint_sha256,
+            })
+        complete = bool(seeds) and len(snapshots) == len(seeds) and not warnings
+        rows = [
+            {"item_id": item.source_item_id or item.url, "item_type": "page",
+             "url": item.url, "title": item.title, "summary": item.summary,
+             "status": "new", "observed_at": item.detected_at or observed_at}
+            for item in items
+        ]
+        parent_run_id = "managed-" + hashlib.sha256(
+            json.dumps({"source": source.key, "observed_at": observed_at,
+                        "snapshots": snapshots}, ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:32]
+        manifest_body = {
+            "schema_version": "web-listening-manifest.v1",
+            "run": {"run_id": f"run-{parent_run_id}", "parent_run_id": parent_run_id},
+            "source": {"source_id": source.key, "tree_seed_url": source.url},
+            "discovered_items": rows, "snapshot_evidence": snapshots,
+        }
+        artifact_id = "wl-" + hashlib.sha256(
+            json.dumps(manifest_body, ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        manifest = {**manifest_body, "manifest_id": artifact_id}
+        artifact_bytes = (json.dumps(manifest, ensure_ascii=False, sort_keys=True,
+                                     indent=2) + "\n").encode("utf-8")
+        artifact_path = artifact_dir / f"{artifact_id}.json"
+        temporary = artifact_path.with_suffix(".tmp")
+        temporary.write_bytes(artifact_bytes)
+        os.replace(temporary, artifact_path)
+        disposition = ("updated" if rows else "unchanged") if complete else "failed"
+        outcome = {
+            "schema_version": "acquisition-batch-result.v2",
+            "run_id": f"scope-run-{parent_run_id}",
+            "authoritative_status": "completed",
+            "status": "succeeded" if complete else "failed", "full_success": complete,
+            "counts": {"requested": 1, "updated": int(disposition == "updated"),
+                       "unchanged": int(disposition == "unchanged"), "blocked": 0,
+                       "failed": int(disposition == "failed"), "unresolved": 0,
+                       "valid_snapshots": int(complete), "failed_evidence": int(not complete),
+                       "succeeded": int(complete)},
+            "dispositions": [{"task_id": source.key, "site_key": source.key,
+                              "requested_url": source.url, "disposition": disposition,
+                              "reason": "scope.completed" if complete else "scope.acquisition_failed",
+                              "artifact_id": artifact_id if complete else None}],
+            "summary": {"checked": 1, "succeeded": int(complete), "failed": int(not complete)},
+        }
+        candidates = [
+            {"url": item.url, "title": item.title, "summary": item.summary,
+             "source": source.key, "discovery_ref": item.source_item_id or item.url,
+             "observed_at": item.detected_at or observed_at}
+            for item in items
+        ]
+        source_results.append({
+            "source": source.key, "status": "succeeded" if complete else "failed",
+            "disposition": disposition, "artifact_id": artifact_id if complete else None,
+            "artifact_path": str(artifact_path.resolve()),
+            "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+            "manifest": manifest, "outcome": outcome, "attempts": attempts,
+            "warnings": list(warnings), "runtime_seconds": time.monotonic() - started,
+            "candidates": candidates,
+        })
+        all_items.extend(items)
+        all_warnings.extend(warnings)
+    evidence = {"status": "completed" if source_results and all(
+        row["status"] == "succeeded" for row in source_results
+    ) else "failed", "source_results": source_results}
+    return all_items, all_warnings, evidence
 
 
 def _extend_web_listening_path() -> None:

@@ -257,7 +257,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 8,
+        "schema_version": 9,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -1223,9 +1223,9 @@ def test_bounded_leading_zero_pagination_is_deliberately_accepted(registry_clien
 
 def test_registry_has_no_write_routes():
     registry_routes = {
-        (method, route.path)
+        (method, path)
         for route in app.routes
-        if route.path.startswith("/api/registry")
+        if (path := getattr(route, "path", "")).startswith("/api/registry")
         for method in (route.methods or set())
     }
     assert all(method == "GET" for method, _ in registry_routes)

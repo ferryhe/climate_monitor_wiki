@@ -17,6 +17,7 @@ external/
 *.sqlite3-shm
 climate_delivery_artifacts/
 /output/
+/monitoring/state/.managed-acquisition.lock
 
 # Personal Obsidian vault config; only the project-authored plugin is tracked
 .obsidian/*

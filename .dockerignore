@@ -29,6 +29,10 @@ docs/
 monitoring/*
 !monitoring/taxonomies/
 !monitoring/taxonomies/**
+!monitoring/jobs/
+!monitoring/jobs/**
+!monitoring/supranational_sources.yaml
+!monitoring/site_scopes.yaml
 
 # Miscellaneous host artifacts
 *.log

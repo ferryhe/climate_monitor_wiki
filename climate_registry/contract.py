@@ -99,7 +99,7 @@ V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES
 V6_TABLES = V5_TABLES
 V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -206,6 +206,9 @@ REQUIRED_TRIGGERS = frozenset(
         "acquisition_items_are_append_only_update",
         "acquisition_items_are_append_only_delete",
         "acquisition_item_resolution_is_valid_insert",
+        "acquisition_batches_reconcile_before_freeze",
+        "acquisition_searches_reconcile_failures_only",
+        "acquisition_items_reconcile_resolution_only",
     }
 )
 
@@ -317,6 +320,20 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    old_reconciliation_triggers = {
+        "acquisition_batches_are_append_only_update",
+        "acquisition_searches_are_append_only_update",
+        "acquisition_items_are_append_only_update",
+    }
+    new_reconciliation_triggers = {
+        "acquisition_batches_reconcile_before_freeze",
+        "acquisition_searches_reconcile_failures_only",
+        "acquisition_items_reconcile_resolution_only",
+    }
+    if version < 9:
+        names = names - new_reconciliation_triggers
+    else:
+        names = names - old_reconciliation_triggers
     if version < 8:
         names = names - {"acquisition_item_resolution_is_valid_insert"}
     if version < 7:

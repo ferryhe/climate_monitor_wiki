@@ -42,24 +42,24 @@ delegates to the existing public entrypoints.
 
 | Configuration | Owner / edit location |
 |---|---|
-| Source inventory and site scopes | `monitoring/supranational_sources.yaml`, `monitoring/site_scopes.yaml` |
-| Run options | `monitoring/run_config.yaml`; external state/output paths for real runs |
-| Search and relevance wording | The two prompt files below, loaded by `weekly_monitor/prompt_loader.py` |
-| Categories and semantic limits | `monitoring/taxonomies/article_categories_v1.yaml`; update its version/hash and validators together |
-| Model, provider, Hermes executable | Explicit monitor options/runtime environment; secrets remain in the existing Hermes auth store |
-| Report date, upstream artifacts, staging and downstream paths | Wrapper environment described in PIPELINE_REFERENCE.md |
-| Live schedule | Hermes on the controlled server; the repository manifest is a deployment specification |
+| Acquisition task parameters and five business prompts | The authenticated `/manage` API and one `climate-acquisition-task-state.v1` at `CLIMATE_TASK_CONFIG` |
+| Source inventory and reviewed site scopes | Existing `monitoring/supranational_sources.yaml` and `monitoring/site_scopes.yaml`, referenced by configured source keys |
+| Categories and semantic limits | Structured/versioned `monitoring/taxonomies/article_categories_v1.yaml`, whose normalized hash is bound to each effective task |
+| Model/provider | Effective task parameters; credentials remain only in the existing Hermes auth store |
+| Runtime Registry and run paths | Effective task parameters, placed on external persistent storage by the operator |
+| Live schedule | Hermes on the controlled server; `scripts/run_agent_acquisition.py --scheduled-start` consumes the same task definition as manual start |
 
 Do not duplicate these definitions in new workflow scripts or cron prompt text.
 The old numeric Step callers remain until the verified scheduler cutover.
 
 ## Prompt Templates
 
-Editable prompts live under
-`monitoring/jobs/weekly-climate-monitor-08h/prompts/`: `pillar-b-search-v1.prompt.md`
-controls search, and `article-relevance-v1.prompt.md` controls the subsequent
-per-URL relevance decision. The old Step 3b/Step 7 tasks are legacy compatibility paths; their inline
-prompts are not the authority for the new monitor.
+The one versioned state exposes exactly `acquisition_task`, `search_guidance`,
+`relevance`, `article_summary`, and `executive_summary`. The tracked prompt files
+seed the explicit bootstrap marker only. After the first authenticated save,
+`prompt_loader.py`, the acquisition launcher, and serial report authoring all
+consume the saved state. Explicit `path=` loader arguments remain test/legacy
+compatibility overrides and never silently replace a bound run.
 
 ### Monitor (v2 evidence authoring)
 
@@ -159,7 +159,25 @@ single-site WRI sandbox showed `1 requested / 1 unchanged`, not 57 sites.
 Use the email wrapper with four absolute paths and a verified monitor identity.
 Configuration and preflight are documented in PIPELINE_REFERENCE.md.
 
-### Step 2: Pillar B Web Search
+### Current agent-guided acquisition and Pillar B v2
+
+The acquisition-task component directs Hermes to choose native search only in
+response to observed coverage gaps. The `search_guidance` component renders the
+bound unlimited/recent/custom publication-date policy. It records real queries,
+result references, reasons, retries and budgets in the existing #112 batch. A
+failed search is not a zero-result success; a defensible `no_search` has a
+concrete coverage reason. Stored publisher/search-result publication evidence
+controls inclusive eligibility, while unknown dates remain pending and event,
+discovery and fetch timestamps are never substituted.
+
+Each start writes an immutable task version, effective/component hashes, exact
+batch, resolved report date/range, budgets and checkpoint paths. Resume creates
+a new immutable attempt file from that original binding; a later config save
+cannot alter it. Completion status requires Registry readback plus byte-equivalent
+`freeze_acquisition_for_report` output, not agent prose. The current launcher is
+implemented and tested but has not been installed in production.
+
+### Legacy Step 2: Pillar B Web Search (historical compatibility only)
 
 Edit the query list, source preferences and selection wording in
 `monitoring/jobs/weekly-climate-monitor-08h/prompts/pillar-b-search-v1.prompt.md`.
@@ -198,11 +216,11 @@ that section directly, so there is no second query list to maintain.
 The date excerpt must come from that article or its source-backed search result;
 passing the schema alone does not prove the publisher's claim.
 
-### Remaining prompt boundaries
+### Serial authoring prompt boundaries
 
-The article/executive response instructions currently live in
-`_URL_AUTHORING_PROMPT` and `_EXECUTIVE_AUTHORING_PROMPT` in the existing
-`scripts/run_climate_monitor.py`. Their structured output is validated by
+The article/executive response instructions now load the bound
+`article_summary` and `executive_summary` components from the same task state in
+`scripts/run_climate_monitor.py`. Their structured output remains validated by
 `weekly_monitor/authoring_contract.py` and `taxonomy.py`. The pinned
 `weekly-monitor-v1.prompt.md` remains a versioned contract/provenance artifact;
 it is not a second whole-week request in the serial authoring path.

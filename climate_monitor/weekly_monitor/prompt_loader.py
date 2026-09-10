@@ -23,7 +23,12 @@ LEGACY_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v1.prompt.
 
 def load_article_relevance_rules(path: str | Path | None = None) -> str:
     """Rules are embedded in the existing URL request and its checkpoint hash."""
-    rules = Path(path or DEFAULT_ARTICLE_RELEVANCE_PATH).read_text(encoding="utf-8").strip()
+    if path is None:
+        from climate_monitor.management import load_active_prompt
+
+        rules = load_active_prompt("relevance")["text"].strip()
+    else:
+        rules = Path(path).read_text(encoding="utf-8").strip()
     if not rules:
         raise ValueError("article relevance rules are empty")
     return rules
@@ -56,7 +61,16 @@ def load_pillar_b_search_prompt(
     policy = PublicationDatePolicy.resolve(
         date_policy, anchor_date=report_date, frozen_at=frozen_at)
     prompt_path = Path(path) if path is not None else DEFAULT_PILLAR_B_SEARCH_PATH
-    template = prompt_path.read_text(encoding="utf-8")
+    if path is None:
+        from climate_monitor.management import load_active_prompt
+
+        component = load_active_prompt("search_guidance")
+        template = component["text"]
+        component_version = component["version"]
+        prompt_path = Path(component["path"])
+    else:
+        template = prompt_path.read_text(encoding="utf-8")
+        component_version = "v2"
     time_filter = policy.search_time_filter
     guidance = (
         "The date policy is unlimited: do not add search time parameters or publication-date filters."
@@ -76,7 +90,7 @@ def load_pillar_b_search_prompt(
         raw = Template(template).substitute(values).encode("utf-8")
     except (ValueError, KeyError) as exc:
         raise ValueError("Pillar B template has invalid or unknown placeholders") from exc
-    return LoadedPrompt(prompt_id="pillar_b_search", version="v2", path=prompt_path,
+    return LoadedPrompt(prompt_id="pillar_b_search", version=component_version, path=prompt_path,
                         raw_bytes=raw, sha256=hashlib.sha256(raw).hexdigest())
 
 

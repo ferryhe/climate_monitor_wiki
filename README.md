@@ -338,4 +338,58 @@ Generated previews and audit output belong in the ignored `/output/` directory
 or external runtime storage. Canonical `sources/`, derived `wiki/`, and intentional
 test fixtures remain tracked.
 
+### Authenticated acquisition management
+
+The optional `/manage` console edits the single versioned acquisition task,
+starts or resumes it through Hermes, and reads progress from the #112 Registry
+contract. It is disabled for login until `CLIMATE_CONSOLE_USERNAME`,
+`CLIMATE_CONSOLE_PASSWORD_HASH`, and a stable `CLIMATE_CONSOLE_SESSION_SECRET` are
+provided server-side. The shipped Compose deployment forwards those values,
+defaults `CLIMATE_CONSOLE_SESSION_SECONDS` to 1800, forces
+`CLIMATE_CONSOLE_SECURE_COOKIE=true`, and fails at container startup if the
+credentials/signing secret are empty or secure cookies are disabled. Generate the
+Argon2 hash without putting the plaintext password in Compose or shell history:
+
+```bash
+python -c 'from fastapi_users.password import PasswordHelper; import getpass; print(PasswordHelper().hash(getpass.getpass()))'
+```
+
+Set the printed value as `CLIMATE_CONSOLE_PASSWORD_HASH`. Credentials are never
+returned to the browser. Put
+`CLIMATE_TASK_CONFIG`, `CLIMATE_TASK_VERSION_DIR`, and
+`CLIMATE_ACQUISITION_RUN_DIR` on persistent external storage in an operated
+deployment. The repository bootstrap marker imports the former five prompt
+locations; the first save writes one self-contained, atomically replaced state.
+
+```text
+authenticated browser (/manage)
+    │ config/version/preview/save/restore + start/resume/status
+    ▼
+FastAPI Users + signed JWT cookie ───► versioned task definition
+    │                                      │ immutable version + hashes
+    │ detached start                       ▼
+    └──────────────────────────────► Hermes Agent (`hermes chat`)
+                                           │ native search/browser tools
+                                           ▼
+existing web-listening adapter + climate_registry.acquisition (#112)
+                                           │ exact batch/content versions
+                                           ▼
+frozen report input ──► existing monitor authoring/checkpoint/publish gates
+```
+
+There is no console queue, search wrapper, second executor, report/publish
+bypass, or general Hermes UI. Concurrent start/resume requests for the shared
+monitor state are rejected by an interprocess lock; the worker owns that lock
+from collection through report finalization. The scheduler snapshot remains separate from live
+acquisition status. The Python 3.12 image installs `web-listening` 3.2.0 and an
+editable Hermes Agent 0.20.5 checkout from immutable source commits; Hermes is
+MIT-licensed, while `web-listening` is an internal source dependency with no
+license metadata declared at the pinned revision. The Compose runtime volume is
+seeded with the task definition only when empty, so later operator versions and
+run evidence persist across container replacement. This diagram describes
+implemented repository code, **not** evidence that production credentials,
+storage, or schedules were deployed. See
+[PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) and [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md)
+for those operational gates.
+
 _Operational documentation updated: 2026-09-08_
