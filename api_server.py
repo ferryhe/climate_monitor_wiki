@@ -3,14 +3,18 @@ from __future__ import annotations
 import os
 import secrets
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from limits import parse as parse_rate_limit
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
 
 from agentic_wiki import AgenticWikiResponder
 from climate_delivery.artifacts import load_report_artifact
@@ -26,6 +30,13 @@ from climate_monitor.run_ledger import (
     LedgerUnavailableError,
     RunLedgerReader,
 )
+from climate_monitor.management import ManagementService
+from climate_monitor.console_auth import (
+    ConsoleUser,
+    auth_router,
+    current_console_user,
+    optional_console_user,
+)
 from climate_registry.read_api import (
     RegistryContractError,
     RegistryLocationError,
@@ -39,6 +50,7 @@ from climate_registry.read_api import (
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 SHOWCASE_DIR = ROOT / "showcase"
+MANAGE_DIR = ROOT / "management_ui"
 WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
 SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
 ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadata")
@@ -63,12 +75,27 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type", "Accept", "X-Reload-Token"],
 )
+app.include_router(auth_router, prefix="/api/manage/auth", include_in_schema=False)
+_LOGIN_LIMITER = Limiter(key_func=get_remote_address)
+_LOGIN_RATE = parse_rate_limit("5/minute")
+app.state.limiter = _LOGIN_LIMITER
 
 responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
 RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
+management_service: ManagementService | None = None
+ConsolePrincipal = Annotated[ConsoleUser, Depends(current_console_user)]
+OptionalConsolePrincipal = Annotated[ConsoleUser | None, Depends(optional_console_user)]
+
+
+def _management_service() -> ManagementService:
+    """Initialize console-only state only after an authenticated console call."""
+    global management_service
+    if management_service is None:
+        management_service = ManagementService.from_environment()
+    return management_service
 
 # --- Input validation constants ---
 MAX_MESSAGE_LENGTH = 8000          # Maximum characters per user message
@@ -110,6 +137,20 @@ async def limit_request_body(request: Request, call_next):
             return JSONResponse(
                 status_code=413,
                 content={"detail": f"Request body too large. Maximum is {MAX_REQUEST_BYTES} bytes."},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def limit_console_login_attempts(request: Request, call_next):
+    """Throttle FastAPI Users' password endpoint per client address."""
+    if request.method == "POST" and request.url.path == "/api/manage/auth/login":
+        client_key = get_remote_address(request)
+        if not _LOGIN_LIMITER._limiter.hit(_LOGIN_RATE, client_key):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many sign-in attempts. Try again later."},
+                headers={"Retry-After": "60"},
             )
     return await call_next(request)
 
@@ -415,6 +456,95 @@ def chat(request: ChatRequest) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _manage_call(callback):
+    try:
+        return callback()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/manage/login", response_class=HTMLResponse, include_in_schema=False)
+def console_login_page() -> FileResponse:
+    return FileResponse(MANAGE_DIR / "login.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/manage", response_class=HTMLResponse, include_in_schema=False)
+def console_page(user: OptionalConsolePrincipal):
+    if user is None:
+        return RedirectResponse("/manage/login", status_code=303)
+    return FileResponse(MANAGE_DIR / "index.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/manage/assets/{filename}", include_in_schema=False)
+def console_asset(filename: str, user: ConsolePrincipal) -> FileResponse:
+    if filename not in {"manage.css", "manage.js"}:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return FileResponse(MANAGE_DIR / filename, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/manage/config", include_in_schema=False)
+def console_config(user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(_management_service().store.load)
+
+
+@app.get("/api/manage/versions", include_in_schema=False)
+def console_versions(user: ConsolePrincipal) -> list[dict[str, Any]]:
+    return _manage_call(_management_service().store.versions)
+
+
+@app.get("/api/manage/diff", include_in_schema=False)
+def console_diff(user: ConsolePrincipal, old_version: int, new_version: int) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().store.diff(old_version, new_version))
+
+
+@app.post("/api/manage/config/preview", include_in_schema=False)
+def console_preview(definition: dict[str, Any], user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().store.preview(definition))
+
+
+@app.put("/api/manage/config", include_in_schema=False)
+def console_save(definition: dict[str, Any], user: ConsolePrincipal, expected_version: int) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().store.save(definition, expected_version=expected_version, actor=user.email))
+
+
+@app.post("/api/manage/versions/{version}/restore", include_in_schema=False)
+def console_restore(version: int, user: ConsolePrincipal, expected_version: int) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().store.restore(version, expected_version=expected_version, actor=user.email))
+
+
+@app.get("/api/manage/progress", include_in_schema=False)
+def console_all_progress(user: ConsolePrincipal) -> list[dict[str, Any]]:
+    return _manage_call(_management_service().list_runs)
+
+
+@app.post("/api/manage/runs", include_in_schema=False)
+def console_start(payload: dict[str, Any], user: ConsolePrincipal) -> dict[str, Any]:
+    if payload:
+        raise HTTPException(status_code=422, detail="Manual start accepts no overrides; save a version first.")
+    return _manage_call(lambda: _management_service().start(trigger="manual"))
+
+
+@app.post("/api/manage/runs/{run_id}/resume", include_in_schema=False)
+def console_resume(run_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().resume(run_id))
+
+
+@app.get("/api/manage/runs/{run_id}/progress", include_in_schema=False)
+def console_run_progress(run_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().progress(run_id))
+
+
+@app.get("/api/manage/runs/{run_id}/items/{item_id:path}", include_in_schema=False)
+def console_item_detail(run_id: str, item_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().item_detail(run_id, item_id))
 
 
 app.mount("/wiki", StaticFiles(directory=WIKI_DIR), name="wiki")

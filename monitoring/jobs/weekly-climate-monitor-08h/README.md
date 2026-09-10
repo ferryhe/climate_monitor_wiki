@@ -16,6 +16,14 @@ had not been installed. Historical captures below do not prove current job IDs.
 Key files:
 
 - `manifest.json` describes the repo-owned artifact set.
+- `task-definition.json` is the explicit legacy-bootstrap marker for the one
+  versioned task consumed by the management console, acquisition launcher,
+  search/relevance loaders and existing serial authoring driver. After the first
+  authenticated save its configured external path is a self-contained state
+  containing effective run parameters and exactly five prompt components.
+- `scripts/run_agent_acquisition.py` is the common manual/scheduled launcher. It
+  starts `hermes chat` detached through `ManagementService`; it is not an agent,
+  queue, worker service, or search wrapper.
 - `prompts/weekly-monitor-v1.prompt.md` is the pinned legacy compatibility
   contract, derived from the captured prompt with later reviewed changes. Its
   current hash is pinned in metadata; the original capture retains its own hash.
@@ -41,3 +49,11 @@ Key files:
   runtime ownership.
 - `docs/parity-cutover-rollback.md` describes controlled parity, cutover, and
   rollback without claiming completion.
+
+The console uses FastAPI Users 15.x (MIT), a maintained authentication component
+compatible with FastAPI, for Argon2 password verification and signed JWT cookie
+login/logout/expiry. SlowAPI 0.1.x (MIT) throttles the public login endpoint to
+five attempts per client address per minute. The deployment exposes no
+registration or account-management API: operators rotate the Argon2 credential
+hash and high-entropy JWT secret through deployment configuration. Production
+must also enable TLS-only cookie mode. No deployment is claimed here.

@@ -13,7 +13,7 @@ import os
 import sqlite3
 import stat
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -27,7 +27,7 @@ from .contract import validate_registry_contract
 from .errors import RegistryInputError
 
 BATCH_SCHEMA_VERSION = "pre-report-acquisition-batch.v1"
-ACQUISITION_WRITER_SCHEMA_VERSION = 8
+ACQUISITION_WRITER_SCHEMA_VERSION = 9
 _SHA256_LENGTH = 64
 
 
@@ -599,7 +599,7 @@ def _store_acquisition_batch_locked(
         if _is_successful_item(item)
     }
     for item in items:
-        resolved_hash = item.pop("_resolved_by_content_hash", None)
+        resolved_hash = item.get("_resolved_by_content_hash")
         item["resolved_by_fetch_id"] = (
             success_fetch_ids[(item["canonical_url"], resolved_hash)]
             if resolved_hash is not None else None
@@ -627,11 +627,16 @@ def _store_acquisition_batch_locked(
     connection = _open_database(database, acquisition_writer=True)
     try:
         existing = connection.execute(
-            "SELECT payload_sha256 FROM acquisition_batches WHERE batch_id = ?", (batch_id,)
+            "SELECT * FROM acquisition_batches WHERE batch_id = ?", (batch_id,)
         ).fetchone()
         if existing is not None:
-            if existing[0] != payload_sha256:
-                raise ValueError("acquisition batch_id already exists with different payload")
+            if existing["payload_sha256"] != payload_sha256:
+                return _reconcile_acquisition_batch(
+                    connection, batch_id=batch_id, report_date=report_date,
+                    started_at=started_at, completed_at=completed_at, policy=policy,
+                    decision=decision, no_search_reason=no_search_reason,
+                    payload_sha256=payload_sha256, searches=searches, items=items,
+                )
             result = _batch_summary(connection, batch_id)
             result.update(new_article_count=0, new_content_version_count=0)
             return result
@@ -808,6 +813,203 @@ def _batch_summary(connection: sqlite3.Connection, batch_id: str) -> dict[str, A
             "selected_count": row["selected_count"] or 0}
 
 
+def _verified_item_matches(row: sqlite3.Row, item: Mapping[str, Any]) -> bool:
+    """Return whether an incoming row is the already-verified observation."""
+    evidence = item["evidence"]
+    expected = {
+        "raw_url": item["url"], "source_name": item["source"],
+        "title": item["title"], "summary": item["summary"],
+        "discovered_at": item["discovered_at"],
+        "discovery_kind": item["discovery_kind"],
+        "discovery_ref": item["discovery_ref"],
+        "publication_date": item["published"].isoformat() if item["published"] else None,
+        "publication_date_evidence_json": (
+            _canonical_json(item["date_evidence"]) if item["date_evidence"] else None
+        ),
+        "content_ref": item["content_ref"],
+        "raw_snapshot_ref": item["raw_snapshot_ref"],
+        "raw_snapshot_sha256": item["raw_snapshot_sha256"],
+        "attempts_json": _canonical_json(evidence["attempts"]),
+        "processing_status": item["processing_status"],
+        "processing_error": item["processing_error"],
+        "final_url": evidence["final_url"],
+        "http_status": evidence["http_status"],
+        "content_type": evidence.get("content_type"),
+        "content_sha256": evidence["content_hash"],
+    }
+    return all(row[key] == value for key, value in expected.items())
+
+
+def _reconcile_acquisition_batch(
+    connection: sqlite3.Connection, *, batch_id: str, report_date: date,
+    started_at: str, completed_at: str | None, policy: PublicationDatePolicy,
+    decision: str, no_search_reason: str | None, payload_sha256: str,
+    searches: list[dict[str, Any]], items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Append retry evidence while retaining verified observations in one batch."""
+    batch = connection.execute(
+        "SELECT * FROM acquisition_batches WHERE batch_id = ?", (batch_id,)
+    ).fetchone()
+    assert batch is not None
+    immutable = {
+        "report_date": report_date.isoformat(), "started_at": started_at,
+        "date_policy_json": _canonical_json(policy.to_dict()),
+        "search_decision": decision, "no_search_reason": no_search_reason,
+    }
+    if batch["frozen_at"] is not None:
+        raise ValueError("frozen acquisition batch cannot be reconciled")
+    if any(batch[key] != value for key, value in immutable.items()):
+        raise ValueError("acquisition resume changed immutable batch fields")
+
+    article_count_before = connection.execute("SELECT count(*) FROM articles").fetchone()[0]
+    content_count_before = connection.execute(
+        "SELECT count(*) FROM article_content_versions"
+    ).fetchone()[0]
+    existing_searches = {
+        row["search_ref"]: row for row in connection.execute(
+            "SELECT * FROM acquisition_searches WHERE batch_id = ?", (batch_id,)
+        )
+    }
+    incoming_search_refs = {search["search_ref"] for search in searches}
+    if any(row["status"] == "success" and ref not in incoming_search_refs
+           for ref, row in existing_searches.items()):
+        raise ValueError("acquisition resume omitted a verified successful search")
+
+    with connection:
+        search_ids: dict[str, str] = {}
+        next_search_ordinal = connection.execute(
+            "SELECT coalesce(max(ordinal), 0) + 1 FROM acquisition_searches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()[0]
+        for search in searches:
+            ref = search["search_ref"]
+            existing = existing_searches.get(ref)
+            values = (
+                search["query"], search["engine"], search["status"],
+                search["attempted_at"], _canonical_json(search["result_refs"]),
+                _canonical_json(search["budget"]), search["error"],
+            )
+            if existing is not None:
+                search_ids[ref] = existing["search_id"]
+                existing_values = tuple(existing[key] for key in (
+                    "query", "engine", "status", "attempted_at", "result_refs_json",
+                    "budget_json", "error_message",
+                ))
+                if existing["status"] == "success":
+                    if existing_values != values:
+                        raise ValueError("acquisition resume changed a verified successful search")
+                    continue
+                if search["status"] == "failed":
+                    if existing_values != values:
+                        raise ValueError("retry must use a new search_ref for a new failed attempt")
+                    continue
+                connection.execute(
+                    """UPDATE acquisition_searches
+                       SET status=?, attempted_at=?, result_refs_json=?, budget_json=?, error_message=?
+                       WHERE search_id=?""",
+                    (search["status"], search["attempted_at"],
+                     _canonical_json(search["result_refs"]), _canonical_json(search["budget"]),
+                     search["error"], existing["search_id"]),
+                )
+                continue
+            search_id = _stable_id("search", f"{batch_id}\n{next_search_ordinal}")
+            connection.execute(
+                "INSERT INTO acquisition_searches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (search_id, batch_id, next_search_ordinal, ref, *values),
+            )
+            search_ids[ref] = search_id
+            next_search_ordinal += 1
+
+        existing_successes = {}
+        for row in connection.execute(
+            """SELECT ai.*, a.canonical_url, cv.content_sha256,
+                      f.final_url, f.http_status, f.content_type
+               FROM acquisition_items ai
+               JOIN articles a ON a.article_id=ai.article_id
+               JOIN article_fetches f ON f.fetch_id=ai.fetch_id
+               LEFT JOIN article_content_versions cv ON cv.content_version_id=ai.content_version_id
+               WHERE ai.batch_id=? AND f.fetch_status='success'""",
+            (batch_id,),
+        ):
+            existing_successes[(row["canonical_url"], row["content_sha256"])] = row
+        incoming_success_keys = {
+            (item["canonical_url"], item["evidence"]["content_hash"])
+            for item in items if _is_successful_item(item)
+        }
+        if set(existing_successes) - incoming_success_keys:
+            raise ValueError("acquisition resume omitted verified successful item evidence")
+
+        next_item_ordinal = connection.execute(
+            "SELECT coalesce(max(ordinal), 0) + 1 FROM acquisition_items WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()[0]
+        success_fetch_ids = {
+            key: row["fetch_id"] for key, row in existing_successes.items()
+        }
+        new_items = []
+        for item in items:
+            key = (item["canonical_url"], item["evidence"].get("content_hash"))
+            existing = existing_successes.get(key) if _is_successful_item(item) else None
+            if existing is not None:
+                if not _verified_item_matches(existing, item):
+                    raise ValueError("acquisition resume changed verified successful item evidence")
+                continue
+            item["discovery_search_id"] = (
+                search_ids[item["discovery_search_ref"]]
+                if item.get("discovery_search_ref") else None
+            )
+            new_items.append((next_item_ordinal, item))
+            if _is_successful_item(item):
+                success_fetch_ids[key] = _stable_id(
+                    "fetch", f"{batch_id}\n{next_item_ordinal}"
+                )
+            next_item_ordinal += 1
+        for ordinal, item in new_items:
+            resolved_hash = item.get("_resolved_by_content_hash")
+            item["resolved_by_fetch_id"] = (
+                success_fetch_ids[(item["canonical_url"], resolved_hash)]
+                if resolved_hash is not None else None
+            )
+            _insert_item(connection, batch_id, ordinal, item)
+
+        for (canonical, _content_hash), fetch_id in success_fetch_ids.items():
+            article_id = _stable_id("article", canonical)
+            connection.execute(
+                """UPDATE acquisition_items SET resolved_by_fetch_id=?
+                   WHERE batch_id=? AND article_id=? AND resolved_by_fetch_id IS NULL
+                     AND fetch_id IN (SELECT fetch_id FROM article_fetches WHERE fetch_status='failed')""",
+                (fetch_id, batch_id, article_id),
+            )
+        failed_searches = connection.execute(
+            "SELECT count(*) FROM acquisition_searches WHERE batch_id=? AND status='failed'",
+            (batch_id,),
+        ).fetchone()[0]
+        unresolved_items = connection.execute(
+            """SELECT count(*) FROM acquisition_items ai
+               JOIN article_fetches f ON f.fetch_id=ai.fetch_id
+               WHERE ai.batch_id=? AND ai.resolved_by_fetch_id IS NULL
+                 AND (f.fetch_status!='success' OR ai.material_status!='full_content'
+                      OR ai.processing_status!='complete')""",
+            (batch_id,),
+        ).fetchone()[0]
+        if completed_at is not None and (failed_searches or unresolved_items):
+            raise ValueError("completed batch contains unresolved persisted work")
+        connection.execute(
+            "UPDATE acquisition_batches SET completed_at=?, payload_sha256=? WHERE batch_id=?",
+            (completed_at, payload_sha256, batch_id),
+        )
+
+    result = _batch_summary(connection, batch_id)
+    result["new_article_count"] = (
+        connection.execute("SELECT count(*) FROM articles").fetchone()[0] - article_count_before
+    )
+    result["new_content_version_count"] = (
+        connection.execute("SELECT count(*) FROM article_content_versions").fetchone()[0]
+        - content_count_before
+    )
+    return result
+
+
 def load_acquisition_batch(database: str | Path, batch_id: str) -> dict[str, Any]:
     """Read a complete batch after restart, including unselected/failure history."""
     connection = _open_database(database, read_only=True)
@@ -921,6 +1123,17 @@ def freeze_acquisition_for_report(
         "resolved_by_fetch_id": item["resolved_by_fetch_id"],
     } for item in loaded["items"]]
     dispositions.sort(key=lambda row: (row["canonical_url"], row["requested_url"]))
+    if not incomplete:
+        connection = _open_database(database, acquisition_writer=True)
+        try:
+            with connection:
+                connection.execute(
+                    "UPDATE acquisition_batches SET frozen_at = ? "
+                    "WHERE batch_id = ? AND frozen_at IS NULL",
+                    (datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), batch_id),
+                )
+        finally:
+            connection.close()
     return {
         "schema_version": "article-evidence.v1", "report_date": report_date,
         "generated_at": loaded["completed_at"] or loaded["started_at"],

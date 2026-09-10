@@ -119,6 +119,86 @@ def test_date_policy_default_recent_custom_boundaries_and_unknown():
     assert not custom.selects(None)
 
 
+def test_same_batch_resume_reconciles_unresolved_and_preserves_verified_success(tmp_path):
+    database = _database(tmp_path)
+    good_url = "https://example.org/already-complete"
+    retry_url = "https://example.org/retry"
+    searches = [
+        {
+            "search_ref": "search-good", "query": "completed query", "engine": "web_search",
+            "status": "success", "attempted_at": NOW, "result_refs": [good_url],
+            "budget": {"max_results": 1, "used_results": 1}, "error": None,
+        },
+        {
+            "search_ref": "search-retry", "query": "retry query", "engine": "web_search",
+            "status": "failed", "attempted_at": NOW, "result_refs": [],
+            "budget": {"max_results": 1, "used_results": 0}, "error": "temporary",
+        },
+    ]
+    initial = _batch(
+        [
+            _item(good_url, discovery_ref=good_url,
+                  discovery_search_ref="search-good"),
+            _item(retry_url, status="failed", selected=False,
+                  discovery_kind="site", discovery_ref=retry_url,
+                  discovery_search_ref=None, processing_status="failed",
+                  processing_error="temporary"),
+        ],
+        batch_id="stable-resume-batch", searches=searches, completed=False,
+    )
+    store_acquisition_batch(database, initial)
+    before = load_acquisition_batch(database, "stable-resume-batch")
+    prior_good = next(item for item in before["items"] if item["canonical_url"] == good_url)
+    prior_search = next(search for search in before["searches"]
+                        if search["search_ref"] == "search-good")
+
+    resumed_searches = deepcopy(searches)
+    resumed_searches[1].update(
+        status="success", result_refs=[retry_url], error=None,
+        budget={"max_results": 1, "used_results": 1},
+    )
+    resumed = _batch(
+        [
+            _item(good_url, discovery_ref=good_url,
+                  discovery_search_ref="search-good"),
+            _item(retry_url, discovery_ref=retry_url,
+                  discovery_search_ref="search-retry"),
+        ],
+        batch_id="stable-resume-batch", searches=resumed_searches, completed=True,
+    )
+    result = store_acquisition_batch(database, resumed)
+    after = load_acquisition_batch(database, "stable-resume-batch")
+    preserved_good = next(item for item in after["items"]
+                          if item["canonical_url"] == good_url)
+    preserved_search = next(search for search in after["searches"]
+                            if search["search_ref"] == "search-good")
+
+    assert result["new_article_count"] == 0
+    assert preserved_good["acquisition_item_id"] == prior_good["acquisition_item_id"]
+    assert preserved_good["fetch_id"] == prior_good["fetch_id"]
+    assert preserved_search["search_id"] == prior_search["search_id"]
+    assert len(after["searches"]) == 2
+    assert len(after["items"]) == 3
+    retried = [item for item in after["items"] if item["canonical_url"] == retry_url]
+    assert len(retried) == 2
+    assert {item["update_status"] for item in retried} == {"baseline", "failed"}
+    assert next(item for item in retried if item["update_status"] == "failed")[
+        "resolved_by_fetch_id"
+    ] == next(item for item in retried if item["update_status"] == "baseline")["fetch_id"]
+    frozen = freeze_acquisition_for_report(
+        database, "stable-resume-batch", report_date="2026-09-10"
+    )
+    assert frozen["record_count"] == 2
+
+    blocked = deepcopy(resumed)
+    blocked["items"].append(_item(
+        "https://example.org/after-freeze", discovery_kind="site",
+        discovery_ref="https://example.org/after-freeze", discovery_search_ref=None,
+    ))
+    with pytest.raises(ValueError, match="frozen acquisition batch"):
+        store_acquisition_batch(database, blocked)
+
+
 def test_store_before_report_restart_dedupe_versions_unselected_and_exact_handoff(tmp_path):
     database = _database(tmp_path)
     first = store_acquisition_batch(database, _batch([
@@ -542,14 +622,14 @@ def test_selected_cannot_be_omitted(tmp_path):
         store_acquisition_batch(_database(tmp_path), _batch([item]))
 
 
-def test_acquisition_writer_rejects_schema_v7_with_actionable_error(tmp_path):
-    database = tmp_path / "registry-v7.sqlite"
+def test_acquisition_writer_rejects_schema_v8_with_actionable_error(tmp_path):
+    database = tmp_path / "registry-v8.sqlite"
     with sqlite3.connect(database) as connection:
-        apply_migrations(connection, target_version=7)
+        apply_migrations(connection, target_version=8)
 
     with pytest.raises(
         RegistryInputError,
-        match="acquisition writes require registry schema 8; found schema 7; migrate the registry",
+        match="acquisition writes require registry schema 9; found schema 8; migrate the registry",
     ):
         store_acquisition_batch(database.resolve(), _batch([_item()]))
 
