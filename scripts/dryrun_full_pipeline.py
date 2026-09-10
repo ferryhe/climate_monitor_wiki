@@ -270,13 +270,25 @@ recipients:
     cli_pillar_b_path = workspace / 'cli_pillar_b.json'
     cli_outcome_path.write_text(json.dumps(cli_outcome))
     cli_manifest_path.write_text(json.dumps(cli_manifest))
-    from climate_monitor.weekly_monitor.prompt_loader import pillar_b_search_queries
+    frozen_at = f'{day}T00:00:00Z'
     cli_pillar_b_path.write_text(json.dumps({
-        'schema_version': 'pillar-b-discovery.v1', 'report_date': day,
-        'searches': [{'query': query, 'status': 'completed'}
-                     for query in pillar_b_search_queries(date.fromisoformat(day))],
+        'schema_version': 'pillar-b-discovery.v2', 'report_date': day,
+        'date_policy': {'mode': 'unlimited', 'start': None, 'end': None,
+                        'days': None, 'anchor_date': day, 'frozen_at': frozen_at},
+        'search_decision': {'status': 'attempted', 'reason': None},
+        'searches': [{'search_ref': 'fixture-search-1',
+                      'query': 'fixture agent-chosen climate query',
+                      'engine': 'fixture-search', 'status': 'success',
+                      'attempted_at': frozen_at,
+                      'result_refs': ['fixture://pillar-b/results'],
+                      'budget': {'max_results': 100, 'used_results': len(records)},
+                      'error': None}],
         'articles': [dict(record, published_date=day,
-                          date_evidence={'url': record['url'], 'text': f'Synthetic publication: {day}'})
+                          date_evidence={'url': record['url'],
+                                         'text': f'Synthetic publication: {day}',
+                                         'kind': 'publisher'},
+                          search_ref='fixture-search-1',
+                          result_ref='fixture://pillar-b/results')
                      for record in records],
     }))
     cli_env = {**os.environ, 'PYTHONPATH': str(ROOT), 'REPORT_DATE': day,

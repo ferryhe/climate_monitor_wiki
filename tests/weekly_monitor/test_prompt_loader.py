@@ -12,21 +12,29 @@ from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_pro
 from climate_monitor.weekly_monitor.prompt_loader import load_pillar_b_search_prompt, DEFAULT_PILLAR_B_SEARCH_PATH
 
 
-@pytest.mark.parametrize("day,start", [
-    ("2026-09-07", "2026-06-07"), ("2026-05-31", "2026-02-28"),
-    ("2024-05-31", "2024-02-29"), ("2026-01-31", "2025-10-31"),
-])
-def test_search_prompt_uses_report_date_calendar_window_and_exact_path(tmp_path, day, start):
+@pytest.mark.parametrize("day", ["2026-09-07", "2026-05-31", "2024-05-31"])
+def test_search_prompt_defaults_to_unlimited_policy_and_exact_path(tmp_path, day):
     destination = tmp_path / "reports with spaces" / "pillar_b.json"
     prompt = load_pillar_b_search_prompt(date.fromisoformat(day), destination)
     text = prompt.raw_bytes.decode("utf-8")
-    assert f"Article date window: {start} through {day}, inclusive" in text
+    assert f"Report date: {day}" in text
+    assert '"mode": "unlimited"' in text
+    assert "do not add search time parameters" in text
     assert json.dumps(str(destination), ensure_ascii=False) in text
     assert "${" not in text
     assert prompt.sha256 == hashlib.sha256(prompt.raw_bytes).hexdigest()
     assert not destination.parent.exists()
-    if day == "2026-09-07":
-        assert "after:2026-06-06 before:2026-09-08" in text
+
+
+def test_search_prompt_renders_optional_inclusive_date_window(tmp_path):
+    destination = tmp_path / "pillar_b.json"
+    prompt = load_pillar_b_search_prompt(
+        date(2026, 9, 7), destination,
+        date_policy={"mode": "custom", "start": "2026-06-07", "end": "2026-09-07"},
+    )
+    text = prompt.raw_bytes.decode("utf-8")
+    assert "2026-06-07 through 2026-09-07 inclusive" in text
+    assert "publisher evidence remains controlling" in text
 
 
 def test_search_prompt_reads_edits_each_time_and_rejects_stale_template(tmp_path):
@@ -34,7 +42,10 @@ def test_search_prompt_reads_edits_each_time_and_rejects_stale_template(tmp_path
     template.write_bytes(DEFAULT_PILLAR_B_SEARCH_PATH.read_bytes())
     args = (date(2026, 9, 7), tmp_path / "pillar_b.json")
     before = load_pillar_b_search_prompt(*args, path=template)
-    text = template.read_text(encoding="utf-8").replace("## Search queries", "## Search queries\n\nAdditional focus: mortality risk.")
+    text = template.read_text(encoding="utf-8").replace(
+        "Use any currently installed Hermes Agent search capability",
+        "Additional focus: mortality risk.\n\nUse any currently installed Hermes Agent search capability",
+    )
     template.write_text(text, encoding="utf-8")
     after = load_pillar_b_search_prompt(*args, path=template)
     assert "Additional focus: mortality risk." in after.raw_bytes.decode()

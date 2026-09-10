@@ -338,6 +338,14 @@ def _build_evidence_request(
             # authoritatively declares the authored basis it used.
             "upstream_summary_basis": record.get("summary_basis"),
         }
+        acquisition = record.get("acquisition")
+        if acquisition is not None and (
+            not isinstance(acquisition, Mapping) or set(acquisition) != {
+                "discovered_at", "publication_date", "publication_date_evidence",
+                "date_status", "update_status",
+            }
+        ):
+            raise AuthoringContractError("article evidence acquisition semantics are invalid")
         # display_pillar fallback: explicit record value wins; otherwise
         # "A wins when any A origin exists, B otherwise" per the candidate
         # contract. This avoids mis-rendering cross-pillar merges when the
@@ -376,6 +384,7 @@ def _build_evidence_request(
                 "title": title,
                 "title_basis": title_basis,
                 "evidence": article_evidence_block,
+                **({"acquisition": dict(acquisition)} if acquisition is not None else {}),
             }
         )
     if by_url:
@@ -399,6 +408,11 @@ def _build_evidence_request(
         "stats": dict(stats),
         "articles": articles,
     }
+    if isinstance(article_evidence, Mapping) and "acquisition_dispositions" in article_evidence:
+        dispositions = article_evidence["acquisition_dispositions"]
+        if not isinstance(dispositions, list):
+            raise AuthoringContractError("acquisition dispositions must be a list")
+        payload["acquisition_dispositions"] = dispositions
     payload["request_sha256"] = _canonical_json_digest(
         _identity_only_payload(payload)
     )
@@ -429,6 +443,7 @@ def _identity_only_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "title": article.get("title"),
                 "title_basis": article.get("title_basis"),
                 "evidence": article.get("evidence"),
+                "acquisition": article.get("acquisition"),
             }
         )
     return {
@@ -438,6 +453,7 @@ def _identity_only_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "prompt": payload.get("prompt"),
         "taxonomy": payload.get("taxonomy"),
         "stats": payload.get("stats"),
+        "acquisition_dispositions": payload.get("acquisition_dispositions"),
         "articles": articles,
     }
 

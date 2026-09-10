@@ -428,6 +428,35 @@ site_scopes:
       - /events
     fetch_config_json: {}
     notes: Reviewed UNFCCC sitemap inventory because news/documents/topics pages return Incapsula or empty responses to HTTP and browser probes.
+  - source_key: unwater
+    include_source_url: false
+    seed_urls:
+      - https://www.unwater.org/news
+      - https://www.unwater.org/publications
+      - https://www.unwater.org/events
+    include_patterns:
+      - /news/
+      - /publications/
+      - /events/
+    exclude_patterns:
+      - /about-un-water/
+      - /contact/
+    notes: News, publications, and events are separate coverage entrypoints; homepage success does not satisfy this scope.
+  - source_key: carbonpool
+    include_source_url: false
+    seed_urls:
+      - https://www.carbonpool.earth/knowledge
+      - https://www.carbonpool.earth/carbon-credit-delivery-offtake-agreements
+      - https://www.carbonpool.earth/webinar-and-qa-the-quest-for-permanence-are-registry-buffer-pools-the-right-solution
+    include_patterns:
+      - /knowledge
+      - /post/
+      - /webinar-
+      - /carbon-
+    exclude_patterns:
+      - /contact
+      - /careers
+    notes: Knowledge/news and webinar entrypoints are tracked independently rather than treating homepage success as full coverage.
   - source_key: who
     seed_urls:
       - https://www.who.int/health-topics/climate-change

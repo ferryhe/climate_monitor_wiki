@@ -752,6 +752,7 @@ def adapt_pillar_b(
     artifact_id: str,
     artifact_sha256: str,
     discovered_at: str,
+    allow_incomplete: bool = False,
 ) -> list[ArticleCandidate]:
     """Read a dated production envelope or historical four-field array."""
 
@@ -759,8 +760,15 @@ def adapt_pillar_b(
     if isinstance(payload, dict):
         from .weekly_monitor.pillar_b_discovery import validate_discovery, ARTICLE_FIELDS
         from datetime import date
-        articles = validate_discovery(payload, report_date=date.fromisoformat(payload.get("report_date", "")))
-        payload = [{key: item[key] for key in ARTICLE_FIELDS} for item in articles]
+        articles = validate_discovery(
+            payload,
+            report_date=date.fromisoformat(payload.get("report_date", "")),
+            allow_incomplete=allow_incomplete,
+        )
+        payload = [
+            {key: item[key] for key in ("title", "url", "source", "summary")}
+            for item in articles
+        ]
         row_prefix = "/articles"
     if not isinstance(payload, list):
         raise CandidateContractError("pillar_b artifact must be a JSON array")

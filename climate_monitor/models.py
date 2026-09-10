@@ -64,6 +64,8 @@ class CandidateItem:
     lane: Literal["website", "research", "document"]
     published: str = ""
     detected_at: str = ""
+    acquisition_date_status: str = ""
+    acquisition_update_status: str = ""
     content_hash: str = ""
     evidence_text: str = ""
     climate_related: bool = False
@@ -158,6 +160,11 @@ def _candidate_item_to_dict(item: CandidateItem) -> dict[str, Any]:
         "categories": list(item.categories),
         "keywords": list(item.keywords),
     }
+    if item.acquisition_date_status or item.acquisition_update_status:
+        payload["acquisition"] = {
+            "date_status": item.acquisition_date_status,
+            "update_status": item.acquisition_update_status,
+        }
     if item.lane == "document":
         payload.update(_document_metadata(item))
     return payload

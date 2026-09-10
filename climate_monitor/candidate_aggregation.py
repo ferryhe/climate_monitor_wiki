@@ -350,6 +350,7 @@ def combine_current_artifacts(
     pillar_b_discovered_at: str,
     seen_urls: Iterable[str],
     carry_forward_candidates: Sequence[ArticleCandidate | Mapping[str, Any]] = (),
+    pillar_b_allow_incomplete: bool = False,
 ) -> CombinedCandidatesResult:
     if pillar_a_payload.get("date") != report_date:
         raise CandidateContractError("article_changes date does not match report_date")
@@ -365,6 +366,7 @@ def combine_current_artifacts(
         artifact_id=pillar_b_artifact_id,
         artifact_sha256=pillar_b_artifact_sha256,
         discovered_at=pillar_b_discovered_at,
+        allow_incomplete=pillar_b_allow_incomplete,
     )
     return combine_candidate_collections(
         carry_forward_candidates,

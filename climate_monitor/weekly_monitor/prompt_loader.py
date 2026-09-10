@@ -17,7 +17,8 @@ JOB_ROOT = (
 )
 DEFAULT_WEEKLY_MONITOR_PROMPT_META_PATH = JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json"
 DEFAULT_ARTICLE_RELEVANCE_PATH = JOB_ROOT / "prompts" / "article-relevance-v1.prompt.md"
-DEFAULT_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v1.prompt.md"
+DEFAULT_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v2.prompt.md"
+LEGACY_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v1.prompt.md"
 
 
 def load_article_relevance_rules(path: str | Path | None = None) -> str:
@@ -38,36 +39,49 @@ class LoadedPrompt:
 
 
 def load_pillar_b_search_prompt(
-    report_date: date, output_path: str | Path, *, path: str | Path | None = None,
+    report_date: date,
+    output_path: str | Path,
+    *,
+    date_policy: dict[str, object] | None = None,
+    frozen_at: str | None = None,
+    path: str | Path | None = None,
 ) -> LoadedPrompt:
-    """Render the editable search task; no search, inference, or file writes.
+    """Render v2 guidance for Agent-chosen native search, without executing it."""
+    from climate_registry.acquisition import PublicationDatePolicy
 
-    The window is three calendar months anchored to the report date, with
-    month-end clamping. The production consumer validates the dated envelope.
-    """
     destination = Path(output_path)
     if not destination.is_absolute():
         raise ValueError("Pillar B output path must be absolute")
-    start = pillar_b_window_start(report_date)
+    frozen_at = frozen_at or f"{report_date.isoformat()}T00:00:00Z"
+    policy = PublicationDatePolicy.resolve(
+        date_policy, anchor_date=report_date, frozen_at=frozen_at)
     prompt_path = Path(path) if path is not None else DEFAULT_PILLAR_B_SEARCH_PATH
     template = prompt_path.read_text(encoding="utf-8")
-    values = {"report_date": report_date.isoformat(), "window_start": start.isoformat(),
-              "search_start": (start - timedelta(days=1)).isoformat(),
-              "search_end": (report_date + timedelta(days=1)).isoformat(),
-              "output_path_json": json.dumps(str(destination), ensure_ascii=False)}
-    # A missing placeholder would silently turn the live search into a stale
-    # copied task. Keep the date window and destination bound by the renderer.
+    time_filter = policy.search_time_filter
+    guidance = (
+        "The date policy is unlimited: do not add search time parameters or publication-date filters."
+        if time_filter is None else
+        f"When the installed tool supports it, request {time_filter['start']} through "
+        f"{time_filter['end']} inclusive; publisher evidence remains controlling."
+    )
+    values = {
+        "report_date": report_date.isoformat(),
+        "date_policy_json": json.dumps(policy.to_dict(), ensure_ascii=False, sort_keys=True),
+        "search_time_guidance": guidance,
+        "output_path_json": json.dumps(str(destination), ensure_ascii=False),
+    }
     if any("${" + key + "}" not in template for key in values):
-        raise ValueError("Pillar B template must retain its date/window/output placeholders")
+        raise ValueError("Pillar B v2 template must retain policy/date/output placeholders")
     try:
         raw = Template(template).substitute(values).encode("utf-8")
     except (ValueError, KeyError) as exc:
         raise ValueError("Pillar B template has invalid or unknown placeholders") from exc
-    return LoadedPrompt(prompt_id="pillar_b_search", version="v1", path=prompt_path,
+    return LoadedPrompt(prompt_id="pillar_b_search", version="v2", path=prompt_path,
                         raw_bytes=raw, sha256=hashlib.sha256(raw).hexdigest())
 
 
 def pillar_b_window_start(report_date: date) -> date:
+    """Legacy v1 helper retained only for reading historical diagnostics."""
     month_index = report_date.year * 12 + report_date.month - 1 - 3
     year, month = divmod(month_index, 12)
     month += 1
@@ -75,18 +89,8 @@ def pillar_b_window_start(report_date: date) -> date:
 
 
 def pillar_b_search_queries(report_date: date) -> list[str]:
-    """Use the editable prompt as the only query-set definition."""
-    text = load_pillar_b_search_prompt(report_date, DEFAULT_PILLAR_B_SEARCH_PATH.resolve()).raw_bytes.decode("utf-8")
-    lines = text.splitlines()
-    headings = [i for i, line in enumerate(lines) if line.strip() == "## Search queries"]
-    if len(headings) != 1:
-        raise ValueError("Pillar B prompt must contain exactly one ## Search queries section")
-    section = lines[headings[0] + 1:]
-    end = next((i for i, line in enumerate(section) if line.startswith("## ")), len(section))
-    queries = [line[2:].strip() for line in section[:end] if line.startswith("- ")]
-    if not queries or any(not query for query in queries) or len(queries) != len(set(queries)):
-        raise ValueError("Pillar B search queries must be non-empty and unique")
-    return queries
+    """Explicitly reject the old fixed-query production contract."""
+    raise ValueError("Pillar B v2 has no required fixed query set")
 
 
 def load_weekly_monitor_prompt(
