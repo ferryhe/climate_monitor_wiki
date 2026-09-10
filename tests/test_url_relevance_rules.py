@@ -52,7 +52,11 @@ def test_url_driver_embeds_rules_in_one_request_and_skips_excluded_summary(tmp_p
     # History binding is covered by the production-chain resume tests; this
     # fixture isolates prompt composition and the excluded-article response.
     monkeypatch.setattr(monitor, "_verify_candidate_selection", lambda *args: None)
-    monkeypatch.setattr(monitor, "_read_staging_bundle", lambda path: {})
+    frozen_prompts = monitor._frozen_authoring_components(None, None)
+    monkeypatch.setattr(
+        monitor, "_read_staging_bundle",
+        lambda path: {"authoring_prompts": frozen_prompts},
+    )
     monkeypatch.setattr(monitor, "_run_finalize", lambda *args: 0)
     calls = []
 

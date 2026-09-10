@@ -2,7 +2,7 @@
 """Run one frozen acquisition binding through a least-privilege Hermes process.
 
 Hermes can only search/browse and returns one JSON acquisition envelope.  This
-trusted runner validates that envelope, persists it through Registry v8, and
+trusted runner validates that envelope, persists it through Registry v9, and
 freezes the exact report input.  The model never receives filesystem, shell,
 code execution, plugin, MCP, memory, or repository write tools.
 """

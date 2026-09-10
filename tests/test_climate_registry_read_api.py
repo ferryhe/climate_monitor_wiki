@@ -1223,9 +1223,9 @@ def test_bounded_leading_zero_pagination_is_deliberately_accepted(registry_clien
 
 def test_registry_has_no_write_routes():
     registry_routes = {
-        (method, route.path)
+        (method, path)
         for route in app.routes
-        if route.path.startswith("/api/registry")
+        if (path := getattr(route, "path", "")).startswith("/api/registry")
         for method in (route.methods or set())
     }
     assert all(method == "GET" for method, _ in registry_routes)

@@ -25,7 +25,7 @@ def test_print_pillar_b_prompt_is_read_only_and_loads_template(tmp_path, monkeyp
     assert output["prompt_id"] == "pillar_b_search"
     assert '"mode": "unlimited"' in output["prompt"]
     assert "do not add search time parameters" in output["prompt"]
-    assert output["path"].endswith("pillar-b-search-v2.prompt.md")
+    assert output["path"].endswith("task-definition.json")
     assert not destination.parent.exists()
 
 

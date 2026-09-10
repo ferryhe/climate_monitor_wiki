@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -825,6 +826,10 @@ def _verify_candidate_selection(args, bundle):
 
 
 def _run_prepare(args, parser) -> int:
+    # Keep direct helper callers from older integrations compatible with CLI
+    # options added after their Namespace fixtures were written.
+    if not hasattr(args, "registry_database"):
+        args.registry_database = ""
     task_binding = None
     task_binding_path = None
     task_taxonomy = None
@@ -983,6 +988,7 @@ def _run_prepare(args, parser) -> int:
     snapshot_path.write_bytes(snapshot_bytes)
 
     candidate_items = _candidate_items_from_evidence(None, evidence_payload)
+    authoring_components = _frozen_authoring_components(task_binding, task_binding_path)
     authoring_prompt = (_bound_prompt(task_binding, "article_summary", Path(str(task_binding_path)))
                         if task_binding is not None else load_weekly_monitor_prompt())
     request = build_authoring_request(
@@ -1002,6 +1008,7 @@ def _run_prepare(args, parser) -> int:
         "report_date": report_date.isoformat(),
         "staging_digest_inputs": [
             "combined", "snapshot", "evidence", "stats", "request", "identity", "history",
+            "authoring_prompts",
         ],
         "public_artifacts": {
             "acquisition_batch": {
@@ -1025,6 +1032,7 @@ def _run_prepare(args, parser) -> int:
             "version": request["prompt"]["version"],
             "sha256": request["prompt"]["sha256"],
         },
+        "authoring_prompts": authoring_components,
         "taxonomy": {
             "schema_version": taxonomy.schema_version,
             "taxonomy_id": taxonomy.taxonomy_id,
@@ -1055,6 +1063,7 @@ def _run_prepare(args, parser) -> int:
         "request": _canonical_bytes(request),
         "identity": _canonical_bytes(bundle_payload["public_artifacts"]),
         "history": _canonical_bytes(history_selection),
+        "authoring_prompts": _canonical_bytes(authoring_components),
     }
     if registry_identity is not None:
         digest_inputs["registry_acquisition"] = _canonical_bytes(registry_identity)
@@ -1138,6 +1147,8 @@ def _verify_staging_digest(staging_dir: Path, bundle: dict) -> None:
             data = _canonical_bytes(bundle.get("registry_acquisition") or {})
         elif key == "execution_binding":
             data = _canonical_bytes(bundle.get("execution_binding") or {})
+        elif key == "authoring_prompts":
+            data = _canonical_bytes(bundle.get("authoring_prompts") or {})
         else:
             raise SystemExit(f"unknown staging digest input: {key!r}")
         parts.append(data)
@@ -1370,11 +1381,41 @@ def _authoring_evidence_view(evidence: dict) -> dict:
     return {"source_artifact_digest": evidence.get("artifact_digest"), "records": records}
 
 
-def _configured_business_prompt(name: str) -> str:
-    """Load the same versioned business component used by acquisition bindings."""
+def _frozen_authoring_components(
+    binding: dict | None, binding_path: Path | None,
+) -> dict[str, dict[str, str]]:
+    """Snapshot the exact report prompts used by this staging bundle."""
     from climate_monitor.management import load_active_prompt
 
-    return load_active_prompt(name)["text"].strip()
+    components: dict[str, dict[str, str]] = {}
+    for name in ("article_summary", "relevance", "executive_summary"):
+        if binding is None:
+            component = load_active_prompt(name)
+        else:
+            configured = binding["definition"]["prompts"][name]
+            component = {
+                "version": configured["version"],
+                "text": configured["text"],
+                "sha256": binding["prompt_hashes"][name],
+                "path": str(binding_path),
+            }
+        components[name] = dict(component)
+    return components
+
+
+def _loaded_authoring_component(component: Mapping[str, object]) -> LoadedPrompt:
+    """Validate and expose one prompt frozen inside the protected bundle."""
+    raw = str(component.get("text", "")).replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    if not raw or digest != component.get("sha256"):
+        raise SystemExit("frozen authoring prompt hash mismatch")
+    return LoadedPrompt(
+        prompt_id="article_summary",
+        version=str(component.get("version", "")),
+        path=Path(str(component.get("path", ""))),
+        raw_bytes=raw,
+        sha256=digest,
+    )
 
 
 def _response_envelope(request, articles, executive_summary=""):
@@ -1556,14 +1597,16 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
     if help_result.returncode:
         raise SystemExit("Hermes authoring capabilities unavailable")
     _hermes_authoring_invocation(help_result.stdout, "", model=args.model, provider=args.model_provider)
-    if bound is not None:
-        article_component = _bound_prompt(bound, "article_summary", Path(str(bound_path))).raw_bytes.decode("utf-8")
-        relevance_component = _bound_prompt(bound, "relevance", Path(str(bound_path))).raw_bytes.decode("utf-8")
-        executive_component = _bound_prompt(bound, "executive_summary", Path(str(bound_path))).raw_bytes.decode("utf-8")
-    else:
-        article_component = _configured_business_prompt("article_summary")
-        relevance_component = load_article_relevance_rules()
-        executive_component = _configured_business_prompt("executive_summary")
+    frozen_prompts = bundle.get("authoring_prompts") or {}
+    article_component = _loaded_authoring_component(
+        frozen_prompts["article_summary"]
+    ).raw_bytes.decode("utf-8").strip()
+    relevance_component = _loaded_authoring_component(
+        frozen_prompts["relevance"]
+    ).raw_bytes.decode("utf-8").strip()
+    executive_component = _loaded_authoring_component(
+        frozen_prompts["executive_summary"]
+    ).raw_bytes.decode("utf-8").strip()
     url_prompt = article_component + "\nRELEVANCE RULES:\n" + relevance_component
     authored, failures = [], []
     for index, article in enumerate(request["articles"]):
@@ -1798,7 +1841,9 @@ def main() -> None:
 
     fixture_root = _outcome_fixture_root()
     if (args.authoring_mode in {"prepare", "run"} and fixture_root is None
-            and not (all(registry_values) or args.task_binding)):
+            and not (all(registry_values) or args.task_binding)
+            and args.article_evidence_loopback
+            != "scripts.hermes_job:dry_run_unavailable_provider"):
         parser.error("production prepare/run requires the Registry store-before-freeze "
                      "arguments: --registry-database, --registry-acquisition-batch-id, "
                      "--registry-acquisition-input")

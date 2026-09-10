@@ -67,6 +67,7 @@ def load_pillar_b_search_prompt(
         component = load_active_prompt("search_guidance")
         template = component["text"]
         component_version = component["version"]
+        prompt_path = Path(component["path"])
     else:
         template = prompt_path.read_text(encoding="utf-8")
         component_version = "v2"

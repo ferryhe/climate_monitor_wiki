@@ -1065,4 +1065,9 @@ def load_active_prompt(name: str, *, task_path: str | Path | None = None) -> dic
     store = TaskDefinitionStore(task_path or os.environ.get("CLIMATE_TASK_CONFIG", str(DEFAULT_TASK_PATH)), os.environ.get("CLIMATE_TASK_VERSION_DIR", str(DEFAULT_VERSION_ROOT)))
     loaded = store.load()
     component = loaded["definition"]["prompts"][name]
-    return {"version": component["version"], "text": component["text"], "sha256": loaded["hashes"]["components"][name]}
+    return {
+        "version": component["version"],
+        "text": component["text"],
+        "sha256": loaded["hashes"]["components"][name],
+        "path": str(store.active_path),
+    }

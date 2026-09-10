@@ -891,7 +891,35 @@ def test_resume_payload_rejects_retry_rows_that_replace_verified_history(tmp_pat
     assert merged["items"] == [completed, legitimate_retry]
 
 
-def test_resume_cannot_store_or_freeze_cumulative_over_budget_evidence(tmp_path):
+def test_unbound_authoring_components_are_frozen_before_config_drift(
+    tmp_path, monkeypatch
+):
+    from climate_monitor import management
+    from scripts import run_climate_monitor as monitor
+
+    source = tmp_path / "task.json"
+    active = {
+        name: {
+            "version": "v1",
+            "text": f"{name} original",
+            "path": str(source),
+        }
+        for name in ("article_summary", "relevance", "executive_summary")
+    }
+    for component in active.values():
+        component["sha256"] = hashlib.sha256(component["text"].encode()).hexdigest()
+    monkeypatch.setattr(management, "load_active_prompt", lambda name: active[name])
+
+    frozen = monitor._frozen_authoring_components(None, None)
+    active["article_summary"]["text"] = "changed after prepare"
+
+    assert frozen["article_summary"]["text"] == "article_summary original"
+    loaded = monitor._loaded_authoring_component(frozen["article_summary"])
+    assert loaded.sha256 == frozen["article_summary"]["sha256"]
+    assert loaded.path == source
+
+
+def test_resume_cannot_store_or_freeze_cumulative_over_budget_evidence(tmp_path, monkeypatch):
     from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
     import scripts.run_agent_acquisition as runner
 
@@ -941,6 +969,14 @@ def test_resume_cannot_store_or_freeze_cumulative_over_budget_evidence(tmp_path)
         [{"tool": "web_search", "arguments": {"query": "attempt-1-search"},
           "result": {"data": {"web": []}}}],
         runtime_seconds=12.0,
+    )
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_hermes_tool_events(
+        hermes_home, first,
+        [{"tool_call_id": "call-1", "tool": "web_search",
+          "arguments": {"query": "attempt-1-search"},
+          "result": {"data": {"web": []}}}],
     )
 
     history = runner._resume_history(second_path, second)
@@ -1074,6 +1110,9 @@ def test_exhausted_immutable_budget_is_terminal_not_retryable(
     runner._persist_tool_provenance(
         first_path, first, [], runtime_seconds=10.0
     )
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_hermes_tool_events(hermes_home, first, [])
 
     monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
     assert runner._execute_locked(second_path) == 65
