@@ -182,6 +182,32 @@ def test_authenticated_http_proxy_owns_upstream_session_auth(monkeypatch):
     assert "x-upstream-secret" not in page.headers
 
 
+def test_loopback_http_proxy_ignores_environment_proxies(monkeypatch):
+    import api_server
+    import climate_monitor.hermes_dashboard as dashboard
+
+    _configure_auth(monkeypatch, api_server)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    real_client = httpx.AsyncClient
+    client_options: list[dict[str, object]] = []
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+
+    def client_factory(**kwargs):
+        client_options.append(kwargs.copy())
+        return real_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(dashboard.httpx, "AsyncClient", client_factory)
+    client = TestClient(api_server.app, base_url="https://testserver")
+    _login(client)
+
+    assert client.get("/hermes/api/config").json() == {"ok": True}
+    assert client_options == [
+        {"timeout": 30.0, "follow_redirects": False, "trust_env": False}
+    ]
+
+
 def test_logout_and_immediate_relogin_never_restore_replayed_session(monkeypatch):
     import api_server
 
@@ -527,6 +553,47 @@ def test_unavailable_state_and_pinned_isolated_runtime(monkeypatch):
     assert "CLIMATE_PUBLIC_ORIGIN: ${CLIMATE_PUBLIC_ORIGIN:-}" in compose
     assert "9119" not in caddy
     assert 'ports:\n      - "80:80"\n      - "443:443"' in compose
+
+
+def test_caddy_suppresses_oauth_callback_uri_access_logs():
+    caddy = (ROOT / "Caddyfile").read_text(encoding="utf-8")
+
+    assert "@hermes_oauth_callback path /hermes/api/mcp/oauth/callback/*" in caddy
+    assert "log_skip @hermes_oauth_callback" in caddy
+    assert "output file /var/log/caddy/access.log" in caddy
+
+
+def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_path):
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "HERMES_DASHBOARD_ENABLED: ${HERMES_DASHBOARD_ENABLED:-0}" in compose
+
+    marker = tmp_path / "application-started"
+    command = (
+        "from pathlib import Path; import sys; "
+        "Path(sys.argv[1]).write_text('wiki-chat-started', encoding='utf-8')"
+    )
+    result = subprocess.run(
+        [
+            "sh",
+            str(ROOT / "scripts" / "docker_entrypoint.sh"),
+            sys.executable,
+            "-c",
+            command,
+            str(marker),
+        ],
+        cwd=ROOT,
+        env={
+            "PATH": os.environ["PATH"],
+            "HERMES_DASHBOARD_ENABLED": "0",
+            "CLIMATE_PUBLIC_ORIGIN": "",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text(encoding="utf-8") == "wiki-chat-started"
 
 
 def test_trusted_public_origin_pins_oauth_callback_and_rejects_header_input(monkeypatch):

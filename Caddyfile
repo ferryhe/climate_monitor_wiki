@@ -37,6 +37,12 @@
 		max_size 200KB
 	}
 
+	# OAuth providers return short-lived credentials in this callback's query.
+	# Suppress the complete callback request rather than persisting code/state in
+	# the JSON URI field. Application-side state validation remains unchanged.
+	@hermes_oauth_callback path /hermes/api/mcp/oauth/callback/*
+	log_skip @hermes_oauth_callback
+
 	reverse_proxy wiki:8501 {
 		health_uri /api/config
 		health_interval 30s

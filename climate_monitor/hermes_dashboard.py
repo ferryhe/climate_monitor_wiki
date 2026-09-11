@@ -214,7 +214,14 @@ async def proxy_http(
             and upstream_url.path != expected_upstream_path
         ):
             raise HTTPException(status_code=404, detail="Not found.")
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+        # This hop is always loopback and carries the private Dashboard token.
+        # Never inherit HTTP(S)_PROXY or other HTTPX transport settings from the
+        # container environment, even when NO_PROXY is absent or misconfigured.
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
             upstream = await client.request(
                 request.method,
                 upstream_url,

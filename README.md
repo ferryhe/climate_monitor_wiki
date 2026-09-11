@@ -418,8 +418,17 @@ fail closed. The login page, cookie name, and `/manage` UX from #94 are unchange
 The Compose image pins Hermes Agent commit
 `5538bd1f933be2e94aca9755deca5cc59cccc553` (`pyproject.toml` version `0.20.5`)
 and Node `22.22.0`. At image build time it installs the upstream `web` and `pty`
-extras and builds both the official React Dashboard and TUI bundle. The existing
-container entrypoint starts it with:
+extras and builds both the official React Dashboard and TUI bundle. Dashboard
+startup is deliberately opt-in so upgrading an existing Wiki/Chat deployment
+without the new origin setting cannot stop the application. Provision both
+values atomically in `.env` before recreating the service:
+
+```text
+HERMES_DASHBOARD_ENABLED=1
+CLIMATE_PUBLIC_ORIGIN=https://climate.example
+```
+
+When enabled, the existing container entrypoint starts it with:
 
 ```text
 HERMES_HOME=/app/output/hermes \
@@ -435,7 +444,8 @@ provides Chat over PTY/WebSocket, structured tool events, recent/session lists,
 and session continuation. Those are upstream capabilities rather than locally
 duplicated forms.
 
-`CLIMATE_PUBLIC_ORIGIN` is a required deployment contract: set it to the exact
+`CLIMATE_PUBLIC_ORIGIN` is a required contract only when
+`HERMES_DASHBOARD_ENABLED=1`: set it to the exact
 browser-facing HTTPS origin (scheme plus authority, with no path, credentials,
 query, or fragment). It is **not** inferred from `Host`, `Forwarded`, or
 `X-Forwarded-*`. Hermes 0.20.5 otherwise derives an MCP OAuth redirect from
@@ -452,6 +462,9 @@ state-protected GET callback without the Strict #94 cookie, because a cross-site
 provider redirect does not carry a `SameSite=Strict` cookie; all Dashboard pages,
 APIs, and WebSockets remain under the single #94 boundary. The upstream
 callback still requires its per-flow opaque OAuth `state` before accepting a code.
+Caddy suppresses access-log records for the complete callback path so OAuth
+`code` and `state` query values are never persisted in its JSON URI field; other
+site requests remain logged normally.
 
 The selected instance is the current/default profile under the dedicated
 `HERMES_HOME=/app/output/hermes` directory in this deployment's named
@@ -463,7 +476,8 @@ deployment directory appear in its switcher, but host profiles cannot. The same
 home is used by `/manage`-started Hermes work, preserving the existing model
 environment and session continuity while keeping this instance explicit.
 
-If the loopback Dashboard is starting or unavailable, authenticated HTML gets a
+When Dashboard enablement is omitted (the safe default), or if the enabled
+loopback Dashboard is starting or unavailable, authenticated HTML gets a
 clear `Hermes Dashboard unavailable` 503 page and API calls get a stable 503
 JSON reason. The persistent volume is not modified, so restarting the Compose
 service does not discard sessions. This repository change does **not** claim a
