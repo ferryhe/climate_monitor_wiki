@@ -9,6 +9,9 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
       RELOAD_TOKEN: ${RELOAD_TOKEN:-}
       HERMES_HOME: /app/output/hermes
+      HERMES_DASHBOARD_ENABLED: "1"
+      HERMES_DASHBOARD_URL: http://127.0.0.1:9119
+      CLIMATE_PUBLIC_ORIGIN: ${CLIMATE_PUBLIC_ORIGIN:-}
       CLIMATE_TASK_CONFIG: /app/output/task/task-definition.json
       CLIMATE_TASK_VERSION_DIR: /app/output/task/versions
       CLIMATE_ACQUISITION_RUN_DIR: /app/output/acquisition-runs
@@ -20,6 +23,7 @@ services:
       CLIMATE_CONSOLE_PASSWORD_HASH: ${CLIMATE_CONSOLE_PASSWORD_HASH:-}
       CLIMATE_CONSOLE_SESSION_SECRET: ${CLIMATE_CONSOLE_SESSION_SECRET:-}
       CLIMATE_CONSOLE_SESSION_SECONDS: ${CLIMATE_CONSOLE_SESSION_SECONDS:-1800}
+      CLIMATE_CONSOLE_SESSION_DB: /app/output/console-sessions.sqlite3
       CLIMATE_CONSOLE_SECURE_COOKIE: ${CLIMATE_CONSOLE_SECURE_COOKIE:-true}
     volumes:
       # Bind-mount the content so an ingest run on the host is picked up by

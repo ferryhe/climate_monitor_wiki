@@ -9,17 +9,23 @@ from __future__ import annotations
 
 import os
 import secrets
+import sqlite3
+import tempfile
+import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi_users import BaseUserManager, FastAPIUsers, InvalidID
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import BaseUserDatabase
+from fastapi_users.jwt import decode_jwt, generate_jwt
 
 
 _USER_NAMESPACE = uuid.UUID("6d53b4b7-bb71-4a9b-bfc5-85dad47cfb72")
 _EPHEMERAL_SESSION_SECRET = secrets.token_urlsafe(48)
+_DEFAULT_SESSION_DB = Path(tempfile.gettempdir()) / f"climate-console-sessions-{os.getpid()}.sqlite3"
 
 
 @dataclass
@@ -99,6 +105,123 @@ def _session_seconds() -> int:
     return int(os.getenv("CLIMATE_CONSOLE_SESSION_SECONDS", "1800"))
 
 
+def _session_db_path() -> Path:
+    configured = os.getenv("CLIMATE_CONSOLE_SESSION_DB", "").strip()
+    return Path(configured).expanduser() if configured else _DEFAULT_SESSION_DB
+
+
+class ConsoleSessionStore:
+    """Deployment-shared allowlist for independently revocable login sessions."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or _session_db_path()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        connection = sqlite3.connect(self.path, timeout=5)
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS console_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            )"""
+        )
+        try:
+            self.path.chmod(0o600)
+        except OSError:
+            pass
+        return connection
+
+    def create(self, session_id: str, user_id: str, expires_at: int) -> None:
+        now = int(time.time())
+        with self._connect() as connection:
+            connection.execute("DELETE FROM console_sessions WHERE expires_at <= ?", (now,))
+            connection.execute(
+                "INSERT INTO console_sessions(session_id, user_id, expires_at) VALUES (?, ?, ?)",
+                (session_id, user_id, expires_at),
+            )
+
+    def is_active(self, session_id: str, user_id: str) -> bool:
+        now = int(time.time())
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT expires_at FROM console_sessions WHERE session_id = ? AND user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
+            if row is not None and int(row[0]) <= now:
+                connection.execute(
+                    "DELETE FROM console_sessions WHERE session_id = ?", (session_id,)
+                )
+                return False
+        return row is not None
+
+    def revoke(self, session_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM console_sessions WHERE session_id = ?", (session_id,)
+            )
+
+
+class ConsoleSessionJWTStrategy(JWTStrategy[ConsoleUser, uuid.UUID]):
+    """JWT strategy with a random login identity backed by durable state."""
+
+    def __init__(self, *, secret: str, lifetime_seconds: int) -> None:
+        super().__init__(secret=secret, lifetime_seconds=lifetime_seconds)
+        self.sessions = ConsoleSessionStore()
+
+    def _decode(self, token: str) -> dict | None:
+        try:
+            return decode_jwt(
+                token,
+                self.decode_key,
+                self.token_audience,
+                algorithms=[self.algorithm],
+            )
+        except Exception:
+            return None
+
+    async def write_token(self, user: ConsoleUser) -> str:
+        session_id = secrets.token_urlsafe(32)
+        expires_at = int(time.time()) + max(int(self.lifetime_seconds or 0), 1)
+        self.sessions.create(session_id, str(user.id), expires_at)
+        return generate_jwt(
+            {"sub": str(user.id), "aud": self.token_audience, "jti": session_id},
+            self.encode_key,
+            self.lifetime_seconds,
+            algorithm=self.algorithm,
+        )
+
+    async def read_token(
+        self, token: str | None, user_manager: BaseUserManager[ConsoleUser, uuid.UUID]
+    ) -> ConsoleUser | None:
+        if token is None:
+            return None
+        data = self._decode(token)
+        if data is None:
+            return None
+        user_id = data.get("sub")
+        session_id = data.get("jti")
+        if not isinstance(user_id, str) or not isinstance(session_id, str):
+            return None
+        try:
+            if not self.sessions.is_active(session_id, user_id):
+                return None
+        except (OSError, sqlite3.Error):
+            return None
+        try:
+            return await super().read_token(token, user_manager)
+        except (OSError, sqlite3.Error):
+            return None
+
+    async def destroy_token(self, token: str, user: ConsoleUser) -> None:
+        data = self._decode(token)
+        session_id = data.get("jti") if data else None
+        if isinstance(session_id, str):
+            self.sessions.revoke(session_id)
+
+
 cookie_transport = CookieTransport(
     cookie_name="climate_console_session",
     cookie_max_age=_session_seconds(),
@@ -108,11 +231,14 @@ cookie_transport = CookieTransport(
 )
 
 
-def get_jwt_strategy() -> JWTStrategy:
+def get_jwt_strategy() -> ConsoleSessionJWTStrategy:
     secret = os.getenv("CLIMATE_CONSOLE_SESSION_SECRET", "").strip()
     # A per-process fallback permits unauthenticated health endpoints without
     # making an absent deployment secret forgeable. Login remains disabled.
-    return JWTStrategy(secret=secret or _EPHEMERAL_SESSION_SECRET, lifetime_seconds=_session_seconds())
+    return ConsoleSessionJWTStrategy(
+        secret=secret or _EPHEMERAL_SESSION_SECRET,
+        lifetime_seconds=_session_seconds(),
+    )
 
 
 auth_backend = AuthenticationBackend(

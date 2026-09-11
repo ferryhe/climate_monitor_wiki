@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
 from limits import parse as parse_rate_limit
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -36,6 +36,11 @@ from climate_monitor.console_auth import (
     auth_router,
     current_console_user,
     optional_console_user,
+)
+from climate_monitor.hermes_dashboard import (
+    oauth_callback_proxy_path,
+    proxy_http,
+    proxy_websocket,
 )
 from climate_registry.read_api import (
     RegistryContractError,
@@ -481,6 +486,55 @@ def console_page(user: OptionalConsolePrincipal):
     if user is None:
         return RedirectResponse("/manage/login", status_code=303)
     return FileResponse(MANAGE_DIR / "index.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/manage/session", include_in_schema=False)
+def console_session(user: OptionalConsolePrincipal) -> dict[str, bool]:
+    """Expose only whether the shared operator session is active."""
+    return {"authenticated": user is not None}
+
+
+@app.api_route(
+    "/hermes/",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+@app.api_route(
+    "/hermes",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def hermes_root(request: Request, user: OptionalConsolePrincipal) -> Response:
+    if user is None:
+        if request.method == "GET":
+            return RedirectResponse("/manage/login?next=/hermes", status_code=303)
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return await proxy_http(request, "")
+
+
+@app.api_route(
+    "/hermes/api/mcp/oauth/callback/{server_name}",
+    methods=["GET"],
+    include_in_schema=False,
+)
+async def hermes_mcp_oauth_callback(request: Request, server_name: str) -> Response:
+    """Forward Hermes' state-protected provider callback without a SameSite cookie."""
+    path = oauth_callback_proxy_path(server_name, request.scope.get("raw_path"))
+    return await proxy_http(request, path, expected_upstream_path=f"/{path}")
+
+
+@app.api_route(
+    "/hermes/{path:path}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def hermes_http(request: Request, path: str, user: ConsolePrincipal) -> Response:
+    return await proxy_http(request, path)
+
+
+@app.websocket("/hermes/{path:path}")
+async def hermes_websocket(websocket: WebSocket, path: str) -> None:
+    await proxy_websocket(websocket, path)
 
 
 @app.get("/manage/assets/{filename}", include_in_schema=False)

@@ -38,4 +38,25 @@ if [ -n "${CLIMATE_ACQUISITION_RUN_DIR:-}" ]; then
     mkdir -p "$CLIMATE_ACQUISITION_RUN_DIR"
 fi
 
+if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
+    : "${CLIMATE_PUBLIC_ORIGIN:?trusted public HTTPS origin is required for Hermes OAuth callbacks}"
+    python -c 'from climate_monitor.hermes_dashboard_server import trusted_public_origin; trusted_public_origin()'
+    export HERMES_HOME="${HERMES_HOME:-/app/output/hermes}"
+    if [ -z "${HERMES_DASHBOARD_SESSION_TOKEN:-}" ]; then
+        HERMES_DASHBOARD_SESSION_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    fi
+    export HERMES_DASHBOARD_SESSION_TOKEN
+    mkdir -p "$HERMES_HOME"
+    python -m climate_monitor.hermes_dashboard_server &
+    hermes_pid=$!
+    "$@" &
+    app_pid=$!
+    trap 'kill "$app_pid" "$hermes_pid" 2>/dev/null || true' INT TERM EXIT
+    status=0
+    wait "$app_pid" || status=$?
+    kill "$hermes_pid" 2>/dev/null || true
+    wait "$hermes_pid" 2>/dev/null || true
+    exit "$status"
+fi
+
 exec "$@"

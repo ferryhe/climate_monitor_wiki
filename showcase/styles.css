@@ -120,6 +120,7 @@ a {
   color: var(--muted);
   font-size: 13px;
   font-weight: 600;
+  text-decoration: none;
   transition:
     background 0.18s ease,
     color 0.18s ease,

@@ -13,7 +13,8 @@ and controlled deployment/scheduler verification remain cutover gates. See
 
 ## Web + Obsidian Surfaces
 
-This repo exposes the monitoring corpus through three web tabs plus an Obsidian plugin:
+This repo exposes the monitoring corpus through three public web tabs, an
+authenticated Hermes operations link, and an Obsidian plugin:
 
 - `Historical Reports` is the default operator archive for weekly narrative
   briefings, monitoring snapshots, PDFs, and their source articles.
@@ -22,6 +23,9 @@ This repo exposes the monitoring corpus through three web tabs plus an Obsidian 
   The page order is now `Dataview + Note Detail` first, then `Graph View`.
   The graph supports `Notes` and `Keywords` modes so you can switch between file links and a source-backed concept map.
   Both graph modes are precomputed by the API so the workspace can render quickly without rebuilding the graph client-side.
+- `Hermes` appears only when the existing `/manage` operator session is active.
+  It opens the official Hermes Web Dashboard at `/hermes`; it is an operations
+  UI and is separate from the public, corpus-grounded retrieval `Chat` tab.
 - `.obsidian/plugins/climate-agent-chat/` adds an Obsidian side-panel chat plugin that calls the same local API.
 
 See [docs/ui-surfaces.md](docs/ui-surfaces.md) for the operator interfaces and
@@ -377,8 +381,8 @@ existing web-listening adapter + climate_registry.acquisition (#112)
 frozen report input ──► existing monitor authoring/checkpoint/publish gates
 ```
 
-There is no console queue, search wrapper, second executor, report/publish
-bypass, or general Hermes UI. Concurrent start/resume requests for the shared
+There is no console queue, search wrapper, second executor, or report/publish
+bypass. Concurrent start/resume requests for the shared
 monitor state are rejected by an interprocess lock; the worker owns that lock
 from collection through report finalization. The scheduler snapshot remains separate from live
 acquisition status. The Python 3.12 image installs `web-listening` 3.2.0 and an
@@ -392,4 +396,118 @@ storage, or schedules were deployed. See
 [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) and [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md)
 for those operational gates.
 
-_Operational documentation updated: 2026-09-08_
+### Authenticated Hermes operations UI
+
+`/hermes` is a same-site reverse proxy to the **official** Hermes Web Dashboard,
+not a replacement chat frontend. It reuses exactly the `/manage` FastAPI Users
+login and `climate_console_session` cookie; there is no second account, login,
+role, configuration form, or executor. Anonymous page requests redirect to
+`/manage/login?next=/hermes`, while anonymous Dashboard HTTP and WebSocket
+requests fail closed. Logging out revokes the presented session for subsequent
+HTTP operations and closes its existing proxied WebSockets; token expiry is
+also rechecked while a WebSocket is open.
+
+Every successful login receives a cryptographically random JWT `jti`. Active
+session IDs are allowlisted in `/app/output/console-sessions.sqlite3`, on the
+same `climate_runtime` deployment volume. Logout deletes only the presented ID;
+all workers and replacement containers consult the same SQLite store, so an old
+cookie cannot be restored by an immediate relogin, process restart, or another
+worker. Tokens issued by the earlier stateless implementation have no `jti` and
+fail closed. The login page, cookie name, and `/manage` UX from #94 are unchanged.
+
+The Compose image pins Hermes Agent commit
+`5538bd1f933be2e94aca9755deca5cc59cccc553` (`pyproject.toml` version `0.20.5`)
+and Node `22.22.0`. At image build time it installs the upstream `web` and `pty`
+extras and builds both the official React Dashboard and TUI bundle. The existing
+container entrypoint starts it with:
+
+```text
+HERMES_HOME=/app/output/hermes \
+CLIMATE_PUBLIC_ORIGIN=https://climate.example \
+python -m climate_monitor.hermes_dashboard_server
+```
+
+Only FastAPI can reach that loopback listener. Caddy exposes FastAPI on 80/443
+and has no route or published port to 9119. FastAPI removes the `/hermes` prefix,
+adds `X-Forwarded-Prefix: /hermes`, and proxies page assets, REST calls and all
+Dashboard WebSockets. The pinned upstream explicitly supports that prefix and
+provides Chat over PTY/WebSocket, structured tool events, recent/session lists,
+and session continuation. Those are upstream capabilities rather than locally
+duplicated forms.
+
+`CLIMATE_PUBLIC_ORIGIN` is a required deployment contract: set it to the exact
+browser-facing HTTPS origin (scheme plus authority, with no path, credentials,
+query, or fragment). It is **not** inferred from `Host`, `Forwarded`, or
+`X-Forwarded-*`. Hermes 0.20.5 otherwise derives an MCP OAuth redirect from
+`request.base_url`; setting upstream `dashboard.public_url` would also engage a
+second Hermes auth gate even though the service binds to loopback. The small
+pinned-version adapter therefore overrides only Hermes' late-bound
+`_mcp_oauth_callback_url` seam and produces
+`$CLIMATE_PUBLIC_ORIGIN/hermes/api/mcp/oauth/callback/<server>`. Callback server
+identifiers are limited to a single 1–128 character RFC 3986 unreserved ASCII
+segment; dot segments, slashes, backslashes, percent escapes, and encoded or
+double-encoded alternate forms fail closed before any loopback request. It
+refuses any Hermes version other than 0.20.5. FastAPI exposes only that
+state-protected GET callback without the Strict #94 cookie, because a cross-site
+provider redirect does not carry a `SameSite=Strict` cookie; all Dashboard pages,
+APIs, and WebSockets remain under the single #94 boundary. The upstream
+callback still requires its per-flow opaque OAuth `state` before accepting a code.
+
+The selected instance is the current/default profile under the dedicated
+`HERMES_HOME=/app/output/hermes` directory in this deployment's named
+`climate_runtime` volume. Configuration, memory and existing #94 session history
+therefore remain in place and survive container/Dashboard restarts without
+exposing a host Hermes home or unrelated profile tree. The official Dashboard is
+machine-level within that home: profiles deliberately created under this
+deployment directory appear in its switcher, but host profiles cannot. The same
+home is used by `/manage`-started Hermes work, preserving the existing model
+environment and session continuity while keeping this instance explicit.
+
+If the loopback Dashboard is starting or unavailable, authenticated HTML gets a
+clear `Hermes Dashboard unavailable` 503 page and API calls get a stable 503
+JSON reason. The persistent volume is not modified, so restarting the Compose
+service does not discard sessions. This repository change does **not** claim a
+production deployment or a real model conversation. A safe runtime check is:
+
+```bash
+docker compose build wiki
+docker compose run --rm --no-deps --entrypoint sh wiki -c \
+  'hermes --version && test -f /opt/hermes-agent/hermes_cli/web_dist/index.html && test -f /opt/hermes-agent/hermes_cli/tui_dist/entry.js && CLIMATE_PUBLIC_ORIGIN=https://climate.example python -c "from climate_monitor.hermes_dashboard_server import oauth_callback_url; assert oauth_callback_url(\"calendar\") == \"https://climate.example/hermes/api/mcp/oauth/callback/calendar\"" && python scripts/validate_pinned_hermes_oauth.py'
+```
+
+After an authorized deployment, run the deterministic, non-model access probe
+with credentials supplied only through the environment:
+
+```bash
+CLIMATE_VALIDATION_USERNAME="$CLIMATE_CONSOLE_USERNAME" \
+CLIMATE_VALIDATION_PASSWORD='<operator password>' \
+python scripts/validate_issue114_access.py "$CLIMATE_PUBLIC_ORIGIN"
+```
+
+It verifies anonymous page/API/WebSocket rejection, shared login, official page
+bootstrap, session-list HTTP, an authenticated WebSocket handshake, the
+cookie-free callback path with deliberately invalid state, logout, and replay
+rejection. It sends no prompt and reports `"model_prompt_sent": false`.
+
+The authorized acceptance operator must still use the browser for the required
+real-model check: open `/hermes`, send a harmless prompt such as “Reply with the
+current session title and do not use tools,” record the answer; then run a
+read-only tool such as listing the current working directory, record the tool
+event/result; open Sessions, reopen that session, send “Continue with OK,” and
+record the continuation. Do not use mail, publishing, scheduling, file-write, or
+other side-effecting tools. Record Hermes `0.20.5`, profile, timestamp, and
+session ID. This must be performed later in the authorized real environment;
+the repository tests and Docker smoke below are not that evidence.
+
+```mermaid
+flowchart LR
+    Public["Public browser"] --> Reports["Reports / Registry / Wiki"]
+    Public --> RAG["Retrieval Chat<br/>climate corpus only"]
+    Operator["Operator browser"] --> Login["Shared #94 /manage login"]
+    Login --> Manage["/manage<br/>climate task forms"]
+    Login --> Proxy["/hermes<br/>FastAPI HTTP + WS gate"]
+    Proxy --> Dashboard["Official Hermes Dashboard<br/>127.0.0.1:9119"]
+    Dashboard --> Store["Dedicated /app/output/hermes directory<br/>current profile + sessions"]
+```
+
+_Operational documentation updated: 2026-09-11_
