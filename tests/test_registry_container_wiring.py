@@ -73,7 +73,10 @@ def test_dockerfile_packages_registry_without_changing_entrypoint():
     assert "COPY climate_delivery ./climate_delivery" in dockerfile
     assert "COPY monitoring/taxonomies ./monitoring/taxonomies" in dockerfile
 
-    assert 'CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501"]' in dockerfile
+    assert (
+        'CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", '
+        '"8501", "--no-access-log"]' in dockerfile
+    )
 
 
 def test_docker_build_context_includes_registry_runtime_dependencies():

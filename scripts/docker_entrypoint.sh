@@ -38,4 +38,36 @@ if [ -n "${CLIMATE_ACQUISITION_RUN_DIR:-}" ]; then
     mkdir -p "$CLIMATE_ACQUISITION_RUN_DIR"
 fi
 
+if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
+    : "${CLIMATE_PUBLIC_ORIGIN:?trusted public HTTPS origin is required for Hermes OAuth callbacks}"
+    python -c 'from climate_monitor.hermes_dashboard_server import trusted_public_origin; trusted_public_origin()'
+    export HERMES_HOME="${HERMES_HOME:-/app/output/hermes}"
+    if [ -z "${HERMES_DASHBOARD_SESSION_TOKEN:-}" ]; then
+        HERMES_DASHBOARD_SESSION_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    fi
+    export HERMES_DASHBOARD_SESSION_TOKEN
+    mkdir -p "$HERMES_HOME"
+    python -m climate_monitor.hermes_dashboard_server &
+    hermes_pid=$!
+    "$@" &
+    app_pid=$!
+    trap 'kill "$app_pid" "$hermes_pid" 2>/dev/null || true' INT TERM EXIT
+    status=0
+    while kill -0 "$app_pid" 2>/dev/null && kill -0 "$hermes_pid" 2>/dev/null; do
+        sleep 1
+    done
+    if ! kill -0 "$hermes_pid" 2>/dev/null; then
+        wait "$hermes_pid" || status=$?
+        # Dashboard mode cannot remain healthy after its child exits. Turn an
+        # unexpected clean child exit into a restartable container failure.
+        [ "$status" -ne 0 ] || status=1
+    else
+        wait "$app_pid" || status=$?
+    fi
+    kill "$app_pid" "$hermes_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+    wait "$hermes_pid" 2>/dev/null || true
+    exit "$status"
+fi
+
 exec "$@"

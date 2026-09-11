@@ -10,6 +10,19 @@
 {
 	auto_https disable_redirects
 	default_sni {$SITE_HOST:172.31.10.77}
+
+	# Runtime/error logs go to container stdout/stderr and are retained by the
+	# Docker logging driver. Preserve request paths for outage diagnosis, but
+	# remove every query string before encoding so callback credentials cannot
+	# escape through reverse-proxy errors when the application is unavailable.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*$" ""
+			}
+		}
+	}
 }
 
 # Shared site body: same reverse proxy + file logger for every hostname.
@@ -36,6 +49,12 @@
 	request_body {
 		max_size 200KB
 	}
+
+	# OAuth providers return short-lived credentials in this callback's query.
+	# Suppress the complete callback request rather than persisting code/state in
+	# the JSON URI field. Application-side state validation remains unchanged.
+	@hermes_oauth_callback path /hermes/api/mcp/oauth/callback/*
+	log_skip @hermes_oauth_callback
 
 	reverse_proxy wiki:8501 {
 		health_uri /api/config

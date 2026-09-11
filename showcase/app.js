@@ -128,6 +128,7 @@ const els = {
   useInChat: document.getElementById("useInChatButton"),
   clearSelection: document.getElementById("clearSelectionButton"),
   status: document.getElementById("connectionStatus"),
+  hermesLink: document.getElementById("hermesLink"),
   activeContextBadge: document.getElementById("activeContextBadge"),
   activeContext: document.getElementById("activeContext"),
   detailTitle: document.getElementById("detailTitle"),
@@ -2222,6 +2223,12 @@ function attachEvents() {
 
 async function main() {
   loadThread();
+  fetch("/api/manage/session", { credentials: "same-origin" })
+    .then((response) => (response.ok ? response.json() : { authenticated: false }))
+    .then(({ authenticated }) => {
+      if (authenticated && els.hermesLink) els.hermesLink.hidden = false;
+    })
+    .catch(() => {});
   setAnswerMode(state.answerMode);
   setGraphMode(state.graphMode);
   setWorkspaceView(state.activeView);

@@ -1,17 +1,33 @@
+FROM node:22.22.0-bookworm-slim AS hermes-dashboard-build
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --filter=blob:none https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
+    && git -C /opt/hermes-agent checkout 5538bd1f933be2e94aca9755deca5cc59cccc553 \
+    && rm -rf /opt/hermes-agent/.git \
+    && cd /opt/hermes-agent \
+    && npm ci --workspace ui-tui --workspace web --include-workspace-root \
+    && npm run build --workspace web \
+    && npm run build --workspace ui-tui \
+    && mkdir -p hermes_cli/tui_dist \
+    && cp ui-tui/dist/entry.js hermes_cli/tui_dist/entry.js \
+    && rm -rf node_modules ui-tui/node_modules web/node_modules
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git \
+    && apt-get install --yes --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=hermes-dashboard-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=hermes-dashboard-build /opt/hermes-agent /opt/hermes-agent
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-RUN git clone --filter=blob:none https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
-    && git -C /opt/hermes-agent checkout 5538bd1f933be2e94aca9755deca5cc59cccc553 \
-    && pip install --no-cache-dir --editable /opt/hermes-agent \
-    && rm -rf /opt/hermes-agent/.git
+RUN pip install --no-cache-dir --editable '/opt/hermes-agent[web,pty]'
 
 COPY api_server.py ./
 COPY agentic_wiki ./agentic_wiki
@@ -34,4 +50,6 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8501
 
 ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501"]
+# Caddy is the request-log sink and skips credential-bearing OAuth callbacks.
+# Keep Uvicorn lifecycle/error logging, but do not duplicate raw request URIs in Docker logs.
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501", "--no-access-log"]

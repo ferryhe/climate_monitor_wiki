@@ -88,7 +88,47 @@ sudo docker compose down               # stop everything (volumes persist)
 ```
 
 Access logs are written as JSON to the `caddy_logs` volume at
-`/var/log/caddy/access.log`.
+`/var/log/caddy/access.log`. Caddy deliberately skips the complete Hermes MCP
+OAuth callback path because its query carries short-lived `code` and `state`
+credentials; all other site requests remain logged. The application container's
+shipped Uvicorn command disables its duplicate request access log, preventing
+the same callback URI from being retained by Docker's logging driver. Uvicorn
+lifecycle and error logs remain available through `docker compose logs wiki`.
+Caddy's separate runtime/error stream remains available through
+`docker compose logs caddy`, including request paths and reverse-proxy failure
+details, but its encoder removes all query strings from `request.uri` before
+stdout/stderr reaches Docker. This prevents an outage-time callback from leaking
+credentials at the cost of omitting query parameters from Caddy process-log
+diagnostics. Non-callback access-log records are unaffected.
+
+## Optional Hermes Dashboard
+
+The Dashboard is disabled by default. This fail-safe keeps an existing Wiki,
+retrieval Chat, and management deployment available when it has not yet been
+provisioned with a trusted callback origin. In that state authenticated
+`/hermes` requests show the documented `Hermes Dashboard unavailable` response.
+
+To opt in, add both settings to `.env` in one operator-reviewed change before
+recreating the application service:
+
+```text
+HERMES_DASHBOARD_ENABLED=1
+CLIMATE_PUBLIC_ORIGIN=https://climate.aiinforsearch.com
+```
+
+The origin must be the exact browser-facing HTTPS origin with no path,
+credentials, query, or fragment. Explicit enablement without a valid origin is
+a configuration error and the entrypoint fails closed. To opt out again, set
+`HERMES_DASHBOARD_ENABLED=0` (or remove it) and recreate only `wiki`; the
+persistent `climate_runtime` volume and stored Dashboard sessions remain intact.
+
+The base Compose deployment continues to set
+`HERMES_HOME=/app/output/hermes`, exactly as it did before this Dashboard was
+added. The directory lives in the existing `climate_runtime` volume. No home
+migration is required: disabled and enabled operation both keep `/manage` jobs,
+profiles, configuration, and session history on that same persistent tree.
+Recreating only `wiki` or toggling the Dashboard does not change the selected
+Hermes home.
 
 ## Publishing and deploying weekly content
 
