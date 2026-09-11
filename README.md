@@ -464,7 +464,10 @@ APIs, and WebSockets remain under the single #94 boundary. The upstream
 callback still requires its per-flow opaque OAuth `state` before accepting a code.
 Caddy suppresses access-log records for the complete callback path so OAuth
 `code` and `state` query values are never persisted in its JSON URI field; other
-site requests remain logged normally.
+site requests remain logged normally. The shipped Uvicorn process disables its
+duplicate request access log, so callback query credentials also stay out of
+the application container's Docker logs. Uvicorn lifecycle and error logs remain
+enabled.
 
 The selected instance is the current/default profile under the dedicated
 `HERMES_HOME=/app/output/hermes` directory in this deployment's named

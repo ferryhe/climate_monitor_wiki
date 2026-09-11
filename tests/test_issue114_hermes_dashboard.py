@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -561,6 +563,80 @@ def test_caddy_suppresses_oauth_callback_uri_access_logs():
     assert "@hermes_oauth_callback path /hermes/api/mcp/oauth/callback/*" in caddy
     assert "log_skip @hermes_oauth_callback" in caddy
     assert "output file /var/log/caddy/access.log" in caddy
+
+
+def test_shipped_application_logging_does_not_record_oauth_callback_query(tmp_path):
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    command_line = next(
+        line.removeprefix("CMD ")
+        for line in dockerfile.splitlines()
+        if line.startswith("CMD ")
+    )
+    command = json.loads(command_line)
+    assert command[:2] == ["uvicorn", "api_server:app"]
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    command[command.index("--host") + 1] = "127.0.0.1"
+    command[command.index("--port") + 1] = str(port)
+
+    marker_code = "ISSUE114_CALLBACK_CODE_DO_NOT_LOG_7f93"
+    marker_state = "ISSUE114_CALLBACK_STATE_DO_NOT_LOG_b281"
+    env = os.environ.copy()
+    env.update(
+        {
+            "CLIMATE_CONSOLE_PASSWORD_HASH": PasswordHelper().hash("unused"),
+            "CLIMATE_CONSOLE_SESSION_DB": str(tmp_path / "console-sessions.sqlite3"),
+            "CLIMATE_CONSOLE_SESSION_SECRET": "runtime-test-secret-with-at-least-32-bytes",
+            "CLIMATE_CONSOLE_SECURE_COOKIE": "true",
+            "CLIMATE_CONSOLE_USERNAME": "runtime-test-operator",
+            "CLIMATE_REQUIRE_CONSOLE_AUTH": "1",
+            "HERMES_DASHBOARD_ENABLED": "0",
+            "HERMES_DASHBOARD_URL": "http://127.0.0.1:9119",
+            "PATH": f"{Path(sys.executable).parent}{os.pathsep}{env['PATH']}",
+        }
+    )
+    process = subprocess.Popen(
+        ["sh", str(ROOT / "scripts" / "docker_entrypoint.sh"), *command],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert process.stdout is not None
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+            deadline = time.monotonic() + 30
+            while True:
+                if process.poll() is not None:
+                    pytest.fail(f"shipped application exited before startup: {process.stdout.read()}")
+                try:
+                    if client.get("/api/config").status_code == 200:
+                        break
+                except httpx.TransportError:
+                    pass
+                if time.monotonic() >= deadline:
+                    pytest.fail("shipped application did not start within 30 seconds")
+                time.sleep(0.1)
+
+            response = client.get(
+                "/hermes/api/mcp/oauth/callback/calendar",
+                params={"code": marker_code, "state": marker_state},
+            )
+            assert response.status_code == 503
+    finally:
+        process.terminate()
+        try:
+            output, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            output, _ = process.communicate(timeout=10)
+
+    assert marker_code not in output
+    assert marker_state not in output
+    assert "Application startup complete" in output
 
 
 def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_path):

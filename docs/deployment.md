@@ -90,7 +90,10 @@ sudo docker compose down               # stop everything (volumes persist)
 Access logs are written as JSON to the `caddy_logs` volume at
 `/var/log/caddy/access.log`. Caddy deliberately skips the complete Hermes MCP
 OAuth callback path because its query carries short-lived `code` and `state`
-credentials; all other site requests remain logged.
+credentials; all other site requests remain logged. The application container's
+shipped Uvicorn command disables its duplicate request access log, preventing
+the same callback URI from being retained by Docker's logging driver. Uvicorn
+lifecycle and error logs remain available through `docker compose logs wiki`.
 
 ## Optional Hermes Dashboard
 

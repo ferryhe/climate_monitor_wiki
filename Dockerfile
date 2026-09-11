@@ -50,4 +50,6 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8501
 
 ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501"]
+# Caddy is the request-log sink and skips credential-bearing OAuth callbacks.
+# Keep Uvicorn lifecycle/error logging, but do not duplicate raw request URIs in Docker logs.
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8501", "--no-access-log"]
