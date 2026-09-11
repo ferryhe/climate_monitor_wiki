@@ -6,11 +6,13 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -30,6 +32,7 @@ def _configure_auth(monkeypatch, api_server, *, seconds: int = 1800) -> None:
     )
     monkeypatch.setenv("CLIMATE_CONSOLE_SESSION_SECRET", "test-secret-with-at-least-32-bytes")
     monkeypatch.setenv("CLIMATE_CONSOLE_SESSION_SECONDS", str(seconds))
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://testserver")
     monkeypatch.setenv(
         "HERMES_DASHBOARD_SESSION_TOKEN",
         "default-internal-test-token-with-at-least-32-bytes",
@@ -371,14 +374,29 @@ class _FakeUpstream:
 
 
 class _FakeConnect:
-    def __init__(self, upstream: _FakeUpstream) -> None:
+    def __init__(self, upstream: Any) -> None:
         self.upstream = upstream
 
-    async def __aenter__(self) -> _FakeUpstream:
+    async def __aenter__(self) -> Any:
         return self.upstream
 
     async def __aexit__(self, *args) -> None:
         return None
+
+
+class _NormallyClosingUpstream:
+    subprotocol = None
+    close_code = 1001
+    close_reason = "upstream going away"
+
+    async def send(self, message: str) -> None:
+        del message
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        raise StopAsyncIteration
 
 
 def test_access_validator_supplies_unique_channel_required_by_upstream(monkeypatch):
@@ -473,6 +491,29 @@ def test_open_websocket_closes_when_shared_session_expires(monkeypatch):
         assert message["code"] == 4401
 
 
+def test_normal_upstream_websocket_close_preserves_code_and_reason(monkeypatch):
+    import api_server
+    import climate_monitor.hermes_dashboard as dashboard
+
+    _configure_auth(monkeypatch, api_server)
+    upstream = _NormallyClosingUpstream()
+    monkeypatch.setattr(
+        dashboard.websockets, "connect", lambda *args, **kwargs: _FakeConnect(upstream)
+    )
+    client = TestClient(api_server.app, base_url="https://testserver")
+    _login(client)
+
+    with client.websocket_connect(
+        "/hermes/api/events?channel=normal-close",
+        headers={"origin": "https://testserver"},
+    ) as socket:
+        assert socket.receive() == {
+            "type": "websocket.close",
+            "code": 1001,
+            "reason": "upstream going away",
+        }
+
+
 def test_anonymous_and_cross_origin_websockets_are_denied(monkeypatch):
     import api_server
     import climate_monitor.hermes_dashboard as dashboard
@@ -487,6 +528,13 @@ def test_anonymous_and_cross_origin_websockets_are_denied(monkeypatch):
     assert anonymous.value.code == 4401
 
     _login(client)
+    with pytest.raises(WebSocketDisconnect) as wrong_scheme:
+        with client.websocket_connect(
+            "/hermes/api/ws", headers={"origin": "http://testserver"}
+        ):
+            pass
+    assert wrong_scheme.value.code == 4403
+
     with pytest.raises(WebSocketDisconnect) as cross_origin:
         with client.websocket_connect(
             "/hermes/api/ws", headers={"origin": "https://attacker.example"}
@@ -546,7 +594,7 @@ def test_unavailable_state_and_pinned_isolated_runtime(monkeypatch):
     assert "checkout 5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
     assert "npm run build --workspace web" in dockerfile
     assert "npm run build --workspace ui-tui" in dockerfile
-    assert "HERMES_HOME: /app/output/hermes" in compose
+    assert "HERMES_HOME:" not in compose
     assert "climate_runtime:/app/output" in compose
     assert "HERMES_DASHBOARD_URL: http://127.0.0.1:9119" in compose
     assert "python -m climate_monitor.hermes_dashboard_server" in entrypoint
@@ -567,14 +615,12 @@ def test_caddy_suppresses_oauth_callback_uri_access_logs():
     assert "output file /var/log/caddy/access.log" in caddy
 
 
-def test_caddy_outage_logs_never_record_oauth_callback_query(tmp_path):
+def test_caddy_outage_logs_never_record_oauth_callback_query():
     docker = shutil.which("docker")
     if not docker:
         pytest.skip("Docker CLI is not installed")
 
     container_name = f"issue114-caddy-log-{os.getpid()}-{time.time_ns()}"
-    log_dir = tmp_path / "caddy-logs"
-    log_dir.mkdir()
     marker_code = "ISSUE114_CADDY_CODE_DO_NOT_LOG_92d1"
     marker_state = "ISSUE114_CADDY_STATE_DO_NOT_LOG_a7c4"
     control_marker = "issue114-caddy-control-observable-41fe"
@@ -596,8 +642,6 @@ def test_caddy_outage_logs_never_record_oauth_callback_query(tmp_path):
             "127.0.0.1::443",
             "--volume",
             f"{ROOT / 'Caddyfile'}:/etc/caddy/Caddyfile:ro",
-            "--volume",
-            f"{log_dir}:/var/log/caddy",
             "caddy:2-alpine",
         ],
         capture_output=True,
@@ -639,13 +683,14 @@ def test_caddy_outage_logs_never_record_oauth_callback_query(tmp_path):
             assert 500 <= control.status_code < 600
 
         deadline = time.monotonic() + 10
-        access_log_path = log_dir / "access.log"
         while True:
-            access_log = (
-                access_log_path.read_text(encoding="utf-8")
-                if access_log_path.exists()
-                else ""
+            captured_access = subprocess.run(
+                [docker, "exec", container_name, "cat", "/var/log/caddy/access.log"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
+            access_log = captured_access.stdout if captured_access.returncode == 0 else ""
             captured = subprocess.run(
                 [docker, "logs", container_name],
                 capture_output=True,
@@ -754,7 +799,13 @@ def test_shipped_application_logging_does_not_record_oauth_callback_query(tmp_pa
 
 def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_path):
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
     assert "HERMES_DASHBOARD_ENABLED: ${HERMES_DASHBOARD_ENABLED:-0}" in compose
+    assert "HERMES_HOME:" not in compose
+    assert 'legacy="${HERMES_HOME:-$HOME/.hermes}"' in deployment
+    assert "target=/app/output/hermes" in deployment
+    assert "target Hermes home already exists" in deployment
+    assert "test -r /app/output/hermes/state.db" in deployment
 
     marker = tmp_path / "application-started"
     command = (
@@ -783,6 +834,88 @@ def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_pa
 
     assert result.returncode == 0, result.stderr
     assert marker.read_text(encoding="utf-8") == "wiki-chat-started"
+
+
+def test_enabled_entrypoint_exits_and_stops_app_when_dashboard_child_crashes(tmp_path):
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    dashboard_started = tmp_path / "dashboard-started"
+    app_started = tmp_path / "app-started"
+    app_stopped = tmp_path / "app-stopped"
+    python_shim = shim_dir / "python"
+    python_shim.write_text(
+        """#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "climate_monitor.hermes_dashboard_server" ]; then
+    printf started > "$DASHBOARD_STARTED"
+    sleep 1
+    exit 17
+fi
+exec "$REAL_PYTHON" "$@"
+""",
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+    app = (
+        "import pathlib,signal,sys,time; "
+        "started=pathlib.Path(sys.argv[1]); stopped=pathlib.Path(sys.argv[2]); "
+        "started.write_text('started'); "
+        "signal.signal(signal.SIGTERM, lambda *_: (stopped.write_text('stopped'), sys.exit(0))); "
+        "time.sleep(30)"
+    )
+    env = os.environ | {
+        "CLIMATE_PUBLIC_ORIGIN": "https://climate.example",
+        "DASHBOARD_STARTED": str(dashboard_started),
+        "HERMES_DASHBOARD_ENABLED": "1",
+        "HERMES_DASHBOARD_SESSION_TOKEN": "entrypoint-test-token",
+        "HERMES_HOME": str(tmp_path / "hermes"),
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        "REAL_PYTHON": sys.executable,
+    }
+    result = subprocess.run(
+        [
+            "sh",
+            str(ROOT / "scripts" / "docker_entrypoint.sh"),
+            sys.executable,
+            "-c",
+            app,
+            str(app_started),
+            str(app_stopped),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 17, result.stderr
+    assert dashboard_started.read_text() == "started"
+    assert app_started.read_text() == "started"
+    assert app_stopped.read_text() == "stopped"
+
+
+def test_session_validity_hot_path_performs_only_indexed_lookup(tmp_path, monkeypatch):
+    import climate_monitor.console_auth as console_auth
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(console_auth.sqlite3, "connect", tracking_connect)
+    path = tmp_path / "sessions.sqlite3"
+    store = console_auth.ConsoleSessionStore(path)
+    store.create("session", "operator", int(time.time()) + 60)
+    statements.clear()
+
+    assert console_auth.ConsoleSessionStore(path).is_active("session", "operator") is True
+    normalized = [statement.strip().upper() for statement in statements]
+    assert len(normalized) == 1
+    assert normalized[0].startswith("SELECT EXPIRES_AT FROM CONSOLE_SESSIONS")
+    assert all("PRAGMA" not in statement and "CREATE" not in statement for statement in normalized)
 
 
 def test_trusted_public_origin_pins_oauth_callback_and_rejects_header_input(monkeypatch):

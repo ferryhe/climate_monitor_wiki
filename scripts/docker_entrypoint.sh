@@ -53,8 +53,19 @@ if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
     app_pid=$!
     trap 'kill "$app_pid" "$hermes_pid" 2>/dev/null || true' INT TERM EXIT
     status=0
-    wait "$app_pid" || status=$?
-    kill "$hermes_pid" 2>/dev/null || true
+    while kill -0 "$app_pid" 2>/dev/null && kill -0 "$hermes_pid" 2>/dev/null; do
+        sleep 1
+    done
+    if ! kill -0 "$hermes_pid" 2>/dev/null; then
+        wait "$hermes_pid" || status=$?
+        # Dashboard mode cannot remain healthy after its child exits. Turn an
+        # unexpected clean child exit into a restartable container failure.
+        [ "$status" -ne 0 ] || status=1
+    else
+        wait "$app_pid" || status=$?
+    fi
+    kill "$app_pid" "$hermes_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
     wait "$hermes_pid" 2>/dev/null || true
     exit "$status"
 fi

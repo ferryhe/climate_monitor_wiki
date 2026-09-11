@@ -122,6 +122,38 @@ a configuration error and the entrypoint fails closed. To opt out again, set
 `HERMES_DASHBOARD_ENABLED=0` (or remove it) and recreate only `wiki`; the
 persistent `climate_runtime` volume and stored Dashboard sessions remain intact.
 
+Before the **first** Dashboard enablement on an existing installation, preserve
+the Hermes home that `/manage` jobs already use. The base Compose service does
+not override `HERMES_HOME` while the Dashboard is disabled, so those jobs retain
+Hermes' pre-upgrade default (`$HOME/.hermes`, normally `/root/.hermes`). Inspect
+and migrate that directory into the existing `climate_runtime` volume before
+recreating the container:
+
+```bash
+sudo docker exec climate-wiki-app sh -eu -c '
+legacy="${HERMES_HOME:-$HOME/.hermes}"
+target=/app/output/hermes
+[ "$legacy" = "$target" ] && exit 0
+[ -d "$legacy" ] || { echo "no legacy Hermes home to migrate"; exit 0; }
+[ ! -e "$target" ] || { echo "target Hermes home already exists" >&2; exit 1; }
+temporary="/app/output/.hermes-migration.$$"
+trap '\''rm -rf "$temporary"'\'' EXIT
+mkdir -m 0700 "$temporary"
+cp -a "$legacy"/. "$temporary"/
+mv "$temporary" "$target"
+trap - EXIT
+'
+sudo docker exec climate-wiki-app sh -eu -c \
+  'test -d /app/output/hermes && test ! -L /app/output/hermes && test -r /app/output/hermes/state.db'
+```
+
+If there is no legacy home, the first enabled start creates the empty persistent
+target (and the `state.db` verification above is intentionally skipped). If the
+target already exists, stop and reconcile it manually rather than merging two
+profile/session trees. After migration, enabled Dashboard and `/manage` jobs
+share `/app/output/hermes`; disabling the Dashboard later leaves that persistent
+tree untouched but restores the pre-upgrade default for jobs.
+
 ## Publishing and deploying weekly content
 
 The Hermes schedule invokes the locked publisher wrapper:

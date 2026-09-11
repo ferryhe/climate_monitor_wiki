@@ -243,13 +243,36 @@ def _same_origin(ws: WebSocket) -> bool:
     if not origin:
         return False
     parsed = urlsplit(origin)
-    return parsed.scheme in {"http", "https"} and parsed.netloc == ws.headers.get("host", "")
+    configured_origin = os.getenv("CLIMATE_PUBLIC_ORIGIN", "").strip()
+    if configured_origin:
+        expected = urlsplit(configured_origin)
+        return (
+            parsed.scheme == expected.scheme
+            and parsed.netloc.lower() == expected.netloc.lower()
+            and parsed.path == ""
+            and not parsed.query
+            and not parsed.fragment
+        )
+    websocket_scheme = "https" if ws.url.scheme == "wss" else "http"
+    return (
+        parsed.scheme == websocket_scheme
+        and parsed.netloc.lower() == ws.headers.get("host", "").lower()
+        and parsed.path == ""
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 async def _relay_browser_to_upstream(ws: WebSocket, upstream: Any, token: str) -> None:
-    while await console_session_is_valid(token):
+    while True:
+        if not await console_session_is_valid(token):
+            if ws.application_state.name == "CONNECTED":
+                await ws.close(code=4401, reason="session ended")
+            return
         message = await ws.receive()
         if not await console_session_is_valid(token):
+            if ws.application_state.name == "CONNECTED":
+                await ws.close(code=4401, reason="session ended")
             return
         if message["type"] == "websocket.disconnect":
             return
@@ -263,11 +286,18 @@ async def _relay_upstream_to_browser(ws: WebSocket, upstream: Any, token: str) -
     try:
         async for message in upstream:
             if not await console_session_is_valid(token):
+                if ws.application_state.name == "CONNECTED":
+                    await ws.close(code=4401, reason="session ended")
                 return
             if isinstance(message, bytes):
                 await ws.send_bytes(cast(bytes, _websocket_content(message)))
             else:
                 await ws.send_text(cast(str, _websocket_content(message)))
+        close_code = upstream.close_code if upstream.close_code is not None else 1000
+        await ws.close(
+            code=int(close_code),
+            reason=cast(str, _websocket_content(upstream.close_reason or "")),
+        )
     except websockets.exceptions.ConnectionClosed as exc:
         if ws.application_state.name == "CONNECTED":
             await ws.close(
@@ -310,12 +340,13 @@ async def proxy_websocket(ws: WebSocket, path: str) -> None:
             proxy=None,
         ) as upstream:
             await ws.accept(subprotocol=upstream.subprotocol)
-            tasks = {
-                asyncio.create_task(_relay_browser_to_upstream(ws, upstream, token)),
-                asyncio.create_task(_relay_upstream_to_browser(ws, upstream, token)),
-                asyncio.create_task(_watch_session(token)),
-            }
+            browser_task = asyncio.create_task(_relay_browser_to_upstream(ws, upstream, token))
+            upstream_task = asyncio.create_task(_relay_upstream_to_browser(ws, upstream, token))
+            session_task = asyncio.create_task(_watch_session(token))
+            tasks = {browser_task, upstream_task, session_task}
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            if session_task in done and ws.application_state.name == "CONNECTED":
+                await ws.close(code=4401, reason="session ended")
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
@@ -329,9 +360,3 @@ async def proxy_websocket(ws: WebSocket, path: str) -> None:
             pass
     except WebSocketDisconnect:
         return
-    finally:
-        if ws.application_state.name == "CONNECTED":
-            try:
-                await ws.close(code=4401, reason="session ended")
-            except RuntimeError:
-                pass

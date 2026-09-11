@@ -11,6 +11,7 @@ import os
 import secrets
 import sqlite3
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from fastapi_users.jwt import decode_jwt, generate_jwt
 _USER_NAMESPACE = uuid.UUID("6d53b4b7-bb71-4a9b-bfc5-85dad47cfb72")
 _EPHEMERAL_SESSION_SECRET = secrets.token_urlsafe(48)
 _DEFAULT_SESSION_DB = Path(tempfile.gettempdir()) / f"climate-console-sessions-{os.getpid()}.sqlite3"
+_INITIALIZED_SESSION_DATABASES: set[Path] = set()
+_SESSION_DATABASE_INIT_LOCK = threading.Lock()
 
 
 @dataclass
@@ -116,22 +119,34 @@ class ConsoleSessionStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or _session_db_path()
 
+        database = self.path.resolve(strict=False)
+        if database in _INITIALIZED_SESSION_DATABASES:
+            return
+        with _SESSION_DATABASE_INIT_LOCK:
+            if database in _INITIALIZED_SESSION_DATABASES:
+                return
+            database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            connection = sqlite3.connect(database, timeout=5)
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS console_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        expires_at INTEGER NOT NULL
+                    )"""
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            try:
+                database.chmod(0o600)
+            except OSError:
+                pass
+            _INITIALIZED_SESSION_DATABASES.add(database)
+
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         connection = sqlite3.connect(self.path, timeout=5)
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS console_sessions (
-                session_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                expires_at INTEGER NOT NULL
-            )"""
-        )
-        try:
-            self.path.chmod(0o600)
-        except OSError:
-            pass
         return connection
 
     def create(self, session_id: str, user_id: str, expires_at: int) -> None:
