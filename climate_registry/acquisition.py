@@ -570,6 +570,19 @@ def store_acquisition_batch(database: str | Path, payload: Mapping[str, Any]) ->
         return _store_acquisition_batch_locked(path, payload)
 
 
+def validate_acquisition_records(
+    payload: Mapping[str, Any], policy: PublicationDatePolicy
+) -> tuple[str, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate v1 nested records without persistence or fabricated defaults."""
+    decision, no_search_reason, searches = _validate_searches(payload)
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError("items must be a list")
+    items = [_validate_item(item, policy) for item in raw_items]
+    _bind_discovery_provenance(items, searches, payload["batch_id"])
+    return decision, no_search_reason, searches, items
+
+
 def _store_acquisition_batch_locked(
     database: Path, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -585,12 +598,7 @@ def _store_acquisition_batch_locked(
     policy = PublicationDatePolicy.from_dict(payload.get("date_policy"))
     if policy.anchor_date != report_date:
         raise ValueError("date policy anchor must equal batch report_date")
-    decision, no_search_reason, searches = _validate_searches(payload)
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list):
-        raise ValueError("items must be a list")
-    items = [_validate_item(item, policy) for item in raw_items]
-    _bind_discovery_provenance(items, searches, batch_id)
+    decision, no_search_reason, searches, items = validate_acquisition_records(payload, policy)
     items = _merge_same_batch_items(items)
     success_fetch_ids = {
         (item["canonical_url"], item["evidence"]["content_hash"]):

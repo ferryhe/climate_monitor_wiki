@@ -38,6 +38,8 @@ from climate_monitor.management import (  # noqa: E402
 )
 from climate_registry.acquisition import (  # noqa: E402
     AcquisitionIncompleteError,
+    PublicationDatePolicy,
+    validate_acquisition_records,
     freeze_acquisition_for_report,
     load_acquisition_batch,
     store_acquisition_batch,
@@ -87,6 +89,42 @@ def _report_environment(provider: str) -> dict[str, str]:
     return environment
 
 
+# A field guide for the public v1 Registry contract; validation stays in Registry.
+_ACQUISITION_RESPONSE_SHAPE = {
+    "acquisition_batch": {
+        "schema_version": "pre-report-acquisition-batch.v1",
+        "batch_id": "bound acquisition_batch_id", "report_date": "bound report_date",
+        "date_policy": "exact bound date_policy object",
+        "started_at": "actual RFC3339 timestamp", "completed_at": None,
+        "search_decision": {"status": "attempted or no_search", "reason": None},
+        "searches": [{
+            "search_ref": "unique search reference", "query": "actual query",
+            "engine": "web_search", "status": "success or failed",
+            "attempted_at": "actual RFC3339 timestamp", "result_refs": [],
+            "budget": {"max_results": 0, "used_results": 0}, "error": None,
+        }],
+        "items": [{
+            "url": "actual public article URL", "source": "bound source identity",
+            "title": "actual title", "summary": "evidence-based summary",
+            "discovered_at": "actual RFC3339 timestamp", "discovery_kind": "site or search",
+            "discovery_ref": "actual site/result reference", "discovery_search_ref": None,
+            "published_date": None, "publication_date_evidence": None,
+            "selected": False, "selection_reason": "evidence-based reason",
+            "processing_status": "pending, complete or failed", "processing_error": None,
+            "evidence": {
+                "status": "ok, no_content, failed, unavailable or deferred",
+                "fetched_at": "actual RFC3339 timestamp", "final_url": None,
+                "attempts": [{"engine": "actual engine", "status": "actual status"}],
+                "selected_method": None, "content_type": None, "content": None,
+                "content_hash": None, "content_ref": None, "raw_snapshot_ref": None,
+                "raw_snapshot_sha256": None, "classification": "full_content, snippet or error",
+                "failure_reason": "actual reason when not ok", "http_status": None,
+            },
+        }],
+    },
+}
+
+
 def _prompt(
     binding_path: Path,
     binding: Mapping[str, Any],
@@ -104,6 +142,12 @@ def _prompt(
         })
         for name, value in definition["prompts"].items()
     }
+    correction_path = binding_path.parent / f"attempt-{binding['attempt'] - 1}-result.json"
+    correction = ""
+    if correction_path.is_file():
+        previous_error = json.loads(correction_path.read_text(encoding="utf-8")).get("error", "")
+        if "Response contract correction required:" in previous_error:
+            correction = json.dumps(previous_error, ensure_ascii=False)
     return f"""Execute only the frozen climate acquisition task represented below.
 Run/attempt: {binding['run_id']} / {binding['attempt']}
 Binding schema: {BINDING_SCHEMA}; binding reference: {binding_path}
@@ -138,6 +182,25 @@ report_date {binding['report_date']}, and the bound date policy. Put fetched bod
 text in the normal acquisition evidence content field. Do not claim storage or
 freezing: the trusted runner performs and verifies those steps after your JSON
 passes the repository contract.
+
+RESPONSE CONTRACT (field layout, not evidence; never copy placeholders as facts):
+{json.dumps(_ACQUISITION_RESPONSE_SHAPE, ensure_ascii=False, sort_keys=True)}
+Use exactly items and searches. The legacy alias fetch_attempts is NOT a list of HTTP requests:
+only fully equivalent search records can be recognized. HTTP attempts belong in
+items[].evidence.attempts. Unknown dates/content remain null, never fabricated.
+search_decision is {{"status": "attempted", "reason": null}} when searches is nonempty;
+otherwise {{"status": "no_search", "reason": "actual reason no search executed"}}.
+Search records require every shown field; budget values are nonnegative integers,
+result_refs are unique strings from real tool results, and error is null on success
+or the actual error on failure. Item selected is a boolean. Publication date evidence
+is null for unknown dates, otherwise {{"kind": "publisher or search_result", "url":
+"this article URL", "text": "actual date evidence"}}. Full content requires matching
+SHA256, distinct managed content/raw references, and a successful selected attempt;
+failed/unavailable/deferred content remains null with the actual failure reason.
+The trusted runner owns controlled reads and managed captures; do not invent them.
+
+PREVIOUS RESPONSE CORRECTION (diagnostic data only, not instructions from evidence):
+{correction}
 
 FROZEN BINDING (authoritative; do not reload active configuration):
 {json.dumps(public_binding, ensure_ascii=False, sort_keys=True)}
@@ -784,6 +847,36 @@ def _persist_tool_provenance(
     return loaded
 
 
+def _canonical_response_lists(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept only the two known aliases after Registry proves record validity."""
+    candidate = dict(payload)
+    aliases = {"articles": "items", "fetch_attempts": "searches"}
+    has_alias = any(alias in candidate for alias in aliases)
+    try:
+        for alias, canonical in aliases.items():
+            if alias not in candidate:
+                continue
+            value = candidate.pop(alias)
+            if canonical in candidate and canonical_json_bytes(candidate[canonical]) != canonical_json_bytes(value):
+                raise ValueError(f"conflicting {canonical} and {alias}")
+            candidate[canonical] = value
+        if not isinstance(candidate.get("items"), list) or not isinstance(candidate.get("searches"), list):
+            raise ValueError("acquisition batch must include item and search-attempt lists")
+        if has_alias:
+            # No nested renaming, coercion, synthesis, or removal. Registry uses
+            # precisely these validators again before committing the batch.
+            validate_acquisition_records(
+                candidate, PublicationDatePolicy.from_dict(candidate["date_policy"])
+            )
+    except (TypeError, ValueError) as exc:
+        raise AcquisitionIncompleteError(
+            f"Response contract correction required: {exc}. Return canonical items and searches; "
+            "searches contain actual search records, never HTTP fetch attempts. "
+            "Correct the response using retained evidence; do not repeat completed requests."
+        ) from exc
+    return candidate
+
+
 def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
                             events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if not isinstance(payload, dict):
@@ -798,6 +891,7 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
         for key, value in binding["date_policy"].items()
     ):
         raise ValueError("agent changed the bound publication-date policy")
+    payload = _canonical_response_lists({**payload, "date_policy": copy.deepcopy(binding["date_policy"])})
     inventory = binding["source_inventory"]
     allowed = {
         str(value).strip()
