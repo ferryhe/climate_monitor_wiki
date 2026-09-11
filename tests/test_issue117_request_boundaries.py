@@ -168,7 +168,10 @@ def test_failed_source_projection_keeps_artifact_and_no_full_success(tmp_path):
                "search_decision": "no_search", "searches": []}
     runner._write_report_inputs(b, payload, {"status": "completed", "source_results": [row]})
     assert json.loads(Path(b["report_inputs"]["acquisition_batch"]).read_text())[0]["full_success"] is False
-    assert json.loads(Path(b["report_inputs"]["web_listening_manifest"]).read_text()) == [manifest]
+    manifest_path = Path(b["report_inputs"]["web_listening_manifest"])
+    assert json.loads(manifest_path.read_text()) == []
+    assert json.loads(manifest_path.with_suffix(".diagnostics.json").read_text()) == [manifest]
+    assert json.loads(path.read_text()) == manifest
 
 
 def seed_runtime(monkeypatch, sends, interrupt_at=None, outcomes=None):
@@ -516,3 +519,77 @@ def test_shared_seed_url_is_not_another_sources_retry(tmp_path, monkeypatch):
     assert sends == ['https://example.test/'] * 2
     assert evidence['full_success'] and not warnings
     assert ledger.usage()['retries'] == 0
+
+
+@pytest.mark.parametrize('event', ['pre_tool_call', 'post_tool_call'])
+@pytest.mark.parametrize('field', ['session_id', 'tool_call_id'])
+@pytest.mark.parametrize('value', [None, '', '   ', 123])
+def test_review_hook_requires_both_durable_ids(event, field, value):
+    from climate_monitor.request_budget import hook_decision
+    invoked = []
+    ledger = SimpleNamespace(attempt=1, claim=lambda *a, **kw: invoked.append('claim'),
+                             complete_tool=lambda *a: invoked.append('complete'))
+    payload = {'hook_event_name': event, 'tool_name': 'web_search',
+               'session_id': 'session', 'extra': {'tool_call_id': 'call'},
+               'tool_input': {'query': 'climate'}}
+    if field == 'session_id':
+        payload[field] = value
+    else:
+        payload['extra'][field] = value
+    assert hook_decision(ledger, payload).get('action') == 'block'
+    assert not invoked
+
+
+@pytest.mark.parametrize('tool', ['web_search', 'web_extract', 'browser_exec'])
+def test_review_transcript_requires_completed_admission(tmp_path, tool):
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    import scripts.run_agent_acquisition as runner
+    b = binding(tmp_path)
+    b['created_at'] = '2026-09-11T00:00:00Z'
+    ledger = budget(tmp_path)
+    result = {'results': [{'url': 'https://example.test/'}]}
+    _write_hermes_tool_events(attempt_home(b), b, [
+        {'tool': tool, 'tool_call_id': 'call', 'arguments': {}, 'result': result}])
+    ledger.claim(tool, 'https://example.test/', call_id='1:session-1:call', results=1)
+    with pytest.raises(ValueError, match='durable completion'):
+        runner._trusted_tool_events(b)
+    assert ledger.usage()['search_results'] == 0
+    ledger.complete_tool('1:session-1:call', result, 'ok')
+    assert len(runner._trusted_tool_events(b)) == 1
+    if tool == 'web_search':
+        assert ledger.usage()['search_results'] == 1
+        assert ledger.usage()['search_results_reserved'] == 0
+
+
+def test_review_failed_completion_is_not_marked_complete(tmp_path):
+    ledger = budget(tmp_path)
+    ledger.claim('web_search', 'climate', call_id='call', results=1)
+    with pytest.raises(ValueError, match='exceeded'):
+        ledger.complete_tool('call', {'results': [{'url': 'https://a.test/'}, {'url': 'https://b.test/'}]}, 'ok')
+    assert not ledger.events()[0].get('completed')
+    assert ledger.usage()['search_results_reserved'] == 1
+
+
+def test_review_mixed_projection_matches_downstream_exports(tmp_path, monkeypatch):
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import MonitorSource
+    from scripts import run_agent_acquisition as runner, run_climate_monitor as monitor
+    sources = [MonitorSource(key=key, abbreviation=key, full_name=key, url=f'https://{key}.test/')
+               for key in ('success', 'rejected', 'incomplete')]
+    seed_runtime(monkeypatch, [], outcomes=lambda url: url.split('//')[1].split('.')[0])
+    _, _, context = adapter.collect_website_items_with_evidence(sources, state_dir=tmp_path/'seeds', budget=budget(tmp_path))
+    b = {'source_inventory': {'records': [{'key': source.key} for source in sources]},
+         'report_inputs': {key: str(tmp_path/(key+'.json')) for key in
+                          ('acquisition_batch', 'web_listening_manifest', 'pillar_b_artifact')}}
+    payload = {'items': [], 'report_date': '2026-09-07', 'date_policy': {},
+               'search_decision': 'no_search', 'searches': []}
+    runner._write_report_inputs(b, payload, context)
+    outcomes = json.loads(Path(b['report_inputs']['acquisition_batch']).read_text())
+    manifest_path = Path(b['report_inputs']['web_listening_manifest'])
+    exports = json.loads(manifest_path.read_text())
+    monitor._verify_collection_identity(outcomes, exports)
+    assert len(exports) == 1 and len(outcomes) == 3
+    diagnostics = json.loads(manifest_path.with_suffix('.diagnostics.json').read_text())
+    assert {row['source']['source_id'] for row in diagnostics} == {'rejected', 'incomplete'}
+    assert all(Path(row['artifact_path']).is_file() for row in context['source_results'])

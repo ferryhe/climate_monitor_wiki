@@ -210,9 +210,6 @@ class RequestBudget:
                 if event.get("result") != result or event["status"] != status:
                     raise ValueError("tool completion differs from durable result")
                 return
-            event["completed"] = True
-            event["status"] = status
-            event["result"] = result
             if event["tool"] == "web_search":
                 # Reuse the transcript URL extraction contract, not model claims.
                 from scripts.run_agent_acquisition import _event_result_urls
@@ -222,6 +219,9 @@ class RequestBudget:
                     raise ValueError(state["fault"])
                 event["result_count"] = count
                 event["result_reservation"] = 0
+            event["status"] = status
+            event["result"] = result
+            event["completed"] = True
 
     def save_receipt(self, key, payload):
         with self._locked() as state:
@@ -270,10 +270,10 @@ def hook_decision(budget, payload):
     if tool not in {"web_search", "web_extract", "browser_exec"}:
         return {"action": "block", "message": "unconfigured acquisition tool"}
     extra = payload.get("extra") or {}
-    call = str(extra.get("tool_call_id") or "")
-    call_id = f"{budget.attempt}:{payload.get('session_id')}:{call}"
-    if not call:
-        return {"action": "block", "message": "missing durable tool-call identity"}
+    call, session = extra.get("tool_call_id"), payload.get("session_id")
+    if any(not isinstance(value, str) or not value.strip() for value in (session, call)):
+        return {"action": "block", "message": "missing durable session/tool-call identity"}
+    call_id = f"{budget.attempt}:{session}:{call}"
     if payload.get("hook_event_name") == "post_tool_call":
         budget.complete_tool(call_id, extra.get("result"), extra.get("status", "error"))
         return {}

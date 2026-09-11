@@ -486,11 +486,16 @@ def _trusted_tool_events(
     if "checkpoint_dir" in binding and ledger_path(binding).exists():
         ledger_events = RequestBudget(ledger_path(binding), binding).events()
         admitted = {event.get("call_id") for event in ledger_events if event["event_kind"] == "tool"}
+        completed = {event.get("call_id") for event in ledger_events
+                     if event["event_kind"] == "tool" and event.get("completed") is True}
         accounted = {event.get("call_id") for event in ledger_events if event["event_kind"] in {"tool", "precheck"}}
         if any(f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" not in accounted for event in events):
             raise ValueError("Hermes tool dispatch lacks a durable budget admission or precheck")
+        if any(f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in admitted - completed
+               for event in events):
+            raise ValueError("Hermes tool transcript lacks durable completion")
         events = [event for event in events if
-                  f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in admitted]
+                  f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in completed]
     allowed = {"web_search", "web_extract", "browser_exec"}
     return [event for event in events if str(event.get("tool", "")).split(".")[-1] in allowed]
 
@@ -1147,6 +1152,7 @@ def _write_report_inputs(
         raise AcquisitionIncompleteError("controlled web-listening has missing or duplicate source artifacts")
     outcomes = []
     manifests = []
+    diagnostic_manifests = []
     for source in sources:
         row = by_source[source["key"]]
         artifact_path = Path(str(row.get("artifact_path") or ""))
@@ -1180,7 +1186,13 @@ def _write_report_inputs(
                 f"controlled source outcome is not bound to a valid snapshot for {source['key']}"
             )
         outcomes.append(outcome)
-        manifests.append(manifest)
+        if outcome.get("full_success") is True:
+            manifests.append(manifest)
+        else:
+            diagnostic_manifests.append(manifest)
+    diagnostic_path = Path(paths["web_listening_manifest"]).with_suffix(".diagnostics.json")
+    _atomic_write(diagnostic_path, json.dumps(diagnostic_manifests, ensure_ascii=False,
+                                            sort_keys=True, indent=2).encode() + b"\n")
     articles = []
     for item in payload["items"]:
         if item.get("discovery_kind") != "search":
