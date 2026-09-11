@@ -94,6 +94,12 @@ credentials; all other site requests remain logged. The application container's
 shipped Uvicorn command disables its duplicate request access log, preventing
 the same callback URI from being retained by Docker's logging driver. Uvicorn
 lifecycle and error logs remain available through `docker compose logs wiki`.
+Caddy's separate runtime/error stream remains available through
+`docker compose logs caddy`, including request paths and reverse-proxy failure
+details, but its encoder removes all query strings from `request.uri` before
+stdout/stderr reaches Docker. This prevents an outage-time callback from leaking
+credentials at the cost of omitting query parameters from Caddy process-log
+diagnostics. Non-callback access-log records are unaffected.
 
 ## Optional Hermes Dashboard
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -562,7 +563,119 @@ def test_caddy_suppresses_oauth_callback_uri_access_logs():
 
     assert "@hermes_oauth_callback path /hermes/api/mcp/oauth/callback/*" in caddy
     assert "log_skip @hermes_oauth_callback" in caddy
+    assert 'request>uri regexp "[?].*$" ""' in caddy
     assert "output file /var/log/caddy/access.log" in caddy
+
+
+def test_caddy_outage_logs_never_record_oauth_callback_query(tmp_path):
+    docker = shutil.which("docker")
+    if not docker:
+        pytest.skip("Docker CLI is not installed")
+
+    container_name = f"issue114-caddy-log-{os.getpid()}-{time.time_ns()}"
+    log_dir = tmp_path / "caddy-logs"
+    log_dir.mkdir()
+    marker_code = "ISSUE114_CADDY_CODE_DO_NOT_LOG_92d1"
+    marker_state = "ISSUE114_CADDY_STATE_DO_NOT_LOG_a7c4"
+    control_marker = "issue114-caddy-control-observable-41fe"
+    process_logs = ""
+
+    started = subprocess.run(
+        [
+            docker,
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            container_name,
+            "--add-host",
+            "wiki:127.0.0.1",
+            "--env",
+            "SITE_HOST=127.0.0.1",
+            "--publish",
+            "127.0.0.1::443",
+            "--volume",
+            f"{ROOT / 'Caddyfile'}:/etc/caddy/Caddyfile:ro",
+            "--volume",
+            f"{log_dir}:/var/log/caddy",
+            "caddy:2-alpine",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert started.returncode == 0, started.stderr
+
+    try:
+        published = subprocess.run(
+            [docker, "port", container_name, "443/tcp"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        port = int(published.rsplit(":", 1)[1])
+
+        with httpx.Client(
+            base_url=f"https://127.0.0.1:{port}", verify=False, trust_env=False
+        ) as client:
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    if client.get("/runtime-ready").status_code >= 500:
+                        break
+                except httpx.TransportError:
+                    pass
+                if time.monotonic() >= deadline:
+                    pytest.fail("Caddy did not become ready within 30 seconds")
+                time.sleep(0.1)
+
+            callback = client.get(
+                "/hermes/api/mcp/oauth/callback/calendar",
+                params={"code": marker_code, "state": marker_state},
+            )
+            assert 500 <= callback.status_code < 600
+            control = client.get(f"/{control_marker}")
+            assert 500 <= control.status_code < 600
+
+        deadline = time.monotonic() + 10
+        access_log_path = log_dir / "access.log"
+        while True:
+            access_log = (
+                access_log_path.read_text(encoding="utf-8")
+                if access_log_path.exists()
+                else ""
+            )
+            captured = subprocess.run(
+                [docker, "logs", container_name],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=10,
+            )
+            process_logs = captured.stdout + captured.stderr
+            if control_marker in access_log and "http.log.error" in process_logs:
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(
+                    "Caddy logs did not expose the control request and outage error; "
+                    f"access={access_log!r}, process={process_logs!r}"
+                )
+            time.sleep(0.1)
+    finally:
+        subprocess.run(
+            [docker, "rm", "--force", container_name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    assert marker_code not in access_log
+    assert marker_state not in access_log
+    assert "/hermes/api/mcp/oauth/callback/calendar" not in access_log
+    assert marker_code not in process_logs
+    assert marker_state not in process_logs
+    assert "/hermes/api/mcp/oauth/callback/calendar" in process_logs
 
 
 def test_shipped_application_logging_does_not_record_oauth_callback_query(tmp_path):
