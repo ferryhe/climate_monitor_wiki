@@ -792,7 +792,11 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
         raise ValueError("agent changed the bound acquisition batch id")
     if payload.get("report_date") != binding["report_date"]:
         raise ValueError("agent changed the bound report date")
-    if payload.get("date_policy") != binding["date_policy"]:
+    policy = payload.get("date_policy")
+    if not isinstance(policy, dict) or any(
+        key not in policy or type(policy[key]) is not type(value) or policy[key] != value
+        for key, value in binding["date_policy"].items()
+    ):
         raise ValueError("agent changed the bound publication-date policy")
     inventory = binding["source_inventory"]
     allowed = {
@@ -903,7 +907,8 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
             raise ValueError("trusted fetch attempts exceeded the bound budget")
         if actual_retries > len(items) * budgets["retries_per_item"]:
             raise ValueError("trusted fetch retries exceeded the per-item budget")
-    return payload
+    # Additive model annotations carry no authority into Registry/report inputs.
+    return {**payload, "date_policy": copy.deepcopy(binding["date_policy"])}
 
 
 def _controlled_fetch_payload(
