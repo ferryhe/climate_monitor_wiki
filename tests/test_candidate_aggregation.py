@@ -625,6 +625,7 @@ def test_orchestrator_report_commit_failure_leaves_canonical_state_unchanged(
     assert state.read_bytes() == before
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_live_checkpoint_reemits_candidate_after_report_commit_interruption(
     tmp_path, monkeypatch
 ):
@@ -660,7 +661,8 @@ def test_live_checkpoint_reemits_candidate_after_report_commit_interruption(
             return {"links": list(current_links)}
 
     class FakeCrawler:
-        def __init__(self, *, fetch_mode):
+        def __init__(self, *, fetch_mode, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):

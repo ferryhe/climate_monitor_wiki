@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 
 from climate_monitor.management import (  # noqa: E402
     BINDING_SCHEMA,
+    canonical_json_bytes,
     ManagementService,
     _atomic_write,
     _exclusive_lock,
@@ -43,8 +44,10 @@ from climate_registry.acquisition import (  # noqa: E402
 )
 
 
-class AcquisitionBudgetError(AcquisitionIncompleteError):
-    """The immutable run budget is exhausted and cannot be resumed."""
+from climate_monitor.request_budget import RequestBudget, RequestBudgetError, ledger_path
+from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks
+
+AcquisitionBudgetError = RequestBudgetError
 
 
 _PROVIDER_ENV = {
@@ -119,6 +122,9 @@ provided to this acquisition agent. Choose searches adaptively; record actual qu
 concise evidence-based reasons, retries, failures, and missing coverage. Never
 invent a publication date or substitute event/discovery/fetch dates. Unknown
 publication dates stay unknown and ineligible when a date window is enabled.
+A tool blocked by a budget precheck was not executed; do not report it as an
+attempted search. Preserve the block reason in a no_search decision when no
+search was admitted. Unsupported governed article readers are explicit gaps.
 Respect exact source inventory, date policy, and budgets. Resume work may reuse
 only verified evidence named by the trusted resume context below.
 
@@ -150,7 +156,7 @@ def _hermes_command(
 ) -> list[str]:
     runtime = int(binding["budgets"]["runtime_seconds"] if runtime_seconds is None else runtime_seconds)
     return [
-        hermes, "chat", "--quiet", "--safe-mode", "--source", _session_source(binding),
+        hermes, "chat", "--quiet", "--source", _session_source(binding),
         "--provider", str(binding["provider"]), "--model", str(binding["model"]),
         "--toolsets", "web,browser", "--max-turns", str(binding["budgets"]["search_attempts"] + binding["budgets"]["fetch_attempts"] + 8),
         "--run-budget", str(max(1, runtime)), "--query-file", str(prompt_path),
@@ -278,19 +284,24 @@ def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
         return {"status": "not_configured", "candidates": [], "warnings": [
             "controlled web-listening is not enabled; this is unknown coverage, not zero work"
         ]}
-    from climate_monitor.config import load_site_scopes
-    from climate_monitor.models import MonitorSource
+    from climate_monitor.models import MonitorSource, SiteScope
     from climate_monitor.web_listening_adapter import collect_website_items_with_evidence
 
     sources = [MonitorSource(**record) for record in binding["source_inventory"]["records"]]
-    scopes_by_source = {
-        scope.source_key: scope
-        for scope in load_site_scopes(ROOT / "monitoring" / "site_scopes.yaml")
-    }
+    scope_inventory = binding.get("site_scope_inventory")
+    gateway = binding.get("governed_gateway")
+    if not isinstance(scope_inventory, Mapping) or not isinstance(gateway, Mapping):
+        raise ValueError("frozen governed gateway/site scopes are missing; start a new run")
+    scope_records = scope_inventory["records"]
+    if hashlib.sha256(canonical_json_bytes(scope_records)).hexdigest() != scope_inventory["sha256"]:
+        raise ValueError("frozen site scope inventory hash differs")
+    scopes_by_source = {record["source_key"]: SiteScope(**record) for record in scope_records}
     candidates, warnings, evidence = collect_website_items_with_evidence(
         sources,
         state_dir=_controlled_site_checkpoint_dir(binding),
         site_scopes=scopes_by_source,
+        gateway_config=dict(gateway),
+        budget=RequestBudget(ledger_path(binding), binding),
     )
     source_results = evidence.get("source_results", [])
     return {
@@ -420,7 +431,9 @@ def _trusted_tool_events(
     binding: Mapping[str, Any], *, allow_missing_session: bool = False,
 ) -> list[dict[str, Any]]:
     """Read every bound durable Hermes transcript, not model final claims."""
-    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    home = attempt_home(binding) if "checkpoint_dir" in binding else Path("/nonexistent")
+    if not home.exists():
+        home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
     database = home / "state.db"
     if not database.is_file():
         raise ValueError("Hermes durable session database is unavailable")
@@ -470,6 +483,14 @@ def _trusted_tool_events(
                     "tool": row["tool_name"] or call.get("tool"),
                     "result": _json_value(row["content"]),
                 })
+    if "checkpoint_dir" in binding and ledger_path(binding).exists():
+        ledger_events = RequestBudget(ledger_path(binding), binding).events()
+        admitted = {event.get("call_id") for event in ledger_events if event["event_kind"] == "tool"}
+        accounted = {event.get("call_id") for event in ledger_events if event["event_kind"] in {"tool", "precheck"}}
+        if any(f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" not in accounted for event in events):
+            raise ValueError("Hermes tool dispatch lacks a durable budget admission or precheck")
+        events = [event for event in events if
+                  f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in admitted]
     allowed = {"web_search", "web_extract", "browser_exec"}
     return [event for event in events if str(event.get("tool", "")).split(".")[-1] in allowed]
 
@@ -581,6 +602,8 @@ def _tool_usage_from_events(
     events: list[dict[str, Any]], *, runtime_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Derive one attempt's counters from deduplicated trusted call events."""
+    events = [event for event in events if not isinstance(event.get("result"), Mapping)
+              or event["result"].get("event_kind") not in {"source", "precheck", "policy", "unsupported"}]
     searches = [event for event in events if _event_tool(event) == "web_search"]
     fetches = [event for event in events if _event_tool(event) in {
         "web_extract", "browser_exec", "controlled_site_fetch", "controlled_article_fetch"
@@ -731,6 +754,8 @@ def _persist_tool_provenance(
     prior_actual: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist typed Hermes attempts and computed budget use, then verify readback."""
+    ledger = RequestBudget(ledger_path(binding), binding) if (
+        "checkpoint_dir" in binding and ledger_path(binding).exists()) else None
     actual = _tool_usage_from_events(
         events, runtime_seconds=float(runtime_seconds or 0)
     )
@@ -739,8 +764,9 @@ def _persist_tool_provenance(
         "run_id": binding["run_id"], "attempt": binding["attempt"],
         "budgets": copy.deepcopy(binding["budgets"]),
         "actual": actual,
-        "cumulative_actual": _combine_tool_usage(prior_actual or {}, actual),
+        "cumulative_actual": ledger.usage() if ledger else _combine_tool_usage(prior_actual or {}, actual),
         "events": events,
+        **({"request_events": ledger.events(), "actual": ledger.usage(binding["attempt"])} if ledger else {}),
     }
     value["sha256"] = _canonical_digest(value)
     path = binding_path.parent / f"attempt-{binding['attempt']}-tool-provenance.json"
@@ -887,9 +913,16 @@ def _controlled_fetch_payload(
     capture_root = binding_path.parent / "managed" / "captures"
     capture_root.mkdir(parents=True, exist_ok=True)
     for ordinal, item in enumerate(checked["items"], start=1):
+        ledger = RequestBudget(ledger_path(binding), binding) if "checkpoint_dir" in binding else None
         if deadline is not None and time.monotonic() >= deadline:
-            raise AcquisitionIncompleteError("runtime budget expired before controlled article read")
-        record = fetch_article_content(f"managed-{ordinal}", item["url"])
+            reason = "runtime budget expired before controlled article read"
+            if ledger:
+                ledger.note("precheck", item["url"], reason, tool="controlled_article_fetch")
+            record = {"status": "failed", "failure_reason": reason, "attempts": [
+                {"engine": "fetch_article_content", "status": "failed",
+                 "event_kind": "precheck", "error": reason}]}
+        else:
+            record = fetch_article_content(f"managed-{ordinal}", item["url"], budget=ledger)
         attempted_at = _now()
         raw_attempts = record.get("attempts")
         if not isinstance(raw_attempts, list):
@@ -1061,12 +1094,14 @@ def _write_progress(binding_path: Path, binding: Mapping[str, Any], *, stage: st
 def _write_result(
     binding_path: Path, *, exit_code: int, retryable: bool, error: str | None,
     resume_phase: str | None = None,
+    execution_complete: bool | None = None, full_coverage: bool | None = None,
 ) -> None:
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
     result = {
         "schema_version": "climate-acquisition-attempt-result.v1", "run_id": binding["run_id"],
         "attempt": binding["attempt"], "finished_at": _now(), "exit_code": exit_code,
         "retryable": retryable, "error": error, "resume_phase": resume_phase,
+        "execution_complete": execution_complete, "full_coverage": full_coverage,
     }
     path = binding_path.parent / f"attempt-{binding['attempt']}-result.json"
     _atomic_write(path, json.dumps(result, sort_keys=True, indent=2).encode("utf-8") + b"\n")
@@ -1075,7 +1110,7 @@ def _write_result(
 
 def _store_readback_and_freeze(
     binding: Mapping[str, Any], payload: Mapping[str, Any], *,
-    cumulative_actual: Mapping[str, Any],
+    cumulative_actual: Mapping[str, Any], allow_unresolved: bool = False,
 ) -> dict[str, Any]:
     """Budget-check, persist, verify, then freeze the exact report handoff."""
     _enforce_cumulative_budgets(binding, cumulative_actual)
@@ -1088,7 +1123,7 @@ def _store_readback_and_freeze(
     return freeze_acquisition_for_report(
         binding["registry_database"],
         binding["acquisition_batch_id"],
-        report_date=binding["report_date"],
+        report_date=binding["report_date"], allow_unresolved=allow_unresolved,
     )
 
 
@@ -1108,10 +1143,8 @@ def _write_report_inputs(
     if site_context.get("status") != "completed" or not isinstance(source_results, list):
         raise AcquisitionIncompleteError("controlled web-listening did not produce complete source artifacts")
     by_source = {row.get("source"): row for row in source_results if isinstance(row, Mapping)}
-    if set(by_source) != {source["key"] for source in sources} or any(
-        row.get("status") != "succeeded" for row in by_source.values()
-    ):
-        raise AcquisitionIncompleteError("controlled web-listening has missing or failed source artifacts")
+    if set(by_source) != {source["key"] for source in sources} or len(by_source) != len(source_results):
+        raise AcquisitionIncompleteError("controlled web-listening has missing or duplicate source artifacts")
     outcomes = []
     manifests = []
     for source in sources:
@@ -1139,9 +1172,10 @@ def _write_report_inputs(
             )
         dispositions = outcome.get("dispositions")
         if (not isinstance(dispositions, list) or len(dispositions) != 1
-                or dispositions[0].get("artifact_id") != manifest["manifest_id"]
-                or outcome.get("full_success") is not True
-                or outcome.get("counts", {}).get("valid_snapshots") != 1):
+                or (outcome.get("full_success") is True and (
+                    dispositions[0].get("artifact_id") != manifest["manifest_id"]
+                    or outcome.get("counts", {}).get("valid_snapshots") != 1))
+                or (outcome.get("full_success") is not True and dispositions[0].get("artifact_id") is not None)) :
             raise AcquisitionIncompleteError(
                 f"controlled source outcome is not bound to a valid snapshot for {source['key']}"
             )
@@ -1189,10 +1223,15 @@ def _invoke_hermes(
     binding: Mapping[str, Any], deadline: float,
 ) -> int:
     """Run one bounded turn in the acquisition feedback loop."""
+    budget = RequestBudget(ledger_path(binding), binding)
+    budget.remaining_seconds()
+    environment, home = install_hooks(command, binding_path, binding,
+                                      _minimal_environment(str(binding["provider"])))
+    budget.remaining_seconds()
     with response_path.open("wb") as response:
         process = subprocess.Popen(
-            command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=response,
-            stderr=subprocess.STDOUT, env=_minimal_environment(str(binding["provider"])),
+            command, cwd=home, stdin=subprocess.DEVNULL, stdout=response,
+            stderr=subprocess.STDOUT, env=environment,
             close_fds=True,
         )
         _write_runtime(binding_path, binding, state="running", pid=process.pid)
@@ -1259,12 +1298,22 @@ def _resume_frozen_report(binding_path: Path, binding: Mapping[str, Any]) -> int
                         next_step="resume report authoring from the exact frozen input")
         return report_exit
     _commit_controlled_site_checkpoints(binding)
-    _write_result(binding_path, exit_code=0, retryable=False, error=None)
+    _write_result(binding_path, exit_code=0, retryable=False, error=None,
+                      execution_complete=True, full_coverage=True)
     _write_progress(binding_path, binding, stage="report_completed")
     return 0
 
 
 def _execute_locked(binding_path: Path) -> int:
+    try:
+        return _execute_attempt(binding_path)
+    finally:
+        binding = json.loads(binding_path.read_text())
+        if "checkpoint_dir" in binding and ledger_path(binding).exists():
+            RequestBudget(ledger_path(binding), binding).finish()
+
+
+def _execute_attempt(binding_path: Path) -> int:
     acquisition_started = time.monotonic()
     binding_path = binding_path.resolve(strict=True)
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
@@ -1282,7 +1331,10 @@ def _execute_locked(binding_path: Path) -> int:
     trusted_events: list[dict[str, Any]] = []
     controlled_events: list[dict[str, Any]] = []
     try:
-        prior_usage = _prior_tool_usage(binding_path, binding)
+        if ledger_path(binding).exists():
+            prior_usage = RequestBudget(ledger_path(binding), binding).usage()
+        else:
+            prior_usage = _prior_tool_usage(binding_path, binding)
         _enforce_cumulative_budgets(binding, prior_usage)
         remaining_budget_runtime = (
             float(binding["budgets"]["runtime_seconds"])
@@ -1292,7 +1344,8 @@ def _execute_locked(binding_path: Path) -> int:
             raise AcquisitionBudgetError(
                 "cumulative acquisition exhausted the runtime budget"
             )
-        deadline = acquisition_started + remaining_budget_runtime
+        budget = RequestBudget(ledger_path(binding), binding, prior=prior_usage)
+        deadline = acquisition_started + budget.remaining_seconds()
         resume_history = _resume_history(binding_path, binding)
         site_context = _controlled_site_context(binding)
         registry_history = _registry_history_context(binding)
@@ -1308,8 +1361,6 @@ def _execute_locked(binding_path: Path) -> int:
             prior_actual=prior_usage,
         )
         _enforce_cumulative_budgets(binding, site_provenance["cumulative_actual"])
-        if time.monotonic() >= deadline:
-            raise AcquisitionIncompleteError("runtime budget expired during controlled site acquisition")
     except AcquisitionBudgetError as exc:
         _discard_controlled_site_checkpoints(binding)
         error = f"Immutable acquisition budget exhausted: {exc}"
@@ -1401,15 +1452,6 @@ def _execute_locked(binding_path: Path) -> int:
         )
         payload = _validate_agent_payload(binding, candidate_payload, trusted_events)
         _validate_site_claims(payload, site_context)
-        if site_context.get("status") != "completed":
-            raise AcquisitionIncompleteError(
-                "controlled web-listening coverage is unavailable or incomplete"
-            )
-        agent_fetches = sum(
-            len(item.get("evidence", {}).get("attempts", [])) for item in payload["items"]
-        )
-        if len(site_attempts) + agent_fetches + len(payload["items"]) > binding["budgets"]["fetch_attempts"]:
-            raise ValueError("agent and controlled fetches exceed the bound fetch-attempt budget")
         controlled_result = _controlled_fetch_payload(
             binding_path, binding, payload, deadline=deadline, return_events=True
         )
@@ -1420,7 +1462,8 @@ def _execute_locked(binding_path: Path) -> int:
         # global run budget is live.  The second turn is a delta: verified
         # successes are immutable and only failed/retryable work can change.
         failed_items = [item for item in payload["items"]
-                        if item.get("processing_status") != "complete"]
+                        if item.get("processing_status") != "complete"
+                        and not any(a.get("event_kind") == "unsupported" for a in item.get("evidence", {}).get("attempts", []))]
         used_so_far = len(site_attempts) + len([
             event for event in trusted_events
             if _event_tool(event) in {"web_extract", "browser_exec"}
@@ -1476,13 +1519,34 @@ def _execute_locked(binding_path: Path) -> int:
         )
         _enforce_cumulative_budgets(binding, provenance["cumulative_actual"])
         payload = _merge_resume_payload(binding, payload, resume_history)
+        payload["source_outcomes"] = copy.deepcopy(site_context.get("source_results", []))
+        gaps = (site_context.get("status") != "completed"
+                or any(row.get("status") != "succeeded" for row in payload["source_outcomes"])
+                or any(item.get("processing_status") != "complete" for item in payload["items"])
+                or any(search.get("status") == "failed" for search in payload["searches"]))
+        if gaps:
+            payload["completed_at"] = None
         frozen = _store_readback_and_freeze(
-            binding, payload, cumulative_actual=provenance["cumulative_actual"]
+            binding, payload, cumulative_actual=provenance["cumulative_actual"], allow_unresolved=gaps
         )
         _atomic_write(
             binding_path.parent / f"attempt-{binding['attempt']}-acquisition.json",
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n",
         )
+        from climate_registry.acquisition import readback_source_outcomes
+        if readback_source_outcomes(binding["registry_database"], payload) != payload["source_outcomes"]:
+            raise ValueError("Registry source-outcome readback differs")
+        _write_report_inputs(binding, payload, site_context)
+        if gaps:
+            _atomic_write(binding_path.parent / f"attempt-{binding['attempt']}-partial-projection.json",
+                          json.dumps(frozen, sort_keys=True, indent=2).encode())
+            error = "Acquisition execution completed with rejected or incomplete coverage; report is blocked"
+            _write_result(binding_path, exit_code=0, retryable=False, error=error,
+                          execution_complete=True, full_coverage=False)
+            _write_progress(binding_path, binding, stage="completed_with_gaps", error=error,
+                            next_step="inspect source and article gaps; report/publication remain blocked",
+                            events=all_events)
+            return 0
         frozen_bytes = json.dumps(frozen, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n"
         _atomic_write(Path(binding["frozen_report_input"]), frozen_bytes)
         _write_report_inputs(binding, payload, site_context)
@@ -1499,7 +1563,8 @@ def _execute_locked(binding_path: Path) -> int:
                             events=all_events)
             return report_exit
         _commit_controlled_site_checkpoints(binding)
-        _write_result(binding_path, exit_code=0, retryable=False, error=None)
+        _write_result(binding_path, exit_code=0, retryable=False, error=None,
+                      execution_complete=True, full_coverage=True)
         _write_progress(binding_path, binding, stage="report_completed", events=all_events)
         return 0
     except AcquisitionBudgetError as exc:

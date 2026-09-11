@@ -1142,3 +1142,22 @@ def freeze_acquisition_for_report(
         "acquisition_dispositions": dispositions,
         "artifact_digest": _artifact_digest(records),
     }
+
+
+def readback_source_outcomes(database: str | Path, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Verify source artifacts against the transaction's stored payload identity.
+
+    Source manifests stay in the acquisition artifact, not fabricated article
+    records. The existing Registry payload hash binds every source outcome.
+    """
+    loaded = load_acquisition_batch(database, payload["batch_id"])
+    if loaded["payload_sha256"] != _digest(payload):
+        raise ValueError("Registry source-outcome payload hash differs")
+    rows = payload.get("source_outcomes", [])
+    if not isinstance(rows, list) or len({row["source"] for row in rows}) != len(rows):
+        raise ValueError("invalid or duplicate source outcomes")
+    for row in rows:
+        raw = Path(row["artifact_path"]).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != row["artifact_sha256"] or json.loads(raw) != row["manifest"]:
+            raise ValueError("Registry source-outcome artifact hash differs")
+    return json.loads(json.dumps(rows))

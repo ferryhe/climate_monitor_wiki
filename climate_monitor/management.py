@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
+from climate_monitor.request_budget import DEFAULT_FETCH_ATTEMPTS
+
 from climate_registry.acquisition import (
     AcquisitionIncompleteError,
     PublicationDatePolicy,
@@ -150,7 +152,7 @@ def default_task_definition() -> dict[str, Any]:
             "budgets": {
                 "search_attempts": 8,
                 "search_results": 40,
-                "fetch_attempts": 80,
+                "fetch_attempts": DEFAULT_FETCH_ATTEMPTS,
                 "retries_per_item": 2,
                 "runtime_seconds": 3600,
             },
@@ -594,6 +596,23 @@ def build_task_binding(
     policy_input = parameters["date_policy"]
     policy = PublicationDatePolicy.resolve(policy_input, anchor_date=report_date, frozen_at=_rfc3339(frozen_at))
     run_root = Path(normalized["runtime"]["run_root"])
+    from climate_monitor.config import load_site_scopes
+    from climate_monitor.models import MonitorSource
+    from climate_monitor.web_listening_adapter import gateway_configuration
+
+    source_inventory = _source_inventory(parameters["source_keys"])
+    scopes = {scope.source_key: scope for scope in load_site_scopes(
+        REPOSITORY_ROOT / "monitoring" / "site_scopes.yaml"
+    ) if scope.source_key in parameters["source_keys"]}
+    scope_records = [asdict(scopes[key]) for key in parameters["source_keys"] if key in scopes]
+    scope_inventory = {
+        "records": scope_records,
+        "sha256": hashlib.sha256(canonical_json_bytes(scope_records)).hexdigest(),
+    }
+    gateway = gateway_configuration(
+        [MonitorSource(**record) for record in source_inventory["records"]], scopes,
+        budget_limit=parameters["budgets"]["fetch_attempts"],
+    )
     return {
         "schema_version": BINDING_SCHEMA,
         "run_id": run_id,
@@ -613,7 +632,9 @@ def build_task_binding(
         "date_policy": policy.to_dict(),
         "budgets": copy.deepcopy(parameters["budgets"]),
         "source_keys": copy.deepcopy(parameters["source_keys"]),
-        "source_inventory": _source_inventory(parameters["source_keys"]),
+        "source_inventory": source_inventory,
+        "site_scope_inventory": scope_inventory,
+        "governed_gateway": gateway,
         "provider": parameters["provider"],
         "model": parameters["model"],
         "acquisition_lineage_id": f"acq-{run_id}",
@@ -990,6 +1011,28 @@ class ManagementService:
             # A matching running attempt is authoritative while authoring is
             # inside the existing report command; frozen is only the idle handoff.
             stage = active_report_stage
+        source_rows = []
+        acquisition_path = self._run_dir(run_id) / f"attempt-{binding['attempt']}-acquisition.json"
+        try:
+            from climate_registry.acquisition import readback_source_outcomes
+            acquisition_payload = json.loads(acquisition_path.read_text())
+            source_rows = readback_source_outcomes(database, acquisition_payload)
+        except (OSError, KeyError, ValueError):
+            pass
+        coverage = {
+            "execution_complete": (result or {}).get("execution_complete", False),
+            "full_success": bool(source_rows) and all(row.get("status") == "succeeded" for row in source_rows)
+                            and (result or {}).get("full_coverage") is not False,
+            "successful_sources": sum(row.get("status") == "succeeded" for row in source_rows),
+            "rejected_sources": sum(row.get("coverage_status") == "rejected" for row in source_rows),
+            "incomplete_sources": sum(row.get("coverage_status") == "incomplete" for row in source_rows),
+            "total_sources": len(source_keys),
+        }
+        if result and result.get("execution_complete") and result.get("full_coverage") is False:
+            stage = "completed_with_gaps"
+        from climate_monitor.request_budget import RequestBudget, ledger_path
+        if ledger_path(binding).is_file():
+            used_budget = RequestBudget(ledger_path(binding), binding).usage()
         updated_at = persisted.get("updated_at") or runtime.get("heartbeat_at") or runtime.get("launched_at") or binding["created_at"]
         try:
             age = (_utc_now() - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))).total_seconds()
@@ -1002,6 +1045,11 @@ class ManagementService:
             "stage": stage,
             "current": persisted.get("current") or {"organization": None, "url": None},
             "counts": counts,
+            "coverage": coverage,
+            "search_decision": {"status": batch.get("search_decision"),
+                                "reason": batch.get("no_search_reason")} if batch else None,
+            "source_outcomes": [{key: row.get(key) for key in (
+                "source", "coverage_status", "artifact_id", "warnings")} for row in source_rows],
             "budget": {"limits": binding["budgets"], "used": used_budget},
             "freshness": freshness,
             "updated_at": updated_at,
@@ -1026,6 +1074,7 @@ class ManagementService:
             "title": item.get("title"),
             "publication_date": item.get("publication_date"),
             "eligibility": item.get("date_status"),
+            "error": item.get("processing_error") or item.get("failure_reason"),
             "status": item.get("processing_status") or ("stored" if item.get("content_version_id") else "pending"),
         }
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pytest
+
 from climate_monitor.ai_filter import classify_candidate
 from climate_monitor.models import CandidateItem, MonitorSource, RunConfig, SiteScope
 from climate_monitor.research_search import (
@@ -374,6 +376,7 @@ def test_collect_website_items_uses_fixture_without_live_web_listening(tmp_path)
     assert items[0].title == "Climate update"
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_merge(
     tmp_path, monkeypatch
 ):
@@ -391,6 +394,7 @@ def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_mer
         scope=None,
         stage_checkpoint=False,
         update_checkpoint=True,
+        _runtime=None,
     ):
         checkpoint_calls.append(
             (source.key, stage_checkpoint, update_checkpoint)
@@ -421,6 +425,7 @@ def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_mer
     assert checkpoint_calls == [("one", True, True), ("two", True, True)]
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path, monkeypatch):
     class Page:
         def __init__(self, url: str, links: list[str], text: str):
@@ -436,7 +441,8 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
         fetch_configs: list[dict] = []
         fetch_counts: dict[str, int] = {}
 
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -493,7 +499,7 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
         "https://www.iais.org/",
         "https://www.iais.org/news/",
     ]
-    assert all(config == {"user_agent_profile": "browser"} for config in FakeCrawler.fetch_configs)
+    assert all(config == {"user_agent": "web-listening-bot/1.0"} for config in FakeCrawler.fetch_configs)
     assert len(list((tmp_path / "state").glob("*.json"))) == 2
     saved_states = [json.loads(path.read_text(encoding="utf-8")) for path in (tmp_path / "state").glob("*.json")]
     assert all("https://www.iais.org/events/agenda.pdf" not in state["links"] for state in saved_states)
@@ -502,6 +508,7 @@ def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path,
     assert item_urls.count("https://www.iais.org/climate/report.pdf") == 2
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_staged_source_checkpoints_commit_only_covered_candidates_across_seeds(
     tmp_path, monkeypatch
 ):
@@ -520,7 +527,8 @@ def test_staged_source_checkpoints_commit_only_covered_candidates_across_seeds(
             self.status_code = 200
 
     class FakeCrawler:
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -627,6 +635,7 @@ def test_staged_source_checkpoints_commit_only_covered_candidates_across_seeds(
     assert not list(state_dir.glob("*.pending-run.json"))
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monkeypatch):
     class Page:
         final_url = "https://www.oecd.org/en/topics/climate-change.html"
@@ -642,7 +651,8 @@ def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monke
         fetch_modes: list[str] = []
         fetch_configs: list[dict] = []
 
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.init_modes.append(fetch_mode)
 
         def __enter__(self):
@@ -687,11 +697,12 @@ def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monke
 
     collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
 
-    assert FakeCrawler.init_modes == ["browser", "browser"]
-    assert FakeCrawler.fetch_modes == ["browser", "browser"]
-    assert FakeCrawler.fetch_configs == [scope.fetch_config_json, scope.fetch_config_json]
+    assert FakeCrawler.init_modes == ["http"]
+    assert FakeCrawler.fetch_modes == ["http", "http"]
+    assert FakeCrawler.fetch_configs == [{"user_agent": "web-listening-bot/1.0"}] * 2
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_warns_when_seed_has_no_usable_information(tmp_path, monkeypatch):
     class Page:
         final_url = "https://www.example.org/empty"
@@ -703,7 +714,8 @@ def test_collect_source_items_warns_when_seed_has_no_usable_information(tmp_path
         status_code = 200
 
     class FakeCrawler:
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -741,6 +753,7 @@ def test_collect_source_items_warns_when_seed_has_no_usable_information(tmp_path
     assert "links=0" in warnings[0]
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_warns_when_seed_returns_security_verification(tmp_path, monkeypatch):
     class Page:
         final_url = "https://www.example.org/protected"
@@ -752,7 +765,8 @@ def test_collect_source_items_warns_when_seed_returns_security_verification(tmp_
         status_code = 200
 
     class FakeCrawler:
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -788,6 +802,7 @@ def test_collect_source_items_warns_when_seed_returns_security_verification(tmp_
     assert "blocked or rejected content marker `performing security verification`" in warnings[0]
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_allows_pages_with_incidental_human_verification_text(tmp_path, monkeypatch):
     class Page:
         final_url = "https://www.example.org/page"
@@ -805,7 +820,8 @@ def test_collect_source_items_allows_pages_with_incidental_human_verification_te
         status_code = 200
 
     class FakeCrawler:
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -840,6 +856,7 @@ def test_collect_source_items_allows_pages_with_incidental_human_verification_te
     assert warnings == []
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(tmp_path, monkeypatch):
     class Page:
         def __init__(self, links: list[str]):
@@ -853,7 +870,8 @@ def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(t
     class FakeCrawler:
         fetch_count = 0
 
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -902,6 +920,7 @@ def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(t
     assert "broken seed" in warnings[0]
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_collect_source_items_emits_document_lane_for_doc_links_and_website_lane_for_other_links(tmp_path, monkeypatch):
     class Page:
         def __init__(self, links: list[str]):
@@ -915,7 +934,8 @@ def test_collect_source_items_emits_document_lane_for_doc_links_and_website_lane
     class FakeCrawler:
         fetch_count = 0
 
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -965,6 +985,7 @@ def test_collect_source_items_emits_document_lane_for_doc_links_and_website_lane
     }
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_path, monkeypatch):
     class Page:
         def __init__(self, links: list[str]):
@@ -978,7 +999,8 @@ def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_
     class FakeCrawler:
         fetch_count = 0
 
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):
@@ -1020,6 +1042,7 @@ def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_
     assert document.evidence_text == "https://www.example.org/files/board-minutes.pdf Board Minutes"
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_live_website_link_uses_link_evidence_not_seed_page_text(tmp_path, monkeypatch):
     class Page:
         def __init__(self, links: list[str]):
@@ -1033,7 +1056,8 @@ def test_live_website_link_uses_link_evidence_not_seed_page_text(tmp_path, monke
     class FakeCrawler:
         fetch_count = 0
 
-        def __init__(self, *, fetch_mode: str):
+        def __init__(self, *, fetch_mode: str, read_gateway):
+            assert read_gateway.user_agent == "web-listening-bot/1.0"
             self.fetch_mode = fetch_mode
 
         def __enter__(self):

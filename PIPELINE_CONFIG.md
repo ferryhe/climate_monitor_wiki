@@ -177,6 +177,48 @@ cannot alter it. Completion status requires Registry readback plus byte-equivale
 `freeze_acquisition_for_report` output, not agent prose. The current launcher is
 implemented and tested but has not been installed in production.
 
+### Managed acquisition capacity and incomplete coverage
+
+New tasks default to 1,200 fetch units, eight search calls, 40 search results,
+two retries per item and 3,600 cumulative seconds. The fetch capacity covers the
+frozen 36-source / 116-seed selection with four target sends per seed, 40 article
+operations with two retries and four sends each, plus 120 native fetch-tool
+units (1,064 units). This is capacity, not a promise of content or of fitting
+arbitrarily long redirects. Explicit lower overrides remain authoritative; each
+run freezes its limits, source/scope inventory and governed HTTP identity.
+
+A durable run ledger reserves capacity before every governed target send,
+including redirects, and before each Hermes `web_search`, `web_extract` and
+`browser_exec` dispatch. Failed or interrupted reservations remain spent or
+uncertain. Target-send reservations, native fetch-tool units, source outcomes,
+policy refusals and precheck blocks are distinct evidence. Search calls and
+returned results are distinct; unreturned result reservations remain reserved.
+Resumes verify successful seed receipts and reuse them, charging only remaining
+operations under the same cumulative limits. A missing or changed ledger fails
+closed. Successful seed receipts are independent of report checkpoint promotion.
+
+Only the acquisition subprocess receives the mandatory Hermes shell hooks in
+its isolated attempt home. Its Python runtime must load and execute the public
+hook contract before acquisition starts; incompatible configuration stops the
+attempt. Global hooks, plugins and MCP configuration are not inherited. Provider
+environment and an optional private copy of OAuth credentials supply identity.
+
+The pinned public gateway supports governed HTTP, including for sources whose
+requested classification is browser. Evidence retains requested/effective
+engines; HTTP content is never represented as browser execution. The pinned
+`web_listening` SHA `89940fea711feb8fc98d7a4233e6cfb922fb8af1` article reader does
+not expose the shared `before_target_request` and `timeout_seconds` parameters.
+Managed article reads therefore retain typed unsupported evidence without
+invoking that reader. A compatible public interface is required to enable them;
+no private upstream patch or alternative crawler is used.
+
+An attempt can finish as `completed_with_gaps`. All selected source outcomes and
+artifacts survive Registry payload verification, report-input projection and
+management readback. The Registry batch remains incomplete, no final report
+input is frozen, and report/publication dispatch remains blocked. A truthful
+`no_search` retains its reason. Local checks do not verify a production deployment,
+import, site run, browser capability or full production coverage.
+
 ### Legacy Step 2: Pillar B Web Search (historical compatibility only)
 
 Edit the query list, source preferences and selection wording in

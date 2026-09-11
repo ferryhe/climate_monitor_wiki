@@ -1230,6 +1230,7 @@ def test_site_provenance_requires_controlled_web_listening_history():
         runner._validate_site_claims({"items": [item]}, {"status": "not_configured", "candidates": []})
 
 
+@pytest.mark.usefixtures("governed_adapter_runtime")
 def test_site_adapter_returns_stored_hash_bound_public_evidence(tmp_path, monkeypatch):
     import climate_monitor.web_listening_adapter as adapter
     from climate_monitor.models import CandidateItem, MonitorSource
@@ -1237,7 +1238,7 @@ def test_site_adapter_returns_stored_hash_bound_public_evidence(tmp_path, monkey
     source = MonitorSource(key="wmo", abbreviation="WMO", full_name="WMO",
                            url="https://wmo.int/")
 
-    def fake_collect(source, state_dir, scope, stage_checkpoint, update_checkpoint):
+    def fake_collect(source, state_dir, scope, stage_checkpoint, update_checkpoint, _runtime, seed_outcomes):
         state = adapter._state_path(state_dir, source, source.url)
         staged = adapter._checkpoint_stage_path(state)
         staged.parent.mkdir(parents=True, exist_ok=True)
@@ -1271,7 +1272,7 @@ def test_managed_site_checkpoints_share_monitor_state_and_finalize(tmp_path, mon
     )
     observed = {}
 
-    def fake_collect(sources, *, state_dir, site_scopes):
+    def fake_collect(sources, *, state_dir, site_scopes, gateway_config, budget):
         observed["state_dir"] = state_dir
         return [], [], {"status": "completed", "source_results": []}
 
@@ -1609,7 +1610,7 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
     binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="fetch", attempt=1)
     binding_path = tmp_path / "runs" / "fetch" / "attempt-1.json"
     binding_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url: {
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url, *, budget: {
         "status": "ok", "selected_method": "web_http", "content": "controlled body",
         "content_hash": hashlib.sha256(b"controlled body").hexdigest(),
         "content_type": "text/plain", "final_url": url, "failure_reason": None,
@@ -1651,7 +1652,7 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     body = "controlled production body"
     body_hash = hashlib.sha256(body.encode()).hexdigest()
     url = "https://wmo.int/article"
-    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, requested_url: {
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, requested_url, *, budget: {
         "status": "ok",
         "selected_method": "web_http",
         "content": body,
