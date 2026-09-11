@@ -428,12 +428,11 @@ HERMES_DASHBOARD_ENABLED=1
 CLIMATE_PUBLIC_ORIGIN=https://climate.example
 ```
 
-The base Compose service deliberately leaves `HERMES_HOME` unset while this
-feature is disabled, preserving the pre-upgrade Hermes home used by `/manage`
-jobs. Before first enablement, migrate that existing home into the persistent
-`/app/output/hermes` target by following the fail-closed copy-and-verify
-procedure in [docs/deployment.md](docs/deployment.md#optional-hermes-dashboard).
-Do not merge two existing profile/session trees.
+The base Compose service continues to set `HERMES_HOME=/app/output/hermes`, as it
+did before the Dashboard integration. That directory is already inside the
+persistent `climate_runtime` volume, so `/manage` jobs keep the same profiles and
+sessions whether the Dashboard is disabled or enabled. No home migration is
+required for an existing base Compose installation.
 
 When enabled, the existing container entrypoint starts it with:
 

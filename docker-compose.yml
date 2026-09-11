@@ -8,6 +8,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
       RELOAD_TOKEN: ${RELOAD_TOKEN:-}
+      HERMES_HOME: /app/output/hermes
       # Existing Wiki/Chat deployments must remain available until operators
       # explicitly provision the Dashboard's trusted public HTTPS origin.
       HERMES_DASHBOARD_ENABLED: ${HERMES_DASHBOARD_ENABLED:-0}

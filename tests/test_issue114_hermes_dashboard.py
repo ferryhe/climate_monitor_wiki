@@ -594,7 +594,7 @@ def test_unavailable_state_and_pinned_isolated_runtime(monkeypatch):
     assert "checkout 5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
     assert "npm run build --workspace web" in dockerfile
     assert "npm run build --workspace ui-tui" in dockerfile
-    assert "HERMES_HOME:" not in compose
+    assert "HERMES_HOME: /app/output/hermes" in compose
     assert "climate_runtime:/app/output" in compose
     assert "HERMES_DASHBOARD_URL: http://127.0.0.1:9119" in compose
     assert "python -m climate_monitor.hermes_dashboard_server" in entrypoint
@@ -801,11 +801,8 @@ def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_pa
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
     assert "HERMES_DASHBOARD_ENABLED: ${HERMES_DASHBOARD_ENABLED:-0}" in compose
-    assert "HERMES_HOME:" not in compose
-    assert 'legacy="${HERMES_HOME:-$HOME/.hermes}"' in deployment
-    assert "target=/app/output/hermes" in deployment
-    assert "target Hermes home already exists" in deployment
-    assert "test -r /app/output/hermes/state.db" in deployment
+    assert "HERMES_HOME: /app/output/hermes" in compose
+    assert "No home migration is required" in " ".join(deployment.split())
 
     marker = tmp_path / "application-started"
     command = (
@@ -834,6 +831,30 @@ def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_pa
 
     assert result.returncode == 0, result.stderr
     assert marker.read_text(encoding="utf-8") == "wiki-chat-started"
+
+
+def test_disabled_compose_keeps_baseline_persistent_hermes_home():
+    docker = shutil.which("docker")
+    if not docker:
+        pytest.skip("Docker CLI is not installed")
+    environment = os.environ.copy()
+    environment.pop("HERMES_DASHBOARD_ENABLED", None)
+    environment.pop("CLIMATE_PUBLIC_ORIGIN", None)
+    rendered = subprocess.run(
+        [docker, "compose", "config", "--format", "json"],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    rendered_environment = json.loads(rendered.stdout)["services"]["wiki"][
+        "environment"
+    ]
+    assert rendered_environment["HERMES_DASHBOARD_ENABLED"] == "0"
+    assert rendered_environment["CLIMATE_PUBLIC_ORIGIN"] == ""
+    assert rendered_environment["HERMES_HOME"] == "/app/output/hermes"
 
 
 def test_enabled_entrypoint_exits_and_stops_app_when_dashboard_child_crashes(tmp_path):
