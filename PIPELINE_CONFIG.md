@@ -206,11 +206,13 @@ environment and an optional private copy of OAuth credentials supply identity.
 The pinned public gateway supports governed HTTP, including for sources whose
 requested classification is browser. Evidence retains requested/effective
 engines; HTTP content is never represented as browser execution. The pinned
-`web_listening` SHA `70b9752d556a6e61c599bef3bec11371b7610539` article reader exposes
+`web_listening` SHA `c1a5f1c04701d314f51409246f106cfe1d11b66f` article reader exposes
 the formal public `before_target_request` callback and `timeout_seconds` controls.
 Managed article reads use those controls to attach the durable request budget at
-actual target and redirect sends while retaining compiled transport ceilings.
-No private upstream patch or alternative crawler is used.
+actual target and redirect sends while retaining compiled transport ceilings; the
+same public gateway also preserves pacing lineage from the later reservation or
+actual request start across same-origin redirects. No private upstream patch or
+alternative crawler is used. A downstream complete canary remains required.
 
 An attempt can finish as `completed_with_gaps`. All selected source outcomes and
 artifacts survive Registry payload verification, report-input projection and

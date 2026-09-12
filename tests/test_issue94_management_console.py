@@ -1811,7 +1811,7 @@ def test_container_and_console_rendering_include_management_runtime():
     assert 'ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]' in dockerfile
     assert (
         "web-listening @ git+https://github.com/ferryhe/web_listening.git@"
-        "70b9752d556a6e61c599bef3bec11371b7610539"
+        "c1a5f1c04701d314f51409246f106cfe1d11b66f"
     ) in requirements
     assert "climate_runtime:/app/output" in compose
     assert "CLIMATE_ACQUISITION_RUN_DIR: /app/output/acquisition-runs" in compose

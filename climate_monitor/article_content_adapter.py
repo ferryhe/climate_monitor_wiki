@@ -593,7 +593,7 @@ def fetch_article_content(
             reason = ("unsupported upstream article guard: installed public "
                       "fetch_article_content is missing required before_target_request "
                       "and timeout_seconds parameters; expected pinned web_listening "
-                      "70b9752d556a6e61c599bef3bec11371b7610539")
+                      "c1a5f1c04701d314f51409246f106cfe1d11b66f")
             budget.note("unsupported", url, reason, tool="controlled_article_fetch")
             record = _unavailable_record(article_id=article_id, url=url, failure_reason=reason).to_dict()
             record["attempts"] = [{"engine": "fetch_article_content", "status": "failed",

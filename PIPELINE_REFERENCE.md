@@ -170,10 +170,12 @@ Evidence as of 2026-09-08:
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**
   without it. Both runs retained the three existing warnings. The full-chain
   harness now calls the real monitor ledger producer and checks its report SHA.
-- The stable project runtime is Python 3.12 with web_listening `70b9752d` and
+- The stable project runtime is Python 3.12 with web_listening `c1a5f1c0` and
   official Hermes v0.21.1 `2237be3`, including its pinned Firecrawl extra. A real
   isolated stdin request passed the production quiet-response parser. The global
-  Hermes gateway was not replaced.
+  Hermes gateway was not replaced. The upstream pin supplies the formal public
+  article target guard and preserves actual-start pacing lineage across same-origin
+  redirects; a downstream complete canary remains required.
 - Live dated Pillar B discovery completed all four required tool queries. The
   validator rejected one article whose date evidence referred to another page;
   after verification and exclusion, five articles passed for June 7–September 7.
