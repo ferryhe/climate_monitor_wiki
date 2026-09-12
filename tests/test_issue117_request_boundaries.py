@@ -668,7 +668,11 @@ def test_real_transcript_shape_exposes_completed_call_id_and_normalizes_event_ti
     import sqlite3
 
     from climate_monitor.hermes_acquisition_hooks import attempt_home
-    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from climate_monitor.request_budget import (
+        RequestBudget,
+        ledger_path,
+        search_identity_suffix,
+    )
     from test_issue94_management_console import _write_hermes_tool_events
     import scripts.run_agent_acquisition as runner
 
@@ -677,10 +681,22 @@ def test_real_transcript_shape_exposes_completed_call_id_and_normalizes_event_ti
     )
     event = events[0]
     call_id = "1:session-1:call-1"
+    query = event["arguments"]["query"]
+    wrapper = event["result"]
+    durable_raw = json.dumps(runner._decoded_event_result(wrapper), indent=2)
+    closing = "\n</untrusted_tool_result>"
+    visible = (
+        wrapper[:-len(closing)]
+        + search_identity_suffix(event["tool_call_id"], query)
+        + closing
+    )
     ledger = RequestBudget(ledger_path(task_binding), task_binding)
-    ledger.claim("web_search", "query a", results=5, call_id=call_id)
-    ledger.complete_tool(call_id, status="ok", result=event["result"])
-    _write_hermes_tool_events(attempt_home(task_binding), task_binding, [event])
+    ledger.claim("web_search", query, results=5, call_id=call_id)
+    ledger.complete_tool(call_id, status="ok", result=durable_raw)
+    _write_hermes_tool_events(
+        attempt_home(task_binding), task_binding,
+        [{**event, "result": visible}],
+    )
     connection = sqlite3.connect(attempt_home(task_binding) / "state.db")
     try:
         connection.execute("ALTER TABLE messages ADD COLUMN timestamp REAL")
@@ -695,11 +711,194 @@ def test_real_transcript_shape_exposes_completed_call_id_and_normalizes_event_ti
     trusted = runner._trusted_tool_events(task_binding)
     assert trusted[0]["tool_call_id"] == "call-1"
     assert trusted[0]["durable_status"] == "ok"
+    assert trusted[0]["result"] == wrapper
     materialized = runner._materialize_agent_candidate(
         task_binding, _candidate_payload(task_binding, []), trusted,
     )
     assert materialized["searches"][0]["search_ref"] == "call-1"
     assert materialized["searches"][0]["attempted_at"] == "2026-09-12T20:06:49.669096Z"
+
+
+def test_v2_model_visible_search_identity_round_trips_to_validated_candidate(
+    tmp_path,
+):
+    import copy
+    import hashlib
+
+    from climate_monitor.hermes_acquisition_hooks import (
+        attempt_home,
+        transform_search_tool_result,
+    )
+    from climate_monitor.request_budget import (
+        RequestBudget,
+        SEARCH_IDENTITY_TAG,
+        ledger_path,
+        search_identity_suffix,
+    )
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    binding_path = tmp_path / "attempt-1.json"
+    binding_path.write_text(json.dumps(task_binding))
+    event = events[0]
+    original = event["result"]
+    durable_raw = json.dumps(runner._decoded_event_result(original), indent=2)
+    query = event["arguments"]["query"]
+    raw_call_id = event["tool_call_id"]
+    session_id = "session-1"
+    durable_call_id = f"1:{session_id}:{raw_call_id}"
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.claim("web_search", query, results=5, call_id=durable_call_id)
+    transformed_raw = transform_search_tool_result(
+        binding_path, tool_name="web_search", args={"query": query},
+        result=durable_raw, session_id=session_id, tool_call_id=raw_call_id,
+        status="ok",
+    )
+    suffix = search_identity_suffix(raw_call_id, query)
+    assert transformed_raw == durable_raw + suffix
+    closing = "\n</untrusted_tool_result>"
+    visible = original[:-len(closing)] + suffix + closing
+    _write_hermes_tool_events(
+        attempt_home(task_binding), task_binding,
+        [{**event, "result": visible}],
+    )
+
+    trusted = runner._trusted_tool_events(task_binding)
+    assert trusted[0]["result"] == original
+    audit = trusted[0]["model_visible_search_result"]
+    assert audit == {
+        "sha256": hashlib.sha256(visible.encode()).hexdigest(),
+        "original_sha256": hashlib.sha256(original.encode()).hexdigest(),
+        "durable_result_sha256": hashlib.sha256(durable_raw.encode()).hexdigest(),
+        "decoded_original_sha256": hashlib.sha256(
+            runner.canonical_json_bytes(runner._decoded_event_result(original))
+        ).hexdigest(),
+        "identity_suffix_tag": SEARCH_IDENTITY_TAG,
+        "identity_suffix_sha256": hashlib.sha256(
+            search_identity_suffix(raw_call_id, query).encode()
+        ).hexdigest(),
+        "identity_suffix_verified": True,
+    }
+    assert "https://wmo.int" not in json.dumps(audit)
+
+    item = copy.deepcopy(payload["items"][0])
+    item["discovery_search_ref"] = raw_call_id
+    item["discovery_ref"] = item["url"]
+    materialized = runner._materialize_agent_candidate(
+        task_binding, _candidate_payload(task_binding, [item]), trusted,
+    )
+    assert materialized["searches"][0]["result_refs"] == [
+        "https://wmo.int/a-1", "https://wmo.int/a-2",
+    ]
+    assert runner._validate_agent_payload(
+        task_binding, materialized, trusted,
+    ) == materialized
+    provenance = runner._persist_tool_provenance(
+        binding_path, task_binding, trusted,
+    )
+    assert provenance["events"][0]["result"] == original
+    assert provenance["events"][0]["model_visible_search_result"] == audit
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "wrong-id", "wrong-query", "changed-content"],
+)
+def test_v2_trusted_events_reject_invalid_model_visible_search_identity(
+    tmp_path, mutation,
+):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import (
+        RequestBudget,
+        ledger_path,
+        search_identity_suffix,
+    )
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    event = events[0]
+    original = event["result"]
+    durable_raw = json.dumps(runner._decoded_event_result(original), indent=2)
+    query = event["arguments"]["query"]
+    raw_call_id = event["tool_call_id"]
+    durable_call_id = f"1:session-1:{raw_call_id}"
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.claim("web_search", query, results=5, call_id=durable_call_id)
+    ledger.complete_tool(durable_call_id, durable_raw, "ok")
+    closing = "\n</untrusted_tool_result>"
+    if mutation == "missing":
+        visible = original
+    elif mutation == "wrong-id":
+        visible = (
+            original[:-len(closing)]
+            + search_identity_suffix("another-call", query)
+            + closing
+        )
+    elif mutation == "wrong-query":
+        visible = (
+            original[:-len(closing)]
+            + search_identity_suffix(raw_call_id, "another query")
+            + closing
+        )
+    else:
+        changed = original.replace("trusted", "changed", 1)
+        visible = (
+            changed[:-len(closing)]
+            + search_identity_suffix(raw_call_id, query)
+            + closing
+        )
+    _write_hermes_tool_events(
+        attempt_home(task_binding), task_binding,
+        [{**event, "result": visible}],
+    )
+
+    error = (
+        "differs from durable result" if mutation == "changed-content"
+        else "identity suffix"
+    )
+    with pytest.raises(ValueError, match=error):
+        runner._trusted_tool_events(task_binding)
+
+
+def test_failed_v2_and_legacy_search_transcripts_keep_original_result_shape(tmp_path):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    current, _payload, current_events = _opaque_search_binding_fixture(
+        tmp_path / "current", candidate_protocol=True,
+    )
+    failed = {
+        **current_events[0],
+        "status": "error",
+        "result": _tagged_search_result(success=False, error="provider failure"),
+    }
+    durable_call_id = f"1:session-1:{failed['tool_call_id']}"
+    ledger = RequestBudget(ledger_path(current), current)
+    ledger.claim(
+        "web_search", failed["arguments"]["query"], results=5,
+        call_id=durable_call_id,
+    )
+    ledger.complete_tool(durable_call_id, failed["result"], "error")
+    _write_hermes_tool_events(attempt_home(current), current, [failed])
+    current_trusted = runner._trusted_tool_events(current)
+    assert current_trusted[0]["result"] == failed["result"]
+    assert current_trusted[0]["durable_status"] == "error"
+    assert "model_visible_search_result" not in current_trusted[0]
+
+    legacy, _payload, legacy_events = _opaque_search_binding_fixture(
+        tmp_path / "legacy",
+    )
+    _write_hermes_tool_events(attempt_home(legacy), legacy, [legacy_events[0]])
+    legacy_trusted = runner._trusted_tool_events(legacy)
+    assert legacy_trusted[0]["result"] == legacy_events[0]["result"]
+    assert "model_visible_search_result" not in legacy_trusted[0]
 
 
 @pytest.mark.parametrize(

@@ -54,8 +54,10 @@ from climate_monitor.request_budget import (
     PROVIDER_NATIVE_SEARCH_POLICY,
     RequestBudget,
     RequestBudgetError,
+    SEARCH_IDENTITY_TAG,
     ledger_path,
     provider_native_unbounded_search,
+    search_identity_suffix,
 )
 from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks
 
@@ -746,12 +748,23 @@ def _trusted_tool_events(
         if any(f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in admitted - completed
                for event in events):
             raise ValueError("Hermes tool transcript lacks durable completion")
-        events = [
-            {**event, "durable_status": completions[call_id].get("status")}
-            for event in events
-            if (call_id := f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}")
-            in completed
-        ]
+        reconciled = []
+        for event in events:
+            call_id = (
+                f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}"
+            )
+            if call_id not in completed:
+                continue
+            completion = completions[call_id]
+            trusted = {**event, "durable_status": completion.get("status")}
+            if (
+                provider_native_unbounded_search(binding)
+                and str(event.get("tool", "")).split(".")[-1] == "web_search"
+                and completion.get("status") == "ok"
+            ):
+                trusted = _verified_model_visible_search_event(trusted, completion)
+            reconciled.append(trusted)
+        events = reconciled
     allowed = {"web_search", "web_extract", "browser_exec"}
     return [event for event in events if str(event.get("tool", "")).split(".")[-1] in allowed]
 
@@ -786,6 +799,56 @@ def _decoded_event_result(value: Any) -> Any:
             except json.JSONDecodeError:
                 return None
     return value
+
+
+def _verified_model_visible_search_event(
+    event: Mapping[str, Any], completion: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a v2 model-visible search result to its durable original result."""
+    arguments = event.get("arguments")
+    query = arguments.get("query") if isinstance(arguments, Mapping) else None
+    tool_call_id = event.get("tool_call_id")
+    visible = event.get("result")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (query, tool_call_id, visible)
+    ):
+        raise ValueError("successful v2 web_search lacks its exact identity suffix")
+    suffix = search_identity_suffix(tool_call_id, query)
+    closing = "\n</untrusted_tool_result>"
+    transformed_tail = suffix + closing
+    if not visible.endswith(transformed_tail):
+        raise ValueError("successful v2 web_search has an invalid identity suffix")
+    original = visible[:-len(transformed_tail)] + closing
+    durable = completion.get("result")
+    decoded_visible = _decoded_event_result(original)
+    decoded_durable = _decoded_event_result(durable)
+    if (
+        decoded_visible is None
+        or decoded_durable is None
+        or decoded_visible != decoded_durable
+    ):
+        raise ValueError(
+            "model-visible v2 web_search result differs from durable result"
+        )
+    return {
+        **event,
+        "result": original,
+        "model_visible_search_result": {
+            "sha256": hashlib.sha256(visible.encode()).hexdigest(),
+            "original_sha256": hashlib.sha256(original.encode()).hexdigest(),
+            "durable_result_sha256": hashlib.sha256(
+                durable.encode() if isinstance(durable, str)
+                else canonical_json_bytes(durable)
+            ).hexdigest(),
+            "decoded_original_sha256": hashlib.sha256(
+                canonical_json_bytes(decoded_durable)
+            ).hexdigest(),
+            "identity_suffix_tag": SEARCH_IDENTITY_TAG,
+            "identity_suffix_sha256": hashlib.sha256(suffix.encode()).hexdigest(),
+            "identity_suffix_verified": True,
+        },
+    }
 
 
 def _event_search_result_urls(value: Any) -> list[str]:
