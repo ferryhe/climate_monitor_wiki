@@ -21,7 +21,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from climate_monitor.request_budget import DEFAULT_FETCH_ATTEMPTS
+from climate_monitor.request_budget import (
+    DEFAULT_FETCH_ATTEMPTS,
+    DEFAULT_SEARCH_ATTEMPTS,
+    DEFAULT_SEARCH_RESULTS,
+)
 
 from climate_registry.acquisition import (
     AcquisitionIncompleteError,
@@ -173,8 +177,8 @@ def default_task_definition() -> dict[str, Any]:
             "source_keys": [source.key for source in load_sources(SOURCE_INVENTORY_PATH)],
             "date_policy": {"mode": "unlimited"},
             "budgets": {
-                "search_attempts": 8,
-                "search_results": 40,
+                "search_attempts": DEFAULT_SEARCH_ATTEMPTS,
+                "search_results": DEFAULT_SEARCH_RESULTS,
                 "fetch_attempts": DEFAULT_FETCH_ATTEMPTS,
                 "retries_per_item": 2,
                 "runtime_seconds": 3600,

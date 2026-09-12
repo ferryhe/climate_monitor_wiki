@@ -410,6 +410,23 @@ def test_terra_response_contract_requires_every_executed_search(tmp_path):
     assert "Never omit an executed search merely because none of its results became an item" in prompt
 
 
+def test_terra_search_contract_prioritizes_unsearched_source_gaps(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "The global search limit is finite and is not a per-source guarantee" in prompt
+    assert (
+        "Before refining a source already searched, prioritize a first search for each "
+        "bound source that still has a coverage gap and has not yet been searched"
+        in prompt
+    )
+    assert (
+        "If a source receives no search opportunity, preserve that source as an explicit "
+        "coverage gap" in prompt
+    )
+
+
 def test_terra_response_contract_rejects_invented_day_for_partial_date(tmp_path):
     import scripts.run_agent_acquisition as runner
 
@@ -556,9 +573,23 @@ def test_reported_search_max_must_match_trusted_effective_limit(
 def test_default_covers_all_seed_and_bounded_article_work():
     from climate_monitor.management import default_task_definition
     value = default_task_definition()["parameters"]["budgets"]
-    # Four sends per seed/article operation, 40 articles with two retries,
-    # plus 120 native fetch-tool units. Larger redirect chains stop honestly.
-    assert value["fetch_attempts"] >= 116 * 4 + 40 * 3 * 4 + 120
+    assert value == {
+        "search_attempts": 36,
+        "search_results": 180,
+        "fetch_attempts": 2800,
+        "retries_per_item": 2,
+        "runtime_seconds": 3600,
+    }
+    # Four sends per seed/article operation, one five-result search per source,
+    # two retries per article, plus 120 native fetch-tool units.
+    required_fetch_units = 116 * 4 + 180 * 3 * 4 + 120
+    assert required_fetch_units == 2744
+    assert value["fetch_attempts"] >= required_fetch_units
+    management_javascript = (
+        Path(__file__).resolve().parents[1] / "management_ui" / "manage.js"
+    ).read_text(encoding="utf-8")
+    assert "Object.entries(parameters.budgets)" in management_javascript
+    assert "form.get('budget_' + key)" in management_javascript
 
 
 def test_container_packages_default_report_run_config():

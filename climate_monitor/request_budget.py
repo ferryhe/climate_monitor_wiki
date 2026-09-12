@@ -16,7 +16,9 @@ import time
 import uuid
 from contextlib import contextmanager
 
-DEFAULT_FETCH_ATTEMPTS = 1200
+DEFAULT_SEARCH_ATTEMPTS = 36
+DEFAULT_SEARCH_RESULTS = 180
+DEFAULT_FETCH_ATTEMPTS = 2800
 
 
 def _empty_systemic_read_failure():

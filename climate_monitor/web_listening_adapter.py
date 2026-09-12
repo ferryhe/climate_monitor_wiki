@@ -16,7 +16,14 @@ from urllib.parse import unquote, urlparse
 
 from .dedupe import canonical_url
 from .models import CandidateItem, MonitorSource, SiteScope
-from .request_budget import RequestBudget, RequestBudgetError, GuardedGateway, DEFAULT_FETCH_ATTEMPTS
+from .request_budget import (
+    DEFAULT_FETCH_ATTEMPTS,
+    DEFAULT_SEARCH_ATTEMPTS,
+    DEFAULT_SEARCH_RESULTS,
+    GuardedGateway,
+    RequestBudget,
+    RequestBudgetError,
+)
 
 
 _ACTIONABLE_MANIFEST_STATUSES = {"changed", "downloaded", "new", "updated"}
@@ -166,8 +173,10 @@ def _open_governed_runtime(sources, scopes, config=None, budget=None):
             temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="climate-seed-budget-"))
             budget = RequestBudget(Path(temporary) / "ledger.json", {
                 "run_id": expected["authority_sha256"], "attempt": 1,
-                "budgets": {"fetch_attempts": expected["budget_limit"], "search_attempts": 8,
-                            "search_results": 40, "retries_per_item": 2, "runtime_seconds": 3600},
+                "budgets": {"fetch_attempts": expected["budget_limit"],
+                            "search_attempts": DEFAULT_SEARCH_ATTEMPTS,
+                            "search_results": DEFAULT_SEARCH_RESULTS,
+                            "retries_per_item": 2, "runtime_seconds": 3600},
             })
         guarded = GuardedGateway(
             gateway, budget, "seed",

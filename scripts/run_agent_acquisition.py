@@ -171,6 +171,10 @@ publication dates stay unknown and ineligible when a date window is enabled.
 A tool blocked by a budget precheck was not executed; do not report it as an
 attempted search. Preserve the block reason in a no_search decision when no
 search was admitted. Unsupported governed article readers are explicit gaps.
+The global search limit is finite and is not a per-source guarantee. Before
+refining a source already searched, prioritize a first search for each bound
+source that still has a coverage gap and has not yet been searched. If a source
+receives no search opportunity, preserve that source as an explicit coverage gap.
 Respect exact source inventory, date policy, and budgets. Resume work may reuse
 only verified evidence named by the trusted resume context below.
 

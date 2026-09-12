@@ -164,7 +164,16 @@ documents rather than retaining another active-looking copy.
 
 ## Verification and cutover
 
-Evidence as of 2026-09-08:
+Evidence through 2026-09-12:
+
+- Full-range managed acquisition `20260912T120731-495c4dd2` ended with 15 source
+  successes, eight policy rejections and 13 incomplete sources. Hermes emitted
+  no budget precheck but consumed exactly the old 8/8 search calls and 40/40
+  results after one five-result search for only eight sources, leaving 13 gaps
+  without a first search opportunity. This proves the old default was too small;
+  it does not prove the revised finite defaults of 36 searches, 180 results and
+  2,800 fetch units are sufficient. A fresh complete full-range run remains
+  required.
 
 - Runtime/discovery/handoff follow-up: full SSH sandbox suite **1791 passed /
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**
