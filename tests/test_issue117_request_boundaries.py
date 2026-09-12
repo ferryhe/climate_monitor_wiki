@@ -504,6 +504,7 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
     import hashlib
     import subprocess
     from scripts import run_climate_monitor as monitor
+    from climate_monitor.weekly_monitor.prompt_loader import LoadedPrompt
 
     exact = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"], cwd=monitor.ROOT,
@@ -527,6 +528,11 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
         "provider": "openai-api", "model": "test-model",
         "repository_commit_sha": exact,
     }
+    frozen_raw = b"frozen article-summary prompt"
+    frozen_prompt = LoadedPrompt(
+        prompt_id="article_summary", version="v1", path=bound_path,
+        raw_bytes=frozen_raw, sha256=hashlib.sha256(frozen_raw).hexdigest(),
+    )
     bundle = {
         "report_date": "2026-09-07", "stats": {},
         "public_artifacts": {
@@ -537,7 +543,8 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
             "task_binding": {"path": str(bound_path), "sha256": digest(bound_path)},
         },
         "execution_binding": {**task_binding},
-        "taxonomy": {"sha256": "taxonomy"}, "prompt": {"sha256": "prompt"},
+        "taxonomy": {"sha256": "taxonomy"},
+        "prompt": {"sha256": frozen_prompt.sha256},
     }
     monkeypatch.setattr(monitor, "_read_staging_bundle", lambda _path: bundle)
     monkeypatch.setattr(monitor, "_verify_staging_digest", lambda *_args: None)
@@ -548,7 +555,7 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
         monitor, "_load_task_binding_with_taxonomy",
         lambda _path: (task_binding, bound_path, taxonomy),
     )
-    monkeypatch.setattr(monitor, "_bound_prompt", lambda *_args: SimpleNamespace(sha256="prompt"))
+    monkeypatch.setattr(monitor, "_bound_prompt", lambda *_args: frozen_prompt)
     for name in ("_verify_candidate_selection", "validate_authoring_response"):
         monkeypatch.setattr(monitor, name, lambda *_args, **_kwargs: None)
     monkeypatch.setattr(monitor, "_candidate_items_from_evidence", lambda *_args: [])
@@ -573,6 +580,7 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
 
     assert monitor._run_finalize(args, SimpleNamespace(error=pytest.fail)) == "completed"
     assert observed["repository_commit_sha"] == exact
+    assert observed["loaded_prompt"] is frozen_prompt
 
 
 def test_target_redirect_and_failure_reservations_are_durable(tmp_path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from datetime import date
@@ -21,7 +22,7 @@ from .authoring_contract import (
     load_authoring_response,
     validate_authoring_response,
 )
-from .prompt_loader import load_weekly_monitor_prompt
+from .prompt_loader import LoadedPrompt, load_weekly_monitor_prompt
 
 
 DRIVER_VERSION = "weekly-monitor-driver.v1"
@@ -53,6 +54,7 @@ def run_weekly_monitor(
     update_seen_state: bool = True,
     authoring_response_path: str | Path | None = None,
     prompt_path: str | Path | None = None,
+    loaded_prompt: LoadedPrompt | None = None,
     repository_commit_sha: str | None = None,
     model_provider: str = "",
     model: str = "",
@@ -68,7 +70,14 @@ def run_weekly_monitor(
 ):
     if authoring_response_path is None:
         raise ValueError("production weekly driver requires an authoring response file")
-    prompt = load_weekly_monitor_prompt(prompt_path) if prompt_path else load_weekly_monitor_prompt()
+    if loaded_prompt is not None:
+        if prompt_path is not None:
+            raise ValueError("loaded_prompt and prompt_path are mutually exclusive")
+        if hashlib.sha256(loaded_prompt.raw_bytes).hexdigest() != loaded_prompt.sha256:
+            raise ValueError("frozen prompt SHA-256 does not match its bytes")
+        prompt = loaded_prompt
+    else:
+        prompt = load_weekly_monitor_prompt(prompt_path) if prompt_path else load_weekly_monitor_prompt()
     commit_sha = validate_repository_commit_sha(
         repository_commit_sha or _repository_commit_sha(Path.cwd())
     )
@@ -130,7 +139,10 @@ def run_weekly_monitor(
         authoring_response=response,
         authoring_request=pre_request,
         prompt_provenance={
-            "id": prompt.prompt_id,
+            # The provenance schema's stable public driver identifier remains
+            # ``weekly_monitor`` even when management labels this frozen
+            # component ``article_summary`` in the authoring request.
+            "id": "weekly_monitor" if loaded_prompt is not None else prompt.prompt_id,
             "version": prompt.version,
             "sha256": prompt.sha256,
         },

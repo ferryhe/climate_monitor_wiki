@@ -1326,7 +1326,7 @@ def _run_finalize(args, parser) -> MonitorRunResult:
         sync=not args.no_sync,
         update_seen_state=not args.no_update_seen_state,
         authoring_response_path=response_path,
-        prompt_path=None,
+        loaded_prompt=prompt,
         article_evidence=evidence_payload,
         stats=validated_stats,
         article_changes_artifact_path=article_changes_path,
