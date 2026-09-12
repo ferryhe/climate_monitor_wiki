@@ -695,6 +695,8 @@ def _publication_date_text_matches(published_date: str, evidence_text: str) -> b
         published_date,
         f"{day} {abbreviated} {parsed.year}",
         f"{day} {full} {parsed.year}",
+        f"{abbreviated} {day}, {parsed.year}",
+        f"{full} {day}, {parsed.year}",
     }
     return evidence_text.strip() in forms | {f"Published {form}" for form in forms}
 

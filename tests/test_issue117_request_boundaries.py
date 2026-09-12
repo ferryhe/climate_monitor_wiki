@@ -214,6 +214,10 @@ def test_fetch_event_explicit_targets_override_result_mentions():
     [
         ("2025-04-16", "16 Apr 2025"),
         ("2026-09-01", "Published 1 September 2026"),
+        ("2026-09-02", "Sep 2, 2026"),
+        ("2026-09-02", "September 2, 2026"),
+        ("2026-09-02", "Published Sep 2, 2026"),
+        ("2026-09-02", "Published September 2, 2026"),
     ],
 )
 def test_publication_date_accepts_bounded_english_equivalent_in_same_url_event(
@@ -252,6 +256,17 @@ def test_publication_date_accepts_bounded_english_equivalent_in_same_url_event(
     crossed["result"]["url"] = "https://wmo.int/other-article"
     with pytest.raises(ValueError, match="trusted fetch event|publication-date evidence"):
         runner._validate_agent_payload(task_binding, payload, [*events, crossed])
+
+
+def test_publication_date_rejects_month_first_near_misses():
+    import scripts.run_agent_acquisition as runner
+
+    for text in (
+        "September 3, 2026", "October 2, 2026", "September 2, 2025",
+        "September 2", "September 2 2026", "09/02/2026",
+        "Related article September 2, 2026",
+    ):
+        assert not runner._publication_date_text_matches("2026-09-02", text)
 
 
 def test_same_result_url_may_belong_to_two_distinct_search_attempts(tmp_path):
