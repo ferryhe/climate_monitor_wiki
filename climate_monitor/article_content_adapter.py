@@ -577,6 +577,7 @@ def fetch_article_content(
     providers: Sequence[ProviderCallable] = (),
     snippet_input: str | None = None,
     budget: Any | None = None,
+    site_key: str | None = None,
 ) -> dict[str, Any]:
     """Call provider[0] once; explicit providers override all dependency states.
 
@@ -604,7 +605,7 @@ def fetch_article_content(
         if providers:
             raise ValueError("managed article reads require the guarded public reader")
         # Forward only through the normal reviewed provider, never a new reader.
-        providers = _default_providers(budget=budget)
+        providers = _default_providers(site_key=site_key, budget=budget)
     if not url:
         return _unavailable_record(article_id=article_id, url=url, failure_reason="missing url").to_dict()
     providers = providers or _default_providers()

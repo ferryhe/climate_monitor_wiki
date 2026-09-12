@@ -219,6 +219,11 @@ A relevant item that needs an article-body read must use selected true and
 processing_status pending; initial unavailable or deferred body evidence does not make
 a relevant item selected false. The trusted runner subsequently performs the controlled
 article-body read. Never select an irrelevant item or an item without a trusted URL.
+Only include a search result in items when its URL host exactly matches one of that
+source's frozen site_scope_inventory seed URL hosts, or its frozen source_inventory URL
+host when that scope has include_source_url true. Do not rewrite a result URL or treat
+apex, subdomain, or same-domain variants as equivalent. If no result has a reviewed host,
+omit it from items while still recording the executed search and every result_ref in searches.
 Set published_date only when trusted evidence gives an explicit complete
 day, month, and year. Month-year evidence such as February 2026 or Publication:
 April 2026, and year-only evidence, are incomplete: set both published_date and
@@ -739,6 +744,8 @@ def _publication_date_text_matches(published_date: str, evidence_text: str) -> b
         f"{day} {full} {parsed.year}",
         f"{day} {abbreviated}, {parsed.year}",
         f"{day} {full}, {parsed.year}",
+        f"{parsed.day:02d} {abbreviated} {parsed.year}",
+        f"{parsed.day:02d} {full} {parsed.year}",
         f"{parsed.day:02d} {abbreviated}, {parsed.year}",
         f"{parsed.day:02d} {full}, {parsed.year}",
         f"{abbreviated} {day}, {parsed.year}",
@@ -1205,6 +1212,33 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
     return {**payload, "date_policy": copy.deepcopy(binding["date_policy"])}
 
 
+def _bound_source_key(binding: Mapping[str, Any], declared: Any) -> str:
+    records = (binding.get("source_inventory") or {}).get("records") or []
+    matches: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        key = record.get("key")
+        aliases = {
+            str(value).strip()
+            for value in (key, record.get("abbreviation"), record.get("full_name"))
+            if isinstance(value, str) and value.strip()
+        }
+        if declared in aliases and isinstance(key, str) and key.strip():
+            matches.add(key.strip())
+    if len(matches) != 1:
+        raise ValueError("managed article source identity is not uniquely bound")
+    selected = next(iter(matches))
+    scopes = (binding.get("site_scope_inventory") or {}).get("records") or []
+    matching_scopes = [
+        scope for scope in scopes
+        if isinstance(scope, Mapping) and scope.get("source_key") == selected
+    ]
+    if len(matching_scopes) != 1:
+        raise ValueError("managed article reviewed site scope is not uniquely bound")
+    return selected
+
+
 def _controlled_fetch_payload(
     binding_path: Path, binding: Mapping[str, Any], payload: Mapping[str, Any],
     *, deadline: float | None = None, return_events: bool = False,
@@ -1226,7 +1260,10 @@ def _controlled_fetch_payload(
                 {"engine": "fetch_article_content", "status": "failed",
                  "event_kind": "precheck", "error": reason}]}
         else:
-            record = fetch_article_content(f"managed-{ordinal}", item["url"], budget=ledger)
+            site_key = _bound_source_key(binding, item.get("source"))
+            record = fetch_article_content(
+                f"managed-{ordinal}", item["url"], budget=ledger, site_key=site_key,
+            )
         attempted_at = _now()
         raw_attempts = record.get("attempts")
         if not isinstance(raw_attempts, list):

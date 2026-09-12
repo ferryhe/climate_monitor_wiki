@@ -322,17 +322,29 @@ def test_publication_date_rejects_day_first_comma_near_misses():
 
     for text in (
         "07 August, 2026", "06 September, 2026", "06 August, 2025",
-        "August, 2026", "06 August,", "06 August 2026", "06/08/2026",
+        "August, 2026", "06 August,", "03 June", "06/08/2026",
         "Related article 06 August, 2026",
     ):
         assert not runner._publication_date_text_matches("2026-08-06", text)
 
 
+def test_publication_date_rejects_zero_padded_day_first_near_misses():
+    import scripts.run_agent_acquisition as runner
+
+    for text in (
+        "04 Jun 2026", "03 Jul 2026", "03 Jun 2025", "03 Jun",
+        "June 2026", "Related article 03 Jun 2026", "03/06/2026",
+    ):
+        assert not runner._publication_date_text_matches("2026-06-03", text)
+
+
 @pytest.mark.parametrize(("published_date", "evidence_text"), [
     ("2026-08-06", "06 August, 2026"),
     ("2024-11-12", "12 November, 2024"),
+    ("2026-06-03", "03 Jun 2026"),
+    ("2026-06-03", "Published 03 June 2026"),
 ])
-def test_publication_date_day_first_comma_binds_to_exact_search_result(
+def test_publication_date_day_first_binds_to_exact_search_result(
     tmp_path, published_date, evidence_text,
 ):
     import copy
@@ -520,6 +532,26 @@ def test_terra_response_contract_selects_relevant_items_before_body_read(tmp_pat
     )
     assert "The trusted runner subsequently performs the controlled article-body read" in prompt
     assert "Never select an irrelevant item or an item without a trusted URL" in prompt
+
+
+def test_terra_response_contract_keeps_items_on_frozen_reviewed_hosts(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert (
+        "Only include a search result in items when its URL host exactly matches one "
+        "of that source's frozen site_scope_inventory seed URL hosts" in prompt
+    )
+    assert (
+        "or its frozen source_inventory URL host when that scope has include_source_url "
+        "true" in prompt
+    )
+    assert (
+        "If no result has a reviewed host, omit it from items while still recording "
+        "the executed search and every result_ref in searches" in prompt
+    )
+    assert "Do not rewrite a result URL" in prompt
 
 
 def test_terra_response_contract_separates_discovery_from_body_fetch_evidence(tmp_path):
@@ -1247,18 +1279,22 @@ def test_supported_article_redirect_is_guarded_at_public_provider_seam(tmp_path,
     assert ledger.usage()['fetch_attempts'] == 1
 
 
-def _install_managed_public_article_result(monkeypatch, tmp_path, *, shape):
+def _install_managed_public_article_result(
+    monkeypatch, tmp_path, *, shape, site_key="example", seed_url="https://example.test/",
+):
     import hashlib
     from climate_monitor import article_content_adapter as article
 
     body = " ".join(["climate"] * 550)
     body_hash = hashlib.sha256(body.encode()).hexdigest()
-    observed = {"sends": [], "output_dirs": []}
+    observed = {"sends": [], "output_dirs": [], "site_keys": [], "timeouts": []}
 
     def reader(url, *, before_target_request, timeout_seconds, output_dir, **kwargs):
         before_target_request(url, None)
         observed["sends"].append(url)
         observed["output_dirs"].append(output_dir)
+        observed["site_keys"].append(kwargs.get("site_key"))
+        observed["timeouts"].append(timeout_seconds)
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
         content_ref = "article-body.txt"
@@ -1291,13 +1327,147 @@ def _install_managed_public_article_result(monkeypatch, tmp_path, *, shape):
         fetch_article_content=reader, runtime_data_dir=lambda: runtime_root,
     ))
     monkeypatch.setattr(article, "_load_site_scopes", lambda: {
-        "example": SimpleNamespace(seed_urls=["https://example.test/"]),
+        site_key: SimpleNamespace(seed_urls=[seed_url]),
     })
     monkeypatch.setattr(article, "_prepare_public_configuration", lambda url, key, output: (
         SimpleNamespace(site_key=key, model_dump=lambda **kwargs: {"site_key": key}),
         output / "scope.yaml",
     ))
     return body, body_hash, observed
+
+
+def _managed_source_binding(tmp_path, *, records=None, scopes=None):
+    task_binding = binding(tmp_path, fetch=2)
+    task_binding["source_inventory"] = {"records": records or [{
+        "key": "example", "abbreviation": "EXAMPLE", "full_name": "Example",
+    }]}
+    task_binding["site_scope_inventory"] = {"records": scopes if scopes is not None else [{
+        "source_key": "example", "seed_urls": ["https://example.test/"],
+    }]}
+    return task_binding
+
+
+@pytest.mark.parametrize("declared", [
+    "iais", "IAIS", "International Association of Insurance Supervisors",
+])
+def test_bound_source_alias_maps_to_canonical_reviewed_scope(tmp_path, declared):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _managed_source_binding(tmp_path, records=[{
+        "key": "iais", "abbreviation": "IAIS",
+        "full_name": "International Association of Insurance Supervisors",
+    }], scopes=[{
+        "source_key": "iais", "seed_urls": ["https://www.iais.org/"],
+        "include_source_url": True,
+    }])
+    assert runner._bound_source_key(task_binding, declared) == "iais"
+
+
+def test_managed_reader_uses_bound_source_and_keeps_budget_guard(tmp_path, monkeypatch):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    body, _body_hash, observed = _install_managed_public_article_result(
+        monkeypatch, tmp_path, shape="inline", site_key="iais",
+        seed_url="https://www.iais.org/",
+    )
+    task_binding = _managed_source_binding(tmp_path, records=[{
+        "key": "iais", "abbreviation": "IAIS",
+        "full_name": "International Association of Insurance Supervisors",
+    }], scopes=[{
+        "source_key": "iais", "seed_urls": ["https://www.iais.org/"],
+        "include_source_url": True,
+    }])
+    url = "https://www.iais.org/activities-topics/climate-risk"
+
+    checked = runner._controlled_fetch_payload(
+        tmp_path / "attempt-1.json", task_binding,
+        {"items": [{"url": url, "source": "IAIS"}]},
+    )
+
+    assert checked["items"][0]["evidence"]["content"] == body
+    assert observed["site_keys"] == ["iais"]
+    assert observed["sends"] == [url]
+    assert len(observed["timeouts"]) == 1 and observed["timeouts"][0] > 0
+    assert RequestBudget(ledger_path(task_binding), task_binding).usage()["fetch_attempts"] == 1
+
+
+@pytest.mark.parametrize("url", [
+    "https://iais.org/activities-topics/climate-risk",
+    "https://outside.example/climate-risk",
+])
+def test_managed_source_key_does_not_bypass_upstream_domain_policy(
+    tmp_path, monkeypatch, url,
+):
+    from climate_monitor import article_content_adapter as article
+    import scripts.run_agent_acquisition as runner
+
+    selected = []
+
+    def transport(_url, *, before_target_request, timeout_seconds, **kwargs):
+        pytest.fail("policy-rejected target reached transport")
+
+    monkeypatch.setattr(article, "_import_public_reader", lambda: SimpleNamespace(
+        fetch_article_content=transport,
+        runtime_data_dir=lambda: tmp_path,
+    ))
+    monkeypatch.setattr(article, "_load_site_scopes", lambda: {
+        "iais": SimpleNamespace(seed_urls=["https://www.iais.org/"]),
+    })
+
+    def reject_unreviewed(_url, site_key, _output):
+        selected.append(site_key)
+        raise ValueError("allowed_domains: target host is not reviewed")
+
+    monkeypatch.setattr(article, "_prepare_public_configuration", reject_unreviewed)
+    task_binding = _managed_source_binding(tmp_path, records=[{
+        "key": "iais", "abbreviation": "IAIS",
+        "full_name": "International Association of Insurance Supervisors",
+    }], scopes=[{
+        "source_key": "iais", "seed_urls": ["https://www.iais.org/"],
+        "include_source_url": True,
+    }])
+
+    checked = runner._controlled_fetch_payload(
+        tmp_path / "attempt-1.json", task_binding,
+        {"items": [{"url": url, "source": "iais"}]},
+    )
+
+    assert selected == ["iais"]
+    assert checked["items"][0]["processing_status"] == "failed"
+    assert "allowed_domains: target host is not reviewed" in (
+        checked["items"][0]["processing_error"]
+    )
+
+
+@pytest.mark.parametrize("records,scopes,declared,error", [
+    ([{"key": "iais", "abbreviation": "IAIS", "full_name": "IAIS full"}],
+     [{"source_key": "iais"}], "unknown", "source identity"),
+    ([{"key": "one", "abbreviation": "SHARED", "full_name": "One"},
+      {"key": "two", "abbreviation": "SHARED", "full_name": "Two"}],
+     [{"source_key": "one"}, {"source_key": "two"}], "SHARED", "source identity"),
+    ([{"key": "iais", "abbreviation": "IAIS", "full_name": "IAIS full"}],
+     [], "IAIS", "reviewed site scope"),
+    ([{"key": "iais", "abbreviation": "IAIS", "full_name": "IAIS full"}],
+     [{"source_key": "iais"}, {"source_key": "iais"}], "IAIS", "reviewed site scope"),
+])
+def test_managed_reader_rejects_ambiguous_source_or_scope_before_reader(
+    tmp_path, monkeypatch, records, scopes, declared, error,
+):
+    from climate_monitor import article_content_adapter as article
+    import scripts.run_agent_acquisition as runner
+
+    monkeypatch.setattr(
+        article, "fetch_article_content",
+        lambda *args, **kwargs: pytest.fail("unbound source reached article reader"),
+    )
+    task_binding = _managed_source_binding(tmp_path, records=records, scopes=scopes)
+
+    with pytest.raises(ValueError, match=error):
+        runner._controlled_fetch_payload(
+            tmp_path / "attempt-1.json", task_binding,
+            {"items": [{"url": "https://www.iais.org/article", "source": declared}]},
+        )
 
 
 @pytest.mark.parametrize("shape", ["inline", "ref"])
@@ -1309,9 +1479,9 @@ def test_managed_controlled_reader_captures_verified_public_content(
     body, body_hash, observed = _install_managed_public_article_result(
         monkeypatch, tmp_path, shape=shape,
     )
-    task_binding = binding(tmp_path, fetch=2)
+    task_binding = _managed_source_binding(tmp_path)
     binding_path = tmp_path / "attempt-1.json"
-    payload = {"items": [{"url": "https://example.test/article"}]}
+    payload = {"items": [{"url": "https://example.test/article", "source": "example"}]}
 
     checked = runner._controlled_fetch_payload(binding_path, task_binding, payload)
 
@@ -1347,13 +1517,13 @@ def test_managed_controlled_reader_rejects_unverifiable_public_ref(
     _body, _body_hash, observed = _install_managed_public_article_result(
         monkeypatch, tmp_path, shape=shape,
     )
-    task_binding = binding(tmp_path, fetch=2)
+    task_binding = _managed_source_binding(tmp_path)
     binding_path = tmp_path / "attempt-1.json"
 
     with pytest.raises(article.ArticleContentAdapterError, match=error):
         runner._controlled_fetch_payload(
             binding_path, task_binding,
-            {"items": [{"url": "https://example.test/article"}]},
+            {"items": [{"url": "https://example.test/article", "source": "example"}]},
         )
 
     assert observed["sends"] == ["https://example.test/article"]
@@ -1470,7 +1640,8 @@ def test_article_dependency_gap_round_trips_registry_and_status(tmp_path, monkey
     path = root / 'attempt-1.json'
     monkeypatch.setattr(article, '_import_public_reader', lambda: SimpleNamespace(
         fetch_article_content=lambda url: pytest.fail('unguarded article provider invoked')))
-    payload = _batch([_item(discovery_kind='site', discovery_ref='site:wmo', discovery_search_ref=None)],
+    payload = _batch([_item(source='WMO', discovery_kind='site', discovery_ref='site:wmo',
+                            discovery_search_ref=None)],
         batch_id=b['acquisition_batch_id'], report_date=b['report_date'], searches=[],
         search_decision={'status': 'no_search', 'reason': 'No supplemental query was executed; article reader is unsupported'})
     payload['date_policy'] = b['date_policy']

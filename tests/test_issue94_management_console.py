@@ -1633,7 +1633,7 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
     binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="fetch", attempt=1)
     binding_path = tmp_path / "runs" / "fetch" / "attempt-1.json"
     binding_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url, *, budget: {
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url, *, budget, site_key: {
         "status": "ok", "selected_method": "web_http", "content": "controlled body",
         "content_hash": hashlib.sha256(b"controlled body").hexdigest(),
         "content_type": "text/plain", "final_url": url, "failure_reason": None,
@@ -1644,7 +1644,8 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
         ],
         "extra": {"extraction_metadata": {"status_code": 200}},
     })
-    payload = {"items": [{"url": "https://wmo.int/article", "processing_status": "complete",
+    payload = {"items": [{"url": "https://wmo.int/article", "source": "WMO",
+                           "processing_status": "complete",
                            "processing_error": None, "evidence": {"content": "agent body"}}]}
     checked = runner._controlled_fetch_payload(binding_path, binding, payload)
     evidence = checked["items"][0]["evidence"]
@@ -1675,7 +1676,7 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     body = "controlled production body"
     body_hash = hashlib.sha256(body.encode()).hexdigest()
     url = "https://wmo.int/article"
-    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, requested_url, *, budget: {
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, requested_url, *, budget, site_key: {
         "status": "ok",
         "selected_method": "web_http",
         "content": body,
@@ -1704,8 +1705,8 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
             "error": None,
         }],
         "items": [{
-            "url": url, "title": "Article", "summary": "summary",
-            "source": "WMO", "discovered_at": binding["created_at"],
+            "url": url, "title": "Article", "summary": "summary", "source": "WMO",
+            "discovered_at": binding["created_at"],
             "discovery_kind": "search", "discovery_ref": url,
             "discovery_search_ref": "search-1",
             "published_date": binding["report_date"],
