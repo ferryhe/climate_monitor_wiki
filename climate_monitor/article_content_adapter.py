@@ -582,6 +582,8 @@ def fetch_article_content(
 
     Provider exceptions become honest failed records. Invalid envelopes and
     identity mismatches reject the batch instead of becoming successful records.
+    A managed budgeted read resolves verified ref-only content before its exact
+    provider output directory is no longer available to the caller.
     """
     if budget is not None:
         import inspect
@@ -621,7 +623,24 @@ def fetch_article_content(
             failure_reason=f"{type(exc).__name__}: {exc}").to_dict()
         record["status"] = "failed"
         return record
-    return map_tool_result_to_record(article_id, url, snippet_input, payload)
+    record = map_tool_result_to_record(article_id, url, snippet_input, payload)
+    if budget is not None and record.get("status") == "ok":
+        output_dir = getattr(providers[0], "output_dir", None)
+        verify_record(
+            record,
+            inputs_index={article_id: {"url": url}},
+            output_dir=output_dir,
+        )
+        if record.get("content") is None:
+            body = resolve_content_ref(
+                record.get("content_ref"), record.get("content_hash"),
+                output_dir=output_dir,
+            )
+            try:
+                record["content"] = body.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ArticleContentAdapterError("content_ref_corrupt") from exc
+    return record
 
 
 def _collect_unique_articles(inputs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:

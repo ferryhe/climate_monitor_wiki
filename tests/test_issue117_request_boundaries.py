@@ -1198,6 +1198,120 @@ def test_supported_article_redirect_is_guarded_at_public_provider_seam(tmp_path,
     assert ledger.usage()['fetch_attempts'] == 1
 
 
+def _install_managed_public_article_result(monkeypatch, tmp_path, *, shape):
+    import hashlib
+    from climate_monitor import article_content_adapter as article
+
+    body = " ".join(["climate"] * 550)
+    body_hash = hashlib.sha256(body.encode()).hexdigest()
+    observed = {"sends": [], "output_dirs": []}
+
+    def reader(url, *, before_target_request, timeout_seconds, output_dir, **kwargs):
+        before_target_request(url, None)
+        observed["sends"].append(url)
+        observed["output_dirs"].append(output_dir)
+        output = Path(output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        content_ref = "article-body.txt"
+        if shape == "ref":
+            (output / content_ref).write_bytes(body.encode())
+        elif shape == "hash_mismatch":
+            (output / content_ref).write_bytes(b"different trusted artifact bytes")
+        elif shape in {"inline", "missing_ref"}:
+            content_ref = None
+        else:
+            raise AssertionError(f"unexpected fixture shape: {shape}")
+        data = {
+            "final_url": url,
+            "selected_method": "web_http",
+            "content_type": "text/html; charset=UTF-8",
+            "content_ref": content_ref,
+            "sha256": body_hash,
+            "truncated": False,
+            "extraction_metadata": {"status_code": 200, "word_count": 550},
+            "attempts": [{
+                "tool": "web_http", "data_status": "present", "http_status": 200,
+            }],
+        }
+        if shape == "inline":
+            data["full_text"] = body
+        return {"data_status": "present", "error": None, "data": data}
+
+    runtime_root = tmp_path / "upstream-runtime"
+    monkeypatch.setattr(article, "_import_public_reader", lambda: SimpleNamespace(
+        fetch_article_content=reader, runtime_data_dir=lambda: runtime_root,
+    ))
+    monkeypatch.setattr(article, "_load_site_scopes", lambda: {
+        "example": SimpleNamespace(seed_urls=["https://example.test/"]),
+    })
+    monkeypatch.setattr(article, "_prepare_public_configuration", lambda url, key, output: (
+        SimpleNamespace(site_key=key, model_dump=lambda **kwargs: {"site_key": key}),
+        output / "scope.yaml",
+    ))
+    return body, body_hash, observed
+
+
+@pytest.mark.parametrize("shape", ["inline", "ref"])
+def test_managed_controlled_reader_captures_verified_public_content(
+    tmp_path, monkeypatch, shape,
+):
+    import scripts.run_agent_acquisition as runner
+
+    body, body_hash, observed = _install_managed_public_article_result(
+        monkeypatch, tmp_path, shape=shape,
+    )
+    task_binding = binding(tmp_path, fetch=2)
+    binding_path = tmp_path / "attempt-1.json"
+    payload = {"items": [{"url": "https://example.test/article"}]}
+
+    checked = runner._controlled_fetch_payload(binding_path, task_binding, payload)
+
+    evidence = checked["items"][0]["evidence"]
+    assert checked["items"][0]["processing_status"] == "complete"
+    assert evidence["classification"] == "full_content"
+    assert evidence["content"] == body
+    assert evidence["content_hash"] == body_hash
+    assert evidence["selected_method"] == "web_http"
+    assert evidence["attempts"][0]["status"] == "success"
+    assert evidence["attempts"][0]["http_status"] == 200
+    assert observed["sends"] == ["https://example.test/article"]
+    assert len(observed["output_dirs"]) == 1
+    assert (binding_path.parent / evidence["content_ref"]).read_bytes() == body.encode()
+    raw = json.loads((binding_path.parent / evidence["raw_snapshot_ref"]).read_text())
+    assert raw["content_ref"] == (None if shape == "inline" else "article-body.txt")
+    assert raw["content_hash"] == body_hash
+    if shape == "ref":
+        assert (Path(observed["output_dirs"][0]) / raw["content_ref"]).read_bytes() == body.encode()
+
+
+@pytest.mark.parametrize(("shape", "error"), [
+    ("missing_ref", "content_ref_unresolvable"),
+    ("hash_mismatch", "content_hash_mismatch"),
+])
+def test_managed_controlled_reader_rejects_unverifiable_public_ref(
+    tmp_path, monkeypatch, shape, error,
+):
+    from climate_monitor import article_content_adapter as article
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    _body, _body_hash, observed = _install_managed_public_article_result(
+        monkeypatch, tmp_path, shape=shape,
+    )
+    task_binding = binding(tmp_path, fetch=2)
+    binding_path = tmp_path / "attempt-1.json"
+
+    with pytest.raises(article.ArticleContentAdapterError, match=error):
+        runner._controlled_fetch_payload(
+            binding_path, task_binding,
+            {"items": [{"url": "https://example.test/article"}]},
+        )
+
+    assert observed["sends"] == ["https://example.test/article"]
+    assert RequestBudget(ledger_path(task_binding), task_binding).usage()["fetch_attempts"] == 1
+    assert not list((binding_path.parent / "managed" / "captures").iterdir())
+
+
 def test_retries_remain_spent_after_failure_and_resume(tmp_path):
     from climate_monitor.request_budget import GuardedGateway, RequestBudgetError
     sends = []
