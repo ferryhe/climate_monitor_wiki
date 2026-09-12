@@ -149,6 +149,35 @@ def test_opaque_search_refs_bind_to_same_trusted_event_urls(tmp_path):
         runner._validate_agent_payload(task_binding, payload, ambiguous_events)
 
 
+def test_search_item_url_uses_repository_canonical_identity(tmp_path):
+    import copy
+    from climate_monitor.dedupe import canonical_url
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    trusted_url = (
+        "https://www.iais.org/2025/04/iais-publishes-comprehensive-application-paper-"
+        "on-the-supervision-of-climate-related-risks-in-the-insurance-sector"
+    )
+    events[0]["result"] = _tagged_search_result(web=[
+        {"url": trusted_url}, {"url": "https://wmo.int/a-2"},
+    ])
+    payload["items"][0]["url"] = trusted_url + "/"
+    payload["items"][0]["discovery_ref"] = "search-a-result-1"
+    assert canonical_url(payload["items"][0]["url"]) == canonical_url(trusted_url)
+    assert runner._validate_agent_payload(task_binding, payload, events) == payload
+
+    same_domain_different_path = copy.deepcopy(payload)
+    same_domain_different_path["items"][0]["url"] = "https://www.iais.org/not-this-result"
+    with pytest.raises(ValueError, match="same trusted search event"):
+        runner._validate_agent_payload(task_binding, same_domain_different_path, events)
+
+    crossed_search = copy.deepcopy(payload)
+    crossed_search["items"][0]["url"] = payload["items"][1]["url"]
+    with pytest.raises(ValueError, match="same trusted search event"):
+        runner._validate_agent_payload(task_binding, crossed_search, events)
+
+
 def test_same_result_url_may_belong_to_two_distinct_search_attempts(tmp_path):
     from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
     import scripts.run_agent_acquisition as runner

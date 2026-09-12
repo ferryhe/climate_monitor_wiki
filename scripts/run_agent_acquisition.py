@@ -36,6 +36,7 @@ from climate_monitor.management import (  # noqa: E402
     _atomic_write,
     _exclusive_lock,
 )
+from climate_monitor.dedupe import canonical_url  # noqa: E402
 from climate_registry.acquisition import (  # noqa: E402
     AcquisitionIncompleteError,
     PublicationDatePolicy,
@@ -1069,7 +1070,9 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
                     raise ValueError("agent item URL is not backed by the same trusted search event")
                 discovery_event, discovery_refs, discovery_urls = discovery
                 if (item.get("discovery_ref") not in discovery_refs
-                        or url not in discovery_urls):
+                        or canonical_url(url) not in {
+                            canonical_url(trusted_url) for trusted_url in discovery_urls
+                        }):
                     raise ValueError("agent item reference/URL is not backed by the same trusted search event")
             attempts_for_item = evidence.get("attempts")
             if not isinstance(attempts_for_item, list):
