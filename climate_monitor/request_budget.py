@@ -20,6 +20,15 @@ DEFAULT_SEARCH_RESULTS_PER_CALL = 10
 DEFAULT_SEARCH_ATTEMPTS = 36
 DEFAULT_SEARCH_RESULTS = DEFAULT_SEARCH_ATTEMPTS * DEFAULT_SEARCH_RESULTS_PER_CALL
 DEFAULT_FETCH_ATTEMPTS = 5000
+AGENT_PROTOCOL_VERSION = "trusted-search-ledger.v2"
+PROVIDER_NATIVE_SEARCH_POLICY = "provider-native-unbounded.v1"
+
+
+def provider_native_unbounded_search(binding):
+    return binding.get("agent_protocol") == {
+        "version": AGENT_PROTOCOL_VERSION,
+        "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+    }
 
 
 def _empty_systemic_read_failure():
@@ -43,11 +52,18 @@ class RequestBudget:
     def __init__(self, path, binding, *, prior=None):
         self.path = Path(path)
         self.attempt = int(binding["attempt"])
-        self.identity = digest({key: binding.get(key) for key in (
+        identity_fields = {
+            key: binding.get(key) for key in (
             "run_id", "effective_sha256", "budgets", "source_inventory",
             "site_scope_inventory", "governed_gateway", "date_policy", "report_date",
-        )})
+            )
+        }
+        # Preserve the exact pre-v2 digest for already-frozen legacy runs.
+        if "agent_protocol" in binding:
+            identity_fields["agent_protocol"] = binding["agent_protocol"]
+        self.identity = digest(identity_fields)
         self.limits = dict(binding["budgets"])
+        self.provider_native_search = provider_native_unbounded_search(binding)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked(create=True) as state:
             now = time.time()
@@ -228,10 +244,11 @@ class RequestBudget:
                 usage = self._usage(state)
                 search = kind == "web_search"
                 if search:
-                    if usage["search_attempts"] >= self.limits["search_attempts"]:
-                        raise RequestBudgetError("search budget precheck blocked request")
-                    if usage["search_results"] + usage["search_results_reserved"] + results > self.limits["search_results"]:
-                        raise RequestBudgetError("search result budget precheck blocked request")
+                    if not self.provider_native_search:
+                        if usage["search_attempts"] >= self.limits["search_attempts"]:
+                            raise RequestBudgetError("search budget precheck blocked request")
+                        if usage["search_results"] + usage["search_results_reserved"] + results > self.limits["search_results"]:
+                            raise RequestBudgetError("search result budget precheck blocked request")
                 elif units < 1 or usage["fetch_attempts"] + units > self.limits["fetch_attempts"]:
                     raise RequestBudgetError("fetch budget precheck blocked request")
                 if call_id and any(e.get("call_id") == call_id for e in state["events"]):
@@ -271,7 +288,7 @@ class RequestBudget:
                 # Reuse the transcript URL extraction contract, not model claims.
                 from scripts.run_agent_acquisition import _event_result_urls
                 count = len(_event_result_urls(result)) if status == "ok" else 0
-                if count > event["result_reservation"]:
+                if not self.provider_native_search and count > event["result_reservation"]:
                     state["fault"] = "search provider exceeded its reserved result limit"
                     raise ValueError(state["fault"])
                 event["result_count"] = count
@@ -363,7 +380,8 @@ def hook_decision(budget, payload):
         reason = "invalid search result limit"
         budget.note("precheck", url, reason, tool=tool, call_id=call_id)
         return {"action": "block", "message": reason}
-    if any(value > DEFAULT_SEARCH_RESULTS_PER_CALL for value in supplied_result_limits):
+    if (not budget.provider_native_search
+            and any(value > DEFAULT_SEARCH_RESULTS_PER_CALL for value in supplied_result_limits)):
         reason = (
             "search result limit exceeds per-call maximum of "
             f"{DEFAULT_SEARCH_RESULTS_PER_CALL}"

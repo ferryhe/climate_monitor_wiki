@@ -6,11 +6,23 @@ from types import SimpleNamespace
 import pytest
 
 
+NEW_AGENT_PROTOCOL = {
+    "version": "trusted-search-ledger.v2",
+    "search_policy": "provider-native-unbounded.v1",
+}
+
+
 def binding(tmp_path, *, fetch=2, search=1, runtime=60, attempt=1):
     return {"run_id": "boundary", "attempt": attempt, "effective_sha256": "a" * 64,
             "checkpoint_dir": str(tmp_path / "checkpoint"),
             "budgets": {"fetch_attempts": fetch, "search_attempts": search,
                         "search_results": 5, "retries_per_item": 2, "runtime_seconds": runtime}}
+
+
+def new_protocol_binding(tmp_path, **kwargs):
+    value = binding(tmp_path, **kwargs)
+    value["agent_protocol"] = dict(NEW_AGENT_PROTOCOL)
+    return value
 
 
 def budget(tmp_path, **kwargs):
@@ -30,7 +42,7 @@ def _tagged_search_result(*, web=None, success=True, error=None):
     )
 
 
-def _opaque_search_binding_fixture(tmp_path):
+def _opaque_search_binding_fixture(tmp_path, *, candidate_protocol=False):
     """Real Hermes web_search envelope shape with model-owned result aliases."""
     from climate_monitor.management import build_task_binding
     from test_issue94_management_console import _definition
@@ -38,6 +50,8 @@ def _opaque_search_binding_fixture(tmp_path):
     task_binding = build_task_binding(
         _definition(tmp_path), task_version=1, run_id="opaque-search", attempt=1,
     )
+    if not candidate_protocol:
+        task_binding.pop("agent_protocol")
     now = task_binding["created_at"]
     searches = [
         {
@@ -101,6 +115,16 @@ def _opaque_search_binding_fixture(tmp_path):
         "items": [item(0, 1), item(1, 0)],
     }
     return task_binding, payload, [event(0), event(1)]
+
+
+def _candidate_payload(task_binding, items):
+    return {
+        "schema_version": "climate-agent-candidate-decisions.v2",
+        "protocol_version": "trusted-search-ledger.v2",
+        "batch_id": task_binding["acquisition_batch_id"],
+        "report_date": task_binding["report_date"],
+        "items": items,
+    }
 
 
 def test_opaque_search_refs_bind_to_same_trusted_event_urls(tmp_path):
@@ -536,6 +560,211 @@ def test_verbatim_result_urls_bind_to_real_web_event_shape(tmp_path):
         runner._validate_agent_payload(task_binding, ordinal_refs, events)
 
 
+def test_new_run_binds_trusted_candidate_protocol_and_unlimited_search(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    assert task_binding["agent_protocol"] == NEW_AGENT_PROTOCOL
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "Candidate protocol trusted-search-ledger.v2" in prompt
+    assert "Do not return searches or search_decision" in prompt
+    assert "completed web_search tool_call_id shown on that tool result" in prompt
+    assert "provider's native web_search schema remains authoritative" in prompt
+    assert "no application search-attempt, result-count, per-call-result, or token limit" in prompt
+    assert "Each web_search call may request at most 10 results" not in prompt
+    assert "searches" not in runner._agent_response_shape(task_binding)["acquisition_batch"]
+
+    legacy = dict(task_binding)
+    legacy.pop("agent_protocol")
+    legacy_prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", legacy).split())
+    assert "Each web_search call may request at most 10 results" in legacy_prompt
+    assert "searches" in runner._agent_response_shape(legacy)["acquisition_batch"]
+
+
+def test_candidate_protocol_materializes_authoritative_completed_searches(tmp_path):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    expected_urls = [
+        ["https://wmo.int/a-1", "https://wmo.int/a-2"],
+        ["https://wmo.int/b-1"],
+    ]
+    for index, event in enumerate(events):
+        event.update(durable_status="ok", attempted_at=task_binding["created_at"])
+        payload["items"][index]["discovery_search_ref"] = event["tool_call_id"]
+        payload["items"][index]["discovery_ref"] = payload["items"][index]["url"]
+    candidate = _candidate_payload(task_binding, payload["items"])
+
+    materialized = runner._materialize_agent_candidate(task_binding, candidate, events)
+
+    assert materialized["search_decision"] == {"status": "attempted", "reason": None}
+    assert [row["search_ref"] for row in materialized["searches"]] == ["call-1", "call-2"]
+    assert [row["result_refs"] for row in materialized["searches"]] == expected_urls
+    assert [row["budget"] for row in materialized["searches"]] == [
+        {"max_results": 5, "used_results": 2},
+        {"max_results": 5, "used_results": 1},
+    ]
+    assert runner._materialize_agent_candidate(
+        task_binding, _candidate_payload(task_binding, []), events,
+    )["search_decision"]["status"] == "attempted"
+    empty = runner._materialize_agent_candidate(
+        task_binding, _candidate_payload(task_binding, []), [],
+    )
+    assert empty["items"] == []
+    assert empty["searches"] == []
+    assert empty["search_decision"]["status"] == "no_search"
+
+    model_no_search = copy.deepcopy(candidate)
+    model_no_search["search_decision"] = {"status": "no_search", "reason": "model omission"}
+    with pytest.raises(ValueError, match="candidate decision fields"):
+        runner._materialize_agent_candidate(task_binding, model_no_search, events)
+
+
+def test_candidate_feedback_uses_delta_ledger_and_cumulative_completed_references(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    for index, event in enumerate(events):
+        event.update(durable_status="ok", attempted_at=task_binding["created_at"])
+        payload["items"][index]["discovery_search_ref"] = event["tool_call_id"]
+        payload["items"][index]["discovery_ref"] = payload["items"][index]["url"]
+
+    retry_from_primary = _candidate_payload(task_binding, [payload["items"][0]])
+    no_new_search = runner._materialize_agent_candidate(
+        task_binding, retry_from_primary, [], reference_events=events,
+    )
+    assert no_new_search["searches"] == []
+    assert no_new_search["items"][0]["discovery_search_ref"] == "call-1"
+    merged = runner._merge_resume_payload(task_binding, no_new_search, {
+        "batch_started_at": task_binding["created_at"],
+        "resolved_items": [],
+        "successful_searches": runner._trusted_search_ledger(task_binding, [events[0]]),
+    })
+    assert [row["search_ref"] for row in merged["searches"]] == ["call-1"]
+    assert merged["search_decision"] == {"status": "attempted", "reason": None}
+
+    with_one_new_search = runner._materialize_agent_candidate(
+        task_binding, retry_from_primary, [events[1]], reference_events=events,
+    )
+    assert [row["search_ref"] for row in with_one_new_search["searches"]] == ["call-2"]
+    merged = runner._merge_resume_payload(task_binding, with_one_new_search, {
+        "batch_started_at": task_binding["created_at"],
+        "resolved_items": [],
+        "successful_searches": runner._trusted_search_ledger(task_binding, [events[0]]),
+    })
+    assert [row["search_ref"] for row in merged["searches"]] == ["call-1", "call-2"]
+
+
+def test_real_transcript_shape_exposes_completed_call_id_and_normalizes_event_time(
+    tmp_path,
+):
+    import sqlite3
+
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    event = events[0]
+    call_id = "1:session-1:call-1"
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.claim("web_search", "query a", results=5, call_id=call_id)
+    ledger.complete_tool(call_id, status="ok", result=event["result"])
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, [event])
+    connection = sqlite3.connect(attempt_home(task_binding) / "state.db")
+    try:
+        connection.execute("ALTER TABLE messages ADD COLUMN timestamp REAL")
+        connection.execute(
+            "UPDATE messages SET timestamp = ? WHERE role = 'tool'",
+            (1789243609.6690965,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    trusted = runner._trusted_tool_events(task_binding)
+    assert trusted[0]["tool_call_id"] == "call-1"
+    assert trusted[0]["durable_status"] == "ok"
+    materialized = runner._materialize_agent_candidate(
+        task_binding, _candidate_payload(task_binding, []), trusted,
+    )
+    assert materialized["searches"][0]["search_ref"] == "call-1"
+    assert materialized["searches"][0]["attempted_at"] == "2026-09-12T20:06:49.669096Z"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("unknown", "completed trusted search event"),
+        ("unfinished", "completed durable event"),
+        ("duplicate", "unique completed tool_call_id"),
+        ("crossed", "same trusted search event"),
+        ("date", "publication-date evidence"),
+    ],
+)
+def test_candidate_protocol_rejects_untrusted_event_or_evidence_identity(
+    tmp_path, mutation, error,
+):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(
+        tmp_path, candidate_protocol=True,
+    )
+    for index, event in enumerate(events):
+        event.update(durable_status="ok", attempted_at=task_binding["created_at"])
+        payload["items"][index]["discovery_search_ref"] = event["tool_call_id"]
+        payload["items"][index]["discovery_ref"] = payload["items"][index]["url"]
+    candidate = _candidate_payload(task_binding, payload["items"])
+    changed_events = copy.deepcopy(events)
+    if mutation == "unknown":
+        candidate["items"][0]["discovery_search_ref"] = "not-a-real-call"
+    elif mutation == "unfinished":
+        changed_events[0].pop("durable_status")
+    elif mutation == "duplicate":
+        changed_events[1]["tool_call_id"] = changed_events[0]["tool_call_id"]
+    elif mutation == "crossed":
+        candidate["items"][0]["discovery_search_ref"] = changed_events[1]["tool_call_id"]
+    else:
+        candidate["items"][0]["published_date"] = "2026-01-02"
+        candidate["items"][0]["publication_date_evidence"] = {
+            "kind": "search_result", "url": candidate["items"][0]["url"],
+            "text": "2 January 2026",
+        }
+    with pytest.raises(ValueError, match=error):
+        runner._materialize_agent_candidate(task_binding, candidate, changed_events)
+
+
+@pytest.mark.parametrize("archived_shape", ["184648-empty", "193204-ordinals", "200356-no-search"])
+def test_legacy_archived_search_response_shapes_remain_fail_closed(tmp_path, archived_shape):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    if archived_shape == "184648-empty":
+        for search in payload["searches"]:
+            search["result_refs"] = []
+    elif archived_shape == "193204-ordinals":
+        for search in payload["searches"]:
+            search["result_refs"] = list(range(1, search["budget"]["used_results"] + 1))
+    else:
+        payload["searches"] = []
+        payload["items"] = []
+        payload["search_decision"] = {"status": "no_search", "reason": "model omission"}
+    with pytest.raises(ValueError):
+        runner._validate_agent_payload(task_binding, copy.deepcopy(payload), events)
+
+
 def test_terra_search_contract_prioritizes_unsearched_source_gaps(tmp_path):
     import scripts.run_agent_acquisition as runner
 
@@ -744,8 +973,12 @@ def test_default_covers_all_seed_and_bounded_article_work():
     management_javascript = (
         Path(__file__).resolve().parents[1] / "management_ui" / "manage.js"
     ).read_text(encoding="utf-8")
-    assert "Object.entries(parameters.budgets)" in management_javascript
-    assert "form.get('budget_' + key)" in management_javascript
+    assert "LEGACY_SEARCH_BUDGETS" in management_javascript
+    assert "input[name^=\"budget_\"]" in management_javascript
+    assert "if (LEGACY_SEARCH_BUDGETS.has(key)) continue" in management_javascript
+    assert "delete budgets[key]" in management_javascript
+    assert "provider-native-unbounded" in management_javascript
+    assert "no application limit on searches, total results, results per call, or tokens" in management_javascript
 
 
 def test_container_packages_default_report_run_config():
@@ -1202,6 +1435,7 @@ def test_mixed_run_round_trips_registry_status_and_blocks_report(tmp_path, monke
     service = ManagementService(store=store, runtime_root=tmp_path / "runs", launcher=lambda b: 4321)
     started = service.start(trigger="manual")
     b = service.binding(started["run_id"])
+    b.pop("agent_protocol")
     root = service._run_dir(started["run_id"])
     path = root / "attempt-1.json"
     sends = []
@@ -1251,6 +1485,7 @@ def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
 
     _service, b, path = _managed_attempt(
         tmp_path, monkeypatch, source_keys=["iais", "ipcc"],
+        candidate_protocol=True,
     )
     source_results = [
         _controlled_site_result(tmp_path, source, candidates=[], disposition="unchanged")
@@ -1266,8 +1501,6 @@ def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
         "status": "completed", "source_results": source_results,
         "attempts": [], "candidates": [], "warnings": [], "systemic_error": None,
     }
-    now = b["created_at"]
-    searches = []
     events = []
     for search_index in range(4):
         query = f"trusted zero-item query {search_index}"
@@ -1275,25 +1508,13 @@ def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
             f"https://example.test/search-{search_index}/result-{result_index}"
             for result_index in range(5)
         ]
-        searches.append({
-            "search_ref": f"search-{search_index}", "query": query,
-            "engine": "web_search", "status": "success", "attempted_at": now,
-            "result_refs": urls, "budget": {"max_results": 5, "used_results": 5},
-            "error": None,
-        })
         events.append({
             "session_id": "trusted-session", "tool_call_id": f"call-{search_index}",
             "durable_status": "ok", "tool": "web_search",
             "arguments": {"query": query, "num_results": 5},
             "result": {"data": {"web": [{"url": url} for url in urls]}},
         })
-    payload = {
-        "schema_version": "pre-report-acquisition-batch.v1",
-        "batch_id": b["acquisition_batch_id"], "report_date": b["report_date"],
-        "date_policy": b["date_policy"], "started_at": now, "completed_at": None,
-        "search_decision": {"status": "attempted", "reason": None},
-        "searches": searches, "items": [],
-    }
+    payload = _candidate_payload(b, [])
     monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
     monkeypatch.setattr(runner, "_controlled_site_context", lambda _binding: site_context)
     monkeypatch.setattr(runner, "_trusted_tool_events", lambda *_args, **_kwargs: events)
@@ -1634,6 +1855,76 @@ def test_concurrent_claims_cannot_overdraw(tmp_path):
     assert ledger.usage()['fetch_attempts'] == 2
 
 
+def test_provider_native_search_is_metered_without_application_caps(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, RequestBudgetError, hook_decision
+
+    task_binding = new_protocol_binding(tmp_path, fetch=1, search=1)
+    task_binding["budgets"]["search_results"] = 1
+    ledger = RequestBudget(tmp_path / "request-budget.json", task_binding)
+    for ordinal, requested in enumerate((25, 15), start=1):
+        call_id = f"call-{ordinal}"
+        pre = {
+            "hook_event_name": "pre_tool_call", "tool_name": "web_search",
+            "tool_input": {"query": f"query {ordinal}", "num_results": requested},
+            "session_id": "session", "extra": {"tool_call_id": call_id},
+        }
+        assert hook_decision(ledger, pre) == {}
+        result = _tagged_search_result(web=[{
+            "url": f"https://example.test/{ordinal}", "rank": 1,
+        }])
+        assert hook_decision(ledger, {
+            **pre, "hook_event_name": "post_tool_call",
+            "extra": {"tool_call_id": call_id, "status": "ok", "result": result},
+        }) == {}
+    usage = ledger.usage()
+    assert usage["search_attempts"] == 2
+    assert usage["search_results"] == 2
+    assert usage["search_results_reserved"] == 0
+    assert not [
+        event for event in ledger.events()
+        if event["event_kind"] == "precheck" and event.get("tool") == "web_search"
+    ]
+
+    ledger.claim("http", "https://example.test/one")
+    assert hook_decision(ledger, {
+        "hook_event_name": "pre_tool_call", "tool_name": "web_search",
+        "tool_input": {"query": "query after fetch cap", "limit": 50},
+        "session_id": "session", "extra": {"tool_call_id": "call-after-fetch-cap"},
+    }) == {}
+    with pytest.raises(RequestBudgetError, match="fetch budget precheck blocked request"):
+        ledger.claim("http", "https://example.test/two")
+
+
+def test_provider_native_search_keeps_native_invalid_input_precheck(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, hook_decision
+
+    task_binding = new_protocol_binding(tmp_path)
+    ledger = RequestBudget(tmp_path / "request-budget.json", task_binding)
+    assert hook_decision(ledger, {
+        "hook_event_name": "pre_tool_call", "tool_name": "web_search",
+        "tool_input": {"query": "query", "num_results": 0},
+        "session_id": "session", "extra": {"tool_call_id": "call"},
+    }) == {"action": "block", "message": "invalid search result limit"}
+
+
+def test_candidate_protocol_omits_application_turn_cap_and_cannot_mix_on_resume(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    current = new_protocol_binding(tmp_path)
+    current.update(provider="openai-api", model="gpt-5.6-terra")
+    command = runner._hermes_command("hermes", current, tmp_path / "prompt.md")
+    assert "--max-turns" not in command
+    runner._assert_same_agent_protocol(current, dict(current))
+
+    legacy = dict(current)
+    legacy.pop("agent_protocol")
+    legacy_command = runner._hermes_command("hermes", legacy, tmp_path / "prompt.md")
+    assert "--max-turns" in legacy_command
+    runner._assert_same_agent_protocol(legacy, dict(legacy))
+    with pytest.raises(ValueError, match="resume agent protocol differs"):
+        runner._assert_same_agent_protocol(current, legacy)
+
+
 def test_failed_search_releases_results_but_spends_attempt(tmp_path):
     from climate_monitor.request_budget import hook_decision
     ledger = budget(tmp_path, search=2)
@@ -1822,7 +2113,10 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
         assert "RELOAD_TOKEN" not in environment
 
 
-def _managed_attempt(tmp_path, monkeypatch, *, source_keys=None, budget_overrides=None):
+def _managed_attempt(
+    tmp_path, monkeypatch, *, source_keys=None, budget_overrides=None,
+    candidate_protocol=False,
+):
     from test_issue94_management_console import _store, _definition
     from climate_monitor.management import ManagementService
 
@@ -1841,6 +2135,8 @@ def _managed_attempt(tmp_path, monkeypatch, *, source_keys=None, budget_override
     )
     started = service.start(trigger="manual")
     b = service.binding(started["run_id"])
+    if not candidate_protocol:
+        b.pop("agent_protocol")
     path = service._run_dir(started["run_id"]) / "attempt-1.json"
     path.write_text(json.dumps(b))
     return service, b, path
@@ -1858,6 +2154,28 @@ def _empty_agent_payload(binding, *, reason):
         "searches": [],
         "items": [],
     }
+
+
+def test_new_protocol_management_exposes_search_as_informational_activity(
+    tmp_path, monkeypatch,
+):
+    service, task_binding, path = _managed_attempt(
+        tmp_path, monkeypatch, candidate_protocol=True,
+    )
+    status = service.progress(task_binding["run_id"])
+    assert status["budget"]["search_policy"] == "provider-native-unbounded.v1"
+    assert "search_attempts" not in status["budget"]["limits"]
+    assert "search_results" not in status["budget"]["limits"]
+    assert status["budget"]["search_activity"] == {
+        "role": "informational_actuals_only", "attempts": None, "results": None,
+    }
+
+    task_binding.pop("agent_protocol")
+    path.write_text(json.dumps(task_binding), encoding="utf-8")
+    legacy_status = service.progress(task_binding["run_id"])
+    assert legacy_status["budget"]["limits"]["search_attempts"] == 36
+    assert legacy_status["budget"]["limits"]["search_results"] == 360
+    assert "search_policy" not in legacy_status["budget"]
 
 
 def test_primary_hermes_failure_retains_sanitized_process_error(tmp_path, monkeypatch):

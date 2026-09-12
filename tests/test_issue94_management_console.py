@@ -92,6 +92,12 @@ def _write_hermes_tool_events(
         connection.close()
 
 
+def _legacy_agent_binding(value: dict) -> dict:
+    """Mark fixtures that deliberately exercise the v1 model-owned search ledger."""
+    value.pop("agent_protocol", None)
+    return value
+
+
 def _controlled_site_result(tmp_path: Path, source: dict, *, candidates: list[dict],
                             disposition: str) -> dict:
     parent = f"managed-{source['key']}"
@@ -493,7 +499,12 @@ def test_management_routes_require_server_verified_session_and_logout(monkeypatc
     assert client.post("/api/manage/auth/login", data={"username": "operator", "password": "correct horse"}).status_code == 204
     assert client.get("/api/manage/config").status_code == 200
     assert client.get("/manage").status_code == 200
-    browser_code = (Path(__file__).parents[1] / "management_ui" / "manage.js").read_text(encoding="utf-8")
+    asset = client.get("/manage/assets/manage.js")
+    assert asset.status_code == 200
+    browser_code = asset.text
+    assert "provider-native-unbounded" in browser_code
+    assert "LEGACY_SEARCH_BUDGETS.has(key)" in browser_code
+    assert "delete budgets[key]" in browser_code
     logout_match = re.search(r"\$\('#logout'\)\.onclick.*?api\('([^']+)'", browser_code)
     assert logout_match is not None
     logout_endpoint = logout_match.group(1)
@@ -706,7 +717,9 @@ def test_real_organization_fixture_reaches_frozen_report_input_and_detail(tmp_pa
 def test_runner_accepts_registry_contract_and_requires_trusted_tool_evidence(tmp_path):
     import scripts.run_agent_acquisition as runner
 
-    binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="trusted", attempt=1)
+    binding = _legacy_agent_binding(build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="trusted", attempt=1,
+    ))
     now = binding["created_at"]
     url = "https://wmo.int/publication/climate-report"
     body = "Observed climate evidence."
@@ -779,7 +792,9 @@ def test_trusted_event_snapshots_charge_each_real_tool_call_once(tmp_path):
 def test_runner_binds_search_refs_and_bodies_to_the_same_typed_tool_event(tmp_path):
     import scripts.run_agent_acquisition as runner
 
-    binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="typed", attempt=1)
+    binding = _legacy_agent_binding(build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="typed", attempt=1,
+    ))
     now = binding["created_at"]
     urls = ["https://wmo.int/a", "https://wmo.int/b"]
     bodies = ["body a", "body b"]
@@ -982,12 +997,12 @@ def test_resume_cannot_store_or_freeze_cumulative_over_budget_evidence(tmp_path,
     )
     run_dir = tmp_path / "runs" / "cumulative-budget"
     run_dir.mkdir(parents=True)
-    first = build_task_binding(
+    first = _legacy_agent_binding(build_task_binding(
         definition, task_version=1, run_id="cumulative-budget", attempt=1
-    )
-    second = build_task_binding(
+    ))
+    second = _legacy_agent_binding(build_task_binding(
         definition, task_version=1, run_id="cumulative-budget", attempt=2
-    )
+    ))
     first_path = run_dir / "attempt-1.json"
     second_path = run_dir / "attempt-2.json"
     first_path.write_text(json.dumps(first), encoding="utf-8")
@@ -1087,8 +1102,11 @@ def test_interrupted_attempt_reconciles_durable_calls_before_resume_store(
     )
     started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
     run_dir = service._run_dir(started["run_id"])
-    first = service.binding(started["run_id"])
+    first = _legacy_agent_binding(service.binding(started["run_id"]))
     first_path = run_dir / "attempt-1.json"
+    legacy_bytes = json.dumps(first, ensure_ascii=False, sort_keys=True, indent=2)
+    (run_dir / "binding.json").write_text(legacy_bytes, encoding="utf-8")
+    first_path.write_text(legacy_bytes, encoding="utf-8")
 
     # This is the exact runner crash window: controlled-site accounting was
     # persisted, then Hermes made a durable call, then no final provenance or

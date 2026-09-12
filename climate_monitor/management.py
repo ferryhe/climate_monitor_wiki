@@ -22,9 +22,12 @@ from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from climate_monitor.request_budget import (
+    AGENT_PROTOCOL_VERSION,
     DEFAULT_FETCH_ATTEMPTS,
     DEFAULT_SEARCH_ATTEMPTS,
     DEFAULT_SEARCH_RESULTS,
+    PROVIDER_NATIVE_SEARCH_POLICY,
+    provider_native_unbounded_search,
 )
 
 from climate_registry.acquisition import (
@@ -666,6 +669,10 @@ def build_task_binding(
         "governed_gateway": gateway,
         "provider": parameters["provider"],
         "model": parameters["model"],
+        "agent_protocol": {
+            "version": AGENT_PROTOCOL_VERSION,
+            "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+        },
         "acquisition_lineage_id": f"acq-{run_id}",
         "acquisition_batch_id": f"acq-{run_id}-attempt-{attempt}",
         "checkpoint_dir": str(run_root / run_id / "checkpoint"),
@@ -1068,6 +1075,17 @@ class ManagementService:
             freshness = "stale" if age > 300 else "fresh"
         except (TypeError, ValueError):
             freshness = "unknown"
+        budget_limits = copy.deepcopy(binding["budgets"])
+        budget_view = {"limits": budget_limits, "used": used_budget}
+        if provider_native_unbounded_search(binding):
+            budget_limits.pop("search_attempts", None)
+            budget_limits.pop("search_results", None)
+            budget_view["search_policy"] = PROVIDER_NATIVE_SEARCH_POLICY
+            budget_view["search_activity"] = {
+                "role": "informational_actuals_only",
+                "attempts": (used_budget or {}).get("search_attempts"),
+                "results": (used_budget or {}).get("search_results"),
+            }
         return {
             "run_id": run_id,
             "attempt": binding["attempt"],
@@ -1079,7 +1097,7 @@ class ManagementService:
                                 "reason": batch.get("no_search_reason")} if batch else None,
             "source_outcomes": [{key: row.get(key) for key in (
                 "source", "coverage_status", "artifact_id", "warnings")} for row in source_rows],
-            "budget": {"limits": binding["budgets"], "used": used_budget},
+            "budget": budget_view,
             "freshness": freshness,
             "updated_at": updated_at,
             "items": items,

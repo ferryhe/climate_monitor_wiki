@@ -173,10 +173,15 @@ Evidence through 2026-09-12:
   without a first search opportunity. This proves the old default was too small;
   a later two-source canary also proved that the real public tool accepts a
   ten-result call, so five results cannot be treated as a deterministic per-call
-  ceiling. New tasks therefore use the finite defaults of 36 searches, 360
-  results and 5,000 fetch units, with a ten-result application cap per call. This
-  still does not prove capacity sufficiency; a fresh complete full-range run
-  remains required.
+  ceiling. The later `trusted-search-ledger.v2` protocol therefore leaves search
+  planning and per-call result sizing to the provider: new tasks have no
+  application search-call, cumulative-result, per-call-result or token limit.
+  The runner derives the complete search ledger from durable completed tool
+  events, while actual search/result counts remain evidence only. The 5,000-unit
+  controlled fetch limit, per-item retry limit and cumulative runtime limit stay
+  enforced before dispatch. Missing `agent_protocol` means the exact legacy
+  bounded protocol; frozen legacy and v2 attempts cannot be mixed on resume. A
+  fresh complete full-range v2 run remains required.
 
 - Runtime/discovery/handoff follow-up: full SSH sandbox suite **1791 passed /
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**

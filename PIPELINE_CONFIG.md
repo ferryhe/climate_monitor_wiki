@@ -163,12 +163,14 @@ Configuration and preflight are documented in PIPELINE_REFERENCE.md.
 
 The acquisition-task component directs Hermes to choose native search only in
 response to observed coverage gaps. The `search_guidance` component renders the
-bound unlimited/recent/custom publication-date policy. It records real queries,
-result references, reasons, retries and budgets in the existing #112 batch. A
-failed search is not a zero-result success; a defensible `no_search` has a
-concrete coverage reason. Stored publisher/search-result publication evidence
-controls inclusive eligibility, while unknown dates remain pending and event,
-discovery and fetch timestamps are never substituted.
+bound unlimited/recent/custom publication-date policy. Under
+`trusted-search-ledger.v2`, Hermes returns candidate decisions only. The runner
+constructs real queries, result references, statuses and actual counts from the
+same-run durable completed tool events and stores them in the existing #112
+batch. A failed search is not a zero-result success; `no_search` is emitted only
+when no trusted search completed. Stored publisher/search-result publication
+evidence controls inclusive eligibility, while unknown dates remain pending and
+event, discovery and fetch timestamps are never substituted.
 
 Each start writes an immutable task version, effective/component hashes, exact
 batch, resolved report date/range, budgets and checkpoint paths. Resume creates
@@ -179,31 +181,33 @@ implemented and tested but has not been installed in production.
 
 ### Managed acquisition capacity and incomplete coverage
 
-New tasks default to 5,000 fetch units, 36 search calls, 360 search results,
-two retries per item and 3,600 cumulative seconds. The finite global search
-ceiling numerically accommodates at most one ten-result first search for each
-of the 36 sources; it is not a per-source guarantee. The agent prioritizes
-unsearched sources with coverage gaps before refinements and must retain an
-explicit gap for any source that receives no search opportunity.
+New tasks use the provider-native unbounded search policy: there is no
+application limit on search calls, cumulative results, results per call or
+tokens. Provider schema validation still applies. Hermes chooses searches
+adaptively; the application retains actual calls and results as evidence, never
+as a pass/fail threshold. The legacy `search_attempts` and `search_results`
+definition fields remain only for schema and frozen-run compatibility and are
+not presented as active v2 controls. A binding with no `agent_protocol` is an
+exact legacy bounded run, and resume rejects any legacy/v2 protocol change.
 
-The fetch capacity covers the frozen 116 seeds at up to four actual
-target/redirect sends each, 360 article operations with an initial attempt plus
-two retries at up to four target/redirect sends each, and 120 native fetch-tool
-units: `116 * 4 + 360 * (1 + 2) * 4 + 120 = 4,904`. The rounded 5,000 limit is
-finite headroom, not a promise of content or of fitting arbitrarily long redirect
-chains. Explicit lower overrides remain authoritative. Existing saved tasks and
-frozen runs retain their stored limits; each new run freezes its limits,
-source/scope inventory and governed HTTP identity.
+Controlled acquisition still defaults to 5,000 fetch units, two retries per
+item and 3,600 cumulative seconds. That finite capacity covers the frozen 116
+seed inventory and substantial article follow-up, but it is not a promise of
+content or of fitting an arbitrary number of candidates or redirect hops.
+Explicit lower overrides remain authoritative. Each new run freezes those
+limits, its protocol, source/scope inventory and governed HTTP identity.
 
 A durable run ledger reserves capacity before every governed target send,
-including redirects, and before each Hermes `web_search`, `web_extract` and
-`browser_exec` dispatch. Failed or interrupted reservations remain spent or
-uncertain. Target-send reservations, native fetch-tool units, source outcomes,
-policy refusals and precheck blocks are distinct evidence. Search calls and
-returned results are distinct; unreturned result reservations remain reserved.
-Resumes verify successful seed receipts and reuse them, charging only remaining
-operations under the same cumulative limits. A missing or changed ledger fails
-closed. Successful seed receipts are independent of report checkpoint promotion.
+including redirects, and before each Hermes `web_extract` and `browser_exec`
+dispatch. Failed or interrupted controlled-fetch reservations remain spent or
+uncertain. `web_search` admission/completion is also recorded durably, but v2
+does not reserve or enforce search/result capacity. Target-send reservations,
+native fetch-tool units, source outcomes, policy refusals and precheck blocks are
+distinct evidence. Resumes verify successful seed receipts and reuse them,
+charging only remaining controlled operations under the same cumulative limits;
+they retain all completed searches as evidence. A missing or changed ledger
+fails closed. Successful seed receipts are independent of report checkpoint
+promotion.
 
 Only the acquisition subprocess receives the mandatory Hermes shell hooks in
 its isolated attempt home. Its Python runtime must load and execute the public
