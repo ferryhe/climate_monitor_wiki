@@ -410,6 +410,46 @@ def test_terra_response_contract_requires_every_executed_search(tmp_path):
     assert "Never omit an executed search merely because none of its results became an item" in prompt
 
 
+def test_terra_response_contract_rejects_invented_day_for_partial_date(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert (
+        "Set published_date only when trusted evidence gives an explicit complete day, "
+        "month, and year" in prompt
+    )
+    assert (
+        "Month-year evidence such as February 2026 or Publication: April 2026, and "
+        "year-only evidence, are incomplete" in prompt
+    )
+    assert (
+        "set both published_date and publication_date_evidence to null; never infer or "
+        "fill in the first day of a month" in prompt
+    )
+
+
+def test_terra_response_contract_selects_relevant_items_before_body_read(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert (
+        "selected expresses relevance based on trusted discovery or search evidence"
+        in prompt
+    )
+    assert (
+        "A relevant item that needs an article-body read must use selected true and "
+        "processing_status pending" in prompt
+    )
+    assert (
+        "initial unavailable or deferred body evidence does not make a relevant item "
+        "selected false" in prompt
+    )
+    assert "The trusted runner subsequently performs the controlled article-body read" in prompt
+    assert "Never select an irrelevant item or an item without a trusted URL" in prompt
+
+
 def test_terra_response_contract_separates_discovery_from_body_fetch_evidence(tmp_path):
     import scripts.run_agent_acquisition as runner
 

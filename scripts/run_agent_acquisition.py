@@ -204,8 +204,16 @@ because none of its results became an item. For every search-discovered item,
 discovery_search_ref must name the exact successful search attempt that returned
 the item's URL, and discovery_ref must be one of that same attempt's existing result_refs.
 Never transfer a result reference or URL between search attempts. Item selected is a
-boolean. Publication date evidence
-is null for unknown dates, otherwise {{"kind": "publisher or search_result", "url":
+boolean and selected expresses relevance based on trusted discovery or search evidence.
+A relevant item that needs an article-body read must use selected true and
+processing_status pending; initial unavailable or deferred body evidence does not make
+a relevant item selected false. The trusted runner subsequently performs the controlled
+article-body read. Never select an irrelevant item or an item without a trusted URL.
+Set published_date only when trusted evidence gives an explicit complete
+day, month, and year. Month-year evidence such as February 2026 or Publication:
+April 2026, and year-only evidence, are incomplete: set both published_date and
+publication_date_evidence to null; never infer or fill in the first day of a month.
+Publication date evidence is null for unknown dates, otherwise {{"kind": "publisher or search_result", "url":
 "this article URL", "text": "actual date evidence"}}. Evidence content is exact body
 text returned by that matched tool event, never a summary or paraphrase. Use ok/full_content
 only when that exact body, its matching SHA256, distinct real managed content/raw references,
