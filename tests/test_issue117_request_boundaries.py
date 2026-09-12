@@ -471,6 +471,19 @@ def test_terra_response_contract_requires_every_executed_search(tmp_path):
     assert "Never omit an executed search merely because none of its results became an item" in prompt
 
 
+def test_terra_response_contract_reproduces_complete_trusted_result_refs(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "reproduce the complete actual result_refs from that same trusted search event" in prompt
+    assert "used_results is greater than zero, result_refs must be non-empty" in prompt
+    assert "length of result_refs must equal used_results" in prompt
+    assert "used_results is zero, result_refs may be empty" in prompt
+    assert "Failed searches must preserve their actual status, result_refs, used_results, and error" in prompt
+    assert "Never invent, remap, or fill result_refs from another search event" in prompt
+
+
 def test_terra_search_contract_prioritizes_unsearched_source_gaps(tmp_path):
     import scripts.run_agent_acquisition as runner
 

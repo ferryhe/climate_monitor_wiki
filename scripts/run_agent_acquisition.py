@@ -210,7 +210,12 @@ result_refs are unique within each search attempt, and error is null on success
 or the actual error on failure. Every admitted and executed web_search call must
 appear exactly once in searches, including auxiliary or refinement queries and
 searches that produced zero selected items. Never omit an executed search merely
-because none of its results became an item. For every search-discovered item,
+because none of its results became an item.
+Each search record must reproduce the complete actual result_refs from that same trusted
+search event. When used_results is greater than zero, result_refs must be non-empty and the
+length of result_refs must equal used_results; when used_results is zero, result_refs may be
+empty. Failed searches must preserve their actual status, result_refs, used_results, and error.
+Never invent, remap, or fill result_refs from another search event. For every search-discovered item,
 discovery_search_ref must name the exact successful search attempt that returned
 the item's URL, and discovery_ref must be one of that same attempt's existing result_refs.
 Never transfer a result reference or URL between search attempts. Item selected is a
