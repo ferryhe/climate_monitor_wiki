@@ -1320,6 +1320,244 @@ def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch):
     assert spec.fail_closed
 
 
+def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    from climate_monitor.hermes_acquisition_hooks import (
+        SEARCH_IDENTITY_PLUGIN_ID,
+        install_hooks,
+    )
+
+    b = new_protocol_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(b))
+    executable = tmp_path / "hermes"
+    executable.write_text(f"#!{sys.executable}\n")
+    executable.chmod(0o700)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
+    ))
+
+    _env, home = install_hooks(
+        [str(executable)], path, b, {"PATH": __import__("os").environ["PATH"]},
+    )
+
+    config = json.loads((home / "config.yaml").read_text())
+    assert config["plugins"] == {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
+    plugin = home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID
+    assert json.loads((plugin / "plugin.yaml").read_text())["hooks"] == [
+        "transform_tool_result",
+    ]
+    source = (plugin / "__init__.py").read_text()
+    assert "transform_tool_result" in source
+    assert repr(str(path.resolve())) in source
+
+    legacy = binding(tmp_path / "legacy")
+    legacy_path = tmp_path / "legacy-attempt.json"
+    legacy_path.write_text(json.dumps(legacy))
+    _env, legacy_home = install_hooks(
+        [str(executable)], legacy_path, legacy,
+        {"PATH": __import__("os").environ["PATH"]},
+    )
+    legacy_config = json.loads((legacy_home / "config.yaml").read_text())
+    assert "plugins" not in legacy_config
+    assert not (legacy_home / "plugins").exists()
+
+
+def test_v2_search_identity_transform_uses_completed_same_call_without_accounting(tmp_path):
+    from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
+    from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+
+    b = new_protocol_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(b))
+    ledger = RequestBudget(ledger_path(b), b)
+    query = "site:example.test climate"
+    result = _tagged_search_result(web=[{
+        "url": "https://example.test/climate", "title": "Climate", "description": "trusted",
+    }])
+
+    def admit(call_id):
+        common = {
+            "tool_name": "web_search", "tool_input": {"query": query},
+            "session_id": "session-a", "extra": {"tool_call_id": call_id},
+        }
+        assert hook_decision(ledger, {**common, "hook_event_name": "pre_tool_call"}) == {}
+
+    admit("call-a")
+    admit("call-b")  # Same query and URL must remain scoped by raw call identity.
+    assert ledger.usage()["search_attempts"] == 2
+    first = transform_search_tool_result(
+        path, tool_name="web_search", args={"query": query}, result=result,
+        session_id="session-a", tool_call_id="call-a", status="ok",
+    )
+    second = transform_search_tool_result(
+        path, tool_name="web_search", args={"query": query}, result=result,
+        session_id="session-a", tool_call_id="call-b", status="ok",
+    )
+
+    assert first.startswith(result)
+    assert second.startswith(result)
+    assert '"tool_call_id":"call-a"' in first
+    assert '"tool_call_id":"call-b"' in second
+    assert "https://example.test/climate" not in first[len(result):]
+    completed = ledger.usage()
+    assert transform_search_tool_result(
+        path, tool_name="web_search", args={"query": query}, result=first,
+        session_id="session-a", tool_call_id="call-a", status="ok",
+    ) == first
+    assert transform_search_tool_result(
+        path, tool_name="web_search", args={"query": query}, result=result,
+        session_id="other-session", tool_call_id="call-a", status="ok",
+    ) is None
+    for call_id, transformed in (("call-a", first), ("call-b", second)):
+        assert hook_decision(ledger, {
+            "hook_event_name": "post_tool_call", "tool_name": "web_search",
+            "tool_input": {"query": query}, "session_id": "session-a",
+            "extra": {"tool_call_id": call_id, "status": "ok", "result": transformed},
+        }) == {}
+    after = ledger.usage()
+    for key in (
+        "fetch_attempts", "search_attempts", "search_results",
+        "search_results_reserved", "target_send_reservations", "fetch_tool_units",
+        "retries_per_item", "retries",
+    ):
+        assert after[key] == completed[key]
+
+
+def test_search_identity_transform_rejects_incomplete_and_legacy_calls(tmp_path):
+    from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
+    from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+
+    result = _tagged_search_result(web=[{"url": "https://example.test/result"}])
+    b = new_protocol_binding(tmp_path / "v2")
+    path = tmp_path / "v2.json"
+    path.write_text(json.dumps(b))
+    ledger = RequestBudget(ledger_path(b), b)
+    assert hook_decision(ledger, {
+        "hook_event_name": "pre_tool_call", "tool_name": "web_search",
+        "tool_input": {"query": "q"}, "session_id": "s",
+        "extra": {"tool_call_id": "unfinished"},
+    }) == {}
+    assert transform_search_tool_result(
+        path, tool_name="web_search", args={"query": "q"}, result=result,
+        session_id="s", tool_call_id="unfinished", status="error",
+    ) is None
+
+    legacy = binding(tmp_path / "legacy")
+    legacy_path = tmp_path / "legacy.json"
+    legacy_path.write_text(json.dumps(legacy))
+    assert transform_search_tool_result(
+        legacy_path, tool_name="web_search", args={"query": "q"}, result=result,
+        session_id="s", tool_call_id="unfinished", status="ok",
+    ) is None
+
+
+def test_pinned_hermes_second_provider_request_contains_completed_search_id(
+    tmp_path, monkeypatch,
+):
+    """Exercise Hermes' real tool dispatch/plugin/provider-input path when installed."""
+    model_tools = pytest.importorskip("model_tools")
+    plugins = pytest.importorskip("hermes_cli.plugins")
+    run_agent = pytest.importorskip("run_agent")
+    import subprocess
+    import sys
+    from unittest.mock import MagicMock
+    from climate_monitor.hermes_acquisition_hooks import (
+        SEARCH_IDENTITY_PLUGIN_ID,
+        install_hooks,
+    )
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+
+    b = new_protocol_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(b))
+    executable = tmp_path / "hermes"
+    executable.write_text(f"#!{sys.executable}\n")
+    executable.chmod(0o700)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
+    ))
+    environment, home = install_hooks(
+        [str(executable)], path, b, {"PATH": __import__("os").environ["PATH"]},
+    )
+    monkeypatch.setenv("HERMES_HOME", environment["HERMES_HOME"])
+    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+    plugins._plugin_manager = plugins.PluginManager()
+    plugins.discover_plugins()
+    installed = {
+        plugin["key"]: plugin for plugin in plugins.get_plugin_manager().list_plugins()
+    }[SEARCH_IDENTITY_PLUGIN_ID]
+    assert installed["enabled"] is True
+    assert installed["hooks"] == 1
+
+    session_id, call_id, query = "session-provider", "call-real", "same query"
+    result = _tagged_search_result(web=[{
+        "url": "https://example.test/result", "title": "Result", "description": "trusted",
+    }])
+    ledger = RequestBudget(ledger_path(b), b)
+    ledger.claim(
+        "web_search", query, call_id=f"1:{session_id}:{call_id}", results=5,
+    )
+
+    tool_call = SimpleNamespace(
+        id=call_id, type="function",
+        function=SimpleNamespace(name="web_search", arguments=json.dumps({"query": query})),
+    )
+    first_response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="", tool_calls=[tool_call]),
+            finish_reason="tool_calls",
+        )], model="test/model", usage=None,
+    )
+    final_response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="done", tool_calls=None),
+            finish_reason="stop",
+        )], model="test/model", usage=None,
+    )
+    tool_definition = [{
+        "type": "function", "function": {
+            "name": "web_search", "description": "search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda *args, **kwargs: tool_definition)
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda *args, **kwargs: {})
+    monkeypatch.setattr(run_agent, "OpenAI", MagicMock())
+    monkeypatch.setattr(model_tools.registry, "dispatch", lambda *args, **kwargs: result)
+    agent = run_agent.AIAgent(
+        api_key="test-key", base_url="https://example.test/v1",
+        provider="openai-compat", model="test-model", max_iterations=4,
+        quiet_mode=True, skip_context_files=True, skip_memory=True,
+        save_trajectories=False, session_id=session_id,
+    )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = [first_response, final_response]
+    agent._cached_system_prompt = "system"
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    monkeypatch.setattr(agent, "_persist_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_save_trajectory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_cleanup_task_resources", lambda *args, **kwargs: None)
+
+    outcome = agent.run_conversation("find candidates", conversation_history=[], task_id="task")
+
+    assert outcome["final_response"] == "done"
+    requests = agent.client.chat.completions.create.call_args_list
+    assert len(requests) == 2
+    tool_messages = [
+        message for message in requests[1].kwargs["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert len(tool_messages) == 1
+    provider_content = tool_messages[0]["content"]
+    assert '"tool_call_id":"call-real"' in provider_content
+    assert "https://example.test/result" in provider_content
+    assert "Trusted acquisition instruction" in provider_content
+    assert ledger.tool_event(f"1:{session_id}:{call_id}")["completed"] is True
+
+
 def test_failed_source_projection_keeps_artifact_and_no_full_success(tmp_path):
     import hashlib
     import scripts.run_agent_acquisition as runner

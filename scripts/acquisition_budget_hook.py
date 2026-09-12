@@ -9,6 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+from climate_monitor.hermes_acquisition_hooks import SEARCH_IDENTITY_PLUGIN_ID
 
 
 def main():
@@ -31,6 +32,17 @@ def main():
         # run_once exposes both the subprocess result and the parsed directive.
         if (result.get("parsed") or {}).get("action") != "block":
             raise ValueError(f"budget hook probe did not block: {result}")
+        binding = json.loads(Path(args.binding).read_text())
+        from climate_monitor.request_budget import provider_native_unbounded_search
+        if provider_native_unbounded_search(binding):
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            discover_plugins(force=True)
+            plugins = {
+                plugin["key"]: plugin for plugin in get_plugin_manager().list_plugins()
+            }
+            installed = plugins.get(SEARCH_IDENTITY_PLUGIN_ID)
+            if not installed or not installed["enabled"] or installed["hooks"] != 1:
+                raise ValueError("attempt search-identity plugin was not registered")
         print("climate acquisition hooks verified")
         return 0
     try:

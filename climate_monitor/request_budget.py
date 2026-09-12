@@ -22,6 +22,7 @@ DEFAULT_SEARCH_RESULTS = DEFAULT_SEARCH_ATTEMPTS * DEFAULT_SEARCH_RESULTS_PER_CA
 DEFAULT_FETCH_ATTEMPTS = 5000
 AGENT_PROTOCOL_VERSION = "trusted-search-ledger.v2"
 PROVIDER_NATIVE_SEARCH_POLICY = "provider-native-unbounded.v1"
+SEARCH_IDENTITY_TAG = "climate_trusted_search_identity_v1"
 
 
 def provider_native_unbounded_search(binding):
@@ -29,6 +30,28 @@ def provider_native_unbounded_search(binding):
         "version": AGENT_PROTOCOL_VERSION,
         "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
     }
+
+
+def search_identity_suffix(tool_call_id, query):
+    identity = json.dumps(
+        {"query": query, "tool_call_id": tool_call_id},
+        ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).replace("<", "\\u003c").replace(">", "\\u003e")
+    return (
+        f"\n\n<{SEARCH_IDENTITY_TAG}>{identity}</{SEARCH_IDENTITY_TAG}>\n"
+        "Trusted acquisition instruction: candidates copied from this completed "
+        "web_search must use discovery_kind=\"search\" and copy this exact raw "
+        "tool_call_id as discovery_search_ref. Copy discovery_ref and url only "
+        "from a data.web[].url in the original result above; never reuse this ID "
+        "for another search or invent, remap, or change a URL."
+    )
+
+
+def original_search_tool_result(result, tool_call_id, query):
+    if not all(isinstance(value, str) for value in (result, tool_call_id, query)):
+        return result
+    suffix = search_identity_suffix(tool_call_id, query)
+    return result[:-len(suffix)] if result.endswith(suffix) else result
 
 
 def _empty_systemic_read_failure():
@@ -93,7 +116,7 @@ class RequestBudget:
                                          "deadline": now + max(0, self.limits["runtime_seconds"] - spent)}
 
     @contextmanager
-    def _locked(self, *, create=False):
+    def _locked(self, *, create=False, write=True):
         with self.path.with_suffix(".lock").open("a+b") as lock:
             os.chmod(lock.name, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -117,7 +140,7 @@ class RequestBudget:
             try:
                 yield state
             finally:
-                if state:
+                if state and write:
                     raw = {**state, "sha256": digest(state)}
                     temporary = self.path.with_name(self.path.name + ".tmp")
                     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -207,6 +230,17 @@ class RequestBudget:
     def events(self, attempt=None):
         with self._locked() as state:
             return copy.deepcopy([e for e in state["events"] if attempt is None or e["attempt"] == attempt])
+
+    def tool_event(self, call_id):
+        """Read one exact durable tool event without rewriting the ledger."""
+        with self._locked(write=False) as state:
+            matching = [
+                event for event in state["events"]
+                if event.get("call_id") == call_id and event["event_kind"] == "tool"
+            ]
+            if len(matching) != 1:
+                return None
+            return copy.deepcopy(matching[0])
 
     def systemic_read_failure(self):
         with self._locked() as state:
@@ -369,7 +403,10 @@ def hook_decision(budget, payload):
         budget.note("precheck", url, reason, tool=recorded_tool)
         return {"action": "block", "message": reason}
     if payload.get("hook_event_name") == "post_tool_call":
-        budget.complete_tool(call_id, extra.get("result"), extra.get("status", "error"))
+        result = extra.get("result")
+        if budget.provider_native_search and tool == "web_search":
+            result = original_search_tool_result(result, call.strip(), args.get("query"))
+        budget.complete_tool(call_id, result, extra.get("status", "error"))
         return {}
     results = args.get("num_results", args.get("limit", 5)) if tool == "web_search" else 0
     supplied_result_limits = (
