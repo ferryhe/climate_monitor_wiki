@@ -498,7 +498,8 @@ service does not discard sessions. This repository change does **not** claim a
 production deployment or a real model conversation. A safe runtime check is:
 
 ```bash
-docker compose build wiki
+CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)" \
+  docker compose build wiki
 docker compose run --rm --no-deps --entrypoint sh wiki -c \
   'hermes --version && test -f /opt/hermes-agent/hermes_cli/web_dist/index.html && test -f /opt/hermes-agent/hermes_cli/tui_dist/entry.js && CLIMATE_PUBLIC_ORIGIN=https://climate.example python -c "from climate_monitor.hermes_dashboard_server import oauth_callback_url; assert oauth_callback_url(\"calendar\") == \"https://climate.example/hermes/api/mcp/oauth/callback/calendar\"" && python scripts/validate_pinned_hermes_oauth.py'
 ```

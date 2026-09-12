@@ -1454,7 +1454,8 @@ def _run_report(binding_path: Path, binding: Mapping[str, Any]) -> int:
         "--pillar-b-artifact", paths["pillar_b_artifact"], "--staging-dir", paths["staging_dir"],
         "--state-dir", paths["state_dir"], "--source-dir", paths["source_dir"],
         "--wiki-dir", paths["wiki_dir"], "--model-provider", str(binding["provider"]),
-        "--model", str(binding["model"]),
+        "--model", str(binding["model"]), "--repository-commit-sha",
+        str(binding["repository_commit_sha"]),
     ]
     result = subprocess.run(command, cwd=ROOT, env=_report_environment(str(binding["provider"])))
     return int(result.returncode)

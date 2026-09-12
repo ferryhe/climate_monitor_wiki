@@ -1479,6 +1479,7 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
     resumed = service.binding(started["run_id"])
     binding_path = run_dir / "attempt-2.json"
     assert resumed["acquisition_batch_id"] == first["acquisition_batch_id"]
+    assert resumed["repository_commit_sha"] == first["repository_commit_sha"]
 
     def enter_report(command, **_kwargs):
         loaded, loaded_path = monitor._load_task_binding(
@@ -1491,6 +1492,12 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
 
     monkeypatch.setattr(runner.subprocess, "run", enter_report)
     assert runner._run_report(binding_path, resumed) == 0
+
+    tampered = dict(resumed)
+    tampered["repository_commit_sha"] = "invalid"
+    binding_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(SystemExit, match="task binding repository commit is invalid"):
+        monitor._load_task_binding(str(binding_path))
 
     tampered = dict(resumed)
     tampered["acquisition_batch_id"] = f"acq-{started['run_id']}-attempt-2"
@@ -1542,6 +1549,7 @@ def test_runner_projects_and_invokes_existing_bound_report_path(tmp_path, monkey
     assert command[command.index("--task-binding") + 1] == str(binding_path)
     assert command[command.index("--model") + 1] == binding["model"]
     assert command[command.index("--model-provider") + 1] == binding["provider"]
+    assert command[command.index("--repository-commit-sha") + 1] == binding["repository_commit_sha"]
 
 
 def test_report_handoff_rejects_unstored_or_hash_mismatched_site_artifact(tmp_path):
@@ -1612,6 +1620,7 @@ def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_pa
     assert service.progress(started["run_id"])["stage"] == "report_resuming"
     assert launches[-1]["attempt"] == launches[0]["attempt"] == 1
     assert launches[-1]["effective_sha256"] == launches[0]["effective_sha256"]
+    assert launches[-1]["repository_commit_sha"] == launches[0]["repository_commit_sha"]
     assert launches[-1]["acquisition_batch_id"] == launches[0]["acquisition_batch_id"]
     assert not (run_dir / "attempt-2.json").exists()
     assert (run_dir / "attempt-1-report-failure.json").is_file()

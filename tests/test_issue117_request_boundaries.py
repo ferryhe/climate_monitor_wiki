@@ -420,6 +420,161 @@ def test_container_packages_default_report_run_config():
     assert "COPY monitoring/run_config.yaml ./monitoring/run_config.yaml" in dockerfile
 
 
+def test_container_requires_and_embeds_exact_repository_commit():
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    dockerignore = (root / ".dockerignore").read_text(encoding="utf-8")
+
+    assert "ARG CLIMATE_REPOSITORY_COMMIT_SHA" in dockerfile
+    assert "ENV CLIMATE_REPOSITORY_COMMIT_SHA=$CLIMATE_REPOSITORY_COMMIT_SHA" in dockerfile
+    assert "repository commit SHA must be a 40-character lowercase hex digest" in dockerfile
+    assert "CLIMATE_REPOSITORY_COMMIT_SHA: ${CLIMATE_REPOSITORY_COMMIT_SHA:-}" in compose
+    assert '--build-arg CLIMATE_REPOSITORY_COMMIT_SHA="${{ github.sha }}"' in workflow
+    assert ".git/" in dockerignore
+    assert "COPY .git" not in dockerfile
+
+
+def test_managed_repository_commit_requires_exact_runtime_value_or_real_checkout(
+    monkeypatch,
+):
+    import subprocess
+    from climate_monitor import management
+
+    exact = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    monkeypatch.setenv("CLIMATE_REPOSITORY_COMMIT_SHA", exact)
+    monkeypatch.setattr(
+        management.subprocess, "run",
+        lambda *args, **kwargs: pytest.fail("configured container path must not call git"),
+    )
+    assert management.resolve_repository_commit_sha() == exact
+
+    monkeypatch.setenv("CLIMATE_REPOSITORY_COMMIT_SHA", "not-a-revision")
+    with pytest.raises(ValueError, match="CLIMATE_REPOSITORY_COMMIT_SHA.*40-character"):
+        management.resolve_repository_commit_sha()
+
+    monkeypatch.delenv("CLIMATE_REPOSITORY_COMMIT_SHA")
+    monkeypatch.setattr(
+        management.subprocess, "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("git")),
+    )
+    with pytest.raises(ValueError, match="CLIMATE_REPOSITORY_COMMIT_SHA.*real Git checkout"):
+        management.resolve_repository_commit_sha()
+
+
+def test_report_process_receives_frozen_repository_commit(tmp_path, monkeypatch):
+    import subprocess
+    import scripts.run_agent_acquisition as runner
+
+    exact = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    task_binding = {
+        "provider": "openai-api", "model": "test-model",
+        "repository_commit_sha": exact,
+        "report_inputs": {
+            key: str(tmp_path / key)
+            for key in (
+                "acquisition_batch", "web_listening_manifest", "pillar_b_artifact",
+                "staging_dir", "state_dir", "source_dir", "wiki_dir",
+            )
+        },
+    }
+    observed = {}
+
+    def run(command, **kwargs):
+        observed["command"] = command
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(runner, "_report_environment", lambda _provider: {})
+    assert runner._run_report(tmp_path / "attempt-1.json", task_binding) == 0
+    command = observed["command"]
+    assert command[command.index("--repository-commit-sha") + 1] == exact
+
+
+def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monkeypatch):
+    import hashlib
+    import subprocess
+    from scripts import run_climate_monitor as monitor
+
+    exact = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"], cwd=monitor.ROOT,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    response = staging / "response.json"
+    public = tmp_path / "public.json"
+    bound_path = tmp_path / "attempt-1.json"
+    for path, value in (
+        (response, {}), (public, {}), (bound_path, {}),
+        (staging / "v2_authoring_request.json", {}),
+        (staging / "stats.json", {}),
+        (staging / "article_evidence.json", {"records": []}),
+    ):
+        path.write_text(json.dumps(value), encoding="utf-8")
+    def digest(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    task_binding = {
+        "provider": "openai-api", "model": "test-model",
+        "repository_commit_sha": exact,
+    }
+    bundle = {
+        "report_date": "2026-09-07", "stats": {},
+        "public_artifacts": {
+            name: {"path": str(public), "sha256": digest(public)}
+            for name in ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact")
+        },
+        "registry_acquisition": {
+            "task_binding": {"path": str(bound_path), "sha256": digest(bound_path)},
+        },
+        "execution_binding": {**task_binding},
+        "taxonomy": {"sha256": "taxonomy"}, "prompt": {"sha256": "prompt"},
+    }
+    monkeypatch.setattr(monitor, "_read_staging_bundle", lambda _path: bundle)
+    monkeypatch.setattr(monitor, "_verify_staging_digest", lambda *_args: None)
+    monkeypatch.setattr(monitor, "_validate_v2_stats_shape", lambda _stats: {})
+    monkeypatch.setattr(monitor, "load_authoring_response", lambda _path: {})
+    taxonomy = SimpleNamespace(sha256="taxonomy")
+    monkeypatch.setattr(
+        monitor, "_load_task_binding_with_taxonomy",
+        lambda _path: (task_binding, bound_path, taxonomy),
+    )
+    monkeypatch.setattr(monitor, "_bound_prompt", lambda *_args: SimpleNamespace(sha256="prompt"))
+    for name in ("_verify_candidate_selection", "validate_authoring_response"):
+        monkeypatch.setattr(monitor, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(monitor, "_candidate_items_from_evidence", lambda *_args: [])
+    monkeypatch.setattr(monitor, "_read_prepare_inputs", lambda *_args, **_kwargs: ({}, {}, {}, [], {}))
+    monkeypatch.setattr(monitor, "_outcome_to_article_changes", lambda *_args: {})
+    observed = {}
+    monkeypatch.setattr(
+        monitor, "run_weekly_monitor",
+        lambda **kwargs: observed.update(kwargs) or "completed",
+    )
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    args = SimpleNamespace(
+        authoring_response=str(response), staging_dir=str(staging),
+        repository_commit_sha=exact, model="test-model", model_provider="openai-api",
+        source_config="monitoring/supranational_sources.yaml",
+        run_config="monitoring/run_config.yaml", site_scopes="",
+        state_dir=str(tmp_path / "state"), source_dir=str(source_dir),
+        wiki_dir=str(tmp_path / "wiki"), no_sync=True, no_update_seen_state=True,
+        article_evidence_loopback="",
+    )
+
+    assert monitor._run_finalize(args, SimpleNamespace(error=pytest.fail)) == "completed"
+    assert observed["repository_commit_sha"] == exact
+
+
 def test_target_redirect_and_failure_reservations_are_durable(tmp_path):
     from climate_monitor.request_budget import GuardedGateway, RequestBudgetError
     ledger = budget(tmp_path, fetch=1)
@@ -1006,12 +1161,18 @@ def test_incompatible_hermes_installation_never_launches_attempt(tmp_path, monke
 
 
 def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, monkeypatch):
+    import subprocess
     import scripts.run_agent_acquisition as runner
 
+    exact = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
     monkeypatch.setenv("OPENAI_API_KEY", "provider-credential")
     monkeypatch.setenv("RELOAD_TOKEN", "must-not-leak")
     b = binding(tmp_path)
-    b.update(provider="openai-api", model="test-model")
+    b.update(provider="openai-api", model="test-model", repository_commit_sha=exact)
     b["report_inputs"] = {
         key: str(tmp_path / key)
         for key in (
@@ -1047,8 +1208,9 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
         runner.time.monotonic() + 60,
     ) == 0
 
-    def run(*args, **kwargs):
+    def run(command, **kwargs):
         environments["report"] = kwargs["env"]
+        assert command[command.index("--repository-commit-sha") + 1] == exact
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(runner.subprocess, "run", run)

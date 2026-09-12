@@ -1,5 +1,6 @@
 """Integration regressions against the installed public upstream contract."""
 import json
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -199,6 +200,10 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
         AUTHORING_RESPONSE_SCHEMA_VERSION_V2, AUTHORING_CONTRACT_VERSION_V2)
     monkeypatch.setenv('HERMES_INFERENCE_MODEL', 'ambient-model')
     monkeypatch.setenv('HERMES_INFERENCE_PROVIDER', 'ambient-provider')
+    repository_commit_sha = subprocess.run(
+        ['git', 'rev-parse', '--verify', 'HEAD'], cwd=monitor.ROOT,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     op, mp, bp = public_inputs(tmp_path)
     payload = json.loads(mp.read_text())
     for item in payload['discovered_items']:
@@ -216,6 +221,7 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
         assert kwargs['model_provider'] == 'openai-codex'
         assert kwargs.get('temperature') is None
         assert kwargs.get('max_output_tokens') is None
+        assert kwargs['repository_commit_sha'] == repository_commit_sha
         return driver(**kwargs)
     monkeypatch.setattr(monitor, 'run_weekly_monitor', tracked_driver)
     prepare = monitor._run_prepare
@@ -284,12 +290,12 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
     monkeypatch.setattr(monitor, '_run_finalize', tracked_finalize)
     # Only the Hermes process is substituted. Prepare, request validation,
     # response validation and finalize execute the production implementation.
-    import subprocess
     original_run = subprocess.run
     monkeypatch.setattr(subprocess, 'run', lambda cmd, **kw:
                         hermes(cmd, **kw) if cmd[0] == 'hermes' else original_run(cmd, **kw))
     monkeypatch.setattr(sys, 'argv', ['run_climate_monitor.py', '--production-weekly',
         '--authoring-mode', 'run', '--model', 'gpt-6-astra', '--model-provider', 'openai-codex', '--report-date', '2026-09-07',
+        '--repository-commit-sha', repository_commit_sha,
         '--acquisition-batch', str(op), '--web-listening-manifest', str(mp),
         '--pillar-b-artifact', str(bp), '--staging-dir', str(staging),
         '--source-dir', str(tmp_path / 'sources'), '--state-dir', str(tmp_path / 'state'),

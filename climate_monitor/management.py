@@ -57,6 +57,7 @@ _PROMPT_FILES = {
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SOURCE_INVENTORY_PATH = Path(__file__).resolve().parents[1] / "monitoring" / "supranational_sources.yaml"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_COMMIT_ENV = "CLIMATE_REPOSITORY_COMMIT_SHA"
 
 
 def _utc_now() -> datetime:
@@ -81,6 +82,28 @@ def _sha(value: Any) -> str:
 
 def _text_sha(value: str) -> str:
     return hashlib.sha256(_normalize_text(value).encode("utf-8")).hexdigest()
+
+
+def resolve_repository_commit_sha() -> str:
+    """Resolve one real repository revision before a managed run starts."""
+    from climate_monitor.weekly_monitor.driver import validate_repository_commit_sha
+
+    configured = os.environ.get(REPOSITORY_COMMIT_ENV)
+    if configured is not None:
+        try:
+            return validate_repository_commit_sha(configured)
+        except ValueError as exc:
+            raise ValueError(f"{REPOSITORY_COMMIT_ENV}: {exc}") from exc
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=REPOSITORY_ROOT, check=True, capture_output=True, text=True,
+        )
+        return validate_repository_commit_sha(completed.stdout)
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        raise ValueError(
+            f"{REPOSITORY_COMMIT_ENV} is required outside a real Git checkout"
+        ) from exc
 
 
 def _canonical_existing_path(value: object, label: str) -> Path:
@@ -592,6 +615,7 @@ def build_task_binding(
     view = definition_view(normalized, version=task_version)
     parameters = normalized["parameters"]
     frozen_at = created_at or _utc_now()
+    repository_commit_sha = resolve_repository_commit_sha()
     report_date = _resolved_report_date(parameters, frozen_at)
     policy_input = parameters["date_policy"]
     policy = PublicationDatePolicy.resolve(policy_input, anchor_date=report_date, frozen_at=_rfc3339(frozen_at))
@@ -623,6 +647,7 @@ def build_task_binding(
         "task_version": task_version,
         "definition_sha256": view["hashes"]["definition_sha256"],
         "effective_sha256": view["hashes"]["effective_sha256"],
+        "repository_commit_sha": repository_commit_sha,
         "taxonomy_sha256": view["effective"]["taxonomy_sha256"],
         "prompt_hashes": view["hashes"]["components"],
         "prompt_versions": view["effective"]["prompt_versions"],

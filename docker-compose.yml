@@ -1,6 +1,9 @@
 services:
   wiki:
-    build: .
+    build:
+      context: .
+      args:
+        CLIMATE_REPOSITORY_COMMIT_SHA: ${CLIMATE_REPOSITORY_COMMIT_SHA:-}
     image: climate-monitor-wiki:local
     container_name: climate-wiki-app
     restart: unless-stopped

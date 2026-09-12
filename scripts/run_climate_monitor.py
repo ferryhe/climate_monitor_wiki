@@ -98,6 +98,7 @@ def _load_task_binding_with_taxonomy(
     from climate_monitor.management import (
         BINDING_SCHEMA, PROMPT_NAMES, _sha, _text_sha, managed_report_inputs,
     )
+    from climate_monitor.weekly_monitor.driver import validate_repository_commit_sha
 
     path = Path(path_value)
     if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_file():
@@ -105,6 +106,10 @@ def _load_task_binding_with_taxonomy(
     binding = json.loads(path.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise SystemExit("task binding schema is unsupported")
+    try:
+        validate_repository_commit_sha(binding.get("repository_commit_sha"))
+    except ValueError as exc:
+        raise SystemExit(f"task binding repository commit is invalid: {exc}") from exc
     definition = binding.get("definition") or {}
     parameters = definition.get("parameters") or {}
     prompts = definition.get("prompts") or {}
@@ -847,6 +852,10 @@ def _run_prepare(args, parser) -> int:
         args.report_date = task_binding["report_date"]
         args.registry_database = task_binding["registry_database"]
         args.registry_acquisition_batch_id = task_binding["acquisition_batch_id"]
+        supplied_commit = getattr(args, "repository_commit_sha", "")
+        if supplied_commit and supplied_commit != task_binding["repository_commit_sha"]:
+            raise SystemExit("--repository-commit-sha differs from the immutable task binding")
+        args.repository_commit_sha = task_binding["repository_commit_sha"]
     outcome_path = Path(args.acquisition_batch).resolve()
     manifest_path = Path(args.web_listening_manifest).resolve()
     pillar_b_path = Path(args.pillar_b_artifact).resolve()
@@ -1052,6 +1061,7 @@ def _run_prepare(args, parser) -> int:
     if task_binding is not None:
         bundle_payload["execution_binding"] = {
             "provider": task_binding["provider"], "model": task_binding["model"],
+            "repository_commit_sha": task_binding["repository_commit_sha"],
             "article_summary_sha256": task_binding["prompt_hashes"]["article_summary"],
             "executive_summary_sha256": task_binding["prompt_hashes"]["executive_summary"],
             "effective_sha256": task_binding["effective_sha256"],
@@ -1236,11 +1246,19 @@ def _run_finalize(args, parser) -> MonitorRunResult:
             str(binding_path)
         )
         prompt = _bound_prompt(binding, "article_summary", binding_path)
-        if execution_binding.get("provider") != binding["provider"] or execution_binding.get("model") != binding["model"]:
-            raise SystemExit("bound provider/model changed since prepare")
+        if (execution_binding.get("provider") != binding["provider"]
+                or execution_binding.get("model") != binding["model"]
+                or execution_binding.get("repository_commit_sha")
+                != binding["repository_commit_sha"]):
+            raise SystemExit("bound provider/model/repository commit changed since prepare")
+        supplied_commit = getattr(args, "repository_commit_sha", "")
+        if supplied_commit and supplied_commit != binding["repository_commit_sha"]:
+            raise SystemExit("--repository-commit-sha differs from the immutable task binding")
+        repository_commit_sha = binding["repository_commit_sha"]
     else:
         taxonomy = load_article_taxonomy()
         prompt = load_weekly_monitor_prompt()
+        repository_commit_sha = getattr(args, "repository_commit_sha", "") or None
     if taxonomy.sha256 != (bundle.get("taxonomy") or {}).get("sha256"):
         raise SystemExit(
             f"taxonomy sha256 changed since prepare: "
@@ -1314,6 +1332,7 @@ def _run_finalize(args, parser) -> MonitorRunResult:
         article_changes_artifact_path=article_changes_path,
         pillar_b_artifact_path=pillar_b_artifact_path,
         providers=_parse_loopback_provider(args.article_evidence_loopback),
+        repository_commit_sha=repository_commit_sha,
     )
 
 
@@ -1572,6 +1591,11 @@ def _verify_authoring_resume(args, staging, bundle):
         prepared_taxonomy_sha = bound_taxonomy.sha256
         if args.model != bound["model"] or args.model_provider != bound["provider"]:
             raise SystemExit("bound provider/model changed; use fresh staging")
+        if (getattr(args, "repository_commit_sha", "")
+                != bound["repository_commit_sha"]
+                or bundle["execution_binding"].get("repository_commit_sha")
+                != bound["repository_commit_sha"]):
+            raise SystemExit("bound repository commit changed; use fresh staging")
     else:
         prepared_prompt_sha = load_weekly_monitor_prompt().sha256
         prepared_taxonomy_sha = load_article_taxonomy().sha256
@@ -1604,6 +1628,10 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
         )
         args.model = bound["model"]
         args.model_provider = bound["provider"]
+        supplied_commit = getattr(args, "repository_commit_sha", "")
+        if supplied_commit and supplied_commit != bound["repository_commit_sha"]:
+            raise SystemExit("--repository-commit-sha differs from the immutable task binding")
+        args.repository_commit_sha = bound["repository_commit_sha"]
     if response_path.exists() and not (staging / "authoring_run.json").exists():
         raise SystemExit("authoring response already exists without a resumable URL run")
     args.model, args.model_provider = _resolve_authoring_identity(args.model, args.model_provider)
@@ -1746,7 +1774,7 @@ def main() -> None:
                         help="Path to the public acquisition-batch-result.v2 artifact "
                              "emitted by the upstream #67 producer.")
     parser.add_argument("--task-binding", default="",
-                        help="Canonical absolute immutable management binding; overrides report date, Registry batch, prompts, provider, and model.")
+                        help="Canonical absolute immutable management binding; overrides report date, Registry batch, prompts, provider, model, and repository commit.")
     parser.add_argument("--registry-database", default="",
         help="Registry SQLite database containing a completed pre-report acquisition batch.",
     )
@@ -1771,6 +1799,10 @@ def main() -> None:
                         help="Maximum seconds for each independent URL or executive-summary invocation.")
     parser.add_argument("--model-provider", default="")
     parser.add_argument("--model", default="")
+    parser.add_argument(
+        "--repository-commit-sha", default="",
+        help="Exact lowercase Git commit for report provenance; managed runs bind this value.",
+    )
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--max-output-tokens", type=int, default=None)
     parser.add_argument(
@@ -1932,6 +1964,7 @@ def main() -> None:
             model=args.model,
             temperature=args.temperature,
             max_output_tokens=args.max_output_tokens,
+            repository_commit_sha=args.repository_commit_sha or None,
             providers=_parse_loopback_provider(args.article_evidence_loopback),
             article_evidence=article_evidence_payload,
             stats=stats_payload,

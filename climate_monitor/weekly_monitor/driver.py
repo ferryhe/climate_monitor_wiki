@@ -29,6 +29,13 @@ _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _SECRET_WORDS = ("api_key", "credential", "password", "secret", "token")
 
 
+def validate_repository_commit_sha(value: object) -> str:
+    commit_sha = str(value or "").strip()
+    if not _GIT_SHA.fullmatch(commit_sha):
+        raise ValueError("repository commit SHA must be a 40-character lowercase hex digest")
+    return commit_sha
+
+
 def run_weekly_monitor(
     *,
     source_config_path: str | Path = "monitoring/supranational_sources.yaml",
@@ -62,9 +69,9 @@ def run_weekly_monitor(
     if authoring_response_path is None:
         raise ValueError("production weekly driver requires an authoring response file")
     prompt = load_weekly_monitor_prompt(prompt_path) if prompt_path else load_weekly_monitor_prompt()
-    commit_sha = repository_commit_sha or _repository_commit_sha(Path.cwd())
-    if not _GIT_SHA.fullmatch(commit_sha):
-        raise ValueError("repository commit SHA must be a 40-character lowercase hex digest")
+    commit_sha = validate_repository_commit_sha(
+        repository_commit_sha or _repository_commit_sha(Path.cwd())
+    )
     response = load_authoring_response(authoring_response_path)
 
     # v2 evidence path: when the caller supplies the article-evidence and

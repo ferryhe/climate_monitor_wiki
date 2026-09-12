@@ -29,7 +29,10 @@ node --check showcase/app.js
 git fetch origin main
 BASE_SHA="$(git merge-base HEAD origin/main)"
 git diff --check "$BASE_SHA...HEAD"
-docker build --pull --tag climate-monitor-wiki:ci .
+CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
+docker build --pull \
+  --build-arg "CLIMATE_REPOSITORY_COMMIT_SHA=$CLIMATE_REPOSITORY_COMMIT_SHA" \
+  --tag climate-monitor-wiki:ci .
 ```
 
 The fetch and merge-base steps make the whitespace check cover the complete
