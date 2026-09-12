@@ -262,6 +262,10 @@ def test_fetch_event_explicit_targets_override_result_mentions():
         ("2026-09-02", "September 2, 2026"),
         ("2026-09-02", "Published Sep 2, 2026"),
         ("2026-09-02", "Published September 2, 2026"),
+        ("2026-08-06", "06 Aug, 2026"),
+        ("2026-08-06", "06 August, 2026"),
+        ("2024-11-12", "Published 12 Nov, 2024"),
+        ("2024-11-12", "Published 12 November, 2024"),
     ],
 )
 def test_publication_date_accepts_bounded_english_equivalent_in_same_url_event(
@@ -311,6 +315,51 @@ def test_publication_date_rejects_month_first_near_misses():
         "Related article September 2, 2026",
     ):
         assert not runner._publication_date_text_matches("2026-09-02", text)
+
+
+def test_publication_date_rejects_day_first_comma_near_misses():
+    import scripts.run_agent_acquisition as runner
+
+    for text in (
+        "07 August, 2026", "06 September, 2026", "06 August, 2025",
+        "August, 2026", "06 August,", "06 August 2026", "06/08/2026",
+        "Related article 06 August, 2026",
+    ):
+        assert not runner._publication_date_text_matches("2026-08-06", text)
+
+
+@pytest.mark.parametrize(("published_date", "evidence_text"), [
+    ("2026-08-06", "06 August, 2026"),
+    ("2024-11-12", "12 November, 2024"),
+])
+def test_publication_date_day_first_comma_binds_to_exact_search_result(
+    tmp_path, published_date, evidence_text,
+):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    item = payload["items"][0]
+    item["published_date"] = published_date
+    item["publication_date_evidence"] = {
+        "kind": "search_result", "url": item["url"], "text": evidence_text,
+    }
+    events[0]["result"] = _tagged_search_result(web=[
+        {"url": "https://wmo.int/a-1", "description": "trusted"},
+        {"url": item["url"], "description": evidence_text},
+    ])
+    assert runner._validate_agent_payload(task_binding, payload, events) == payload
+
+    crossed = copy.deepcopy(events)
+    crossed[0]["result"] = _tagged_search_result(web=[
+        {"url": "https://wmo.int/a-1", "description": "trusted"},
+        {"url": item["url"], "description": "trusted"},
+    ])
+    crossed[1]["result"] = _tagged_search_result(web=[
+        {"url": "https://wmo.int/b-1", "description": evidence_text},
+    ])
+    with pytest.raises(ValueError, match="publication-date evidence"):
+        runner._validate_agent_payload(task_binding, payload, crossed)
 
 
 def test_same_result_url_may_belong_to_two_distinct_search_attempts(tmp_path):

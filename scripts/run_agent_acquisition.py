@@ -737,6 +737,10 @@ def _publication_date_text_matches(published_date: str, evidence_text: str) -> b
         published_date,
         f"{day} {abbreviated} {parsed.year}",
         f"{day} {full} {parsed.year}",
+        f"{day} {abbreviated}, {parsed.year}",
+        f"{day} {full}, {parsed.year}",
+        f"{parsed.day:02d} {abbreviated}, {parsed.year}",
+        f"{parsed.day:02d} {full}, {parsed.year}",
         f"{abbreviated} {day}, {parsed.year}",
         f"{full} {day}, {parsed.year}",
     }
