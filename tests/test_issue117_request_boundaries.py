@@ -149,6 +149,50 @@ def test_opaque_search_refs_bind_to_same_trusted_event_urls(tmp_path):
         runner._validate_agent_payload(task_binding, payload, ambiguous_events)
 
 
+def test_feedback_event_delta_retains_new_durable_calls_and_legacy_snapshots(tmp_path):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    primary = [
+        {
+            "session_id": "session-primary", "tool_call_id": f"call-{index}",
+            "tool": "web_search", "arguments": {"query": f"primary {index}"},
+            "result": _tagged_search_result(),
+        }
+        for index in range(8)
+    ]
+    delta = runner._feedback_tool_event_delta(primary, copy.deepcopy(primary))
+    assert delta == []
+    empty = _empty_agent_payload(task_binding, reason="Feedback selected no new items")
+    assert runner._validate_agent_payload(task_binding, empty, delta) == empty
+
+    new_event = {
+        "session_id": "session-feedback", "tool_call_id": "call-new",
+        "tool": "web_search", "arguments": {"query": "feedback refinement"},
+        "result": _tagged_search_result(),
+    }
+    cumulative = [*copy.deepcopy(primary), new_event]
+    delta = runner._feedback_tool_event_delta(primary, cumulative)
+    assert delta == [new_event]
+
+    with pytest.raises(ValueError, match="unreported web_search"):
+        runner._validate_agent_payload(task_binding, empty, delta)
+    reported = copy.deepcopy(empty)
+    reported["search_decision"] = {"status": "attempted", "reason": None}
+    reported["searches"] = [{
+        "search_ref": "feedback-search", "query": "feedback refinement",
+        "engine": "web_search", "status": "success",
+        "attempted_at": task_binding["created_at"], "result_refs": [],
+        "budget": {"max_results": 5, "used_results": 0}, "error": None,
+    }]
+    assert runner._validate_agent_payload(task_binding, reported, delta) == reported
+    assert len(runner._merge_tool_event_snapshots(primary, cumulative)) == 9
+
+    legacy = {"tool": "web_search", "arguments": {"query": "legacy"}, "result": {}}
+    assert runner._feedback_tool_event_delta(primary, [legacy]) == [legacy]
+
+
 def test_search_item_url_uses_repository_canonical_identity(tmp_path):
     import copy
     from climate_monitor.dedupe import canonical_url

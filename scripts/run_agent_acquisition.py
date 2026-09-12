@@ -662,6 +662,24 @@ def _merge_tool_event_snapshots(
     return list(merged.values())
 
 
+def _feedback_tool_event_delta(
+    primary: list[dict[str, Any]], cumulative: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return new durable feedback calls; legacy snapshots remain per-invocation."""
+    primary_ids = {
+        (event["session_id"], event["tool_call_id"])
+        for event in primary
+        if event.get("session_id") and event.get("tool_call_id")
+    }
+    return [
+        event for event in cumulative
+        if not (
+            event.get("session_id") and event.get("tool_call_id")
+            and (event["session_id"], event["tool_call_id"]) in primary_ids
+        )
+    ]
+
+
 def _event_supports_url(event: Mapping[str, Any], url: str) -> bool:
     arguments = event.get("arguments")
     if isinstance(arguments, Mapping):
@@ -1823,7 +1841,12 @@ def _execute_attempt(binding_path: Path) -> int:
                     binding, second_envelope["acquisition_batch"]
                 )
                 second_events = _trusted_tool_events(binding)
-                second_payload = _validate_agent_payload(binding, second_candidate, second_events)
+                feedback_events = _feedback_tool_event_delta(
+                    trusted_events, second_events
+                )
+                second_payload = _validate_agent_payload(
+                    binding, second_candidate, feedback_events
+                )
                 _validate_site_claims(second_payload, site_context, require_complete=False)
                 second_checked = _controlled_fetch_payload(
                     binding_path, binding, second_payload, deadline=deadline,
