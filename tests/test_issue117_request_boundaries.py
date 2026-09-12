@@ -407,6 +407,19 @@ def test_default_covers_all_seed_and_bounded_article_work():
     assert value["fetch_attempts"] >= 116 * 4 + 40 * 3 * 4 + 120
 
 
+def test_container_packages_default_report_run_config():
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore_entries = {
+        line.strip()
+        for line in (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "!monitoring/run_config.yaml" in dockerignore_entries
+    assert "COPY monitoring/run_config.yaml ./monitoring/run_config.yaml" in dockerfile
+
+
 def test_target_redirect_and_failure_reservations_are_durable(tmp_path):
     from climate_monitor.request_budget import GuardedGateway, RequestBudgetError
     ledger = budget(tmp_path, fetch=1)

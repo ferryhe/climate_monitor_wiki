@@ -37,6 +37,7 @@ COPY climate_registry ./climate_registry
 COPY management_ui ./management_ui
 COPY monitoring/taxonomies ./monitoring/taxonomies
 COPY monitoring/jobs ./monitoring/jobs
+COPY monitoring/run_config.yaml ./monitoring/run_config.yaml
 COPY monitoring/supranational_sources.yaml ./monitoring/supranational_sources.yaml
 COPY monitoring/site_scopes.yaml ./monitoring/site_scopes.yaml
 COPY scripts ./scripts
