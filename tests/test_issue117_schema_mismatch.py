@@ -76,6 +76,7 @@ def test_response_shape_visible_even_with_old_bound_task(tmp_path):
     definition = _definition(tmp_path)
     definition['prompts']['acquisition_task']['text'] += '\nLegacy task text without field names.'
     b = build_task_binding(definition, task_version=1, run_id='contract', attempt=1)
+    b.pop("agent_protocol")
     prompt = runner._prompt(tmp_path/'attempt-1.json', b)
     for name in ('"items"', '"searches"', '"search_decision"', '"discovery_search_ref"', '"processing_status"', '"evidence"', '"result_refs"'):
         assert name in prompt
@@ -109,9 +110,11 @@ def test_malformed_alias_is_retryable_without_resetting_seed_accounting(tmp_path
     service = ManagementService(store=store, runtime_root=tmp_path / "runs", launcher=lambda b: 4321)
     started = service.start(trigger="manual")
     b = service.binding(started["run_id"])
+    b.pop("agent_protocol")
     root = service._run_dir(started["run_id"])
     path = root / "attempt-1.json"
     b['report_inputs']['state_dir'] = str(tmp_path / 'source-state')
+    (root / "binding.json").write_text(json.dumps(b))
     path.write_text(json.dumps(b))
     sends = []
     seed_runtime(monkeypatch, sends)

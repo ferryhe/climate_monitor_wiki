@@ -906,14 +906,19 @@ def _trusted_search_ledger(
     return searches
 
 
-def _materialize_agent_candidate(
-    binding: Mapping[str, Any], candidate: Any, events: list[dict[str, Any]],
-    *, reference_events: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Attach runner-owned search truth to a v2 candidate-only response."""
+def _validate_agent_candidate_envelope(
+    binding: Mapping[str, Any], candidate: Any,
+) -> Mapping[str, Any]:
+    """Validate the event-independent identity of a v2 candidate response."""
     if not provider_native_unbounded_search(binding):
         raise ValueError("candidate decisions require the frozen candidate protocol")
-    if not isinstance(candidate, Mapping) or set(candidate) != {
+    if not isinstance(candidate, Mapping):
+        raise ValueError("candidate decision must be an object")
+    if candidate.get("batch_id") != binding["acquisition_batch_id"]:
+        raise ValueError("agent changed the bound acquisition batch id")
+    if candidate.get("report_date") != binding["report_date"]:
+        raise ValueError("agent changed the bound report date")
+    if set(candidate) != {
         "schema_version", "protocol_version", "batch_id", "report_date", "items",
     }:
         raise ValueError("candidate decision fields are invalid")
@@ -921,13 +926,19 @@ def _materialize_agent_candidate(
         raise ValueError("candidate decision schema differs from the frozen protocol")
     if candidate.get("protocol_version") != AGENT_PROTOCOL_VERSION:
         raise ValueError("candidate decision protocol differs from the frozen run")
-    if candidate.get("batch_id") != binding["acquisition_batch_id"]:
-        raise ValueError("agent changed the bound acquisition batch id")
-    if candidate.get("report_date") != binding["report_date"]:
-        raise ValueError("agent changed the bound report date")
     items = candidate.get("items")
     if not isinstance(items, list):
         raise ValueError("candidate decisions must include an item list")
+    return candidate
+
+
+def _materialize_agent_candidate(
+    binding: Mapping[str, Any], candidate: Any, events: list[dict[str, Any]],
+    *, reference_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Attach runner-owned search truth to a v2 candidate-only response."""
+    candidate = _validate_agent_candidate_envelope(binding, candidate)
+    items = candidate["items"]
     searches = _trusted_search_ledger(binding, events)
     reference_events = events if reference_events is None else reference_events
     reference_searches = _trusted_search_ledger(binding, reference_events)
@@ -2149,9 +2160,11 @@ def _execute_attempt(binding_path: Path) -> int:
             return exit_code
         envelope = _extract_envelope(response_path.read_text(encoding="utf-8"))
         raw_payload = envelope["acquisition_batch"]
-        candidate_payload = None
-        if not provider_native_unbounded_search(binding):
-            candidate_payload = _validate_agent_payload(binding, raw_payload)
+        candidate_payload = (
+            _validate_agent_candidate_envelope(binding, raw_payload)
+            if provider_native_unbounded_search(binding)
+            else _validate_agent_payload(binding, raw_payload)
+        )
         trusted_events = _trusted_tool_events(binding)
         invocation_provenance = _persist_tool_provenance(
             binding_path, binding, [*site_events, *trusted_events],
@@ -2162,7 +2175,7 @@ def _execute_attempt(binding_path: Path) -> int:
             binding, invocation_provenance["cumulative_actual"]
         )
         payload = (
-            _materialize_agent_candidate(binding, raw_payload, trusted_events)
+            _materialize_agent_candidate(binding, candidate_payload, trusted_events)
             if provider_native_unbounded_search(binding)
             else _validate_agent_payload(binding, candidate_payload, trusted_events)
         )
@@ -2226,6 +2239,12 @@ def _execute_attempt(binding_path: Path) -> int:
                 return feedback_exit
             if feedback_exit == 0:
                 second_envelope = _extract_envelope(feedback_response.read_text(encoding="utf-8"))
+                second_raw_payload = second_envelope["acquisition_batch"]
+                second_candidate_payload = (
+                    _validate_agent_candidate_envelope(binding, second_raw_payload)
+                    if provider_native_unbounded_search(binding)
+                    else _validate_agent_payload(binding, second_raw_payload)
+                )
                 second_events = _trusted_tool_events(binding)
                 feedback_events = _feedback_tool_event_delta(
                     trusted_events, second_events
@@ -2236,16 +2255,12 @@ def _execute_attempt(binding_path: Path) -> int:
                 ]
                 second_payload = (
                     _materialize_agent_candidate(
-                        binding, second_envelope["acquisition_batch"], feedback_events,
+                        binding, second_candidate_payload, feedback_events,
                         reference_events=candidate_reference_events,
                     )
                     if provider_native_unbounded_search(binding)
                     else _validate_agent_payload(
-                        binding,
-                        _validate_agent_payload(
-                            binding, second_envelope["acquisition_batch"]
-                        ),
-                        feedback_events,
+                        binding, second_candidate_payload, feedback_events,
                     )
                 )
                 _validate_site_claims(second_payload, site_context, require_complete=False)
