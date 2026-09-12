@@ -678,6 +678,27 @@ def _event_supports_url(event: Mapping[str, Any], url: str) -> bool:
     return url in _event_text(event.get("result"))
 
 
+def _publication_date_text_matches(published_date: str, evidence_text: str) -> bool:
+    """Accept only exact ISO or observed unambiguous English date renderings."""
+    try:
+        parsed = datetime.strptime(published_date, "%Y-%m-%d")
+    except ValueError:
+        return False
+    day = str(parsed.day)
+    abbreviated, full = (
+        ("Jan", "January"), ("Feb", "February"), ("Mar", "March"),
+        ("Apr", "April"), ("May", "May"), ("Jun", "June"),
+        ("Jul", "July"), ("Aug", "August"), ("Sep", "September"),
+        ("Oct", "October"), ("Nov", "November"), ("Dec", "December"),
+    )[parsed.month - 1]
+    forms = {
+        published_date,
+        f"{day} {abbreviated} {parsed.year}",
+        f"{day} {full} {parsed.year}",
+    }
+    return evidence_text.strip() in forms | {f"Published {form}" for form in forms}
+
+
 def _attempt_matches_event(attempt: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
     declared = attempt.get("tool") or attempt.get("engine")
     if not isinstance(declared, str):
@@ -1121,7 +1142,7 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
                 if not evidence_text or not any(
                     _event_supports_url(event, url)
                     and evidence_text in _event_text(event.get("result"))
-                    and published_date in _event_text(event.get("result"))
+                    and _publication_date_text_matches(published_date, evidence_text)
                     for event in corroborating
                 ):
                     raise ValueError("publication-date evidence is not corroborated by the URL-bound trusted event")

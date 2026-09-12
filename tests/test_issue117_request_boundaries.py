@@ -209,6 +209,51 @@ def test_fetch_event_explicit_targets_override_result_mentions():
     )
 
 
+@pytest.mark.parametrize(
+    ("published_date", "evidence_text"),
+    [
+        ("2025-04-16", "16 Apr 2025"),
+        ("2026-09-01", "Published 1 September 2026"),
+    ],
+)
+def test_publication_date_accepts_bounded_english_equivalent_in_same_url_event(
+    tmp_path, published_date, evidence_text,
+):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    item = payload["items"][0]
+    item["published_date"] = published_date
+    item["publication_date_evidence"] = {
+        "kind": "publisher", "url": item["url"], "text": evidence_text,
+    }
+    item["evidence"]["attempts"] = [{"engine": "web_extract", "status": "success"}]
+    fetch = {
+        "tool": "web_extract", "arguments": {"url": item["url"]},
+        "result": {"url": item["url"], "content": f"Publisher page\n{evidence_text}"},
+    }
+    assert runner._validate_agent_payload(task_binding, payload, [*events, fetch]) == payload
+
+    for wrong_text in (
+        "17 Apr 2025", "16 May 2025", "16 Apr 2026", "16 Apr", "04/05/2025",
+        "Related article 16 Apr 2025",
+    ):
+        wrong = copy.deepcopy(payload)
+        wrong["items"][0]["published_date"] = "2025-04-16"
+        wrong["items"][0]["publication_date_evidence"]["text"] = wrong_text
+        wrong_fetch = copy.deepcopy(fetch)
+        wrong_fetch["result"]["content"] = f"Publisher page\n{wrong_text}"
+        with pytest.raises(ValueError, match="publication-date evidence"):
+            runner._validate_agent_payload(task_binding, wrong, [*events, wrong_fetch])
+
+    crossed = copy.deepcopy(fetch)
+    crossed["arguments"]["url"] = "https://wmo.int/other-article"
+    crossed["result"]["url"] = "https://wmo.int/other-article"
+    with pytest.raises(ValueError, match="trusted fetch event|publication-date evidence"):
+        runner._validate_agent_payload(task_binding, payload, [*events, crossed])
+
+
 def test_same_result_url_may_belong_to_two_distinct_search_attempts(tmp_path):
     from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
     import scripts.run_agent_acquisition as runner
