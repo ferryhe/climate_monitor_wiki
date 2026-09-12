@@ -655,10 +655,19 @@ def _merge_tool_event_snapshots(
 def _event_supports_url(event: Mapping[str, Any], url: str) -> bool:
     arguments = event.get("arguments")
     if isinstance(arguments, Mapping):
-        if arguments.get("url") == url:
-            return True
-        if isinstance(arguments.get("urls"), list) and url in arguments["urls"]:
-            return True
+        single = arguments.get("url")
+        multiple = arguments.get("urls")
+        has_targets = (
+            isinstance(single, str) and bool(single.strip())
+        ) or (isinstance(multiple, list) and bool(multiple))
+        if has_targets:
+            targets = [single] if isinstance(single, str) and single.strip() else []
+            if isinstance(multiple, list):
+                targets.extend(
+                    target for target in multiple
+                    if isinstance(target, str) and target.strip()
+                )
+            return canonical_url(url) in {canonical_url(target) for target in targets}
     return url in _event_text(event.get("result"))
 
 

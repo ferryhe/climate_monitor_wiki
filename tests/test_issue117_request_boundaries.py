@@ -178,6 +178,37 @@ def test_search_item_url_uses_repository_canonical_identity(tmp_path):
         runner._validate_agent_payload(task_binding, crossed_search, events)
 
 
+def test_fetch_event_explicit_targets_override_result_mentions():
+    import scripts.run_agent_acquisition as runner
+
+    first = "https://www.ipcc.ch/2026/08/03/srcities-lam4/"
+    second = "https://www.ipcc.ch/2026/08/13/prslcfsod/"
+    mention_only = {
+        "arguments": {
+            "urls": [
+                "https://www.ipcc.ch/news/",
+                "https://www.iais.org/activities-topics/climate-risk",
+            ],
+        },
+        "result": {"content": f"Related links: {first} and {second}"},
+    }
+    batched = {
+        "arguments": {"urls": [first.rstrip("/"), second]},
+        "result": {"content": "Fetched both requested pages"},
+    }
+
+    assert not runner._event_supports_url(mention_only, first)
+    assert not runner._event_supports_url(mention_only, second)
+    assert runner._event_supports_url(batched, first)
+    assert runner._event_supports_url(batched, second)
+    assert not runner._event_supports_url(
+        batched, "https://www.ipcc.ch/2026/08/04/not-the-target/",
+    )
+    assert runner._event_supports_url(
+        {"arguments": {"char_limit": 12000}, "result": {"content": first}}, first,
+    )
+
+
 def test_same_result_url_may_belong_to_two_distinct_search_attempts(tmp_path):
     from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
     import scripts.run_agent_acquisition as runner
