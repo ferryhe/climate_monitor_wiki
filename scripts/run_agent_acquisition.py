@@ -329,6 +329,8 @@ def _merge_resume_payload(
     if not history:
         return payload
     merged = copy.deepcopy(payload)
+    # Completion is assigned only after the runner reconciles every trusted gap.
+    merged["completed_at"] = None
     if history.get("batch_started_at") is not None:
         merged["started_at"] = history["batch_started_at"]
     searches = {row["search_ref"]: row for row in history["successful_searches"]}
@@ -1820,8 +1822,9 @@ def _execute_attempt(binding_path: Path) -> int:
                 or any(item.get("processing_status") != "complete" for item in payload["items"])
                 or any(search.get("status") == "failed" for search in payload["searches"])
                 or bool(blocked_tool_prechecks))
-        if gaps:
-            payload["completed_at"] = None
+        # Completion is runner-owned trusted state: model timestamps cannot
+        # complete a gapped batch or leave a fully reconciled batch unfinished.
+        payload["completed_at"] = None if gaps else _now()
         frozen = _store_readback_and_freeze(
             binding, payload, cumulative_actual=provenance["cumulative_actual"], allow_unresolved=gaps
         )

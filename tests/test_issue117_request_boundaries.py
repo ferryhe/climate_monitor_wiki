@@ -208,6 +208,7 @@ def test_resume_item_identity_scopes_result_ref_to_its_search_ref(tmp_path):
     current = {**shared, "discovery_ref": "shared-result", "discovery_search_ref": "search-b"}
     merged = runner._merge_resume_payload(task_binding, {
         **payload,
+        "completed_at": "2099-01-01T00:00:00Z",
         "searches": [{**payload["searches"][1], "search_ref": "search-b"}],
         "items": [current],
     }, {
@@ -220,6 +221,7 @@ def test_resume_item_identity_scopes_result_ref_to_its_search_ref(tmp_path):
         (item["discovery_search_ref"], item["discovery_ref"])
         for item in merged["items"]
     } == {("search-a", "shared-result"), ("search-b", "shared-result")}
+    assert merged["completed_at"] is None
 
 
 def test_terra_response_contract_names_exact_search_result_pair(tmp_path):
@@ -636,6 +638,87 @@ def test_mixed_run_round_trips_registry_status_and_blocks_report(tmp_path, monke
     assert status["budget"]["used"]["fetch_attempts"] == len(sends)
     assert status["budget"]["used"]["search_attempts"] == 0
     assert not Path(b["frozen_report_input"]).exists()
+
+
+def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
+    tmp_path, monkeypatch,
+):
+    import hashlib
+    from climate_registry.acquisition import load_acquisition_batch, readback_source_outcomes
+    from test_issue94_management_console import _controlled_site_result
+    import scripts.run_agent_acquisition as runner
+
+    _service, b, path = _managed_attempt(
+        tmp_path, monkeypatch, source_keys=["iais", "ipcc"],
+    )
+    source_results = [
+        _controlled_site_result(tmp_path, source, candidates=[], disposition="unchanged")
+        for source in b["source_inventory"]["records"]
+    ]
+    for row in source_results:
+        artifact = tmp_path / f"{row['source']}-manifest.json"
+        raw = (json.dumps(row["manifest"], sort_keys=True, indent=2) + "\n").encode()
+        artifact.write_bytes(raw)
+        row["artifact_path"] = str(artifact)
+        row["artifact_sha256"] = hashlib.sha256(raw).hexdigest()
+    site_context = {
+        "status": "completed", "source_results": source_results,
+        "attempts": [], "candidates": [], "warnings": [], "systemic_error": None,
+    }
+    now = b["created_at"]
+    searches = []
+    events = []
+    for search_index in range(4):
+        query = f"trusted zero-item query {search_index}"
+        urls = [
+            f"https://example.test/search-{search_index}/result-{result_index}"
+            for result_index in range(5)
+        ]
+        searches.append({
+            "search_ref": f"search-{search_index}", "query": query,
+            "engine": "web_search", "status": "success", "attempted_at": now,
+            "result_refs": urls, "budget": {"max_results": 5, "used_results": 5},
+            "error": None,
+        })
+        events.append({
+            "session_id": "trusted-session", "tool_call_id": f"call-{search_index}",
+            "durable_status": "ok", "tool": "web_search",
+            "arguments": {"query": query, "num_results": 5},
+            "result": {"data": {"web": [{"url": url} for url in urls]}},
+        })
+    payload = {
+        "schema_version": "pre-report-acquisition-batch.v1",
+        "batch_id": b["acquisition_batch_id"], "report_date": b["report_date"],
+        "date_policy": b["date_policy"], "started_at": now, "completed_at": None,
+        "search_decision": {"status": "attempted", "reason": None},
+        "searches": searches, "items": [],
+    }
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda _binding: site_context)
+    monkeypatch.setattr(runner, "_trusted_tool_events", lambda *_args, **_kwargs: events)
+
+    def invoke(_command, response_path, *_args):
+        response_path.write_text(json.dumps({"acquisition_batch": payload}))
+        return 0
+
+    report_calls = []
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(runner, "_run_report", lambda *_args: report_calls.append(True) or 0)
+    monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda _binding: 0)
+
+    assert runner._execute_locked(path) == 0
+    persisted_payload = json.loads(path.with_name("attempt-1-acquisition.json").read_text())
+    stored = load_acquisition_batch(b["registry_database"], b["acquisition_batch_id"])
+    assert persisted_payload["completed_at"] is not None
+    assert stored["completed_at"] == persisted_payload["completed_at"]
+    assert stored["items"] == []
+    assert len(stored["searches"]) == 4
+    assert readback_source_outcomes(
+        b["registry_database"], persisted_payload,
+    ) == persisted_payload["source_outcomes"]
+    assert len(persisted_payload["source_outcomes"]) == 2
+    assert Path(b["frozen_report_input"]).is_file()
+    assert report_calls == [True]
 
 
 def test_supported_article_redirect_is_guarded_at_public_provider_seam(tmp_path, monkeypatch):
