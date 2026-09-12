@@ -356,6 +356,16 @@ def test_terra_response_contract_names_exact_search_result_pair(tmp_path):
     assert "discovery_ref must be one of that same attempt's existing result_refs" in prompt
 
 
+def test_terra_response_contract_requires_every_executed_search(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "Every admitted and executed web_search call must appear exactly once in searches" in prompt
+    assert "including auxiliary or refinement queries and searches that produced zero selected items" in prompt
+    assert "Never omit an executed search merely because none of its results became an item" in prompt
+
+
 def test_terra_response_contract_separates_discovery_from_body_fetch_evidence(tmp_path):
     import scripts.run_agent_acquisition as runner
 
