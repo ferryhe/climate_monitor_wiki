@@ -99,7 +99,7 @@ _ACQUISITION_RESPONSE_SHAPE = {
         "started_at": "actual RFC3339 timestamp", "completed_at": None,
         "search_decision": {"status": "attempted or no_search", "reason": None},
         "searches": [{
-            "search_ref": "unique search reference", "query": "actual query",
+            "search_ref": "batch-unique search reference", "query": "actual query",
             "engine": "web_search", "status": "success or failed",
             "attempted_at": "actual RFC3339 timestamp", "result_refs": [],
             "budget": {"max_results": 0, "used_results": 0}, "error": None,
@@ -192,8 +192,12 @@ items[].evidence.attempts. Unknown dates/content remain null, never fabricated.
 search_decision is {{"status": "attempted", "reason": null}} when searches is nonempty;
 otherwise {{"status": "no_search", "reason": "actual reason no search executed"}}.
 Search records require every shown field; budget values are nonnegative integers,
-result_refs are unique strings from real tool results, and error is null on success
-or the actual error on failure. Item selected is a boolean. Publication date evidence
+result_refs are unique within each search attempt, and error is null on success
+or the actual error on failure. For every search-discovered item,
+discovery_search_ref must name the exact successful search attempt that returned
+the item's URL, and discovery_ref must be one of that same attempt's existing result_refs.
+Never transfer a result reference or URL between search attempts. Item selected is a
+boolean. Publication date evidence
 is null for unknown dates, otherwise {{"kind": "publisher or search_result", "url":
 "this article URL", "text": "actual date evidence"}}. Full content requires matching
 SHA256, distinct managed content/raw references, and a successful selected attempt;
@@ -331,11 +335,13 @@ def _merge_resume_payload(
     for row in payload["searches"]:
         searches.setdefault(row["search_ref"], row)
     items = {
-        (row["url"], row["discovery_kind"], row["discovery_ref"]): row
+        (row["url"], row["discovery_kind"], row["discovery_ref"],
+         row.get("discovery_search_ref")): row
         for row in history["resolved_items"]
     }
     for row in payload["items"]:
-        identity = (row["url"], row["discovery_kind"], row["discovery_ref"])
+        identity = (row["url"], row["discovery_kind"], row["discovery_ref"],
+                    row.get("discovery_search_ref"))
         items.setdefault(identity, row)
     merged["searches"] = list(searches.values())
     merged["items"] = list(items.values())
@@ -991,10 +997,15 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
         consumed_searches: set[int] = set()
         consumed_fetch_slots: set[tuple[int, str]] = set()
         search_events_by_ref: dict[str, tuple[dict[str, Any], set[str], set[str]]] = {}
-        reported_result_refs: set[str] = set()
+        reported_search_refs: set[str] = set()
         for attempt in attempts:
             if not isinstance(attempt, Mapping):
                 raise ValueError("agent search history is not backed by a trusted web_search call")
+            search_ref = attempt.get("search_ref")
+            if (not isinstance(search_ref, str) or not search_ref.strip()
+                    or search_ref in reported_search_refs):
+                raise ValueError("agent search_ref must be non-empty and unique")
+            reported_search_refs.add(search_ref)
             matching = [
                 (index, event) for index, event in enumerate(search_events)
                 if index not in consumed_searches
@@ -1002,6 +1013,9 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
                 and event["arguments"].get("query") == attempt.get("query")
             ]
             refs = attempt.get("result_refs")
+            if (isinstance(refs, list) and all(isinstance(ref, str) for ref in refs)
+                    and len(refs) != len(set(refs))):
+                raise ValueError("agent result_refs must be unique within each search attempt")
             matching = [
                 (index, event) for index, event in matching
                 if isinstance(refs, list)
@@ -1030,12 +1044,7 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
                 raise ValueError("agent search max_results differs from the trusted search call")
             consumed_searches.add(index)
             ref_set = set(refs)
-            if reported_result_refs.intersection(ref_set):
-                raise ValueError(
-                    "agent search result reference is not unique to the same trusted search event"
-                )
-            reported_result_refs.update(ref_set)
-            search_events_by_ref[str(attempt.get("search_ref"))] = (
+            search_events_by_ref[search_ref] = (
                 event, ref_set, _event_result_urls(event.get("result")),
             )
         if consumed_searches != set(range(len(search_events))):

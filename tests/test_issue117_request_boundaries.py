@@ -149,6 +149,91 @@ def test_opaque_search_refs_bind_to_same_trusted_event_urls(tmp_path):
         runner._validate_agent_payload(task_binding, payload, ambiguous_events)
 
 
+def test_same_result_url_may_belong_to_two_distinct_search_attempts(tmp_path):
+    from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    shared_url = "https://www.ipcc.ch/news/"
+    events[0]["result"] = _tagged_search_result(web=[
+        {"url": shared_url}, {"url": "https://wmo.int/a-2"},
+    ])
+    events[1]["result"] = _tagged_search_result(web=[{"url": shared_url}])
+    payload["searches"][0]["result_refs"][0] = shared_url
+    payload["searches"][1]["result_refs"][0] = shared_url
+    payload["items"][0]["url"] = shared_url
+    payload["items"][0]["discovery_ref"] = shared_url
+    payload["items"][1]["url"] = shared_url
+    payload["items"][1]["discovery_ref"] = shared_url
+
+    assert runner._validate_agent_payload(task_binding, payload, events) == payload
+    store_acquisition_batch(task_binding["registry_database"], payload)
+    loaded = load_acquisition_batch(
+        task_binding["registry_database"], task_binding["acquisition_batch_id"],
+    )
+    assert {
+        (origin["search_ref"], origin["discovery_ref"])
+        for item in loaded["items"] for origin in item["origins"]
+    } == {("search-a", shared_url), ("search-b", shared_url)}
+
+
+def test_result_alias_must_be_unique_within_its_search_attempt(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    payload["searches"][0]["result_refs"] = ["duplicate-result", "duplicate-result"]
+    payload["items"][0]["discovery_ref"] = "duplicate-result"
+
+    with pytest.raises(ValueError, match="result_refs.*unique within.*search"):
+        runner._validate_agent_payload(task_binding, payload, events)
+
+
+def test_search_ref_must_be_unique_before_event_mapping(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    payload["searches"][1]["search_ref"] = payload["searches"][0]["search_ref"]
+    payload["items"][1]["discovery_search_ref"] = payload["searches"][0]["search_ref"]
+
+    with pytest.raises(ValueError, match="search_ref.*unique"):
+        runner._validate_agent_payload(task_binding, payload, events)
+
+
+def test_resume_item_identity_scopes_result_ref_to_its_search_ref(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, _events = _opaque_search_binding_fixture(tmp_path)
+    shared = payload["items"][0]
+    prior = {**shared, "discovery_ref": "shared-result", "discovery_search_ref": "search-a"}
+    current = {**shared, "discovery_ref": "shared-result", "discovery_search_ref": "search-b"}
+    merged = runner._merge_resume_payload(task_binding, {
+        **payload,
+        "searches": [{**payload["searches"][1], "search_ref": "search-b"}],
+        "items": [current],
+    }, {
+        "batch_started_at": payload["started_at"],
+        "successful_searches": [{**payload["searches"][0], "search_ref": "search-a"}],
+        "resolved_items": [prior],
+    })
+
+    assert {
+        (item["discovery_search_ref"], item["discovery_ref"])
+        for item in merged["items"]
+    } == {("search-a", "shared-result"), ("search-b", "shared-result")}
+
+
+def test_terra_response_contract_names_exact_search_result_pair(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert (
+        "discovery_search_ref must name the exact successful search attempt that returned "
+        "the item's URL" in prompt
+    )
+    assert "discovery_ref must be one of that same attempt's existing result_refs" in prompt
+
+
 def test_failed_durable_search_cannot_be_reported_as_zero_result_success(tmp_path):
     from climate_monitor.hermes_acquisition_hooks import attempt_home
     from climate_monitor.request_budget import RequestBudget, ledger_path
