@@ -1809,7 +1809,10 @@ def test_container_and_console_rendering_include_management_runtime():
     assert "git clone --filter=blob:none https://github.com/NousResearch/hermes-agent.git" in dockerfile
     assert "checkout 5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
     assert 'ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]' in dockerfile
-    assert "web-listening @ git+https://github.com/ferryhe/web_listening.git@89940fea" in requirements
+    assert (
+        "web-listening @ git+https://github.com/ferryhe/web_listening.git@"
+        "70b9752d556a6e61c599bef3bec11371b7610539"
+    ) in requirements
     assert "climate_runtime:/app/output" in compose
     assert "CLIMATE_ACQUISITION_RUN_DIR: /app/output/acquisition-runs" in compose
     assert "CLIMATE_REQUIRE_CONSOLE_AUTH: \"1\"" in compose

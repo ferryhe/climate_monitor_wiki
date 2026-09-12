@@ -170,7 +170,7 @@ Evidence as of 2026-09-08:
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**
   without it. Both runs retained the three existing warnings. The full-chain
   harness now calls the real monitor ledger producer and checks its report SHA.
-- The stable project runtime is Python 3.12 with web_listening `89940fea` and
+- The stable project runtime is Python 3.12 with web_listening `70b9752d` and
   official Hermes v0.21.1 `2237be3`, including its pinned Firecrawl extra. A real
   isolated stdin request passed the production quiet-response parser. The global
   Hermes gateway was not replaced.

@@ -206,11 +206,11 @@ environment and an optional private copy of OAuth credentials supply identity.
 The pinned public gateway supports governed HTTP, including for sources whose
 requested classification is browser. Evidence retains requested/effective
 engines; HTTP content is never represented as browser execution. The pinned
-`web_listening` SHA `89940fea711feb8fc98d7a4233e6cfb922fb8af1` article reader does
-not expose the shared `before_target_request` and `timeout_seconds` parameters.
-Managed article reads therefore retain typed unsupported evidence without
-invoking that reader. A compatible public interface is required to enable them;
-no private upstream patch or alternative crawler is used.
+`web_listening` SHA `70b9752d556a6e61c599bef3bec11371b7610539` article reader exposes
+the formal public `before_target_request` callback and `timeout_seconds` controls.
+Managed article reads use those controls to attach the durable request budget at
+actual target and redirect sends while retaining compiled transport ceilings.
+No private upstream patch or alternative crawler is used.
 
 An attempt can finish as `completed_with_gaps`. All selected source outcomes and
 artifacts survive Registry payload verification, report-input projection and

@@ -590,9 +590,10 @@ def fetch_article_content(
         required = {"before_target_request", "timeout_seconds"}
         supported = callable(reader) and required.issubset(inspect.signature(reader).parameters)
         if not supported:
-            reason = ("unsupported upstream article guard: public fetch_article_content "
-                      "must expose before_target_request and timeout_seconds; "
-                      "pinned 89940fea cannot accept the shared pre-send guard")
+            reason = ("unsupported upstream article guard: installed public "
+                      "fetch_article_content is missing required before_target_request "
+                      "and timeout_seconds parameters; expected pinned web_listening "
+                      "70b9752d556a6e61c599bef3bec11371b7610539")
             budget.note("unsupported", url, reason, tool="controlled_article_fetch")
             record = _unavailable_record(article_id=article_id, url=url, failure_reason=reason).to_dict()
             record["attempts"] = [{"engine": "fetch_article_content", "status": "failed",

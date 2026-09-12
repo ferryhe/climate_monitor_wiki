@@ -13,4 +13,4 @@ websockets==15.0.1
 reportlab>=4.2.0
 pypdf>=5.0.0
 idna>=3,<4
-web-listening @ git+https://github.com/ferryhe/web_listening.git@89940fea711feb8fc98d7a4233e6cfb922fb8af1 ; python_version >= "3.12"
+web-listening @ git+https://github.com/ferryhe/web_listening.git@70b9752d556a6e61c599bef3bec11371b7610539 ; python_version >= "3.12"
