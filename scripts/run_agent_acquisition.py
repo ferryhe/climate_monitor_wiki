@@ -107,14 +107,16 @@ _ACQUISITION_RESPONSE_SHAPE = {
         "searches": [{
             "search_ref": "batch-unique search reference", "query": "actual query",
             "engine": "web_search", "status": "success or failed",
-            "attempted_at": "actual RFC3339 timestamp", "result_refs": [],
-            "budget": {"max_results": 0, "used_results": 0}, "error": None,
+            "attempted_at": "actual RFC3339 timestamp",
+            "result_refs": ["https://example.invalid/result"],
+            "budget": {"max_results": 10, "used_results": 1}, "error": None,
         }],
         "items": [{
             "url": "actual public article URL", "source": "bound source identity",
             "title": "actual title", "summary": "evidence-based summary",
             "discovered_at": "actual RFC3339 timestamp", "discovery_kind": "site or search",
-            "discovery_ref": "actual site/result reference", "discovery_search_ref": None,
+            "discovery_ref": "https://example.invalid/result",
+            "discovery_search_ref": None,
             "published_date": None, "publication_date_evidence": None,
             "selected": False, "selection_reason": "evidence-based reason",
             "processing_status": "pending, complete or failed", "processing_error": None,
@@ -212,12 +214,18 @@ appear exactly once in searches, including auxiliary or refinement queries and
 searches that produced zero selected items. Never omit an executed search merely
 because none of its results became an item.
 Each search record must reproduce the complete actual result_refs from that same trusted
-search event. When used_results is greater than zero, result_refs must be non-empty and the
-length of result_refs must equal used_results; when used_results is zero, result_refs may be
-empty. Failed searches must preserve their actual status, result_refs, used_results, and error.
+search event. For web_search, copy each URL from the tool response's data.web[].url field as
+a complete verbatim URL string returned by that same web_search, in the same order as the
+actual results. The adjacent rank, position, or ordinal is not a result reference. Never use
+1-based ordinals, numeric indices, placeholders, shortened URLs, renumbered refs, or a
+different order. When used_results is greater than zero, result_refs must be non-empty and the
+length of result_refs must equal used_results. An empty result_refs array is allowed only when
+that web_search actually returned zero results and used_results is zero. Failed searches must
+preserve their actual status, result_refs, used_results, and error.
 Never invent, remap, or fill result_refs from another search event. For every search-discovered item,
 discovery_search_ref must name the exact successful search attempt that returned
-the item's URL, and discovery_ref must be one of that same attempt's existing result_refs.
+the item's URL, and discovery_ref must be one of that same attempt's existing result_refs;
+discovery_ref must reuse one of those complete URL strings verbatim.
 Never transfer a result reference or URL between search attempts. Item selected is a
 boolean and selected expresses relevance based on trusted discovery or search evidence.
 A relevant item that needs an article-body read must use selected true and

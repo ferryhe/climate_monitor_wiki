@@ -479,9 +479,61 @@ def test_terra_response_contract_reproduces_complete_trusted_result_refs(tmp_pat
     assert "reproduce the complete actual result_refs from that same trusted search event" in prompt
     assert "used_results is greater than zero, result_refs must be non-empty" in prompt
     assert "length of result_refs must equal used_results" in prompt
-    assert "used_results is zero, result_refs may be empty" in prompt
+    assert (
+        "An empty result_refs array is allowed only when that web_search actually returned "
+        "zero results and used_results is zero" in prompt
+    )
     assert "Failed searches must preserve their actual status, result_refs, used_results, and error" in prompt
     assert "Never invent, remap, or fill result_refs from another search event" in prompt
+
+
+def test_terra_response_contract_uses_verbatim_result_urls_not_ordinals(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    shape = runner._ACQUISITION_RESPONSE_SHAPE["acquisition_batch"]
+    assert shape["searches"][0]["result_refs"] == [
+        "https://example.invalid/result",
+    ]
+    assert shape["searches"][0]["budget"] == {"max_results": 10, "used_results": 1}
+    assert shape["items"][0]["discovery_ref"] == "https://example.invalid/result"
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "copy each URL from the tool response's data.web[].url field" in prompt
+    assert "complete verbatim URL string returned by that same web_search" in prompt
+    assert "in the same order as the actual results" in prompt
+    assert "The adjacent rank, position, or ordinal is not a result reference" in prompt
+    assert (
+        "Never use 1-based ordinals, numeric indices, placeholders, shortened URLs, "
+        "renumbered refs, or a different order" in prompt
+    )
+    assert "discovery_ref must reuse one of those complete URL strings verbatim" in prompt
+
+
+def test_verbatim_result_urls_bind_to_real_web_event_shape(tmp_path):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    urls = [
+        ["https://wmo.int/a-1", "https://wmo.int/a-2"],
+        ["https://wmo.int/b-1"],
+    ]
+    for index, result_urls in enumerate(urls):
+        events[index]["result"] = _tagged_search_result(web=[
+            {"rank": rank, "url": url, "title": f"Result {rank}", "description": "trusted"}
+            for rank, url in enumerate(result_urls, start=1)
+        ])
+        payload["searches"][index]["result_refs"] = result_urls
+    for item in payload["items"]:
+        item["discovery_ref"] = item["url"]
+
+    assert runner._validate_agent_payload(task_binding, payload, events) == payload
+
+    ordinal_refs = copy.deepcopy(payload)
+    ordinal_refs["searches"][0]["result_refs"] = [1, 2]
+    with pytest.raises(ValueError, match="one-to-one.*trusted search event"):
+        runner._validate_agent_payload(task_binding, ordinal_refs, events)
 
 
 def test_terra_search_contract_prioritizes_unsearched_source_gaps(tmp_path):
