@@ -415,6 +415,7 @@ def test_terra_search_contract_prioritizes_unsearched_source_gaps(tmp_path):
 
     task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
     prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "Each web_search call may request at most 10 results" in prompt
     assert "The global search limit is finite and is not a per-source guarantee" in prompt
     assert (
         "Before refining a source already searched, prioritize a first search for each "
@@ -444,6 +445,11 @@ def test_terra_response_contract_rejects_invented_day_for_partial_date(tmp_path)
         "set both published_date and publication_date_evidence to null; never infer or "
         "fill in the first day of a month" in prompt
     )
+    assert (
+        "publication_date_evidence.text must copy only the standalone complete date "
+        "expression" in prompt
+    )
+    assert "copy 31 Mar 2025, never 31 Mar 2025 in Latest news" in prompt
 
 
 def test_terra_response_contract_selects_relevant_items_before_body_read(tmp_path):
@@ -572,18 +578,22 @@ def test_reported_search_max_must_match_trusted_effective_limit(
 
 def test_default_covers_all_seed_and_bounded_article_work():
     from climate_monitor.management import default_task_definition
+    from climate_monitor.request_budget import DEFAULT_SEARCH_RESULTS_PER_CALL
+
     value = default_task_definition()["parameters"]["budgets"]
     assert value == {
         "search_attempts": 36,
-        "search_results": 180,
-        "fetch_attempts": 2800,
+        "search_results": 360,
+        "fetch_attempts": 5000,
         "retries_per_item": 2,
         "runtime_seconds": 3600,
     }
-    # Four sends per seed/article operation, one five-result search per source,
+    assert DEFAULT_SEARCH_RESULTS_PER_CALL == 10
+    assert value["search_results"] == value["search_attempts"] * DEFAULT_SEARCH_RESULTS_PER_CALL
+    # Four sends per seed/article operation, one ten-result search per source,
     # two retries per article, plus 120 native fetch-tool units.
-    required_fetch_units = 116 * 4 + 180 * 3 * 4 + 120
-    assert required_fetch_units == 2744
+    required_fetch_units = 116 * 4 + 360 * 3 * 4 + 120
+    assert required_fetch_units == 4904
     assert value["fetch_attempts"] >= required_fetch_units
     management_javascript = (
         Path(__file__).resolve().parents[1] / "management_ui" / "manage.js"
@@ -1413,7 +1423,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
         assert "RELOAD_TOKEN" not in environment
 
 
-def _managed_attempt(tmp_path, monkeypatch, *, source_keys=None):
+def _managed_attempt(tmp_path, monkeypatch, *, source_keys=None, budget_overrides=None):
     from test_issue94_management_console import _store, _definition
     from climate_monitor.management import ManagementService
 
@@ -1424,6 +1434,8 @@ def _managed_attempt(tmp_path, monkeypatch, *, source_keys=None):
     definition = _definition(tmp_path)
     if source_keys is not None:
         definition["parameters"]["source_keys"] = source_keys
+    if budget_overrides is not None:
+        definition["parameters"]["budgets"].update(budget_overrides)
     store.save(definition, actor="operator")
     service = ManagementService(
         store=store, runtime_root=tmp_path / "runs", launcher=lambda binding: 4321,
@@ -1800,7 +1812,7 @@ def test_primary_zero_exit_keeps_incomplete_transcript_validation_strict(
 
 
 def _exercise_blocked_search_precheck(
-    tmp_path, monkeypatch, *, num_results, expected_reason,
+    tmp_path, monkeypatch, *, num_results, expected_reason, result_field="num_results",
 ):
     from test_issue94_management_console import _write_hermes_tool_events
     from climate_monitor.hermes_acquisition_hooks import attempt_home
@@ -1808,7 +1820,11 @@ def _exercise_blocked_search_precheck(
     from climate_registry.acquisition import load_acquisition_batch
     import scripts.run_agent_acquisition as runner
 
-    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    service, b, path = _managed_attempt(
+        tmp_path,
+        monkeypatch,
+        budget_overrides={"search_results": 5} if num_results is None else None,
+    )
     monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
     sends = []
     seed_runtime(monkeypatch, sends)
@@ -1824,7 +1840,7 @@ def _exercise_blocked_search_precheck(
             "tool_name": "web_search",
             "tool_input": {
                 "query": "current climate risk",
-                "num_results": result_limit,
+                result_field: result_limit,
             },
             "session_id": "session-1",
             "extra": {"tool_call_id": "blocked-search"},
@@ -1836,7 +1852,7 @@ def _exercise_blocked_search_precheck(
         _write_hermes_tool_events(attempt_home(binding), binding, [{
             "tool": "web_search",
             "tool_call_id": "blocked-search",
-            "arguments": {"query": "current climate risk", "num_results": result_limit},
+            "arguments": {"query": "current climate risk", result_field: result_limit},
             "result": {"error": expected_reason},
         }])
         response_path.write_text(json.dumps({
@@ -1888,15 +1904,48 @@ def test_blocked_search_precheck_round_trips_truth_and_blocks_report(tmp_path, m
 
 
 @pytest.mark.parametrize("num_results", [0, "five"], ids=["zero", "non-integer"])
+@pytest.mark.parametrize("result_field", ["num_results", "limit"])
 def test_invalid_search_result_limit_round_trips_truth_and_blocks_report(
-    tmp_path, monkeypatch, num_results,
+    tmp_path, monkeypatch, num_results, result_field,
 ):
     _exercise_blocked_search_precheck(
         tmp_path,
         monkeypatch,
         num_results=num_results,
+        result_field=result_field,
         expected_reason="invalid search result limit",
     )
+
+
+@pytest.mark.parametrize("result_field", ["num_results", "limit"])
+def test_per_call_search_result_limit_round_trips_truth_and_blocks_report(
+    tmp_path, monkeypatch, result_field,
+):
+    _exercise_blocked_search_precheck(
+        tmp_path,
+        monkeypatch,
+        num_results=11,
+        result_field=result_field,
+        expected_reason="search result limit exceeds per-call maximum of 10",
+    )
+
+
+def test_per_call_search_result_limit_allows_exact_maximum(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, hook_decision
+
+    task_binding = binding(tmp_path)
+    task_binding["budgets"]["search_results"] = 10
+    ledger = RequestBudget(tmp_path / "request-budget.json", task_binding)
+
+    assert hook_decision(ledger, {
+        "hook_event_name": "pre_tool_call",
+        "tool_name": "web_search",
+        "tool_input": {"query": "current climate risk", "limit": 10},
+        "session_id": "session-1",
+        "extra": {"tool_call_id": "ten-results"},
+    }) == {}
+    assert ledger.usage()["search_attempts"] == 1
+    assert ledger.usage()["search_results_reserved"] == 10
 
 
 def test_invalid_search_precheck_reconciles_transcript_and_blocks_call_reuse(

@@ -16,9 +16,10 @@ import time
 import uuid
 from contextlib import contextmanager
 
+DEFAULT_SEARCH_RESULTS_PER_CALL = 10
 DEFAULT_SEARCH_ATTEMPTS = 36
-DEFAULT_SEARCH_RESULTS = 180
-DEFAULT_FETCH_ATTEMPTS = 2800
+DEFAULT_SEARCH_RESULTS = DEFAULT_SEARCH_ATTEMPTS * DEFAULT_SEARCH_RESULTS_PER_CALL
+DEFAULT_FETCH_ATTEMPTS = 5000
 
 
 def _empty_systemic_read_failure():
@@ -354,8 +355,19 @@ def hook_decision(budget, payload):
         budget.complete_tool(call_id, extra.get("result"), extra.get("status", "error"))
         return {}
     results = args.get("num_results", args.get("limit", 5)) if tool == "web_search" else 0
-    if type(results) is not int or results < (1 if tool == "web_search" else 0):
+    supplied_result_limits = (
+        [args[key] for key in ("num_results", "limit") if key in args]
+        if tool == "web_search" else []
+    )
+    if any(type(value) is not int or value < 1 for value in supplied_result_limits):
         reason = "invalid search result limit"
+        budget.note("precheck", url, reason, tool=tool, call_id=call_id)
+        return {"action": "block", "message": reason}
+    if any(value > DEFAULT_SEARCH_RESULTS_PER_CALL for value in supplied_result_limits):
+        reason = (
+            "search result limit exceeds per-call maximum of "
+            f"{DEFAULT_SEARCH_RESULTS_PER_CALL}"
+        )
         budget.note("precheck", url, reason, tool=tool, call_id=call_id)
         return {"action": "block", "message": reason}
     try:

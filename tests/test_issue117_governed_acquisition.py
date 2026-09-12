@@ -83,8 +83,8 @@ def test_bulk_injects_one_gateway_with_matching_identity(tmp_path, monkeypatch, 
     assert calls["guarded"][0].transport_timeout_seconds == config["timeout_seconds"]
     assert calls["guarded"][0].budget.limits == {
         "search_attempts": 36,
-        "search_results": 180,
-        "fetch_attempts": 2800,
+        "search_results": 360,
+        "fetch_attempts": 5000,
         "retries_per_item": 2,
         "runtime_seconds": 3600,
     }
@@ -121,8 +121,8 @@ def test_managed_binding_freezes_scopes_and_gateway(tmp_path, monkeypatch):
     binding = build_task_binding(definition, task_version=1, run_id="frozen", attempt=1)
     assert binding["budgets"] == {
         "search_attempts": 36,
-        "search_results": 180,
-        "fetch_attempts": 2800,
+        "search_results": 360,
+        "fetch_attempts": 5000,
         "retries_per_item": 2,
         "runtime_seconds": 3600,
     }

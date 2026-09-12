@@ -47,7 +47,12 @@ from climate_registry.acquisition import (  # noqa: E402
 )
 
 
-from climate_monitor.request_budget import RequestBudget, RequestBudgetError, ledger_path
+from climate_monitor.request_budget import (
+    DEFAULT_SEARCH_RESULTS_PER_CALL,
+    RequestBudget,
+    RequestBudgetError,
+    ledger_path,
+)
 from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks
 
 AcquisitionBudgetError = RequestBudgetError
@@ -171,6 +176,7 @@ publication dates stay unknown and ineligible when a date window is enabled.
 A tool blocked by a budget precheck was not executed; do not report it as an
 attempted search. Preserve the block reason in a no_search decision when no
 search was admitted. Unsupported governed article readers are explicit gaps.
+Each web_search call may request at most {DEFAULT_SEARCH_RESULTS_PER_CALL} results.
 The global search limit is finite and is not a per-source guarantee. Before
 refining a source already searched, prioritize a first search for each bound
 source that still has a coverage gap and has not yet been searched. If a source
@@ -217,6 +223,9 @@ Set published_date only when trusted evidence gives an explicit complete
 day, month, and year. Month-year evidence such as February 2026 or Publication:
 April 2026, and year-only evidence, are incomplete: set both published_date and
 publication_date_evidence to null; never infer or fill in the first day of a month.
+publication_date_evidence.text must copy only the standalone complete date expression
+from the same URL-bound trusted event: copy 31 Mar 2025, never 31 Mar 2025 in Latest news
+or other surrounding prose.
 Publication date evidence is null for unknown dates, otherwise {{"kind": "publisher or search_result", "url":
 "this article URL", "text": "actual date evidence"}}. Evidence content is exact body
 text returned by that matched tool event, never a summary or paraphrase. Use ok/full_content

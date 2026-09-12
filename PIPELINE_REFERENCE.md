@@ -171,9 +171,12 @@ Evidence through 2026-09-12:
   no budget precheck but consumed exactly the old 8/8 search calls and 40/40
   results after one five-result search for only eight sources, leaving 13 gaps
   without a first search opportunity. This proves the old default was too small;
-  it does not prove the revised finite defaults of 36 searches, 180 results and
-  2,800 fetch units are sufficient. A fresh complete full-range run remains
-  required.
+  a later two-source canary also proved that the real public tool accepts a
+  ten-result call, so five results cannot be treated as a deterministic per-call
+  ceiling. New tasks therefore use the finite defaults of 36 searches, 360
+  results and 5,000 fetch units, with a ten-result application cap per call. This
+  still does not prove capacity sufficiency; a fresh complete full-range run
+  remains required.
 
 - Runtime/discovery/handoff follow-up: full SSH sandbox suite **1791 passed /
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**

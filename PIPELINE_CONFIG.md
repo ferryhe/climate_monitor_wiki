@@ -179,17 +179,17 @@ implemented and tested but has not been installed in production.
 
 ### Managed acquisition capacity and incomplete coverage
 
-New tasks default to 2,800 fetch units, 36 search calls, 180 search results,
+New tasks default to 5,000 fetch units, 36 search calls, 360 search results,
 two retries per item and 3,600 cumulative seconds. The finite global search
-ceiling numerically accommodates at most one five-result first search for each
+ceiling numerically accommodates at most one ten-result first search for each
 of the 36 sources; it is not a per-source guarantee. The agent prioritizes
 unsearched sources with coverage gaps before refinements and must retain an
 explicit gap for any source that receives no search opportunity.
 
 The fetch capacity covers the frozen 116 seeds at up to four actual
-target/redirect sends each, 180 article operations with an initial attempt plus
+target/redirect sends each, 360 article operations with an initial attempt plus
 two retries at up to four target/redirect sends each, and 120 native fetch-tool
-units: `116 * 4 + 180 * (1 + 2) * 4 + 120 = 2,744`. The rounded 2,800 limit is
+units: `116 * 4 + 360 * (1 + 2) * 4 + 120 = 4,904`. The rounded 5,000 limit is
 finite headroom, not a promise of content or of fitting arbitrarily long redirect
 chains. Explicit lower overrides remain authoritative. Existing saved tasks and
 frozen runs retain their stored limits; each new run freezes its limits,
