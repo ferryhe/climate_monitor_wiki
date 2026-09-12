@@ -18,6 +18,216 @@ def budget(tmp_path, **kwargs):
     return RequestBudget(tmp_path / "request-budget.json", binding(tmp_path, **kwargs))
 
 
+def _tagged_search_result(*, web=None, success=True, error=None):
+    result = {"success": success, "data": {"web": web or []}}
+    if error is not None:
+        result["error"] = error
+    return (
+        '<untrusted_tool_result source="web_search">\n'
+        "External content follows.\n\n"
+        + json.dumps(result)
+        + "\n</untrusted_tool_result>"
+    )
+
+
+def _opaque_search_binding_fixture(tmp_path):
+    """Real Hermes web_search envelope shape with model-owned result aliases."""
+    from climate_monitor.management import build_task_binding
+    from test_issue94_management_console import _definition
+
+    task_binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="opaque-search", attempt=1,
+    )
+    now = task_binding["created_at"]
+    searches = [
+        {
+            "search_ref": "search-a", "query": "query a", "engine": "web_search",
+            "status": "success", "attempted_at": now,
+            "result_refs": ["search-a-result-1", "search-a-result-2"],
+            "budget": {"max_results": 5, "used_results": 2}, "error": None,
+        },
+        {
+            "search_ref": "search-b", "query": "query b", "engine": "web_search",
+            "status": "success", "attempted_at": now,
+            "result_refs": ["search-b-result-1"],
+            "budget": {"max_results": 5, "used_results": 1}, "error": None,
+        },
+    ]
+    urls = [
+        ["https://wmo.int/a-1", "https://wmo.int/a-2"],
+        ["https://wmo.int/b-1"],
+    ]
+
+    def item(search_index, result_index):
+        url = urls[search_index][result_index]
+        return {
+            "url": url, "title": "", "summary": "", "source": "wmo",
+            "discovered_at": now, "discovery_kind": "search",
+            "discovery_ref": searches[search_index]["result_refs"][result_index],
+            "discovery_search_ref": searches[search_index]["search_ref"],
+            "published_date": None, "publication_date_evidence": None,
+            "selected": True, "selection_reason": "candidate",
+            "processing_status": "pending", "processing_error": None,
+            "evidence": {
+                "status": "deferred", "fetched_at": now, "final_url": None,
+                "attempts": [], "selected_method": None, "content_type": None,
+                "content": None, "content_hash": None, "content_ref": None,
+                "raw_snapshot_ref": None, "raw_snapshot_sha256": None,
+                "classification": "error", "failure_reason": "not fetched yet",
+                "http_status": None,
+            },
+        }
+
+    def event(index):
+        result = _tagged_search_result(web=[
+                {"url": url, "title": f"Result {ordinal}", "description": "trusted"}
+                for ordinal, url in enumerate(urls[index], start=1)
+            ])
+        return {
+            "session_id": "session-real", "tool_call_id": f"call-{index + 1}",
+            "status": "ok",
+            "tool": "web_search", "arguments": {"query": searches[index]["query"]},
+            "result": result,
+        }
+
+    payload = {
+        "schema_version": "pre-report-acquisition-batch.v1",
+        "batch_id": task_binding["acquisition_batch_id"],
+        "report_date": task_binding["report_date"],
+        "started_at": now, "completed_at": None,
+        "date_policy": task_binding["date_policy"],
+        "search_decision": {"status": "attempted", "reason": None},
+        "searches": searches,
+        "items": [item(0, 1), item(1, 0)],
+    }
+    return task_binding, payload, [event(0), event(1)]
+
+
+def test_opaque_search_refs_bind_to_same_trusted_event_urls(tmp_path):
+    import copy
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    assert runner._validate_agent_payload(task_binding, payload, events) == payload
+
+    false_failure = copy.deepcopy(payload)
+    false_failure["searches"][0]["status"] = "failed"
+    false_failure["searches"][0]["error"] = "model-only failure"
+    with pytest.raises(ValueError, match="status.*durable trusted search"):
+        runner._validate_agent_payload(task_binding, false_failure, events)
+
+    fabricated_url = copy.deepcopy(payload)
+    fabricated_url["items"][0]["url"] = "https://wmo.int/fabricated"
+    with pytest.raises(ValueError, match="same trusted search event"):
+        runner._validate_agent_payload(task_binding, fabricated_url, events)
+
+    swapped_url = copy.deepcopy(payload)
+    swapped_url["items"][0]["url"] = payload["items"][1]["url"]
+    with pytest.raises(ValueError, match="same trusted search event"):
+        runner._validate_agent_payload(task_binding, swapped_url, events)
+
+    orphan_ref = copy.deepcopy(payload)
+    orphan_ref["items"][0]["discovery_ref"] = "orphan-result-ref"
+    with pytest.raises(ValueError, match="same trusted search event"):
+        runner._validate_agent_payload(task_binding, orphan_ref, events)
+
+    crossed_ref = copy.deepcopy(payload)
+    crossed_ref["items"][0]["discovery_ref"] = payload["searches"][1]["result_refs"][0]
+    with pytest.raises(ValueError, match="same trusted search event"):
+        runner._validate_agent_payload(task_binding, crossed_ref, events)
+
+    count_mismatch = copy.deepcopy(payload)
+    count_mismatch["searches"][0]["result_refs"].pop()
+    with pytest.raises(ValueError, match="one-to-one.*trusted search event"):
+        runner._validate_agent_payload(task_binding, count_mismatch, events)
+
+    ambiguous_events = copy.deepcopy(events)
+    duplicate = copy.deepcopy(events[0])
+    duplicate["tool_call_id"] = "call-distinct-but-ambiguous"
+    ambiguous_events.append(duplicate)
+    with pytest.raises(ValueError, match="one-to-one.*trusted search event"):
+        runner._validate_agent_payload(task_binding, payload, ambiguous_events)
+
+
+def test_failed_durable_search_cannot_be_reported_as_zero_result_success(tmp_path):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    payload["searches"][0]["result_refs"] = []
+    payload["searches"][0]["budget"]["used_results"] = 0
+    payload["items"] = [payload["items"][1]]
+    events[0]["status"] = "error"
+    events[0]["result"] = _tagged_search_result(
+        success=False, error="upstream timeout",
+    )
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, events)
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    for event in events:
+        call_id = (
+            f"{task_binding['attempt']}:session-{task_binding['attempt']}:"
+            f"{event['tool_call_id']}"
+        )
+        ledger.claim(
+            "web_search", event["arguments"]["query"], call_id=call_id, results=5,
+        )
+        ledger.complete_tool(call_id, event["result"], event["status"])
+    trusted_events = runner._trusted_tool_events(task_binding)
+    assert [event["durable_status"] for event in trusted_events] == ["error", "ok"]
+
+    with pytest.raises(ValueError, match="status.*durable trusted search"):
+        runner._validate_agent_payload(task_binding, payload, trusted_events)
+
+
+def test_json_looking_description_cannot_create_a_trusted_result_url(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    embedded_url = "https://wmo.int/not-a-result"
+    events[0]["result"] = _tagged_search_result(web=[
+        {"url": "https://wmo.int/a-1", "description": json.dumps({"url": embedded_url})},
+        {"url": "https://wmo.int/a-2", "description": "trusted"},
+    ])
+    assert runner._event_result_urls(events[0]["result"]) == {
+        "https://wmo.int/a-1", "https://wmo.int/a-2",
+    }
+    payload["searches"][0]["result_refs"].append("search-a-result-3")
+    payload["searches"][0]["budget"]["used_results"] = 3
+    payload["items"][0]["url"] = embedded_url
+    payload["items"][0]["discovery_ref"] = "search-a-result-3"
+
+    with pytest.raises(ValueError, match="trusted search event"):
+        runner._validate_agent_payload(task_binding, payload, events)
+
+
+@pytest.mark.parametrize(
+    ("trusted_limits", "reported_max"),
+    [
+        ({"num_results": 2, "limit": 4}, 4),
+        ({"limit": 3}, 5),
+        ({}, 4),
+    ],
+)
+def test_reported_search_max_must_match_trusted_effective_limit(
+    tmp_path, trusted_limits, reported_max,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, payload, events = _opaque_search_binding_fixture(tmp_path)
+    events[0]["arguments"].update(trusted_limits)
+    payload["searches"][0]["budget"]["max_results"] = reported_max
+
+    with pytest.raises(ValueError, match="max_results.*trusted search"):
+        runner._validate_agent_payload(task_binding, payload, events)
+
+    payload["searches"][0]["budget"]["max_results"] = trusted_limits.get(
+        "num_results", trusted_limits.get("limit", 5),
+    )
+    assert runner._validate_agent_payload(task_binding, payload, events) == payload
+
+
 def test_default_covers_all_seed_and_bounded_article_work():
     from climate_monitor.management import default_task_definition
     value = default_task_definition()["parameters"]["budgets"]

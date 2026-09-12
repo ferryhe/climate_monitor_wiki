@@ -809,7 +809,8 @@ def test_runner_binds_search_refs_and_bodies_to_the_same_typed_tool_event(tmp_pa
                                    "raw_snapshot_sha256": str(index) * 64,
                                    "classification": "full_content", "failure_reason": None, "http_status": 200}})
         events.extend([
-            {"tool": "web_search", "arguments": {"query": query}, "result": {"data": {"web": [{"url": url}]}}},
+            {"tool": "web_search", "arguments": {"query": query, "num_results": 1},
+             "result": {"data": {"web": [{"url": url}]}}},
             {"tool": "browser_exec", "arguments": {"url": url},
              "result": {"url": url,
                         "content": "Published " + binding["report_date"] + "\n" + body}},

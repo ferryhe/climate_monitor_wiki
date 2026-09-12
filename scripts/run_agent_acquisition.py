@@ -553,16 +553,23 @@ def _trusted_tool_events(
     if "checkpoint_dir" in binding and ledger_path(binding).exists():
         ledger_events = RequestBudget(ledger_path(binding), binding).events()
         admitted = {event.get("call_id") for event in ledger_events if event["event_kind"] == "tool"}
-        completed = {event.get("call_id") for event in ledger_events
-                     if event["event_kind"] == "tool" and event.get("completed") is True}
+        completions = {
+            event.get("call_id"): event for event in ledger_events
+            if event["event_kind"] == "tool" and event.get("completed") is True
+        }
+        completed = set(completions)
         accounted = {event.get("call_id") for event in ledger_events if event["event_kind"] in {"tool", "precheck"}}
         if any(f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" not in accounted for event in events):
             raise ValueError("Hermes tool dispatch lacks a durable budget admission or precheck")
         if any(f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in admitted - completed
                for event in events):
             raise ValueError("Hermes tool transcript lacks durable completion")
-        events = [event for event in events if
-                  f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in completed]
+        events = [
+            {**event, "durable_status": completions[call_id].get("status")}
+            for event in events
+            if (call_id := f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}")
+            in completed
+        ]
     allowed = {"web_search", "web_extract", "browser_exec"}
     return [event for event in events if str(event.get("tool", "")).split(".")[-1] in allowed]
 
@@ -585,17 +592,34 @@ def _event_result_urls(value: Any) -> set[str]:
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
-            return set()
-    urls: set[str] = set()
-    if isinstance(value, Mapping):
-        if isinstance(value.get("url"), str):
-            urls.add(value["url"])
-        for child in value.values():
-            urls.update(_event_result_urls(child))
-    elif isinstance(value, list):
-        for child in value:
-            urls.update(_event_result_urls(child))
-    return urls
+            stripped = value.strip()
+            if (not stripped.startswith("<untrusted_tool_result ")
+                    or not stripped.endswith("</untrusted_tool_result>")):
+                return set()
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start < 0 or end <= start:
+                return set()
+            try:
+                value = json.loads(stripped[start:end + 1])
+            except json.JSONDecodeError:
+                return set()
+
+    def structured_urls(child: Any) -> set[str]:
+        urls: set[str] = set()
+        if isinstance(child, Mapping):
+            if isinstance(child.get("url"), str):
+                urls.add(child["url"])
+            for nested in child.values():
+                if isinstance(nested, (Mapping, list)):
+                    urls.update(structured_urls(nested))
+        elif isinstance(child, list):
+            for nested in child:
+                if isinstance(nested, (Mapping, list)):
+                    urls.update(structured_urls(nested))
+        return urls
+
+    return structured_urls(value)
 
 
 def _event_tool(event: Mapping[str, Any]) -> str:
@@ -966,7 +990,8 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
         fetch_events = [event for event in events if _event_tool(event) in {"web_extract", "browser_exec"}]
         consumed_searches: set[int] = set()
         consumed_fetch_slots: set[tuple[int, str]] = set()
-        search_events_by_ref: dict[str, dict[str, Any]] = {}
+        search_events_by_ref: dict[str, tuple[dict[str, Any], set[str], set[str]]] = {}
+        reported_result_refs: set[str] = set()
         for attempt in attempts:
             if not isinstance(attempt, Mapping):
                 raise ValueError("agent search history is not backed by a trusted web_search call")
@@ -980,15 +1005,39 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
             matching = [
                 (index, event) for index, event in matching
                 if isinstance(refs, list)
-                and all(isinstance(ref, str) and ref in _event_text(event.get("result")) for ref in refs)
+                and all(isinstance(ref, str) for ref in refs)
+                and len(refs) == len(_event_result_urls(event.get("result")))
+                and isinstance(attempt.get("budget"), Mapping)
+                and attempt["budget"].get("used_results") == len(refs)
             ]
             if len(matching) != 1:
                 raise ValueError(
                     "agent search attempt is not bound one-to-one to the same trusted search event"
                 )
             index, event = matching[0]
+            durable_status = event.get("durable_status", event.get("status"))
+            if durable_status is not None:
+                expected_status = "success" if durable_status == "ok" else "failed"
+                error_shape_matches = (
+                    attempt.get("error") is None if expected_status == "success"
+                    else isinstance(attempt.get("error"), str) and bool(attempt["error"].strip())
+                )
+                if attempt.get("status") != expected_status or not error_shape_matches:
+                    raise ValueError("agent search status differs from durable trusted search completion")
+            arguments = event.get("arguments") if isinstance(event.get("arguments"), Mapping) else {}
+            trusted_limit = arguments.get("num_results", arguments.get("limit", 5))
+            if attempt["budget"].get("max_results") != trusted_limit:
+                raise ValueError("agent search max_results differs from the trusted search call")
             consumed_searches.add(index)
-            search_events_by_ref[str(attempt.get("search_ref"))] = event
+            ref_set = set(refs)
+            if reported_result_refs.intersection(ref_set):
+                raise ValueError(
+                    "agent search result reference is not unique to the same trusted search event"
+                )
+            reported_result_refs.update(ref_set)
+            search_events_by_ref[str(attempt.get("search_ref"))] = (
+                event, ref_set, _event_result_urls(event.get("result")),
+            )
         if consumed_searches != set(range(len(search_events))):
             raise ValueError("Hermes performed unreported web_search attempts")
         if sum(len(_event_result_urls(event.get("result"))) for event in search_events) > budgets["search_results"]:
@@ -1004,9 +1053,13 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
                 raise ValueError("agent item URL is not backed by trusted tool output")
             discovery_event = None
             if item.get("discovery_kind") == "search":
-                discovery_event = search_events_by_ref.get(str(item.get("discovery_search_ref")))
-                if discovery_event is None or str(item.get("discovery_ref")) not in _event_text(discovery_event.get("result")):
-                    raise ValueError("agent item URL is not backed by its trusted search event")
+                discovery = search_events_by_ref.get(str(item.get("discovery_search_ref")))
+                if discovery is None:
+                    raise ValueError("agent item URL is not backed by the same trusted search event")
+                discovery_event, discovery_refs, discovery_urls = discovery
+                if (item.get("discovery_ref") not in discovery_refs
+                        or url not in discovery_urls):
+                    raise ValueError("agent item reference/URL is not backed by the same trusted search event")
             attempts_for_item = evidence.get("attempts")
             if not isinstance(attempts_for_item, list):
                 raise ValueError("agent fetch attempts must be a list")
