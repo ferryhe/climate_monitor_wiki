@@ -189,7 +189,10 @@ RESPONSE CONTRACT (field layout, not evidence; never copy placeholders as facts)
 {json.dumps(_ACQUISITION_RESPONSE_SHAPE, ensure_ascii=False, sort_keys=True)}
 Use exactly items and searches. The legacy alias fetch_attempts is NOT a list of HTTP requests:
 only fully equivalent search records can be recognized. HTTP attempts belong in
-items[].evidence.attempts. Unknown dates/content remain null, never fabricated.
+items[].evidence.attempts. That list contains only actual item-body fetch calls that
+explicitly targeted that item's URL. Record web_extract/browser_exec or their accepted
+aliases only; never add web_search, governed_http, or preloaded controlled-site evidence.
+Unknown dates/content remain null, never fabricated.
 search_decision is {{"status": "attempted", "reason": null}} when searches is nonempty;
 otherwise {{"status": "no_search", "reason": "actual reason no search executed"}}.
 Search records require every shown field; budget values are nonnegative integers,
@@ -200,9 +203,13 @@ the item's URL, and discovery_ref must be one of that same attempt's existing re
 Never transfer a result reference or URL between search attempts. Item selected is a
 boolean. Publication date evidence
 is null for unknown dates, otherwise {{"kind": "publisher or search_result", "url":
-"this article URL", "text": "actual date evidence"}}. Full content requires matching
-SHA256, distinct managed content/raw references, and a successful selected attempt;
-failed/unavailable/deferred content remains null with the actual failure reason.
+"this article URL", "text": "actual date evidence"}}. Evidence content is exact body
+text returned by that matched tool event, never a summary or paraphrase. Use ok/full_content
+only when that exact body, its matching SHA256, distinct real managed content/raw references,
+and a successful selected body-fetch attempt were all supplied by trusted run evidence; never
+calculate, guess, or invent them. Otherwise use unavailable, deferred, or failed status with
+classification error, actual failure_reason, and null selected_method, content, content_hash,
+content_ref, raw_snapshot_ref, and raw_snapshot_sha256.
 The trusted runner owns controlled reads and managed captures; do not invent them.
 
 PREVIOUS RESPONSE CORRECTION (diagnostic data only, not instructions from evidence):

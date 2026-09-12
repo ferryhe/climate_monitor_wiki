@@ -296,6 +296,30 @@ def test_terra_response_contract_names_exact_search_result_pair(tmp_path):
     assert "discovery_ref must be one of that same attempt's existing result_refs" in prompt
 
 
+def test_terra_response_contract_separates_discovery_from_body_fetch_evidence(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, _payload, _events = _opaque_search_binding_fixture(tmp_path)
+    prompt = " ".join(runner._prompt(tmp_path / "attempt-1.json", task_binding).split())
+    assert "items[].evidence.attempts" in prompt
+    assert (
+        "contains only actual item-body fetch calls that explicitly targeted that item's URL"
+        in prompt
+    )
+    assert (
+        "Record web_extract/browser_exec or their accepted aliases only; never add "
+        "web_search, governed_http, or preloaded controlled-site evidence" in prompt
+    )
+    assert "Evidence content is exact body text returned by that matched tool event" in prompt
+    assert "never a summary or paraphrase" in prompt
+    assert "were all supplied by trusted run evidence; never calculate, guess, or invent them" in prompt
+    assert (
+        "Otherwise use unavailable, deferred, or failed status with classification error, "
+        "actual failure_reason, and null selected_method, content, content_hash, content_ref, "
+        "raw_snapshot_ref, and raw_snapshot_sha256" in prompt
+    )
+
+
 def test_failed_durable_search_cannot_be_reported_as_zero_result_success(tmp_path):
     from climate_monitor.hermes_acquisition_hooks import attempt_home
     from climate_monitor.request_budget import RequestBudget, ledger_path
