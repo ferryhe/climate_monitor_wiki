@@ -14,7 +14,7 @@ def source(key="example"):
 
 
 def install_runtime(monkeypatch, *, builder_error=None, page_error=None):
-    calls = {"build": [], "fetch": [], "close": 0}
+    calls = {"build": [], "fetch": [], "guarded": [], "close": 0}
     gateway = SimpleNamespace(user_agent="web-listening-bot/1.0", read=lambda url, **kwargs: None)
 
     def close():
@@ -31,6 +31,7 @@ def install_runtime(monkeypatch, *, builder_error=None, page_error=None):
         def __init__(self, *, fetch_mode, read_gateway=None):
             assert read_gateway.gateway is gateway, "actual Crawler must receive governed gateway"
             assert fetch_mode == "http"
+            calls["guarded"].append(read_gateway)
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -79,6 +80,7 @@ def test_bulk_injects_one_gateway_with_matching_identity(tmp_path, monkeypatch, 
     assert len(calls["fetch"]) == 2
     assert calls["close"] == 1
     config = calls["build"][0]
+    assert calls["guarded"][0].transport_timeout_seconds == config["timeout_seconds"]
     assert set(config["seed_urls"]) == {source().url, source("second").url}
     assert all(row[1:] == ("http", {"user_agent": config["user_agent"]})
                for row in calls["fetch"])

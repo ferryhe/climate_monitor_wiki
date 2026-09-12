@@ -37,6 +37,7 @@ _BLOCKED_CONTENT_MARKERS = (
 )
 _CHECKPOINT_STAGE_VERSION = "web-listening-checkpoint-stage.v1"
 _CHECKPOINT_STAGE_SUFFIX = ".pending-run.json"
+_SYSTEMIC_READ_FAILURE_THRESHOLD = 3
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -168,7 +169,10 @@ def _open_governed_runtime(sources, scopes, config=None, budget=None):
                 "budgets": {"fetch_attempts": expected["budget_limit"], "search_attempts": 8,
                             "search_results": 40, "retries_per_item": 2, "runtime_seconds": 3600},
             })
-        guarded = GuardedGateway(gateway, budget, "seed")
+        guarded = GuardedGateway(
+            gateway, budget, "seed",
+            transport_timeout_seconds=expected["timeout_seconds"],
+        )
         crawler = stack.enter_context(Crawler(fetch_mode="http", read_gateway=guarded))
         crawler.climate_budget = budget
         crawler.climate_gateway = guarded
@@ -213,8 +217,23 @@ def collect_source_items(
     seed_outcomes = seed_outcomes if seed_outcomes is not None else {}
     for seed_url in _seed_urls(source, scope):
         key = f"seed:{source.key}:{seed_url}"
-        receipt = budget.receipt(key) if stage_checkpoint else None
+        receipt = budget.receipt(key, reset_systemic=True) if stage_checkpoint else None
+        systemic = budget.systemic_read_failure()
         if receipt is None:
+            if systemic["stopped"]:
+                error = (
+                    "systemic controlled-read stop after "
+                    f"{_SYSTEMIC_READ_FAILURE_THRESHOLD} consecutive identical "
+                    f"post-send failures; root cause: {systemic['root_error']}"
+                )
+                receipt = {
+                    "status": "incomplete", "event_kind": "precheck", "error": error,
+                }
+                budget.note("precheck", seed_url, error)
+                seed_outcomes[seed_url] = receipt
+                warnings.append(f"{source.key} seed {seed_url}: {receipt['error']}")
+                continue
+            sends_before = budget.usage()["target_send_reservations"]
             try:
                 budget.remaining_seconds()
                 if budget.usage()["fetch_attempts"] >= budget.limits["fetch_attempts"]:
@@ -252,19 +271,30 @@ def collect_source_items(
                 # stage. A crash after this commit never requires another send.
                 if stage_checkpoint:
                     budget.save_receipt(key, receipt)
+                systemic = budget.reset_systemic_read_failure()
             except RequestBudgetError as exc:
                 receipt = {"status": "incomplete", "event_kind": "precheck", "error": str(exc)}
                 budget.note("precheck", seed_url, exc)
+                systemic = budget.reset_systemic_read_failure()
             except Exception as exc:
                 envelope = getattr(exc, "envelope", None)
                 rejected = envelope is not None
+                typed_error = f"{type(exc).__name__}: {exc}"
                 receipt = {"status": "rejected" if rejected else "incomplete",
                     "event_kind": "policy" if rejected else "network",
-                    "error": f"{type(exc).__name__}: {exc}"}
+                    "error": typed_error}
                 if envelope is not None:
                     receipt["rejection"] = envelope.model_dump(mode="json")
                     if stage_checkpoint:
                         budget.save_receipt(key, receipt)
+                sent = budget.usage()["target_send_reservations"] > sends_before
+                if sent and not rejected:
+                    signature = " ".join(typed_error.split())
+                    systemic = budget.record_systemic_read_failure(
+                        signature, threshold=_SYSTEMIC_READ_FAILURE_THRESHOLD,
+                    )
+                else:
+                    systemic = budget.reset_systemic_read_failure()
                 budget.note(receipt["event_kind"], seed_url, receipt["error"])
         seed_outcomes[seed_url] = receipt
         if receipt["status"] == "success":
@@ -451,9 +481,11 @@ def _collect_website_evidence(sources, *, state_dir, scopes, runtime):
         })
         all_items.extend(items)
         all_warnings.extend(warnings)
+    systemic = runtime[0].climate_budget.systemic_read_failure()
     evidence = {"status": "completed", "full_success": bool(source_results) and all(
         row["status"] == "succeeded" for row in source_results
-    ), "source_results": source_results}
+    ), "source_results": source_results,
+        "systemic_error": systemic["root_error"] if systemic["stopped"] else None}
     return all_items, all_warnings, evidence
 
 

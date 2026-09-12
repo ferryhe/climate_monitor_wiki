@@ -54,6 +54,7 @@ AcquisitionBudgetError = RequestBudgetError
 
 _PROVIDER_ENV = {
     "openai": ("OPENAI_API_KEY",),
+    "openai-api": ("OPENAI_API_KEY",),
     "openai-codex": (),
     "anthropic": ("ANTHROPIC_API_KEY",),
     "openrouter": ("OPENROUTER_API_KEY",),
@@ -374,6 +375,7 @@ def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
         "warnings": warnings,
         "attempts": [attempt for row in source_results for attempt in row["attempts"]],
         "runtime_seconds": sum(float(row.get("runtime_seconds", 0)) for row in source_results),
+        "systemic_error": evidence.get("systemic_error"),
     }
 
 
@@ -499,6 +501,8 @@ def _trusted_tool_events(
         home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
     database = home / "state.db"
     if not database.is_file():
+        if allow_missing_session:
+            return []
         raise ValueError("Hermes durable session database is unavailable")
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
@@ -561,6 +565,14 @@ def _trusted_tool_events(
                   f"{binding['attempt']}:{event['session_id']}:{event['tool_call_id']}" in completed]
     allowed = {"web_search", "web_extract", "browser_exec"}
     return [event for event in events if str(event.get("tool", "")).split(".")[-1] in allowed]
+
+
+def _failed_invocation_tool_events(binding: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Best-effort transcript evidence after the process has already failed."""
+    try:
+        return _trusted_tool_events(binding, allow_missing_session=True)
+    except (OSError, sqlite3.Error, ValueError):
+        return []
 
 
 def _event_text(value: Any) -> str:
@@ -845,6 +857,42 @@ def _persist_tool_provenance(
         raise RuntimeError("trusted tool provenance readback differs from persisted events")
     loaded["sha256"] = digest
     return loaded
+
+
+def _unresolved_tool_prechecks(
+    binding: Mapping[str, Any], provenance: Mapping[str, Any],
+) -> list[tuple[str, str]]:
+    """Return current-attempt tool prechecks with no matching completion."""
+    events = provenance.get("request_events", [])
+    if not isinstance(events, list):
+        raise ValueError("durable request events are invalid")
+    completed = {
+        event.get("call_id")
+        for event in events
+        if event.get("attempt") == binding["attempt"]
+        and event.get("event_kind") == "tool"
+        and event.get("completed") is True
+    }
+    unresolved = []
+    for event in events:
+        if (
+            event.get("attempt") == binding["attempt"]
+            and event.get("event_kind") == "precheck"
+            and event.get("tool") is not None
+            and (not event.get("call_id") or event.get("call_id") not in completed)
+        ):
+            tool = str(event["tool"])
+            reason = " ".join(str(event.get("reason") or "").split())
+            unresolved.append((tool, reason[:1000] or f"{tool} precheck blocked request"))
+    return unresolved
+
+
+def _blocked_search_precheck_reason(
+    binding: Mapping[str, Any], provenance: Mapping[str, Any],
+) -> str | None:
+    """Return the current attempt's first unexecuted durable search reason."""
+    return next((reason for tool, reason in _unresolved_tool_prechecks(binding, provenance)
+                 if tool == "web_search"), None)
 
 
 def _canonical_response_lists(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1361,6 +1409,44 @@ def _invoke_hermes(
     return process.wait()
 
 
+def _hermes_process_error(response_path: Path, exit_code: int, *, phase: str) -> str:
+    """Return one bounded operator-visible error without exposing credentials."""
+    base = (
+        f"Hermes {phase} exceeded the bound runtime"
+        if exit_code == 124
+        else f"Hermes {phase} process exited with {exit_code}"
+    )
+    try:
+        with response_path.open("rb") as response:
+            response.seek(0, os.SEEK_END)
+            response.seek(max(0, response.tell() - 2000))
+            detail = response.read().decode("utf-8", errors="replace")
+    except OSError:
+        return base
+    sensitive_names = {name for names in _PROVIDER_ENV.values() for name in names}
+    for name in sensitive_names:
+        value = os.environ.get(name)
+        if value:
+            detail = detail.replace(value, "[REDACTED]")
+    detail = re.sub(
+        r'''(?ix)
+        (?P<quote>["']?)
+        (?P<key>[a-z0-9_]*(?:api_key|token|secret|password))
+        (?P=quote)\s*[:=]\s*
+        (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)
+        ''',
+        lambda match: (
+            f"{match.group('quote')}{match.group('key')}"
+            f"{match.group('quote')}=[REDACTED]"
+        ),
+        detail,
+    )
+    detail = re.sub(r"(?i)\b(authorization\s*[:=]\s*)(?:bearer\s+)?\S+", r"\1[REDACTED]", detail)
+    detail = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}\b", "[REDACTED]", detail)
+    detail = " ".join(detail.split())[-1000:]
+    return f"{base}: {detail}" if detail else base
+
+
 def _adaptive_feedback_prompt(
     binding_path: Path, binding: Mapping[str, Any], payload: Mapping[str, Any]
 ) -> str:
@@ -1530,7 +1616,7 @@ def _execute_attempt(binding_path: Path) -> int:
             command, response_path, binding_path, binding, deadline
         )
         if exit_code:
-            trusted_events = _trusted_tool_events(binding)
+            trusted_events = _failed_invocation_tool_events(binding)
             invocation_provenance = _persist_tool_provenance(
                 binding_path, binding, [*site_events, *trusted_events],
                 runtime_seconds=time.monotonic() - acquisition_started,
@@ -1541,12 +1627,13 @@ def _execute_attempt(binding_path: Path) -> int:
             )
         if exit_code == 124:
             _discard_controlled_site_checkpoints(binding)
-            _write_result(binding_path, exit_code=124, retryable=True, error="Hermes acquisition exceeded the bound runtime")
-            _write_progress(binding_path, binding, stage="retryable_failure", error="runtime budget exceeded", next_step="resume the same frozen run")
+            error = _hermes_process_error(response_path, exit_code, phase="acquisition")
+            _write_result(binding_path, exit_code=124, retryable=True, error=error)
+            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
             return 124
         if exit_code:
             _discard_controlled_site_checkpoints(binding)
-            error = f"Hermes acquisition process exited with {exit_code}"
+            error = _hermes_process_error(response_path, exit_code, phase="acquisition")
             _write_result(binding_path, exit_code=exit_code, retryable=True, error=error)
             _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
             return exit_code
@@ -1593,6 +1680,33 @@ def _execute_attempt(binding_path: Path) -> int:
             feedback_exit = _invoke_hermes(
                 feedback_command, feedback_response, binding_path, binding, deadline
             )
+            if feedback_exit:
+                second_events = _failed_invocation_tool_events(binding)
+                trusted_events = _merge_tool_event_snapshots(
+                    trusted_events, second_events
+                )
+                all_events = [*site_events, *trusted_events, *controlled_events]
+                feedback_provenance = _persist_tool_provenance(
+                    binding_path, binding, all_events,
+                    runtime_seconds=time.monotonic() - acquisition_started,
+                    prior_actual=prior_usage,
+                )
+                _enforce_cumulative_budgets(
+                    binding, feedback_provenance["cumulative_actual"]
+                )
+                _discard_controlled_site_checkpoints(binding)
+                error = _hermes_process_error(
+                    feedback_response, feedback_exit, phase="adaptive feedback"
+                )
+                _write_result(
+                    binding_path, exit_code=feedback_exit, retryable=True,
+                    error=error,
+                )
+                _write_progress(
+                    binding_path, binding, stage="retryable_failure", error=error,
+                    next_step="resume the same frozen run", events=all_events,
+                )
+                return feedback_exit
             if feedback_exit == 0:
                 second_envelope = _extract_envelope(feedback_response.read_text(encoding="utf-8"))
                 second_candidate = _validate_agent_payload(
@@ -1630,11 +1744,20 @@ def _execute_attempt(binding_path: Path) -> int:
         )
         _enforce_cumulative_budgets(binding, provenance["cumulative_actual"])
         payload = _merge_resume_payload(binding, payload, resume_history)
+        blocked_tool_prechecks = _unresolved_tool_prechecks(binding, provenance)
+        blocked_search_reason = next(
+            (reason for tool, reason in blocked_tool_prechecks if tool == "web_search"), None,
+        )
+        if blocked_search_reason and not payload["searches"]:
+            payload["search_decision"] = {
+                "status": "no_search", "reason": blocked_search_reason,
+            }
         payload["source_outcomes"] = copy.deepcopy(site_context.get("source_results", []))
         gaps = (site_context.get("status") != "completed"
                 or any(row.get("status") != "succeeded" for row in payload["source_outcomes"])
                 or any(item.get("processing_status") != "complete" for item in payload["items"])
-                or any(search.get("status") == "failed" for search in payload["searches"]))
+                or any(search.get("status") == "failed" for search in payload["searches"])
+                or bool(blocked_tool_prechecks))
         if gaps:
             payload["completed_at"] = None
         frozen = _store_readback_and_freeze(
@@ -1652,6 +1775,12 @@ def _execute_attempt(binding_path: Path) -> int:
             _atomic_write(binding_path.parent / f"attempt-{binding['attempt']}-partial-projection.json",
                           json.dumps(frozen, sort_keys=True, indent=2).encode())
             error = "Acquisition execution completed with rejected or incomplete coverage; report is blocked"
+            gap_reasons = [reason for reason in (
+                site_context.get("systemic_error"),
+                *(reason for _, reason in blocked_tool_prechecks),
+            ) if reason]
+            if gap_reasons:
+                error += ": " + "; ".join(dict.fromkeys(gap_reasons))
             _write_result(binding_path, exit_code=0, retryable=False, error=error,
                           execution_complete=True, full_coverage=False)
             _write_progress(binding_path, binding, stage="completed_with_gaps", error=error,

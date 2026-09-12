@@ -19,6 +19,10 @@ from contextlib import contextmanager
 DEFAULT_FETCH_ATTEMPTS = 1200
 
 
+def _empty_systemic_read_failure():
+    return {"signature": None, "count": 0, "root_error": None, "stopped": False}
+
+
 class RequestBudgetError(RuntimeError):
     pass
 
@@ -49,12 +53,19 @@ class RequestBudget:
                     raise ValueError("durable request ledger missing on resume")
                 state.update(identity=self.identity, limits=self.limits, active=1,
                              attempts={}, events=[], receipts={}, reads={}, operations=[],
-                             prior=dict(prior or {}), last_seen=now)
+                             prior=dict(prior or {}), last_seen=now,
+                             systemic_read_failure=_empty_systemic_read_failure())
             self._validate(state)
             if self.attempt != state["active"]:
                 if self.attempt != state["active"] + 1:
                     raise ValueError("request ledger attempt identity is not sequential")
+                previous = state["attempts"].get(str(state["active"]))
+                previous_was_finished = bool(
+                    previous and previous["finished"] is not None
+                )
                 self._finish(state, state["active"], now)
+                if previous_was_finished:
+                    state["systemic_read_failure"] = _empty_systemic_read_failure()
                 state["active"] = self.attempt
             key = str(self.attempt)
             if key not in state["attempts"]:
@@ -73,6 +84,7 @@ class RequestBudget:
                 if expected != digest(state):
                     raise ValueError("request ledger digest differs")
                 self._validate(state)
+                state.setdefault("systemic_read_failure", _empty_systemic_read_failure())
             elif create:
                 lock.seek(0)
                 if lock.read():
@@ -104,6 +116,25 @@ class RequestBudget:
     def _validate(self, state):
         if state["identity"] != self.identity or state["limits"] != self.limits:
             raise ValueError("immutable request ledger identity/limits differ")
+        systemic = state.get("systemic_read_failure")
+        if systemic is None:
+            return
+        if (
+            set(systemic) != {"signature", "count", "root_error", "stopped"}
+            or type(systemic["count"]) is not int
+            or systemic["count"] < 0
+            or type(systemic["stopped"]) is not bool
+            or (systemic["signature"] is not None
+                and (not isinstance(systemic["signature"], str) or not systemic["signature"]))
+            or (systemic["root_error"] is not None
+                and (not isinstance(systemic["root_error"], str) or not systemic["root_error"]))
+            or (systemic["signature"] is None
+                and (systemic["count"] != 0 or systemic["root_error"] is not None
+                     or systemic["stopped"]))
+            or (systemic["signature"] is not None
+                and (systemic["count"] == 0 or systemic["root_error"] is None))
+        ):
+            raise ValueError("durable systemic read-failure state is invalid")
 
     def _runtime(self, state, now):
         return float(state["prior"].get("runtime_seconds", 0)) + sum(
@@ -158,10 +189,33 @@ class RequestBudget:
         with self._locked() as state:
             return copy.deepcopy([e for e in state["events"] if attempt is None or e["attempt"] == attempt])
 
-    def note(self, kind, url, reason, *, tool=None):
+    def systemic_read_failure(self):
+        with self._locked() as state:
+            return copy.deepcopy(state["systemic_read_failure"])
+
+    def reset_systemic_read_failure(self):
+        with self._locked() as state:
+            state["systemic_read_failure"] = _empty_systemic_read_failure()
+            return copy.deepcopy(state["systemic_read_failure"])
+
+    def record_systemic_read_failure(self, signature, *, threshold):
+        if not isinstance(signature, str) or not signature or type(threshold) is not int or threshold < 1:
+            raise ValueError("systemic read-failure update is invalid")
+        with self._locked() as state:
+            current = state["systemic_read_failure"]
+            if signature == current["signature"]:
+                current["count"] += 1
+            else:
+                current.update(signature=signature, count=1, root_error=signature, stopped=False)
+            if current["count"] >= threshold:
+                current["stopped"] = True
+            return copy.deepcopy(current)
+
+    def note(self, kind, url, reason, *, tool=None, call_id=None):
         with self._locked() as state:
             state["events"].append({"id": uuid.uuid4().hex, "attempt": self.attempt,
-                "event_kind": kind, "url": url, "tool": tool, "reason": str(reason),
+                "event_kind": kind, "url": url, "tool": tool, "call_id": call_id,
+                "reason": str(reason),
                 "attempted_at": time.time(), "fetch_units": 0, "search_units": 0})
 
     def claim(self, kind, url, *, operation=None, call_id=None, results=0, units=1, retry_key=None):
@@ -227,13 +281,15 @@ class RequestBudget:
         with self._locked() as state:
             state["receipts"][key] = {"payload": payload, "sha256": digest(payload)}
 
-    def receipt(self, key):
+    def receipt(self, key, *, reset_systemic=False):
         with self._locked() as state:
             value = state["receipts"].get(key)
             if value is None:
                 return None
             if digest(value["payload"]) != value["sha256"]:
                 raise ValueError("seed receipt hash differs")
+            if reset_systemic and value["payload"].get("status") in {"success", "rejected"}:
+                state["systemic_read_failure"] = _empty_systemic_read_failure()
             return copy.deepcopy(value["payload"])
 
     def _finish(self, state, attempt, now):
@@ -248,8 +304,9 @@ class RequestBudget:
 
 class GuardedGateway:
     """Delegate all policy/transport work; attach only the public target hook."""
-    def __init__(self, gateway, budget, lane):
+    def __init__(self, gateway, budget, lane, *, transport_timeout_seconds):
         self.gateway, self.budget, self.lane = gateway, budget, lane
+        self.transport_timeout_seconds = float(transport_timeout_seconds)
 
     def __getattr__(self, name):
         return getattr(self.gateway, name)
@@ -261,29 +318,45 @@ class GuardedGateway:
             self.budget.claim("http", target, operation=operation, retry_key=f"{self.lane}:{url}")
             return existing(target, decision) if existing else None
         remaining = self.budget.remaining_seconds()
-        kwargs["timeout_seconds"] = min(float(kwargs.get("timeout_seconds", remaining)), remaining)
+        raw_timeout = kwargs.get("timeout_seconds", self.transport_timeout_seconds)
+        requested = (
+            self.transport_timeout_seconds
+            if raw_timeout is None
+            else float(raw_timeout)
+        )
+        kwargs["timeout_seconds"] = min(
+            requested, self.transport_timeout_seconds, remaining,
+        )
         return self.gateway.read(url, before_target_request=before, **kwargs)
 
 
 def hook_decision(budget, payload):
     tool = payload.get("tool_name")
-    if tool not in {"web_search", "web_extract", "browser_exec"}:
-        return {"action": "block", "message": "unconfigured acquisition tool"}
+    recorded_tool = str(tool or "unknown")
+    args = payload.get("tool_input") or {}
+    urls = args.get("urls") if isinstance(args.get("urls"), list) else []
+    url = str(args.get("url") or (urls[0] if urls else args.get("query") or recorded_tool))
     extra = payload.get("extra") or {}
     call, session = extra.get("tool_call_id"), payload.get("session_id")
-    if any(not isinstance(value, str) or not value.strip() for value in (session, call)):
-        return {"action": "block", "message": "missing durable session/tool-call identity"}
-    call_id = f"{budget.attempt}:{session}:{call}"
+    valid_identity = all(isinstance(value, str) and value.strip() for value in (session, call))
+    call_id = f"{budget.attempt}:{session.strip()}:{call.strip()}" if valid_identity else None
+    if tool not in {"web_search", "web_extract", "browser_exec"}:
+        reason = "unconfigured acquisition tool"
+        budget.note("precheck", url, reason, tool=recorded_tool, call_id=call_id)
+        return {"action": "block", "message": reason}
+    if not valid_identity:
+        reason = "missing durable session/tool-call identity"
+        budget.note("precheck", url, reason, tool=recorded_tool)
+        return {"action": "block", "message": reason}
     if payload.get("hook_event_name") == "post_tool_call":
         budget.complete_tool(call_id, extra.get("result"), extra.get("status", "error"))
         return {}
-    args = payload.get("tool_input") or {}
-    urls = args.get("urls") if isinstance(args.get("urls"), list) else []
-    url = str(args.get("url") or (urls[0] if urls else args.get("query") or tool))
+    results = args.get("num_results", args.get("limit", 5)) if tool == "web_search" else 0
+    if type(results) is not int or results < (1 if tool == "web_search" else 0):
+        reason = "invalid search result limit"
+        budget.note("precheck", url, reason, tool=tool, call_id=call_id)
+        return {"action": "block", "message": reason}
     try:
-        results = args.get("num_results", args.get("limit", 5)) if tool == "web_search" else 0
-        if type(results) is not int or results < (1 if tool == "web_search" else 0):
-            raise ValueError("invalid search result limit")
         budget.claim(tool, url, call_id=call_id, results=results, units=max(1, len(urls)),
                      retry_key=f"{tool}:{url}")
         return {}

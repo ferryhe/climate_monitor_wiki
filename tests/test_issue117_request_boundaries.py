@@ -39,7 +39,7 @@ def test_target_redirect_and_failure_reservations_are_durable(tmp_path):
                 if release:
                     release()
     with pytest.raises(RequestBudgetError):
-        GuardedGateway(Gateway(), ledger, "seed").read("https://example.test/")
+        GuardedGateway(Gateway(), ledger, "seed", transport_timeout_seconds=30).read("https://example.test/")
     assert sends == ["https://example.test/"]
     assert budget(tmp_path, fetch=1).usage()["fetch_attempts"] == 1
     assert any(event["event_kind"] == "precheck" for event in ledger.events())
@@ -52,8 +52,46 @@ def test_policy_rejection_has_no_target_charge(tmp_path):
         def read(self, url, **kwargs):
             raise RuntimeError("policy rejection before callback")
     with pytest.raises(RuntimeError, match="policy"):
-        GuardedGateway(Gateway(), ledger, "seed").read("https://example.test/")
+        GuardedGateway(Gateway(), ledger, "seed", transport_timeout_seconds=30).read("https://example.test/")
     assert ledger.usage()["fetch_attempts"] == 0
+
+
+def test_guarded_gateway_caps_implicit_and_explicit_timeouts_before_send():
+    from climate_monitor.request_budget import GuardedGateway
+
+    observed = []
+    claims = []
+    remaining = iter((3600.0, 3600.0, 3600.0, 3600.0, 4.0))
+
+    class Budget:
+        def remaining_seconds(self):
+            return next(remaining)
+
+        def claim(self, kind, target, **kwargs):
+            claims.append((kind, target))
+
+    class Gateway:
+        def read(self, url, *, before_target_request, timeout_seconds):
+            observed.append(timeout_seconds)
+            before_target_request(url, None)
+
+    gateway = GuardedGateway(
+        Gateway(), Budget(), "seed", transport_timeout_seconds=30.0,
+    )
+    gateway.read("https://example.test/default")
+    gateway.read("https://example.test/none", timeout_seconds=None)
+    gateway.read("https://example.test/shorter", timeout_seconds=5.0)
+    gateway.read("https://example.test/longer", timeout_seconds=120.0)
+    gateway.read("https://example.test/remaining")
+
+    assert observed == [30.0, 30.0, 5.0, 30.0, 4.0]
+    assert claims == [
+        ("http", "https://example.test/default"),
+        ("http", "https://example.test/none"),
+        ("http", "https://example.test/shorter"),
+        ("http", "https://example.test/longer"),
+        ("http", "https://example.test/remaining"),
+    ]
 
 
 def test_deadline_blocks_before_send(tmp_path, monkeypatch):
@@ -187,6 +225,8 @@ def seed_runtime(monkeypatch, sends, interrupt_at=None, outcomes=None):
                 raise error
             before_target_request(url, SimpleNamespace(decision_id="authorized"))
             sends.append(url)
+            if isinstance(kind, BaseException):
+                raise kind
             if kind == "incomplete":
                 raise OSError("network temporarily unavailable")
             return SimpleNamespace(final_url=url, status_code=200, fit_markdown="Climate risk evidence",
@@ -336,13 +376,13 @@ def test_retries_remain_spent_after_failure_and_resume(tmp_path):
     ledger = budget(tmp_path, fetch=20)
     for _ in range(2):
         with pytest.raises(OSError):
-            GuardedGateway(Gateway(), ledger, 'seed').read('https://example.test/')
+            GuardedGateway(Gateway(), ledger, 'seed', transport_timeout_seconds=30).read('https://example.test/')
     ledger.finish()
     resumed = budget(tmp_path, fetch=20, attempt=2)
     with pytest.raises(OSError):
-        GuardedGateway(Gateway(), resumed, 'seed').read('https://example.test/')
+        GuardedGateway(Gateway(), resumed, 'seed', transport_timeout_seconds=30).read('https://example.test/')
     with pytest.raises(RequestBudgetError, match='retry'):
-        GuardedGateway(Gateway(), resumed, 'seed').read('https://example.test/')
+        GuardedGateway(Gateway(), resumed, 'seed', transport_timeout_seconds=30).read('https://example.test/')
     assert len(sends) == 3
     assert resumed.usage()['retries'] == 2
     assert resumed.usage(attempt=2)['retries'] == 1
@@ -490,6 +530,955 @@ def test_incompatible_hermes_installation_never_launches_attempt(tmp_path, monke
         runner._invoke_hermes(['/bin/true'], tmp_path/'response.txt', path, b, runner.time.monotonic()+60)
 
 
+def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-credential")
+    monkeypatch.setenv("RELOAD_TOKEN", "must-not-leak")
+    b = binding(tmp_path)
+    b.update(provider="openai-api", model="test-model")
+    b["report_inputs"] = {
+        key: str(tmp_path / key)
+        for key in (
+            "acquisition_batch", "web_listening_manifest", "pillar_b_artifact",
+            "staging_dir", "state_dir", "source_dir", "wiki_dir",
+        )
+    }
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(b))
+    environments = {}
+
+    def install(command, binding_path, supplied, environment):
+        environments["hermes-hook"] = environment
+        return environment, tmp_path
+
+    class Process:
+        pid = 123
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    def popen(*args, **kwargs):
+        environments["hermes-process"] = kwargs["env"]
+        return Process()
+
+    monkeypatch.setattr(runner, "install_hooks", install)
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    assert runner._invoke_hermes(
+        ["hermes"], tmp_path / "response.txt", path, b,
+        runner.time.monotonic() + 60,
+    ) == 0
+
+    def run(*args, **kwargs):
+        environments["report"] = kwargs["env"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    assert runner._run_report(path, b) == 0
+    for environment in environments.values():
+        assert environment["OPENAI_API_KEY"] == "provider-credential"
+        assert "RELOAD_TOKEN" not in environment
+
+
+def _managed_attempt(tmp_path, monkeypatch, *, source_keys=None):
+    from test_issue94_management_console import _store, _definition
+    from climate_monitor.management import ManagementService
+
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "managed-state"))
+    monkeypatch.setenv("CLIMATE_MANAGED_SOURCE_DIR", str(tmp_path / "managed-sources"))
+    monkeypatch.setenv("CLIMATE_MANAGED_WIKI_DIR", str(tmp_path / "managed-wiki"))
+    store = _store(tmp_path)
+    definition = _definition(tmp_path)
+    if source_keys is not None:
+        definition["parameters"]["source_keys"] = source_keys
+    store.save(definition, actor="operator")
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs", launcher=lambda binding: 4321,
+    )
+    started = service.start(trigger="manual")
+    b = service.binding(started["run_id"])
+    path = service._run_dir(started["run_id"]) / "attempt-1.json"
+    path.write_text(json.dumps(b))
+    return service, b, path
+
+
+def _empty_agent_payload(binding, *, reason):
+    return {
+        "schema_version": "pre-report-acquisition-batch.v1",
+        "batch_id": binding["acquisition_batch_id"],
+        "report_date": binding["report_date"],
+        "date_policy": binding["date_policy"],
+        "started_at": binding["created_at"],
+        "completed_at": binding["created_at"],
+        "search_decision": {"status": "no_search", "reason": reason},
+        "searches": [],
+        "items": [],
+    }
+
+
+def test_primary_hermes_failure_retains_sanitized_process_error(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+
+    def trusted(binding, *, allow_missing_session=False):
+        if allow_missing_session:
+            return []
+        raise ValueError("Hermes did not persist the bound acquisition session")
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        response_path.write_text(
+            "No usable credentials found for provider 'openai-api'. "
+            "Set OPENAI_API_KEY. OPENAI_API_KEY=sk-test-secret"
+        )
+        return 78
+
+    monkeypatch.setattr(runner, "_trusted_tool_events", trusted)
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    exit_code = runner._execute_locked(path)
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    for value in (status, result):
+        assert "No usable credentials found for provider 'openai-api'" in value["error"]
+        assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
+        assert "sk-test-secret" not in value["error"]
+        assert "did not persist the bound acquisition session" not in value["error"]
+    assert exit_code == 78
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "detail"),
+    [
+        (78, "No usable credentials found for provider 'openai-api'"),
+        (124, "Timed out before Hermes could persist its session"),
+    ],
+)
+def test_failed_hermes_without_session_database_retains_process_error(
+    tmp_path, monkeypatch, exit_code, detail,
+):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        attempt_home(binding).mkdir(parents=True, exist_ok=True)
+        response_path.write_text(f"{detail}. OPENAI_API_KEY=sk-missing-db-secret")
+        return exit_code
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    assert runner._execute_locked(path) == exit_code
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    expected_root = (
+        "Hermes acquisition exceeded the bound runtime"
+        if exit_code == 124
+        else f"Hermes acquisition process exited with {exit_code}"
+    )
+    for value in (status, result):
+        assert expected_root in value["error"]
+        assert detail in value["error"]
+        assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
+        assert "sk-missing-db-secret" not in value["error"]
+        assert "durable session database is unavailable" not in value["error"]
+
+
+def test_structured_provider_credentials_are_redacted_from_result_and_progress(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-fake-bare-environment-value")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+    fake_values = (
+        "unit-fake-json-value",
+        "unit-fake-python-value",
+        "unit-fake-lower-api-value",
+        "unit-fake-token-value",
+        "unit-fake-secret-value",
+        "unit-fake-password-value",
+        "unit-fake-bare-environment-value",
+    )
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        attempt_home(binding).mkdir(parents=True, exist_ok=True)
+        response_path.write_text(
+            "No usable credentials found for provider 'openai-api'. "
+            '{"OPENAI_API_KEY": "unit-fake-json-value"} '
+            "{'ANTHROPIC_API_KEY': 'unit-fake-python-value'} "
+            'api_key="unit-fake-lower-api-value" '
+            '{"token": "unit-fake-token-value"} '
+            "{'Secret': 'unit-fake-secret-value'} "
+            "password='unit-fake-password-value' "
+            "credential unit-fake-bare-environment-value"
+        )
+        return 78
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    assert runner._execute_locked(path) == 78
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    status = service.progress(b["run_id"])
+    for value in (result, status):
+        assert "No usable credentials found for provider 'openai-api'" in value["error"]
+        assert value["error"].count("[REDACTED]") >= len(fake_values)
+        assert not any(fake_value in value["error"] for fake_value in fake_values)
+
+
+def test_successful_hermes_path_keeps_missing_database_validation_strict(tmp_path):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    import scripts.run_agent_acquisition as runner
+
+    b = binding(tmp_path)
+    attempt_home(b).mkdir(parents=True)
+    with pytest.raises(ValueError, match="durable session database is unavailable"):
+        runner._trusted_tool_events(b)
+    assert runner._trusted_tool_events(b, allow_missing_session=True) == []
+
+
+def test_feedback_hermes_failure_retains_sanitized_process_error(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+    missing = {"url": "https://example.test/article", "source": "example",
+               "processing_status": "failed", "evidence": {"attempts": []}}
+    payload = {"items": [missing], "searches": []}
+    calls = []
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        calls.append(response_path)
+        if len(calls) == 1:
+            response_path.write_text("{}")
+            return 0
+        response_path.write_text(
+            "Adaptive provider failed. OPENAI_API_KEY=sk-feedback-secret"
+        )
+        return 79
+
+    def trusted(binding, *, allow_missing_session=False):
+        if len(calls) == 2 and not allow_missing_session:
+            raise ValueError("Hermes did not persist the bound acquisition session")
+        return []
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(runner, "_extract_envelope", lambda response: {
+        "acquisition_batch": payload,
+    })
+    monkeypatch.setattr(runner, "_validate_agent_payload", lambda binding, value, *args: value)
+    monkeypatch.setattr(runner, "_validate_site_claims", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_controlled_fetch_payload", lambda *args, **kwargs: (payload, []))
+    monkeypatch.setattr(runner, "_trusted_tool_events", trusted)
+    monkeypatch.setattr(runner, "_store_readback_and_freeze", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_write_report_inputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "climate_registry.acquisition.readback_source_outcomes",
+        lambda database, value: value["source_outcomes"],
+    )
+    exit_code = runner._execute_locked(path)
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    for value in (status, result):
+        assert "Adaptive provider failed" in value["error"]
+        assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
+        assert "sk-feedback-secret" not in value["error"]
+        assert "did not persist the bound acquisition session" not in value["error"]
+    assert exit_code == 79
+
+
+def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
+    tmp_path, monkeypatch,
+):
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        ledger = RequestBudget(ledger_path(binding), binding)
+        ledger.claim(
+            "web_search", "current climate risk",
+            call_id="1:session-1:incomplete-search", results=2,
+        )
+        _write_hermes_tool_events(attempt_home(binding), binding, [{
+            "tool": "web_search", "tool_call_id": "incomplete-search",
+            "arguments": {"query": "current climate risk", "num_results": 2},
+            "result": {"error": "provider stopped before post hook"},
+        }])
+        response_path.write_text("PRIMARY PROVIDER ROOT: upstream authentication failed")
+        return 78
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    assert runner._execute_locked(path) == 78
+
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    provenance = json.loads(path.with_name("attempt-1-tool-provenance.json").read_text())
+    for value in (status, result):
+        assert "Hermes acquisition process exited with 78" in value["error"]
+        assert "PRIMARY PROVIDER ROOT: upstream authentication failed" in value["error"]
+        assert "transcript lacks durable completion" not in value["error"]
+    assert provenance["cumulative_actual"]["search_attempts"] == 1
+    assert provenance["cumulative_actual"]["search_results"] == 0
+    assert provenance["cumulative_actual"]["runtime_seconds"] > 0
+    assert provenance["events"] == []
+    assert len(provenance["request_events"]) == 1
+    assert provenance["request_events"][0]["status"] == "reserved_or_uncertain"
+    assert provenance["request_events"][0].get("completed") is not True
+
+
+def test_feedback_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
+    tmp_path, monkeypatch,
+):
+    import sqlite3
+
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+    missing = {"url": "https://example.test/article", "source": "example",
+               "processing_status": "failed", "evidence": {"attempts": []}}
+    payload = {"items": [missing], "searches": []}
+    calls = []
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        calls.append(response_path)
+        if len(calls) == 1:
+            _write_hermes_tool_events(attempt_home(binding), binding, [])
+            response_path.write_text("{}")
+            return 0
+        ledger = RequestBudget(ledger_path(binding), binding)
+        ledger.claim(
+            "web_extract", "https://example.test/article",
+            call_id="1:session-1:incomplete-extract",
+        )
+        call = {"id": "incomplete-extract", "function": {
+            "name": "web_extract",
+            "arguments": json.dumps({"url": "https://example.test/article"}),
+        }}
+        connection = sqlite3.connect(attempt_home(binding) / "state.db")
+        try:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (1, "session-1", "assistant", None, None, json.dumps([call]), None),
+            )
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (2, "session-1", "tool", "incomplete-extract", "web_extract", None,
+                 json.dumps({"error": "provider stopped before post hook"})),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        response_path.write_text("ADAPTIVE PROVIDER ROOT: upstream authentication failed")
+        return 79
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(runner, "_extract_envelope", lambda response: {
+        "acquisition_batch": payload,
+    })
+    monkeypatch.setattr(runner, "_validate_agent_payload", lambda binding, value, *args: value)
+    monkeypatch.setattr(runner, "_validate_site_claims", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_controlled_fetch_payload", lambda *args, **kwargs: (payload, []))
+
+    assert runner._execute_locked(path) == 79
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    provenance = json.loads(path.with_name("attempt-1-tool-provenance.json").read_text())
+    for value in (status, result):
+        assert "Hermes adaptive feedback process exited with 79" in value["error"]
+        assert "ADAPTIVE PROVIDER ROOT: upstream authentication failed" in value["error"]
+        assert "transcript lacks durable completion" not in value["error"]
+    assert provenance["cumulative_actual"]["fetch_attempts"] == 1
+    assert provenance["cumulative_actual"]["runtime_seconds"] > 0
+    assert provenance["events"] == []
+    assert len(provenance["request_events"]) == 1
+    assert provenance["request_events"][0]["status"] == "reserved_or_uncertain"
+    assert provenance["request_events"][0].get("completed") is not True
+
+
+def test_primary_zero_exit_keeps_incomplete_transcript_validation_strict(
+    tmp_path, monkeypatch,
+):
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        ledger = RequestBudget(ledger_path(binding), binding)
+        ledger.claim(
+            "web_search", "current climate risk",
+            call_id="1:session-1:incomplete-search", results=1,
+        )
+        _write_hermes_tool_events(attempt_home(binding), binding, [{
+            "tool": "web_search", "tool_call_id": "incomplete-search",
+            "arguments": {"query": "current climate risk", "num_results": 1},
+            "result": {"results": []},
+        }])
+        response_path.write_text("{}")
+        return 0
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(runner, "_extract_envelope", lambda response: {
+        "acquisition_batch": _empty_agent_payload(
+            b, reason="No supplemental query was needed",
+        ),
+    })
+    assert runner._execute_locked(path) == 65
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    for value in (status, result):
+        assert "Trusted acquisition validation failed" in value["error"]
+        assert "Hermes tool transcript lacks durable completion" in value["error"]
+
+
+def _exercise_blocked_search_precheck(
+    tmp_path, monkeypatch, *, num_results, expected_reason,
+):
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+    from climate_registry.acquisition import load_acquisition_batch
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    sends = []
+    seed_runtime(monkeypatch, sends)
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        ledger = RequestBudget(ledger_path(binding), binding)
+        result_limit = (
+            int(binding["budgets"]["search_results"]) + 1
+            if num_results is None else num_results
+        )
+        blocked = hook_decision(ledger, {
+            "hook_event_name": "pre_tool_call",
+            "tool_name": "web_search",
+            "tool_input": {
+                "query": "current climate risk",
+                "num_results": result_limit,
+            },
+            "session_id": "session-1",
+            "extra": {"tool_call_id": "blocked-search"},
+        })
+        assert blocked == {
+            "action": "block",
+            "message": expected_reason,
+        }
+        _write_hermes_tool_events(attempt_home(binding), binding, [{
+            "tool": "web_search",
+            "tool_call_id": "blocked-search",
+            "arguments": {"query": "current climate risk", "num_results": result_limit},
+            "result": {"error": expected_reason},
+        }])
+        response_path.write_text(json.dumps({
+            "acquisition_batch": _empty_agent_payload(
+                binding, reason="The model says no supplemental query was needed",
+            ),
+        }))
+        return 0
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(
+        runner, "_run_report", lambda *args: pytest.fail("precheck gap must block report"),
+    )
+    assert runner._execute_locked(path) == 0
+
+    stored = load_acquisition_batch(b["registry_database"], b["acquisition_batch_id"])
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    acquisition = json.loads(path.with_name("attempt-1-acquisition.json").read_text())
+    for value in (stored, status["search_decision"], acquisition["search_decision"]):
+        reason = value.get("no_search_reason", value.get("reason"))
+        assert reason == expected_reason
+        assert "model says" not in reason
+    search_prechecks = [
+        event for event in RequestBudget(ledger_path(b), b).events()
+        if event["event_kind"] == "precheck" and event.get("tool") == "web_search"
+    ]
+    assert len(search_prechecks) == 1
+    assert search_prechecks[0]["call_id"] == "1:session-1:blocked-search"
+    assert search_prechecks[0]["url"] == "current climate risk"
+    assert search_prechecks[0]["reason"] == expected_reason
+    assert stored["searches"] == []
+    assert stored["completed_at"] is None
+    assert status["stage"] == "completed_with_gaps"
+    assert status["budget"]["used"]["search_attempts"] == 0
+    assert status["coverage"]["full_success"] is False
+    assert result["full_coverage"] is False
+    assert expected_reason in result["error"]
+    assert not Path(b["frozen_report_input"]).exists()
+
+
+def test_blocked_search_precheck_round_trips_truth_and_blocks_report(tmp_path, monkeypatch):
+    _exercise_blocked_search_precheck(
+        tmp_path,
+        monkeypatch,
+        num_results=None,
+        expected_reason="search result budget precheck blocked request",
+    )
+
+
+@pytest.mark.parametrize("num_results", [0, "five"], ids=["zero", "non-integer"])
+def test_invalid_search_result_limit_round_trips_truth_and_blocks_report(
+    tmp_path, monkeypatch, num_results,
+):
+    _exercise_blocked_search_precheck(
+        tmp_path,
+        monkeypatch,
+        num_results=num_results,
+        expected_reason="invalid search result limit",
+    )
+
+
+def test_invalid_search_precheck_reconciles_transcript_and_blocks_call_reuse(
+    tmp_path,
+):
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import hook_decision
+    import scripts.run_agent_acquisition as runner
+
+    b = binding(tmp_path)
+    b["created_at"] = "2026-09-12T00:00:00Z"
+    ledger = budget(tmp_path)
+    payload = {
+        "hook_event_name": "pre_tool_call",
+        "tool_name": "web_search",
+        "tool_input": {"query": "current climate risk", "num_results": 0},
+        "session_id": "session-1",
+        "extra": {"tool_call_id": "blocked-search"},
+    }
+    assert hook_decision(ledger, payload) == {
+        "action": "block", "message": "invalid search result limit",
+    }
+    _write_hermes_tool_events(attempt_home(b), b, [{
+        "tool": "web_search", "tool_call_id": "blocked-search",
+        "arguments": payload["tool_input"],
+        "result": {"error": "invalid search result limit"},
+    }])
+    assert runner._trusted_tool_events(b) == []
+
+    payload["tool_input"]["num_results"] = 1
+    assert hook_decision(ledger, payload) == {
+        "action": "block", "message": "duplicate tool dispatch blocked",
+    }
+    payload.update(
+        hook_event_name="post_tool_call",
+        extra={"tool_call_id": "blocked-search", "status": "error", "result": "blocked"},
+    )
+    assert hook_decision(ledger, payload) == {}
+    payload["extra"]["tool_call_id"] = "different-call"
+    assert hook_decision(ledger, payload) == {}
+
+    events = ledger.events()
+    assert [event["event_kind"] for event in events] == ["precheck", "precheck"]
+    assert {event["call_id"] for event in events} == {"1:session-1:blocked-search"}
+    assert not any(event.get("completed") for event in events)
+    assert ledger.usage()["search_attempts"] == 0
+    assert ledger.usage()["search_results"] == 0
+    assert runner._trusted_tool_events(b) == []
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_reason", "expected_tool", "expected_target", "expected_call_id"),
+    [
+        ("unsupported", "unconfigured acquisition tool", "other_tool",
+         "https://unsupported.test/", "1:session-1:blocked-tool"),
+        ("missing-identity", "missing durable session/tool-call identity", "web_search",
+         "current climate risk", None),
+    ],
+)
+def test_other_hook_blocks_round_trip_to_final_report_gate(
+    tmp_path, monkeypatch, case, expected_reason, expected_tool, expected_target,
+    expected_call_id,
+):
+    from test_issue94_management_console import _write_hermes_tool_events
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+    from climate_registry.acquisition import load_acquisition_batch
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    seed_runtime(monkeypatch, [])
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        ledger = RequestBudget(ledger_path(binding), binding)
+        payload = {
+            "hook_event_name": "pre_tool_call",
+            "tool_name": expected_tool,
+            "tool_input": (
+                {"url": expected_target} if case == "unsupported"
+                else {"query": expected_target, "num_results": 5}
+            ),
+            "session_id": "session-1",
+            "extra": ({"tool_call_id": "blocked-tool"} if case == "unsupported" else {}),
+        }
+        assert hook_decision(ledger, payload) == {
+            "action": "block", "message": expected_reason,
+        }
+        transcript = ([{
+            "tool": expected_tool, "tool_call_id": "blocked-tool",
+            "arguments": payload["tool_input"], "result": {"error": expected_reason},
+        }] if case == "unsupported" else [])
+        _write_hermes_tool_events(attempt_home(binding), binding, transcript)
+        response_path.write_text(json.dumps({
+            "acquisition_batch": _empty_agent_payload(
+                binding, reason="The model says no supplemental query was needed",
+            ),
+        }))
+        return 0
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(
+        runner, "_run_report", lambda *args: pytest.fail("hook precheck must block report"),
+    )
+    assert runner._execute_locked(path) == 0
+
+    ledger = RequestBudget(ledger_path(b), b)
+    prechecks = [event for event in ledger.events() if event["event_kind"] == "precheck"]
+    assert len(prechecks) == 1
+    assert prechecks[0]["tool"] == expected_tool
+    assert prechecks[0]["url"] == expected_target
+    assert prechecks[0].get("call_id") == expected_call_id
+    assert ledger.usage()["search_attempts"] == 0
+    stored = load_acquisition_batch(b["registry_database"], b["acquisition_batch_id"])
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert stored["completed_at"] is None
+    assert status["stage"] == "completed_with_gaps"
+    assert status["coverage"]["full_success"] is False
+    assert result["full_coverage"] is False
+    assert expected_reason in status["error"]
+    assert expected_reason in result["error"]
+    assert not Path(b["frozen_report_input"]).exists()
+
+
+def test_identical_systemic_reads_stop_after_three_and_preserve_full_inventory(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.management import default_task_definition
+    import scripts.run_agent_acquisition as runner
+
+    source_keys = default_task_definition()["parameters"]["source_keys"]
+    service, b, path = _managed_attempt(
+        tmp_path, monkeypatch, source_keys=source_keys,
+    )
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    sends = []
+    seed_runtime(monkeypatch, sends, outcomes=lambda url: "incomplete")
+    monkeypatch.setattr(runner, "_trusted_tool_events", lambda *args, **kwargs: [])
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        response_path.write_text(json.dumps({
+            "acquisition_batch": _empty_agent_payload(
+                binding, reason="No supplemental search was executed",
+            ),
+        }))
+        return 0
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(
+        runner, "_run_report", lambda *args: pytest.fail("source gaps must block report"),
+    )
+    assert runner._execute_locked(path) == 0
+
+    acquisition = json.loads(path.with_name("attempt-1-acquisition.json").read_text())
+    status = service.progress(b["run_id"])
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    source_outcomes = acquisition["source_outcomes"]
+    seed_outcomes = [
+        outcome
+        for row in source_outcomes
+        for outcome in row["manifest"]["seed_outcomes"].values()
+    ]
+    assert len(sends) == 3
+    assert len(source_outcomes) == 36
+    assert len(seed_outcomes) == 116
+    assert sum(row["event_kind"] == "network" for row in seed_outcomes) == 3
+    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 113
+    assert all(row["status"] == "failed" for row in source_outcomes)
+    assert status["coverage"]["total_sources"] == 36
+    assert status["coverage"]["incomplete_sources"] == 36
+    for value in (status, result):
+        assert "OSError: network temporarily unavailable" in value["error"]
+    assert not Path(b["frozen_report_input"]).exists()
+
+
+def test_policy_and_varied_site_failures_do_not_trigger_systemic_stop(tmp_path, monkeypatch):
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import MonitorSource
+
+    kinds = {
+        "policy-a": "rejected",
+        "different-a": OSError("host-specific failure A"),
+        "different-b": OSError("host-specific failure B"),
+        "policy-b": "rejected",
+        "same-a": OSError("host-specific failure A"),
+        "same-b": OSError("host-specific failure A"),
+        "success": "success",
+    }
+    sources = [
+        MonitorSource(key=key, abbreviation=key, full_name=key, url=f"https://{key}.test/")
+        for key in kinds
+    ]
+    sends = []
+    seed_runtime(
+        monkeypatch, sends,
+        outcomes=lambda url: kinds[url.split("//", 1)[1].split(".", 1)[0]],
+    )
+    _, _, evidence = adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=budget(tmp_path, fetch=20),
+    )
+
+    seed_outcomes = [
+        outcome
+        for row in evidence["source_results"]
+        for outcome in row["manifest"]["seed_outcomes"].values()
+    ]
+    assert len(evidence["source_results"]) == len(sources)
+    assert len(seed_outcomes) == len(sources)
+    assert len(sends) == 5
+    assert not any(row["event_kind"] == "precheck" for row in seed_outcomes)
+    assert evidence["systemic_error"] is None
+
+
+def test_reused_success_receipt_resets_durable_systemic_failure_sequence(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import MonitorSource
+
+    keys = ("fail-1", "reused-success", "fail-2", "fail-3", "fail-4", "fail-5")
+    sources = [
+        MonitorSource(key=key, abbreviation=key, full_name=key, url=f"https://{key}.test/")
+        for key in keys
+    ]
+    ledger = budget(tmp_path, fetch=30)
+    ledger.save_receipt("seed:reused-success:https://reused-success.test/", {
+        "status": "success",
+        "event_kind": "source",
+        "candidates": [],
+        "checkpoint": {"content_hash": "a" * 64, "links": []},
+        "candidate_urls": [],
+        "observed_at": "2026-09-12T00:00:00+00:00",
+    })
+    sends = []
+    seed_runtime(monkeypatch, sends, outcomes=lambda url: "incomplete")
+    _, _, evidence = adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=ledger,
+    )
+
+    seed_outcomes = [
+        outcome
+        for row in evidence["source_results"]
+        for outcome in row["manifest"]["seed_outcomes"].values()
+    ]
+    assert sends == [
+        "https://fail-1.test/", "https://fail-2.test/",
+        "https://fail-3.test/", "https://fail-4.test/",
+    ]
+    assert [row["event_kind"] for row in seed_outcomes] == [
+        "network", "source", "network", "network", "network", "precheck",
+    ]
+    assert len(evidence["source_results"]) == len(sources)
+    assert evidence["systemic_error"] == "OSError: network temporarily unavailable"
+    state = json.loads((tmp_path / "request-budget.json").read_text())
+    assert state["systemic_read_failure"] == {
+        "signature": "OSError: network temporarily unavailable",
+        "count": 3,
+        "root_error": "OSError: network temporarily unavailable",
+        "stopped": True,
+    }
+
+
+def test_systemic_failure_sequence_resumes_and_third_failure_stops(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import MonitorSource
+    from climate_monitor.request_budget import RequestBudget
+
+    sources = [
+        MonitorSource(key=f"seed-{index}", abbreviation=f"seed-{index}",
+                      full_name=f"seed-{index}", url=f"https://seed-{index}.test/")
+        for index in range(1, 7)
+    ]
+    sends = []
+    first = budget(tmp_path, fetch=30)
+    seed_runtime(monkeypatch, sends, interrupt_at=2, outcomes=lambda url: "incomplete")
+    with pytest.raises(KeyboardInterrupt, match="simulated worker crash"):
+        adapter.collect_website_items_with_evidence(
+            sources, state_dir=tmp_path / "seeds", budget=first,
+        )
+
+    resumed = RequestBudget(
+        tmp_path / "request-budget.json",
+        binding(tmp_path, fetch=30, attempt=2),
+    )
+    seed_runtime(monkeypatch, sends, outcomes=lambda url: "incomplete")
+    _, _, evidence = adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=resumed,
+    )
+    seed_outcomes = [
+        outcome
+        for row in evidence["source_results"]
+        for outcome in row["manifest"]["seed_outcomes"].values()
+    ]
+
+    assert sends == [
+        "https://seed-1.test/", "https://seed-2.test/", "https://seed-1.test/",
+    ]
+    assert [row["event_kind"] for row in seed_outcomes] == [
+        "network", "precheck", "precheck", "precheck", "precheck", "precheck",
+    ]
+    assert len(evidence["source_results"]) == len(sources)
+    assert evidence["systemic_error"] == "OSError: network temporarily unavailable"
+    state = json.loads((tmp_path / "request-budget.json").read_text())
+    assert state["systemic_read_failure"] == {
+        "signature": "OSError: network temporarily unavailable",
+        "count": 3,
+        "root_error": "OSError: network temporarily unavailable",
+        "stopped": True,
+    }
+
+
+def test_finished_systemic_stop_rearms_resume_and_preserves_receipts_and_usage(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import MonitorSource
+    from climate_monitor.request_budget import RequestBudget
+
+    keys = ("success", "fail-1", "fail-2", "fail-3", "pending-1", "pending-2")
+    sources = [
+        MonitorSource(key=key, abbreviation=key, full_name=key,
+                      url=f"https://{key}.test/")
+        for key in keys
+    ]
+    sends = []
+    first = budget(tmp_path, fetch=30)
+    seed_runtime(
+        monkeypatch, sends,
+        outcomes=lambda url: (
+            "success" if url == "https://success.test/" else "incomplete"
+        ),
+    )
+    _, _, first_evidence = adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=first,
+    )
+    assert sends == [
+        "https://success.test/", "https://fail-1.test/",
+        "https://fail-2.test/", "https://fail-3.test/",
+    ]
+    assert first_evidence["systemic_error"] == "OSError: network temporarily unavailable"
+    assert first.systemic_read_failure()["stopped"] is True
+    first.finish()
+
+    resumed = RequestBudget(
+        tmp_path / "request-budget.json",
+        binding(tmp_path, fetch=30, attempt=2),
+    )
+    assert resumed.systemic_read_failure() == {
+        "signature": None, "count": 0, "root_error": None, "stopped": False,
+    }
+    resumed_sends = []
+    seed_runtime(monkeypatch, resumed_sends)
+    _, warnings, evidence = adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=resumed,
+    )
+
+    assert resumed_sends == [
+        "https://fail-1.test/", "https://fail-2.test/", "https://fail-3.test/",
+        "https://pending-1.test/", "https://pending-2.test/",
+    ]
+    assert evidence["full_success"] is True
+    assert evidence["systemic_error"] is None
+    assert warnings == []
+    assert resumed.usage(attempt=1)["fetch_attempts"] == 4
+    assert resumed.usage(attempt=2)["fetch_attempts"] == 5
+    assert resumed.usage()["fetch_attempts"] == 9
+    assert resumed.usage()["retries"] == 3
+
+
+def test_finished_partial_systemic_sequence_rearms_before_resume(tmp_path, monkeypatch):
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import MonitorSource
+    from climate_monitor.request_budget import RequestBudget
+
+    sources = [
+        MonitorSource(key=f"fail-{index}", abbreviation=f"fail-{index}",
+                      full_name=f"fail-{index}", url=f"https://fail-{index}.test/")
+        for index in range(1, 3)
+    ]
+    first = budget(tmp_path, fetch=20)
+    seed_runtime(monkeypatch, [], outcomes=lambda url: "incomplete")
+    adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=first,
+    )
+    assert first.systemic_read_failure() == {
+        "signature": "OSError: network temporarily unavailable",
+        "count": 2,
+        "root_error": "OSError: network temporarily unavailable",
+        "stopped": False,
+    }
+    first.finish()
+
+    resumed = RequestBudget(
+        tmp_path / "request-budget.json",
+        binding(tmp_path, fetch=20, attempt=2),
+    )
+    assert resumed.systemic_read_failure() == {
+        "signature": None, "count": 0, "root_error": None, "stopped": False,
+    }
+    resumed_sends = []
+    seed_runtime(monkeypatch, resumed_sends)
+    adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", budget=resumed,
+    )
+    assert resumed_sends == ["https://fail-1.test/", "https://fail-2.test/"]
+    assert resumed.usage()["fetch_attempts"] == 4
+
+
 def test_lower_fetch_override_is_frozen(tmp_path):
     from climate_monitor.management import default_task_definition, build_task_binding
     from climate_registry.persistent import initialize_registry
@@ -528,7 +1517,8 @@ def test_review_hook_requires_both_durable_ids(event, field, value):
     from climate_monitor.request_budget import hook_decision
     invoked = []
     ledger = SimpleNamespace(attempt=1, claim=lambda *a, **kw: invoked.append('claim'),
-                             complete_tool=lambda *a: invoked.append('complete'))
+                             complete_tool=lambda *a: invoked.append('complete'),
+                             note=lambda *a, **kw: invoked.append(('note', a, kw)))
     payload = {'hook_event_name': event, 'tool_name': 'web_search',
                'session_id': 'session', 'extra': {'tool_call_id': 'call'},
                'tool_input': {'query': 'climate'}}
@@ -537,7 +1527,8 @@ def test_review_hook_requires_both_durable_ids(event, field, value):
     else:
         payload['extra'][field] = value
     assert hook_decision(ledger, payload).get('action') == 'block'
-    assert not invoked
+    assert [entry for entry in invoked if entry == 'claim' or entry == 'complete'] == []
+    assert invoked[0][0] == 'note'
 
 
 @pytest.mark.parametrize('tool', ['web_search', 'web_extract', 'browser_exec'])
