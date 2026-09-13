@@ -173,15 +173,19 @@ Evidence through 2026-09-12:
   without a first search opportunity. This proves the old default was too small;
   a later two-source canary also proved that the real public tool accepts a
   ten-result call, so five results cannot be treated as a deterministic per-call
-  ceiling. The later `trusted-search-ledger.v2` protocol therefore leaves search
-  planning and per-call result sizing to the provider: new tasks have no
-  application search-call, cumulative-result, per-call-result or token limit.
-  The runner derives the complete search ledger from durable completed tool
-  events, while actual search/result counts remain evidence only. The 5,000-unit
-  controlled fetch limit, per-item retry limit and cumulative runtime limit stay
-  enforced before dispatch. Missing `agent_protocol` means the exact legacy
-  bounded protocol; frozen legacy and v2 attempts cannot be mixed on resume. A
-  fresh complete full-range v2 run remains required.
+  ceiling. New tasks now freeze `trusted-candidate-handles.v3`: Hermes selects
+  public native-search candidates and calls the attempt-scoped stage/finalize
+  tools under `acquisition-task-v2`, while the runner persists the complete real
+  search ledger and governed article receipts and assembles Registry input from
+  them. The v1 acquisition task remains unchanged for frozen legacy/v2 runs.
+  Search planning and
+  per-call result sizing remain provider-owned, with no application search-call,
+  cumulative-result, per-call-result or token limit; actual counts remain
+  evidence only. The 5,000-unit controlled fetch limit, per-item retry limit and
+  cumulative runtime limit stay enforced before dispatch. Missing
+  `agent_protocol` remains exact legacy behavior, explicit v2 remains frozen,
+  and legacy/v2/v3 attempts cannot mix on resume. A fresh complete full-range v3
+  run remains required.
 
 - Runtime/discovery/handoff follow-up: full SSH sandbox suite **1791 passed /
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**

@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from climate_monitor.request_budget import (
     AGENT_PROTOCOL_VERSION,
+    CANDIDATE_RECEIPT_POLICY,
     DEFAULT_FETCH_ATTEMPTS,
     DEFAULT_SEARCH_ATTEMPTS,
     DEFAULT_SEARCH_RESULTS,
@@ -55,7 +56,7 @@ PROMPT_NAMES = (
     "executive_summary",
 )
 _PROMPT_FILES = {
-    "acquisition_task": ("v1", "acquisition-task-v1.prompt.md"),
+    "acquisition_task": ("v2", "acquisition-task-v2.prompt.md"),
     "search_guidance": ("v2", "pillar-b-search-v2.prompt.md"),
     "relevance": ("v1", "article-relevance-v1.prompt.md"),
     "article_summary": ("v1", "article-summary-v1.prompt.md"),
@@ -672,6 +673,7 @@ def build_task_binding(
         "agent_protocol": {
             "version": AGENT_PROTOCOL_VERSION,
             "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+            "candidate_policy": CANDIDATE_RECEIPT_POLICY,
         },
         "acquisition_lineage_id": f"acq-{run_id}",
         "acquisition_batch_id": f"acq-{run_id}-attempt-{attempt}",

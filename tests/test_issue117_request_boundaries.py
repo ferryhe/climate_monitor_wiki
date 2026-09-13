@@ -10,6 +10,11 @@ NEW_AGENT_PROTOCOL = {
     "version": "trusted-search-ledger.v2",
     "search_policy": "provider-native-unbounded.v1",
 }
+V3_AGENT_PROTOCOL = {
+    "version": "trusted-candidate-handles.v3",
+    "search_policy": "provider-native-unbounded.v1",
+    "candidate_policy": "trusted-tool-receipts.v1",
+}
 
 
 def binding(tmp_path, *, fetch=2, search=1, runtime=60, attempt=1):
@@ -50,7 +55,9 @@ def _opaque_search_binding_fixture(tmp_path, *, candidate_protocol=False):
     task_binding = build_task_binding(
         _definition(tmp_path), task_version=1, run_id="opaque-search", attempt=1,
     )
-    if not candidate_protocol:
+    if candidate_protocol:
+        task_binding["agent_protocol"] = dict(NEW_AGENT_PROTOCOL)
+    else:
         task_binding.pop("agent_protocol")
     now = task_binding["created_at"]
     searches = [
@@ -125,6 +132,1144 @@ def _candidate_payload(task_binding, items):
         "report_date": task_binding["report_date"],
         "items": items,
     }
+
+
+def _v3_binding(tmp_path, *, mode="unlimited"):
+    from climate_monitor.management import build_task_binding
+    from test_issue94_management_console import _definition
+
+    definition = _definition(tmp_path)
+    definition["parameters"]["date_policy"] = {
+        "unlimited": {"mode": "unlimited"},
+        "recent": {"mode": "recent", "days": 30},
+        "custom": {"mode": "custom", "start": "2026-08-01", "end": "2026-09-07"},
+    }[mode]
+    value = build_task_binding(
+        definition, task_version=1, run_id=f"v3-{mode}", attempt=1,
+    )
+    assert value["agent_protocol"] == V3_AGENT_PROTOCOL
+    return value
+
+
+def test_v3_is_default_and_exposes_only_governed_candidate_tools(tmp_path):
+    import scripts.run_agent_acquisition as runner
+    from climate_monitor.request_budget import candidate_handle_protocol
+
+    task_binding = _v3_binding(tmp_path)
+    assert candidate_handle_protocol(task_binding)
+    command = runner._hermes_command("hermes", task_binding, tmp_path / "prompt")
+    assert command[command.index("--toolsets") + 1] == "web,browser,climate_acquisition"
+    assert "--max-turns" not in command
+    prompt = " ".join(
+        runner._prompt(tmp_path / "attempt-1.json", task_binding, {}).split()
+    )
+    assert "climate_stage_candidate" in prompt
+    assert "climate_finalize_candidate" in prompt
+    assert "web, browser, and climate_acquisition" in prompt
+    assert "public query, URL, title, and snippet" in prompt
+    assert "concise natural-language summary" in prompt
+    assert "tool_call_id" not in prompt
+    assert "searches or search_decision" not in prompt
+    for legacy_instruction in (
+        "You have search/browser tools only",
+        "Put fetched body text",
+        "after your JSON passes",
+        "items[].evidence.attempts",
+        "processing_status pending",
+        "Set published_date",
+        "publication_date_evidence",
+        "content_hash",
+        "content_ref",
+        "raw_snapshot_ref",
+    ):
+        assert legacy_instruction not in prompt
+
+
+def test_default_v3_binding_uses_tool_owned_acquisition_task_v2(tmp_path):
+    import hashlib
+    from climate_monitor.management import build_task_binding
+    from test_issue94_management_console import _definition
+    import scripts.run_agent_acquisition as runner
+
+    definition = _definition(tmp_path)
+    component = definition["prompts"]["acquisition_task"]
+    assert component["version"] == "v2"
+    task_binding = build_task_binding(
+        definition, task_version=1, run_id="v3-default-prompt", attempt=1,
+    )
+    assert task_binding["prompt_versions"]["acquisition_task"] == "v2"
+    assert task_binding["prompt_hashes"]["acquisition_task"] == hashlib.sha256(
+        component["text"].encode()
+    ).hexdigest()
+    prompt = runner._prompt(tmp_path / "attempt-1.json", task_binding, {})
+    bound_task = prompt.split("BOUND ACQUISITION INSTRUCTIONS:\n", 1)[1]
+    assert "climate_stage_candidate" in bound_task
+    assert "climate_finalize_candidate" in bound_task
+    assert "trusted runner validates" in bound_task.lower()
+    for direct_legacy_instruction in (
+        "climate_registry.acquisition",
+        "store the exact batch",
+        "read it back",
+        "freeze compatible report input",
+    ):
+        assert direct_legacy_instruction not in bound_task
+
+
+def test_v3_rejects_v1_task_before_acquisition_but_old_protocols_keep_v1(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.management import build_task_binding
+    from test_issue94_management_console import _definition
+    import scripts.run_agent_acquisition as runner
+
+    definition = _definition(tmp_path)
+    v1_path = (
+        Path(runner.__file__).resolve().parents[1]
+        / "monitoring/jobs/weekly-climate-monitor-08h/prompts"
+        / "acquisition-task-v1.prompt.md"
+    )
+    definition["prompts"]["acquisition_task"] = {
+        "version": "v1", "text": v1_path.read_text(encoding="utf-8"),
+    }
+    task_binding = build_task_binding(
+        definition, task_version=1, run_id="v3-v1-conflict", attempt=1,
+    )
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding), encoding="utf-8")
+    monkeypatch.setenv("HERMES_EXECUTABLE", "unused-hermes")
+    monkeypatch.setattr(
+        runner, "_controlled_site_context",
+        lambda _binding: pytest.fail("incompatible prompt reached acquisition"),
+    )
+    with pytest.raises(ValueError, match="requires acquisition_task v2"):
+        runner._execute_locked(path)
+
+    explicit_v2 = json.loads(json.dumps(task_binding))
+    explicit_v2["agent_protocol"] = dict(NEW_AGENT_PROTOCOL)
+    v2_prompt = runner._prompt(path, explicit_v2, {})
+    assert "climate_registry.acquisition" in v2_prompt
+    legacy = json.loads(json.dumps(task_binding))
+    legacy.pop("agent_protocol")
+    legacy_prompt = runner._prompt(path, legacy, {})
+    assert "climate_registry.acquisition" in legacy_prompt
+
+
+def test_v3_search_transform_mints_ordered_attempt_scoped_handles(tmp_path):
+    from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+
+    task_binding = _v3_binding(tmp_path)
+    binding_path = tmp_path / "attempt-1.json"
+    binding_path.write_text(json.dumps(task_binding))
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.register_site_candidate_handles([{
+        "url": "https://wmo.int/site", "source": "wmo",
+        "discovery_ref": "site-ref", "observed_at": task_binding["created_at"],
+    }])
+    raw = _tagged_search_result(web=[
+        {"url": "https://www.wmo.int/a", "title": "A", "description": "16 Apr 2025"},
+        {"url": "https://www.wmo.int/b", "title": "B", "description": "unknown"},
+    ])
+    call_id = "1:session-a:call-private"
+    ledger.claim(
+        "web_search", "wmo climate", call_id=call_id, results=5,
+        session_id="session-a", tool_call_id="call-private",
+    )
+    transformed = transform_search_tool_result(
+        binding_path, tool_name="web_search", args={"query": "wmo climate"},
+        result=raw, session_id="session-a", tool_call_id="call-private", status="ok",
+    )
+    all_handles = RequestBudget(ledger_path(task_binding), task_binding).result_handles()
+    handles = [row for row in all_handles if row["discovery_kind"] == "search"]
+    assert len(handles) == 2
+    assert len(all_handles) == 3
+    assert [row["ordinal"] for row in handles] == [0, 1]
+    assert all(row["handle"] in transformed for row in handles)
+    suffix = transformed.removeprefix(raw)
+    assert "call-private" not in suffix
+    assert "wmo climate" not in suffix
+    assert "https://" not in suffix
+    assert RequestBudget(ledger_path(task_binding), task_binding).usage()["search_attempts"] == 1
+
+
+def test_v3_custom_tool_dispatch_is_not_a_fetch_budget_unit(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+
+    task_binding = _v3_binding(tmp_path)
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    payload = {
+        "hook_event_name": "pre_tool_call", "tool_name": "climate_stage_candidate",
+        "tool_input": {"result_handle": "result-fake", "source_key": "wmo"},
+        "session_id": "session-a", "extra": {"tool_call_id": "call-stage"},
+    }
+    assert hook_decision(ledger, payload) == {}
+    assert ledger.usage()["fetch_attempts"] == 0
+    assert ledger.events() == []
+
+
+@pytest.mark.parametrize("requested", [0, "ten", 100])
+def test_v3_search_shape_is_provider_owned_not_an_application_precheck(
+    tmp_path, requested,
+):
+    from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
+
+    task_binding = _v3_binding(tmp_path)
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    payload = {
+        "hook_event_name": "pre_tool_call", "tool_name": "web_search",
+        "tool_input": {"query": "WMO climate", "num_results": requested},
+        "session_id": "session-a", "extra": {"tool_call_id": "call-search"},
+    }
+    assert hook_decision(ledger, payload) == {}
+    events = ledger.events()
+    assert len(events) == 1 and events[0]["event_kind"] == "tool"
+    assert events[0]["result_reservation"] == 0
+
+
+def _v3_completed_search(
+    tmp_path, task_binding, *, description, session="session-a",
+    raw_call="call-search", query="WMO climate",
+    url="https://wmo.int/article",
+):
+    from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding))
+    result = _tagged_search_result(web=[{
+        "url": url, "title": "WMO article",
+        "description": description,
+    }])
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.claim(
+        "web_search", query, call_id=f"1:{session}:{raw_call}", results=5,
+        session_id=session, tool_call_id=raw_call,
+    )
+    transformed = transform_search_tool_result(
+        path, tool_name="web_search", args={"query": query}, result=result,
+        session_id=session, tool_call_id=raw_call, status="ok",
+    )
+    assert transformed and transformed != result
+    result_record = next(
+        row for row in ledger.result_handles()
+        if row.get("tool_call_id") == raw_call
+    )
+    handle = result_record["handle"]
+    event = {
+        "session_id": session, "tool_call_id": raw_call,
+        "tool": "web_search", "arguments": {"query": query},
+        "result": result, "durable_status": "ok",
+        "attempted_at": task_binding["created_at"],
+        "search_ref": result_record["search_ref"],
+    }
+    return path, ledger, handle, event
+
+
+def test_v3_refined_same_url_date_replaces_ineligible_receipt_without_duplicate_item(
+    tmp_path, monkeypatch,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode="recent")
+    path, _ledger, first_handle, first_event = _v3_completed_search(
+        tmp_path, task_binding, description="February 2026",
+        raw_call="call-unknown", query="WMO first search",
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    first = runner._stage_candidate_receipt(
+        path, result_handle=first_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    assert first["date_status"] == "unknown_pending_review"
+    assert calls == []
+
+    _path, _ledger, refined_handle, refined_event = _v3_completed_search(
+        tmp_path, task_binding, description="19 Aug 2026",
+        raw_call="call-refined", query="WMO exact date refinement",
+    )
+    refined = runner._stage_candidate_receipt(
+        path, result_handle=refined_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    assert refined["date_status"] == "eligible"
+    assert refined["published_date"] == "2026-08-19"
+    assert refined["body_status"] == "ok"
+    assert calls == [("https://wmo.int/article", "wmo")]
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=refined["candidate_handle"], selected=True,
+        title="Refined", summary="Summary", selection_reason="Relevant",
+        session_id="session-a",
+    )
+
+    payload, _events = runner._assemble_v3_payload(
+        task_binding, [first_event, refined_event],
+    )
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["published_date"] == "2026-08-19"
+    assert payload["items"][0]["processing_status"] == "complete"
+
+
+def test_v3_same_url_ineligible_refinement_does_not_inherit_old_eligible_date(
+    tmp_path, monkeypatch,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode="custom")
+    path, _ledger, eligible_handle, eligible_event = _v3_completed_search(
+        tmp_path, task_binding, description="19 Aug 2026",
+        raw_call="call-eligible", query="WMO eligible",
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    eligible = runner._stage_candidate_receipt(
+        path, result_handle=eligible_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=eligible["candidate_handle"], selected=True,
+        title="Eligible", summary="Summary", selection_reason="Relevant",
+        session_id="session-a",
+    )
+
+    _path, _ledger, outside_handle, outside_event = _v3_completed_search(
+        tmp_path, task_binding, description="19 Aug 2024",
+        raw_call="call-outside", query="WMO outside",
+    )
+    outside = runner._stage_candidate_receipt(
+        path, result_handle=outside_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    assert outside["status"] == "deduped"
+    assert outside["candidate_handle"] is None
+    assert outside["date_status"] == "outside_window"
+    assert outside["published_date"] == "2024-08-19"
+    assert calls == [("https://wmo.int/article", "wmo")]
+    payload, _events = runner._assemble_v3_payload(
+        task_binding, [eligible_event, outside_event],
+    )
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["published_date"] == "2026-08-19"
+
+
+def test_v3_same_url_exact_date_refinement_reuses_only_verified_body(
+    tmp_path, monkeypatch,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode="unlimited")
+    path, _ledger, unknown_handle, unknown_event = _v3_completed_search(
+        tmp_path, task_binding, description="date unavailable",
+        raw_call="call-unknown-body", query="WMO first body",
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    unknown = runner._stage_candidate_receipt(
+        path, result_handle=unknown_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=unknown["candidate_handle"], selected=True,
+        title="Unknown date", summary="Summary", selection_reason="Relevant",
+        session_id="session-a",
+    )
+    assert unknown["date_status"] == "eligible_unknown"
+    assert calls == [("https://wmo.int/article", "wmo")]
+
+    _path, _ledger, exact_handle, exact_event = _v3_completed_search(
+        tmp_path, task_binding, description="19 Aug 2026",
+        raw_call="call-exact-body", query="WMO exact body date",
+    )
+    exact = runner._stage_candidate_receipt(
+        path, result_handle=exact_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    assert exact["date_status"] == "eligible"
+    assert exact["published_date"] == "2026-08-19"
+    assert exact["body_status"] == "ok"
+    assert calls == [("https://wmo.int/article", "wmo")]
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=exact["candidate_handle"], selected=True,
+        title="Exact date", summary="Summary", selection_reason="Relevant",
+        session_id="session-a",
+    )
+    payload, controlled = runner._assemble_v3_payload(
+        task_binding, [unknown_event, exact_event],
+    )
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["published_date"] == "2026-08-19"
+    assert len(controlled) == 1
+
+
+def test_v3_site_handle_stages_with_null_search_reference(tmp_path, monkeypatch):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding))
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    handle = ledger.register_site_candidate_handles([{
+        "url": "https://wmo.int/article", "source": "wmo",
+        "title": "WMO site candidate", "discovery_ref": "site-manifest-1",
+        "observed_at": task_binding["created_at"],
+    }])[0]["handle"]
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    staged = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    assert staged["status"] == "staged"
+    receipt = ledger.candidate_receipts()[0]
+    assert receipt["item"]["discovery_kind"] == "site"
+    assert receipt["item"]["discovery_ref"] == "site-manifest-1"
+    assert receipt["item"]["discovery_search_ref"] is None
+
+
+def test_v2_cannot_register_candidate_result_handles(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+
+    task_binding = new_protocol_binding(tmp_path)
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    raw_state = json.loads(ledger.path.read_text())
+    raw_state.pop("sha256")
+    assert "result_handles" not in raw_state
+    assert "candidate_receipts" not in raw_state
+    with pytest.raises(ValueError, match="frozen v3"):
+        ledger.result_handles()
+    with pytest.raises(ValueError, match="frozen v3"):
+        ledger.candidate_receipts()
+    result = _tagged_search_result(web=[{
+        "url": "https://wmo.int/article", "title": "WMO",
+        "description": "19 Aug 2026",
+    }])
+    ledger.claim(
+        "web_search", "WMO", call_id="1:session-a:call-v2", results=1,
+        session_id="session-a", tool_call_id="call-v2",
+    )
+    ledger.complete_tool("1:session-a:call-v2", result, "ok")
+    with pytest.raises(ValueError, match="frozen v3"):
+        ledger.register_search_result_handles("session-a", "call-v2", result)
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("climate_stage_candidate", {
+            "result_handle": "result-" + "0" * 64, "source_key": "wmo",
+        }),
+        ("climate_finalize_candidate", {
+            "candidate_handle": "candidate-" + "0" * 64,
+            "selected": True, "title": "Forged", "summary": "Forged",
+            "selection_reason": "Forged",
+        }),
+    ],
+)
+def test_v3_invalid_candidate_tool_transcript_cannot_disappear(
+    tmp_path, tool, arguments,
+):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    RequestBudget(ledger_path(task_binding), task_binding)
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, [{
+        "tool_call_id": f"call-invalid-{tool}", "tool": tool,
+        "arguments": arguments,
+        "result": {"error": "tool rejected the unknown handle"},
+    }])
+    trusted = runner._trusted_tool_events(task_binding)
+    assert trusted[0]["result"] == {
+        "event_kind": "candidate_tool",
+        "status": "unresolved_error",
+        "error": "tool rejected the unknown handle",
+    }
+    provenance = runner._persist_tool_provenance(
+        tmp_path / "attempt-1.json", task_binding, trusted,
+    )
+    assert provenance["events"][0]["result"]["status"] == "unresolved_error"
+    with pytest.raises(ValueError, match="unresolved candidate tool transcript"):
+        runner._assemble_v3_payload(task_binding, trusted)
+    assert RequestBudget(
+        ledger_path(task_binding), task_binding,
+    ).usage()["fetch_attempts"] == 0
+
+
+def test_v3_candidate_tool_error_can_be_corrected_without_hiding_audit(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode="unlimited")
+    binding_path = tmp_path / "attempt-1.json"
+    binding_path.write_text(json.dumps(task_binding))
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    result_handle = ledger.register_site_candidate_handles([{
+        "url": "https://wmo.int/article", "source": "wmo",
+        "title": "WMO candidate", "discovery_ref": "site-result-1",
+        "observed_at": task_binding["created_at"],
+    }])[0]["handle"]
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    staged = runner._stage_candidate_receipt(
+        binding_path, result_handle=result_handle, source_key="wmo",
+        session_id="session-1",
+    )
+    annotations = {
+        "selected": True, "title": "WMO candidate", "summary": "Summary",
+        "selection_reason": "Relevant",
+    }
+    finalized = runner._finalize_candidate_receipt(
+        binding_path, candidate_handle=staged["candidate_handle"],
+        session_id="session-1", **annotations,
+    )
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, [
+        {
+            "tool_call_id": "call-invalid-stage",
+            "tool": "climate_stage_candidate",
+            "arguments": {
+                "result_handle": "result-" + "0" * 64,
+                "source_key": "wmo",
+            },
+            "result": {
+                "error": "Error executing climate_stage_candidate: "
+                "candidate result handle is not bound to this attempt/session",
+            },
+        },
+        {
+            "tool_call_id": "call-valid-stage",
+            "tool": "climate_stage_candidate",
+            "arguments": {
+                "result_handle": result_handle, "source_key": "wmo",
+            },
+            "result": staged,
+        },
+        {
+            "tool_call_id": "call-valid-finalize",
+            "tool": "climate_finalize_candidate",
+            "arguments": {
+                "candidate_handle": staged["candidate_handle"], **annotations,
+            },
+            "result": finalized,
+        },
+    ])
+
+    trusted = runner._trusted_tool_events(task_binding)
+    assert [event["result"]["status"] for event in trusted] == [
+        "resolved_error",
+    ]
+    assert trusted[0]["result"]["resolved_by_tool_call_id"] == "call-valid-stage"
+    provenance = runner._persist_tool_provenance(
+        binding_path, task_binding, trusted,
+    )
+    assert provenance["actual"]["fetch_attempts"] == 1
+    assert provenance["events"][0]["result"]["error"].startswith(
+        "Error executing climate_stage_candidate:"
+    )
+    payload, controlled = runner._assemble_v3_payload(task_binding, trusted)
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["url"] == "https://wmo.int/article"
+    assert len(controlled) == 1
+    assert calls == [("https://wmo.int/article", "wmo")]
+
+
+def test_v3_valid_candidate_tool_transcript_reconciles_all_receipt_states(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import article_content_adapter as article
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode="unlimited")
+    session = "session-1"
+    path, _ledger, first_handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description="date unavailable", session=session,
+        raw_call="call-first", query="WMO first",
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    first_stage = runner._stage_candidate_receipt(
+        path, result_handle=first_handle, source_key="wmo", session_id=session,
+    )
+    first_annotations = {
+        "selected": True, "title": "First", "summary": "Summary",
+        "selection_reason": "Relevant",
+    }
+    first_final = runner._finalize_candidate_receipt(
+        path, candidate_handle=first_stage["candidate_handle"],
+        session_id=session, **first_annotations,
+    )
+
+    _path, _ledger, exact_handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description="19 Aug 2026", session=session,
+        raw_call="call-exact", query="WMO exact",
+    )
+    exact_stage = runner._stage_candidate_receipt(
+        path, result_handle=exact_handle, source_key="wmo", session_id=session,
+    )
+    exact_annotations = {
+        "selected": True, "title": "Exact", "summary": "Summary",
+        "selection_reason": "Relevant",
+    }
+    exact_final = runner._finalize_candidate_receipt(
+        path, candidate_handle=exact_stage["candidate_handle"],
+        session_id=session, **exact_annotations,
+    )
+
+    _path, _ledger, alias_handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description="19 Aug 2026", session=session,
+        raw_call="call-alias", query="WMO exact again",
+    )
+    alias_stage = runner._stage_candidate_receipt(
+        path, result_handle=alias_handle, source_key="wmo", session_id=session,
+    )
+    assert alias_stage["status"] == "reused"
+    assert alias_stage["reused"] is True
+    alias_final = runner._finalize_candidate_receipt(
+        path, candidate_handle=alias_stage["candidate_handle"],
+        session_id=session, **exact_annotations,
+    )
+
+    _path, _ledger, failed_handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description="date unavailable", session=session,
+        raw_call="call-failed", query="WMO failed",
+        url="https://wmo.int/failed",
+    )
+    def fail_fetch(_item_id, url, *, budget, site_key):
+        calls.append((url, site_key))
+        budget.claim("http", url, retry_key=f"article:{url}")
+        return {
+            "status": "failed", "failure_reason": "controlled failure",
+            "attempts": [{"engine": "public_reader", "status": "failed"}],
+        }
+    monkeypatch.setattr(article, "fetch_article_content", fail_fetch)
+    failed_stage = runner._stage_candidate_receipt(
+        path, result_handle=failed_handle, source_key="wmo", session_id=session,
+    )
+    assert failed_stage["status"] == "failed"
+
+    events = [
+        {
+            "tool_call_id": "call-stage-first", "tool": "climate_stage_candidate",
+            "arguments": {"result_handle": first_handle, "source_key": "wmo"},
+            "result": first_stage,
+        },
+        {
+            "tool_call_id": "call-final-first", "tool": "climate_finalize_candidate",
+            "arguments": {
+                "candidate_handle": first_stage["candidate_handle"],
+                **first_annotations,
+            },
+            "result": first_final,
+        },
+        {
+            "tool_call_id": "call-stage-exact", "tool": "climate_stage_candidate",
+            "arguments": {"result_handle": exact_handle, "source_key": "wmo"},
+            "result": exact_stage,
+        },
+        {
+            "tool_call_id": "call-final-exact", "tool": "climate_finalize_candidate",
+            "arguments": {
+                "candidate_handle": exact_stage["candidate_handle"],
+                **exact_annotations,
+            },
+            "result": exact_final,
+        },
+        {
+            "tool_call_id": "call-stage-alias", "tool": "climate_stage_candidate",
+            "arguments": {"result_handle": alias_handle, "source_key": "wmo"},
+            "result": alias_stage,
+        },
+        {
+            "tool_call_id": "call-final-alias", "tool": "climate_finalize_candidate",
+            "arguments": {
+                "candidate_handle": alias_stage["candidate_handle"],
+                **exact_annotations,
+            },
+            "result": alias_final,
+        },
+        {
+            "tool_call_id": "call-stage-failed", "tool": "climate_stage_candidate",
+            "arguments": {"result_handle": failed_handle, "source_key": "wmo"},
+            "result": failed_stage,
+        },
+    ]
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, events)
+    assert runner._trusted_tool_events(task_binding) == []
+    receipts = RequestBudget(ledger_path(task_binding), task_binding).candidate_receipts()
+    assert {row["state"] for row in receipts} == {
+        "failed", "finalized", "superseded",
+    }
+    assert calls == [
+        ("https://wmo.int/article", "wmo"),
+        ("https://wmo.int/failed", "wmo"),
+    ]
+    assert RequestBudget(
+        ledger_path(task_binding), task_binding,
+    ).usage()["fetch_attempts"] == 2
+
+
+def _install_v3_reader(monkeypatch, calls):
+    from climate_monitor import article_content_adapter as article
+
+    def fetch(_item_id, url, *, budget, site_key):
+        calls.append((url, site_key))
+        budget.claim("http", url, retry_key=f"article:{url}")
+        body = "Verified governed article body"
+        return {
+            "status": "ok", "selected_method": "public_reader",
+            "content": body, "content_hash": __import__("hashlib").sha256(
+                body.encode()
+            ).hexdigest(),
+            "content_type": "text/html", "final_url": url,
+            "attempts": [{
+                "engine": "public_reader", "status": "success",
+                "http_status": 200,
+            }],
+            "extra": {"extraction_metadata": {"http_status": 200}},
+        }
+
+    monkeypatch.setattr(article, "fetch_article_content", fetch)
+
+
+def test_v3_stage_date_first_reader_receipt_is_idempotent_and_runner_owned(
+    tmp_path, monkeypatch,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode="unlimited")
+    path, ledger, handle, event = _v3_completed_search(
+        tmp_path, task_binding, description="16 Apr 2025",
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+
+    staged = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    assert staged["status"] == "staged"
+    assert staged["url"] == "https://wmo.int/article"
+    assert staged["source_key"] == "wmo"
+    assert staged["title"] == "WMO article"
+    assert staged["published_date"] == "2025-04-16"
+    assert staged["body_status"] == "ok"
+    assert staged["content_preview"] == "Verified governed article body"
+    bounded = runner._candidate_stage_tool_output({
+        "status": "staged", "item": {
+            "url": "https://wmo.int/article", "source": "wmo", "title": "WMO",
+            "evidence": {"status": "ok", "content": "x" * 12_001},
+        },
+    })
+    assert len(bounded["content_preview"]) == 12_000
+    assert bounded["content_truncated"] is True
+    reused = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    assert reused["reused"] is True
+    assert calls == [("https://wmo.int/article", "wmo")]
+    assert ledger.usage()["fetch_attempts"] == 1
+
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=staged["candidate_handle"], selected=True,
+        title="Model title", summary="Model summary",
+        selection_reason="Relevant climate evidence", session_id="session-a",
+    )
+    payload, controlled = runner._assemble_v3_payload(task_binding, [event])
+    assert payload["searches"][0]["result_refs"] == ["https://wmo.int/article"]
+    assert payload["items"][0]["title"] == "Model title"
+    assert payload["items"][0]["published_date"] == "2025-04-16"
+    assert payload["items"][0]["evidence"]["content"] == "Verified governed article body"
+    assert payload["items"][0]["discovery_search_ref"] == payload["searches"][0]["search_ref"]
+    assert len(controlled) == 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "description", "date_status"),
+    [
+        ("recent", "February 2026", "unknown_pending_review"),
+        ("custom", "February 2026", "unknown_pending_review"),
+        ("recent", "16 Apr 2025", "outside_window"),
+    ],
+)
+def test_v3_ineligible_date_never_reads_body(
+    tmp_path, monkeypatch, mode, description, date_status,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path, mode=mode)
+    path, ledger, handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description=description,
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    staged = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    assert staged["date_status"] == date_status
+    assert staged["body_status"] == "unavailable"
+    assert calls == []
+    assert ledger.usage()["fetch_attempts"] == 0
+
+
+def test_v3_handles_and_finalization_fail_closed_across_identity_boundaries(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    path, _ledger, handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description="unknown",
+    )
+    with pytest.raises(ValueError, match="attempt/session"):
+        runner._stage_candidate_receipt(
+            path, result_handle=handle, source_key="wmo", session_id="other",
+        )
+    with pytest.raises(ValueError, match="source identity"):
+        runner._stage_candidate_receipt(
+            path, result_handle=handle, source_key="WMO", session_id="session-a",
+        )
+    with pytest.raises(ValueError, match="attempt/session"):
+        runner._stage_candidate_receipt(
+            path, result_handle="result-forged", source_key="wmo",
+            session_id="session-a",
+        )
+
+
+def test_v3_unstaged_controlled_site_handle_is_an_explicit_gap(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.register_site_candidate_handles([{
+        "url": "https://wmo.int/site-candidate", "source": "wmo",
+        "discovery_ref": "site-item-1", "title": "Site candidate",
+        "observed_at": task_binding["created_at"],
+    }])
+    payload, events = runner._assemble_v3_payload(task_binding, [])
+    assert events == []
+    assert payload["items"][0]["processing_status"] == "failed"
+    assert payload["items"][0]["processing_error"] == (
+        "controlled site candidate was not staged"
+    )
+    runner._validate_site_claims(payload, {
+        "candidates": [{
+            "url": "https://wmo.int/site-candidate", "source": "wmo",
+            "discovery_ref": "site-item-1",
+        }],
+    })
+
+
+@pytest.mark.parametrize(
+    ("description", "published", "kind"),
+    [
+        ("Published 1 September 2026", "2026-09-01", "known"),
+        ("September 2, 2026", "2026-09-02", "known"),
+        ("06 August, 2026", "2026-08-06", "known"),
+        ("Recent work includes 19 Jan 2026 in Latest news", "2026-01-19", "known"),
+        ("Utrecht, 2 December 2025: Today the initiative launched", "2025-12-02", "known"),
+        ("February 2026", None, "unknown"),
+        ("16 Apr 2025 and 17 Apr 2025", None, "unknown"),
+        ("2 December 2025 and updated 3 December 2025", None, "unknown"),
+        ("IPCC climate update, September 2026", None, "unknown"),
+        ("2026", None, "unknown"),
+    ],
+)
+def test_v3_date_is_derived_only_from_one_complete_unambiguous_result_date(
+    description, published, kind,
+):
+    import scripts.run_agent_acquisition as runner
+
+    value, evidence, actual_kind = runner._trusted_result_publication_date({
+        "url": "https://wmo.int/article", "description": description,
+    }, "https://wmo.int/article/")
+    assert value == published
+    assert actual_kind == kind
+    assert (evidence is None) == (published is None)
+    if evidence:
+        assert evidence["text"] in description
+    with pytest.raises(ValueError, match="URL differs"):
+        runner._trusted_result_publication_date({
+            "url": "https://wmo.int/other", "description": description,
+        }, "https://wmo.int/article")
+
+
+def test_v3_unlimited_unknown_reads_and_failed_read_can_retry_without_tool_double_count(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import article_content_adapter as article
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    path, _ledger, handle, _event = _v3_completed_search(
+        tmp_path, task_binding, description="month and year unavailable",
+    )
+    calls = []
+
+    def fetch(_item_id, url, *, budget, site_key):
+        calls.append(url)
+        budget.claim("http", url, retry_key=f"article:{url}")
+        if len(calls) == 1:
+            return {"status": "failed", "failure_reason": "temporary",
+                    "attempts": [{"engine": "public_reader", "status": "failed"}]}
+        body = "Recovered exact body"
+        return {
+            "status": "ok", "selected_method": "public_reader", "content": body,
+            "content_type": "text/html", "final_url": url,
+            "attempts": [{"engine": "public_reader", "status": "success", "http_status": 200}],
+            "extra": {"extraction_metadata": {"http_status": 200}},
+        }
+
+    monkeypatch.setattr(article, "fetch_article_content", fetch)
+    first = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    second = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    assert first["status"] == "failed"
+    assert second["status"] == "staged"
+    assert second["date_status"] == "eligible_unknown"
+    assert calls == ["https://wmo.int/article"] * 2
+    usage = RequestBudget(ledger_path(task_binding), task_binding).usage()
+    assert usage["fetch_attempts"] == 2
+    assert usage["search_attempts"] == 1
+
+
+def test_v3_interrupted_stage_is_explicit_gap_and_resume_reuses_verified_receipt(
+    tmp_path, monkeypatch,
+):
+    import copy
+    from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
+    from climate_monitor.request_budget import (
+        RequestBudget, RequestBudgetError, ledger_path,
+    )
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path / "interrupted")
+    path, ledger, handle, event = _v3_completed_search(
+        tmp_path / "interrupted", task_binding, description="unknown",
+    )
+    ledger.begin_candidate_stage(handle, session_id="session-a", source_key="wmo")
+    with pytest.raises(RequestBudgetError, match="already in progress"):
+        RequestBudget(ledger_path(task_binding), task_binding).begin_candidate_stage(
+            handle, session_id="session-a", source_key="wmo",
+        )
+    interrupted, _events = runner._assemble_v3_payload(task_binding, [event])
+    assert interrupted["items"][0]["processing_status"] == "failed"
+    assert "interrupted" in interrupted["items"][0]["processing_error"]
+
+    resumed_interrupted = copy.deepcopy(task_binding)
+    resumed_interrupted.update(attempt=2, created_at="2026-09-12T12:00:00Z")
+    resumed_interrupted_path = tmp_path / "interrupted" / "attempt-2.json"
+    resumed_interrupted_path.write_text(json.dumps(resumed_interrupted))
+    resumed_interrupted_ledger = RequestBudget(
+        ledger_path(resumed_interrupted), resumed_interrupted,
+    )
+    retry_result = _tagged_search_result(web=[{
+        "url": "https://wmo.int/article", "title": "retried", "description": "unknown",
+    }])
+    resumed_interrupted_ledger.claim(
+        "web_search", "retry", call_id="2:session-a:call-search", results=5,
+        session_id="session-a", tool_call_id="call-search",
+    )
+    assert transform_search_tool_result(
+        resumed_interrupted_path, tool_name="web_search", args={"query": "retry"},
+        result=retry_result, session_id="session-a", tool_call_id="call-search",
+        status="ok",
+    )
+    retry_handle = resumed_interrupted_ledger.result_handles()[-1]["handle"]
+    retry_calls = []
+    _install_v3_reader(monkeypatch, retry_calls)
+    retried = runner._stage_candidate_receipt(
+        resumed_interrupted_path, result_handle=retry_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    runner._finalize_candidate_receipt(
+        resumed_interrupted_path, candidate_handle=retried["candidate_handle"],
+        selected=True, title="retried", summary="summary",
+        selection_reason="relevant", session_id="session-a",
+    )
+    retry_event = {
+        **event, "arguments": {"query": "retry"},
+        "result": retry_result,
+        "attempted_at": resumed_interrupted["created_at"],
+        "search_ref": resumed_interrupted_ledger.result_handles()[-1]["search_ref"],
+    }
+    recovered, _ = runner._assemble_v3_payload(
+        resumed_interrupted, [retry_event],
+    )
+    assert len(recovered["items"]) == 1
+    assert recovered["items"][0]["processing_status"] == "complete"
+    assert retry_calls == [("https://wmo.int/article", "wmo")]
+
+    completed_binding = _v3_binding(tmp_path / "completed")
+    completed_path, completed_ledger, first_handle, first_event = _v3_completed_search(
+        tmp_path / "completed", completed_binding, description="unknown",
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    staged = runner._stage_candidate_receipt(
+        completed_path, result_handle=first_handle, source_key="wmo",
+        session_id="session-a",
+    )
+    runner._finalize_candidate_receipt(
+        completed_path, candidate_handle=staged["candidate_handle"], selected=True,
+        title="Title", summary="Summary", selection_reason="Relevant",
+        session_id="session-a",
+    )
+    completed_ledger.finish()
+    resumed = copy.deepcopy(completed_binding)
+    resumed.update(attempt=2, created_at="2026-09-12T12:00:00Z")
+    resumed_path = tmp_path / "completed" / "attempt-2.json"
+    resumed_path.write_text(json.dumps(resumed))
+    resumed_ledger = RequestBudget(ledger_path(resumed), resumed)
+    raw = _tagged_search_result(web=[{
+        "url": "https://wmo.int/article", "title": "again", "description": "unknown",
+    }])
+    resumed_ledger.claim(
+        "web_search", "refinement", call_id="2:session-b:call-new", results=5,
+        session_id="session-b", tool_call_id="call-new",
+    )
+    assert transform_search_tool_result(
+        resumed_path, tool_name="web_search", args={"query": "refinement"},
+        result=raw, session_id="session-b", tool_call_id="call-new", status="ok",
+    )
+    second_handle = resumed_ledger.result_handles()[-1]["handle"]
+    reused = runner._stage_candidate_receipt(
+        resumed_path, result_handle=second_handle, source_key="wmo",
+        session_id="session-b",
+    )
+    assert reused["reused"] is True
+    assert reused["candidate_handle"] == staged["candidate_handle"]
+    assert calls == [("https://wmo.int/article", "wmo")]
+    second_event = {
+        **first_event, "session_id": "session-b", "tool_call_id": "call-new",
+        "arguments": {"query": "refinement"}, "result": raw,
+        "attempted_at": resumed["created_at"],
+        "search_ref": resumed_ledger.result_handles()[-1]["search_ref"],
+    }
+    payload, _ = runner._assemble_v3_payload(resumed, [second_event])
+    assert len(payload["items"]) == 1
+    assert resumed_ledger.usage()["fetch_attempts"] == 1
+
+
+def test_v3_resume_recovers_prior_sqlite_searches_and_receipts_from_durable_ledger(
+    tmp_path, monkeypatch,
+):
+    import copy
+    from climate_monitor.hermes_acquisition_hooks import (
+        attempt_home, transform_search_tool_result,
+    )
+    from climate_monitor.request_budget import (
+        RequestBudget, candidate_handle_suffix, ledger_path,
+    )
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    first = _v3_binding(tmp_path)
+    first_path = tmp_path / "attempt-1.json"
+    first_path.write_text(json.dumps(first))
+    first_ledger = RequestBudget(ledger_path(first), first)
+    query = "WMO climate"
+    raw_call = "call-reused-by-provider"
+    wrapper = _tagged_search_result(web=[{
+        "url": "https://wmo.int/article", "title": "WMO article",
+        "description": "16 Apr 2025",
+    }])
+    durable_raw = json.dumps(runner._decoded_event_result(wrapper), indent=2)
+    first_ledger.claim(
+        "web_search", query, call_id=f"1:session-1:{raw_call}", results=0,
+        session_id="session-1", tool_call_id=raw_call,
+    )
+    transformed = transform_search_tool_result(
+        first_path, tool_name="web_search", args={"query": query},
+        result=durable_raw, session_id="session-1", tool_call_id=raw_call,
+        status="ok",
+    )
+    handles = first_ledger.result_handles()
+    assert transformed == durable_raw + candidate_handle_suffix([handles[0]["handle"]])
+    closing = "\n</untrusted_tool_result>"
+    visible = wrapper[:-len(closing)] + candidate_handle_suffix(
+        [handles[0]["handle"]]
+    ) + closing
+    failed_call = "call-failed"
+    failed_result = _tagged_search_result(
+        web=[], success=False, error="provider search failed",
+    )
+    first_ledger.claim(
+        "web_search", "failed query", call_id=f"1:session-1:{failed_call}",
+        results=0, session_id="session-1", tool_call_id=failed_call,
+    )
+    first_ledger.complete_tool(
+        f"1:session-1:{failed_call}", failed_result, "error",
+    )
+    _write_hermes_tool_events(attempt_home(first), first, [
+        {"tool_call_id": raw_call, "tool": "web_search",
+         "arguments": {"query": query}, "result": visible},
+        {"tool_call_id": failed_call, "tool": "web_search",
+         "arguments": {"query": "failed query"}, "result": failed_result},
+    ])
+    trusted_first = runner._trusted_tool_events(first)
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    staged = runner._stage_candidate_receipt(
+        first_path, result_handle=handles[0]["handle"], source_key="wmo",
+        session_id="session-1",
+    )
+    runner._finalize_candidate_receipt(
+        first_path, candidate_handle=staged["candidate_handle"], selected=True,
+        title="WMO article", summary="Verified", selection_reason="Relevant",
+        session_id="session-1",
+    )
+    assert len(trusted_first) == 2
+    # Simulate a process loss before attempt 1 can assemble or store Registry state.
+
+    second = copy.deepcopy(first)
+    second.update(
+        attempt=2, created_at="2026-09-12T12:00:00Z",
+        acquisition_batch_id="acq-v3-unlimited-attempt-2",
+    )
+    second_path = tmp_path / "attempt-2.json"
+    second_path.write_text(json.dumps(second))
+    second_ledger = RequestBudget(ledger_path(second), second)
+    second_ledger.claim(
+        "web_search", "second failed query",
+        call_id=f"2:session-2:{raw_call}", results=0,
+        session_id="session-2", tool_call_id=raw_call,
+    )
+    second_failed = _tagged_search_result(
+        web=[], success=False, error="second provider failure",
+    )
+    second_ledger.complete_tool(
+        f"2:session-2:{raw_call}", second_failed, "error",
+    )
+    _write_hermes_tool_events(attempt_home(second), second, [{
+        "tool_call_id": raw_call, "tool": "web_search",
+        "arguments": {"query": "second failed query"}, "result": second_failed,
+    }])
+
+    current_only = runner._trusted_tool_events(second)
+    assert len(current_only) == 1
+    payload, controlled = runner._assemble_v3_payload(second, current_only)
+    assert len(payload["searches"]) == 3
+    assert len({row["search_ref"] for row in payload["searches"]}) == 3
+    assert [row["status"] for row in payload["searches"]].count("failed") == 2
+    assert payload["items"][0]["discovery_search_ref"] in {
+        row["search_ref"] for row in payload["searches"]
+    }
+    assert payload["items"][0]["processing_status"] == "complete"
+    assert len(controlled) == 1
+    usage = second_ledger.usage()
+    assert usage["search_attempts"] == 3
+    assert usage["search_results"] == 1
+    assert calls == [("https://wmo.int/article", "wmo")]
 
 
 def test_opaque_search_refs_bind_to_same_trusted_event_urls(tmp_path):
@@ -573,6 +1718,10 @@ def test_new_run_binds_trusted_candidate_protocol_and_unlimited_search(tmp_path)
     assert "completed web_search tool_call_id shown on that tool result" in prompt
     assert "provider's native web_search schema remains authoritative" in prompt
     assert "no application search-attempt, result-count, per-call-result, or token limit" in prompt
+    assert "You have search/browser tools only" in prompt
+    assert "Put fetched body text" in prompt
+    assert "items[].evidence.attempts" in prompt
+    assert "publication_date_evidence" in prompt
     assert "Each web_search call may request at most 10 results" not in prompt
     assert "searches" not in runner._agent_response_shape(task_binding)["acquisition_batch"]
 
@@ -801,6 +1950,88 @@ def test_v2_model_visible_search_identity_round_trips_to_validated_candidate(
     )
     assert provenance["events"][0]["result"] == original
     assert provenance["events"][0]["model_visible_search_result"] == audit
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "wrong-handle", "changed-content"])
+def test_v3_model_visible_handles_reconcile_exact_durable_search_rows(
+    tmp_path, monkeypatch, mutation,
+):
+    from climate_monitor.hermes_acquisition_hooks import (
+        attempt_home, transform_search_tool_result,
+    )
+    from climate_monitor.request_budget import (
+        RequestBudget, candidate_handle_suffix, ledger_path,
+    )
+    from test_issue94_management_console import _write_hermes_tool_events
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding))
+    wrapper = _tagged_search_result(web=[{
+        "url": "https://wmo.int/a", "title": "A", "description": "16 Apr 2025",
+    }])
+    durable_raw = json.dumps(runner._decoded_event_result(wrapper), indent=2)
+    session, raw_call, query = "session-1", "call-real", "WMO climate"
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.claim(
+        "web_search", query, call_id=f"1:{session}:{raw_call}", results=5,
+        session_id=session, tool_call_id=raw_call,
+    )
+    transformed = transform_search_tool_result(
+        path, tool_name="web_search", args={"query": query}, result=durable_raw,
+        session_id=session, tool_call_id=raw_call, status="ok",
+    )
+    handles = [row["handle"] for row in ledger.result_handles()]
+    suffix = candidate_handle_suffix(handles)
+    assert transformed == durable_raw + suffix
+    closing = "\n</untrusted_tool_result>"
+    visible = wrapper[:-len(closing)] + suffix + closing
+    if mutation == "missing":
+        visible = wrapper
+    elif mutation == "wrong-handle":
+        visible = wrapper[:-len(closing)] + candidate_handle_suffix(
+            ["result-" + "0" * 64]
+        ) + closing
+    elif mutation == "changed-content":
+        changed = wrapper.replace("16 Apr 2025", "17 Apr 2025")
+        visible = changed[:-len(closing)] + suffix + closing
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, [{
+        "session_id": session, "tool_call_id": raw_call, "status": "ok",
+        "tool": "web_search", "arguments": {"query": query}, "result": visible,
+    }])
+
+    if mutation is not None:
+        expected = "differs from durable" if mutation == "changed-content" else "result-handle suffix"
+        with pytest.raises(ValueError, match=expected):
+            runner._trusted_tool_events(task_binding)
+        return
+    trusted = runner._trusted_tool_events(task_binding)
+    assert trusted[0]["result"] == wrapper
+    audit = trusted[0]["model_visible_search_result"]
+    assert audit["result_handle_suffix_verified"] is True
+    assert audit["result_handle_count"] == 1
+    assert "https://wmo.int/a" not in json.dumps(audit)
+    assert raw_call not in json.dumps(audit)
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    staged = runner._stage_candidate_receipt(
+        path, result_handle=handles[0], source_key="wmo", session_id=session,
+    )
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=staged["candidate_handle"], selected=True,
+        title="A", summary="Verified summary", selection_reason="Relevant",
+        session_id=session,
+    )
+    provenance = runner._persist_tool_provenance(path, task_binding, trusted)
+    assert provenance["events"][0]["result"] == wrapper
+    assert provenance["events"][0]["model_visible_search_result"] == audit
+    payload, controlled = runner._assemble_v3_payload(task_binding, trusted)
+    # Assembly itself runs the public Registry-schema/date-policy validator;
+    # governed reader events are runner receipts, not Hermes fetch-tool rows.
+    assert payload["items"][0]["url"] == "https://wmo.int/a"
+    assert calls == [("https://wmo.int/a", "wmo")]
+    assert len(controlled) == 1
 
 
 @pytest.mark.parametrize(
@@ -1563,6 +2794,39 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
     assert not (legacy_home / "plugins").exists()
 
 
+def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
+    tmp_path, monkeypatch,
+):
+    import subprocess
+    import sys
+    from climate_monitor.hermes_acquisition_hooks import (
+        SEARCH_IDENTITY_PLUGIN_ID, install_hooks,
+    )
+
+    task_binding = _v3_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding))
+    executable = tmp_path / "hermes"
+    executable.write_text(f"#!{sys.executable}\n")
+    executable.chmod(0o700)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
+    ))
+    _environment, home = install_hooks(
+        [str(executable)], path, task_binding,
+        {"PATH": __import__("os").environ["PATH"]},
+    )
+    config = json.loads((home / "config.yaml").read_text())
+    assert config["plugins"] == {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
+    assert config["mcp_servers"] == {}
+    source = (home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID / "__init__.py").read_text()
+    assert source.count("ctx.register_tool(") == 2
+    assert "toolset='climate_acquisition'" in source
+    assert "climate_stage_candidate" in source
+    assert "climate_finalize_candidate" in source
+    assert "terminal" not in source and "execute_code" not in source
+
+
 def test_v2_search_identity_transform_uses_completed_same_call_without_accounting(tmp_path):
     from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
     from climate_monitor.request_budget import RequestBudget, hook_decision, ledger_path
@@ -1757,6 +3021,174 @@ def test_pinned_hermes_second_provider_request_contains_completed_search_id(
     assert ledger.tool_event(f"1:{session_id}:{call_id}")["completed"] is True
 
 
+def test_pinned_hermes_v3_tool_loop_exposes_handles_and_dispatches_receipts(
+    tmp_path, monkeypatch,
+):
+    """Exercise pinned Hermes definitions, transform, dispatch, and next messages."""
+    import re
+    import subprocess
+    import sys
+    from unittest.mock import MagicMock
+    model_tools = pytest.importorskip("model_tools")
+    plugins = pytest.importorskip("hermes_cli.plugins")
+    run_agent = pytest.importorskip("run_agent")
+    from climate_monitor.hermes_acquisition_hooks import install_hooks
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+
+    task_binding = _v3_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding))
+    executable = tmp_path / "hermes"
+    executable.write_text(f"#!{sys.executable}\n")
+    executable.chmod(0o700)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
+    ))
+    environment, _home = install_hooks(
+        [str(executable)], path, task_binding,
+        {"PATH": __import__("os").environ["PATH"]},
+    )
+    monkeypatch.setenv("HERMES_HOME", environment["HERMES_HOME"])
+    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+    plugins._plugin_manager = plugins.PluginManager()
+    plugins.discover_plugins()
+    climate_definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=["climate_acquisition"], quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    assert {
+        row["function"]["name"] for row in climate_definitions
+    } == {"climate_stage_candidate", "climate_finalize_candidate"}
+
+    session_id, call_id, query = "session-provider", "call-web_search", "WMO climate"
+    result = _tagged_search_result(web=[{
+        "url": "https://wmo.int/article", "title": "WMO article",
+        "description": "16 Apr 2025",
+    }])
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    ledger.claim(
+        "web_search", query, call_id=f"1:{session_id}:{call_id}", results=5,
+        session_id=session_id, tool_call_id=call_id,
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    web_definition = {
+        "type": "function", "function": {
+            "name": "web_search", "description": "search",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"},
+            }, "required": ["query"]},
+        },
+    }
+    monkeypatch.setattr(
+        run_agent, "get_tool_definitions",
+        lambda *args, **kwargs: [web_definition, *climate_definitions],
+    )
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda *args, **kwargs: {})
+    monkeypatch.setattr(run_agent, "OpenAI", MagicMock())
+    original_dispatch = model_tools.registry.dispatch
+    monkeypatch.setattr(
+        model_tools.registry, "dispatch",
+        lambda name, args, *pos, **kwargs: (
+            result if name == "web_search"
+            else original_dispatch(name, args, *pos, **kwargs)
+        ),
+    )
+
+    def response(tool_name=None, arguments=None, content=""):
+        tool_calls = None
+        finish = "stop"
+        if tool_name:
+            tool_calls = [SimpleNamespace(
+                id=f"call-{tool_name}", type="function",
+                function=SimpleNamespace(
+                    name=tool_name, arguments=json.dumps(arguments),
+                ),
+            )]
+            finish = "tool_calls"
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content, tool_calls=tool_calls),
+            finish_reason=finish,
+        )], model="test/model", usage=None)
+
+    provider_requests = []
+    def provider_side_effect(**kwargs):
+        provider_requests.append(kwargs)
+        index = len(provider_requests)
+        if index == 1:
+            return response("web_search", {"query": query})
+        tool_text = "\n".join(
+            str(message.get("content") or "") for message in kwargs["messages"]
+            if message.get("role") == "tool"
+        )
+        if index == 2:
+            return response("climate_stage_candidate", {
+                "result_handle": "result-" + "0" * 64,
+                "source_key": "wmo",
+            })
+        if index == 3:
+            assert '"error"' in tool_text
+            assert "candidate result handle is not bound" in tool_text
+            handle = re.search(r"result-[0-9a-f]{64}", tool_text).group(0)
+            return response("climate_stage_candidate", {
+                "result_handle": handle, "source_key": "wmo",
+            })
+        if index == 4:
+            candidate = re.search(r"candidate-[0-9a-f]{64}", tool_text).group(0)
+            return response("climate_finalize_candidate", {
+                "candidate_handle": candidate, "selected": True,
+                "title": "WMO article", "summary": "Verified summary",
+                "selection_reason": "Relevant climate evidence",
+            })
+        return response(content="Archived summary only")
+
+    agent = run_agent.AIAgent(
+        api_key="test-key", base_url="https://example.test/v1",
+        provider="openai-compat", model="test-model", max_iterations=6,
+        quiet_mode=True, skip_context_files=True, skip_memory=True,
+        save_trajectories=False, session_id=session_id,
+    )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = provider_side_effect
+    agent._cached_system_prompt = "system"
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    monkeypatch.setattr(agent, "_persist_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_save_trajectory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_cleanup_task_resources", lambda *args, **kwargs: None)
+
+    outcome = agent.run_conversation(
+        "find candidates", conversation_history=[], task_id="task",
+    )
+
+    assert outcome["final_response"] == "Archived summary only"
+    assert len(provider_requests) == 5
+    second_tool_text = "\n".join(
+        str(row.get("content") or "") for row in provider_requests[1]["messages"]
+        if row.get("role") == "tool"
+    )
+    suffix = second_tool_text[second_tool_text.index("climate_trusted_candidate_handles_v1"):]
+    assert "result-" in suffix
+    assert call_id not in suffix and query not in suffix and "https://" not in suffix
+    assert "https://wmo.int/article" in second_tool_text
+    correction_tool_text = "\n".join(
+        str(row.get("content") or "") for row in provider_requests[2]["messages"]
+        if row.get("role") == "tool"
+    )
+    assert '"error"' in correction_tool_text
+    assert "candidate result handle is not bound" in correction_tool_text
+    fourth_tool_text = "\n".join(
+        str(row.get("content") or "") for row in provider_requests[3]["messages"]
+        if row.get("role") == "tool"
+    )
+    assert "candidate-" in fourth_tool_text
+    assert "Verified governed article body" in fourth_tool_text
+    receipts = ledger.candidate_receipts()
+    assert len(receipts) == 1 and receipts[0]["state"] == "finalized"
+    assert calls == [("https://wmo.int/article", "wmo")]
+    assert ledger.usage()["fetch_attempts"] == 1
+
+
 def test_failed_source_projection_keeps_artifact_and_no_full_success(tmp_path):
     import hashlib
     import scripts.run_agent_acquisition as runner
@@ -1924,6 +3356,8 @@ def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
         tmp_path, monkeypatch, source_keys=["iais", "ipcc"],
         candidate_protocol=True,
     )
+    b["agent_protocol"] = dict(NEW_AGENT_PROTOCOL)
+    path.write_text(json.dumps(b), encoding="utf-8")
     source_results = [
         _controlled_site_result(tmp_path, source, candidates=[], disposition="unchanged")
         for source in b["source_inventory"]["records"]

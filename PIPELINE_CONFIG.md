@@ -159,18 +159,19 @@ single-site WRI sandbox showed `1 requested / 1 unchanged`, not 57 sites.
 Use the email wrapper with four absolute paths and a verified monitor identity.
 Configuration and preflight are documented in PIPELINE_REFERENCE.md.
 
-### Current agent-guided acquisition and Pillar B v2
+### Current agent-guided acquisition and Pillar B v3
 
 The acquisition-task component directs Hermes to choose native search only in
 response to observed coverage gaps. The `search_guidance` component renders the
 bound unlimited/recent/custom publication-date policy. Under
-`trusted-search-ledger.v2`, Hermes returns candidate decisions only. The runner
-constructs real queries, result references, statuses and actual counts from the
-same-run durable completed tool events and stores them in the existing #112
-batch. A failed search is not a zero-result success; `no_search` is emitted only
-when no trusted search completed. Stored publisher/search-result publication
-evidence controls inclusive eligibility, while unknown dates remain pending and
-event, discovery and fetch timestamps are never substituted.
+`trusted-candidate-handles.v3` lets Hermes select from public search candidates
+and call the attempt-scoped stage/finalize tools. The runner persists the real
+search events and governed article-read receipts, applies bound date eligibility,
+and assembles the existing #112 Registry batch; model prose never supplies those
+facts. New task definitions bind `acquisition-task-v2`; the v1 component remains
+unchanged for explicit legacy/v2 frozen runs. A failed search is not a zero-result
+success, and zero candidates is not zero searches. Explicit v2 and legacy runs
+keep their frozen behavior and cannot resume as v3.
 
 Each start writes an immutable task version, effective/component hashes, exact
 batch, resolved report date/range, budgets and checkpoint paths. Resume creates
@@ -187,8 +188,8 @@ tokens. Provider schema validation still applies. Hermes chooses searches
 adaptively; the application retains actual calls and results as evidence, never
 as a pass/fail threshold. The legacy `search_attempts` and `search_results`
 definition fields remain only for schema and frozen-run compatibility and are
-not presented as active v2 controls. A binding with no `agent_protocol` is an
-exact legacy bounded run, and resume rejects any legacy/v2 protocol change.
+not presented as active v3 controls. A binding with no `agent_protocol` is an
+exact legacy bounded run, and resume rejects any legacy/v2/v3 protocol change.
 
 Controlled acquisition still defaults to 5,000 fetch units, two retries per
 item and 3,600 cumulative seconds. That finite capacity covers the frozen 116

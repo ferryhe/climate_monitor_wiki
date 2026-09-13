@@ -10,7 +10,10 @@ import sys
 
 from climate_monitor.request_budget import (
     RequestBudget,
+    candidate_handle_protocol,
+    candidate_handle_suffix,
     ledger_path,
+    original_candidate_search_result,
     original_search_tool_result,
     provider_native_unbounded_search,
     search_identity_suffix,
@@ -50,10 +53,33 @@ def transform_search_tool_result(
         return None
     raw_session = session_id.strip()
     raw_call = tool_call_id.strip()
-    suffix = search_identity_suffix(raw_call, query)
-    original = original_search_tool_result(result, raw_call, query)
     budget = RequestBudget(ledger_path(binding), binding)
     call_id = f"{int(binding['attempt'])}:{raw_session}:{raw_call}"
+    if candidate_handle_protocol(binding):
+        existing = [
+            row for row in budget.result_handles()
+            if row["attempt"] == int(binding["attempt"])
+            and row["session_id"] == raw_session
+            and row["tool_call_id"] == raw_call
+        ]
+        existing.sort(key=lambda row: row["ordinal"])
+        handles = [row["handle"] for row in existing]
+        original = (
+            original_candidate_search_result(result, handles)
+            if handles else result
+        )
+        try:
+            budget.complete_tool(call_id, original, status)
+            minted = budget.register_search_result_handles(
+                raw_session, raw_call, original,
+            )
+        except ValueError:
+            return None
+        handles = [row["handle"] for row in minted]
+        suffix = candidate_handle_suffix(handles)
+        return original + suffix
+    suffix = search_identity_suffix(raw_call, query)
+    original = original_search_tool_result(result, raw_call, query)
     # The direct Hermes dispatcher emits post_tool_call before this seam. Its
     # AIAgent executor owns post-tool emission and suppresses that inner event,
     # so this post-dispatch transform may run first. Completing the exact
@@ -77,14 +103,50 @@ def transform_search_tool_result(
 
 def _install_search_identity_plugin(home, binding_path):
     plugin = home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID
+    binding = json.loads(Path(binding_path).read_text())
+    v3 = candidate_handle_protocol(binding)
     manifest = json.dumps({
         "name": SEARCH_IDENTITY_PLUGIN_ID,
         "version": "1.0.0",
         "description": "Expose durable completed search identity to the acquisition turn.",
         "hooks": ["transform_tool_result"],
     }, sort_keys=True)
+    stage_schema = {
+        "name": "climate_stage_candidate",
+        "description": (
+            "Resolve one trusted search result handle, apply the frozen date policy, "
+            "and conditionally obtain its governed article body."
+        ),
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "result_handle": {"type": "string"},
+                "source_key": {"type": "string"},
+            },
+            "required": ["result_handle", "source_key"],
+        },
+    }
+    finalize_schema = {
+        "name": "climate_finalize_candidate",
+        "description": "Attach bounded relevance annotations to one staged candidate receipt.",
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "candidate_handle": {"type": "string"},
+                "selected": {"type": "boolean"},
+                "title": {"type": "string", "maxLength": 500},
+                "summary": {"type": "string", "maxLength": 4000},
+                "selection_reason": {"type": "string", "maxLength": 2000},
+            },
+            "required": [
+                "candidate_handle", "selected", "title", "summary",
+                "selection_reason",
+            ],
+        },
+    }
     source = (
         "import sys\n"
+        "import json\n"
         f"sys.path.insert(0, {str(ROOT)!r})\n"
         "from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result\n"
         f"_BINDING_PATH = {str(Path(binding_path).resolve())!r}\n\n"
@@ -93,6 +155,19 @@ def _install_search_identity_plugin(home, binding_path):
         "        return transform_search_tool_result(_BINDING_PATH, **kwargs)\n"
         "    ctx.register_hook(\"transform_tool_result\", transform)\n"
     )
+    if v3:
+        source += (
+            "    from scripts.run_agent_acquisition import "
+            "_stage_candidate_receipt, _finalize_candidate_receipt\n"
+            "    def stage(args, session_id=None, **_kwargs):\n"
+            "        return json.dumps(_stage_candidate_receipt(_BINDING_PATH, "
+            "session_id=session_id, **args), sort_keys=True, separators=(',', ':'))\n"
+            "    def finalize(args, session_id=None, **_kwargs):\n"
+            "        return json.dumps(_finalize_candidate_receipt(_BINDING_PATH, "
+            "session_id=session_id, **args), sort_keys=True, separators=(',', ':'))\n"
+            f"    ctx.register_tool(name='climate_stage_candidate', toolset='climate_acquisition', schema={stage_schema!r}, handler=stage)\n"
+            f"    ctx.register_tool(name='climate_finalize_candidate', toolset='climate_acquisition', schema={finalize_schema!r}, handler=finalize)\n"
+        )
     _write_immutable(
         plugin / "plugin.yaml", manifest,
         "immutable attempt Hermes plugin manifest differs",

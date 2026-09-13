@@ -33,7 +33,9 @@ def main():
         if (result.get("parsed") or {}).get("action") != "block":
             raise ValueError(f"budget hook probe did not block: {result}")
         binding = json.loads(Path(args.binding).read_text())
-        from climate_monitor.request_budget import provider_native_unbounded_search
+        from climate_monitor.request_budget import (
+            candidate_handle_protocol, provider_native_unbounded_search,
+        )
         if provider_native_unbounded_search(binding):
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins(force=True)
@@ -43,6 +45,22 @@ def main():
             installed = plugins.get(SEARCH_IDENTITY_PLUGIN_ID)
             if not installed or not installed["enabled"] or installed["hooks"] != 1:
                 raise ValueError("attempt search-identity plugin was not registered")
+            if candidate_handle_protocol(binding):
+                from model_tools import get_tool_definitions
+                definitions = get_tool_definitions(
+                    enabled_toolsets=["climate_acquisition"], quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+                names = {
+                    row.get("function", {}).get("name") for row in definitions
+                }
+                expected = {
+                    "climate_stage_candidate", "climate_finalize_candidate",
+                }
+                if names != expected:
+                    raise ValueError(
+                        "attempt candidate tools were not registered exactly"
+                    )
         print("climate acquisition hooks verified")
         return 0
     try:

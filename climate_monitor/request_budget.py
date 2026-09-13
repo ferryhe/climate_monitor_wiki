@@ -20,16 +20,48 @@ DEFAULT_SEARCH_RESULTS_PER_CALL = 10
 DEFAULT_SEARCH_ATTEMPTS = 36
 DEFAULT_SEARCH_RESULTS = DEFAULT_SEARCH_ATTEMPTS * DEFAULT_SEARCH_RESULTS_PER_CALL
 DEFAULT_FETCH_ATTEMPTS = 5000
-AGENT_PROTOCOL_VERSION = "trusted-search-ledger.v2"
+V2_AGENT_PROTOCOL_VERSION = "trusted-search-ledger.v2"
+AGENT_PROTOCOL_VERSION = "trusted-candidate-handles.v3"
 PROVIDER_NATIVE_SEARCH_POLICY = "provider-native-unbounded.v1"
+CANDIDATE_RECEIPT_POLICY = "trusted-tool-receipts.v1"
 SEARCH_IDENTITY_TAG = "climate_trusted_search_identity_v1"
+CANDIDATE_HANDLE_TAG = "climate_trusted_candidate_handles_v1"
 
 
-def provider_native_unbounded_search(binding):
+def candidate_handle_protocol(binding):
     return binding.get("agent_protocol") == {
         "version": AGENT_PROTOCOL_VERSION,
         "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+        "candidate_policy": CANDIDATE_RECEIPT_POLICY,
     }
+
+
+def provider_native_unbounded_search(binding):
+    protocol = binding.get("agent_protocol")
+    return protocol == {
+        "version": V2_AGENT_PROTOCOL_VERSION,
+        "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+    } or candidate_handle_protocol(binding)
+
+
+def candidate_handle_suffix(handles):
+    identity = json.dumps(
+        {"result_handles": handles}, ensure_ascii=True, sort_keys=True,
+        separators=(",", ":"),
+    ).replace("<", "\\u003c").replace(">", "\\u003e")
+    return (
+        f"\n\n<{CANDIDATE_HANDLE_TAG}>{identity}</{CANDIDATE_HANDLE_TAG}>\n"
+        "Trusted acquisition instruction: use climate_stage_candidate with one "
+        "of these ordered result handles. The tool owns URL, search identity, "
+        "publication-date checks, and controlled body evidence."
+    )
+
+
+def original_candidate_search_result(result, handles):
+    if not isinstance(result, str):
+        return result
+    suffix = candidate_handle_suffix(handles)
+    return result[:-len(suffix)] if result.endswith(suffix) else result
 
 
 def search_identity_suffix(tool_call_id, query):
@@ -67,6 +99,19 @@ def digest(value):
                                     separators=(",", ":")).encode()).hexdigest()
 
 
+def candidate_search_ref(ledger_identity, attempt, session_id, tool_call_id):
+    """Return the opaque public search identity for one durable v3 call."""
+    if type(attempt) is not int or attempt < 1 or not all(
+        isinstance(value, str) and value.strip()
+        for value in (ledger_identity, session_id, tool_call_id)
+    ):
+        raise ValueError("candidate search identity is invalid")
+    return "search-" + digest({
+        "ledger": ledger_identity, "attempt": attempt,
+        "session_id": session_id.strip(), "tool_call_id": tool_call_id.strip(),
+    })
+
+
 def ledger_path(binding):
     return Path(binding["checkpoint_dir"]).parent / "request-budget.json"
 
@@ -87,6 +132,7 @@ class RequestBudget:
         self.identity = digest(identity_fields)
         self.limits = dict(binding["budgets"])
         self.provider_native_search = provider_native_unbounded_search(binding)
+        self.candidate_handles = candidate_handle_protocol(binding)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked(create=True) as state:
             now = time.time()
@@ -97,6 +143,8 @@ class RequestBudget:
                              attempts={}, events=[], receipts={}, reads={}, operations=[],
                              prior=dict(prior or {}), last_seen=now,
                              systemic_read_failure=_empty_systemic_read_failure())
+                if self.candidate_handles:
+                    state.update(result_handles={}, candidate_receipts={})
             self._validate(state)
             if self.attempt != state["active"]:
                 if self.attempt != state["active"] + 1:
@@ -127,6 +175,9 @@ class RequestBudget:
                     raise ValueError("request ledger digest differs")
                 self._validate(state)
                 state.setdefault("systemic_read_failure", _empty_systemic_read_failure())
+                if self.candidate_handles:
+                    state.setdefault("result_handles", {})
+                    state.setdefault("candidate_receipts", {})
             elif create:
                 lock.seek(0)
                 if lock.read():
@@ -242,6 +293,422 @@ class RequestBudget:
                 return None
             return copy.deepcopy(matching[0])
 
+    def register_search_result_handles(self, session_id, tool_call_id, result):
+        """Mint v3 handles only for rows in one completed current-attempt search."""
+        if not self.candidate_handles:
+            raise ValueError("search result handles require the frozen v3 protocol")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (session_id, tool_call_id)
+        ):
+            raise ValueError("search result handles require a bound native search")
+        from scripts.run_agent_acquisition import _event_search_result_rows
+        rows = _event_search_result_rows(result)
+        call_id = f"{self.attempt}:{session_id.strip()}:{tool_call_id.strip()}"
+        with self._locked() as state:
+            matching = [
+                event for event in state["events"]
+                if event.get("call_id") == call_id and event["event_kind"] == "tool"
+            ]
+            if len(matching) != 1:
+                raise ValueError("search result handle lacks one durable tool event")
+            event = matching[0]
+            if any((
+                event.get("tool") != "web_search",
+                event.get("completed") is not True,
+                event.get("status") != "ok",
+                event.get("result") != result,
+            )):
+                raise ValueError("search result handle requires exact successful completion")
+            event["session_id"] = session_id.strip()
+            event["tool_call_id"] = tool_call_id.strip()
+            event["search_ref"] = candidate_search_ref(
+                self.identity, self.attempt, session_id, tool_call_id,
+            )
+            minted = []
+            for ordinal, row in enumerate(rows):
+                url = row["url"]
+                record = {
+                    "attempt": self.attempt,
+                    "session_id": session_id.strip(),
+                    "tool_call_id": tool_call_id.strip(),
+                    "ordinal": ordinal,
+                    "url": url,
+                    "canonical_url": row["canonical_url"],
+                    "result_row": row["row"],
+                    "result_row_sha256": digest(row["row"]),
+                    "result_sha256": digest(result),
+                    "query": event.get("url"),
+                    "attempted_at": event.get("attempted_at"),
+                    "discovery_kind": "search",
+                    "search_ref": event["search_ref"],
+                }
+                handle = "result-" + digest({
+                    "ledger": self.identity, **record,
+                })
+                record["handle"] = handle
+                current = state["result_handles"].get(handle)
+                if current is not None and current != record:
+                    raise ValueError("search result handle collision")
+                state["result_handles"][handle] = record
+                minted.append(copy.deepcopy(record))
+            return minted
+
+    def result_handles(self):
+        if not self.candidate_handles:
+            raise ValueError("candidate result handles require the frozen v3 protocol")
+        with self._locked(write=False) as state:
+            rows = list(state["result_handles"].values())
+            return copy.deepcopy(sorted(
+                rows, key=lambda row: (
+                    row["attempt"], str(row["session_id"] or ""),
+                    str(row["tool_call_id"] or ""),
+                    row["ordinal"], row["handle"],
+                ),
+            ))
+
+    def completed_search_events(self):
+        """Return cumulative v3 search truth from the locked durable ledger."""
+        if not self.candidate_handles:
+            raise ValueError("cumulative search events require the frozen v3 protocol")
+        with self._locked(write=False) as state:
+            events = []
+            for event in state["events"]:
+                if event.get("event_kind") != "tool" or event.get("tool") != "web_search":
+                    continue
+                if event.get("completed") is not True:
+                    continue
+                session_id = event.get("session_id")
+                tool_call_id = event.get("tool_call_id")
+                expected_ref = candidate_search_ref(
+                    self.identity, int(event["attempt"]), session_id, tool_call_id,
+                )
+                if event.get("search_ref") != expected_ref:
+                    raise ValueError("durable v3 search identity differs")
+                events.append({
+                    "attempt": int(event["attempt"]),
+                    "session_id": session_id,
+                    "tool_call_id": tool_call_id,
+                    "search_ref": expected_ref,
+                    "tool": "web_search",
+                    "arguments": copy.deepcopy(event.get("search_arguments")),
+                    "result": copy.deepcopy(event.get("result")),
+                    "durable_status": event.get("status"),
+                    "attempted_at": event.get("attempted_at"),
+                })
+            return copy.deepcopy(sorted(
+                events, key=lambda row: (
+                    row["attempt"], row["attempted_at"], row["session_id"],
+                    row["tool_call_id"],
+                ),
+            ))
+
+    def register_site_candidate_handles(self, candidates):
+        """Bind frozen governed-site history to attempt-local v3 handles."""
+        if not self.candidate_handles or not isinstance(candidates, list):
+            raise ValueError("site candidate handles require the frozen v3 protocol")
+        with self._locked() as state:
+            minted = []
+            for ordinal, candidate in enumerate(candidates):
+                if not isinstance(candidate, dict):
+                    raise ValueError("controlled site candidate must be an object")
+                url = candidate.get("url")
+                source_key = candidate.get("source")
+                discovery_ref = candidate.get("discovery_ref")
+                if not all(isinstance(value, str) and value.strip()
+                           for value in (url, source_key, discovery_ref)):
+                    raise ValueError("controlled site candidate identity is invalid")
+                from climate_monitor.dedupe import canonical_url
+                record = {
+                    "attempt": self.attempt, "session_id": None,
+                    "tool_call_id": None, "ordinal": ordinal,
+                    "url": url, "canonical_url": canonical_url(url),
+                    "result_row": copy.deepcopy(candidate),
+                    "result_row_sha256": digest(candidate),
+                    "result_sha256": digest(candidates),
+                    "query": None,
+                    "attempted_at": candidate.get("observed_at") or time.time(),
+                    "source_key": source_key,
+                    "discovery_ref": discovery_ref,
+                    "discovery_kind": "site",
+                }
+                handle = "site-result-" + digest({
+                    "ledger": self.identity, **record,
+                })
+                record["handle"] = handle
+                current = state["result_handles"].get(handle)
+                if current is not None and current != record:
+                    raise ValueError("site candidate handle collision")
+                state["result_handles"][handle] = record
+                minted.append(copy.deepcopy(record))
+            return minted
+
+    def result_handle(self, handle, *, session_id):
+        if not self.candidate_handles:
+            raise ValueError("candidate result handles require the frozen v3 protocol")
+        if not isinstance(handle, str) or not isinstance(session_id, str):
+            raise ValueError("candidate result handle identity is invalid")
+        with self._locked(write=False) as state:
+            row = state["result_handles"].get(handle)
+            site_handle = (
+                row is not None and row.get("discovery_kind") == "site"
+                and row.get("session_id") is None
+            )
+            if (
+                row is None or row.get("attempt") != self.attempt
+                or (not site_handle and row.get("session_id") != session_id)
+            ):
+                raise ValueError("candidate result handle is not bound to this attempt/session")
+            return copy.deepcopy(row)
+
+    def begin_candidate_stage(
+        self, result_handle, *, session_id, source_key, date_binding=None,
+    ):
+        """Reserve one candidate stage, reusing verified successes without a resend."""
+        if not self.candidate_handles:
+            raise ValueError("candidate staging requires the frozen v3 protocol")
+        with self._locked() as state:
+            row = state["result_handles"].get(result_handle)
+            if row is None or row.get("attempt") != self.attempt:
+                raise ValueError("candidate result handle is not bound to this attempt/session")
+            if row.get("source_key") is not None and row["source_key"] != source_key:
+                raise ValueError("candidate result handle source identity differs")
+            if row.get("session_id") is None and row.get("discovery_kind") == "site":
+                row["session_id"] = session_id
+            elif row.get("session_id") != session_id:
+                raise ValueError("candidate result handle is not bound to this attempt/session")
+            existing = state["candidate_receipts"].get(result_handle)
+            if existing and existing.get("state") in {"staged", "finalized"}:
+                if existing.get("source_key") != source_key:
+                    raise ValueError("candidate receipt source identity differs")
+                if digest(existing["payload"]) != existing["sha256"]:
+                    raise ValueError("candidate receipt hash differs")
+                return {"reuse": True, "receipt": copy.deepcopy(existing["payload"])}
+            if existing and existing.get("state") == "in_progress":
+                raise RequestBudgetError("candidate stage is already in progress")
+            if isinstance(date_binding, dict):
+                for other_handle, prior in state["candidate_receipts"].items():
+                    if prior.get("state") not in {"staged", "finalized"}:
+                        continue
+                    prior_result = state["result_handles"].get(other_handle)
+                    prior_item = prior.get("payload", {}).get("item", {})
+                    prior_date_binding = {
+                        "date_status": prior.get("payload", {}).get("date_status"),
+                        "published_date": prior_item.get("published_date"),
+                        "publication_date_evidence": prior_item.get(
+                            "publication_date_evidence"
+                        ),
+                    }
+                    if (
+                        prior_result
+                        and prior_result.get("canonical_url") == row.get("canonical_url")
+                        and prior.get("source_key") == source_key
+                        and prior_date_binding == date_binding
+                    ):
+                        if digest(prior["payload"]) != prior["sha256"]:
+                            raise ValueError("candidate receipt hash differs")
+                        alias = copy.deepcopy(prior["payload"])
+                        alias.update({
+                            "status": "reused",
+                            "result_handle": result_handle,
+                            "reused_result_handle": other_handle,
+                            "attempt": self.attempt,
+                        })
+                        state["candidate_receipts"][result_handle] = {
+                            "state": "superseded", "source_key": source_key,
+                            "payload": alias, "sha256": digest(alias),
+                        }
+                        return {
+                            "reuse": True, "receipt": copy.deepcopy(alias),
+                        }
+            for other_handle, prior in state["candidate_receipts"].items():
+                prior_result = state["result_handles"].get(other_handle)
+                if (
+                    prior.get("state") == "in_progress"
+                    and prior_result
+                    and prior_result.get("canonical_url") == row.get("canonical_url")
+                    and prior.get("source_key") == source_key
+                ):
+                    if prior_result.get("attempt", self.attempt) >= self.attempt:
+                        raise RequestBudgetError("candidate stage is already in progress")
+                    prior["state"] = "superseded"
+                    prior["payload"] = {
+                        "status": "superseded",
+                        "reason": "interrupted candidate stage was retried by a later attempt",
+                    }
+                    prior["sha256"] = digest(prior["payload"])
+            token = uuid.uuid4().hex
+            state["candidate_receipts"][result_handle] = {
+                "state": "in_progress", "token": token, "source_key": source_key,
+                "attempt": self.attempt,
+                "payload": {}, "sha256": digest({}),
+            }
+            return {"reuse": False, "token": token, "result": copy.deepcopy(row)}
+
+    def reusable_candidate_body(self, result_handle, *, source_key):
+        """Return only hash-bound governed body evidence for the same URL."""
+        if not self.candidate_handles:
+            raise ValueError("candidate body reuse requires the frozen v3 protocol")
+        with self._locked(write=False) as state:
+            result = state["result_handles"].get(result_handle)
+            if result is None or result.get("attempt") != self.attempt:
+                raise ValueError("candidate result handle is not bound to this attempt")
+            for other_handle, prior in state["candidate_receipts"].items():
+                if other_handle == result_handle or prior.get("state") not in {
+                    "staged", "finalized",
+                }:
+                    continue
+                prior_result = state["result_handles"].get(other_handle)
+                payload = prior.get("payload", {})
+                item = payload.get("item", {})
+                evidence = item.get("evidence", {})
+                controlled = payload.get("controlled_events")
+                if (
+                    prior_result
+                    and prior_result.get("canonical_url")
+                    == result.get("canonical_url")
+                    and prior.get("source_key") == source_key
+                    and item.get("processing_status") == "complete"
+                    and evidence.get("status") == "ok"
+                    and evidence.get("classification") == "full_content"
+                    and isinstance(controlled, list)
+                ):
+                    if digest(payload) != prior["sha256"]:
+                        raise ValueError("candidate receipt hash differs")
+                    return {
+                        "evidence": copy.deepcopy(evidence),
+                        "controlled_events": copy.deepcopy(controlled),
+                    }
+            return None
+
+    def complete_candidate_stage(self, result_handle, token, payload):
+        if not self.candidate_handles:
+            raise ValueError("candidate staging requires the frozen v3 protocol")
+        with self._locked() as state:
+            current = state["candidate_receipts"].get(result_handle)
+            if not current or current.get("state") != "in_progress" or current.get("token") != token:
+                raise ValueError("candidate stage reservation differs")
+            candidate_handle = "candidate-" + digest({
+                "ledger": self.identity, "result_handle": result_handle,
+                "source_key": current["source_key"],
+            })
+            stored = copy.deepcopy(payload)
+            stored.update({
+                "candidate_handle": candidate_handle,
+                "result_handle": result_handle,
+                "source_key": current["source_key"],
+                "attempt": self.attempt,
+            })
+            current_result = state["result_handles"][result_handle]
+            competing = []
+            for other_handle, prior in state["candidate_receipts"].items():
+                if other_handle == result_handle or prior.get("state") not in {
+                    "staged", "finalized",
+                }:
+                    continue
+                prior_result = state["result_handles"].get(other_handle)
+                if (
+                    prior_result
+                    and prior_result.get("canonical_url")
+                    == current_result.get("canonical_url")
+                    and prior.get("source_key") == current["source_key"]
+                ):
+                    competing.append((other_handle, prior))
+            rank = {
+                "unknown_pending_review": 0, "outside_window": 1,
+                "eligible_unknown": 2, "eligible": 3,
+            }
+            current_rank = rank.get(stored.get("date_status"), -1)
+            best_prior_rank = max(
+                (rank.get(prior.get("payload", {}).get("date_status"), -1)
+                 for _handle, prior in competing),
+                default=-1,
+            )
+            state_name = "staged"
+            if competing and current_rank <= best_prior_rank:
+                state_name = "superseded"
+                stored.update(
+                    status="deduped", candidate_handle=None,
+                    dedupe_reason="a same-URL receipt has an equal or stronger date decision",
+                )
+            elif competing:
+                for _other_handle, prior in competing:
+                    prior["state"] = "superseded"
+            state["candidate_receipts"][result_handle] = {
+                "state": state_name, "source_key": current["source_key"],
+                "payload": stored, "sha256": digest(stored),
+            }
+            return copy.deepcopy(stored)
+
+    def fail_candidate_stage(self, result_handle, token, payload):
+        if not self.candidate_handles:
+            raise ValueError("candidate staging requires the frozen v3 protocol")
+        with self._locked() as state:
+            current = state["candidate_receipts"].get(result_handle)
+            if not current or current.get("state") != "in_progress" or current.get("token") != token:
+                raise ValueError("candidate stage reservation differs")
+            stored = copy.deepcopy(payload)
+            stored.update({
+                "result_handle": result_handle,
+                "source_key": current["source_key"],
+                "attempt": self.attempt,
+            })
+            state["candidate_receipts"][result_handle] = {
+                "state": "failed", "source_key": current["source_key"],
+                "payload": stored, "sha256": digest(stored),
+            }
+            return copy.deepcopy(stored)
+
+    def finalize_candidate(self, candidate_handle, *, session_id, annotations):
+        if not self.candidate_handles:
+            raise ValueError("candidate finalization requires the frozen v3 protocol")
+        with self._locked() as state:
+            matches = [
+                (key, value) for key, value in state["candidate_receipts"].items()
+                if value.get("state") in {"staged", "finalized"}
+                and value.get("payload", {}).get("candidate_handle") == candidate_handle
+            ]
+            if len(matches) != 1:
+                raise ValueError("candidate handle is not one staged receipt")
+            key, current = matches[0]
+            result = state["result_handles"].get(key)
+            if (
+                result is None
+                or result.get("attempt", self.attempt) > self.attempt
+                or (
+                    result.get("attempt") == self.attempt
+                    and result.get("session_id") != session_id
+                )
+            ):
+                raise ValueError("candidate handle is not bound to this attempt/session")
+            if digest(current["payload"]) != current["sha256"]:
+                raise ValueError("candidate receipt hash differs")
+            if current["state"] == "finalized":
+                if current["payload"].get("annotations") != annotations:
+                    raise ValueError("candidate finalization differs")
+                return copy.deepcopy(current["payload"])
+            payload = {**current["payload"], "annotations": copy.deepcopy(annotations)}
+            state["candidate_receipts"][key] = {
+                **current, "state": "finalized", "payload": payload,
+                "sha256": digest(payload),
+            }
+            return copy.deepcopy(payload)
+
+    def candidate_receipts(self):
+        if not self.candidate_handles:
+            raise ValueError("candidate receipts require the frozen v3 protocol")
+        with self._locked(write=False) as state:
+            values = []
+            for result_handle, value in state["candidate_receipts"].items():
+                if digest(value["payload"]) != value["sha256"]:
+                    raise ValueError("candidate receipt hash differs")
+                values.append({
+                    "state": value["state"], "result_handle": result_handle,
+                    "source_key": value.get("source_key"),
+                    **copy.deepcopy(value["payload"]),
+                })
+            return sorted(values, key=lambda row: row.get("result_handle", ""))
+
     def systemic_read_failure(self):
         with self._locked() as state:
             return copy.deepcopy(state["systemic_read_failure"])
@@ -271,7 +738,9 @@ class RequestBudget:
                 "reason": str(reason),
                 "attempted_at": time.time(), "fetch_units": 0, "search_units": 0})
 
-    def claim(self, kind, url, *, operation=None, call_id=None, results=0, units=1, retry_key=None):
+    def claim(self, kind, url, *, operation=None, call_id=None, results=0, units=1,
+              retry_key=None, session_id=None, tool_call_id=None,
+              tool_arguments=None):
         with self._locked() as state:
             try:
                 self._check_time(state)
@@ -301,6 +770,19 @@ class RequestBudget:
                     "attempted_at": time.time(), "status": "reserved_or_uncertain",
                     "fetch_units": 0 if search else units, "search_units": int(search),
                     "result_reservation": results if search else 0, "result_count": 0})
+                if self.candidate_handles and search:
+                    event = state["events"][-1]
+                    event["session_id"] = session_id
+                    event["tool_call_id"] = tool_call_id
+                    event["search_arguments"] = copy.deepcopy(
+                        tool_arguments if isinstance(tool_arguments, dict)
+                        else {"query": url}
+                    )
+                    if event["search_arguments"].get("query") != url:
+                        raise ValueError("candidate search arguments differ from target")
+                    event["search_ref"] = candidate_search_ref(
+                        self.identity, self.attempt, session_id, tool_call_id,
+                    )
                 return event_id
             except RequestBudgetError as exc:
                 state["events"].append({"id": uuid.uuid4().hex, "attempt": self.attempt,
@@ -394,6 +876,12 @@ def hook_decision(budget, payload):
     call, session = extra.get("tool_call_id"), payload.get("session_id")
     valid_identity = all(isinstance(value, str) and value.strip() for value in (session, call))
     call_id = f"{budget.attempt}:{session.strip()}:{call.strip()}" if valid_identity else None
+    if tool in {"climate_stage_candidate", "climate_finalize_candidate"}:
+        if budget.candidate_handles and valid_identity:
+            return {}
+        reason = "unconfigured acquisition tool" if not budget.provider_native_search else "missing durable session/tool-call identity"
+        budget.note("precheck", url, reason, tool=recorded_tool, call_id=call_id)
+        return {"action": "block", "message": reason}
     if tool not in {"web_search", "web_extract", "browser_exec"}:
         reason = "unconfigured acquisition tool"
         budget.note("precheck", url, reason, tool=recorded_tool, call_id=call_id)
@@ -413,7 +901,8 @@ def hook_decision(budget, payload):
         [args[key] for key in ("num_results", "limit") if key in args]
         if tool == "web_search" else []
     )
-    if any(type(value) is not int or value < 1 for value in supplied_result_limits):
+    if (not budget.candidate_handles
+            and any(type(value) is not int or value < 1 for value in supplied_result_limits)):
         reason = "invalid search result limit"
         budget.note("precheck", url, reason, tool=tool, call_id=call_id)
         return {"action": "block", "message": reason}
@@ -425,9 +914,18 @@ def hook_decision(budget, payload):
         )
         budget.note("precheck", url, reason, tool=tool, call_id=call_id)
         return {"action": "block", "message": reason}
+    if budget.candidate_handles and tool == "web_search":
+        # Hermes/provider schema owns request-shape validation in v3. The
+        # application records only actual result cardinality after completion.
+        results = 0
     try:
-        budget.claim(tool, url, call_id=call_id, results=results, units=max(1, len(urls)),
-                     retry_key=f"{tool}:{url}")
+        budget.claim(
+            tool, url, call_id=call_id, results=results,
+            units=max(1, len(urls)), retry_key=f"{tool}:{url}",
+            session_id=session.strip() if budget.candidate_handles and tool == "web_search" else None,
+            tool_call_id=call.strip() if budget.candidate_handles and tool == "web_search" else None,
+            tool_arguments=args if budget.candidate_handles and tool == "web_search" else None,
+        )
         return {}
     except (RequestBudgetError, ValueError) as exc:
         return {"action": "block", "message": str(exc)}
