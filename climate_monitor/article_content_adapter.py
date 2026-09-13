@@ -436,7 +436,7 @@ def _prepare_public_configuration(url: str, site_key: str, output_dir: Path):
     return profile, scope_path
 
 
-def _default_providers(*, data_root: str | Path | None = None, site_key: str | None = None) -> tuple[Callable[..., Any], ...]:
+def _default_providers(*, data_root: str | Path | None = None, site_key: str | None = None, budget: Any | None = None) -> tuple[Callable[..., Any], ...]:
     """Use upstream configuration, its runtime data root, and the public reader."""
     module = _import_public_reader()
     if module is None or not callable(getattr(module, "fetch_article_content", None)):
@@ -467,13 +467,26 @@ def _default_providers(*, data_root: str | Path | None = None, site_key: str | N
             profile, scope_path = _prepare_public_configuration(url, selected_site, output_dir)
             public_reader.output_dir = str(output_dir)
             public_reader.site_key = profile.site_key
+            guarded = {}
+            if budget is not None:
+                operation = uuid.uuid4().hex
+                guarded = {
+                    "before_target_request": lambda target, decision: budget.claim(
+                        "http", target, operation=operation, retry_key=f"article:{url}") and None,
+                    "timeout_seconds": budget.remaining_seconds(),
+                }
             return module.fetch_article_content(
-                url, profile=profile.model_dump(mode="json"), site_key=profile.site_key,
+                url, **guarded, profile=profile.model_dump(mode="json"), site_key=profile.site_key,
                 scope_path=str(scope_path), output_dir=str(output_dir), goal_preset="page_text")
         except Exception as exc:
-            return _unavailable_record(
+            record = _unavailable_record(
                 article_id=article_id, url=url,
                 failure_reason=f"{type(exc).__name__}: {exc}").to_dict()
+            from climate_monitor.request_budget import RequestBudgetError
+            if isinstance(exc, RequestBudgetError):
+                record["attempts"] = [{"engine": "fetch_article_content", "status": "failed",
+                                       "event_kind": "precheck", "error": str(exc)}]
+            return record
 
     public_reader.output_dir = None
     public_reader.site_key = None
@@ -563,12 +576,36 @@ def fetch_article_content(
     *,
     providers: Sequence[ProviderCallable] = (),
     snippet_input: str | None = None,
+    budget: Any | None = None,
+    site_key: str | None = None,
 ) -> dict[str, Any]:
     """Call provider[0] once; explicit providers override all dependency states.
 
     Provider exceptions become honest failed records. Invalid envelopes and
     identity mismatches reject the batch instead of becoming successful records.
+    A managed budgeted read resolves verified ref-only content before its exact
+    provider output directory is no longer available to the caller.
     """
+    if budget is not None:
+        import inspect
+        module = _import_public_reader()
+        reader = getattr(module, "fetch_article_content", None)
+        required = {"before_target_request", "timeout_seconds"}
+        supported = callable(reader) and required.issubset(inspect.signature(reader).parameters)
+        if not supported:
+            reason = ("unsupported upstream article guard: installed public "
+                      "fetch_article_content is missing required before_target_request "
+                      "and timeout_seconds parameters; expected pinned web_listening "
+                      "fd541f07942d7cdcb6a554225bbcbfec2f20147f")
+            budget.note("unsupported", url, reason, tool="controlled_article_fetch")
+            record = _unavailable_record(article_id=article_id, url=url, failure_reason=reason).to_dict()
+            record["attempts"] = [{"engine": "fetch_article_content", "status": "failed",
+                                   "event_kind": "unsupported", "error": reason}]
+            return record
+        if providers:
+            raise ValueError("managed article reads require the guarded public reader")
+        # Forward only through the normal reviewed provider, never a new reader.
+        providers = _default_providers(site_key=site_key, budget=budget)
     if not url:
         return _unavailable_record(article_id=article_id, url=url, failure_reason="missing url").to_dict()
     providers = providers or _default_providers()
@@ -587,7 +624,24 @@ def fetch_article_content(
             failure_reason=f"{type(exc).__name__}: {exc}").to_dict()
         record["status"] = "failed"
         return record
-    return map_tool_result_to_record(article_id, url, snippet_input, payload)
+    record = map_tool_result_to_record(article_id, url, snippet_input, payload)
+    if budget is not None and record.get("status") == "ok":
+        output_dir = getattr(providers[0], "output_dir", None)
+        verify_record(
+            record,
+            inputs_index={article_id: {"url": url}},
+            output_dir=output_dir,
+        )
+        if record.get("content") is None:
+            body = resolve_content_ref(
+                record.get("content_ref"), record.get("content_hash"),
+                output_dir=output_dir,
+            )
+            try:
+                record["content"] = body.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ArticleContentAdapterError("content_ref_corrupt") from exc
+    return record
 
 
 def _collect_unique_articles(inputs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -18,6 +18,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+ARG CLIMATE_REPOSITORY_COMMIT_SHA
+RUN python -c 'import re, sys; value = sys.argv[1]; raise SystemExit(0 if re.fullmatch(r"[0-9a-f]{40}", value) else "repository commit SHA must be a 40-character lowercase hex digest")' "$CLIMATE_REPOSITORY_COMMIT_SHA"
+ENV CLIMATE_REPOSITORY_COMMIT_SHA=$CLIMATE_REPOSITORY_COMMIT_SHA
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
@@ -37,6 +41,7 @@ COPY climate_registry ./climate_registry
 COPY management_ui ./management_ui
 COPY monitoring/taxonomies ./monitoring/taxonomies
 COPY monitoring/jobs ./monitoring/jobs
+COPY monitoring/run_config.yaml ./monitoring/run_config.yaml
 COPY monitoring/supranational_sources.yaml ./monitoring/supranational_sources.yaml
 COPY monitoring/site_scopes.yaml ./monitoring/site_scopes.yaml
 COPY scripts ./scripts

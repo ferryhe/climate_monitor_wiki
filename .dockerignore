@@ -31,6 +31,7 @@ monitoring/*
 !monitoring/taxonomies/**
 !monitoring/jobs/
 !monitoring/jobs/**
+!monitoring/run_config.yaml
 !monitoring/supranational_sources.yaml
 !monitoring/site_scopes.yaml
 

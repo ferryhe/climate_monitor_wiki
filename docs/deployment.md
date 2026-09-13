@@ -35,10 +35,16 @@ cd /home/ubuntu/climate_monitor_wiki
 printf 'SITE_HOST=172.31.10.77\nRELOAD_TOKEN=%s\n' "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 
-sudo docker compose build
+CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
+sudo CLIMATE_REPOSITORY_COMMIT_SHA="$CLIMATE_REPOSITORY_COMMIT_SHA" docker compose build
 sudo docker compose up -d
 sudo docker compose ps      # both containers should be Up, app "(healthy)"
 ```
+
+The build rejects a missing or invalid commit. The validated value is embedded
+in the application image as `CLIMATE_REPOSITORY_COMMIT_SHA`, because the image
+deliberately contains no `.git` directory. Managed runs freeze that exact value
+before acquisition and reuse it for report provenance on resume.
 
 Verify:
 

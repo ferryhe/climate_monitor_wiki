@@ -159,16 +159,19 @@ single-site WRI sandbox showed `1 requested / 1 unchanged`, not 57 sites.
 Use the email wrapper with four absolute paths and a verified monitor identity.
 Configuration and preflight are documented in PIPELINE_REFERENCE.md.
 
-### Current agent-guided acquisition and Pillar B v2
+### Current agent-guided acquisition and Pillar B v3
 
 The acquisition-task component directs Hermes to choose native search only in
 response to observed coverage gaps. The `search_guidance` component renders the
-bound unlimited/recent/custom publication-date policy. It records real queries,
-result references, reasons, retries and budgets in the existing #112 batch. A
-failed search is not a zero-result success; a defensible `no_search` has a
-concrete coverage reason. Stored publisher/search-result publication evidence
-controls inclusive eligibility, while unknown dates remain pending and event,
-discovery and fetch timestamps are never substituted.
+bound unlimited/recent/custom publication-date policy. Under
+`trusted-candidate-handles.v3` lets Hermes select from public search candidates
+and call the attempt-scoped stage/finalize tools. The runner persists the real
+search events and governed article-read receipts, applies bound date eligibility,
+and assembles the existing #112 Registry batch; model prose never supplies those
+facts. New task definitions bind `acquisition-task-v2`; the v1 component remains
+unchanged for explicit legacy/v2 frozen runs. A failed search is not a zero-result
+success, and zero candidates is not zero searches. Explicit v2 and legacy runs
+keep their frozen behavior and cannot resume as v3.
 
 Each start writes an immutable task version, effective/component hashes, exact
 batch, resolved report date/range, budgets and checkpoint paths. Resume creates
@@ -176,6 +179,64 @@ a new immutable attempt file from that original binding; a later config save
 cannot alter it. Completion status requires Registry readback plus byte-equivalent
 `freeze_acquisition_for_report` output, not agent prose. The current launcher is
 implemented and tested but has not been installed in production.
+
+### Managed acquisition capacity and incomplete coverage
+
+New tasks use the provider-native unbounded search policy: there is no
+application limit on search calls, cumulative results, results per call or
+tokens. Provider schema validation still applies. Hermes chooses searches
+adaptively; the application retains actual calls and results as evidence, never
+as a pass/fail threshold. The legacy `search_attempts` and `search_results`
+definition fields remain only for schema and frozen-run compatibility and are
+not presented as active v3 controls. A binding with no `agent_protocol` is an
+exact legacy bounded run, and resume rejects any legacy/v2/v3 protocol change.
+
+Controlled acquisition still defaults to 5,000 fetch units, two retries per
+item and 3,600 cumulative seconds. That finite capacity covers the frozen 116
+seed inventory and substantial article follow-up, but it is not a promise of
+content or of fitting an arbitrary number of candidates or redirect hops.
+Explicit lower overrides remain authoritative. Each new run freezes those
+limits, its protocol, source/scope inventory and governed HTTP identity.
+
+A durable run ledger reserves capacity before every governed target send,
+including redirects, and before each Hermes `web_extract` and `browser_exec`
+dispatch. Failed or interrupted controlled-fetch reservations remain spent or
+uncertain. `web_search` admission/completion is also recorded durably, but v2
+does not reserve or enforce search/result capacity. Target-send reservations,
+native fetch-tool units, source outcomes, policy refusals and precheck blocks are
+distinct evidence. Resumes verify successful seed receipts and reuse them,
+charging only remaining controlled operations under the same cumulative limits;
+they retain all completed searches as evidence. A missing or changed ledger
+fails closed. Successful seed receipts are independent of report checkpoint
+promotion.
+
+Only the acquisition subprocess receives the mandatory Hermes shell hooks in
+its isolated attempt home. Its Python runtime must load and execute the public
+hook contract before acquisition starts; incompatible configuration stops the
+attempt. Global hooks, plugins and MCP configuration are not inherited. Provider
+environment and an optional private copy of OAuth credentials supply identity.
+
+The pinned public gateway supports governed HTTP, including for sources whose
+requested classification is browser. Evidence retains requested/effective
+engines; HTTP content is never represented as browser execution. The pinned
+`web_listening` SHA `fd541f07942d7cdcb6a554225bbcbfec2f20147f` article reader exposes
+the formal public `before_target_request` callback and `timeout_seconds` controls.
+Managed article reads use those controls to attach the durable request budget at
+actual target and redirect sends while retaining compiled transport ceilings; the
+same public gateway also preserves pacing lineage from the later reservation or
+actual request start across same-origin redirects. Governed document captures
+retain decoded-byte SHA identity, report unsupported document bodies honestly,
+and reject extensionless PDF/Office media before text hashing; the explicit
+legacy TreeCrawler fallback continues through its frozen DocumentProcessor.
+No private upstream patch or alternative crawler is used. A downstream complete
+canary remains required.
+
+An attempt can finish as `completed_with_gaps`. All selected source outcomes and
+artifacts survive Registry payload verification, report-input projection and
+management readback. The Registry batch remains incomplete, no final report
+input is frozen, and report/publication dispatch remains blocked. A truthful
+`no_search` retains its reason. Local checks do not verify a production deployment,
+import, site run, browser capability or full production coverage.
 
 ### Legacy Step 2: Pillar B Web Search (historical compatibility only)
 

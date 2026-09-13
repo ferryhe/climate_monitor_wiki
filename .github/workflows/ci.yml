@@ -128,7 +128,9 @@ jobs:
       - name: Build application image
         run: |
           set -euo pipefail
-          docker build --pull --tag climate-monitor-wiki:ci .
+          docker build --pull \
+            --build-arg CLIMATE_REPOSITORY_COMMIT_SHA="${{ github.sha }}" \
+            --tag climate-monitor-wiki:ci .
 
       - name: Run offline container smoke
         run: |

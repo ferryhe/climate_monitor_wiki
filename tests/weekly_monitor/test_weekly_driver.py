@@ -442,8 +442,12 @@ def test_weekly_driver_v2_path_emits_request_and_validates_response(tmp_path):
     from climate_monitor.weekly_monitor.authoring_contract import (
         build_authoring_request,
     )
-    from climate_monitor.weekly_monitor.prompt_loader import load_weekly_monitor_prompt
-    prompt = load_weekly_monitor_prompt()
+    from climate_monitor.weekly_monitor.prompt_loader import LoadedPrompt
+    frozen_raw = b"frozen managed article-summary prompt"
+    prompt = LoadedPrompt(
+        prompt_id="article_summary", version="v1", path=tmp_path / "binding.json",
+        raw_bytes=frozen_raw, sha256=hashlib.sha256(frozen_raw).hexdigest(),
+    )
     request = build_authoring_request(
         report_date=date(2026, 5, 18),
         items=[item],
@@ -472,6 +476,18 @@ def test_weekly_driver_v2_path_emits_request_and_validates_response(tmp_path):
         "stats": stats,
     }
     authoring.write_text(json.dumps(v2_response) + "\n", encoding="utf-8")
+    drifted_prompt = LoadedPrompt(
+        prompt_id=prompt.prompt_id, version=prompt.version, path=prompt.path,
+        raw_bytes=b"mutated after validation", sha256=prompt.sha256,
+    )
+    with pytest.raises(ValueError, match="frozen prompt SHA-256"):
+        run_weekly_monitor(
+            source_config_path=source_config, run_config_path=run_config,
+            report_date=date(2026, 5, 18), manifest_fixture_path=manifest,
+            state_dir=state, authoring_response_path=authoring, sync=False,
+            repository_commit_sha="d" * 40, article_evidence=article_evidence,
+            stats=stats, loaded_prompt=drifted_prompt,
+        )
     result = run_weekly_monitor(
         source_config_path=source_config,
         run_config_path=run_config,
@@ -481,12 +497,14 @@ def test_weekly_driver_v2_path_emits_request_and_validates_response(tmp_path):
         authoring_response_path=authoring,
         sync=False,
         repository_commit_sha="d" * 40,
+        loaded_prompt=prompt,
         article_evidence=article_evidence,
         stats=stats,
     )
     payload = json.loads(result.to_json())
     provenance = payload["provenance"]
     assert provenance["driver"]["contract_version"] == AUTHORING_CONTRACT_VERSION_V2
+    assert provenance["prompt"]["sha256"] == prompt.sha256
 
 
 def test_cli_production_weekly_path_forwards_v2_evidence_to_driver(tmp_path):

@@ -5,6 +5,9 @@ import json
 import os
 import sys
 import time
+import tempfile
+from contextlib import ExitStack, contextmanager
+from dataclasses import asdict
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
@@ -13,10 +16,17 @@ from urllib.parse import unquote, urlparse
 
 from .dedupe import canonical_url
 from .models import CandidateItem, MonitorSource, SiteScope
+from .request_budget import (
+    DEFAULT_FETCH_ATTEMPTS,
+    DEFAULT_SEARCH_ATTEMPTS,
+    DEFAULT_SEARCH_RESULTS,
+    GuardedGateway,
+    RequestBudget,
+    RequestBudgetError,
+)
 
 
 _ACTIONABLE_MANIFEST_STATUSES = {"changed", "downloaded", "new", "updated"}
-_BROWSER_FETCH_CONFIG = {"user_agent_profile": "browser"}
 _BAD_FINAL_URL_MARKERS = (
     "/404",
     "/error/",
@@ -34,6 +44,7 @@ _BLOCKED_CONTENT_MARKERS = (
 )
 _CHECKPOINT_STAGE_VERSION = "web-listening-checkpoint-stage.v1"
 _CHECKPOINT_STAGE_SUFFIX = ".pending-run.json"
+_SYSTEMIC_READ_FAILURE_THRESHOLD = 3
 
 
 def read_manifest_items(path: str | Path) -> list[CandidateItem]:
@@ -99,86 +110,208 @@ def _manifest_item_is_actionable(raw: dict[str, Any]) -> bool:
     return status_text in _ACTIONABLE_MANIFEST_STATUSES
 
 
-def collect_source_items(
-    *,
-    source: MonitorSource,
-    state_dir: Path,
-    fetch_mode: str = "http",
-    scope: SiteScope | None = None,
-    stage_checkpoint: bool = False,
-    update_checkpoint: bool = True,
-) -> tuple[list[CandidateItem], list[str]]:
-    if os.getenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING") != "1":
-        raise RuntimeError("live web_listening collection requires CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1")
+def gateway_configuration(
+    sources: list[MonitorSource], scopes: dict[str, SiteScope], *, budget_limit: int = DEFAULT_FETCH_ATTEMPTS,
+) -> dict[str, Any]:
+    """Bind the public gateway to the selected inventory and supported HTTP identity.
 
-    _extend_web_listening_path()
-    Crawler, diff = _load_web_listening()
-    items: list[CandidateItem] = []
-    warnings: list[str] = []
-    resolved_fetch_mode = _scope_fetch_mode(fetch_mode, scope)
-    fetch_config = _scope_fetch_config(scope)
-    for seed_url in _seed_urls(source, scope):
+    This is the upstream gateway cap, not a durable climate run request ledger.
+    """
+    seeds = tuple(dict.fromkeys(
+        url for source in sources for url in _seed_urls(source, scopes.get(source.key))
+    ))
+    config = {
+        "seed_urls": list(seeds),
+        "allowed_domains": sorted({urlparse(url).hostname for url in seeds}),
+        "user_agent": "web-listening-bot/1.0",
+        "max_body_bytes": 4 * 1024 * 1024,
+        "timeout_seconds": 30.0,
+        "budget_limit": budget_limit,
+    }
+    authority = {"sources": [asdict(source) for source in sources],
+                 "scopes": [asdict(scopes[source.key]) for source in sources
+                            if source.key in scopes], "gateway": config}
+    config["authority_sha256"] = hashlib.sha256(
+        json.dumps(authority, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode()
+    ).hexdigest()
+    return config
+
+
+def _load_gateway_builder() -> Any:
+    from web_listening.blocks.governed_read import build_runtime_read_gateway
+    return build_runtime_read_gateway
+
+
+@contextmanager
+def _open_governed_runtime(sources, scopes, config=None, budget=None):
+    """Assemble once before bulk work; cleanup never replaces the root error."""
+    stack = ExitStack()
+    try:
+        if os.getenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING") != "1":
+            raise RuntimeError("live web_listening collection requires CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING=1")
+        _extend_web_listening_path()
+        Crawler, diff = _load_web_listening()
+        builder = _load_gateway_builder()
+        expected = gateway_configuration(
+            sources, scopes, budget_limit=config["budget_limit"] if config is not None else DEFAULT_FETCH_ATTEMPTS,
+        )
+        if config is not None and config != expected:
+            raise ValueError("frozen gateway authority/scope/identity configuration differs")
+        kwargs = {**expected, "seed_urls": tuple(expected["seed_urls"]),
+                  "allowed_domains": tuple(expected["allowed_domains"])}
+        gateway = builder(**kwargs)
+        stack.callback(gateway.close)
+        if not callable(gateway.read) or gateway.user_agent != expected["user_agent"]:
+            raise ValueError("incompatible governed read gateway or mismatched User-Agent")
+        import inspect
+        parameters = inspect.signature(gateway.read).parameters
+        if not ({"before_target_request", "timeout_seconds"}.issubset(parameters)
+                or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())):
+            raise ValueError("governed gateway read lacks before_target_request/timeout_seconds")
+        if budget is None:
+            temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="climate-seed-budget-"))
+            budget = RequestBudget(Path(temporary) / "ledger.json", {
+                "run_id": expected["authority_sha256"], "attempt": 1,
+                "budgets": {"fetch_attempts": expected["budget_limit"],
+                            "search_attempts": DEFAULT_SEARCH_ATTEMPTS,
+                            "search_results": DEFAULT_SEARCH_RESULTS,
+                            "retries_per_item": 2, "runtime_seconds": 3600},
+            })
+        guarded = GuardedGateway(
+            gateway, budget, "seed",
+            transport_timeout_seconds=expected["timeout_seconds"],
+        )
+        crawler = stack.enter_context(Crawler(fetch_mode="http", read_gateway=guarded))
+        crawler.climate_budget = budget
+        crawler.climate_gateway = guarded
+    except Exception as exc:
         try:
-            state_file = _state_path(state_dir, source, seed_url)
-            previous = _load_state(state_file)
-            with Crawler(fetch_mode=resolved_fetch_mode) as crawler:
-                page = crawler.fetch_page(
-                    seed_url,
-                    fetch_mode=resolved_fetch_mode,
-                    fetch_config_json=fetch_config,
+            stack.close()
+        except Exception as cleanup:
+            exc.add_note(f"gateway cleanup also failed: {type(cleanup).__name__}: {cleanup}")
+        raise RuntimeError(
+            f"[tool] governed gateway preflight failed before bulk acquisition: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        yield crawler, diff, expected
+    except BaseException as exc:
+        try:
+            stack.close()
+        except Exception as cleanup:
+            exc.add_note(f"gateway cleanup also failed: {type(cleanup).__name__}: {cleanup}")
+        raise
+    else:
+        stack.close()
+
+
+def collect_source_items(
+    *, source: MonitorSource, state_dir: Path, fetch_mode: str = "http",
+    scope: SiteScope | None = None, stage_checkpoint: bool = False,
+    update_checkpoint: bool = True, _runtime: Any | None = None,
+    seed_outcomes: dict[str, Any] | None = None,
+) -> tuple[list[CandidateItem], list[str]]:
+    if _runtime is None:
+        with _open_governed_runtime([source], {source.key: scope} if scope else {}) as runtime:
+            return collect_source_items(source=source, state_dir=state_dir, fetch_mode=fetch_mode,
+                scope=scope, stage_checkpoint=stage_checkpoint, update_checkpoint=update_checkpoint,
+                _runtime=runtime, seed_outcomes=seed_outcomes)
+    crawler, diff, gateway_config = _runtime
+    budget = crawler.climate_budget
+    # Collection is serial. The same URL under two selected institutions is
+    # two source slots; only subsequent reads of the same slot are retries.
+    crawler.climate_gateway.lane = f"seed:{source.key}"
+    items, warnings = [], []
+    seed_outcomes = seed_outcomes if seed_outcomes is not None else {}
+    for seed_url in _seed_urls(source, scope):
+        key = f"seed:{source.key}:{seed_url}"
+        receipt = budget.receipt(key, reset_systemic=True) if stage_checkpoint else None
+        systemic = budget.systemic_read_failure()
+        if receipt is None:
+            if systemic["stopped"]:
+                error = (
+                    "systemic controlled-read stop after "
+                    f"{_SYSTEMIC_READ_FAILURE_THRESHOLD} consecutive identical "
+                    f"post-send failures; root cause: {systemic['root_error']}"
                 )
-
-            final_url = getattr(page, "final_url", "") or seed_url
-            failure_reason = _fetch_failure_reason(page, final_url=final_url)
-            if failure_reason:
-                warnings.append(f"{source.key} seed {seed_url}: {failure_reason}")
+                receipt = {
+                    "status": "incomplete", "event_kind": "precheck", "error": error,
+                }
+                budget.note("precheck", seed_url, error)
+                seed_outcomes[seed_url] = receipt
+                warnings.append(f"{source.key} seed {seed_url}: {receipt['error']}")
                 continue
-            compare_text = diff["select_compare_text"](
-                fit_markdown=getattr(page, "fit_markdown", ""),
-                markdown=getattr(page, "markdown", ""),
-                content_text=getattr(page, "content_text", ""),
-            )
-            content_hash = diff["compute_hash"](compare_text)
-            current_links = list((getattr(page, "metadata_json", {}) or {}).get("links", []))
-            if not current_links and diff.get("extract_links"):
-                current_links = diff["extract_links"](getattr(page, "raw_html", ""), final_url)
-
-            eligible_links = [link for link in current_links if _url_allowed(link, scope)]
-            new_links = diff["find_new_links"](previous.get("links", []), eligible_links)
-            doc_links = diff["find_document_links"](new_links)
-            if not previous.get("content_hash"):
-                _save_checkpoint(
-                    state_file,
-                    {"content_hash": content_hash, "links": eligible_links},
-                    candidate_urls=(),
-                    staged=stage_checkpoint,
-                    update=update_checkpoint,
-                )
-                continue
-
-            doc_link_set = set(doc_links)
-            for link in doc_links + [link for link in new_links if link not in doc_link_set]:
-                lane = "document" if link in doc_link_set else "website"
-                link_title = _title_from_url(link)
-                items.append(
-                    CandidateItem(
-                        title=link_title,
-                        url=link,
-                        summary=f"{source.abbreviation} added a new {lane} link. Link text: {link_title}.",
-                        source_name=source.abbreviation,
-                        lane=lane,
-                        evidence_text=f"{link} {link_title}",
+            sends_before = budget.usage()["target_send_reservations"]
+            try:
+                budget.remaining_seconds()
+                if budget.usage()["fetch_attempts"] >= budget.limits["fetch_attempts"]:
+                    raise RequestBudgetError("fetch budget exhausted before seed operation")
+                state_file = _state_path(state_dir, source, seed_url)
+                previous = _load_state(state_file)
+                page = crawler.fetch_page(seed_url, fetch_mode="http",
+                    fetch_config_json={"user_agent": gateway_config["user_agent"]})
+                final_url = getattr(page, "final_url", "") or seed_url
+                reason = _fetch_failure_reason(page, final_url=final_url)
+                if reason:
+                    raise ValueError(reason)
+                compare_text = diff["select_compare_text"](
+                    fit_markdown=getattr(page, "fit_markdown", ""),
+                    markdown=getattr(page, "markdown", ""), content_text=getattr(page, "content_text", ""))
+                links = list((getattr(page, "metadata_json", {}) or {}).get("links", []))
+                if not links and diff.get("extract_links"):
+                    links = diff["extract_links"](getattr(page, "raw_html", ""), final_url)
+                eligible = [link for link in links if _url_allowed(link, scope)]
+                new_links = diff["find_new_links"](previous.get("links", []), eligible)
+                docs = diff["find_document_links"](new_links)
+                candidates = []
+                if previous.get("content_hash"):
+                    for link in docs + [link for link in new_links if link not in set(docs)]:
+                        lane = "document" if link in docs else "website"
+                        title = _title_from_url(link)
+                        candidates.append(asdict(CandidateItem(title=title, url=link,
+                            summary=f"{source.abbreviation} added a new {lane} link. Link text: {title}.",
+                            source_name=source.abbreviation, lane=lane, evidence_text=f"{link} {title}")))
+                receipt = {"status": "success", "event_kind": "source", "candidates": candidates,
+                    "checkpoint": {"content_hash": diff["compute_hash"](compare_text), "links": eligible},
+                    "candidate_urls": new_links if previous.get("content_hash") else [],
+                    "observed_at": datetime.now(timezone.utc).isoformat()}
+                # Commit the reusable evidence before materializing the report
+                # stage. A crash after this commit never requires another send.
+                if stage_checkpoint:
+                    budget.save_receipt(key, receipt)
+                systemic = budget.reset_systemic_read_failure()
+            except RequestBudgetError as exc:
+                receipt = {"status": "incomplete", "event_kind": "precheck", "error": str(exc)}
+                budget.note("precheck", seed_url, exc)
+                systemic = budget.reset_systemic_read_failure()
+            except Exception as exc:
+                envelope = getattr(exc, "envelope", None)
+                rejected = envelope is not None
+                typed_error = f"{type(exc).__name__}: {exc}"
+                receipt = {"status": "rejected" if rejected else "incomplete",
+                    "event_kind": "policy" if rejected else "network",
+                    "error": typed_error}
+                if envelope is not None:
+                    receipt["rejection"] = envelope.model_dump(mode="json")
+                    if stage_checkpoint:
+                        budget.save_receipt(key, receipt)
+                sent = budget.usage()["target_send_reservations"] > sends_before
+                if sent and not rejected:
+                    signature = " ".join(typed_error.split())
+                    systemic = budget.record_systemic_read_failure(
+                        signature, threshold=_SYSTEMIC_READ_FAILURE_THRESHOLD,
                     )
-                )
-            _save_checkpoint(
-                state_file,
-                {"content_hash": content_hash, "links": eligible_links},
-                candidate_urls=new_links,
-                staged=stage_checkpoint,
-                update=update_checkpoint,
-            )
-        except Exception as exc:
-            warnings.append(f"{source.key} seed {seed_url}: {exc}")
+                else:
+                    systemic = budget.reset_systemic_read_failure()
+                budget.note(receipt["event_kind"], seed_url, receipt["error"])
+        seed_outcomes[seed_url] = receipt
+        if receipt["status"] == "success":
+            items.extend(CandidateItem(**item) for item in receipt["candidates"])
+            _save_checkpoint(_state_path(state_dir, source, seed_url), receipt["checkpoint"],
+                candidate_urls=receipt["candidate_urls"], staged=stage_checkpoint, update=update_checkpoint)
+        else:
+            warnings.append(f"{source.key} seed {seed_url}: {receipt['error']}")
     return items, warnings
 
 
@@ -193,15 +326,25 @@ def collect_website_items(
 ) -> tuple[list[CandidateItem], list[str]]:
     if manifest_fixture_path:
         return read_manifest_items(manifest_fixture_path), []
+    scope_by_key = _scope_by_source_key(site_scopes)
+    with _open_governed_runtime(sources, scope_by_key) as runtime:
+        return _collect_website_items(
+            sources, state_dir=state_dir, scope_by_key=scope_by_key,
+            stage_checkpoints=stage_checkpoints, update_checkpoints=update_checkpoints,
+            runtime=runtime,
+        )
+
+
+def _collect_website_items(sources, *, state_dir, scope_by_key,
+                           stage_checkpoints, update_checkpoints, runtime):
     if stage_checkpoints:
         discard_staged_source_checkpoints(state_dir)
-    scope_by_key = _scope_by_source_key(site_scopes)
     items: list[CandidateItem] = []
     warnings: list[str] = []
     for source in sources:
         scope = scope_by_key.get(source.key)
         try:
-            kwargs = {"source": source, "state_dir": state_dir, "scope": scope}
+            kwargs = {"source": source, "state_dir": state_dir, "scope": scope, "_runtime": runtime}
             if stage_checkpoints:
                 kwargs["stage_checkpoint"] = True
             if not update_checkpoints:
@@ -221,6 +364,8 @@ def collect_website_items_with_evidence(
     *,
     state_dir: Path,
     site_scopes: dict[str, SiteScope] | list[SiteScope] | tuple[SiteScope, ...] | None = None,
+    gateway_config: dict[str, Any] | None = None,
+    budget: RequestBudget | None = None,
 ) -> tuple[list[CandidateItem], list[str], dict[str, Any]]:
     """Collect sites and expose the adapter's stored, hash-bound evidence.
 
@@ -230,6 +375,11 @@ def collect_website_items_with_evidence(
     """
     state_dir = Path(state_dir)
     scopes = _scope_by_source_key(site_scopes)
+    with _open_governed_runtime(sources, scopes, gateway_config, budget) as runtime:
+        return _collect_website_evidence(sources, state_dir=state_dir, scopes=scopes, runtime=runtime)
+
+
+def _collect_website_evidence(sources, *, state_dir, scopes, runtime):
     artifact_dir = state_dir / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     all_items: list[CandidateItem] = []
@@ -241,9 +391,10 @@ def collect_website_items_with_evidence(
         observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         scope = scopes.get(source.key)
         seeds = _seed_urls(source, scope)
+        seed_outcomes = {}
         items, warnings = collect_source_items(
             source=source, state_dir=state_dir, scope=scope,
-            stage_checkpoint=True, update_checkpoint=True,
+            stage_checkpoint=True, update_checkpoint=True, _runtime=runtime, seed_outcomes=seed_outcomes,
         )
         snapshots: list[dict[str, Any]] = []
         attempts: list[dict[str, Any]] = []
@@ -261,7 +412,11 @@ def collect_website_items_with_evidence(
                 })
             related = [warning for warning in warnings if seed in warning]
             attempts.append({
-                "engine": _scope_fetch_mode("http", scope),
+                "event_kind": "source",
+                "source_outcome": seed_outcomes.get(seed, {}),
+                "engine": "governed_http",
+                "requested_engine": _scope_fetch_mode("http", scope),
+                "effective_engine": "governed_http",
                 "status": "success" if valid else "failed",
                 "attempted_at": observed_at, "requested_url": seed,
                 "error": None if valid else ("; ".join(related) or "no valid snapshot was stored"),
@@ -279,11 +434,15 @@ def collect_website_items_with_evidence(
                         "snapshots": snapshots}, ensure_ascii=False, sort_keys=True,
                        separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:32]
+        rejected = bool(seed_outcomes) and any(row["status"] == "rejected" for row in seed_outcomes.values()) and all(
+            row["status"] in {"success", "rejected"} for row in seed_outcomes.values())
+        coverage_status = "success" if complete else ("rejected" if rejected else "incomplete")
         manifest_body = {
             "schema_version": "web-listening-manifest.v1",
             "run": {"run_id": f"run-{parent_run_id}", "parent_run_id": parent_run_id},
             "source": {"source_id": source.key, "tree_seed_url": source.url},
             "discovered_items": rows, "snapshot_evidence": snapshots,
+            "seed_outcomes": seed_outcomes, "coverage_status": coverage_status,
         }
         artifact_id = "wl-" + hashlib.sha256(
             json.dumps(manifest_body, ensure_ascii=False, sort_keys=True,
@@ -296,14 +455,14 @@ def collect_website_items_with_evidence(
         temporary = artifact_path.with_suffix(".tmp")
         temporary.write_bytes(artifact_bytes)
         os.replace(temporary, artifact_path)
-        disposition = ("updated" if rows else "unchanged") if complete else "failed"
+        disposition = ("updated" if rows else "unchanged") if complete else ("blocked" if rejected else "failed")
         outcome = {
             "schema_version": "acquisition-batch-result.v2",
             "run_id": f"scope-run-{parent_run_id}",
             "authoritative_status": "completed",
             "status": "succeeded" if complete else "failed", "full_success": complete,
             "counts": {"requested": 1, "updated": int(disposition == "updated"),
-                       "unchanged": int(disposition == "unchanged"), "blocked": 0,
+                       "unchanged": int(disposition == "unchanged"), "blocked": int(disposition == "blocked"),
                        "failed": int(disposition == "failed"), "unresolved": 0,
                        "valid_snapshots": int(complete), "failed_evidence": int(not complete),
                        "succeeded": int(complete)},
@@ -321,7 +480,8 @@ def collect_website_items_with_evidence(
         ]
         source_results.append({
             "source": source.key, "status": "succeeded" if complete else "failed",
-            "disposition": disposition, "artifact_id": artifact_id if complete else None,
+            "coverage_status": coverage_status,
+            "disposition": disposition, "artifact_id": artifact_id,
             "artifact_path": str(artifact_path.resolve()),
             "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
             "manifest": manifest, "outcome": outcome, "attempts": attempts,
@@ -330,9 +490,11 @@ def collect_website_items_with_evidence(
         })
         all_items.extend(items)
         all_warnings.extend(warnings)
-    evidence = {"status": "completed" if source_results and all(
+    systemic = runtime[0].climate_budget.systemic_read_failure()
+    evidence = {"status": "completed", "full_success": bool(source_results) and all(
         row["status"] == "succeeded" for row in source_results
-    ) else "failed", "source_results": source_results}
+    ), "source_results": source_results,
+        "systemic_error": systemic["root_error"] if systemic["stopped"] else None}
     return all_items, all_warnings, evidence
 
 
@@ -357,7 +519,7 @@ def _load_web_listening() -> tuple[Any, dict[str, Any]]:
     except Exception as exc:
         raise RuntimeError(
             "web_listening is required for live website monitoring. Install it or set "
-            "WEB_LISTENING_PROJECT_PATH to a local checkout."
+            f"WEB_LISTENING_PROJECT_PATH to the pinned checkout. {type(exc).__name__}: {exc}"
         ) from exc
     return Crawler, {
         "compute_hash": compute_hash,
@@ -533,12 +695,6 @@ def _scope_fetch_mode(default_fetch_mode: str, scope: SiteScope | None) -> str:
     if scope and scope.fetch_mode:
         return scope.fetch_mode
     return default_fetch_mode
-
-
-def _scope_fetch_config(scope: SiteScope | None) -> dict[str, Any]:
-    if scope and scope.fetch_config_json is not None:
-        return dict(scope.fetch_config_json)
-    return dict(_BROWSER_FETCH_CONFIG)
 
 
 def _fetch_failure_reason(page: Any, *, final_url: str) -> str:

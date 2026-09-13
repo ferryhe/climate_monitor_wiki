@@ -164,16 +164,42 @@ documents rather than retaining another active-looking copy.
 
 ## Verification and cutover
 
-Evidence as of 2026-09-08:
+Evidence through 2026-09-12:
+
+- Full-range managed acquisition `20260912T120731-495c4dd2` ended with 15 source
+  successes, eight policy rejections and 13 incomplete sources. Hermes emitted
+  no budget precheck but consumed exactly the old 8/8 search calls and 40/40
+  results after one five-result search for only eight sources, leaving 13 gaps
+  without a first search opportunity. This proves the old default was too small;
+  a later two-source canary also proved that the real public tool accepts a
+  ten-result call, so five results cannot be treated as a deterministic per-call
+  ceiling. New tasks now freeze `trusted-candidate-handles.v3`: Hermes selects
+  public native-search candidates and calls the attempt-scoped stage/finalize
+  tools under `acquisition-task-v2`, while the runner persists the complete real
+  search ledger and governed article receipts and assembles Registry input from
+  them. The v1 acquisition task remains unchanged for frozen legacy/v2 runs.
+  Search planning and
+  per-call result sizing remain provider-owned, with no application search-call,
+  cumulative-result, per-call-result or token limit; actual counts remain
+  evidence only. The 5,000-unit controlled fetch limit, per-item retry limit and
+  cumulative runtime limit stay enforced before dispatch. Missing
+  `agent_protocol` remains exact legacy behavior, explicit v2 remains frozen,
+  and legacy/v2/v3 attempts cannot mix on resume. A fresh complete full-range v3
+  run remains required.
 
 - Runtime/discovery/handoff follow-up: full SSH sandbox suite **1791 passed /
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**
   without it. Both runs retained the three existing warnings. The full-chain
   harness now calls the real monitor ledger producer and checks its report SHA.
-- The stable project runtime is Python 3.12 with web_listening `89940fea` and
+- The stable project runtime is Python 3.12 with web_listening `fd541f0` and
   official Hermes v0.21.1 `2237be3`, including its pinned Firecrawl extra. A real
   isolated stdin request passed the production quiet-response parser. The global
-  Hermes gateway was not replaced.
+  Hermes gateway was not replaced. The upstream pin supplies the formal public
+  article target guard, preserves actual-start pacing lineage across same-origin
+  redirects, verifies governed document bytes before persistence, rejects
+  unsupported extensionless PDF/Office bodies before text hashing, and retains
+  the explicit legacy TreeCrawler DocumentProcessor path. A downstream complete
+  canary remains required.
 - Live dated Pillar B discovery completed all four required tool queries. The
   validator rejected one article whose date evidence referred to another page;
   after verification and exclusion, five articles passed for June 7–September 7.
