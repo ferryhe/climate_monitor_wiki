@@ -439,6 +439,42 @@ def _registry_occurrence_key(
     return str(kind), discovery_ref, search_ref, source, normalized
 
 
+def _validated_registry_selection_urls(candidates, evidence_payload: Mapping) -> set[str]:
+    """Bind all report candidates and the Registry-selected subset independently."""
+    dispositions = evidence_payload.get("acquisition_dispositions")
+    records = evidence_payload.get("records")
+    if not isinstance(dispositions, list) or not isinstance(records, list):
+        raise ValueError("frozen Registry evidence is missing selection records")
+
+    candidate_urls = [canonical_url(candidate.canonical_url) for candidate in candidates]
+    disposition_urls: list[str] = []
+    selected_urls: list[str] = []
+    for disposition in dispositions:
+        if not isinstance(disposition, Mapping):
+            raise ValueError("frozen Registry disposition is invalid")
+        url = canonical_url(str(disposition.get("requested_url") or ""))
+        status = disposition.get("selection_status")
+        if not url or status not in {"selected", "unselected"}:
+            raise ValueError("frozen Registry disposition selection is invalid")
+        disposition_urls.append(url)
+        if status == "selected":
+            selected_urls.append(url)
+    if Counter(candidate_urls) != Counter(disposition_urls):
+        raise ValueError("bound acquisition candidates do not match the frozen Registry dispositions")
+
+    record_urls: list[str] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise ValueError("frozen Registry selected record is invalid")
+        url = canonical_url(str(record.get("requested_url") or ""))
+        if not url:
+            raise ValueError("frozen Registry selected record URL is invalid")
+        record_urls.append(url)
+    if Counter(selected_urls) != Counter(record_urls):
+        raise ValueError("bound acquisition selection does not match the frozen candidate set")
+    return set(record_urls)
+
+
 def _expected_registry_occurrences(manifest: dict | list[dict], pillar_b: dict) -> Counter:
     manifests = manifest if isinstance(manifest, list) else [manifest]
     expected: Counter = Counter()
@@ -923,11 +959,12 @@ def _run_prepare(args, parser) -> int:
             )
             if _canonical_bytes(regenerated) != _canonical_bytes(evidence_payload):
                 raise ValueError("bound frozen report input differs from durable Registry evidence")
-            expected_urls = {canonical_url(candidate.canonical_url) for candidate in combined.candidates}
-            actual_urls = {canonical_url(record["requested_url"]) for record in evidence_payload["records"]}
-            if expected_urls != actual_urls:
-                raise ValueError("bound acquisition selection does not match the frozen candidate set")
-            validate_retained_article_evidence(evidence_payload, report_date=report_date.isoformat(), urls=expected_urls)
+            selected_urls = _validated_registry_selection_urls(
+                combined.candidates, evidence_payload
+            )
+            validate_retained_article_evidence(
+                evidence_payload, report_date=report_date.isoformat(), urls=selected_urls
+            )
             registry_identity = {
                 "database": task_binding["registry_database"], "batch_id": task_binding["acquisition_batch_id"],
                 "content_version_ids": sorted(record["content_version_id"] for record in evidence_payload["records"]),
@@ -951,17 +988,13 @@ def _run_prepare(args, parser) -> int:
                 manifest=manifest,
                 pillar_b=pillar_b,
             )
-            expected_urls = {canonical_url(candidate.canonical_url) for candidate in combined.candidates}
-            actual_urls = {canonical_url(record["requested_url"])
-                           for record in evidence_payload["records"]}
-            if expected_urls != actual_urls:
-                raise ValueError(
-                    "Registry acquisition selection does not match the frozen candidate set"
-                )
+            selected_urls = _validated_registry_selection_urls(
+                combined.candidates, evidence_payload
+            )
             validate_retained_article_evidence(
                 evidence_payload,
                 report_date=report_date.isoformat(),
-                urls=expected_urls,
+                urls=selected_urls,
             )
             registry_identity = {
                 "database": str(Path(args.registry_database).resolve()),
