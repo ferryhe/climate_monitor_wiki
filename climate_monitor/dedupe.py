@@ -27,7 +27,7 @@ def canonical_url(url: str) -> str:
         if chr(int(match[1], 16)) in ASCII_UNRESERVED else match[0],
         parsed.path,
     )
-    normalized_path = path.rstrip("/") or path
+    normalized_path = "/" if parsed.netloc and path in {"", "/"} else (path.rstrip("/") or path)
     return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), normalized_path, "", urlencode(query), ""))
 
 

@@ -6,11 +6,17 @@ from typing import Any, Mapping
 
 from climate_monitor.semantic_bundle import SemanticBundleError, verify_semantic_sidecar
 
+from .artifacts import ARTIFACT_ONLY_DELIVERY_STATUS
 from .config import load_delivery_config
 from .delivery import deliver
 from .errors import DeliveryError, GenerationError, InputError, LockStateError
 from .io import atomic_write_bytes, atomic_write_json, exclusive_lock
-from .paths import validate_run_paths
+from .paths import (
+    external_directory_root,
+    external_file_path,
+    require_separate_trees,
+    validate_run_paths,
+)
 from .pdf import render_pdf
 from .report import parse_weekly_report
 from .summary import build_summary, write_summary
@@ -155,20 +161,30 @@ def run_delivery(
     report_path: Path,
     output_dir: Path,
     state_dir: Path,
-    config_path: Path,
+    config_path: Path | None,
     *,
     dry_run: bool = False,
+    artifact_only: bool = False,
     expected_report_sha256: str | None = None,
     smtp_factory=None,
     clock=None,
     allow_offcycle: bool = False,
 ) -> dict[str, Any]:
-    report_path, output_dir, state_dir, config_path = validate_run_paths(
-        report_path,
-        output_dir,
-        state_dir,
-        config_path,
-    )
+    if artifact_only:
+        report_path = external_file_path(report_path, "report")
+        output_dir = external_directory_root(output_dir, "output-dir")
+        state_dir = external_directory_root(state_dir, "state-dir")
+        require_separate_trees(output_dir, state_dir, "output-dir", "state-dir")
+        config_path = None
+    else:
+        if config_path is None:
+            raise InputError("config is required unless artifact-only mode is selected")
+        report_path, output_dir, state_dir, config_path = validate_run_paths(
+            report_path,
+            output_dir,
+            state_dir,
+            config_path,
+        )
     try:
         report_bytes = report_path.read_bytes()
     except OSError as exc:
@@ -178,7 +194,7 @@ def run_delivery(
     )
     if expected_report_sha256 is not None and report.sha256 != expected_report_sha256:
         raise InputError("report SHA does not match expected monitor identity")
-    config = load_delivery_config(config_path)
+    config = None if artifact_only else load_delivery_config(config_path)
 
     # The 09:00 delivery consumes the SAME SHA-bound semantic sidecar that the
     # 08:00 producer committed next to the canonical Markdown. Verification is
@@ -216,46 +232,53 @@ def run_delivery(
                     (candidate_pdf, pdf_path, pdf_sha256),
                 ]
             )
-            try:
-                delivery = deliver(
-                    summary,
-                    pdf_path,
-                    config,
-                    state_dir,
-                    dry_run=dry_run,
-                    smtp_factory=smtp_factory,
-                    acquire_lock=False,
-                    summary_artifact_sha256=summary_sha256,
-                    allow_offcycle=allow_offcycle,
-                    clock=clock,
-                )
-            except (DeliveryError, LockStateError) as original_error:
-                state_path = state_dir / f"{report.sha256}.json"
-                recipients = (
-                    _recipient_snapshot(state_path, config.recipients)
-                    if state_path.exists()
-                    else [
-                        {
-                            "id": item.id,
-                            "status": "pending",
-                        }
-                        for item in config.recipients
-                    ]
-                )
+            if artifact_only:
+                delivery = {
+                    "status": ARTIFACT_ONLY_DELIVERY_STATUS,
+                    "recipients": [],
+                }
+            else:
+                assert config is not None
                 try:
-                    atomic_write_json(
-                        manifest_path,
-                        _manifest(
-                            summary,
-                            {"status": _failure_status(recipients, original_error), "recipients": recipients},
-                            summary_sha256=summary_sha256,
-                            pdf_name=pdf_name,
-                            pdf_sha256=pdf_sha256,
-                        ),
+                    delivery = deliver(
+                        summary,
+                        pdf_path,
+                        config,
+                        state_dir,
+                        dry_run=dry_run,
+                        smtp_factory=smtp_factory,
+                        acquire_lock=False,
+                        summary_artifact_sha256=summary_sha256,
+                        allow_offcycle=allow_offcycle,
+                        clock=clock,
                     )
-                except Exception as manifest_error:
-                    raise original_error.with_traceback(original_error.__traceback__) from manifest_error
-                raise
+                except (DeliveryError, LockStateError) as original_error:
+                    state_path = state_dir / f"{report.sha256}.json"
+                    recipients = (
+                        _recipient_snapshot(state_path, config.recipients)
+                        if state_path.exists()
+                        else [
+                            {
+                                "id": item.id,
+                                "status": "pending",
+                            }
+                            for item in config.recipients
+                        ]
+                    )
+                    try:
+                        atomic_write_json(
+                            manifest_path,
+                            _manifest(
+                                summary,
+                                {"status": _failure_status(recipients, original_error), "recipients": recipients},
+                                summary_sha256=summary_sha256,
+                                pdf_name=pdf_name,
+                                pdf_sha256=pdf_sha256,
+                            ),
+                        )
+                    except Exception as manifest_error:
+                        raise original_error.with_traceback(original_error.__traceback__) from manifest_error
+                    raise
             atomic_write_json(
                 manifest_path,
                 _manifest(

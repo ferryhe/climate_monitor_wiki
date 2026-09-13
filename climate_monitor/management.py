@@ -34,8 +34,8 @@ from climate_monitor.request_budget import (
 from climate_registry.acquisition import (
     AcquisitionIncompleteError,
     PublicationDatePolicy,
-    freeze_acquisition_for_report,
     load_acquisition_batch,
+    verify_reportable_freeze,
 )
 from climate_registry.errors import RegistryInputError
 from climate_registry.acquisition import ACQUISITION_WRITER_SCHEMA_VERSION
@@ -177,7 +177,7 @@ def default_task_definition() -> dict[str, Any]:
         "task_id": "weekly-climate-monitor-acquisition",
         "parameters": {
             "report_date": "auto",
-            "timezone": "Asia/Shanghai",
+            "timezone": "America/New_York",
             "source_keys": [source.key for source in load_sources(SOURCE_INVENTORY_PATH)],
             "date_policy": {"mode": "unlimited"},
             "budgets": {
@@ -187,8 +187,8 @@ def default_task_definition() -> dict[str, Any]:
                 "retries_per_item": 2,
                 "runtime_seconds": 3600,
             },
-            "provider": "openai-codex",
-            "model": "gpt-5.6-sol-900k",
+            "provider": "openai-api",
+            "model": "gpt-5.6-luna",
         },
         "runtime": {
             "registry_database": str(database),
@@ -441,7 +441,7 @@ def _exclusive_lock(path: Path):
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        yield descriptor
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -740,6 +740,15 @@ class ManagementService:
                 active = self.binding(path.name)
                 if str(Path(active["report_inputs"]["state_dir"])) != state_dir:
                     continue
+                run_lock = path / ".run.lock"
+                if run_lock.is_file():
+                    try:
+                        with _exclusive_lock_nowait(run_lock):
+                            pass
+                    except RuntimeError as exc:
+                        raise RuntimeError(
+                            f"managed acquisition state is already owned by run {path.name}"
+                        ) from exc
                 result_path = path / f"attempt-{active['attempt']}-result.json"
                 if result_path.exists():
                     continue
@@ -756,6 +765,25 @@ class ManagementService:
                 raise
             except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
                 continue
+
+    def _existing_scheduled_run(self, binding: Mapping[str, Any]) -> str | None:
+        """Return the immutable same-task/date scheduled run, if one exists."""
+        for path in sorted(self.runtime_root.iterdir()):
+            if not path.is_dir() or not (path / "binding.json").is_file():
+                continue
+            try:
+                existing = json.loads(
+                    (path / "binding.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                existing.get("trigger") == "scheduled"
+                and existing.get("task_id") == binding.get("task_id")
+                and existing.get("report_date") == binding.get("report_date")
+            ):
+                return path.name
+        return None
 
     def _launch_process(self, binding: dict[str, Any]) -> int:
         attempt_path = self._attempt_path(binding["run_id"], binding["attempt"])
@@ -787,6 +815,13 @@ class ManagementService:
         binding = build_task_binding(loaded["definition"], task_version=loaded["version"], run_id=run_id, attempt=1, created_at=stamp)
         binding["trigger"] = trigger
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
+            if trigger == "scheduled":
+                existing = self._existing_scheduled_run(binding)
+                if existing is not None:
+                    raise RuntimeError(
+                        f"scheduled run already exists for this task/date: {existing}; "
+                        "use the explicit managed recovery command"
+                    )
             with _exclusive_lock_nowait(self._state_lock_path(binding)):
                 self._assert_no_startup_owner(binding)
                 run_dir = self._run_dir(run_id)
@@ -830,11 +865,114 @@ class ManagementService:
         return json.loads(max(attempts)[1].read_text(encoding="utf-8")) if attempts else base
 
     def resume(self, run_id: str) -> dict[str, Any]:
-        binding = self.binding(run_id)
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
+            binding = self.binding(run_id)
             with _exclusive_lock_nowait(self._state_lock_path(binding)):
                 self._assert_no_startup_owner(binding, exclude_run_id=run_id)
                 return self._resume_locked(run_id)
+
+    def attach_or_resume(self, run_id: str) -> dict[str, Any]:
+        """Attach to the exact live attempt or resume one stale attempt."""
+        with _exclusive_lock(self.runtime_root / ".runs.lock"):
+            current = self.binding(run_id)
+            run_dir = self._run_dir(run_id)
+
+            def terminal_result(binding: Mapping[str, Any]) -> dict[str, Any] | None:
+                path = run_dir / f"attempt-{binding['attempt']}-result.json"
+                return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+            def reconciled(binding: Mapping[str, Any], result: Mapping[str, Any] | None):
+                if result is None:
+                    return None
+                if result.get("exit_code") == 0 and result.get("execution_complete") is True:
+                    return {
+                        "accepted": True, "run_id": run_id,
+                        "attempt": binding["attempt"], "reconciled": True,
+                    }
+                if not result.get("retryable"):
+                    raise RuntimeError("acquisition attempt is terminal and non-retryable")
+                return None
+
+            result = terminal_result(current)
+            completed = reconciled(current, result)
+            if completed is not None:
+                return completed
+
+            runtime_path = run_dir / "runtime.json"
+            try:
+                with _exclusive_lock_nowait(self._state_lock_path(current)):
+                    self._assert_no_startup_owner(current, exclude_run_id=run_id)
+                    # Acquisition may have completed while the caller was
+                    # entering the shared state transaction.
+                    current = self.binding(run_id)
+                    result = terminal_result(current)
+                    completed = reconciled(current, result)
+                    if completed is not None:
+                        return completed
+                    runtime = (
+                        json.loads(runtime_path.read_text(encoding="utf-8"))
+                        if runtime_path.is_file() else {}
+                    )
+                    active = (
+                        result is None
+                        and runtime.get("attempt") == current["attempt"]
+                        and runtime.get("state") in {"launching", "running"}
+                    )
+                    if active:
+                        try:
+                            heartbeat = datetime.fromisoformat(
+                                str(runtime.get("heartbeat_at")).replace("Z", "+00:00")
+                            )
+                            fresh = (_utc_now() - heartbeat).total_seconds() <= 300
+                        except (TypeError, ValueError):
+                            fresh = False
+                        if fresh:
+                            return {
+                                "accepted": True, "run_id": run_id,
+                                "attempt": current["attempt"], "attached": True,
+                            }
+                    return self._resume_locked(run_id)
+            except RuntimeError as exc:
+                if str(exc) != "managed acquisition state is already owned by another run":
+                    raise
+                # A finishing child can publish its terminal between the lock
+                # probe and this read.  Reconcile it, or attach only when the
+                # requested attempt itself still has a live process.
+                current = self.binding(run_id)
+                result = terminal_result(current)
+                completed = reconciled(current, result)
+                if completed is not None:
+                    return completed
+                self._assert_no_startup_owner(current, exclude_run_id=run_id)
+                runtime = (
+                    json.loads(runtime_path.read_text(encoding="utf-8"))
+                    if runtime_path.is_file() else {}
+                )
+                report_active = False
+                run_lock = run_dir / ".run.lock"
+                if run_lock.is_file():
+                    try:
+                        with _exclusive_lock_nowait(run_lock):
+                            pass
+                    except RuntimeError:
+                        report_active = True
+                if (
+                    result is None
+                    and runtime.get("attempt") == current["attempt"]
+                    and runtime.get("state") in {"launching", "running"}
+                    and (
+                        self._pid_is_alive(runtime.get("pid"))
+                        or (
+                            report_active
+                            and Path(current["frozen_report_input"]).is_file()
+                        )
+                    )
+                ):
+                    return {
+                        "accepted": True, "run_id": run_id,
+                        "attempt": current["attempt"], "attached": True,
+                    }
+                raise
 
     def _resume_locked(self, run_id: str) -> dict[str, Any]:
         with _exclusive_lock(self._run_dir(run_id) / ".run.lock"):
@@ -844,6 +982,7 @@ class ManagementService:
             original = json.loads(original_path.read_text(encoding="utf-8"))
             current = self.binding(run_id)
             result_path = self._run_dir(run_id) / f"attempt-{current['attempt']}-result.json"
+            result = None
             if not result_path.exists():
                 runtime_path = self._run_dir(run_id) / "runtime.json"
                 runtime = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
@@ -851,28 +990,33 @@ class ManagementService:
                     heartbeat = datetime.fromisoformat(str(runtime.get("heartbeat_at")).replace("Z", "+00:00"))
                     age = (_utc_now() - heartbeat).total_seconds()
                 except (TypeError, ValueError):
-                    age = 0
-                if age <= 300:
+                    age = float("inf")
+                active = (
+                    runtime.get("attempt") == current["attempt"]
+                    and runtime.get("state") in {"launching", "running"}
+                )
+                if active and (
+                    age <= 300 or self._pid_is_alive(runtime.get("pid"))
+                ):
                     raise RuntimeError("acquisition attempt is already running")
             else:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
                 if result.get("exit_code") != 0 and not result.get("retryable"):
                     raise RuntimeError("acquisition attempt is terminal and non-retryable")
             if Path(original["frozen_report_input"]).exists():
-                if not result_path.exists():
-                    raise RuntimeError("frozen report run has no finished report attempt")
-                result = json.loads(result_path.read_text(encoding="utf-8"))
-                if result.get("exit_code") == 0:
-                    raise RuntimeError("report preparation is already complete")
-                if not result.get("retryable") or result.get("resume_phase") != "report":
-                    raise RuntimeError("frozen report run is terminal and non-retryable")
+                if result is not None:
+                    if result.get("exit_code") == 0:
+                        raise RuntimeError("report preparation is already complete")
+                    if not result.get("retryable") or result.get("resume_phase") != "report":
+                        raise RuntimeError("frozen report run is terminal and non-retryable")
                 launched_at = _rfc3339(_utc_now())
-                archived_result = self._run_dir(run_id) / f"attempt-{current['attempt']}-report-failure.json"
-                _atomic_write(
-                    archived_result,
-                    json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
-                )
-                result_path.unlink()
+                if result is not None:
+                    archived_result = self._run_dir(run_id) / f"attempt-{current['attempt']}-report-failure.json"
+                    _atomic_write(
+                        archived_result,
+                        json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
+                    )
+                    result_path.unlink()
                 self._write_runtime(run_id, {
                     "schema_version": "climate-acquisition-runtime.v1", "state": "launching",
                     "attempt": current["attempt"], "pid": None, "command": None,
@@ -1029,12 +1173,17 @@ class ManagementService:
             stage = "acquisition_stored"
             frozen = Path(binding["frozen_report_input"])
             try:
-                expected = freeze_acquisition_for_report(
-                    database,
-                    binding["acquisition_batch_id"],
-                    report_date=binding["report_date"],
+                frozen_payload = json.loads(frozen.read_text(encoding="utf-8"))
+                acquisition_payload = json.loads(
+                    (self._run_dir(run_id) / f"attempt-{binding['attempt']}-acquisition.json")
+                    .read_text(encoding="utf-8")
                 )
-                if json.loads(frozen.read_text(encoding="utf-8")) == expected:
+                verify_reportable_freeze(
+                    database, binding["acquisition_batch_id"],
+                    report_date=binding["report_date"], payload=frozen_payload,
+                    acquisition_payload=acquisition_payload,
+                )
+                if frozen_payload["reportability"]["reportable"]:
                     stage = ("report_completed" if result and result.get("exit_code") == 0
                              else ("report_failed" if result and result.get("resume_phase") == "report"
                                    else "report_input_frozen"))
@@ -1065,9 +1214,21 @@ class ManagementService:
             "rejected_sources": sum(row.get("coverage_status") == "rejected" for row in source_rows),
             "incomplete_sources": sum(row.get("coverage_status") == "incomplete" for row in source_rows),
             "total_sources": len(source_keys),
+            "outcome": (result or {}).get("outcome"),
+            "reportable": ((result or {}).get("reportability") or {}).get("reportable", False),
+            "selected_record_count": ((result or {}).get("reportability") or {}).get(
+                "selected_record_count", 0
+            ),
         }
-        if result and result.get("execution_complete") and result.get("full_coverage") is False:
-            stage = "completed_with_gaps"
+        if result and result.get("execution_complete"):
+            if result.get("outcome") == "no_eligible_information":
+                stage = "no_eligible_information"
+            elif result.get("outcome") == "completed_with_gaps":
+                stage = "report_completed_with_gaps"
+            elif result.get("full_coverage") is False:
+                stage = "completed_with_gaps"
+        elif result and result.get("outcome") == "systemic_failure":
+            stage = "systemic_failure"
         from climate_monitor.request_budget import RequestBudget, ledger_path
         if ledger_path(binding).is_file():
             used_budget = RequestBudget(ledger_path(binding), binding).usage()
@@ -1104,7 +1265,7 @@ class ManagementService:
             "updated_at": updated_at,
             "items": items,
             "scheduler_snapshot": None,
-            "report_phase": ("completed" if stage == "report_completed"
+            "report_phase": ("completed" if stage in {"report_completed", "report_completed_with_gaps"}
                              else ("failed" if stage == "report_failed"
                              else ("active" if stage in {"report_preparing", "report_resuming"}
                              else ("frozen" if stage == "report_input_frozen"

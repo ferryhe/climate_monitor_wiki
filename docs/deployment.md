@@ -555,8 +555,8 @@ Historical Report/PDF views, and absence of email or delivery-state access.
 After the current full-chain gates pass, use the existing
 `scripts/hermes_job_registry.sh` wrapper with the explicit environment described
 in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#hermes-job-wrappers-ac-1310).
-The target is Monday **10:30 UTC**, which is **18:30 Asia/Shanghai** and
-`30 18 * * 1` in this Hermes scheduler. Read back the timezone, command and paths;
+The target is **10:30 ET every other Monday**, anchored to September 14, 2026.
+Use [the ET runbook](biweekly-et-deployment.md). Read back the timezone, command and paths;
 do not change the global timezone or preserve an obsolete job merely by its ID.
 Stage the replacement disabled, then switch the unique schedule under the owner's
 cutover authorization after validation. Observe a normal Monday cycle before

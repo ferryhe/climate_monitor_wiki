@@ -730,7 +730,11 @@ def run_monitor(
                 carry_forward_items=carry_forward_items,
             )
         )
-        website_warnings: list[str] = []
+        reportability = (prepared_article_evidence or {}).get("reportability") or {}
+        website_warnings = [
+            str(value) for value in reportability.get("limitations", [])
+            if isinstance(value, str) and value.strip()
+        ]
         invalid_notes: list[str] = []
     else:
         source_checkpoints_active = manifest_fixture_path is None

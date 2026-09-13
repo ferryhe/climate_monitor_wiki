@@ -2,8 +2,10 @@ import hashlib
 import json
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from pypdf import PdfReader
 
 from climate_delivery.cli import main
 from climate_delivery.errors import DeliveryError, GenerationError, InputError, LockStateError
@@ -15,6 +17,8 @@ from climate_monitor.semantic_bundle import (
     semantic_sidecar_path,
 )
 from climate_monitor.taxonomy import load_article_taxonomy
+from climate_monitor.report_writer import render_report
+from climate_registry.acquisition import build_reportability_projection
 
 from test_climate_delivery_email import config_file
 from test_climate_delivery_report import REPORT, report_file
@@ -132,6 +136,158 @@ def test_run_writes_content_addressed_artifacts_and_redacted_manifest(tmp_path, 
 
     render_pdf(json.loads((artifact_dir / "summary.json").read_text(encoding="utf-8")), second_pdf)
     assert second_pdf.read_bytes() == (artifact_dir / pdf_name).read_bytes()
+
+
+def test_artifact_only_run_needs_no_mail_config_and_is_idempotent(
+    tmp_path, monkeypatch,
+):
+    from climate_delivery.artifacts import load_report_artifact
+
+    report = delivery_report(tmp_path)
+    output = tmp_path / "output"
+    state = tmp_path / "state"
+    for key in (
+        "TEST_SMTP_HOST", "TEST_SMTP_PORT", "TEST_SMTP_USER",
+        "TEST_SMTP_PASSWORD", "TEST_FROM_ADDRESS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "climate_delivery.pipeline.load_delivery_config",
+        lambda *_args, **_kwargs: pytest.fail("mail config must not be loaded"),
+    )
+    monkeypatch.setattr(
+        "climate_delivery.pipeline.deliver",
+        lambda *_args, **_kwargs: pytest.fail("SMTP delivery must not run"),
+    )
+
+    digest = parse_weekly_report(report).sha256
+    first = run_delivery(
+        report, output, state, None, artifact_only=True,
+        expected_report_sha256=digest,
+    )
+    artifact_dir = output / "2026-08-10" / digest
+    first_bytes = {
+        path.name: path.read_bytes() for path in artifact_dir.iterdir()
+    }
+    second = run_delivery(
+        report, output, state, None, artifact_only=True,
+        expected_report_sha256=digest,
+    )
+    assert first == second
+    assert {
+        path.name: path.read_bytes() for path in artifact_dir.iterdir()
+    } == first_bytes
+    artifact = load_report_artifact(
+        output, report_date="2026-08-10", report_filename=report.name,
+        report_title=parse_weekly_report(report).title,
+        report_sha256=digest, include_pdf_bytes=False,
+    )
+    assert artifact is not None
+    manifest = json.loads(next(output.rglob("manifest.json")).read_text())
+    assert manifest["delivery"] == {
+        "status": "artifact-only", "recipients": [],
+    }
+    assert not list(state.glob("*.json"))
+
+
+def test_more_than_twenty_gaps_survive_projection_report_pdf_and_manifest(tmp_path):
+    failed_sources = []
+    warnings = []
+    for index in range(22):
+        source = f"source-{index:02d}"
+        seed = f"https://failed-{index:02d}.example.test"
+        reason = f"governed reader reason-{index:02d}"
+        failed_sources.append({
+            "source": source, "status": "failed", "disposition": "failed",
+            "outcome": {"dispositions": [{"reason": "scope.acquisition_failed"}]},
+        })
+        warnings.append(f"{source} seed {seed}: {reason}")
+    projection = build_reportability_projection({
+        "completed_at": "2026-08-10T09:00:00Z",
+        "source_coverage_status": "completed",
+        "source_outcomes": [
+            {"source": "eligible-source", "status": "succeeded", "disposition": "updated"},
+            *failed_sources,
+        ],
+        "source_warnings": warnings,
+        "searches": [],
+        "items": [{
+            "url": "https://excluded.example.test/filing",
+            "title": "Excluded filing",
+            "processing_status": "failed",
+            "processing_error": "unsupported governed format",
+        }],
+        "blocked_tool_prechecks": [],
+        "systemic_error": None,
+    }, {"record_count": 2})
+    items = [
+        SimpleNamespace(
+            title="First finding", url="https://example.test/first",
+            summary="First supporting sentence.", source_name="Example", lane="website",
+        ),
+        SimpleNamespace(
+            title="Second finding", url="https://example.test/second",
+            summary="Second supporting sentence.", source_name="Example", lane="research",
+        ),
+    ]
+    text = render_report(
+        report_date=date(2026, 8, 10), title="Weekly Climate Monitor", items=items,
+        dedup_notes=[], sites_monitored=23, warnings=projection["limitations"],
+        weekly_stats={
+            "total": 23, "updated": 1, "unchanged": 0,
+            "blocked": 0, "failed": 22, "unresolved": 0,
+        },
+        executive_summary="Verified eligible evidence was retained.",
+    )
+    report = delivery_report(tmp_path, text=text)
+    parsed = parse_weekly_report(report)
+    assert parsed.original_links == (
+        "https://example.test/first", "https://example.test/second",
+    )
+    assert all(f"source-{index:02d} seed" in text and f"reason-{index:02d}" in text
+               for index in range(22))
+    assert "Excluded filing" in text and "unsupported governed format" in text
+
+    result = run_delivery(
+        report, tmp_path / "output", tmp_path / "state", None,
+        artifact_only=True, expected_report_sha256=parsed.sha256,
+    )
+    artifact_dir = tmp_path / "output" / "2026-08-10" / parsed.sha256
+    summary_path = artifact_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    notes = "\n".join(summary["monitoring_notes"])
+    assert all(f"source-{index:02d} seed" in notes and f"reason-{index:02d}" in notes
+               for index in range(22))
+    assert "Excluded filing" in notes and "unsupported governed format" in notes
+    pdf_text = " ".join(
+        " ".join(page.extract_text().split())
+        for page in PdfReader(artifact_dir / result["artifacts"]["pdf"]).pages
+    )
+    assert all(f"source-{index:02d}" in pdf_text and f"reason-{index:02d}" in pdf_text
+               for index in range(22))
+    assert "Excluded filing" in pdf_text and "unsupported governed format" in pdf_text
+    manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["delivery"] == {"status": "artifact-only", "recipients": []}
+    assert manifest["artifacts"]["summary"]["sha256"] == hashlib.sha256(
+        summary_path.read_bytes()
+    ).hexdigest()
+
+
+def test_cli_artifact_only_omits_config_but_sending_mode_still_requires_it(
+    tmp_path, capsys,
+):
+    report = delivery_report(tmp_path)
+    base = [
+        "run", "--report", str(report),
+        "--output-dir", str(tmp_path / "output"),
+        "--state-dir", str(tmp_path / "state"),
+    ]
+    assert main(base + ["--artifact-only"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "artifact-only"
+    assert main(base) == 2
+    error = json.loads(capsys.readouterr().out)
+    assert error["kind"] == "input"
+    assert "config is required" in error["message"]
 
 
 def test_existing_run_lock_fails_without_force(tmp_path, monkeypatch):

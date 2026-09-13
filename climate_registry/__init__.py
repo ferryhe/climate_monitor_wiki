@@ -2,10 +2,12 @@
 
 from .acquisition import (
     AcquisitionIncompleteError,
+    build_reportability_projection,
     PublicationDatePolicy,
     freeze_acquisition_for_report,
     load_acquisition_batch,
     store_acquisition_batch,
+    verify_reportable_freeze,
 )
 from .audit import build_audit_registry
 from .capture import capture_enrich_registry
@@ -14,6 +16,7 @@ from .weekly import restore_registry_backup, weekly_sync
 
 __all__ = [
     "AcquisitionIncompleteError",
+    "build_reportability_projection",
     "PublicationDatePolicy",
     "build_audit_registry",
     "capture_enrich_registry",
@@ -22,6 +25,7 @@ __all__ = [
     "plan_registry_update",
     "restore_registry_backup",
     "store_acquisition_batch",
+    "verify_reportable_freeze",
     "update_registry",
     "weekly_sync",
 ]

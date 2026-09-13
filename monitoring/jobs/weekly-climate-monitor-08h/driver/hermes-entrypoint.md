@@ -24,16 +24,15 @@ Wrapper template (operator supplies real, absolute paths from
 ```bash
 export REPO=/absolute/reviewed/application/checkout
 export PYTHON=/absolute/reviewed/runtime/bin/python
-export REPORT_DATE="$(date -u +%F)"
-bash "$REPO/scripts/hermes_job_monitor.sh" --preflight
+export REPORT_DATE="$(TZ=America/New_York date +%F)"
+"$PYTHON" "$REPO/scripts/hermes_job.py" monitor --managed --preflight
 ```
 
 Read-only preflight does not provision the upstream chain or authorize dispatch.
-Once actual prerequisites are satisfied, the corresponding normal wrapper
-command is the same command without `--preflight`. Do not remove that flag to
-work around a failed check. Configure Hermes's local schedule explicitly:
-`0 16 * * 1` (Asia/Shanghai) is Monday 08:00 UTC. The remaining slots are
-`0 17 * * 1`, `0 18 * * 1`, and `30 18 * * 1`. Job readback is required;
+Once actual prerequisites are satisfied, the scheduled command is
+`scripts/hermes_job.py monitor --managed --scheduled`. Do not bypass a failed
+preflight. Configure the DST-aware guarded checks in
+[the ET runbook](../../../../docs/biweekly-et-deployment.md). Job readback is required;
 this template and historical capture do not prove that a job exists.
 
 `authoring_response.json` in staging combines validated per-URL checkpoints and

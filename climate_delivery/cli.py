@@ -12,7 +12,7 @@ from .delivery import deliver, load_summary, load_summary_with_sha256
 from .errors import DeliveryError, GenerationError, InputError, LockStateError
 from .pdf import render_pdf
 from .pipeline import run_delivery
-from .paths import external_directory_root, external_file_path, require_distinct_files, validate_run_paths
+from .paths import external_directory_root, external_file_path, require_distinct_files
 from .report import parse_weekly_report
 from .summary import build_summary, write_summary
 
@@ -60,8 +60,9 @@ def _parser() -> Parser:
     run.add_argument("--report", type=Path, required=True)
     run.add_argument("--output-dir", type=Path, required=True)
     run.add_argument("--state-dir", type=Path, required=True)
-    run.add_argument("--config", type=Path, required=True)
+    run.add_argument("--config", type=Path)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--artifact-only", action="store_true")
     run.add_argument("--expected-report-sha256")
     run.add_argument(
         "--allow-offcycle",
@@ -127,18 +128,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 allow_offcycle=args.allow_offcycle,
             )
         elif args.command == "run":
-            report_path, output_dir, state_dir, config_path = validate_run_paths(
+            result = run_delivery(
                 args.report,
                 args.output_dir,
                 args.state_dir,
                 args.config,
-            )
-            result = run_delivery(
-                report_path,
-                output_dir,
-                state_dir,
-                config_path,
                 dry_run=args.dry_run,
+                artifact_only=args.artifact_only,
                 expected_report_sha256=args.expected_report_sha256,
                 allow_offcycle=args.allow_offcycle,
             )

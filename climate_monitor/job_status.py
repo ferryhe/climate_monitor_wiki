@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from . import schedule
+
 
 SCHEMA_VERSION = "weekly-job-status.v1"
 SNAPSHOT_FILENAME = "scheduler-status.json"
@@ -90,7 +92,7 @@ def _job_fields_for_state(state: str) -> tuple[frozenset[str], frozenset[str]]:
     if state == "running":
         return _BASE_JOB_FIELDS | frozenset({"claimed_at"}), frozenset({"started_at"})
     if state == "completed":
-        return _BASE_JOB_FIELDS | _TIME_FIELDS, frozenset()
+        return _BASE_JOB_FIELDS | _TIME_FIELDS, frozenset({"result_code"})
     if state == "failed":
         return _BASE_JOB_FIELDS | _TIME_FIELDS | frozenset({"result_code"}), frozenset()
     if state == "unknown":
@@ -99,7 +101,7 @@ def _job_fields_for_state(state: str) -> tuple[frozenset[str], frozenset[str]]:
         )
         return required, frozenset({"started_at"})
     if state == "not_dispatched":
-        return _BASE_JOB_FIELDS | frozenset({"result_code"}), frozenset()
+        return _BASE_JOB_FIELDS | frozenset({"result_code"}), _TIME_FIELDS
     raise JobStatusInvalidSnapshotError("invalid job state")
 
 
@@ -121,6 +123,7 @@ def _validate_job(
     raw: Any,
     *,
     generated_at: datetime,
+    eastern: bool = False,
 ) -> dict[str, str]:
     if not isinstance(raw, dict):
         raise JobStatusInvalidSnapshotError("job must be an object")
@@ -135,7 +138,15 @@ def _validate_job(
     scheduled = _strict_utc(raw["scheduled_for"], field="scheduled_for")
     expected_hour = _job_schedule_hour(alias)
     expected_minute = 30 if alias == "registry" else 0
-    if (
+    if eastern:
+        expected = schedule.occurrence(
+            schedule.period_date(generated_at, eastern=True), alias, eastern=True
+        )
+        if scheduled != expected:
+            raise JobStatusInvalidSnapshotError(
+                "scheduled_for does not match the ET fortnight"
+            )
+    elif (
         scheduled.weekday() != 0
         or scheduled.hour != expected_hour
         or scheduled.minute != expected_minute
@@ -155,25 +166,51 @@ def _validate_job(
     ordered = [times[field] for field in ("claimed_at", "started_at", "finished_at") if field in times]
     if ordered != sorted(ordered):
         raise JobStatusInvalidSnapshotError("execution timestamps are out of order")
+    if state == "not_dispatched" and times and not (
+        eastern
+        and alias == "email"
+        and raw.get("result_code") == "delivery_no_send"
+        and set(times) == set(_TIME_FIELDS)
+    ):
+        raise JobStatusInvalidSnapshotError(
+            "execution timestamps are invalid for not_dispatched"
+        )
 
     required_code = STATE_RESULT_CODES.get(state)
-    if alias == "registry" and state == "not_dispatched":
-        # Issue #87 AC-3: the registry slot is forward-compatible and may
-        # carry a domain-specific code (e.g. ``awaiting_human_merge_deploy``)
-        # instead of the strict ``not_dispatched`` default.
+    delivery_no_send = (
+        eastern
+        and alias == "email"
+        and state == "not_dispatched"
+        and raw.get("result_code") == "delivery_no_send"
+    )
+    if (alias == "registry" and state == "not_dispatched") or delivery_no_send:
+        # Registry gate dispositions and the ET email artifact-only result use
+        # application-owned codes instead of the generic not-dispatched token.
         required_code = None
     if required_code is not None and raw.get("result_code") != required_code:
         raise JobStatusInvalidSnapshotError("invalid result_code")
     if required_code is None and "result_code" in raw:
-        # The registry slot permits ``result_code`` only while in
-        # ``not_dispatched``; any other registry state must omit it to keep
-        # the API contract unambiguous.
+        # The Registry gate keeps its not-dispatched codes. Under the ET
+        # contract it may also record that no report existed to consume; the
+        # email slot separately keeps its exact artifact-only disposition.
         if alias == "registry":
-            if state != "not_dispatched":
+            if not (
+                state == "not_dispatched"
+                or (eastern and state == "completed"
+                    and raw["result_code"] == "no_eligible_information")
+            ):
                 raise JobStatusInvalidSnapshotError(
-                    "registry result_code is only allowed when state=not_dispatched"
+                    "registry result_code is invalid for this state"
                 )
-        else:
+        elif delivery_no_send:
+            pass
+        elif not (
+            eastern and state == "completed"
+            and (
+                raw["result_code"] == "no_eligible_information"
+                or (alias == "monitor" and raw["result_code"] == "completed_with_gaps")
+            )
+        ):
             raise JobStatusInvalidSnapshotError("result_code is not allowed for this state")
 
     normalized = {
@@ -185,9 +222,12 @@ def _validate_job(
             normalized[field] = times[field].strftime(_UTC_TIMESTAMP)
     if required_code is not None:
         normalized["result_code"] = required_code
-    elif alias == "registry" and isinstance(raw.get("result_code"), str):
-        # Issue #87 AC-3: forward-compatible registry slot may carry a
-        # caller-supplied domain code; preserve it on the normalized output.
+    elif ((alias == "registry" or delivery_no_send)
+          and isinstance(raw.get("result_code"), str)):
+        # Preserve the validated application-owned disposition.
+        normalized["result_code"] = raw["result_code"]
+    elif (eastern and state == "completed"
+          and isinstance(raw.get("result_code"), str)):
         normalized["result_code"] = raw["result_code"]
     return normalized
 
@@ -195,8 +235,9 @@ def _validate_job(
 def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str, Any]:
     current = _aware_utc_now(now)
     top = _exact_object(payload, expected=_TOP_LEVEL_FIELDS, label="snapshot")
-    if top["schema_version"] != SCHEMA_VERSION:
+    if top["schema_version"] not in {SCHEMA_VERSION, schedule.SCHEMA}:
         raise JobStatusInvalidSnapshotError("unsupported schema_version")
+    eastern = top["schema_version"] == schedule.SCHEMA
     generated_at = _strict_utc(top["generated_at"], field="generated_at")
     if generated_at > current:
         raise JobStatusInvalidSnapshotError("generated_at must not be in the future")
@@ -217,10 +258,12 @@ def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str,
         if not isinstance(registry_raw, dict):
             raise JobStatusInvalidSnapshotError("registry job must be an object")
         registry_block = _validate_job(
-            "registry", registry_raw, generated_at=generated_at
+            "registry", registry_raw, generated_at=generated_at, eastern=eastern
         )
     normalized_jobs = {
-        alias: _validate_job(alias, jobs_raw[alias], generated_at=generated_at)
+        alias: _validate_job(
+            alias, jobs_raw[alias], generated_at=generated_at, eastern=eastern
+        )
         for alias in JOB_SCHEDULE_HOURS
     }
     schedule_dates = {
@@ -231,11 +274,11 @@ def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str,
         schedule_dates.add(
             _strict_utc(registry_block["scheduled_for"], field="scheduled_for").date()
         )
-    generated_monday = generated_at.date() - timedelta(days=generated_at.weekday())
+    generated_monday = schedule.period_date(generated_at, eastern=eastern)
     if schedule_dates != {generated_monday}:
         raise JobStatusInvalidSnapshotError("jobs must describe the generated week")
     snapshot = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": top["schema_version"],
         "generated_at": generated_at.strftime(_UTC_TIMESTAMP),
         "jobs": normalized_jobs,
     }

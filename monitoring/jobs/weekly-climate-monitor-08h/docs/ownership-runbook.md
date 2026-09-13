@@ -1,6 +1,6 @@
 # Weekly Monitor Ownership Runbook
 
-This runbook describes the repository-owned pieces of the Monday 08:00 UTC
+This runbook describes the repository-owned pieces of the biweekly Monday 08:00 ET
 Weekly Climate & Actuarial Monitor and the boundary with Hermes.
 
 Status: repository support is implemented for prompt bytes, strict authoring
@@ -38,7 +38,7 @@ Repository owns:
 Hermes/runtime owns:
 
 - The actual live job inventory, command and timezone readback. The target
-  monitor cadence is Monday 08:00 UTC, or 16:00 Asia/Shanghai. Historical job
+  monitor cadence is biweekly Monday 08:00 ET, anchored to September 14, 2026. Historical job
   ID `f5259a8ec2d9` is capture provenance, not a required current job identity.
 - Provider credentials, secret injection, runtime limits, working directories,
   host paths, and authoritative execution logs/state.

@@ -1066,7 +1066,8 @@ def _publisher_attempt(
     finished_at: datetime,
     report: ReportIdentity | None = None,
 ) -> dict[str, object]:
-    scheduled = datetime.fromisoformat(f"{report_date}T10:00:00+00:00")
+    from climate_monitor.schedule import occurrence
+    scheduled = occurrence(report_date, "publisher")
     if finished_at < scheduled:
         scheduled = datetime.fromisoformat(f"{report_date}T00:00:00+00:00")
     attempt: dict[str, object] = {

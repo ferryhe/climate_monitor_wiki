@@ -27,7 +27,7 @@ from .contract import validate_registry_contract
 from .errors import RegistryInputError
 
 BATCH_SCHEMA_VERSION = "pre-report-acquisition-batch.v1"
-ACQUISITION_WRITER_SCHEMA_VERSION = 9
+ACQUISITION_WRITER_SCHEMA_VERSION = 10
 _SHA256_LENGTH = 64
 
 
@@ -298,6 +298,30 @@ def _is_successful_fetch(item: Mapping[str, Any]) -> bool:
 
 def _is_successful_item(item: Mapping[str, Any]) -> bool:
     return item["processing_status"] == "complete" and _is_successful_fetch(item)
+
+
+def is_resolved_acquisition_item(item: Mapping[str, Any]) -> bool:
+    """Return whether one validated or persisted item leaves no acquisition gap."""
+    date_status = item.get("date_status")
+    resolved_by_fetch = (
+        item.get("resolved_by_fetch_id") is not None
+        or item.get("_resolved_by_content_hash") is not None
+    )
+    if date_status == "outside_window":
+        return item.get("processing_status") == "complete"
+    if date_status != "eligible":
+        return False
+    if resolved_by_fetch:
+        return True
+    if item.get("processing_status") != "complete":
+        return False
+    evidence = item.get("evidence")
+    if isinstance(evidence, Mapping):
+        return _is_successful_fetch(item)
+    return (
+        item.get("fetch_status") == "success"
+        and item.get("material_status") == "full_content"
+    )
 
 
 def _merge_same_batch_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -583,6 +607,20 @@ def validate_acquisition_records(
     return decision, no_search_reason, searches, items
 
 
+def unresolved_acquisition_items(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return unresolved items after applying the frozen date policy and same-URL merge."""
+    if payload.get("schema_version") == BATCH_SCHEMA_VERSION:
+        policy = PublicationDatePolicy.from_dict(payload.get("date_policy"))
+        _, _, _, items = validate_acquisition_records(payload, policy)
+        items = _merge_same_batch_items(items)
+    else:
+        raw_items = payload.get("items") or []
+        if not isinstance(raw_items, list):
+            raise ValueError("items must be a list")
+        items = [dict(item) for item in raw_items if isinstance(item, Mapping)]
+    return [item for item in items if not is_resolved_acquisition_item(item)]
+
+
 def _store_acquisition_batch_locked(
     database: Path, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -621,12 +659,7 @@ def _store_acquisition_batch_locked(
         raise ValueError("same batch has conflicting selected content versions for one article")
     unresolved_searches = [search for search in searches if search["status"] == "failed"]
     unresolved_items = [
-        item for item in items
-        if item["resolved_by_fetch_id"] is None and (
-            item["processing_status"] != "complete"
-            or item["evidence"]["status"] != "ok"
-            or item["evidence"]["classification"] != "full_content"
-        )
+        item for item in items if not is_resolved_acquisition_item(item)
     ]
     if completed_at is not None and (unresolved_searches or unresolved_items):
         raise ValueError("completed batch contains unresolved work")
@@ -862,7 +895,6 @@ def _reconcile_acquisition_batch(
     immutable = {
         "report_date": report_date.isoformat(), "started_at": started_at,
         "date_policy_json": _canonical_json(policy.to_dict()),
-        "search_decision": decision, "no_search_reason": no_search_reason,
     }
     if batch["frozen_at"] is not None:
         raise ValueError("frozen acquisition batch cannot be reconciled")
@@ -879,9 +911,19 @@ def _reconcile_acquisition_batch(
         )
     }
     incoming_search_refs = {search["search_ref"] for search in searches}
-    if any(row["status"] == "success" and ref not in incoming_search_refs
-           for ref, row in existing_searches.items()):
-        raise ValueError("acquisition resume omitted a verified successful search")
+    decision_matches = (
+        batch["search_decision"] == decision
+        and batch["no_search_reason"] == no_search_reason
+    )
+    decision_advances = (
+        batch["search_decision"] == "no_search"
+        and decision == "attempted" and no_search_reason is None
+        and not existing_searches and bool(incoming_search_refs)
+    )
+    if not (decision_matches or decision_advances):
+        raise ValueError("acquisition resume changed search decision")
+    if set(existing_searches) - incoming_search_refs:
+        raise ValueError("acquisition resume omitted prior search evidence")
 
     with connection:
         search_ids: dict[str, str] = {}
@@ -992,19 +1034,24 @@ def _reconcile_acquisition_batch(
             "SELECT count(*) FROM acquisition_searches WHERE batch_id=? AND status='failed'",
             (batch_id,),
         ).fetchone()[0]
-        unresolved_items = connection.execute(
-            """SELECT count(*) FROM acquisition_items ai
+        persisted_items = connection.execute(
+            """SELECT ai.date_status, ai.processing_status, ai.material_status,
+                      ai.resolved_by_fetch_id, f.fetch_status
+               FROM acquisition_items ai
                JOIN article_fetches f ON f.fetch_id=ai.fetch_id
-               WHERE ai.batch_id=? AND ai.resolved_by_fetch_id IS NULL
-                 AND (f.fetch_status!='success' OR ai.material_status!='full_content'
-                      OR ai.processing_status!='complete')""",
+               WHERE ai.batch_id=?""",
             (batch_id,),
-        ).fetchone()[0]
+        ).fetchall()
+        unresolved_items = sum(
+            not is_resolved_acquisition_item(dict(item)) for item in persisted_items
+        )
         if completed_at is not None and (failed_searches or unresolved_items):
             raise ValueError("completed batch contains unresolved persisted work")
         connection.execute(
-            "UPDATE acquisition_batches SET completed_at=?, payload_sha256=? WHERE batch_id=?",
-            (completed_at, payload_sha256, batch_id),
+            """UPDATE acquisition_batches
+               SET completed_at=?, payload_sha256=?, search_decision=?, no_search_reason=?
+               WHERE batch_id=?""",
+            (completed_at, payload_sha256, decision, no_search_reason, batch_id),
         )
 
     result = _batch_summary(connection, batch_id)
@@ -1061,6 +1108,7 @@ def freeze_acquisition_for_report(
     *,
     report_date: str,
     allow_unresolved: bool = False,
+    mark_partial_frozen: bool = False,
 ) -> dict[str, Any]:
     """Freeze exact selected content versions into the existing evidence contract."""
     _exact_date(report_date, "report_date")
@@ -1070,11 +1118,7 @@ def freeze_acquisition_for_report(
     failed_searches = [row for row in loaded["searches"] if row["status"] == "failed"]
     unresolved_items = [
         row for row in loaded["items"]
-        if row["resolved_by_fetch_id"] is None and (
-            row["fetch_status"] != "success"
-            or row["material_status"] != "full_content"
-            or row["processing_status"] != "complete"
-        )
+        if not is_resolved_acquisition_item(row)
     ]
     incomplete = loaded["completed_at"] is None or failed_searches or unresolved_items
     if incomplete and not allow_unresolved:
@@ -1131,7 +1175,7 @@ def freeze_acquisition_for_report(
         "resolved_by_fetch_id": item["resolved_by_fetch_id"],
     } for item in loaded["items"]]
     dispositions.sort(key=lambda row: (row["canonical_url"], row["requested_url"]))
-    if not incomplete:
+    if not incomplete or mark_partial_frozen:
         connection = _open_database(database, acquisition_writer=True)
         try:
             with connection:
@@ -1150,6 +1194,224 @@ def freeze_acquisition_for_report(
         "acquisition_dispositions": dispositions,
         "artifact_digest": _artifact_digest(records),
     }
+
+
+REPORTABILITY_SCHEMA = "climate-reportability.v1"
+REPORTABILITY_OUTCOMES = {
+    "completed",
+    "completed_with_gaps",
+    "no_eligible_information",
+    "systemic_failure",
+}
+
+
+def _bounded_reportability_reason(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split()).strip()
+    return cleaned[:500] or None
+
+
+def _unresolved_item_limitation(item: Mapping[str, Any]) -> str:
+    title = _bounded_reportability_reason(item.get("title"))
+    requested = _bounded_reportability_reason(item.get("url"))
+    if requested:
+        try:
+            requested = canonical_url(requested)
+        except ValueError:
+            pass
+        requested = requested[:240]
+    if title and requested:
+        identity = f"{title[:120]} ({requested})"
+    else:
+        identity = (title or requested or "unknown item")[:360]
+    evidence = item.get("evidence")
+    fallback = evidence.get("failure_reason") if isinstance(evidence, Mapping) else None
+    reason = (
+        "publication date is unknown under the frozen date policy"
+        if item.get("date_status") == "unknown_pending_review"
+        else _bounded_reportability_reason(item.get("processing_error"))
+        or _bounded_reportability_reason(fallback)
+        or "unresolved processing"
+    )
+    return _bounded_reportability_reason(
+        f"Excluded item {identity}: {reason}."
+    ) or "Excluded item: unresolved processing."
+
+
+def build_reportability_projection(
+    acquisition_payload: Mapping[str, Any], frozen: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive the only report/no-report classification from durable evidence."""
+    source_outcomes = acquisition_payload.get("source_outcomes") or []
+    source_gaps = [row for row in source_outcomes if row.get("status") != "succeeded"]
+    coverage_status = _bounded_reportability_reason(
+        acquisition_payload.get("source_coverage_status") or "completed"
+    )
+    source_warnings = acquisition_payload.get("source_warnings") or []
+    if not isinstance(source_warnings, list) or any(
+        not _bounded_reportability_reason(value) for value in source_warnings
+    ):
+        raise ValueError("invalid source warning projection")
+    source_warnings = [
+        _bounded_reportability_reason(value) for value in source_warnings
+    ]
+    failed_searches = [
+        row for row in acquisition_payload.get("searches", [])
+        if row.get("status") == "failed"
+    ]
+    unresolved_items = unresolved_acquisition_items(acquisition_payload)
+    blocked = acquisition_payload.get("blocked_tool_prechecks") or []
+    if not isinstance(blocked, list) or any(
+        not isinstance(row, Mapping) or set(row) != {"tool", "reason"}
+        or not _bounded_reportability_reason(row.get("tool"))
+        or not _bounded_reportability_reason(row.get("reason"))
+        for row in blocked
+    ):
+        raise ValueError("invalid blocked tool precheck projection")
+    systemic_reason = _bounded_reportability_reason(
+        acquisition_payload.get("systemic_error")
+    )
+    selected_count = int(frozen.get("record_count", 0))
+    gaps = (
+        acquisition_payload.get("completed_at") is None
+        or coverage_status != "completed"
+        or bool(source_gaps) or bool(failed_searches) or bool(unresolved_items)
+        or bool(blocked) or bool(systemic_reason)
+    )
+    if systemic_reason:
+        outcome, reportable = "systemic_failure", False
+    elif selected_count == 0:
+        outcome, reportable = "no_eligible_information", False
+    elif gaps:
+        outcome, reportable = "completed_with_gaps", True
+    else:
+        outcome, reportable = "completed", True
+
+    limitations: list[str] = []
+    for row in source_gaps:
+        source = str(row.get("source") or "unknown source")
+        disposition = str(row.get("disposition") or row.get("coverage_status") or "failed")
+        reason = None
+        outcome_payload = row.get("outcome")
+        if isinstance(outcome_payload, Mapping):
+            dispositions = outcome_payload.get("dispositions")
+            if isinstance(dispositions, list) and dispositions and isinstance(dispositions[0], Mapping):
+                reason = _bounded_reportability_reason(dispositions[0].get("reason"))
+        limitations.append(
+            f"Pillar A source {source} was {disposition}"
+            + (f": {reason}" if reason else ".")
+        )
+    for warning in source_warnings:
+        limitations.append(f"Pillar A coverage warning: {warning}")
+    if coverage_status != "completed" and not source_warnings:
+        limitations.append(f"Pillar A coverage status was {coverage_status}.")
+    for row in failed_searches:
+        ref = str(row.get("search_ref") or row.get("query") or "unknown search")
+        reason = _bounded_reportability_reason(row.get("error"))
+        limitations.append(
+            f"Pillar B search {ref} failed" + (f": {reason}" if reason else ".")
+        )
+    limitations.extend(_unresolved_item_limitation(row) for row in unresolved_items)
+    for row in blocked:
+        limitations.append(
+            f"Governed {row['tool']} capability was unavailable: {row['reason']}."
+        )
+    if systemic_reason:
+        limitations.append(
+            f"Acquisition stopped after a systemic reader failure: {systemic_reason}."
+        )
+    return {
+        "schema_version": REPORTABILITY_SCHEMA,
+        "outcome": outcome,
+        "reportable": reportable,
+        "full_coverage": not gaps,
+        "selected_record_count": selected_count,
+        "counts": {
+            "successful_sources": len(source_outcomes) - len(source_gaps),
+            "source_gaps": len(source_gaps),
+            "coverage_warnings": len(source_warnings),
+            "failed_searches": len(failed_searches),
+            "unresolved_items": len(unresolved_items),
+            "blocked_tool_prechecks": len(blocked),
+        },
+        "limitations": list(dict.fromkeys(limitations)),
+        "acquisition_payload_sha256": _digest(acquisition_payload),
+    }
+
+
+def verify_reportable_freeze(
+    database: str | Path,
+    batch_id: str,
+    *,
+    report_date: str,
+    payload: Mapping[str, Any],
+    acquisition_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Verify a frozen partial/full handoff and its Registry-bound outcome."""
+    reportability = payload.get("reportability")
+    if not isinstance(reportability, Mapping):
+        raise ValueError("frozen report input has no reportability projection")
+    expected_keys = {
+        "schema_version", "outcome", "reportable", "full_coverage",
+        "selected_record_count", "counts", "limitations",
+        "acquisition_payload_sha256",
+    }
+    if set(reportability) != expected_keys:
+        raise ValueError("frozen reportability projection has an invalid shape")
+    if (reportability.get("schema_version") != REPORTABILITY_SCHEMA
+            or reportability.get("outcome") not in REPORTABILITY_OUTCOMES
+            or not isinstance(reportability.get("reportable"), bool)
+            or not isinstance(reportability.get("full_coverage"), bool)):
+        raise ValueError("frozen reportability projection has invalid values")
+    count = reportability.get("selected_record_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise ValueError("frozen reportability selected record count is invalid")
+    count_keys = {
+        "successful_sources", "source_gaps", "failed_searches",
+        "coverage_warnings", "unresolved_items", "blocked_tool_prechecks",
+    }
+    counts = reportability.get("counts")
+    if (not isinstance(counts, Mapping) or set(counts) != count_keys
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+                   for value in counts.values())):
+        raise ValueError("frozen reportability counts are invalid")
+    limitations = reportability.get("limitations")
+    if (not isinstance(limitations, list)
+            or any(not isinstance(value, str) or not value.strip() for value in limitations)):
+        raise ValueError("frozen reportability limitations are invalid")
+
+    outcome = reportability["outcome"]
+    reportable = reportability["reportable"]
+    full_coverage = reportability["full_coverage"]
+    if count != payload.get("record_count"):
+        raise ValueError("frozen reportability count differs from selected evidence")
+    if outcome == "completed" and not (reportable and full_coverage and count > 0):
+        raise ValueError("completed reportability outcome is inconsistent")
+    if outcome == "completed_with_gaps" and not (reportable and not full_coverage and count > 0):
+        raise ValueError("completed-with-gaps reportability outcome is inconsistent")
+    if outcome == "no_eligible_information" and (reportable or count != 0):
+        raise ValueError("no-eligible-information outcome is inconsistent")
+    if outcome == "systemic_failure" and reportable:
+        raise ValueError("systemic-failure outcome cannot be reportable")
+
+    loaded = load_acquisition_batch(database, batch_id)
+    if (_digest(acquisition_payload) != loaded.get("payload_sha256")
+            or reportability["acquisition_payload_sha256"] != loaded.get("payload_sha256")):
+        raise ValueError("frozen reportability differs from Registry payload identity")
+    expected = freeze_acquisition_for_report(
+        database,
+        batch_id,
+        report_date=report_date,
+        allow_unresolved=payload.get("dependency_status") == "partial",
+    )
+    core = dict(payload)
+    core.pop("reportability", None)
+    if core != expected:
+        raise ValueError("frozen report input differs from Registry readback")
+    if dict(reportability) != build_reportability_projection(acquisition_payload, expected):
+        raise ValueError("frozen reportability differs from durable acquisition evidence")
+    return dict(payload)
 
 
 def readback_source_outcomes(database: str | Path, payload: Mapping[str, Any]) -> list[dict[str, Any]]:

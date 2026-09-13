@@ -4,9 +4,9 @@
 snapshot. It is deliberately separate from the detailed producer-owned
 `weekly-run-attempt.v1` ledger exposed by `/api/update-status`.
 
-The API defines the application-side read contract. It does not create
-an exporter, systemd timer, Hermes hook, scheduled job, or production snapshot.
-The observer/exporter remains a separately reviewed server operation.
+The API defines the application-side read contract. `scripts/export_scheduler_status.py`
+projects actual Hermes execution rows; installing its observer is a separately
+reviewed server operation and merely setting an API path creates no snapshot.
 
 The 2026-09-08 SSH audit found 12 enabled legacy Step jobs on the real server;
 the target four-slot wrapper schedule was not installed. The wrappers write
@@ -17,54 +17,69 @@ The existing deployed `/api/update-status` and Registry API expose their own
 available evidence; they do not prove Hermes dispatch. No new transport is added.
 See [current cutover status](../PIPELINE_REFERENCE.md#verification-and-cutover).
 
-The optional Registry slot uses Monday 10:30 UTC. The three canonical slots stay
-08:00, 09:00 and 10:00 UTC. Hermes uses Asia/Shanghai: configure their local cron
-expressions as 16:00, 17:00, 18:00 and 18:30 respectively. Do not change host time.
+The current four slots use 08:00, 09:00, 10:00 and 10:30 ET every other Monday,
+anchored to September 14, 2026. `biweekly-job-status.v1` stores UTC instants but
+validates them against `America/New_York`, including DST. See
+[the ET runbook](biweekly-et-deployment.md).
 An explicit dry-run never marks a production slot completed. A current-week
-Registry rehearsal after 10:30 UTC records `registry_dry_run_exit_N` in its
+Registry rehearsal after 10:30 ET records `registry_dry_run_exit_N` in its
 isolated snapshot with `not_dispatched`; before-slot/historical rehearsals
 report the exit code only in stdout. Production gate failures remain pending. A blocked Registry
 is pending, never evidence of end-to-end completion.
 
+The prepared 09:00 no-send mode is different from global dry-run. After exact
+report, semantic-sidecar, PDF, and manifest verification, it records the email
+slot as `not_dispatched` with `result_code=delivery_no_send`; it does not claim
+an email was sent. The exporter preserves that same-occurrence application
+disposition while Hermes catches up, but never carries it to a newer execution
+or fortnight.
+
 ## Contract
 
 The fixed filename is `scheduler-status.json`. The strict
-`weekly-job-status.v1` shape is:
+exporter contract uses `biweekly-job-status.v1` and all four public aliases:
 
 ```json
 {
-  "schema_version": "weekly-job-status.v1",
-  "generated_at": "2026-08-17T10:05:00Z",
+  "schema_version": "biweekly-job-status.v1",
+  "generated_at": "2026-09-14T12:05:00Z",
   "jobs": {
     "monitor": {
-      "scheduled_for": "2026-08-17T08:00:00Z",
+      "scheduled_for": "2026-09-14T12:00:00Z",
       "state": "completed",
-      "claimed_at": "2026-08-17T08:00:01Z",
-      "started_at": "2026-08-17T08:00:02Z",
-      "finished_at": "2026-08-17T08:40:00Z"
+      "claimed_at": "2026-09-14T12:00:01Z",
+      "started_at": "2026-09-14T12:00:02Z",
+      "finished_at": "2026-09-14T12:04:00Z"
     },
     "email": {
-      "scheduled_for": "2026-08-17T09:00:00Z",
-      "state": "failed",
-      "claimed_at": "2026-08-17T09:00:01Z",
-      "started_at": "2026-08-17T09:00:02Z",
-      "finished_at": "2026-08-17T09:01:00Z",
-      "result_code": "execution_failed"
+      "scheduled_for": "2026-09-14T13:00:00Z",
+      "state": "scheduled"
     },
     "publisher": {
-      "scheduled_for": "2026-08-17T10:00:00Z",
+      "scheduled_for": "2026-09-14T14:00:00Z",
+      "state": "scheduled"
+    },
+    "registry": {
+      "scheduled_for": "2026-09-14T14:30:00Z",
       "state": "scheduled"
     }
   }
 }
 ```
 
-The three aliases are public names; Hermes job IDs are never accepted. Version
-1 deliberately couples them to the UTC Monday containing `generated_at`, at
-08:00, 09:00, and 10:00 UTC. A Monday-morning snapshot may therefore keep the
-later Email and Publisher occurrences in `scheduled`. A past or future week's
-schedule is invalid. A schedule change requires an application contract update
-as well as the separately controlled scheduler change.
+The four aliases are public names; Hermes job IDs are never accepted. Eligible
+run dates are every 14 days from the Monday anchor `2026-09-14`. The slots stay
+at 08:00, 09:00, 10:00, and 10:30 in `America/New_York`; only their UTC offset
+changes with DST. On September 14, 2026 they are 12:00, 13:00, 14:00, and
+14:30Z. On November 9, 2026 they are 13:00, 14:00, 15:00, and 15:30Z.
+`generated_at` binds the snapshot to its containing anchored fortnight, so a
+snapshot after Monitor but before Email may truthfully keep the later
+same-occurrence slots in `scheduled`. A schedule change requires an application
+contract update as well as the separately controlled scheduler change.
+
+The reader also accepts historical `weekly-job-status.v1` snapshots as a
+compatibility input. That legacy three-slot UTC format is not the current
+exporter or rollout contract.
 
 The states have these exact meanings and fields:
 
@@ -128,10 +143,20 @@ host directory.
 Do not mount the Hermes database, `jobs.json`, prompts, logs, or any Hermes
 state directory into the public application container. They may contain
 operational data, recipients, or secrets. Native best-effort hooks alone also
-cannot prove that a scheduler never dispatched a job. A future sanitized
-exporter must independently query authoritative execution state and publish
-only this allowlisted snapshot. Its implementation and any systemd timer are
-deferred.
+cannot prove that a scheduler never dispatched a job.
+
+`scripts/export_scheduler_status.py` is the implemented sanitized exporter. It
+opens the Hermes executions SQLite database read-only, accepts a separate
+four-alias/ID allowlist, and writes only this validated snapshot. The exporter
+and application slot writer share the stable external
+`.scheduler-status.lock` across each complete read/validate/write transaction;
+same-occurrence merging retains a newer verified application completion while
+Hermes is catching up, but a newer execution or fortnight supersedes it. The
+observed production execution database is
+`/home/ubuntu/.hermes/cron/executions.db`, and IDs must be read back from
+`/home/ubuntu/.hermes/cron/jobs.json` into a separate sanitized map. Exporter
+systemd timer installation and scheduler cutover remain unperformed and require their
+own deployment evidence.
 
 ## API and rollback
 
@@ -146,8 +171,8 @@ deferred.
 These failures do not change `/api/health`, the homepage, Chat, Registry, or
 `/api/update-status`.
 
-Deployment and rollback are app-only: add or remove
+Public reader deployment and rollback are app-only: add or remove
 `docker-compose.job-status.yml` and rebuild/recreate only the Wiki app. Do not
 restart or reload Caddy. Do not modify the 08:00 Monitor, 09:00 Email, or 10:00
-Publisher jobs. This phase creates neither a job nor an exporter, and it does
-not create or observe the pending 10:30 Weekly Registry Sync task.
+Publisher jobs. This reader phase creates no scheduler job or exporter timer
+and does not create the pending 10:30 Weekly Registry Sync task.

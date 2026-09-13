@@ -218,7 +218,7 @@ def test_render_report_places_document_files_between_website_updates_and_researc
     assert "**Checksum:** sha256: abc123" in text
 
 
-def test_render_report_sanitizes_and_limits_warning_lines():
+def test_render_report_sanitizes_and_preserves_warning_lines():
     warnings = [
         "iea seed https://iea.org: Client error '403 Forbidden'\nFor more information check: https://developer.mozilla.org/",
         *[f"warning {index}" for index in range(25)],
@@ -235,5 +235,24 @@ def test_render_report_sanitizes_and_limits_warning_lines():
 
     assert "For more information check:" not in text
     assert "- iea seed https://iea.org: Client error '403 Forbidden'" in text
-    assert "- 6 additional warning(s) omitted." in text
-    assert "warning 24" not in text
+    assert "additional warning(s) omitted" not in text
+    assert "warning 24" in text
+
+
+def test_weekly_report_retains_coverage_limitations_without_claiming_full_coverage():
+    text = render_report(
+        report_date=date(2026, 9, 14),
+        title="Weekly Climate Monitor",
+        items=[],
+        dedup_notes=[],
+        sites_monitored=2,
+        warnings=["Pillar A source wmo was blocked: scope.acquisition_failed"],
+        weekly_stats={
+            "total": 2, "updated": 1, "unchanged": 0,
+            "blocked": 1, "failed": 0, "unresolved": 0,
+        },
+        executive_summary="Verified eligible evidence was retained.",
+    )
+    assert "### Coverage Limitations" in text
+    assert "- Pillar A source wmo was blocked: scope.acquisition_failed" in text
+    assert "Verified eligible evidence was retained." in text

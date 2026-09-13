@@ -201,8 +201,8 @@ coverage is verified; the 2026-09-08 audit still found them enabled.
 [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md) owns the detailed program/artifact
 map, executable monitor command, resume behavior, compatibility boundary and
 cutover evidence. [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) owns editable prompts,
-runtime configuration and the intended Monday 08:00/09:00/10:00/10:30 UTC schedule.
-Hermes uses Asia/Shanghai, so these are 16:00/17:00/18:00/18:30 local time.
+runtime configuration and the biweekly Monday 08:00/09:00/10:00/10:30 ET schedule,
+anchored to September 14, 2026. See [the ET deployment runbook](docs/biweekly-et-deployment.md).
 
 The 09:00 delivery path owns the PDF/manifest and retained email. Publication
 uses **generate → isolated rolling PR → review/merge → deploy**. Registry sync

@@ -177,6 +177,42 @@ ARTICLE_EVIDENCE_SCHEMA: dict[str, Any] = {
             },
         },
         "artifact_digest": {"type": "string"},
+        "reportability": {
+            "type": "object",
+            "required": [
+                "schema_version", "outcome", "reportable", "full_coverage",
+                "selected_record_count", "counts", "limitations",
+                "acquisition_payload_sha256",
+            ],
+            "properties": {
+                "schema_version": {"const": "climate-reportability.v1"},
+                "outcome": {"enum": [
+                    "completed", "completed_with_gaps",
+                    "no_eligible_information", "systemic_failure",
+                ]},
+                "reportable": {"type": "boolean"},
+                "full_coverage": {"type": "boolean"},
+                "selected_record_count": {"type": "integer", "minimum": 0},
+                "counts": {
+                    "type": "object",
+                    "required": [
+                        "successful_sources", "source_gaps", "failed_searches",
+                        "coverage_warnings", "unresolved_items", "blocked_tool_prechecks",
+                    ],
+                    "properties": {
+                        key: {"type": "integer", "minimum": 0}
+                        for key in (
+                            "successful_sources", "source_gaps", "failed_searches",
+                            "coverage_warnings", "unresolved_items", "blocked_tool_prechecks",
+                        )
+                    },
+                    "additionalProperties": False,
+                },
+                "limitations": {"type": "array", "items": {"type": "string"}},
+                "acquisition_payload_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+            },
+            "additionalProperties": False,
+        },
     },
     "additionalProperties": False,
 }

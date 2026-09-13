@@ -296,13 +296,13 @@ Production additionally requires `CLIMATE_REGISTRY_WRITE_ENABLE=1`, `API_BASE_UR
 and `SITE_HOST`. The existing runner verifies deployed corpus, publisher ledger,
 artifact and DB identity. A blocked or dry-run Registry is never full completion.
 
-All wrappers require `REPORT_DATE` (Monday, UTC semantics) and an external
+Explicit wrapper calls require `REPORT_DATE` (Monday, ET business date); the
+`--scheduled` guard resolves it from the anchored ET clock. All wrappers require an external
 `CLIMATE_JOB_STATUS_DIR`. These snapshots are local-only evidence. Render has
 no shared source and `/api/job-status` remains 503 `not_configured`; see
 [the status contract](docs/job-status.md). The 2026-09-08 SSH audit found 12 enabled legacy Step jobs on the real server;
 the four-slot target was not installed. The intended schedule is not a provisioning claim.
 
-Hermes local timezone is Asia/Shanghai: Monday 08/09/10/10:30 UTC maps to
-16/17/18/18:30 CST (`0 16 * * 1`, `0 17 * * 1`, `0 18 * * 1`, `30 18 * * 1`).
-Read back each job's timezone and command before scheduling. Do not change the
-global timezone. Local 08:23 CST is 00:23 UTC, before the monitor window.
+The current target is 08:00/09:00/10:00/10:30 ET every other Monday, anchored
+to September 14, 2026. Use the DST-aware guarded checks in
+[the ET runbook](docs/biweekly-et-deployment.md) and read back every real job.

@@ -1,16 +1,16 @@
 # Pipeline Configuration
 
-The repository defines a four-slot weekly Hermes sequence anchored to the
+The repository defines a four-slot biweekly ET Hermes sequence anchored to the
 single production driver path. This is the intended deployment, not proof
 that the server has switched to it. The 2026-09-08 SSH audit still found
 12 enabled legacy Step jobs and no installed four-slot sequence. Keep that
 deployment distinction until the live chain passes and the scheduler is switched.
 
-## Weekly schedule (deployment target)
+## Biweekly ET schedule (anchor: September 14, 2026)
 
-| # | UTC | Slot        | Hermes wrapper                            | Entry point invoked                                                  | Result                                                  |
+| # | ET | Slot        | Hermes wrapper                            | Entry point invoked                                                  | Result                                                  |
 |---|-----|-------------|--------------------------------------------|----------------------------------------------------------------------|---------------------------------------------------------|
-| 1 | 08  | `monitor`   | `scripts/hermes_job_monitor.sh`           | `python scripts/run_climate_monitor.py --production-weekly …`        | Monday report Markdown + sidecar + URL-state commit    |
+| 1 | 08  | `monitor`   | `scripts/hermes_job_monitor.sh`           | `python scripts/hermes_job.py monitor --managed --scheduled`         | Monday report Markdown + sidecar + URL-state commit    |
 | 2 | 09  | `email`     | `scripts/hermes_job_email.sh`             | `python -m climate_delivery.cli run`    | PDF + manifest + retained email to the four recipients  |
 | 3 | 10  | `publisher` | `scripts/hermes_job_publisher.sh`         | `flock` + `python scripts/publish_weekly_reports.py`                   | Rolling `codex/hermes-weekly-monitor` PR update         |
 | 4 | 10:30 | `registry` | `scripts/hermes_job_registry.sh`          | `scripts/weekly_registry_refresh.py` (explicit gates)                                                        | `not_dispatched` until merge + deploy gate is satisfied |
@@ -21,8 +21,8 @@ report exists before ingest; preserve that gap if you ever re-schedule.
 `weekly_wiki_refresh.sh` remains a compatible direct Publisher wrapper; the
 scheduled slot delegates directly to the same Python publisher under its lock.
 
-Hermes uses Asia/Shanghai local time. Configure Monday local cron expressions
-`0 16 * * 1`, `0 17 * * 1`, `0 18 * * 1`, `30 18 * * 1` for these UTC slots.
+Use the DST-aware UTC ticker checks in [the ET deployment runbook](docs/biweekly-et-deployment.md).
+The shared guard rejects the wrong offset and alternate Mondays.
 The manifest records this mapping; it is not an installed job inventory.
 The 2026-09-08 server audit found no four-slot scheduler snapshot;
 `/api/job-status` returned 503 `not_configured`.
@@ -45,7 +45,7 @@ delegates to the existing public entrypoints.
 | Acquisition task parameters and five business prompts | The authenticated `/manage` API and one `climate-acquisition-task-state.v1` at `CLIMATE_TASK_CONFIG` |
 | Source inventory and reviewed site scopes | Existing `monitoring/supranational_sources.yaml` and `monitoring/site_scopes.yaml`, referenced by configured source keys |
 | Categories and semantic limits | Structured/versioned `monitoring/taxonomies/article_categories_v1.yaml`, whose normalized hash is bound to each effective task |
-| Model/provider | Effective task parameters; credentials remain only in the existing Hermes auth store |
+| Model/provider | Effective task parameters; GPT-5.6 Luna default with credentials outside the repository |
 | Runtime Registry and run paths | Effective task parameters, placed on external persistent storage by the operator |
 | Live schedule | Hermes on the controlled server; `scripts/run_agent_acquisition.py --scheduled-start` consumes the same task definition as manual start |
 
@@ -154,7 +154,7 @@ the orchestrator writes any artifact; `MonitorRunResult.stats` exposes
 the validated counts. The total is the actual upstream site count; the
 single-site WRI sandbox showed `1 requested / 1 unchanged`, not 57 sites.
 
-### Email (09:00 UTC, climate_delivery pipeline)
+### Email (09:00 ET, climate_delivery pipeline)
 
 Use the email wrapper with four absolute paths and a verified monitor identity.
 Configuration and preflight are documented in PIPELINE_REFERENCE.md.
@@ -233,10 +233,15 @@ canary remains required.
 
 An attempt can finish as `completed_with_gaps`. All selected source outcomes and
 artifacts survive Registry payload verification, report-input projection and
-management readback. The Registry batch remains incomplete, no final report
-input is frozen, and report/publication dispatch remains blocked. A truthful
-`no_search` retains its reason. Local checks do not verify a production deployment,
-import, site run, browser capability or full production coverage.
+management readback. If at least one eligible exact content version was selected,
+the partial projection is frozen immutably and authoring continues with the
+English coverage limitations retained in the report, sidecar and delivery
+artifacts. A selected-content integrity failure still blocks that content and
+the report. Zero selected eligible records completes as
+`no_eligible_information` without creating a report; a systemic reader stop is
+`systemic_failure` and remains retryable. A truthful `no_search` retains its
+reason. Local checks do not verify a production deployment, import, site run,
+browser capability or full production coverage.
 
 ### Legacy Step 2: Pillar B Web Search (historical compatibility only)
 

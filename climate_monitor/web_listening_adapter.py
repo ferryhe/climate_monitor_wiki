@@ -224,10 +224,16 @@ def collect_source_items(
     crawler.climate_gateway.lane = f"seed:{source.key}"
     items, warnings = [], []
     seed_outcomes = seed_outcomes if seed_outcomes is not None else {}
+    # The systemic circuit breaker samples distinct source runtimes. Multiple
+    # failed roots owned by one institution are one site-local gap, not proof
+    # that the governed reader is unavailable for the whole run.
+    systemic_failure_recorded_for_source = False
     for seed_url in _seed_urls(source, scope):
         key = f"seed:{source.key}:{seed_url}"
         receipt = budget.receipt(key, reset_systemic=True) if stage_checkpoint else None
         systemic = budget.systemic_read_failure()
+        if receipt is not None and receipt.get("status") in {"success", "rejected"}:
+            systemic_failure_recorded_for_source = False
         if receipt is None:
             if systemic["stopped"]:
                 error = (
@@ -281,10 +287,12 @@ def collect_source_items(
                 if stage_checkpoint:
                     budget.save_receipt(key, receipt)
                 systemic = budget.reset_systemic_read_failure()
+                systemic_failure_recorded_for_source = False
             except RequestBudgetError as exc:
                 receipt = {"status": "incomplete", "event_kind": "precheck", "error": str(exc)}
                 budget.note("precheck", seed_url, exc)
                 systemic = budget.reset_systemic_read_failure()
+                systemic_failure_recorded_for_source = False
             except Exception as exc:
                 envelope = getattr(exc, "envelope", None)
                 rejected = envelope is not None
@@ -298,12 +306,17 @@ def collect_source_items(
                         budget.save_receipt(key, receipt)
                 sent = budget.usage()["target_send_reservations"] > sends_before
                 if sent and not rejected:
-                    signature = " ".join(typed_error.split())
-                    systemic = budget.record_systemic_read_failure(
-                        signature, threshold=_SYSTEMIC_READ_FAILURE_THRESHOLD,
-                    )
+                    if not systemic_failure_recorded_for_source:
+                        signature = " ".join(typed_error.split())
+                        systemic = budget.record_systemic_read_failure(
+                            signature, threshold=_SYSTEMIC_READ_FAILURE_THRESHOLD,
+                        )
+                        systemic_failure_recorded_for_source = True
+                    else:
+                        systemic = budget.systemic_read_failure()
                 else:
                     systemic = budget.reset_systemic_read_failure()
+                    systemic_failure_recorded_for_source = False
                 budget.note(receipt["event_kind"], seed_url, receipt["error"])
         seed_outcomes[seed_url] = receipt
         if receipt["status"] == "success":
@@ -684,6 +697,11 @@ def _seed_urls(source: MonitorSource, scope: SiteScope | None) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for url in urls:
+        # A host-only HTTP URL requests "/". The governed gateway requires
+        # that path explicitly; normalize before binding profiles and receipts.
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.path:
+            url = parsed._replace(path="/").geturl()
         if url in seen:
             continue
         seen.add(url)

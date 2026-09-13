@@ -46,7 +46,7 @@ Required constraints:
 
 - Read back the actual job inventory and replace legacy callers with one unique
   schedule. Do not require the unverified historical ID `f5259a8ec2d9`.
-- Preserve Monday 08:00 UTC dispatch.
+- Use biweekly Monday 08:00 ET dispatch anchored to September 14, 2026.
 - Preserve runtime credentials, host paths, resource limits, and logs/state.
 - Preserve the 09:00 email/PDF producer and the 10:00 Publisher behavior.
 - Use the repository CLI from an exact deployed commit.
@@ -79,7 +79,7 @@ Do not claim production migration complete until all of the following are true:
 - Controlled parity passed against captured inputs.
 - A controlled exact-date run produced validated report and sidecar hashes.
 - The unique monitor job has verified command/timezone readback and Monday
-  08:00 UTC cadence (16:00 Asia/Shanghai).
+  08:00 ET cadence every 14 calendar days from September 14, 2026.
 - The 09:00 email/PDF producer and 10:00 Publisher still consume the same
   canonical report identity.
 - Reviewed content is merged/deployed before the gated Registry sync; the full
