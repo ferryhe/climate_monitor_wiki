@@ -2774,6 +2774,7 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
 
     config = json.loads((home / "config.yaml").read_text())
     assert config["plugins"] == {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
+    assert "tools" not in config
     plugin = home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID
     assert json.loads((plugin / "plugin.yaml").read_text())["hooks"] == [
         "transform_tool_result",
@@ -2791,6 +2792,7 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
     )
     legacy_config = json.loads((legacy_home / "config.yaml").read_text())
     assert "plugins" not in legacy_config
+    assert "tools" not in legacy_config
     assert not (legacy_home / "plugins").exists()
 
 
@@ -2799,6 +2801,8 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
 ):
     import subprocess
     import sys
+    model_tools = pytest.importorskip("model_tools")
+    plugins = pytest.importorskip("hermes_cli.plugins")
     from climate_monitor.hermes_acquisition_hooks import (
         SEARCH_IDENTITY_PLUGIN_ID, install_hooks,
     )
@@ -2819,12 +2823,26 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
     config = json.loads((home / "config.yaml").read_text())
     assert config["plugins"] == {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
     assert config["mcp_servers"] == {}
+    assert config["tools"] == {"tool_search": {"enabled": "off"}}
     source = (home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID / "__init__.py").read_text()
     assert source.count("ctx.register_tool(") == 2
     assert "toolset='climate_acquisition'" in source
     assert "climate_stage_candidate" in source
     assert "climate_finalize_candidate" in source
     assert "terminal" not in source and "execute_code" not in source
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+    plugins._plugin_manager = plugins.PluginManager()
+    plugins.discover_plugins()
+    assembled = model_tools.get_tool_definitions(
+        enabled_toolsets=["web", "browser", "climate_acquisition"],
+        quiet_mode=True,
+    )
+    assembled_names = {row["function"]["name"] for row in assembled}
+    assert {
+        "climate_stage_candidate", "climate_finalize_candidate",
+    } <= assembled_names
+    assert not {"tool_search", "tool_describe", "tool_call"} & assembled_names
 
 
 def test_v2_search_identity_transform_uses_completed_same_call_without_accounting(tmp_path):

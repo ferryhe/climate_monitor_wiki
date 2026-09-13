@@ -187,6 +187,8 @@ def install_hooks(command, binding_path, binding, environment):
         "pre_tool_call": [{"command": hook, "timeout": 15, "fail_closed": True}],
         "post_tool_call": [{"command": hook, "timeout": 15}],
     }, "mcp_servers": {}, "memory": {"memory_enabled": False, "user_profile_enabled": False}}
+    if candidate_handle_protocol(binding):
+        config["tools"] = {"tool_search": {"enabled": "off"}}
     if provider_native_unbounded_search(binding):
         _install_search_identity_plugin(home, binding_path)
         config["plugins"] = {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
