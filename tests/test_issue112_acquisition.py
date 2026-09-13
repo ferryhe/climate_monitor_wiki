@@ -9,6 +9,7 @@ import sys
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -963,6 +964,117 @@ def test_actual_prepare_registry_branch_accepts_frozen_evidence(tmp_path, monkey
     assert restarted["searches"][0]["status"] == "failed"
     assert restarted["searches"][0]["error_message"] == "native search timeout"
     assert not (failed_staging / "v2_authoring_request.json").exists()
+
+
+def test_bound_prepare_uses_registry_selected_subset_for_immutable_handoff(
+    tmp_path, monkeypatch,
+):
+    selected_url = "https://www.iais.org/publications/gimar/"
+    unselected_url = "https://www.ipcc.ch/news/"
+    searches = [{
+        "search_ref": "search-1", "query": "climate reports", "engine": "web_search",
+        "status": "success", "attempted_at": NOW,
+        "result_refs": [selected_url, unselected_url],
+        "budget": {"max_results": 2, "used_results": 2}, "error": None,
+    }]
+    payload = _batch([
+        _item(selected_url, discovery_ref=selected_url, source="iais"),
+        _item(
+            unselected_url, selected=False, discovery_ref=unselected_url,
+            source="ipcc",
+        ),
+    ], batch_id="selected-subset", searches=searches)
+    database = _database(tmp_path)
+    store_acquisition_batch(database, payload)
+    frozen = freeze_acquisition_for_report(
+        database, "selected-subset", report_date=payload["report_date"]
+    )
+    frozen_path = tmp_path / "frozen-report-input.json"
+    frozen_path.write_text(json.dumps(frozen), encoding="utf-8")
+
+    report_inputs = {
+        "acquisition_batch": str((tmp_path / "outcome.json").resolve()),
+        "web_listening_manifest": str((tmp_path / "manifest.json").resolve()),
+        "pillar_b_artifact": str((tmp_path / "pillar.json").resolve()),
+        "staging_dir": str((tmp_path / "staging").resolve()),
+        "state_dir": str((tmp_path / "state").resolve()),
+        "source_dir": str((tmp_path / "sources").resolve()),
+        "wiki_dir": str((tmp_path / "wiki").resolve()),
+    }
+    binding = {
+        "report_date": payload["report_date"], "registry_database": str(database),
+        "acquisition_batch_id": "selected-subset",
+        "frozen_report_input": str(frozen_path), "report_inputs": report_inputs,
+        "repository_commit_sha": "a" * 40, "provider": "openai-api", "model": "test",
+    }
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    run_config = tmp_path / "run-config.yaml"
+    run_config.write_text("{}\n", encoding="utf-8")
+    args = SimpleNamespace(
+        task_binding=str(binding_path), report_date="", repository_commit_sha="",
+        acquisition_batch=report_inputs["acquisition_batch"],
+        web_listening_manifest=report_inputs["web_listening_manifest"],
+        pillar_b_artifact=report_inputs["pillar_b_artifact"],
+        staging_dir=report_inputs["staging_dir"], state_dir=report_inputs["state_dir"],
+        source_dir=report_inputs["source_dir"], wiki_dir=report_inputs["wiki_dir"],
+        run_config=str(run_config),
+    )
+    combined = SimpleNamespace(candidates=(
+        SimpleNamespace(canonical_url=monitor.canonical_url(selected_url)),
+        SimpleNamespace(canonical_url=monitor.canonical_url(unselected_url)),
+    ))
+    monkeypatch.setattr(
+        monitor, "_load_task_binding_with_taxonomy",
+        lambda path: (binding, binding_path, None),
+    )
+    monkeypatch.setattr(monitor, "_enforce_production_paths", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        monitor, "_read_prepare_inputs", lambda *args, **kwargs: ({}, [], {}, [], {})
+    )
+    monkeypatch.setattr(
+        monitor, "_select_authoring_candidates",
+        lambda *args, **kwargs: (combined, (), {}),
+    )
+
+    class SelectionValidated(Exception):
+        pass
+
+    def validate_selected_only(value, *, report_date, urls):
+        assert value == frozen
+        assert report_date == payload["report_date"]
+        assert urls == {monitor.canonical_url(selected_url)}
+        raise SelectionValidated
+
+    monkeypatch.setattr(monitor, "validate_retained_article_evidence", validate_selected_only)
+    with pytest.raises(SelectionValidated):
+        monitor._run_prepare(args, SimpleNamespace(error=pytest.fail))
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "wrong_selected"])
+def test_frozen_registry_selection_still_rejects_incorrect_selected_subset(mutation):
+    selected_url = "https://www.iais.org/publications/gimar/"
+    unselected_url = "https://www.ipcc.ch/news/"
+    evidence = {
+        "records": [{"requested_url": selected_url}],
+        "acquisition_dispositions": [
+            {"requested_url": selected_url, "selection_status": "selected"},
+            {"requested_url": unselected_url, "selection_status": "unselected"},
+        ],
+    }
+    if mutation == "missing":
+        evidence["records"] = []
+    elif mutation == "extra":
+        evidence["records"].append({"requested_url": unselected_url})
+    else:
+        evidence["acquisition_dispositions"][0]["selection_status"] = "unselected"
+        evidence["acquisition_dispositions"][1]["selection_status"] = "selected"
+    candidates = (
+        SimpleNamespace(canonical_url=monitor.canonical_url(selected_url)),
+        SimpleNamespace(canonical_url=monitor.canonical_url(unselected_url)),
+    )
+    with pytest.raises(ValueError, match="selection does not match"):
+        monitor._validated_registry_selection_urls(candidates, evidence)
 
 
 def test_production_store_restart_freeze_helper_uses_exact_durable_batch(tmp_path):
