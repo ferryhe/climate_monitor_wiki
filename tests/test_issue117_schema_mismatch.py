@@ -87,10 +87,46 @@ def test_response_shape_visible_even_with_old_bound_task(tmp_path):
 def test_resume_prompt_includes_contract_correction(tmp_path):
     from test_issue94_management_console import _definition
     from climate_monitor.management import build_task_binding
-    b = build_task_binding(_definition(tmp_path), task_version=1, run_id='contract', attempt=2)
+    from climate_monitor.request_budget import (
+        PROVIDER_NATIVE_SEARCH_POLICY,
+        V2_AGENT_PROTOCOL_VERSION,
+    )
+    definition = _definition(tmp_path)
+    v1_path = (
+        Path(runner.__file__).resolve().parents[1]
+        / 'monitoring/jobs/weekly-climate-monitor-08h/prompts'
+        / 'acquisition-task-v1.prompt.md'
+    )
+    definition['prompts']['acquisition_task'] = {
+        'version': 'v1', 'text': v1_path.read_text(encoding='utf-8'),
+    }
+    b = build_task_binding(
+        definition, task_version=1, run_id='contract', attempt=2,
+    )
+    b['agent_protocol'] = {
+        'version': V2_AGENT_PROTOCOL_VERSION,
+        'search_policy': PROVIDER_NATIVE_SEARCH_POLICY,
+    }
     error = 'Response contract correction required: searches must be a list'
     (tmp_path/'attempt-1-result.json').write_text(json.dumps({'error': error}))
     assert error in runner._prompt(tmp_path/'attempt-2.json', b)
+
+
+def test_v3_resume_prompt_does_not_inherit_model_json_contract_correction(tmp_path):
+    from test_issue94_management_console import _definition
+    from climate_monitor.management import build_task_binding
+
+    b = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id='contract-v3', attempt=2,
+    )
+    error = 'Response contract correction required: searches must be a list'
+    (tmp_path/'attempt-1-result.json').write_text(json.dumps({'error': error}))
+    prompt = runner._prompt(tmp_path/'attempt-2.json', b)
+    assert error not in prompt
+    assert (
+        'After all staging and finalization calls, return only a concise '
+        'natural-language' in prompt
+    )
 
 
 def test_equal_duplicate_aliases_are_stripped():
