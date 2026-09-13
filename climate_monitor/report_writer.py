@@ -6,9 +6,6 @@ from typing import Any
 from .ai_filter import CATEGORY_LABELS
 
 
-_MAX_WARNING_LINES = 20
-
-
 def _metadata_values(item: Any, name: str, fallback: tuple[str, ...] = ()) -> tuple[str, ...]:
     raw = tuple(_item_value(item, name, ()) or fallback)
     output: list[str] = []
@@ -38,11 +35,7 @@ def _warning_line(warning: str) -> str:
 
 def _render_warnings(warnings: list[str]) -> list[str]:
     cleaned = [line for warning in warnings if (line := _warning_line(warning))]
-    lines = [f"- {warning}" for warning in cleaned[:_MAX_WARNING_LINES]]
-    omitted = len(cleaned) - _MAX_WARNING_LINES
-    if omitted > 0:
-        lines.append(f"- {omitted} additional warning(s) omitted.")
-    return lines
+    return [f"- {warning}" for warning in cleaned]
 
 
 def _document_metadata_lines(item: Any) -> list[str]:
@@ -180,6 +173,10 @@ def render_report(
                  "## Executive Summary", "",
                  f"- Sites checked: **{counts['total']}**, succeeded: **{succeeded}**, failed: **{failed}**",
                  "", executive_summary, ""]
+        if warnings:
+            lines += ["### Coverage Limitations", ""]
+            lines += _render_warnings(warnings)
+            lines.append("")
         for pillar in ("A", "B"):
             lines += [f"## Pillar {pillar}", ""]
             for index, item in enumerate(render_order(items), 1):

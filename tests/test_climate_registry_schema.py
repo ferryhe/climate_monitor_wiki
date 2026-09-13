@@ -2,14 +2,15 @@ import sqlite3
 
 import pytest
 
-from climate_registry.schema import apply_migrations
+from climate_registry.contract import SchemaContractError, validate_registry_contract
+from climate_registry.schema import MIGRATIONS, apply_migrations
 
 
 def test_schema_v8_upgrades_to_reconcilable_unfrozen_batches():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=8)
 
-    assert apply_migrations(connection) == [9]
+    assert apply_migrations(connection, target_version=9) == [9]
     triggers = {
         row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'trigger'"
@@ -25,13 +26,129 @@ def test_schema_v8_upgrades_to_reconcilable_unfrozen_batches():
     } <= triggers
 
 
+def test_schema_v9_upgrades_trigger_without_changing_acquisition_data():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection, target_version=9)
+    connection.execute(
+        "INSERT INTO acquisition_batches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "batch", "pre-report-acquisition-batch.v1", "2026-09-07",
+            "2026-09-07T12:00:00Z", None, "{}", "no_search",
+            "systemic stop before search", "a" * 64, None,
+        ),
+    )
+    before = connection.execute("SELECT * FROM acquisition_batches").fetchall()
+    connection.commit()
+
+    assert validate_registry_contract(connection) == 9
+    assert apply_migrations(connection) == [10]
+    assert connection.execute("SELECT * FROM acquisition_batches").fetchall() == before
+    assert connection.execute("PRAGMA user_version").fetchone() == (10,)
+    assert validate_registry_contract(connection) == 10
+    assert apply_migrations(connection) == []
+
+
+def test_v10_trigger_allows_only_search_backed_forward_decision_transition():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection)
+    connection.execute(
+        "INSERT INTO acquisition_batches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "batch", "pre-report-acquisition-batch.v1", "2026-09-07",
+            "2026-09-07T12:00:00Z", None, "{}", "no_search",
+            "systemic stop before search", "a" * 64, None,
+        ),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable acquisition"):
+        connection.execute(
+            "UPDATE acquisition_batches SET search_decision='attempted', no_search_reason=NULL"
+        )
+    connection.execute(
+        "UPDATE acquisition_batches SET completed_at=?, payload_sha256=?",
+        ("2026-09-07T12:30:00Z", "b" * 64),
+    )
+    for assignment in (
+        "batch_id='other'", "schema_version='other'", "report_date='2026-09-08'",
+        "started_at='2026-09-07T12:00:01Z'", "date_policy_json='{\"mode\":\"other\"}'",
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match="immutable acquisition"):
+            connection.execute(f"UPDATE acquisition_batches SET {assignment}")
+    connection.execute(
+        "INSERT INTO acquisition_searches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "search-id", "batch", 1, "search-ref", "query", "web_search",
+            "failed", "2026-09-07T12:01:00Z", "[]", '{"used_results":0}',
+            "provider unavailable",
+        ),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable acquisition"):
+        connection.execute(
+            """UPDATE acquisition_batches
+               SET search_decision='attempted', no_search_reason=NULL,
+                   frozen_at='2026-09-07T12:59:00Z'"""
+        )
+    connection.execute(
+        "UPDATE acquisition_batches SET search_decision='attempted', no_search_reason=NULL"
+    )
+    connection.execute(
+        "UPDATE acquisition_batches SET completed_at=?, payload_sha256=?",
+        ("2026-09-07T12:31:00Z", "c" * 64),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable acquisition"):
+        connection.execute(
+            "UPDATE acquisition_batches SET search_decision='no_search', "
+            "no_search_reason='rewritten'"
+        )
+    connection.execute(
+        "UPDATE acquisition_batches SET frozen_at='2026-09-07T13:00:00Z'"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable acquisition"):
+        connection.execute("UPDATE acquisition_batches SET completed_at='2026-09-07T13:00:01Z'")
+    connection.execute(
+        "INSERT INTO acquisition_batches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "other-batch", "pre-report-acquisition-batch.v1", "2026-09-07",
+            "2026-09-07T12:00:00Z", None, "{}", "no_search",
+            "systemic stop before search", "d" * 64, None,
+        ),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable acquisition"):
+        connection.execute(
+            """UPDATE acquisition_batches
+               SET search_decision='attempted', no_search_reason=NULL
+               WHERE batch_id='other-batch'"""
+        )
+
+
+def test_v10_contract_rejects_v9_trigger_with_claimed_v10_metadata():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection, target_version=9)
+    assert validate_registry_contract(connection) == 9
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (10, ?, ?)",
+        ("monotonic_acquisition_search_decision", "2026-09-13T00:00:00Z"),
+    )
+    connection.execute("PRAGMA user_version = 10")
+    with pytest.raises(SchemaContractError, match="triggers contract"):
+        validate_registry_contract(connection)
+
+
+def test_v9_contract_rejects_unversioned_v10_trigger():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection, target_version=9)
+    connection.executescript(MIGRATIONS[-1][2])
+
+    with pytest.raises(SchemaContractError, match="triggers contract"):
+        validate_registry_contract(connection)
+
+
 def test_migrations_are_idempotent_and_enable_foreign_keys():
     connection = sqlite3.connect(":memory:")
 
-    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert apply_migrations(connection) == []
     assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
-    assert connection.execute("PRAGMA user_version").fetchone() == (9,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (10,)
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -178,9 +295,9 @@ def test_v2_to_v3_preserves_existing_rows_and_defaults_to_summary_excerpt():
         for table in ("sources", "articles", "article_versions", "reports", "discoveries")
     }
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10]
 
-    assert connection.execute("PRAGMA user_version").fetchone() == (9,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (10,)
     assert connection.execute(
         "SELECT current_content_version_id, display_policy FROM articles WHERE article_id = 'a'"
     ).fetchone() == (None, "summary_excerpt")
@@ -266,7 +383,7 @@ def test_v2_to_v3_preserves_the_historical_audit_baseline_counts():
         for table in counts_before
     } == counts_before
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10]
 
     assert {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

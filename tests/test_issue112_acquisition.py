@@ -113,12 +113,78 @@ def test_date_policy_default_recent_custom_boundaries_and_unknown():
     assert recent.start == date(2026, 9, 8) and recent.end == date(2026, 9, 10)
     assert recent.selects(date(2026, 9, 8)) and recent.selects(date(2026, 9, 10))
     assert not recent.selects(date(2026, 9, 7)) and not recent.selects(None)
-
     custom = PublicationDatePolicy.resolve({"mode": "custom", "start": "2026-08-01", "end": "2026-08-31"},
         anchor_date=date(2026, 9, 10), frozen_at=NOW)
     assert custom.selects(date(2026, 8, 1)) and custom.selects(date(2026, 8, 31))
     assert not custom.selects(None)
 
+
+def test_reportable_partial_projection_is_registry_bound_and_tamper_evident(tmp_path):
+    from climate_registry.acquisition import (
+        build_reportability_projection, verify_reportable_freeze,
+    )
+
+    database = _database(tmp_path)
+    good = _item(url="https://example.org/eligible", discovery_ref="result-1")
+    excluded = _item(
+        url="https://example.org/excluded", selected=False, status="failed",
+        discovery_kind="site", discovery_ref="site:excluded",
+        discovery_search_ref=None, processing_status="failed",
+        processing_error="reader failed",
+    )
+    payload = _batch([good, excluded], completed=False)
+    payload.update(
+        source_outcomes=[], systemic_error=None, blocked_tool_prechecks=[],
+    )
+    store_acquisition_batch(database, payload)
+    frozen = freeze_acquisition_for_report(
+        database, payload["batch_id"], report_date=payload["report_date"],
+        allow_unresolved=True, mark_partial_frozen=True,
+    )
+    frozen["reportability"] = build_reportability_projection(payload, frozen)
+    verified = verify_reportable_freeze(
+        database, payload["batch_id"], report_date=payload["report_date"],
+        payload=frozen, acquisition_payload=payload,
+    )
+    assert verified["reportability"]["outcome"] == "completed_with_gaps"
+    assert verified["reportability"]["selected_record_count"] == 1
+    assert [record["requested_url"] for record in verified["records"]] == [
+        "https://example.org/eligible"
+    ]
+    assert (
+        "Excluded item Article (https://example.org/excluded): reader failed."
+        in verified["reportability"]["limitations"]
+    )
+    changed = deepcopy(payload)
+    changed["systemic_error"] = "late mutation"
+    with pytest.raises(ValueError, match="frozen acquisition batch"):
+        store_acquisition_batch(database, changed)
+
+    tampered = deepcopy(frozen)
+    tampered["reportability"]["limitations"] = ["Full coverage."]
+    with pytest.raises(ValueError, match="durable acquisition evidence"):
+        verify_reportable_freeze(
+            database, payload["batch_id"], report_date=payload["report_date"],
+            payload=tampered, acquisition_payload=payload,
+        )
+
+
+def test_unresolved_item_limitation_falls_back_to_evidence_reason():
+    from climate_registry.acquisition import build_reportability_projection
+
+    projection = build_reportability_projection({
+        "completed_at": None, "source_outcomes": [], "searches": [],
+        "blocked_tool_prechecks": [],
+        "items": [{
+            "url": "https://example.org/fallback", "title": "Fallback item",
+            "processing_status": "failed", "processing_error": None,
+            "evidence": {"failure_reason": "body unavailable\nfrom governed reader"},
+        }],
+    }, {"record_count": 1})
+    assert projection["limitations"] == [
+        "Excluded item Fallback item (https://example.org/fallback): "
+        "body unavailable from governed reader."
+    ]
 
 def test_same_batch_resume_reconciles_unresolved_and_preserves_verified_success(tmp_path):
     database = _database(tmp_path)
@@ -200,6 +266,118 @@ def test_same_batch_resume_reconciles_unresolved_and_preserves_verified_success(
         store_acquisition_batch(database, blocked)
 
 
+def test_no_search_batch_advances_only_with_new_validated_search_evidence(tmp_path):
+    database = _database(tmp_path)
+    reason = "systemic reader stop before any trusted search"
+    initial = _batch(
+        [], batch_id="search-decision-recovery", completed=False, searches=[],
+        search_decision={"status": "no_search", "reason": reason},
+    )
+    store_acquisition_batch(database, initial)
+    search = {
+        "search_ref": "recovery-search", "query": "recovered climate evidence",
+        "engine": "web_search", "status": "success", "attempted_at": NOW,
+        "result_refs": ["https://example.org/recovered"],
+        "budget": {"max_results": 1, "used_results": 1}, "error": None,
+    }
+    recovery = _batch(
+        [_item("https://example.org/recovered", discovery_ref="https://example.org/recovered",
+               discovery_search_ref="recovery-search")],
+        batch_id=initial["batch_id"], searches=[search], completed=True,
+    )
+    store_acquisition_batch(database, recovery)
+    loaded = load_acquisition_batch(database, initial["batch_id"])
+    assert loaded["search_decision"] == "attempted"
+    assert loaded["no_search_reason"] is None
+    assert [row["search_ref"] for row in loaded["searches"]] == ["recovery-search"]
+    assert loaded["completed_at"] == NOW
+    assert store_acquisition_batch(database, recovery)["batch_id"] == initial["batch_id"]
+
+    failed_initial = _batch(
+        [], batch_id="failed-search-decision-recovery", completed=False, searches=[],
+        search_decision={"status": "no_search", "reason": reason},
+    )
+    store_acquisition_batch(database, failed_initial)
+    failed_search = dict(search)
+    failed_search.update(
+        search_ref="failed-recovery-search", status="failed", result_refs=[],
+        budget={"max_results": 1, "used_results": 0}, error="provider unavailable",
+    )
+    store_acquisition_batch(
+        database,
+        _batch(
+            [], batch_id=failed_initial["batch_id"], searches=[failed_search],
+            completed=False,
+        ),
+    )
+    failed_loaded = load_acquisition_batch(database, failed_initial["batch_id"])
+    assert failed_loaded["search_decision"] == "attempted"
+    assert failed_loaded["no_search_reason"] is None
+    assert failed_loaded["searches"][0]["status"] == "failed"
+    assert failed_loaded["completed_at"] is None
+
+
+def test_search_decision_recovery_rejections_leave_registry_unchanged(tmp_path):
+    database = _database(tmp_path)
+    reason = "systemic reader stop before any trusted search"
+    initial = _batch(
+        [], batch_id="search-decision-rollback", completed=False, searches=[],
+        search_decision={"status": "no_search", "reason": reason},
+    )
+    store_acquisition_batch(database, initial)
+    before = load_acquisition_batch(database, initial["batch_id"])
+
+    reason_rewrite = deepcopy(initial)
+    reason_rewrite["search_decision"]["reason"] = "different no-search reason"
+    with pytest.raises(ValueError, match="search decision"):
+        store_acquisition_batch(database, reason_rewrite)
+    decision_only = deepcopy(initial)
+    decision_only["search_decision"] = {"status": "attempted", "reason": None}
+    with pytest.raises(ValueError, match="at least one true attempt"):
+        store_acquisition_batch(database, decision_only)
+    changed_start = deepcopy(initial)
+    changed_start["started_at"] = "2026-09-10T08:01:00Z"
+    with pytest.raises(ValueError, match="immutable batch fields"):
+        store_acquisition_batch(database, changed_start)
+    assert load_acquisition_batch(database, initial["batch_id"]) == before
+
+    rollback_initial = _batch(
+        [_item(
+            "https://example.org/preserved", selected=False,
+            discovery_kind="site", discovery_ref="site:preserved",
+            discovery_search_ref=None,
+        )],
+        batch_id="search-decision-transaction-rollback", completed=False,
+        searches=[], search_decision={"status": "no_search", "reason": reason},
+    )
+    store_acquisition_batch(database, rollback_initial)
+    rollback_before = load_acquisition_batch(database, rollback_initial["batch_id"])
+    late_failure = deepcopy(rollback_initial)
+    late_failure["search_decision"] = {"status": "attempted", "reason": None}
+    late_failure["searches"] = deepcopy(_batch([])["searches"])
+    late_failure["items"][0]["title"] = "Changed verified title"
+    with pytest.raises(ValueError, match="verified successful item evidence"):
+        store_acquisition_batch(database, late_failure)
+    assert load_acquisition_batch(database, rollback_initial["batch_id"]) == rollback_before
+
+    successful = _batch(
+        [_item()], batch_id="attempted-search-rollback", completed=False,
+    )
+    store_acquisition_batch(database, successful)
+    attempted_before = load_acquisition_batch(database, successful["batch_id"])
+    removed = deepcopy(successful)
+    removed["search_decision"] = {"status": "no_search", "reason": "rewritten"}
+    removed["searches"] = []
+    removed["items"] = []
+    with pytest.raises(ValueError, match="search decision"):
+        store_acquisition_batch(database, removed)
+    mutated = deepcopy(successful)
+    mutated["searches"][0]["query"] = "changed prior query"
+    with pytest.raises(ValueError, match="verified successful search"):
+        store_acquisition_batch(database, mutated)
+    assert load_acquisition_batch(database, successful["batch_id"]) == attempted_before
+
+
 def test_store_before_report_restart_dedupe_versions_unselected_and_exact_handoff(tmp_path):
     database = _database(tmp_path)
     first = store_acquisition_batch(database, _batch([
@@ -249,14 +427,143 @@ def test_enabled_window_retains_unknown_for_reselection(tmp_path):
         anchor_date=date(2026, 9, 10), frozen_at=NOW).to_dict()
     unknown = _item(published_date=None)
     old = _item("https://example.org/old", published_date="2026-01-01")
-    result = store_acquisition_batch(database, _batch([unknown, old], policy=policy))
+    limited = _batch([unknown, old], policy=policy, completed=False)
+    result = store_acquisition_batch(database, limited)
     assert result["selected_count"] == 0
     loaded = load_acquisition_batch(database, "batch-112")
     assert {row["date_status"] for row in loaded["items"]} == {"outside_window", "unknown_pending_review"}
+    frozen = freeze_acquisition_for_report(
+        database, "batch-112", report_date="2026-09-10",
+        allow_unresolved=True, mark_partial_frozen=True,
+    )
+    assert frozen["dependency_status"] == "partial"
 
     unlimited = PublicationDatePolicy.resolve(None, anchor_date=date(2026, 9, 10), frozen_at=NOW).to_dict()
     result = store_acquisition_batch(database, _batch([unknown, old], batch_id="batch-reselect", policy=unlimited))
     assert result["selected_count"] == 2
+
+
+@pytest.mark.parametrize("mode", ["recent", "custom"])
+@pytest.mark.parametrize("with_eligible", [False, True])
+@pytest.mark.parametrize("date_case", ["outside", "unknown"])
+def test_limited_date_resolution_drives_store_freeze_and_reportability(
+    tmp_path, mode, with_eligible, date_case,
+):
+    from climate_registry.acquisition import (
+        build_reportability_projection, verify_reportable_freeze,
+    )
+
+    database = _database(tmp_path)
+    policy_value = (
+        {"mode": "recent", "days": 3}
+        if mode == "recent"
+        else {"mode": "custom", "start": "2026-09-08", "end": "2026-09-10"}
+    )
+    policy = PublicationDatePolicy.resolve(
+        policy_value, anchor_date=date(2026, 9, 10), frozen_at=NOW,
+    ).to_dict()
+    if date_case == "outside":
+        dated = _item(
+            "https://example.org/outside", published_date="2026-01-01",
+            selected=False, status="unavailable", discovery_kind="site",
+            discovery_ref="site:outside", discovery_search_ref=None,
+        )
+        dated["evidence"]["failure_reason"] = (
+            "trusted publication date is outside the frozen policy"
+        )
+        completed = True
+    else:
+        dated = _item(
+            "https://example.org/unknown", published_date=None,
+            selected=False, discovery_kind="site", discovery_ref="site:unknown",
+            discovery_search_ref=None,
+        )
+        completed = False
+    items = [dated]
+    if with_eligible:
+        items.append(_item(
+            "https://example.org/eligible", published_date="2026-09-09",
+            discovery_kind="site", discovery_ref="site:eligible",
+            discovery_search_ref=None,
+        ))
+    payload = _batch(
+        items, policy=policy, completed=completed,
+        searches=[], search_decision={"status": "no_search", "reason": "site evidence only"},
+    )
+    payload.update(
+        source_outcomes=[], source_coverage_status="completed",
+        source_warnings=[], systemic_error=None, blocked_tool_prechecks=[],
+    )
+    store_acquisition_batch(database, payload)
+    loaded = load_acquisition_batch(database, payload["batch_id"])
+    assert loaded["payload_sha256"] == hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    frozen = freeze_acquisition_for_report(
+        database, payload["batch_id"], report_date=payload["report_date"],
+        allow_unresolved=date_case == "unknown", mark_partial_frozen=True,
+    )
+    frozen["reportability"] = build_reportability_projection(payload, frozen)
+    verified = verify_reportable_freeze(
+        database, payload["batch_id"], report_date=payload["report_date"],
+        payload=frozen, acquisition_payload=payload,
+    )
+    expected_outcome = {
+        ("outside", False): "no_eligible_information",
+        ("outside", True): "completed",
+        ("unknown", False): "no_eligible_information",
+        ("unknown", True): "completed_with_gaps",
+    }[(date_case, with_eligible)]
+    assert verified["dependency_status"] == (
+        "partial" if date_case == "unknown" else "available"
+    )
+    assert verified["record_count"] == int(with_eligible)
+    assert verified["reportability"]["outcome"] == expected_outcome
+    assert verified["reportability"]["full_coverage"] is (date_case == "outside")
+    assert verified["reportability"]["counts"]["unresolved_items"] == (
+        1 if date_case == "unknown" else 0
+    )
+    if date_case == "unknown":
+        assert any(
+            "publication date is unknown under the frozen date policy" in limitation
+            for limitation in verified["reportability"]["limitations"]
+        )
+
+
+@pytest.mark.parametrize("date_case", ["outside", "unknown"])
+def test_same_batch_completion_reconciliation_uses_limited_date_resolution(
+    tmp_path, date_case,
+):
+    database = _database(tmp_path)
+    policy = PublicationDatePolicy.resolve(
+        {"mode": "recent", "days": 3},
+        anchor_date=date(2026, 9, 10), frozen_at=NOW,
+    ).to_dict()
+    if date_case == "outside":
+        item = _item(
+            "https://example.org/outside", published_date="2026-01-01",
+            selected=False, status="unavailable", discovery_kind="site",
+            discovery_ref="site:outside", discovery_search_ref=None,
+        )
+    else:
+        item = _item(
+            "https://example.org/unknown", published_date=None,
+            selected=False, discovery_kind="site", discovery_ref="site:unknown",
+            discovery_search_ref=None,
+        )
+    initial = _batch(
+        [item], policy=policy, completed=False, searches=[],
+        search_decision={"status": "no_search", "reason": "site evidence only"},
+    )
+    store_acquisition_batch(database, initial)
+    completed = deepcopy(initial)
+    completed["completed_at"] = NOW
+    if date_case == "unknown":
+        with pytest.raises(ValueError, match="unresolved work"):
+            store_acquisition_batch(database, completed)
+    else:
+        store_acquisition_batch(database, completed)
+        assert load_acquisition_batch(database, initial["batch_id"])["completed_at"] == NOW
 
 
 def test_search_success_failure_and_justified_no_search_are_distinct(tmp_path):
@@ -623,14 +930,14 @@ def test_selected_cannot_be_omitted(tmp_path):
         store_acquisition_batch(_database(tmp_path), _batch([item]))
 
 
-def test_acquisition_writer_rejects_schema_v8_with_actionable_error(tmp_path):
-    database = tmp_path / "registry-v8.sqlite"
+def test_acquisition_writer_rejects_schema_v9_with_actionable_error(tmp_path):
+    database = tmp_path / "registry-v9.sqlite"
     with sqlite3.connect(database) as connection:
-        apply_migrations(connection, target_version=8)
+        apply_migrations(connection, target_version=9)
 
     with pytest.raises(
         RegistryInputError,
-        match="acquisition writes require registry schema 9; found schema 8; migrate the registry",
+        match="acquisition writes require registry schema 10; found schema 9; migrate the registry",
     ):
         store_acquisition_batch(database.resolve(), _batch([_item()]))
 
@@ -895,7 +1202,13 @@ def test_actual_prepare_registry_branch_accepts_frozen_evidence(tmp_path, monkey
 
     discovered = json.loads(manifest.read_text(encoding="utf-8"))["discovered_items"]
     urls = {monitor.canonical_url(item["url"]) for item in discovered}
-    assert len(urls) == 154
+    root_variants = [
+        item for item in discovered
+        if item["url"] in {"https://wri.ethicspoint.com", "https://wri.ethicspoint.com/"}
+    ]
+    assert len(root_variants) == 2
+    assert root_variants[0]["provenance"] == root_variants[1]["provenance"]
+    assert len(urls) == 153
 
     items = [
         _item(
@@ -935,6 +1248,15 @@ def test_actual_prepare_registry_branch_accepts_frozen_evidence(tmp_path, monkey
     )
     assert evidence["record_count"] == len(urls)
     assert len(evidence["acquisition_dispositions"]) == len(urls)
+    ethics = next(
+        record for record in evidence["records"]
+        if monitor.canonical_url(record["requested_url"])
+        == "https://wri.ethicspoint.com/"
+    )
+    assert {origin["url"] for origin in ethics["origins"]} == {
+        "https://wri.ethicspoint.com", "https://wri.ethicspoint.com/"
+    }
+    assert ethics["content"] == "# Registry article\n\nhttps://wri.ethicspoint.com/"
     assert bundle["registry_acquisition"]["batch_id"] == "prepare-integration"
     completeness = bundle["registry_acquisition"]["ingestion"]["completeness"]
     assert completeness["site_occurrence_count"] == len(discovered)
@@ -983,12 +1305,15 @@ def test_bound_prepare_uses_registry_selected_subset_for_immutable_handoff(
             unselected_url, selected=False, discovery_ref=unselected_url,
             source="ipcc",
         ),
-    ], batch_id="selected-subset", searches=searches)
+        ], batch_id="selected-subset", searches=searches)
+    payload.update(source_outcomes=[], systemic_error=None, blocked_tool_prechecks=[])
     database = _database(tmp_path)
     store_acquisition_batch(database, payload)
     frozen = freeze_acquisition_for_report(
         database, "selected-subset", report_date=payload["report_date"]
     )
+    from climate_registry.acquisition import build_reportability_projection
+    frozen["reportability"] = build_reportability_projection(payload, frozen)
     frozen_path = tmp_path / "frozen-report-input.json"
     frozen_path.write_text(json.dumps(frozen), encoding="utf-8")
 
@@ -1006,9 +1331,13 @@ def test_bound_prepare_uses_registry_selected_subset_for_immutable_handoff(
         "acquisition_batch_id": "selected-subset",
         "frozen_report_input": str(frozen_path), "report_inputs": report_inputs,
         "repository_commit_sha": "a" * 40, "provider": "openai-api", "model": "test",
+        "attempt": 1,
     }
     binding_path = tmp_path / "binding.json"
     binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    (tmp_path / "attempt-1-acquisition.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
     run_config = tmp_path / "run-config.yaml"
     run_config.write_text("{}\n", encoding="utf-8")
     args = SimpleNamespace(

@@ -24,6 +24,23 @@ def test_canonical_url_removes_tracking_query_params():
     )
 
 
+def test_canonical_url_treats_only_the_host_root_slash_as_optional():
+    for root in (
+        "https://www.undp.org",
+        "https://www.unep.org",
+        "https://www.weforum.org",
+    ):
+        assert canonical_url(root) == canonical_url(root + "/") == root + "/"
+    assert canonical_url("https://www.undp.org/path") != canonical_url("https://www.undp.org")
+    assert canonical_url("https://www.undp.org?edition=2") != canonical_url("https://www.undp.org")
+    assert canonical_url("https://www.undp.org:444") != canonical_url("https://www.undp.org")
+
+
+def test_canonical_url_keeps_blank_input_blank():
+    assert canonical_url("") == ""
+    assert canonical_url(" \t\n") == ""
+
+
 def test_dedupe_items_normalizes_tracking_urls_without_using_titles_as_identity():
     items = [
         _item("Climate risk report", "https://example.com/report?utm_source=x"),

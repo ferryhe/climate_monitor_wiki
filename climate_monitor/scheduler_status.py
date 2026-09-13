@@ -26,9 +26,13 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import fcntl
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from . import schedule
 
 from .job_status import (
     JOB_SCHEDULE_HOURS,
@@ -189,18 +193,18 @@ def _resolve_status_dir(
     return path
 
 
-def _seed_for_monday() -> dict[str, dict[str, str]]:
+def _seed_for_monday(now: datetime | None = None) -> dict[str, dict[str, str]]:
     """Build a seed payload for ``JOB_SCHEDULE_HOURS`` slots on the next Monday.
 
     The seed uses the most recent Monday relative to ``generated_at`` so
     freshly-created snapshots still satisfy the read-side validator's
     "jobs must describe the generated week" invariant.
     """
-    generated = _aware_now()
-    generated_monday = generated.date() - timedelta(days=generated.weekday())
+    generated = now or _aware_now()
+    generated_monday = schedule.period_date(generated)
     return {
         alias: {
-            "scheduled_for": f"{generated_monday.isoformat()}T{hour:02d}:00:00Z",
+            "scheduled_for": schedule.stamp(schedule.occurrence(generated_monday, alias)),
             "state": "scheduled",
         }
         for alias, hour in JOB_SCHEDULE_HOURS.items()
@@ -211,7 +215,9 @@ def _aware_now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
-def _load_existing_payload(target: Path) -> dict[str, Any]:
+def _load_existing_payload(
+    target: Path, *, now: datetime | None = None,
+) -> dict[str, Any]:
     """Return the existing snapshot, seeded with the canonical three slots.
 
     A new snapshot is always serialised with all three canonical slots
@@ -220,11 +226,12 @@ def _load_existing_payload(target: Path) -> dict[str, Any]:
     the payload even when only one slot has been written by a wrapper.
     The optional ``registry`` slot is added lazily by ``update_slot``.
     """
-    seeded_jobs = _seed_for_monday()
+    generated = now or _aware_now()
+    seeded_jobs = _seed_for_monday(generated)
     if not target.exists():
         return {
-            "schema_version": SCHEMA_VERSION,
-            "generated_at": _now_utc(),
+            "schema_version": schedule.SCHEMA if schedule.biweekly() else SCHEMA_VERSION,
+            "generated_at": schedule.stamp(generated),
             "jobs": seeded_jobs,
         }
     try:
@@ -246,7 +253,14 @@ def _load_existing_payload(target: Path) -> dict[str, Any]:
     if not isinstance(jobs, dict):
         jobs = {}
     for alias, default in seeded_jobs.items():
-        jobs.setdefault(alias, dict(default))
+        if alias not in jobs or jobs[alias].get("scheduled_for") != default["scheduled_for"]:
+            jobs[alias] = dict(default)
+    if "registry" in jobs:
+        expected = schedule.stamp(
+            schedule.occurrence(schedule.period_date(generated), "registry")
+        )
+        if jobs["registry"].get("scheduled_for") != expected:
+            jobs.pop("registry")
     loaded["jobs"] = jobs
     return loaded
 
@@ -377,7 +391,7 @@ def _atomic_write(target: Path, payload: Mapping[str, Any]) -> None:
             os.fsync(handle.fileno())
         fd = None
         if directory_descriptor is None:
-            os.rename(temp_path_str, target)
+            os.replace(temp_path_str, target)
             temp_path_str = None
         else:
             try:
@@ -417,6 +431,29 @@ def _atomic_write(target: Path, payload: Mapping[str, Any]) -> None:
                 Path(temp_path_str).unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+@contextmanager
+def snapshot_transaction(
+    status_dir: str | Path | None = None,
+):
+    """Lock one stable external inode for a complete snapshot transaction."""
+    resolved_dir = _resolve_status_dir(status_dir=status_dir)
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = resolved_dir / ".scheduler-status.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o640)
+    except OSError as exc:
+        raise SchedulerStatusLocationError("snapshot lock is unavailable") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield resolved_dir / SNAPSHOT_FILENAME
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 # ---------------------------------------------------------------------------
@@ -482,28 +519,12 @@ def update_slot(
         raise SchedulerStatusArgumentError("scheduled_for is required")
     scheduled_dt = _strict_utc(scheduled_str, field="scheduled_for")
 
-    expected_hour, expected_minute = _target_for_slot(name)
-    if (
-        scheduled_dt.weekday() != 0
-        or scheduled_dt.hour != expected_hour
-        or scheduled_dt.minute != expected_minute
-    ):
-        raise SchedulerStatusArgumentError(
-            f"scheduled_for does not match the public schedule for slot "
-            f"{name!r} (expected Monday {expected_hour:02d}:{expected_minute:02d}Z)"
-        )
-
     _validate_result_code(result_code)
     if error_reason is not None and result_code is None:
         raise SchedulerStatusArgumentError(
             "error_reason requires an explicit result_code token"
         )
 
-    resolved_dir = _resolve_status_dir(status_dir=status_dir)
-    resolved_dir.mkdir(parents=True, exist_ok=True)
-    target = resolved_dir / SNAPSHOT_FILENAME
-
-    payload = _load_existing_payload(target)
     job_block = _build_job_block(
         state=state,
         scheduled_for=scheduled_dt,
@@ -512,12 +533,30 @@ def update_slot(
         finished_at=finished_at,
         result_code=result_code,
     )
-    payload["jobs"][name] = job_block
-    payload["schema_version"] = SCHEMA_VERSION
-    payload["generated_at"] = _now_utc()
-    _validate_payload_against_read_contract(payload)
-
-    _atomic_write(target, payload)
+    with snapshot_transaction(status_dir) as target:
+        current = _aware_now()
+        expected_hour, expected_minute = _target_for_slot(name)
+        if schedule.biweekly():
+            expected = schedule.occurrence(schedule.period_date(current), name)
+            if scheduled_dt != expected:
+                raise SchedulerStatusArgumentError(
+                    "scheduled_for does not match the ET fortnight"
+                )
+        elif (
+            scheduled_dt.weekday() != 0
+            or scheduled_dt.hour != expected_hour
+            or scheduled_dt.minute != expected_minute
+        ):
+            raise SchedulerStatusArgumentError(
+                f"scheduled_for does not match the public schedule for slot "
+                f"{name!r} (expected Monday {expected_hour:02d}:{expected_minute:02d}Z)"
+            )
+        payload = _load_existing_payload(target, now=current)
+        payload["jobs"][name] = job_block
+        payload["schema_version"] = schedule.SCHEMA if schedule.biweekly() else SCHEMA_VERSION
+        payload["generated_at"] = _now_utc()
+        _validate_payload_against_read_contract(payload)
+        _atomic_write(target, payload)
     return target
 
 
@@ -525,5 +564,6 @@ __all__ = [
     "SchedulerStatusError",
     "SchedulerStatusLocationError",
     "SchedulerStatusArgumentError",
+    "snapshot_transaction",
     "update_slot",
 ]

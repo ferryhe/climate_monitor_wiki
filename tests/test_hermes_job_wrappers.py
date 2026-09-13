@@ -75,10 +75,17 @@ def test_f4_cron_mapping_is_explicit():
     from datetime import datetime
     from zoneinfo import ZoneInfo
     manifest = json.loads((ROOT / 'monitoring/jobs/weekly-climate-monitor-08h/manifest.json').read_text())
-    schedules = manifest['weekly_schedule']
+    schedules = manifest['schedule']
+    assert schedules['timezone'] == 'America/New_York'
+    assert schedules['anchor_date'] == '2026-09-14'
+    assert schedules['interval_days'] == 14
     for name, hour, minute in [('monitor', 8, 0), ('email', 9, 0), ('publisher', 10, 0), ('registry', 10, 30)]:
-        local = datetime(2026, 9, 7, hour, minute, tzinfo=ZoneInfo('UTC')).astimezone(ZoneInfo('Asia/Shanghai'))
-        assert schedules[name] == {'timezone': 'Asia/Shanghai', 'cron': f'{minute} {local.hour} * * 1', 'utc': f'{hour:02}:{minute:02}'}
+        assert schedules['slots'][name] == f'{hour:02}:{minute:02}'
+        hours = schedules['guarded_cron'][name].split()[1].split(',')
+        for month, day in [(9, 14), (11, 9)]:
+            utc = datetime(2026, month, day, hour, minute,
+                           tzinfo=ZoneInfo('America/New_York')).astimezone(ZoneInfo('UTC'))
+            assert str(utc.hour) in hours
 
 
 def test_f2_email_plan_uses_public_cli_and_checks_identity(tmp_path, monkeypatch):
@@ -104,6 +111,43 @@ def test_f2_email_plan_uses_public_cli_and_checks_identity(tmp_path, monkeypatch
     monkeypatch.setattr(job, 'verify_monitor', lambda *_: (_ for _ in ()).throw(ValueError('mismatch')))
     with pytest.raises(ValueError):
         job.email_command('2026-08-10', dry_run=False)
+
+
+def test_email_artifact_only_uses_no_config_and_dispatches_once(
+    tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+    from scripts import hermes_job as job
+    from test_climate_delivery_pipeline import delivery_report
+
+    report = delivery_report(tmp_path)
+    output, state = tmp_path / 'persistent-output', tmp_path / 'persistent-state'
+    monkeypatch.setenv('CLIMATE_REPORT_PATH', str(report.resolve()))
+    monkeypatch.setenv('CLIMATE_DELIVERY_OUTPUT_DIR', str(output.resolve()))
+    monkeypatch.setenv('CLIMATE_DELIVERY_STATE_DIR', str(state.resolve()))
+    monkeypatch.delenv('CLIMATE_DELIVERY_CONFIG', raising=False)
+    monkeypatch.delenv('CLIMATE_DRY_RUN_ROOT', raising=False)
+    verified = []
+    monkeypatch.setattr(job, 'verify_monitor', lambda *_args: None)
+    command = job.email_command(
+        '2026-08-10', dry_run=False, artifact_only=True,
+    )
+    assert '--artifact-only' in command
+    assert '--config' not in command
+    calls = []
+    monkeypatch.setattr(
+        job.subprocess, 'run',
+        lambda args, **_kwargs: calls.append(list(args)) or SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        job, 'verify_delivery_artifact',
+        lambda day, digest: verified.append((day, digest)),
+    )
+    assert job.dispatch(
+        command, 'email', '2026-08-10', False, delivery_no_send=True,
+    ) == 0
+    assert calls == [command]
+    assert verified == [('2026-08-10', job.sha(report))]
 
 
 def test_email_preflight_accepts_uncreated_delivery_roots(tmp_path, monkeypatch, capsys):

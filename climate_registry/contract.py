@@ -99,7 +99,7 @@ V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES
 V6_TABLES = V5_TABLES
 V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -247,9 +247,12 @@ def _expected_object_sql(
     expected: dict[str, str] = {}
     for name in names:
         create = r"CREATE\s+(?:UNIQUE\s+)?INDEX" if kind == "INDEX" else rf"CREATE\s+{kind}"
-        start = re.search(rf"{create}\s+{re.escape(name)}\b", migration_sql, re.IGNORECASE)
-        if start is None:
+        matches = list(re.finditer(
+            rf"{create}\s+{re.escape(name)}\b", migration_sql, re.IGNORECASE,
+        ))
+        if not matches:
             raise RuntimeError(f"schema migration is missing required {kind.lower()}: {name}")
+        start = matches[-1]
         tail = migration_sql[start.start():]
         terminator = re.search(r"\bEND\s*;" if kind == "TRIGGER" else r";", tail, re.IGNORECASE)
         if terminator is None:

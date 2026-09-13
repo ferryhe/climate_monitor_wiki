@@ -4,13 +4,16 @@ Current status (2026-09-08 SSH audit): the same-run monitor is implemented and
 sandbox-tested; production still has 12 enabled legacy Step jobs. The target
 four-slot schedule is not installed. Issue #87 is owner-closed. Current wrapper
 contracts and cutover gates live in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
-Monday 08/09/10/10:30 UTC means 16/17/18/18:30 in Hermes's Asia/Shanghai timezone.
+The current dispatch policy is every other Monday at 08:00/09:00/10:00/10:30 ET,
+anchored to September 14, 2026; see [the ET runbook](biweekly-et-deployment.md).
+The library still uses its explicit weekly mode for these real Monday reports.
 This page records cadence behavior, not proof of production dispatch.
 
 
 The repo was originally built around a **daily** monitor (April 2026,
-`sources/climate-monitor-YYYY-MM-DD.md`, one file per calendar day). The live
-intended monitoring cadence is **weekly** (Mondays 08:00 UTC). This document records
+`sources/climate-monitor-YYYY-MM-DD.md`, one file per calendar day). The first
+weekly migration targeted Mondays at 08:00 UTC; the current anchored biweekly ET
+policy above supersedes that historical dispatch time. This document records
 what changed and why.
 
 ## What "daily" assumed

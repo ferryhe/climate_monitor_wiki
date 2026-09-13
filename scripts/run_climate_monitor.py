@@ -50,6 +50,7 @@ from climate_registry.acquisition import (
     freeze_acquisition_for_report,
     load_acquisition_batch,
     store_acquisition_batch,
+    verify_reportable_freeze,
 )
 from climate_monitor.dedupe import canonical_url
 from climate_monitor.candidate_snapshot import (
@@ -952,13 +953,16 @@ def _run_prepare(args, parser) -> int:
             if not frozen_path.is_file():
                 raise ValueError("bound frozen report input is missing")
             evidence_payload = json.loads(frozen_path.read_text(encoding="utf-8"))
+            acquisition_path = task_binding_path.parent / f"attempt-{task_binding['attempt']}-acquisition.json"
+            acquisition_payload = json.loads(acquisition_path.read_text(encoding="utf-8"))
             durable = load_acquisition_batch(task_binding["registry_database"], task_binding["acquisition_batch_id"])
-            regenerated = freeze_acquisition_for_report(
+            verify_reportable_freeze(
                 task_binding["registry_database"], task_binding["acquisition_batch_id"],
-                report_date=task_binding["report_date"],
+                report_date=task_binding["report_date"], payload=evidence_payload,
+                acquisition_payload=acquisition_payload,
             )
-            if _canonical_bytes(regenerated) != _canonical_bytes(evidence_payload):
-                raise ValueError("bound frozen report input differs from durable Registry evidence")
+            if not evidence_payload["reportability"]["reportable"]:
+                raise ValueError("bound acquisition is not eligible for report authoring")
             selected_urls = _validated_registry_selection_urls(
                 combined.candidates, evidence_payload
             )
@@ -1331,7 +1335,9 @@ def _run_finalize(args, parser) -> MonitorRunResult:
     manifest_path = Path(bundle["public_artifacts"]["web_listening_manifest"]["path"])
     pillar_b_path = Path(bundle["public_artifacts"]["pillar_b_artifact"]["path"])
     outcome, manifest, pillar_b_payload, records, _ = _read_prepare_inputs(
-        outcome_path, manifest_path, pillar_b_path, report_date=bundle["report_date"])
+        outcome_path, manifest_path, pillar_b_path, report_date=bundle["report_date"],
+        allow_incomplete_pillar_b=bool(bundle.get("registry_acquisition")),
+    )
     pillar_a_payload = _outcome_to_article_changes(outcome, manifest, records, bundle["report_date"])
     source_dir = Path(args.source_dir).resolve()
     article_changes_artifact = source_dir / f"article_changes_{bundle['report_date']}.json"

@@ -40,11 +40,14 @@ from climate_monitor.management import (  # noqa: E402
 from climate_monitor.dedupe import canonical_url  # noqa: E402
 from climate_registry.acquisition import (  # noqa: E402
     AcquisitionIncompleteError,
+    build_reportability_projection,
     PublicationDatePolicy,
     validate_acquisition_records,
     freeze_acquisition_for_report,
     load_acquisition_batch,
     store_acquisition_batch,
+    unresolved_acquisition_items,
+    verify_reportable_freeze,
 )
 
 
@@ -792,7 +795,7 @@ def _reconcile_v3_candidate_tool_events(
         identities.add(identity)
         tool = _event_tool(event)
         arguments = event.get("arguments")
-        result = event.get("result")
+        result = _candidate_transcript_result(event.get("result"))
         if not isinstance(arguments, Mapping) or not isinstance(result, Mapping):
             raise ValueError("candidate tool transcript result is invalid")
         error = result.get("error")
@@ -892,6 +895,20 @@ def _reconcile_v3_candidate_tool_events(
             raise ValueError("candidate tool transcript final result differs")
         mark_verified(event, tool)
     return audits
+
+
+def _candidate_transcript_result(value: Any) -> Any:
+    """Decode Hermes's JSON result followed by its tool-loop diagnostic."""
+    if not isinstance(value, str):
+        return value
+    try:
+        result, end = json.JSONDecoder().raw_decode(value)
+    except ValueError:
+        return value
+    suffix = value[end:]
+    if re.fullmatch(r"\n\n\[Tool loop warning: [^\r\n]+\]", suffix):
+        return result
+    return value
 
 
 def _trusted_tool_events(
@@ -2569,6 +2586,8 @@ def _write_result(
     binding_path: Path, *, exit_code: int, retryable: bool, error: str | None,
     resume_phase: str | None = None,
     execution_complete: bool | None = None, full_coverage: bool | None = None,
+    outcome: str | None = None,
+    reportability: Mapping[str, Any] | None = None,
 ) -> None:
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
     result = {
@@ -2576,6 +2595,8 @@ def _write_result(
         "attempt": binding["attempt"], "finished_at": _now(), "exit_code": exit_code,
         "retryable": retryable, "error": error, "resume_phase": resume_phase,
         "execution_complete": execution_complete, "full_coverage": full_coverage,
+        "outcome": outcome,
+        "reportability": copy.deepcopy(reportability),
     }
     path = binding_path.parent / f"attempt-{binding['attempt']}-result.json"
     _atomic_write(path, json.dumps(result, sort_keys=True, indent=2).encode("utf-8") + b"\n")
@@ -2599,6 +2620,25 @@ def _store_readback_and_freeze(
         binding["acquisition_batch_id"],
         report_date=binding["report_date"], allow_unresolved=allow_unresolved,
     )
+
+
+def _reportability_projection(
+    payload: Mapping[str, Any],
+    frozen: Mapping[str, Any],
+    site_context: Mapping[str, Any],
+    blocked_tool_prechecks: list[tuple[str, str]],
+    *,
+    gaps: bool,
+) -> dict[str, Any]:
+    """Compatibility seam for focused tests; durable inputs own the result."""
+    projected = dict(payload)
+    projected["systemic_error"] = site_context.get("systemic_error")
+    projected["blocked_tool_prechecks"] = [
+        {"tool": tool, "reason": reason} for tool, reason in blocked_tool_prechecks
+    ]
+    if gaps and projected.get("completed_at") is not None:
+        projected["completed_at"] = None
+    return build_reportability_projection(projected, frozen)
 
 
 def _write_report_inputs(
@@ -2683,7 +2723,10 @@ def _write_report_inputs(
                                                    indent=2).encode() + b"\n")
 
 
-def _run_report(binding_path: Path, binding: Mapping[str, Any]) -> int:
+def _run_report(
+    binding_path: Path, binding: Mapping[str, Any], *,
+    state_lock_descriptor: int | None = None,
+) -> int:
     paths = binding["report_inputs"]
     command = [
         sys.executable, str(ROOT / "scripts" / "run_climate_monitor.py"),
@@ -2695,8 +2738,24 @@ def _run_report(binding_path: Path, binding: Mapping[str, Any]) -> int:
         "--wiki-dir", paths["wiki_dir"], "--model-provider", str(binding["provider"]),
         "--model", str(binding["model"]), "--repository-commit-sha",
         str(binding["repository_commit_sha"]),
+        "--json",
     ]
-    result = subprocess.run(command, cwd=ROOT, env=_report_environment(str(binding["provider"])))
+    result_path = binding_path.parent / f"attempt-{binding['attempt']}-report-result.json"
+    with (
+        _exclusive_lock(binding_path.parent / ".run.lock") as report_lock_descriptor,
+        result_path.open("w", encoding="utf-8") as output,
+    ):
+        run_options: dict[str, Any] = {
+            "cwd": ROOT,
+            "env": _report_environment(str(binding["provider"])),
+            "stdout": output,
+        }
+        run_options["pass_fds"] = tuple(
+            descriptor for descriptor in (
+                state_lock_descriptor, report_lock_descriptor,
+            ) if descriptor is not None
+        )
+        result = subprocess.run(command, **run_options)
     return int(result.returncode)
 
 
@@ -2796,25 +2855,34 @@ def _adaptive_feedback_prompt(
     }, ensure_ascii=False, sort_keys=True, indent=2)
 
 
-def _resume_frozen_report(binding_path: Path, binding: Mapping[str, Any]) -> int | None:
+def _resume_frozen_report(
+    binding_path: Path, binding: Mapping[str, Any], *,
+    state_lock_descriptor: int | None = None,
+) -> int | None:
     """Retry only report authoring once acquisition/report inputs are frozen."""
     frozen_path = Path(binding["frozen_report_input"])
     if not frozen_path.exists():
         return None
-    expected = freeze_acquisition_for_report(
-        binding["registry_database"], binding["acquisition_batch_id"],
-        report_date=binding["report_date"],
-    )
     actual = json.loads(frozen_path.read_text(encoding="utf-8"))
-    if actual != expected:
-        raise ValueError("frozen report input differs from Registry readback")
+    acquisition_path = binding_path.parent / f"attempt-{binding['attempt']}-acquisition.json"
+    acquisition_payload = json.loads(acquisition_path.read_text(encoding="utf-8"))
+    verify_reportable_freeze(
+        binding["registry_database"], binding["acquisition_batch_id"],
+        report_date=binding["report_date"], payload=actual,
+        acquisition_payload=acquisition_payload,
+    )
+    reportability = actual["reportability"]
+    if not reportability["reportable"]:
+        raise ValueError("non-reportable acquisition cannot resume report authoring")
     missing = [name for name in ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact")
                if not Path(binding["report_inputs"][name]).is_file()]
     if missing:
         raise ValueError(f"frozen report handoff is missing artifacts: {missing}")
     _write_progress(binding_path, binding, stage="report_resuming")
     _write_runtime(binding_path, binding, state="running", pid=os.getpid())
-    report_exit = _run_report(binding_path, binding)
+    report_exit = _run_report(
+        binding_path, binding, state_lock_descriptor=state_lock_descriptor,
+    )
     if report_exit:
         _discard_controlled_site_checkpoints(binding)
         error = f"existing report path exited with {report_exit}"
@@ -2825,21 +2893,33 @@ def _resume_frozen_report(binding_path: Path, binding: Mapping[str, Any]) -> int
         return report_exit
     _commit_controlled_site_checkpoints(binding)
     _write_result(binding_path, exit_code=0, retryable=False, error=None,
-                      execution_complete=True, full_coverage=True)
-    _write_progress(binding_path, binding, stage="report_completed")
+                  execution_complete=True,
+                  full_coverage=reportability["full_coverage"],
+                  outcome=reportability["outcome"], reportability=reportability)
+    _write_progress(
+        binding_path, binding,
+        stage=("report_completed" if reportability["full_coverage"]
+               else "report_completed_with_gaps"),
+    )
     return 0
 
 
-def _execute_locked(binding_path: Path) -> int:
+def _execute_locked(
+    binding_path: Path, *, state_lock_descriptor: int | None = None,
+) -> int:
     try:
-        return _execute_attempt(binding_path)
+        return _execute_attempt(
+            binding_path, state_lock_descriptor=state_lock_descriptor,
+        )
     finally:
         binding = json.loads(binding_path.read_text())
         if "checkpoint_dir" in binding and ledger_path(binding).exists():
             RequestBudget(ledger_path(binding), binding).finish()
 
 
-def _execute_attempt(binding_path: Path) -> int:
+def _execute_attempt(
+    binding_path: Path, *, state_lock_descriptor: int | None = None,
+) -> int:
     acquisition_started = time.monotonic()
     binding_path = binding_path.resolve(strict=True)
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
@@ -2847,7 +2927,9 @@ def _execute_attempt(binding_path: Path) -> int:
         raise ValueError(f"unsupported binding schema at {binding_path}")
     _agent_protocol(binding)
     _validate_agent_prompt_protocol(binding)
-    resumed_report = _resume_frozen_report(binding_path, binding)
+    resumed_report = _resume_frozen_report(
+        binding_path, binding, state_lock_descriptor=state_lock_descriptor,
+    )
     if resumed_report is not None:
         return resumed_report
     hermes = os.environ.get("HERMES_EXECUTABLE") or shutil.which("hermes")
@@ -3148,9 +3230,19 @@ def _execute_attempt(binding_path: Path) -> int:
                 "status": "no_search", "reason": blocked_search_reason,
             }
         payload["source_outcomes"] = copy.deepcopy(site_context.get("source_results", []))
+        payload["source_coverage_status"] = str(site_context.get("status") or "unknown")
+        payload["source_warnings"] = [
+            str(value) for value in site_context.get("warnings", [])
+            if isinstance(value, str) and value.strip()
+        ]
+        payload["systemic_error"] = site_context.get("systemic_error")
+        payload["blocked_tool_prechecks"] = [
+            {"tool": tool, "reason": reason}
+            for tool, reason in blocked_tool_prechecks
+        ]
         gaps = (site_context.get("status") != "completed"
                 or any(row.get("status") != "succeeded" for row in payload["source_outcomes"])
-                or any(item.get("processing_status") != "complete" for item in payload["items"])
+                or bool(unresolved_acquisition_items(payload))
                 or any(search.get("status") == "failed" for search in payload["searches"])
                 or bool(blocked_tool_prechecks))
         # Completion is runner-owned trusted state: model timestamps cannot
@@ -3159,6 +3251,19 @@ def _execute_attempt(binding_path: Path) -> int:
         frozen = _store_readback_and_freeze(
             binding, payload, cumulative_actual=provenance["cumulative_actual"], allow_unresolved=gaps
         )
+        reportability = _reportability_projection(
+            payload, frozen, site_context, blocked_tool_prechecks, gaps=gaps,
+        )
+        if (reportability["outcome"] != "systemic_failure"
+                and frozen["dependency_status"] == "partial"):
+            immutable = freeze_acquisition_for_report(
+                binding["registry_database"], binding["acquisition_batch_id"],
+                report_date=binding["report_date"], allow_unresolved=True,
+                mark_partial_frozen=True,
+            )
+            if immutable != frozen:
+                raise RuntimeError("Registry partial freeze changed the selected report evidence")
+        frozen = {**frozen, "reportability": reportability}
         _atomic_write(
             binding_path.parent / f"attempt-{binding['attempt']}-acquisition.json",
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n",
@@ -3167,28 +3272,43 @@ def _execute_attempt(binding_path: Path) -> int:
         if readback_source_outcomes(binding["registry_database"], payload) != payload["source_outcomes"]:
             raise ValueError("Registry source-outcome readback differs")
         _write_report_inputs(binding, payload, site_context)
-        if gaps:
+        if not reportability["reportable"]:
             _atomic_write(binding_path.parent / f"attempt-{binding['attempt']}-partial-projection.json",
                           json.dumps(frozen, sort_keys=True, indent=2).encode())
-            error = "Acquisition execution completed with rejected or incomplete coverage; report is blocked"
-            gap_reasons = [reason for reason in (
-                site_context.get("systemic_error"),
-                *(reason for _, reason in blocked_tool_prechecks),
-            ) if reason]
-            if gap_reasons:
-                error += ": " + "; ".join(dict.fromkeys(gap_reasons))
-            _write_result(binding_path, exit_code=0, retryable=False, error=error,
-                          execution_complete=True, full_coverage=False)
-            _write_progress(binding_path, binding, stage="completed_with_gaps", error=error,
-                            next_step="inspect source and article gaps; report/publication remain blocked",
-                            events=all_events)
-            return 0
+            if reportability["outcome"] == "no_eligible_information":
+                _commit_controlled_site_checkpoints(binding)
+                _write_result(
+                    binding_path, exit_code=0, retryable=False, error=None,
+                    execution_complete=True, full_coverage=reportability["full_coverage"],
+                    outcome=reportability["outcome"], reportability=reportability,
+                )
+                _write_progress(
+                    binding_path, binding, stage="no_eligible_information",
+                    next_step="retain the truthful no-report outcome", events=all_events,
+                )
+                return 0
+            error = "Acquisition stopped after a systemic reader failure"
+            if reportability["limitations"]:
+                error += ": " + reportability["limitations"][-1]
+            _discard_controlled_site_checkpoints(binding)
+            _write_result(
+                binding_path, exit_code=75, retryable=True, error=error,
+                execution_complete=False, full_coverage=False,
+                outcome=reportability["outcome"], reportability=reportability,
+            )
+            _write_progress(
+                binding_path, binding, stage="systemic_failure", error=error,
+                next_step="resume the same frozen run after reader service recovers",
+                events=all_events,
+            )
+            return 75
         frozen_bytes = json.dumps(frozen, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n"
         _atomic_write(Path(binding["frozen_report_input"]), frozen_bytes)
-        _write_report_inputs(binding, payload, site_context)
         _write_progress(binding_path, binding, stage="report_preparing", events=all_events)
         _write_runtime(binding_path, binding, state="running", pid=os.getpid())
-        report_exit = _run_report(binding_path, binding)
+        report_exit = _run_report(
+            binding_path, binding, state_lock_descriptor=state_lock_descriptor,
+        )
         if report_exit:
             _discard_controlled_site_checkpoints(binding)
             error = f"existing report path exited with {report_exit}"
@@ -3200,8 +3320,17 @@ def _execute_attempt(binding_path: Path) -> int:
             return report_exit
         _commit_controlled_site_checkpoints(binding)
         _write_result(binding_path, exit_code=0, retryable=False, error=None,
-                      execution_complete=True, full_coverage=True)
-        _write_progress(binding_path, binding, stage="report_completed", events=all_events)
+                      execution_complete=True,
+                      full_coverage=reportability["full_coverage"],
+                      outcome=reportability["outcome"], reportability=reportability)
+        _write_progress(
+            binding_path, binding,
+            stage=("report_completed" if reportability["full_coverage"]
+                   else "report_completed_with_gaps"),
+            next_step=(None if reportability["full_coverage"]
+                       else "publish only after retained limitations and final validation are reviewed"),
+            events=all_events,
+        )
         return 0
     except AcquisitionBudgetError as exc:
         _discard_controlled_site_checkpoints(binding)
@@ -3232,8 +3361,8 @@ def execute(binding_path: Path) -> int:
     binding = json.loads(resolved.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise ValueError(f"unsupported binding schema at {resolved}")
-    with _exclusive_lock(ManagementService._state_lock_path(binding)):
-        return _execute_locked(resolved)
+    with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
+        return _execute_locked(resolved, state_lock_descriptor=descriptor)
 
 
 def main() -> int:

@@ -727,6 +727,45 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         END;
         """,
     ),
+    (
+        10,
+        "monotonic_acquisition_search_decision",
+        """
+        DROP TRIGGER acquisition_batches_reconcile_before_freeze;
+
+        CREATE TRIGGER acquisition_batches_reconcile_before_freeze
+        BEFORE UPDATE ON acquisition_batches
+        WHEN OLD.frozen_at IS NOT NULL
+          OR NEW.batch_id IS NOT OLD.batch_id
+          OR NEW.schema_version IS NOT OLD.schema_version
+          OR NEW.report_date IS NOT OLD.report_date
+          OR NEW.started_at IS NOT OLD.started_at
+          OR NEW.date_policy_json IS NOT OLD.date_policy_json
+          OR (
+               (
+                 NEW.search_decision IS NOT OLD.search_decision
+                 OR NEW.no_search_reason IS NOT OLD.no_search_reason
+               )
+               AND NOT (
+                 OLD.search_decision = 'no_search'
+                 AND NEW.search_decision = 'attempted'
+                 AND NEW.no_search_reason IS NULL
+                 AND NEW.frozen_at IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM acquisition_searches search
+                   WHERE search.batch_id = OLD.batch_id
+                 )
+               )
+             )
+          OR (NEW.frozen_at IS NOT NULL AND (
+                NEW.completed_at IS NOT OLD.completed_at
+                OR NEW.payload_sha256 IS NOT OLD.payload_sha256
+             ))
+        BEGIN
+            SELECT RAISE(ABORT, 'frozen or immutable acquisition batch fields cannot change');
+        END;
+        """,
+    ),
 )
 
 

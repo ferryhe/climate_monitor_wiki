@@ -5,7 +5,10 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +45,49 @@ def _definition(tmp_path: Path) -> dict:
     initialize_registry(tmp_path / "registry.sqlite3")
     (tmp_path / "runs").mkdir(exist_ok=True)
     return value
+
+
+def _linux_lock_holder(lock_path: Path, marker: Path) -> subprocess.Popen:
+    code = (
+        "import fcntl,os,pathlib,sys,time; "
+        "fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600); "
+        "fcntl.flock(fd,fcntl.LOCK_EX); pathlib.Path(sys.argv[2]).write_text('held'); "
+        "time.sleep(30)"
+    )
+    child = subprocess.Popen([sys.executable, "-c", code, str(lock_path), str(marker)])
+    for _ in range(100):
+        if marker.exists():
+            return child
+        time.sleep(0.02)
+    child.terminate()
+    child.wait(timeout=5)
+    raise AssertionError("child did not acquire the state lock")
+
+
+def _linux_inherited_lock_holder(
+    lock_path: Path, marker: Path, *additional_locks: Path,
+) -> subprocess.Popen:
+    import fcntl
+
+    descriptors = [
+        os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        for path in (lock_path, *additional_locks)
+    ]
+    for descriptor in descriptors:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('held'); time.sleep(30)", str(marker)],
+        pass_fds=tuple(descriptors),
+    )
+    for descriptor in descriptors:
+        os.close(descriptor)
+    for _ in range(100):
+        if marker.exists():
+            return child
+        time.sleep(0.02)
+    child.terminate()
+    child.wait(timeout=5)
+    raise AssertionError("child did not inherit the state lock")
 
 
 def _write_hermes_tool_events(
@@ -278,7 +324,7 @@ def test_new_run_freezes_binding_and_resume_reuses_it(tmp_path):
         "attempt": 1, "exit_code": 75, "retryable": True,
         "finished_at": "2026-09-07T00:01:00Z", "error": "temporary",
     }))
-    resumed = service.resume(started["run_id"])
+    resumed = service.attach_or_resume(started["run_id"])
     rebound = service.binding(started["run_id"])
     assert resumed["attempt"] == 2
     assert rebound["task_version"] == 1
@@ -306,6 +352,332 @@ def test_running_attempt_is_not_resumed_and_attempts_sort_numerically(tmp_path):
         if attempt < 11:
             assert service.resume(started["run_id"])["attempt"] == attempt + 1
     assert service.binding(started["run_id"])["attempt"] == 11
+
+
+def test_attach_or_resume_stale_dead_attempt_advances_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or 99999999,
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    run_dir = service._run_dir(started["run_id"])
+    (run_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999999,
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+
+    recovered = service.attach_or_resume(started["run_id"])
+
+    assert recovered["run_id"] == started["run_id"]
+    assert recovered["attempt"] == 2
+    assert launches == [1, 2]
+    assert service.binding(started["run_id"])["attempt"] == 2
+
+
+@pytest.mark.parametrize("outcome", ["completed_with_gaps", "no_eligible_information"])
+def test_bridge_waits_for_real_service_recovered_attempt_receipts(
+    tmp_path, monkeypatch, outcome,
+):
+    from scripts import hermes_job as job
+
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    definition = _definition(tmp_path)
+    definition["parameters"]["report_date"] = "2026-09-14"
+    store = _store(tmp_path)
+    store.save(definition, actor="operator")
+    launches = []
+
+    def launch(binding):
+        launches.append(binding)
+        if binding["attempt"] == 2:
+            run_dir = Path(binding["checkpoint_dir"]).parent
+            reportable = outcome == "completed_with_gaps"
+            terminal = {
+                "run_id": binding["run_id"], "attempt": 2, "exit_code": 0,
+                "retryable": False, "execution_complete": True,
+                "full_coverage": not reportable, "outcome": outcome,
+                "reportability": {
+                    "schema_version": "climate-reportability.v1",
+                    "outcome": outcome, "reportable": reportable,
+                    "full_coverage": not reportable,
+                    "selected_record_count": int(reportable),
+                    "counts": {
+                        "successful_sources": 1, "source_gaps": int(reportable),
+                        "coverage_warnings": 0, "failed_searches": 0,
+                        "unresolved_items": 0, "blocked_tool_prechecks": 0,
+                    },
+                    "limitations": (["one retained source gap"] if reportable else []),
+                    "acquisition_payload_sha256": "b" * 64,
+                },
+            }
+            (run_dir / "attempt-2-result.json").write_text(json.dumps(terminal))
+            if reportable:
+                (run_dir / "attempt-2-report-result.json").write_text(json.dumps({
+                    "report_date": "2026-09-14",
+                    "report_path": "climate-monitor-2026-09-14.md",
+                    "report_sha256": "a" * 64,
+                    "stats": {
+                        "total": 1, "updated": 1, "unchanged": 0,
+                        "blocked": 0, "failed": 0, "unresolved": 0,
+                    },
+                }))
+        return 99999999
+
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs", launcher=launch,
+    )
+    started = service.start(
+        trigger="scheduled", now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc),
+    )
+    run_dir = service._run_dir(started["run_id"])
+    (run_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999999,
+        "heartbeat_at": "2026-09-10T11:00:00Z",
+    }))
+    records = []
+    monkeypatch.setattr(job, "managed_monitor_preflight", lambda *_a, **_k: service)
+    monkeypatch.setattr(
+        job, "record_monitor_result",
+        lambda *args, **kwargs: records.append((args, kwargs)),
+    )
+
+    assert job.dispatch_managed_monitor(
+        "2026-09-14", dry_run=False, resume_run_id=started["run_id"],
+    ) == 0
+    assert [binding["attempt"] for binding in launches] == [1, 2]
+    for key in (
+        "acquisition_lineage_id", "acquisition_batch_id", "checkpoint_dir",
+        "definition_sha256", "effective_sha256", "budgets",
+    ):
+        assert launches[1][key] == launches[0][key]
+    carried = records[0][0][1]
+    assert carried["terminal"]["attempt"] == 2
+    assert carried["terminal"]["outcome"] == outcome
+    assert (carried["report"] is not None) is (outcome == "completed_with_gaps")
+
+
+def test_attach_or_resume_fresh_live_attempt(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or os.getpid(),
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    attached = service.attach_or_resume(started["run_id"])
+
+    assert attached == {
+        "accepted": True, "run_id": started["run_id"], "attempt": 1,
+        "attached": True,
+    }
+    assert launches == [1]
+
+
+def test_concurrent_attach_or_resume_creates_only_one_new_attempt(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or os.getpid(),
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    run_dir = service._run_dir(started["run_id"])
+    (run_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999999,
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+    barrier = threading.Barrier(2)
+    results = []
+
+    def recover():
+        barrier.wait()
+        results.append(service.attach_or_resume(started["run_id"]))
+
+    threads = [threading.Thread(target=recover) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert launches == [1, 2]
+    assert {result["attempt"] for result in results} == {2}
+    assert sorted(bool(result.get("attached")) for result in results) == [False, True]
+
+
+def test_attach_or_resume_reconciles_concurrent_completion(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or 99999999,
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    run_dir = service._run_dir(started["run_id"])
+    (run_dir / "attempt-1-result.json").write_text(json.dumps({
+        "run_id": started["run_id"], "attempt": 1, "exit_code": 0,
+        "execution_complete": True, "retryable": False,
+    }))
+
+    result = service.attach_or_resume(started["run_id"])
+
+    assert result["reconciled"] is True
+    assert result["attempt"] == 1
+    assert launches == [1]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real fcntl ownership proof is Linux-only")
+def test_attach_or_resume_live_child_holding_state_lock(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(state_dir))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or 99999999,
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    run_dir = service._run_dir(started["run_id"])
+    marker = tmp_path / "requested-owner-held"
+    child = _linux_lock_holder(state_dir / ".managed-acquisition.lock", marker)
+    try:
+        (run_dir / "runtime.json").write_text(json.dumps({
+            "state": "running", "attempt": 1, "pid": child.pid,
+            "heartbeat_at": "2026-09-10T07:00:00Z",
+        }))
+        attached = service.attach_or_resume(started["run_id"])
+        assert attached["attached"] is True
+        assert attached["attempt"] == 1
+        assert launches == [1]
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real fcntl ownership proof is Linux-only")
+def test_attach_or_resume_frozen_report_child_survives_dead_wrapper(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(state_dir))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or 99999999,
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    binding = service.binding(started["run_id"])
+    Path(binding["frozen_report_input"]).write_text("{}", encoding="utf-8")
+    run_dir = service._run_dir(started["run_id"])
+    (run_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999999,
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+    child = _linux_inherited_lock_holder(
+        state_dir / ".managed-acquisition.lock", tmp_path / "report-child-held",
+        run_dir / ".run.lock",
+    )
+    try:
+        attached = service.attach_or_resume(started["run_id"])
+        assert attached["attached"] is True
+        assert attached["attempt"] == 1
+        assert launches == [1]
+        assert not (run_dir / "attempt-2.json").exists()
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real fcntl ownership proof is Linux-only")
+def test_different_process_state_lock_does_not_false_attach(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(state_dir))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(binding["attempt"]) or 99999999,
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    run_dir = service._run_dir(started["run_id"])
+    (run_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": os.getpid(),
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+    other_dir = service.runtime_root / "other-run"
+    other_dir.mkdir()
+    other = service.binding(started["run_id"])
+    other["run_id"] = "other-run"
+    encoded = json.dumps(other)
+    (other_dir / "binding.json").write_text(encoded)
+    (other_dir / "attempt-1.json").write_text(encoded)
+    child = _linux_lock_holder(
+        state_dir / ".managed-acquisition.lock", tmp_path / "other-owner-held",
+    )
+    try:
+        (other_dir / "runtime.json").write_text(json.dumps({
+            "state": "running", "attempt": 1, "pid": child.pid,
+            "launched_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        with pytest.raises(RuntimeError, match="owned by run other-run"):
+            service.attach_or_resume(started["run_id"])
+        assert not (run_dir / "attempt-2.json").exists()
+        assert launches == [1]
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real fcntl ownership proof is Linux-only")
+def test_different_frozen_report_child_does_not_false_attach(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(state_dir))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs", launcher=lambda _binding: 99999999,
+    )
+    started = service.start(now=datetime(2026, 9, 10, 8, tzinfo=timezone.utc))
+    requested = service.binding(started["run_id"])
+    Path(requested["frozen_report_input"]).write_text("{}", encoding="utf-8")
+    requested_dir = service._run_dir(started["run_id"])
+    (requested_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999999,
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+    other_dir = service.runtime_root / "other-frozen-run"
+    other_dir.mkdir()
+    other = dict(requested)
+    other["run_id"] = "other-frozen-run"
+    encoded = json.dumps(other)
+    (other_dir / "binding.json").write_text(encoded)
+    (other_dir / "attempt-1.json").write_text(encoded)
+    (other_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999998,
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+    child = _linux_inherited_lock_holder(
+        state_dir / ".managed-acquisition.lock", tmp_path / "other-report-child-held",
+        other_dir / ".run.lock",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="owned by run other-frozen-run"):
+            service.attach_or_resume(started["run_id"])
+        assert not (requested_dir / "attempt-2.json").exists()
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
 
 
 def test_agent_runner_uses_narrow_tools_and_minimal_environment(monkeypatch, tmp_path):
@@ -458,7 +830,7 @@ def test_worker_holds_state_lock_until_pipeline_returns(tmp_path, monkeypatch):
     entered = threading.Event()
     release = threading.Event()
 
-    def pipeline(_binding_path):
+    def pipeline(_binding_path, **_kwargs):
         entered.set()
         assert release.wait(5)
         return 0
@@ -634,7 +1006,11 @@ def test_progress_preserves_active_report_stage_while_report_command_runs(
 
 def test_real_organization_fixture_reaches_frozen_report_input_and_detail(tmp_path):
     """Config -> tool acquisition -> storage -> status -> compatible handoff."""
-    from climate_registry.acquisition import freeze_acquisition_for_report, store_acquisition_batch
+    from climate_registry.acquisition import (
+        build_reportability_projection,
+        freeze_acquisition_for_report,
+        store_acquisition_batch,
+    )
     from climate_registry.persistent import initialize_registry
 
     database = tmp_path / "registry.sqlite3"
@@ -687,11 +1063,25 @@ def test_real_organization_fixture_reaches_frozen_report_input_and_detail(tmp_pa
                 },
             }],
         }
+        payload.update({
+            "source_outcomes": source_results,
+            "source_coverage_status": "completed",
+            "source_warnings": [],
+            "systemic_error": None,
+            "blocked_tool_prechecks": [],
+        })
         store_acquisition_batch(database, payload)
         frozen = freeze_acquisition_for_report(database, binding["acquisition_batch_id"], report_date=binding["report_date"])
+        frozen = {
+            **frozen,
+            "reportability": build_reportability_projection(payload, frozen),
+        }
         path = Path(binding["frozen_report_input"])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(frozen, sort_keys=True), encoding="utf-8")
+        (path.parent / "attempt-1-acquisition.json").write_text(
+            json.dumps(payload, sort_keys=True), encoding="utf-8",
+        )
         return {"pid": 999_999_999, "command": ["hermes", "chat", "--provider", "inherited"]}
 
     service = ManagementService(store=store, runtime_root=tmp_path / "runs", launcher=installed_tool_fixture)
@@ -719,6 +1109,29 @@ def test_real_organization_fixture_reaches_frozen_report_input_and_detail(tmp_pa
     completed = service.progress(started["run_id"])
     assert completed["stage"] == "report_completed"
     assert completed["report_phase"] == "completed"
+
+
+def test_duplicate_scheduled_start_reuses_recovery_boundary(tmp_path):
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), expected_version=0, actor="operator")
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs", launcher=lambda _binding: 4321,
+    )
+    first = service.start(
+        trigger="scheduled", now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc),
+    )
+    first_dir = service._run_dir(first["run_id"])
+    (first_dir / "attempt-1-result.json").write_text(json.dumps({
+        "schema_version": "climate-acquisition-attempt-result.v1",
+        "run_id": first["run_id"], "attempt": 1, "exit_code": 75,
+        "retryable": True, "finished_at": "2026-09-14T12:30:00Z",
+        "error": "temporary upstream outage",
+    }))
+    with pytest.raises(RuntimeError, match=first["run_id"]):
+        service.start(
+            trigger="scheduled", now=datetime(2026, 9, 14, 12, 1, tzinfo=timezone.utc),
+        )
+    assert [row["run_id"] for row in service.list_runs()] == [first["run_id"]]
 
 
 def test_runner_accepts_registry_contract_and_requires_trusted_tool_evidence(tmp_path):
@@ -1483,6 +1896,31 @@ def test_compose_state_override_reaches_existing_report_entry_point(tmp_path, mo
     assert runner._run_report(binding_path, binding) == 0
 
 
+def test_report_process_inherits_shared_state_lock(tmp_path, monkeypatch):
+    from climate_monitor.management import _exclusive_lock
+    import scripts.run_agent_acquisition as runner
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="report-lock", attempt=1
+    )
+    binding_path = tmp_path / "runs" / "report-lock" / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    observed = {}
+
+    def enter_report(_command, **kwargs):
+        observed["pass_fds"] = kwargs.get("pass_fds")
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(runner.subprocess, "run", enter_report)
+    with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
+        assert runner._run_report(
+            binding_path, binding, state_lock_descriptor=descriptor,
+        ) == 0
+        assert descriptor in observed["pass_fds"]
+        assert len(observed["pass_fds"]) == 2
+
+
 def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
     from scripts import run_climate_monitor as monitor
@@ -1620,7 +2058,8 @@ def test_progress_uses_complete_controlled_provenance_budget(tmp_path):
     }
 
 
-def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_path):
+def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
     store = _store(tmp_path)
     store.save(_definition(tmp_path), actor="operator")
     launches = []
@@ -1640,7 +2079,7 @@ def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_pa
     }), encoding="utf-8")
 
     assert service.progress(started["run_id"])["report_phase"] == "failed"
-    resumed = service.resume(started["run_id"])
+    resumed = service.attach_or_resume(started["run_id"])
     assert resumed["attempt"] == 1 and resumed["phase"] == "report"
     assert service.progress(started["run_id"])["stage"] == "report_resuming"
     assert launches[-1]["attempt"] == launches[0]["attempt"] == 1
@@ -1649,6 +2088,53 @@ def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_pa
     assert launches[-1]["acquisition_batch_id"] == launches[0]["acquisition_batch_id"]
     assert not (run_dir / "attempt-2.json").exists()
     assert (run_dir / "attempt-1-report-failure.json").is_file()
+
+
+def test_crashed_frozen_report_without_result_relaunches_same_attempt_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="operator")
+    launches = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        launcher=lambda binding: launches.append(dict(binding)) or 99999999,
+    )
+    started = service.start()
+    binding = service.binding(started["run_id"])
+    run_dir = service._run_dir(started["run_id"])
+    frozen_path = Path(binding["frozen_report_input"])
+    frozen_bytes = b'{"verified":"immutable"}\n'
+    frozen_path.write_bytes(frozen_bytes)
+    (run_dir / "runtime.json").write_text(json.dumps({
+        "state": "running", "attempt": 1, "pid": 99999999,
+        "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+
+    barrier = threading.Barrier(2)
+    recovered = []
+
+    def recover():
+        barrier.wait()
+        recovered.append(service.attach_or_resume(started["run_id"]))
+
+    callers = [threading.Thread(target=recover) for _ in range(2)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(timeout=5)
+
+    assert not any(caller.is_alive() for caller in callers)
+    assert len(launches) == 2
+    assert {result["attempt"] for result in recovered} == {1}
+    assert sorted(bool(result.get("attached")) for result in recovered) == [False, True]
+    relaunched = launches[-1]
+    assert relaunched["effective_sha256"] == binding["effective_sha256"]
+    assert relaunched["repository_commit_sha"] == binding["repository_commit_sha"]
+    assert relaunched["acquisition_batch_id"] == binding["acquisition_batch_id"]
+    assert relaunched["task_version"] == binding["task_version"]
+    assert frozen_path.read_bytes() == frozen_bytes
+    assert not (run_dir / "attempt-2.json").exists()
+    assert not (run_dir / "attempt-1-report-failure.json").exists()
 
 
 def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, monkeypatch):
@@ -1686,7 +2172,10 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
 def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkeypatch):
     import climate_monitor.article_content_adapter as adapter
     import scripts.run_agent_acquisition as runner
-    from climate_registry.acquisition import load_acquisition_batch
+    from climate_registry.acquisition import (
+        build_reportability_projection,
+        load_acquisition_batch,
+    )
     from climate_registry.persistent import initialize_registry
 
     database = tmp_path / "registry.sqlite3"
@@ -1698,6 +2187,7 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     )
     binding_path = tmp_path / "runs" / "controlled-integration" / "attempt-1.json"
     binding_path.parent.mkdir(parents=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
     body = "controlled production body"
     body_hash = hashlib.sha256(body.encode()).hexdigest()
     url = "https://wmo.int/article"
@@ -1757,6 +2247,33 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     assert frozen["record_count"] == 1
     assert frozen["records"][0]["content"] == body
     assert frozen["records"][0]["attempts"][0]["http_status"] == 200
+
+    frozen["reportability"] = build_reportability_projection(transformed, frozen)
+    frozen_bytes = json.dumps(
+        frozen, ensure_ascii=False, sort_keys=True, indent=2,
+    ).encode() + b"\n"
+    Path(binding["frozen_report_input"]).write_bytes(frozen_bytes)
+    (binding_path.parent / "attempt-1-acquisition.json").write_text(
+        json.dumps(transformed), encoding="utf-8",
+    )
+    for name in ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact"):
+        Path(binding["report_inputs"][name]).parent.mkdir(parents=True, exist_ok=True)
+        Path(binding["report_inputs"][name]).write_text("{}", encoding="utf-8")
+    report_calls = []
+    monkeypatch.setattr(
+        runner, "_run_report",
+        lambda path, exact, **_kwargs: report_calls.append((path, exact)) or 0,
+    )
+    monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda _binding: None)
+    assert runner._resume_frozen_report(binding_path, binding) == 0
+    assert report_calls == [(binding_path, binding)]
+    assert Path(binding["frozen_report_input"]).read_bytes() == frozen_bytes
+    terminal = json.loads(
+        (binding_path.parent / "attempt-1-result.json").read_text(encoding="utf-8")
+    )
+    assert terminal["run_id"] == binding["run_id"]
+    assert terminal["attempt"] == binding["attempt"]
+    assert terminal["execution_complete"] is True
 
 
 def test_managed_binding_rejects_drift_in_its_referenced_taxonomy(tmp_path, monkeypatch):

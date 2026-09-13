@@ -94,6 +94,63 @@ def test_delivery_reuses_monitor_narrative_in_summary_and_pdf(tmp_path):
     assert "This week's report contains" not in pdf_text
 
 
+def test_delivery_carries_coverage_limitations_without_polluting_executive_prose(tmp_path):
+    text = REPORT.replace(
+        "- One deterministic observation.",
+        "Verified eligible evidence was retained.\n\n"
+        "### Coverage Limitations\n\n"
+        "- Pillar A source wmo was blocked: scope.acquisition_failed",
+    )
+    report = parse_weekly_report(report_file(tmp_path, text=text))
+    summary = build_summary(report)
+    assert report.executive_summary == ("Verified eligible evidence was retained.",)
+    assert summary["monitoring_notes"] == [
+        "Pillar A source wmo was blocked: scope.acquisition_failed"
+    ]
+    output = tmp_path / "partial.pdf"
+    render_pdf(summary, output)
+    pdf_text = " ".join(" ".join(page.extract_text().split()) for page in PdfReader(output).pages)
+    assert "scope.acquisition_failed" in pdf_text
+
+
+def test_failed_item_identity_and_reason_reach_monitoring_notes_and_pdf(tmp_path):
+    from climate_registry.acquisition import build_reportability_projection
+
+    failed_url = "https://example.org/excluded-item"
+    projection = build_reportability_projection({
+        "completed_at": None, "source_outcomes": [], "searches": [],
+        "items": [{
+            "url": failed_url, "title": "Excluded climate filing",
+            "processing_status": "failed", "processing_error": "reader timed out",
+            "evidence": {"failure_reason": "fallback reason"},
+        }],
+        "blocked_tool_prechecks": [],
+    }, {"record_count": 1})
+    limitation = (
+        "Excluded item Excluded climate filing "
+        f"({failed_url}): reader timed out."
+    )
+    assert limitation in projection["limitations"]
+    text = REPORT.replace(
+        "- One deterministic observation.",
+        "Verified eligible evidence was retained.\n\n"
+        "### Coverage Limitations\n\n" + "\n".join(
+            f"- {value}" for value in projection["limitations"]
+        ),
+    )
+    report = parse_weekly_report(report_file(tmp_path, text=text))
+    summary = build_summary(report)
+    assert limitation in summary["monitoring_notes"]
+    assert failed_url not in report.original_links
+    output = tmp_path / "failed-item-partial.pdf"
+    render_pdf(summary, output)
+    pdf_text = " ".join(
+        " ".join(page.extract_text().split()) for page in PdfReader(output).pages
+    )
+    assert "Excluded climate filing" in pdf_text
+    assert "reader timed out" in pdf_text
+
+
 def test_weekly_report_preserves_explicitly_unknown_site_counts(tmp_path):
     text = REPORT.replace(
         "Sites checked: **3**, succeeded: **2**, failed: **1**",

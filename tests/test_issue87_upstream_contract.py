@@ -42,6 +42,42 @@ def test_public_producer_scope_export_and_article_counts(tmp_path):
         total=1, updated=0, unchanged=1, blocked=0, failed=0, unresolved=0)
 
 
+@pytest.mark.parametrize("root", [
+    "https://www.undp.org",
+    "https://www.unep.org",
+    "https://www.weforum.org",
+])
+def test_public_identity_accepts_pydantic_host_root_slash_round_trip(tmp_path, root):
+    op, mp, _ = public_inputs(tmp_path)
+    payload = json.loads(op.read_text())
+    payload["dispositions"][0]["requested_url"] = root
+    op.write_text(json.dumps(payload))
+    manifest = json.loads(mp.read_text())
+    manifest["source"]["tree_seed_url"] = root
+
+    outcome = monitor._read_outcomes(op)[0]
+    assert outcome["dispositions"][0]["requested_url"] == root + "/"
+    monitor._verify_same_run_identity(outcome, manifest)
+
+
+@pytest.mark.parametrize("seed", [
+    "https://other.example",
+    "https://www.undp.org/path",
+    "https://www.undp.org?edition=2",
+    "https://www.undp.org:444",
+])
+def test_public_identity_root_slash_equivalence_keeps_material_differences(tmp_path, seed):
+    op, mp, _ = public_inputs(tmp_path)
+    payload = json.loads(op.read_text())
+    payload["dispositions"][0]["requested_url"] = "https://www.undp.org"
+    op.write_text(json.dumps(payload))
+    manifest = json.loads(mp.read_text())
+    manifest["source"]["tree_seed_url"] = seed
+
+    with pytest.raises(SystemExit, match="scope seed differs"):
+        monitor._verify_same_run_identity(monitor._read_outcomes(op)[0], manifest)
+
+
 @pytest.mark.parametrize('mutation', ['parent', 'source', 'missing_parent', 'export', 'manifest_id'])
 def test_public_identity_rejects_cross_scope_and_source(tmp_path, mutation):
     op, mp, _ = public_inputs(tmp_path)
@@ -819,15 +855,25 @@ def test_real_wri_export_preserves_anchor_occurrences_and_source_counts(real_wri
     raw_urls = [origin['url'] for record in records for origin in record['origins']]
     assert 'https://www.wri.org/insights#latest-insights=' in raw_urls
     assert 'https://www.wri.org/insights#main-content=' in raw_urls
+    assert {'https://wri.ethicspoint.com', 'https://wri.ethicspoint.com/'} <= set(raw_urls)
     reversed_manifest = {**manifest, 'discovered_items': list(reversed(manifest['discovered_items']))}
     reversed_records = monitor._attach_outcome_disposition(
         monitor._collect_same_run_records(outcome, reversed_manifest), outcome)
     assert monitor._outcome_to_article_changes(outcome, reversed_manifest, reversed_records, '2026-09-07') == projected
     candidates = adapt_article_changes(projected, artifact_id='wri-repro', artifact_sha256='a' * 64)
-    assert len(candidates) == 154
+    root_variants = [
+        item for item in manifest['discovered_items']
+        if item['url'] in {'https://wri.ethicspoint.com', 'https://wri.ethicspoint.com/'}
+    ]
+    assert len(root_variants) == 2
+    assert root_variants[0]['provenance'] == root_variants[1]['provenance']
+    assert len(candidates) == 153
     assert len(candidates) == len({monitor.canonical_url(item['url']) for item in manifest['discovered_items']})
     insights = next(c for c in candidates if c.canonical_url == 'https://www.wri.org/insights')
     assert len(insights.origins) == 8
+    ethics = next(c for c in candidates if c.canonical_url == 'https://wri.ethicspoint.com/')
+    assert len(ethics.origins) == 2
+    assert {origin.source for origin in ethics.origins} == {'wri'}
     assert sum(len(c.origins) for c in candidates) == 164
 
 
@@ -885,7 +931,7 @@ def test_real_wri_full_prepare_with_unavailable_body_provider(tmp_path, monkeypa
     assert hashlib.sha256((inputs / 'manifest.json').read_bytes()).hexdigest() == '4424b337737a881dcb06b231ca083f057c4a4270bb9bfaa6bcd75735df5344ad'
     assert request['stats'] == dict(total=1, updated=0, unchanged=1, blocked=0, failed=0, unresolved=0)
     expected_urls = {monitor.canonical_url(item['url']) for item in manifest['discovered_items']}
-    assert len(request['articles']) == 154
+    assert len(request['articles']) == 153
     assert len(request['articles']) == len(expected_urls)
     assert {monitor.canonical_url(item['url']) for item in request['articles']} == expected_urls
     raw_origins = [o for article in request['articles'] for o in article['origins'] if o.get('source_item_id')]

@@ -1,7 +1,7 @@
 # Weekly Registry and Article Detail automation
 
 This document defines the application-side contract for the target Monday
-10:30 UTC Registry update. The implementation includes validated fallback and
+10:30 ET Registry update every other Monday, anchored to September 14, 2026. The implementation includes validated fallback and
 semantic import support. The 2026-09-08 SSH audit still found the legacy Step
 schedule, with the new four-slot schedule not installed. Current deployment gates
 are maintained in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md).
@@ -222,7 +222,7 @@ tests the operation but does not authorize running it against production.
 ## Proposed disabled 10:30 Hermes job (not installed)
 
 After code deployment and separate owner authorization, the proposed Monday
-10:30 UTC job command is:
+10:30 ET job command is:
 
 ```bash
 cd /srv/climate_monitor_wiki
@@ -306,7 +306,7 @@ The current production adoption sequence is:
    dry-run and controlled sync. Keep captured, failed, validated-fallback and
    unresolved counts distinct; unresolved articles block promotion;
 6. stage the Registry wrapper disabled and validate command/path/timezone readback.
-   Monday 10:30 UTC is `30 18 * * 1` in Asia/Shanghai. Enable the unique schedule
+   Use the guarded schedule in [the ET runbook](biweekly-et-deployment.md). Enable the unique schedule
    under the owner's cutover authorization only after its gates pass; and
 7. observe at least one normal Monday before calling Registry/article metadata
    weekly automation production-complete.

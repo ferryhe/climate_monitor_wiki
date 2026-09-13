@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,14 +24,24 @@ def test_job_status_override_declares_external_read_only_directory():
     assert "/home/" not in text
 
 
-def test_job_status_docs_keep_exporter_and_hermes_database_out_of_scope():
+def test_job_status_docs_keep_exporter_and_hermes_database_out_of_public_runtime():
+    from climate_monitor.job_status import validate_snapshot
+
     text = (ROOT / "docs" / "job-status.md").read_text(encoding="utf-8")
-    assert "weekly-job-status.v1" in text
+    contract = text.split("## Contract", 1)[1]
+    example = json.loads(contract.split("```json", 1)[1].split("```", 1)[0])
+    assert example["schema_version"] == "biweekly-job-status.v1"
+    assert set(example["jobs"]) == {"monitor", "email", "publisher", "registry"}
+    assert validate_snapshot(
+        example, now=datetime(2026, 9, 14, 12, 5, tzinfo=timezone.utc),
+    )["jobs"] == example["jobs"]
+    assert "weekly-job-status.v1" in contract.split("compatibility input", 1)[0]
     assert "15 minutes" in text
     assert "Do not mount" in text
     assert "Hermes" in text
     assert "exporter" in text
-    assert "deferred" in text
+    assert "installation" in text.lower()
+    assert "unperformed" in text
     assert "Caddy" in text
     assert "systemd" in text
 

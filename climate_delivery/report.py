@@ -81,7 +81,7 @@ def _narrative(section: str) -> tuple[str, ...]:
     # prose after the count line; preserve every paragraph, even without a
     # blank line between the counts and the first narrative sentence.
     prose = "\n".join(
-        "" if re.match(r"^\s*[-*]\s+", line) else line
+        "" if re.match(r"^\s*(?:[-*]\s+|#{1,6}\s+)", line) else line
         for line in section.splitlines()
     )
     paragraphs = (_clean_markdown(part) for part in re.split(r"\n\s*\n", prose))

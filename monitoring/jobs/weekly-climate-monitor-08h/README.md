@@ -1,7 +1,8 @@
 # Weekly Climate Monitor 08h
 
 This directory contains repository-owned management artifacts for the Monday
-08:00 UTC Weekly Climate & Actuarial Monitor.
+08:00 ET Climate & Actuarial Monitor, every other Monday from September 14, 2026.
+The directory name remains a compatibility identifier.
 
 The repository owns the production-capable prepare/serial-authoring/finalize
 CLI, editable prompts and strict contracts. Hermes supplies model execution and

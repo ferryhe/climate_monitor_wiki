@@ -334,7 +334,7 @@ def _v3_completed_search(
     from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
     from climate_monitor.request_budget import RequestBudget, ledger_path
 
-    path = tmp_path / "attempt-1.json"
+    path = tmp_path / f"attempt-{task_binding['attempt']}.json"
     path.write_text(json.dumps(task_binding))
     result = _tagged_search_result(web=[{
         "url": url, "title": "WMO article",
@@ -342,7 +342,8 @@ def _v3_completed_search(
     }])
     ledger = RequestBudget(ledger_path(task_binding), task_binding)
     ledger.claim(
-        "web_search", query, call_id=f"1:{session}:{raw_call}", results=5,
+        "web_search", query,
+        call_id=f"{task_binding['attempt']}:{session}:{raw_call}", results=5,
         session_id=session, tool_call_id=raw_call,
     )
     transformed = transform_search_tool_result(
@@ -2481,6 +2482,7 @@ def test_report_process_receives_frozen_repository_commit(tmp_path, monkeypatch)
         capture_output=True, text=True,
     ).stdout.strip()
     task_binding = {
+        "attempt": 1,
         "provider": "openai-api", "model": "test-model",
         "repository_commit_sha": exact,
         "report_inputs": {
@@ -2495,11 +2497,14 @@ def test_report_process_receives_frozen_repository_commit(tmp_path, monkeypatch)
 
     def run(command, **kwargs):
         observed["command"] = command
+        kwargs["stdout"].write('{"report_sha256":"test-report-receipt"}')
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(runner.subprocess, "run", run)
     monkeypatch.setattr(runner, "_report_environment", lambda _provider: {})
     assert runner._run_report(tmp_path / "attempt-1.json", task_binding) == 0
+    assert "--json" in observed["command"]
+    assert json.loads((tmp_path / "attempt-1-report-result.json").read_text())["report_sha256"] == "test-report-receipt"
     command = observed["command"]
     assert command[command.index("--repository-commit-sha") + 1] == exact
 
@@ -3265,7 +3270,7 @@ def seed_runtime(monkeypatch, sends, interrupt_at=None, outcomes=None):
     }))
 
 
-def test_116_seed_crash_resume_has_no_duplicate_completed_sends(tmp_path, monkeypatch):
+def test_seed_crash_resume_has_no_duplicate_completed_sends(tmp_path, monkeypatch):
     from climate_monitor import web_listening_adapter as adapter
     from climate_monitor.config import load_sources, load_site_scopes
     sources = load_sources("monitoring/supranational_sources.yaml")
@@ -3282,14 +3287,14 @@ def test_116_seed_crash_resume_has_no_duplicate_completed_sends(tmp_path, monkey
     seed_runtime(monkeypatch, sends)
     _, warnings, evidence = adapter.collect_website_items_with_evidence(sources,
         state_dir=tmp_path / "seeds", site_scopes=scopes, budget=resumed)
-    assert len(sends) == 116
+    assert len(sends) == 115
     from collections import Counter
     scopes_by_key = {scope.source_key: scope for scope in scopes}
     expected = [url for source in sources for url in adapter._seed_urls(source, scopes_by_key.get(source.key))]
-    # There are 116 selected source/seed slots but 114 distinct URLs: two URLs
-    # belong to multiple institutions. Preserve those slots, without retries.
+    # G20's host-only/root aliases collapse to one seed. There are 115 selected
+    # slots and 113 distinct URLs; shared institutions still own separate slots.
     assert Counter(sends) == Counter(expected)
-    assert resumed.usage()["fetch_attempts"] == 116
+    assert resumed.usage()["fetch_attempts"] == 115
     assert len(evidence["source_results"]) == 36
     assert evidence["full_success"] and not warnings
 
@@ -3310,10 +3315,19 @@ def test_completed_with_gaps_status_never_says_report_completed(tmp_path):
     assert value["coverage"]["full_success"] is False
 
 
-def test_mixed_run_round_trips_registry_status_and_blocks_report(tmp_path, monkeypatch):
+def test_mixed_run_round_trips_truthful_no_eligible_status(tmp_path, monkeypatch):
+    import sqlite3
+    from copy import deepcopy
     from test_issue94_management_console import _store, _definition
+    from test_issue112_acquisition import _item
     from climate_monitor.management import ManagementService
-    from climate_registry.acquisition import load_acquisition_batch, readback_source_outcomes, freeze_acquisition_for_report, AcquisitionIncompleteError
+    from climate_registry.acquisition import (
+        AcquisitionIncompleteError,
+        freeze_acquisition_for_report,
+        load_acquisition_batch,
+        readback_source_outcomes,
+        store_acquisition_batch,
+    )
     import scripts.run_agent_acquisition as runner
     store = _store(tmp_path)
     definition = _definition(tmp_path)
@@ -3352,7 +3366,7 @@ def test_mixed_run_round_trips_registry_status_and_blocks_report(tmp_path, monke
     with pytest.raises(AcquisitionIncompleteError):
         freeze_acquisition_for_report(b["registry_database"], b["acquisition_batch_id"], report_date=b["report_date"])
     status = service.progress(started["run_id"])
-    assert status["stage"] == "completed_with_gaps"
+    assert status["stage"] == "no_eligible_information"
     assert status["coverage"]["execution_complete"] is True
     assert status["coverage"]["full_success"] is False
     assert status["coverage"]["rejected_sources"] == 1
@@ -3360,9 +3374,35 @@ def test_mixed_run_round_trips_registry_status_and_blocks_report(tmp_path, monke
     assert status["budget"]["used"]["fetch_attempts"] == len(sends)
     assert status["budget"]["used"]["search_attempts"] == 0
     assert not Path(b["frozen_report_input"]).exists()
+    result = json.loads((root / "attempt-1-result.json").read_text())
+    projection = json.loads((root / "attempt-1-partial-projection.json").read_text())
+    assert result["exit_code"] == 0 and result["retryable"] is False
+    assert result["execution_complete"] is True
+    assert projection["reportability"]["acquisition_payload_sha256"] == stored["payload_sha256"]
+    with sqlite3.connect(b["registry_database"]) as connection:
+        frozen_at = connection.execute(
+            "SELECT frozen_at FROM acquisition_batches WHERE batch_id = ?",
+            (b["acquisition_batch_id"],),
+        ).fetchone()[0]
+    assert frozen_at is not None
+    assert store_acquisition_batch(
+        b["registry_database"], payload,
+    )["batch_id"] == b["acquisition_batch_id"]
+    changed = deepcopy(payload)
+    changed["items"] = [_item(
+        url="https://example.org/later-evidence", selected=False, status="failed",
+        discovery_kind="site", discovery_ref="site:later-evidence",
+        discovery_search_ref=None, processing_status="failed",
+        processing_error="later governed failure",
+    )]
+    with pytest.raises(ValueError, match="frozen acquisition batch"):
+        store_acquisition_batch(b["registry_database"], changed)
+    assert load_acquisition_batch(
+        b["registry_database"], b["acquisition_batch_id"],
+    )["payload_sha256"] == stored["payload_sha256"]
 
 
-def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
+def test_runner_completes_zero_item_as_truthful_no_report_and_round_trips_sources(
     tmp_path, monkeypatch,
 ):
     import hashlib
@@ -3428,8 +3468,150 @@ def test_runner_completes_zero_item_full_coverage_and_round_trips_sources(
         b["registry_database"], persisted_payload,
     ) == persisted_payload["source_outcomes"]
     assert len(persisted_payload["source_outcomes"]) == 2
-    assert Path(b["frozen_report_input"]).is_file()
-    assert report_calls == [True]
+    assert not Path(b["frozen_report_input"]).exists()
+    assert report_calls == []
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert result["outcome"] == "no_eligible_information"
+    assert result["execution_complete"] is True
+    assert result["full_coverage"] is True
+
+
+@pytest.mark.parametrize("mode", ["recent", "custom"])
+@pytest.mark.parametrize("with_eligible", [False, True])
+@pytest.mark.parametrize("date_case", ["outside", "unknown"])
+def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
+    tmp_path, monkeypatch, mode, with_eligible, date_case,
+):
+    import sqlite3
+    from climate_registry.acquisition import load_acquisition_batch
+    from test_issue94_management_console import _controlled_site_result
+    import scripts.run_agent_acquisition as runner
+
+    policy = (
+        {"mode": "recent", "days": 30}
+        if mode == "recent"
+        else {"mode": "custom", "start": "2026-08-01", "end": "2026-09-07"}
+    )
+    service, binding, path = _managed_attempt(
+        tmp_path, monkeypatch, candidate_protocol=True, date_policy=policy,
+    )
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    description = "16 Apr 2025" if date_case == "outside" else "date unavailable"
+    _path, _ledger, handle, event = _v3_completed_search(
+        path.parent, binding, description=description,
+        raw_call="call-date", query="WMO dated candidate",
+        url="https://wmo.int/date-candidate",
+    )
+    staged = runner._stage_candidate_receipt(
+        path, result_handle=handle, source_key="wmo", session_id="session-a",
+    )
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=staged["candidate_handle"], selected=False,
+        title="Excluded by date", summary="", selection_reason="Not eligible by date",
+        session_id="session-a",
+    )
+    events = [event]
+    if with_eligible:
+        _path, _ledger, eligible_handle, eligible_event = _v3_completed_search(
+            path.parent, binding, description="7 Sep 2026",
+            raw_call="call-eligible", query="WMO eligible candidate",
+            url="https://wmo.int/eligible-candidate",
+        )
+        eligible = runner._stage_candidate_receipt(
+            path, result_handle=eligible_handle, source_key="wmo",
+            session_id="session-a",
+        )
+        runner._finalize_candidate_receipt(
+            path, candidate_handle=eligible["candidate_handle"], selected=True,
+            title="Eligible article", summary="Verified summary",
+            selection_reason="Relevant climate evidence", session_id="session-a",
+        )
+        events.append(eligible_event)
+
+    source = binding["source_inventory"]["records"][0]
+    source_result = _controlled_site_result(
+        path.parent, source, candidates=[], disposition="unchanged",
+    )
+    site_context = {
+        "status": "completed", "source_results": [source_result],
+        "attempts": [], "candidates": [], "warnings": [], "systemic_error": None,
+    }
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda _binding: site_context)
+    monkeypatch.setattr(runner, "_trusted_tool_events", lambda *_args, **_kwargs: events)
+
+    def invoke(_command, response_path, *_args):
+        response_path.write_text("{}", encoding="utf-8")
+        return 0
+
+    report_calls = []
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(
+        runner, "_run_report",
+        lambda *_args, **_kwargs: report_calls.append(True) or 0,
+    )
+    monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda _binding: 0)
+
+    assert runner._execute_locked(path) == 0
+    payload = json.loads(path.with_name("attempt-1-acquisition.json").read_text())
+    stored = load_acquisition_batch(
+        binding["registry_database"], binding["acquisition_batch_id"],
+    )
+    projection = (
+        json.loads(Path(binding["frozen_report_input"]).read_text())
+        if with_eligible else
+        json.loads(path.with_name("attempt-1-partial-projection.json").read_text())
+    )
+    expected_outcome = {
+        ("outside", False): "no_eligible_information",
+        ("outside", True): "completed",
+        ("unknown", False): "no_eligible_information",
+        ("unknown", True): "completed_with_gaps",
+    }[(date_case, with_eligible)]
+    if date_case == "unknown":
+        assert payload["completed_at"] is None
+    else:
+        assert payload["completed_at"] is not None
+    assert stored["payload_sha256"] == projection["reportability"][
+        "acquisition_payload_sha256"
+    ]
+    assert projection["dependency_status"] == (
+        "partial" if date_case == "unknown" else "available"
+    )
+    assert projection["record_count"] == int(with_eligible)
+    assert projection["reportability"]["outcome"] == expected_outcome
+    assert projection["reportability"]["full_coverage"] is (date_case == "outside")
+    assert projection["reportability"]["counts"]["unresolved_items"] == (
+        1 if date_case == "unknown" else 0
+    )
+    dated_disposition = next(
+        row for row in projection["acquisition_dispositions"]
+        if row["requested_url"] == "https://wmo.int/date-candidate"
+    )
+    assert dated_disposition["date_status"] == (
+        "unknown_pending_review" if date_case == "unknown" else "outside_window"
+    )
+    if date_case == "unknown":
+        assert any(
+            "publication date is unknown under the frozen date policy" in limitation
+            for limitation in projection["reportability"]["limitations"]
+        )
+    assert report_calls == ([True] if with_eligible else [])
+    assert calls == (
+        [("https://wmo.int/eligible-candidate", "wmo")] if with_eligible else []
+    )
+    assert not Path(binding["frozen_report_input"]).exists() or with_eligible
+    assert service.progress(binding["run_id"])["stage"] == (
+        "report_completed" if with_eligible and date_case == "outside"
+        else "report_completed_with_gaps" if with_eligible
+        else "no_eligible_information"
+    )
+    with sqlite3.connect(binding["registry_database"]) as connection:
+        assert connection.execute(
+            "SELECT frozen_at IS NOT NULL FROM acquisition_batches WHERE batch_id=?",
+            (binding["acquisition_batch_id"],),
+        ).fetchone()[0] == 1
 
 
 def test_supported_article_redirect_is_guarded_at_public_provider_seam(tmp_path, monkeypatch):
@@ -4004,7 +4186,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
 
 def _managed_attempt(
     tmp_path, monkeypatch, *, source_keys=None, budget_overrides=None,
-    candidate_protocol=False,
+    candidate_protocol=False, date_policy=None,
 ):
     from test_issue94_management_console import _store, _definition
     from climate_monitor.management import ManagementService
@@ -4018,6 +4200,8 @@ def _managed_attempt(
         definition["parameters"]["source_keys"] = source_keys
     if budget_overrides is not None:
         definition["parameters"]["budgets"].update(budget_overrides)
+    if date_policy is not None:
+        definition["parameters"]["date_policy"] = date_policy
     store.save(definition, actor="operator")
     service = ManagementService(
         store=store, runtime_root=tmp_path / "runs", launcher=lambda binding: 4321,
@@ -4043,6 +4227,135 @@ def _empty_agent_payload(binding, *, reason):
         "searches": [],
         "items": [],
     }
+
+
+def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
+    tmp_path, monkeypatch,
+):
+    """Regression: the former blanket gap branch skipped report authoring."""
+    from test_issue112_acquisition import _batch, _item
+    from climate_monitor import request_budget, web_listening_adapter
+    from climate_monitor.models import MonitorSource
+    import scripts.run_agent_acquisition as runner
+    import os
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    source = b["source_inventory"]["records"][0]
+    if os.name == "nt":
+        original_open = request_budget.os.open
+        directory_sync_file = tmp_path / "windows-directory-sync"
+
+        def portable_open(value, flags, *args):
+            if Path(value).is_dir():
+                return original_open(directory_sync_file, os.O_RDWR | os.O_CREAT, 0o600)
+            return original_open(value, flags, *args)
+
+        monkeypatch.setattr(request_budget.os, "open", portable_open)
+    sends = []
+    seed_runtime(
+        monkeypatch, sends,
+        outcomes=lambda _url: OSError("upstream HTTP 503"),
+    )
+    _, warnings, evidence = web_listening_adapter.collect_website_items_with_evidence(
+        [MonitorSource(**source)], state_dir=tmp_path / "pillar-a-state",
+        budget=budget(tmp_path / "pillar-a-ledger", fetch=3),
+    )
+    source_row = evidence["source_results"][0]
+    site_context = {
+        **evidence, "candidates": [], "warnings": warnings,
+        "attempts": source_row["attempts"],
+    }
+    search_item = _item(
+        url="https://example.org/pillar-b-recovery",
+        source="Example Institute", published_date=b["report_date"],
+    )
+    search_item["publication_date_evidence"]["text"] = "Published " + b["report_date"]
+    payload = _batch(
+        [search_item], batch_id=b["acquisition_batch_id"],
+        report_date=b["report_date"], policy=b["date_policy"], completed=True,
+    )
+
+    prompts = []
+    def invoke(_command, response_path, _binding_path, _binding, _deadline):
+        prompts.append(json.loads(path.with_name("attempt-1-trusted-context.json").read_text()))
+        response_path.write_text("{}")
+        return 0
+
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda _binding: site_context)
+    class FakeBudget:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def usage(self):
+            return runner._empty_tool_usage()
+
+        def remaining_seconds(self):
+            return 60.0
+
+    monkeypatch.setattr(runner, "RequestBudget", FakeBudget)
+    monkeypatch.setattr(runner, "_prior_tool_usage", lambda *args: runner._empty_tool_usage())
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    monkeypatch.setattr(runner, "_extract_envelope", lambda _response: {"acquisition_batch": payload})
+    monkeypatch.setattr(runner, "_validate_agent_payload", lambda _binding, value, *args: value)
+    monkeypatch.setattr(runner, "_validate_site_claims", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_controlled_fetch_payload", lambda *args, **kwargs: (payload, []))
+    monkeypatch.setattr(runner, "_trusted_tool_events", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        runner, "_persist_tool_provenance",
+        lambda *args, **kwargs: {"cumulative_actual": runner._empty_tool_usage()},
+    )
+    monkeypatch.setattr(runner, "_unresolved_tool_prechecks", lambda *args: [])
+    reports = []
+    monkeypatch.setattr(
+        runner, "_run_report",
+        lambda *args, **_kwargs: reports.append(args) or 0,
+    )
+    monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda *args: 0)
+
+    exit_code = runner._execute_attempt(path)
+    terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert exit_code == 0, terminal
+    assert reports
+    assert sends == [source["url"]]
+    assert prompts[0]["web_listening"]["source_results"][0]["status"] == "failed"
+    assert source_row["manifest"]["coverage_status"] == "incomplete"
+    seed_failure = next(iter(source_row["manifest"]["seed_outcomes"].values()))
+    assert seed_failure["event_kind"] == "network"
+    assert "upstream HTTP 503" in seed_failure["error"]
+    acquired = json.loads(path.with_name("attempt-1-acquisition.json").read_text())
+    assert acquired["search_decision"]["status"] == "attempted"
+    assert acquired["items"][0]["discovery_kind"] == "search"
+    frozen = json.loads(Path(b["frozen_report_input"]).read_text())
+    assert frozen["reportability"]["outcome"] == "completed_with_gaps"
+    assert frozen["reportability"]["selected_record_count"] == 1
+    assert any("upstream HTTP 503" in value for value in frozen["reportability"]["limitations"])
+    result = terminal
+    assert result["outcome"] == "completed_with_gaps"
+    assert result["execution_complete"] is True
+    assert result["full_coverage"] is False
+    assert service.progress(b["run_id"])["stage"] == "report_completed_with_gaps"
+
+
+def test_reportability_distinguishes_no_eligible_and_systemic_failure():
+    import scripts.run_agent_acquisition as runner
+
+    payload = {
+        "completed_at": "2026-09-14T12:00:00Z",
+        "source_outcomes": [], "searches": [], "items": [],
+    }
+    no_eligible = runner._reportability_projection(
+        payload, {"record_count": 0}, {"systemic_error": None}, [], gaps=False,
+    )
+    systemic = runner._reportability_projection(
+        payload, {"record_count": 0}, {"systemic_error": "reader unavailable"}, [], gaps=True,
+    )
+    assert no_eligible["outcome"] == "no_eligible_information"
+    assert no_eligible["reportable"] is False
+    assert no_eligible["full_coverage"] is True
+    assert systemic["outcome"] == "systemic_failure"
+    assert systemic["reportable"] is False
+    assert systemic["full_coverage"] is False
 
 
 def test_new_protocol_management_exposes_search_as_informational_activity(
@@ -4492,11 +4805,12 @@ def _exercise_blocked_search_precheck(
     assert search_prechecks[0]["reason"] == expected_reason
     assert stored["searches"] == []
     assert stored["completed_at"] is None
-    assert status["stage"] == "completed_with_gaps"
+    assert status["stage"] == "no_eligible_information"
     assert status["budget"]["used"]["search_attempts"] == 0
     assert status["coverage"]["full_success"] is False
     assert result["full_coverage"] is False
-    assert expected_reason in result["error"]
+    assert result["outcome"] == "no_eligible_information"
+    assert result["error"] is None
     assert not Path(b["frozen_report_input"]).exists()
 
 
@@ -4670,42 +4984,46 @@ def test_other_hook_blocks_round_trip_to_final_report_gate(
     status = service.progress(b["run_id"])
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     assert stored["completed_at"] is None
-    assert status["stage"] == "completed_with_gaps"
+    assert status["stage"] == "no_eligible_information"
     assert status["coverage"]["full_success"] is False
     assert result["full_coverage"] is False
-    assert expected_reason in status["error"]
-    assert expected_reason in result["error"]
+    assert result["outcome"] == "no_eligible_information"
+    assert result["error"] is None
     assert not Path(b["frozen_report_input"]).exists()
 
 
-def test_identical_systemic_reads_stop_after_three_and_preserve_full_inventory(
+def test_identical_failures_across_three_sources_stop_and_preserve_full_inventory(
     tmp_path, monkeypatch,
 ):
+    import sqlite3
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
     from climate_monitor.management import default_task_definition
+    from climate_monitor.request_budget import (
+        RequestBudget, candidate_handle_suffix, ledger_path,
+    )
+    from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
+    from test_issue94_management_console import _write_hermes_tool_events
     import scripts.run_agent_acquisition as runner
 
     source_keys = default_task_definition()["parameters"]["source_keys"]
     service, b, path = _managed_attempt(
-        tmp_path, monkeypatch, source_keys=source_keys,
+        tmp_path, monkeypatch, source_keys=source_keys, candidate_protocol=True,
     )
     monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
     sends = []
     seed_runtime(monkeypatch, sends, outcomes=lambda url: "incomplete")
-    monkeypatch.setattr(runner, "_trusted_tool_events", lambda *args, **kwargs: [])
 
     def invoke(command, response_path, binding_path, binding, deadline):
-        response_path.write_text(json.dumps({
-            "acquisition_batch": _empty_agent_payload(
-                binding, reason="No supplemental search was executed",
-            ),
-        }))
+        if binding["attempt"] == 1:
+            _write_hermes_tool_events(attempt_home(binding), binding, [])
+        response_path.write_text("{}")
         return 0
 
     monkeypatch.setattr(runner, "_invoke_hermes", invoke)
     monkeypatch.setattr(
         runner, "_run_report", lambda *args: pytest.fail("source gaps must block report"),
     )
-    assert runner._execute_locked(path) == 0
+    assert runner._execute_locked(path) == 75
 
     acquisition = json.loads(path.with_name("attempt-1-acquisition.json").read_text())
     status = service.progress(b["run_id"])
@@ -4716,17 +5034,136 @@ def test_identical_systemic_reads_stop_after_three_and_preserve_full_inventory(
         for row in source_outcomes
         for outcome in row["manifest"]["seed_outcomes"].values()
     ]
-    assert len(sends) == 3
+    network_source_count = sum(
+        any(value["event_kind"] == "network"
+            for value in row["manifest"]["seed_outcomes"].values())
+        for row in source_outcomes
+    )
+    assert network_source_count == 3
+    assert len(sends) == sum(
+        row["event_kind"] == "network" for row in seed_outcomes
+    )
     assert len(source_outcomes) == 36
-    assert len(seed_outcomes) == 116
-    assert sum(row["event_kind"] == "network" for row in seed_outcomes) == 3
-    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 113
+    assert len(seed_outcomes) == 115
+    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 115 - len(sends)
     assert all(row["status"] == "failed" for row in source_outcomes)
     assert status["coverage"]["total_sources"] == 36
     assert status["coverage"]["incomplete_sources"] == 36
     for value in (status, result):
         assert "OSError: network temporarily unavailable" in value["error"]
+    assert status["stage"] == "systemic_failure"
+    assert result["outcome"] == "systemic_failure"
+    assert result["exit_code"] == 75 and result["retryable"] is True
+    assert result["execution_complete"] is False
     assert not Path(b["frozen_report_input"]).exists()
+    with sqlite3.connect(b["registry_database"]) as connection:
+        assert connection.execute(
+            "SELECT frozen_at FROM acquisition_batches WHERE batch_id = ?",
+            (b["acquisition_batch_id"],),
+        ).fetchone()[0] is None
+    first_binding_bytes = path.read_bytes()
+    first_acquisition_bytes = path.with_name("attempt-1-acquisition.json").read_bytes()
+    first_result_bytes = path.with_name("attempt-1-result.json").read_bytes()
+    first_provenance_bytes = path.with_name("attempt-1-tool-provenance.json").read_bytes()
+    first_reason = acquisition["search_decision"]["reason"]
+    before = load_acquisition_batch(b["registry_database"], b["acquisition_batch_id"])
+
+    resumed = service.resume(b["run_id"])
+    assert resumed["attempt"] == 2
+    resumed_binding = service.binding(b["run_id"])
+    resumed_path = service._run_dir(b["run_id"]) / "attempt-2.json"
+    for key in (
+        "acquisition_lineage_id", "acquisition_batch_id", "task_id", "task_version",
+        "definition_sha256", "effective_sha256", "repository_commit_sha",
+        "taxonomy_sha256", "prompt_hashes", "prompt_versions", "report_date",
+        "timezone", "resolved_date_range", "date_policy", "budgets", "source_keys",
+        "source_inventory", "site_scope_inventory", "governed_gateway", "provider",
+        "model", "agent_protocol", "checkpoint_dir", "registry_database",
+        "frozen_report_input", "report_inputs", "definition",
+    ):
+        assert resumed_binding[key] == b[key]
+
+    resumed_sends = []
+    seed_runtime(monkeypatch, resumed_sends)
+    article_calls = []
+    _install_v3_reader(monkeypatch, article_calls)
+    _path, _ledger, handle, search_event = _v3_completed_search(
+        resumed_path.parent, resumed_binding, description="7 Sep 2026",
+        session="session-2", raw_call="recovery-search",
+        query="WMO recovered climate evidence",
+        url="https://wmo.int/recovered-evidence",
+    )
+    staged = runner._stage_candidate_receipt(
+        resumed_path, result_handle=handle, source_key="wmo", session_id="session-2",
+    )
+    runner._finalize_candidate_receipt(
+        resumed_path, candidate_handle=staged["candidate_handle"], selected=True,
+        title="Recovered WMO evidence", summary="Verified recovery evidence",
+        selection_reason="Eligible governed evidence", session_id="session-2",
+    )
+    transcript_event = dict(search_event)
+    transcript_event["result"] += candidate_handle_suffix([handle])
+    _write_hermes_tool_events(
+        attempt_home(resumed_binding), resumed_binding, [transcript_event],
+    )
+    report_calls = []
+    monkeypatch.setattr(
+        runner, "_run_report",
+        lambda *_args, **_kwargs: report_calls.append(True) or 0,
+    )
+
+    assert runner._execute_locked(resumed_path) == 0
+    recovered_payload = json.loads(
+        resumed_path.with_name("attempt-2-acquisition.json").read_text()
+    )
+    recovered = load_acquisition_batch(
+        resumed_binding["registry_database"], resumed_binding["acquisition_batch_id"],
+    )
+    assert recovered["search_decision"] == "attempted"
+    assert recovered["no_search_reason"] is None
+    assert recovered["completed_at"] is not None
+    assert recovered["payload_sha256"] == runner._canonical_digest(recovered_payload)
+    assert {
+        key: recovered[key] for key in ("report_date", "started_at", "date_policy")
+    } == {
+        key: before[key] for key in ("report_date", "started_at", "date_policy")
+    }
+    assert before["search_decision"] == "no_search"
+    assert before["no_search_reason"] == first_reason
+    assert before["completed_at"] is None
+    assert [row["search_ref"] for row in recovered["searches"]] == [
+        search_event["search_ref"]
+    ]
+    assert recovered_payload["search_decision"] == {"status": "attempted", "reason": None}
+    assert recovered_payload["items"][0]["url"] == "https://wmo.int/recovered-evidence"
+    assert report_calls == [True]
+    assert article_calls == [("https://wmo.int/recovered-evidence", "wmo")]
+    assert service.progress(b["run_id"])["stage"] == "report_completed"
+
+    provenance = json.loads(
+        resumed_path.with_name("attempt-2-tool-provenance.json").read_text()
+    )
+    assert any(
+        event.get("tool") == "web_search" and event.get("completed") is True
+        for event in provenance["request_events"]
+    )
+    ledger = RequestBudget(ledger_path(resumed_binding), resumed_binding)
+    assert ledger.usage(attempt=1)["fetch_attempts"] == len(sends)
+    assert ledger.usage(attempt=2)["search_attempts"] == 1
+    assert ledger.usage()["fetch_attempts"] == len(sends) + len(resumed_sends) + 1
+    checkpoint_dir = runner._controlled_site_checkpoint_dir(resumed_binding)
+    assert not list(checkpoint_dir.glob("*.pending-run.json"))
+    assert list(checkpoint_dir.glob("*.json"))
+
+    assert path.read_bytes() == first_binding_bytes
+    assert path.with_name("attempt-1-acquisition.json").read_bytes() == first_acquisition_bytes
+    assert path.with_name("attempt-1-result.json").read_bytes() == first_result_bytes
+    assert path.with_name("attempt-1-tool-provenance.json").read_bytes() == first_provenance_bytes
+    assert json.loads(first_acquisition_bytes)["search_decision"]["reason"] == first_reason
+    assert all(row["status"] == "failed" for row in json.loads(first_acquisition_bytes)["source_outcomes"])
+    assert store_acquisition_batch(
+        resumed_binding["registry_database"], recovered_payload,
+    )["batch_id"] == resumed_binding["acquisition_batch_id"]
 
 
 def test_policy_and_varied_site_failures_do_not_trigger_systemic_stop(tmp_path, monkeypatch):
