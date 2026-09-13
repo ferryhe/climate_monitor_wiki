@@ -50,6 +50,7 @@ from .seen_state import (
     prepare_seen_url_delta,
 )
 from .semantic_bundle import (
+    article_identity,
     commit_report_with_semantics,
     recover_pending_commit,
     select_semantic_articles,
@@ -60,7 +61,10 @@ from .web_listening_adapter import (
     collect_website_items,
     commit_staged_source_checkpoints,
 )
-from .weekly_monitor.authoring_contract import validate_authoring_response
+from .weekly_monitor.authoring_contract import (
+    AuthoringContractError,
+    validate_authoring_response,
+)
 from .weekly_monitor.provenance import build_run_provenance, require_complete_provenance_inputs
 
 
@@ -490,6 +494,44 @@ def _stage_article_evidence(
     )
 
 
+def _items_selected_by_authoring_request(
+    items: list[CandidateItem], request: Mapping[str, Any] | None
+) -> list[CandidateItem]:
+    """Project the audit candidate set onto the frozen authoring request."""
+
+    if not isinstance(request, Mapping):
+        raise AuthoringContractError("v2 authoring response requires its request")
+    requested = request.get("articles")
+    if not isinstance(requested, list):
+        raise AuthoringContractError("invalid v2 authoring request articles")
+    by_id: dict[str, CandidateItem] = {}
+    for item in items:
+        identity = article_identity(item)
+        if identity in by_id:
+            raise AuthoringContractError("duplicate article identity in combined candidates")
+        by_id[identity] = item
+    selected: list[CandidateItem] = []
+    seen: set[str] = set()
+    for article in requested:
+        if not isinstance(article, Mapping):
+            raise AuthoringContractError("v2 authoring request article must be an object")
+        identity = article.get("article_id")
+        if not isinstance(identity, str) or not identity:
+            raise AuthoringContractError(
+                "v2 authoring request article_id must be a non-empty string"
+            )
+        if identity in seen:
+            raise AuthoringContractError("duplicate article identity in v2 authoring request")
+        seen.add(identity)
+        item = by_id.get(identity)
+        if item is None:
+            raise AuthoringContractError(
+                "authoring request selected article is missing from combined candidates"
+            )
+        selected.append(item)
+    return selected
+
+
 def run_monitor(
     *,
     source_config_path: str | Path = "monitoring/supranational_sources.yaml",
@@ -803,7 +845,7 @@ def run_monitor(
         # The validated per-URL model decision is the relevance authority.
         # A second keyword gate would discard synonyms or body-only findings.
         classified = list(merged_items)
-        kept = classified
+        kept = _items_selected_by_authoring_request(classified, authoring_request)
     else:
         classified = [classify_candidate(item, config) for item in merged_items]
         relevant = [item for item in classified if item.climate_related and item.actuarial_related]
@@ -878,8 +920,16 @@ def run_monitor(
     # ``prepare_seen_url_delta``. Failure (ArticleContentAdapterError or any
     # contract violation) aborts the seen-state commit and rolls back.
     try:
+        evidence_candidates = combined.candidates
+        if evidence_authoring:
+            selected_urls = {canonical_url(item.url) for item in kept}
+            evidence_candidates = tuple(
+                candidate
+                for candidate in combined.candidates
+                if candidate.canonical_url in selected_urls
+            )
         _stage_article_evidence(
-            candidates=combined.candidates,
+            candidates=evidence_candidates,
             source_dir=output_source_dir,
             report_date=day,
             providers=providers,

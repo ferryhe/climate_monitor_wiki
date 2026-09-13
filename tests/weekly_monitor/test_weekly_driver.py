@@ -14,6 +14,11 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from climate_monitor.models import CandidateItem
+from climate_monitor.candidate_aggregation import combined_candidates_path
+from climate_monitor.candidate_snapshot import (
+    candidate_item_snapshot_path,
+    verify_candidate_item_snapshot,
+)
 from climate_monitor.orchestrator import run_monitor
 from climate_monitor.semantic_bundle import article_identity, semantic_sidecar_path
 from climate_monitor.taxonomy import DEFAULT_TAXONOMY_ID, DEFAULT_TAXONOMY_SHA256
@@ -680,6 +685,146 @@ def _v2_evidence_record(
     if status != "ok":
         record["failure_reason"] = "auth_required"
     return record
+
+
+def _retained_v2_evidence(item: CandidateItem, *, body: str) -> dict:
+    from climate_monitor.article_content_adapter import _artifact_digest, _record_digest
+
+    record = _v2_evidence_record(item, body=body)
+    record.update(content=body, failure_reason=None)
+    record["record_hash"] = _record_digest(record)
+    records = [record]
+    return {
+        "schema_version": "article-evidence.v1",
+        "report_date": "2026-05-18",
+        "generated_at": "",
+        "dependency_status": "available",
+        "record_count": 1,
+        "records": records,
+        "artifact_digest": _artifact_digest(records),
+    }
+
+
+@pytest.mark.parametrize("relevant", [True, False])
+def test_v2_finalize_authors_only_registry_selected_candidate(
+    tmp_path, monkeypatch, relevant
+):
+    """The authoring request is the Registry-selected subset, while the
+    combined candidate and snapshot artifacts retain every disposition."""
+    source_config = tmp_path / "sources.yaml"
+    run_config = tmp_path / "run_config.yaml"
+    manifest = tmp_path / "manifest.json"
+    authoring = tmp_path / "authoring_response.json"
+    source_dir = tmp_path / "sources"
+    wiki_dir = tmp_path / "wiki"
+    state = tmp_path / "state"
+    _write_source_config(source_config)
+    _write_run_config(run_config, source_dir=source_dir, wiki_dir=wiki_dir, state=state)
+    _write_manifest(manifest)
+
+    selected = _item()
+    unselected = _item(
+        title="IPCC candidate retained for acquisition audit",
+        url="https://www.ipcc.ch/report/ar7/",
+        source_name="IPCC",
+    )
+    monkeypatch.setattr(
+        "climate_monitor.orchestrator.collect_website_items",
+        lambda *args, **kwargs: ([selected, unselected], []),
+    )
+    monkeypatch.setattr(
+        "climate_monitor.orchestrator.search_recent_research",
+        lambda *args, **kwargs: [],
+    )
+
+    body = "Verified IAIS climate insurance article body."
+    evidence = _retained_v2_evidence(selected, body=body)
+    stats = {
+        "total": 2,
+        "updated": 0,
+        "unchanged": 2,
+        "blocked": 0,
+        "failed": 0,
+        "unresolved": 0,
+    }
+    prompt = load_weekly_monitor_prompt()
+    request = build_authoring_request(
+        report_date=date(2026, 5, 18),
+        items=[selected],
+        prompt=prompt,
+        article_evidence=evidence,
+        stats=stats,
+    )
+    response_article = json.loads(json.dumps(request["articles"][0]))
+    response_article.update(
+        {
+            "relevant": relevant,
+            "summary": "Verified IAIS climate insurance summary.",
+            "summary_basis": "article_content",
+            "evidence_hash": hashlib.sha256(body.encode()).hexdigest(),
+            "categories": ["Supervision & Disclosure"],
+            "keywords": ["climate", "insurance", "capital"],
+        }
+    )
+    authoring.write_text(
+        json.dumps(
+            {
+                "schema_version": AUTHORING_RESPONSE_SCHEMA_VERSION_V2,
+                "contract_version": AUTHORING_CONTRACT_VERSION_V2,
+                "request_sha256": request["request_sha256"],
+                "article_count": 1,
+                "articles": [response_article],
+                "executive_summary": (
+                    "2 total; 0 updated; 2 unchanged; 0 blocked; "
+                    "0 failed; 0 unresolved."
+                ),
+                "stats": stats,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_weekly_monitor(
+        source_config_path=source_config,
+        run_config_path=run_config,
+        report_date=date(2026, 5, 18),
+        manifest_fixture_path=manifest,
+        state_dir=state,
+        authoring_response_path=authoring,
+        sync=False,
+        update_seen_state=False,
+        repository_commit_sha="a" * 40,
+        article_evidence=evidence,
+        stats=stats,
+    )
+
+    combined = json.loads(
+        combined_candidates_path(source_dir, "2026-05-18").read_text(encoding="utf-8")
+    )
+    assert {row["canonical_url"] for row in combined["items"]} == {
+        "https://www.iais.org/climate-supervision",
+        "https://www.ipcc.ch/report/ar7",
+    }
+    if relevant:
+        assert [item.url for item in result.items] == [selected.url]
+        retained = json.loads(
+            (source_dir / "article-evidence.v1_2026-05-18.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert [record["requested_url"] for record in retained["records"]] == [
+            selected.url
+        ]
+        snapshot = verify_candidate_item_snapshot(
+            candidate_item_snapshot_path(source_dir, "2026-05-18"),
+            combined_path=combined_candidates_path(source_dir, "2026-05-18"),
+            report_path=Path(result.report_path),
+            report_date="2026-05-18",
+        )
+        assert {item.url for item in snapshot} == {selected.url, unselected.url}
+    else:
+        assert result.report_path is None
+        assert result.items == ()
 
 
 def test_v2_authoring_response_exposes_canonical_57_42_15_split(tmp_path):
