@@ -1,6 +1,7 @@
 """Issue #126 contracts that keep one pinned public web_listening_new runtime."""
 
 import os
+import sys
 
 from pathlib import Path
 
@@ -13,6 +14,11 @@ from climate_monitor.models import MonitorSource
 
 ROOT = Path(__file__).resolve().parent.parent
 PIN = "ac2343f89bc7939736d85f049ebe2beac571034a"
+
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
+)
 
 
 def binding(tmp_path):
@@ -106,6 +112,7 @@ def test_legacy_checkpoint_is_an_honest_new_runtime_baseline(tmp_path):
     assert _load_refresh_checkpoint(path, source, source.url) is None
 
 
+@requires_web_listening
 def test_first_exploration_projects_non_seed_pages_as_new_discoveries(tmp_path):
     class Budget:
         limits = {"fetch_attempts": 8}

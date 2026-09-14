@@ -2,6 +2,7 @@
 
 import hashlib
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -9,6 +10,13 @@ from climate_monitor import article_content_adapter as adapter
 from test_article_content_default_adapter import _install_runtime
 
 
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
+)
+
+
+@requires_web_listening
 def test_p1_data_root_threads_into_default_reader(monkeypatch, tmp_path):
     runtime, _body, _result = _install_runtime(monkeypatch)
     artifact = adapter.build_article_evidence_artifact(
@@ -18,6 +26,7 @@ def test_p1_data_root_threads_into_default_reader(monkeypatch, tmp_path):
     assert artifact["records"][0]["status"] == "ok"
 
 
+@requires_web_listening
 def test_p1_data_root_none_uses_runtime_environment(monkeypatch, tmp_path):
     runtime, _body, _result = _install_runtime(monkeypatch)
     monkeypatch.setenv("CLIMATE_WEB_LISTENING_DATA_DIR", str(tmp_path / "governed"))
@@ -27,6 +36,7 @@ def test_p1_data_root_none_uses_runtime_environment(monkeypatch, tmp_path):
     assert runtime.roots == [(tmp_path / "governed").resolve()]
 
 
+@requires_web_listening
 def test_p2_collect_evidence_materializes_verified_owned_content(monkeypatch):
     _runtime, body, _result = _install_runtime(monkeypatch)
     records, output_dirs = adapter.collect_evidence(
@@ -54,6 +64,7 @@ def test_p2_build_artifact_rechecks_materialized_content(monkeypatch):
     assert artifact["records"][0]["status"] == "ok"
 
 
+@requires_web_listening
 def test_p2_long_body_from_owned_artifact_is_hash_verified(monkeypatch):
     body = ("climate evidence " * 500).encode()
     _runtime, _, _result = _install_runtime(monkeypatch, body=body)
@@ -74,6 +85,7 @@ def test_p2_no_data_root_does_not_create_climate_artifact_cache(monkeypatch, tmp
     assert not (tmp_path / "runtime" / ".cache" / "article_content").exists()
 
 
+@requires_web_listening
 def test_authoring_can_retain_verified_runtime_content(monkeypatch):
     _runtime, body, _result = _install_runtime(monkeypatch)
     artifact = adapter.build_article_evidence_artifact(

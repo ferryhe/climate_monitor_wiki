@@ -4,9 +4,18 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import io
+import sys
 from types import SimpleNamespace
 
+import pytest
+
 from climate_monitor import article_content_adapter as adapter
+
+
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
+)
 
 
 def _install_runtime(monkeypatch, body=b"# verified climate evidence\n"):
@@ -77,6 +86,7 @@ def _install_runtime(monkeypatch, body=b"# verified climate evidence\n"):
     return Runtime, body, result
 
 
+@requires_web_listening
 def test_default_adapter_uses_public_runtime_and_verified_owned_artifact(monkeypatch, tmp_path):
     runtime, body, result = _install_runtime(monkeypatch)
     provider = adapter._default_providers(data_root=tmp_path)[0]

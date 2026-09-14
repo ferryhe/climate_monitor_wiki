@@ -23,6 +23,12 @@ from climate_monitor.management import (
 )
 
 
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
+)
+
+
 def _store(tmp_path: Path) -> TaskDefinitionStore:
     return TaskDefinitionStore(tmp_path / "task.json", tmp_path / "versions")
 
@@ -1714,6 +1720,7 @@ def _public_refresh_checkpoint():
 
 
 
+@requires_web_listening
 def test_managed_site_checkpoints_share_monitor_state_and_finalize(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
 
@@ -1757,6 +1764,7 @@ def test_managed_site_checkpoints_share_monitor_state_and_finalize(tmp_path, mon
     )
 
 
+@requires_web_listening
 def test_managed_site_checkpoint_failure_discards_pending_state(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
 

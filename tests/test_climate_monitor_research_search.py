@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date
 
 import pytest
@@ -20,6 +21,12 @@ from climate_monitor.web_listening_adapter import (
     collect_website_items,
     commit_staged_source_checkpoints,
     read_manifest_items,
+)
+
+
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
 )
 
 
@@ -427,6 +434,7 @@ def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_mer
     assert checkpoint_calls == [("one", True, True), ("two", True, True)]
 
 
+@requires_web_listening
 def test_public_site_result_preserves_scope_lanes_artifact_identity_and_attempts(tmp_path):
     class Budget:
         limits = {"fetch_attempts": 8}
@@ -499,6 +507,7 @@ def test_public_site_result_preserves_scope_lanes_artifact_identity_and_attempts
                for item in receipt["candidates"])
 
 
+@requires_web_listening
 def test_public_site_policy_rejection_preserves_upstream_reason_and_attempts(tmp_path):
     class Budget:
         limits = {"fetch_attempts": 4}

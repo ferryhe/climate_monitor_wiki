@@ -4,12 +4,19 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
+import sys
 
 import pytest
 
 from climate_monitor import web_listening_adapter as adapter
 from climate_monitor.models import MonitorSource, SiteScope
 from climate_monitor.request_budget import RequestBudget
+
+
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
+)
 
 
 def source(key="example"):
@@ -88,6 +95,7 @@ def install_runtime(monkeypatch):
     monkeypatch.setattr(adapter, "_runtime_service_type", lambda: Runtime)
 
 
+@requires_web_listening
 @pytest.mark.parametrize(
     "collector",
     ["collect_source_items", "collect_website_items", "collect_website_items_with_evidence"],
