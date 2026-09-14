@@ -23,6 +23,52 @@ app container. A host-side report ingest is visible after `POST /api/reload`;
 article annotations are read per Registry request. Neither content-only change
 requires an image rebuild.
 
+## Governed acquisition runtime
+
+The application image contains one `web-listening` distribution pinned to
+`web_listening_new` revision
+`ac2343f89bc7939736d85f049ebe2beac571034a`. The same frozen upstream checkout
+is retained at `/opt/web-listening-source` for its browser lifecycle installer
+and controlled qualification fixture. The build provisions Playwright 1.62.0
+and Chromium 151 revision 1234 at the final in-container path and checks the
+upstream lock before completing:
+
+```text
+/opt/web-listening-data/browser-runtimes/playwright
+```
+
+The dedicated named volume `climate_web_listening_issue126` mounts the whole
+Runtime root at `/opt/web-listening-data`. Docker's initial empty-volume copy-up
+seeds the locked browser runtime. Never reuse a non-empty HTTP-only volume and
+expect a new image to update it. The root also owns lifecycle state, jobs,
+artifacts and journals, so it must not be reduced to selected file mounts or
+replaced by a host-runtime bind.
+
+Before production use, qualify the adapter inside the exact candidate image and
+fresh mounted volume against the upstream-owned controlled fixture:
+
+```bash
+docker run --rm --network none --user 0:0 \
+  --entrypoint /usr/local/bin/python \
+  --mount type=volume,src=climate_web_listening_issue126,dst=/opt/web-listening-data \
+  "$CANDIDATE_IMAGE_ID" /app/scripts/qualify_web_listening_playwright.py \
+  --authorization-window "$AUTHORIZATION_WINDOW"
+```
+
+This qualifies the installed runtime only. Every public target still receives
+fresh robots/network/scope/budget checks, and exact-20 browser coverage must be
+reported from actual attempts. CloakBrowser is absent and remains excluded.
+The monitor producer must mount this same volume and set
+`CLIMATE_WEB_LISTENING_DATA_DIR=/opt/web-listening-data`; delivery stays on its
+existing network-none, no-send path and does not need the acquisition volume.
+
+After qualification, recreate a container with the same image and volume,
+reopen `RuntimeService`, and verify lifecycle eligibility plus an existing
+artifact identity/hash. A browser-only rollback uses the upstream lifecycle
+disable command and then reopens Runtime for HTTP-only operation. Application
+rollback restores the retained image and matching external scheduler config
+without deleting the Runtime volume or rewriting report/Registry history.
+
 ## First run
 
 Initial installation only: the following creates `.env`. Do not run it during

@@ -246,8 +246,7 @@ def test_authoring_text_view_preserves_complete_plain_text_and_source():
     assert evidence == original
 
 
-def test_authoring_html_uses_upstream_full_markdown_without_cutoff():
-    normalizer = pytest.importorskip("web_listening.blocks.normalizer")
+def test_authoring_html_preserves_complete_historical_source_without_cutoff():
     body = ("<html><script>irrelevant_script_payload</script><body><main><h1>Policy</h1>"
             + "<p>Full climate insurance paragraph.</p>" * 1000
             + '<table><tr><th>Year</th><th>Loss</th></tr><tr><td>2026</td><td>42</td></tr></table>'
@@ -255,14 +254,14 @@ def test_authoring_html_uses_upstream_full_markdown_without_cutoff():
     evidence = _view_evidence(body, "text/html; charset=utf-8")
     original = copy.deepcopy(evidence)
     text = monitor._authoring_evidence_view(evidence)["records"][0]["readable_content"]
-    assert text["text"] == normalizer.normalize_html(body, "https://example.org/article").markdown
+    assert text["text"] == body
     assert "END OF ARTICLE" in text["text"]
-    assert "https://example.org/source" in text["text"]
+    assert 'href="/source"' in text["text"]
     assert "2026" in text["text"] and "42" in text["text"]
-    assert "irrelevant_script_payload" not in text["text"]
+    assert "irrelevant_script_payload" in text["text"]
     assert text["source_content_hash"] == evidence["records"][0]["content_hash"]
     assert text["text_sha256"] == hashlib.sha256(text["text"].encode()).hexdigest()
-    assert text["text_sha256"] != text["source_content_hash"]
+    assert text["text_sha256"] == text["source_content_hash"]
     assert evidence == original
 
 

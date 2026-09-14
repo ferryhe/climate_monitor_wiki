@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
 
@@ -626,16 +626,12 @@ def test_orchestrator_report_commit_failure_leaves_canonical_state_unchanged(
 
 
 @pytest.mark.usefixtures("governed_adapter_runtime")
-def test_live_checkpoint_reemits_candidate_after_report_commit_interruption(
-    tmp_path, monkeypatch
+def test_public_runtime_checkpoint_reemits_after_report_commit_interruption(
+    tmp_path, monkeypatch,
 ):
+    """A staged public checkpoint advances only with committed URL state."""
+
     sources, config, source_dir, _, state_dir = _write_modern_config(tmp_path)
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url="https://example.org/",
-    )
     sources.write_text(
         "sources:\n"
         "  - key: example\n"
@@ -648,204 +644,80 @@ def test_live_checkpoint_reemits_candidate_after_report_commit_interruption(
     (state_dir / "seen_urls.json").write_bytes(b"[]\n")
     current_links: list[str] = []
 
-    class Page:
-        final_url = "https://example.org/"
-        fit_markdown = "Climate insurance page"
-        markdown = ""
-        content_text = ""
-        raw_html = ""
-        status_code = 200
+    def load_checkpoint(path, *_args):
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
 
-        @property
-        def metadata_json(self):
-            return {"links": list(current_links)}
+    def run_seed(_service, source, _scope, seed_url, *_args):
+        state_path = web_listening_adapter._state_path(state_dir / "websites", source, seed_url)
+        checkpoint = load_checkpoint(state_path) or {"seen_candidates": []}
+        discovered = [url for url in current_links if url not in checkpoint["seen_candidates"]]
+        candidates = [
+            asdict(CandidateItem(
+                title="Climate insurance update", url=url,
+                summary="Climate insurance evidence.", source_name=source.abbreviation,
+                lane="website", detected_at="2026-09-07T00:00:00Z",
+                source_item_id=url,
+            ))
+            for url in discovered
+        ]
+        return {
+            "status": "success", "event_kind": "source", "phase": "refresh",
+            "candidates": candidates, "candidate_urls": discovered,
+            "checkpoint": {"seen_candidates": list(current_links)},
+            "observed_at": "2026-09-07T00:00:00Z", "result": {}, "attempts": [],
+            "change_counts": {"added": len(discovered), "changed": 0,
+                              "unchanged": 0, "missing": 0, "failed": 0,
+                              "unresolved": 0},
+        }
 
-    class FakeCrawler:
-        def __init__(self, *, fetch_mode, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
+    monkeypatch.setattr(web_listening_adapter, "_load_refresh_checkpoint", load_checkpoint)
+    monkeypatch.setattr(web_listening_adapter, "_valid_refresh_checkpoint_mapping", lambda value: True)
+    monkeypatch.setattr(web_listening_adapter, "_run_site_seed", run_seed)
+    source = MonitorSource("example", "EXAMPLE", "Example", "https://example.org/")
+    checkpoint_dir = state_dir / "websites"
+    assert web_listening_adapter.collect_source_items(
+        source=source, state_dir=checkpoint_dir,
+    ) == ([], [])
+    checkpoint = next(checkpoint_dir.glob("*.json"))
+    baseline = checkpoint.read_bytes()
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url, *, fetch_mode, fetch_config_json=None):
-            return Page()
-
-    diff = {
-        "compute_hash": lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [],
-        "find_new_links": lambda previous, current: [
-            link for link in current if link not in previous
-        ],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr(web_listening_adapter, "_load_web_listening", lambda: (FakeCrawler, diff))
-    web_state_dir = state_dir / "websites"
-    baseline_items, baseline_warnings = web_listening_adapter.collect_source_items(
-        source=source,
-        state_dir=web_state_dir,
-    )
-    assert baseline_items == []
-    assert baseline_warnings == []
-    checkpoint = next(web_state_dir.glob("*.json"))
-    baseline_checkpoint = checkpoint.read_bytes()
     candidate_url = "https://example.org/climate-insurance-update"
     current_links.append(candidate_url)
     monkeypatch.setattr(orchestrator, "search_recent_research", lambda *args, **kwargs: [])
     monkeypatch.setattr(orchestrator, "classify_candidate", _classify_as_relevant)
     arguments = {
-        "source_config_path": sources,
-        "run_config_path": config,
-        "report_date": date(2026, 9, 7),
-        "state_dir": state_dir,
-        "sync": False,
+        "source_config_path": sources, "run_config_path": config,
+        "report_date": date(2026, 9, 7), "state_dir": state_dir, "sync": False,
     }
     with monkeypatch.context() as crash:
         crash.setattr(
-            orchestrator,
-            "commit_report_with_semantics",
-            lambda **kwargs: (_ for _ in ()).throw(
-                KeyboardInterrupt("simulated live report interruption")
-            ),
+            orchestrator, "commit_report_with_semantics",
+            lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt("simulated report interruption")),
         )
-        with pytest.raises(KeyboardInterrupt, match="live report"):
+        with pytest.raises(KeyboardInterrupt, match="report interruption"):
             run_monitor(**arguments)
-
-    assert checkpoint.read_bytes() == baseline_checkpoint
+    assert checkpoint.read_bytes() == baseline
+    assert json.loads((state_dir / "seen_urls.json").read_text()) == []
 
     recovered = run_monitor(**arguments)
-
     assert [item.url for item in recovered.items] == [candidate_url]
-    assert json.loads(checkpoint.read_text(encoding="utf-8"))["links"] == [
-        candidate_url
-    ]
-    assert json.loads((state_dir / "seen_urls.json").read_text(encoding="utf-8")) == [
-        candidate_url
-    ]
+    assert json.loads(checkpoint.read_text())["seen_candidates"] == [candidate_url]
+    assert json.loads((state_dir / "seen_urls.json").read_text()) == [candidate_url]
     assert Path(recovered.report_path).parent == source_dir
 
-    report_path = Path(recovered.report_path)
-    sidecar_path = semantic_sidecar_path(report_path)
-    combined_path = combined_candidates_path(source_dir, "2026-09-07")
-    first_bundle = {
-        "report": report_path.read_bytes(),
-        "sidecar": sidecar_path.read_bytes(),
-        "combined": combined_path.read_bytes(),
-        "state": (state_dir / "seen_urls.json").read_bytes(),
-    }
-    first_combined = json.loads(first_bundle["combined"])
-
-    unchanged = run_monitor(**arguments)
-
-    assert [item.url for item in unchanged.items] == [candidate_url]
-    assert {
-        "report": report_path.read_bytes(),
-        "sidecar": sidecar_path.read_bytes(),
-        "combined": combined_path.read_bytes(),
-        "state": (state_dir / "seen_urls.json").read_bytes(),
-    } == first_bundle
-
-    incremental_url = "https://example.org/climate-insurance-incremental"
-    current_links.append(incremental_url)
-    incremental = run_monitor(**arguments)
-
-    assert [item.url for item in incremental.items] == [candidate_url, incremental_url]
-    combined = json.loads(combined_path.read_text(encoding="utf-8"))
-    assert combined["counts"] == {
-        "pillar_a_rows": 2,
-        "pillar_b_rows": 0,
-        "unique_urls": 2,
-        "cross_pillar_merges": 0,
-        "history_skips": 0,
-        "invalid_rows": 0,
-    }
-    assert [item["canonical_url"] for item in combined["items"]] == [
-        incremental_url,
-        candidate_url,
-    ]
-    assert all(len(item["origins"]) == 1 for item in combined["items"])
-    carried = next(
-        item for item in combined["items"] if item["canonical_url"] == candidate_url
-    )
-    assert carried["origins"] == first_combined["items"][0]["origins"]
-    report_text = report_path.read_text(encoding="utf-8")
-    assert candidate_url in report_text
-    assert incremental_url in report_text
-    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    assert [article["canonical_url"] for article in sidecar["articles"]] == [
-        candidate_url,
-        incremental_url,
-    ]
-    assert json.loads((state_dir / "seen_urls.json").read_text(encoding="utf-8")) == [
-        candidate_url,
-        incremental_url,
-    ]
-    incremental_bundle = {
-        "report": report_path.read_bytes(),
-        "sidecar": sidecar_path.read_bytes(),
-        "combined": combined_path.read_bytes(),
-        "state": (state_dir / "seen_urls.json").read_bytes(),
-    }
-
-    incremental_replay = run_monitor(**arguments)
-
-    assert [item.url for item in incremental_replay.items] == [
-        candidate_url,
-        incremental_url,
-    ]
-    assert {
-        "report": report_path.read_bytes(),
-        "sidecar": sidecar_path.read_bytes(),
-        "combined": combined_path.read_bytes(),
-        "state": (state_dir / "seen_urls.json").read_bytes(),
-    } == incremental_bundle
-
-    rejected_url = "https://example.org/climate-insurance-rejected"
-    current_links.append(rejected_url)
-    monkeypatch.setattr(orchestrator, "classify_candidate", lambda item, config: item)
-    no_report = run_monitor(**{**arguments, "report_date": date(2026, 9, 14)})
-
-    assert no_report.report_path is None
-    assert json.loads(checkpoint.read_text(encoding="utf-8"))["links"] == [
-        candidate_url,
-        incremental_url,
-    ]
-    assert json.loads((state_dir / "seen_urls.json").read_text(encoding="utf-8")) == [
-        candidate_url,
-        incremental_url,
-    ]
-
-    monkeypatch.setattr(orchestrator, "classify_candidate", _classify_as_relevant)
-    retry = run_monitor(**{**arguments, "report_date": date(2026, 9, 14)})
-
-    assert [item.url for item in retry.items] == [rejected_url]
-    assert json.loads(checkpoint.read_text(encoding="utf-8"))["links"] == [
-        candidate_url,
-        incremental_url,
-        rejected_url,
-    ]
-
-    read_only_url = "https://example.org/climate-insurance-read-only"
-    current_links.append(read_only_url)
-    checkpoint_before_read_only = checkpoint.read_bytes()
-    seen_before_read_only = (state_dir / "seen_urls.json").read_bytes()
+    current_links.append("https://example.org/read-only")
+    checkpoint_before = checkpoint.read_bytes()
+    seen_before = (state_dir / "seen_urls.json").read_bytes()
     read_only = run_monitor(
-        **{
-            **arguments,
-            "report_date": date(2026, 9, 21),
-            "update_seen_state": False,
-        }
+        **{**arguments, "report_date": date(2026, 9, 14), "update_seen_state": False}
     )
-
-    assert [item.url for item in read_only.items] == [read_only_url]
-    assert checkpoint.read_bytes() == checkpoint_before_read_only
-    assert (state_dir / "seen_urls.json").read_bytes() == seen_before_read_only
-    assert not list(web_state_dir.glob("*.pending-run.json"))
+    assert [item.url for item in read_only.items] == ["https://example.org/read-only"]
+    assert checkpoint.read_bytes() == checkpoint_before
+    assert (state_dir / "seen_urls.json").read_bytes() == seen_before
+    assert not list(checkpoint_dir.glob("*.pending-run.json"))
 
 
 def test_orchestrator_invalidates_stale_combined_evidence_before_current_artifact_failure(

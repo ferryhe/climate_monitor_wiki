@@ -317,34 +317,112 @@ def _outcome_fixture_root(path: Path | None = None) -> Path | None:
 def _read_outcomes(path: Path) -> list[dict]:
     fixture_root = _outcome_fixture_root(path)
     try:
-        try:
-            from web_listening.contracts.acquisition_batch import AcquisitionBatchResultV2
-        except ModuleNotFoundError as exc:
-            if exc.name != "web_listening" or fixture_root is None:
-                raise
-            # No schema substitute: the test-only helper accepts two exact saved
-            # public payloads. Installed upstream always owns validation above.
-            import runpy
-            validate = runpy.run_path(str(ROOT / "tests/issue87_outcome_fixture.py"))["validate_fixture"]
-            return [validate(path.read_text(encoding="utf-8"))]
         payload = json.loads(path.read_text(encoding="utf-8"))
         entries = payload if isinstance(payload, list) else [payload]
         if not entries:
             raise ValueError("acquisition batch must contain at least one outcome")
-        return [AcquisitionBatchResultV2.model_validate_json(
-            json.dumps(entry)).model_dump(mode="json") for entry in entries]
-    except ValueError as exc:
-        raise SystemExit("invalid public acquisition-batch-result.v2") from exc
+        return [_validate_climate_acquisition_outcome(entry) for entry in entries]
+    except (KeyError, TypeError, ValueError) as exc:
+        kind = "saved" if fixture_root is not None else "climate"
+        raise SystemExit(f"invalid {kind} acquisition-batch-result.v2") from exc
+
+
+def _validate_climate_acquisition_outcome(value: object) -> dict:
+    """Validate the retained bridge artifact emitted by our acquisition adapter."""
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "run_id", "authoritative_status", "status", "full_success",
+        "counts", "dispositions", "summary",
+    }:
+        raise ValueError("invalid acquisition outcome fields")
+    if value["schema_version"] != "acquisition-batch-result.v2":
+        raise ValueError("invalid acquisition outcome schema")
+    if not isinstance(value["run_id"], str) or not value["run_id"]:
+        raise ValueError("invalid acquisition outcome run")
+    dispositions = value["dispositions"]
+    if not isinstance(dispositions, list) or not dispositions:
+        raise ValueError("invalid acquisition dispositions")
+    allowed = {"updated", "unchanged", "blocked", "failed", "unresolved"}
+    normalized = []
+    for item in dispositions:
+        if not isinstance(item, dict) or set(item) not in (
+            {"task_id", "site_key", "requested_url", "disposition", "reason"},
+            {"task_id", "site_key", "requested_url", "disposition", "reason", "artifact_id"},
+        ):
+            raise ValueError("invalid acquisition disposition fields")
+        if any(not isinstance(item.get(key), str) or not item[key] for key in (
+            "task_id", "site_key", "requested_url", "disposition", "reason",
+        )) or item["disposition"] not in allowed:
+            raise ValueError("invalid acquisition disposition")
+        expected_artifact = item["disposition"] in {"updated", "unchanged"}
+        if expected_artifact != (isinstance(item.get("artifact_id"), str) and bool(item.get("artifact_id"))):
+            raise ValueError("invalid acquisition artifact binding")
+        normalized.append({**item, "requested_url": canonical_url(item["requested_url"])})
+    counts = value["counts"]
+    count_keys = {
+        "requested", "updated", "unchanged", "blocked", "failed", "unresolved",
+        "valid_snapshots", "failed_evidence", "succeeded",
+    }
+    if not isinstance(counts, dict) or set(counts) != count_keys or any(
+        type(counts[key]) is not int or counts[key] < 0 for key in count_keys
+    ):
+        raise ValueError("invalid acquisition counts")
+    actual = {name: sum(item["disposition"] == name for item in normalized) for name in allowed}
+    if (counts["requested"] != len(normalized)
+            or any(counts[name] != actual[name] for name in allowed)
+            or counts["succeeded"] != actual["updated"] + actual["unchanged"]
+            or counts["valid_snapshots"] != counts["succeeded"]
+            or counts["failed_evidence"] != actual["blocked"] + actual["failed"]):
+        raise ValueError("inconsistent acquisition counts")
+    summary = value["summary"]
+    if not isinstance(summary, dict) or set(summary) != {"checked", "succeeded", "failed"}:
+        raise ValueError("invalid acquisition summary")
+    if summary != {"checked": counts["requested"], "succeeded": counts["succeeded"],
+                   "failed": counts["requested"] - counts["succeeded"]}:
+        raise ValueError("inconsistent acquisition summary")
+    expected_success = (
+        counts["succeeded"] == counts["requested"]
+        and value["authoritative_status"] == "completed"
+    )
+    expected_status = (
+        "succeeded" if expected_success else "partial" if counts["succeeded"] else "failed"
+    )
+    if (type(value["full_success"]) is not bool or value["full_success"] != expected_success
+            or value["status"] != expected_status
+            or value["authoritative_status"] not in {"completed", "partial"}):
+        raise ValueError("inconsistent acquisition status")
+    return {**value, "dispositions": normalized}
 
 
 def _aggregate_outcomes(outcomes: list[dict]) -> dict:
     if len(outcomes) == 1:
         return outcomes[0]
-    from web_listening.contracts.acquisition_batch import aggregate_batch_result_v2
     tasks = [item["task_id"] for result in outcomes for item in result["dispositions"]]
     if len(tasks) != len(set(tasks)):
         raise SystemExit("acquisition collection contains duplicate task identities")
-    return aggregate_batch_result_v2(outcomes)
+    dispositions = [item for result in outcomes for item in result["dispositions"]]
+    count_names = (
+        "requested", "updated", "unchanged", "blocked", "failed", "unresolved",
+        "valid_snapshots", "failed_evidence", "succeeded",
+    )
+    counts = {name: sum(result["counts"][name] for result in outcomes) for name in count_names}
+    full_success = all(result["full_success"] for result in outcomes)
+    identity = hashlib.sha256(_canonical_bytes([
+        result["run_id"] for result in outcomes
+    ])).hexdigest()
+    return {
+        "schema_version": "acquisition-batch-result.v2",
+        "run_id": f"climate-collection-{identity}",
+        "authoritative_status": (
+            "partial" if any(result["authoritative_status"] == "partial" for result in outcomes)
+            else "completed"
+        ),
+        "status": "succeeded" if full_success else "partial" if counts["succeeded"] else "failed",
+        "full_success": full_success,
+        "counts": counts,
+        "dispositions": dispositions,
+        "summary": {"checked": counts["requested"], "succeeded": counts["succeeded"],
+                    "failed": counts["requested"] - counts["succeeded"]},
+    }
 
 
 def _read_outcome(path: Path) -> dict:
@@ -447,7 +525,18 @@ def _validated_registry_selection_urls(candidates, evidence_payload: Mapping) ->
     if not isinstance(dispositions, list) or not isinstance(records, list):
         raise ValueError("frozen Registry evidence is missing selection records")
 
-    candidate_urls = [canonical_url(candidate.canonical_url) for candidate in candidates]
+    candidate_urls: list[str] = []
+    for candidate in candidates:
+        raw_url = getattr(candidate, "canonical_url", None)
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            raise ValueError("bound acquisition candidate URL is invalid")
+        url = canonical_url(raw_url)
+        parsed = urlparse(url)
+        if not url or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("bound acquisition candidate URL is invalid")
+        candidate_urls.append(url)
+    if len(candidate_urls) != len(set(candidate_urls)):
+        raise ValueError("bound acquisition candidate URL is duplicated")
     disposition_urls: list[str] = []
     selected_urls: list[str] = []
     for disposition in dispositions:
@@ -460,7 +549,7 @@ def _validated_registry_selection_urls(candidates, evidence_payload: Mapping) ->
         disposition_urls.append(url)
         if status == "selected":
             selected_urls.append(url)
-    if Counter(candidate_urls) != Counter(disposition_urls):
+    if set(candidate_urls) != set(disposition_urls):
         raise ValueError("bound acquisition candidates do not match the frozen Registry dispositions")
 
     record_urls: list[str] = []
@@ -955,6 +1044,9 @@ def _run_prepare(args, parser) -> int:
             evidence_payload = json.loads(frozen_path.read_text(encoding="utf-8"))
             acquisition_path = task_binding_path.parent / f"attempt-{task_binding['attempt']}-acquisition.json"
             acquisition_payload = json.loads(acquisition_path.read_text(encoding="utf-8"))
+            _validate_registry_acquisition_completeness(
+                acquisition_payload, manifest, pillar_b,
+            )
             durable = load_acquisition_batch(task_binding["registry_database"], task_binding["acquisition_batch_id"])
             verify_reportable_freeze(
                 task_binding["registry_database"], task_binding["acquisition_batch_id"],
@@ -1447,13 +1539,10 @@ def _authoring_evidence_view(evidence: dict) -> dict:
             media_type = str(record.get("content_type") or "").split(";", 1)[0].strip().lower()
             text, derivation = body, "source_text"
             if media_type in {"text/html", "application/xhtml+xml"}:
-                from web_listening.blocks.normalizer import normalize_html
-                text = normalize_html(
-                    body, record.get("final_url") or record["requested_url"]
-                ).markdown
-                if not text.strip():
-                    raise ValueError("HTML authoring normalization produced no readable text")
-                derivation = "web_listening.blocks.normalizer.normalize_html.markdown"
+                # Current URL retrieval supplies a verified Markdown derivative.
+                # Historical retained HTML remains byte-identical and readable;
+                # do not copy an upstream transform implementation into climate.
+                derivation = "source_html"
             text_view = {
                 "text": text,
                 "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),

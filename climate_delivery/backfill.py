@@ -23,7 +23,7 @@ from .paths import (
 )
 from .pdf import render_pdf
 from .pipeline import _file_sha256, _manifest
-from .report import Highlight, WeeklyReport, parse_weekly_report
+from .report import Highlight, WeeklyReport, has_weekly_report_structure, parse_weekly_report
 from .summary import build_summary, write_summary
 
 
@@ -246,11 +246,7 @@ def _source_report(sources_dir: Path, report_date: str) -> WeeklyReport:
         text = raw.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise _SkipReport("unreadable_markdown") from exc
-    if not (
-        "Weekly Climate" in text
-        and "Pillar A" in text
-        and "Pillar B" in text
-    ):
+    if not has_weekly_report_structure(text):
         raise _SkipReport("legacy_report_incomplete_for_backfill")
     try:
         return parse_weekly_report(path, raw=raw)

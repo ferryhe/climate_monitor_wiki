@@ -21,7 +21,7 @@ path, not competing report generators.
 
 | Stage | Owner / public entry | Input → output |
 |---|---|---|
-| Pillar A acquisition | External `web_listening` batch/export APIs | Configured sites → matching `acquisition-batch-result.v2` and `web-listening-manifest.v1` |
+| Pillar A acquisition | Public `RuntimeService.explore_site` / `refresh_site` | Configured sites → stored upstream results/continuations plus matching climate `acquisition-batch-result.v2` and `web-listening-manifest.v1` bridge artifacts |
 | Pillar B discovery | Hermes `web_search` / `web_extract`; `prompt_loader`, `pillar_b_discovery` | Explicit report date + editable template → validated `pillar-b-discovery.v1` envelope |
 | Prepare | `scripts/run_climate_monitor.py --production-weekly --authoring-mode prepare` | Outcome + manifest + Pillar B → `bundle.json`, `combined.json`, `candidate_item_snapshot.json`, `article_evidence.json`, `stats.json`, `v2_authoring_request.json` in staging |
 | Identity/merge | `article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | URL-bearing records → one canonical identity, all origins, source metadata |
@@ -37,15 +37,17 @@ path, not competing report generators.
 | Web / retrieval | `api_server.py`, `agentic_wiki/`, `showcase/` | Published corpus + Registry → historical reports, article details, cited chat |
 
 Module paths without a directory prefix are under `climate_monitor/`. Upstream
-reader policy belongs to `web_listening`; climate does not implement a second
+reader and tool-selection policy belongs to `web_listening`; climate does not implement a second
 HTTP/browser/stealth crawler. A policy refusal remains a terminal acquisition
 outcome. Available snippets are explicitly labelled, and a URL with no evidence
 cannot acquire an invented summary.
 
-HTML is retained with its original content hash. The authoring view uses the
-complete `web_listening.blocks.normalizer.normalize_html` Markdown result;
-there is no arbitrary text cutoff. The offline title helper neither fetches nor
-calls a model. `--no-page-titles` disables it on a fresh prepare.
+The public URL-fetch workflow stores original source evidence and a cleaned
+Markdown derivative. Climate verifies the selected derivative through the
+Runtime artifact API and keeps both artifact identities and hashes. Historical
+retained HTML remains byte-identical in the authoring view. The offline title
+helper neither fetches nor calls a model. `--no-page-titles` disables it on a
+fresh prepare.
 
 ## Run and resume
 
@@ -191,15 +193,12 @@ Evidence through 2026-09-12:
   5 skipped** with the pinned upstream installed, and **1718 passed / 78 skipped**
   without it. Both runs retained the three existing warnings. The full-chain
   harness now calls the real monitor ledger producer and checks its report SHA.
-- The stable project runtime is Python 3.12 with web_listening `fd541f0` and
-  official Hermes v0.21.1 `2237be3`, including its pinned Firecrawl extra. A real
-  isolated stdin request passed the production quiet-response parser. The global
-  Hermes gateway was not replaced. The upstream pin supplies the formal public
-  article target guard, preserves actual-start pacing lineage across same-origin
-  redirects, verifies governed document bytes before persistence, rejects
-  unsupported extensionless PDF/Office bodies before text hashing, and retains
-  the explicit legacy TreeCrawler DocumentProcessor path. A downstream complete
-  canary remains required.
+- Historical September 2026 validation used web_listening `fd541f0`; that
+  evidence is retained as the old-side comparison and is not current runtime
+  proof. The deployment target is Python 3.12 with `web-listening` 0.1.0 pinned
+  to `web_listening_new` revision `ac2343f89bc7939736d85f049ebe2beac571034a`.
+  Fresh exact-20, container lifecycle
+  and downstream rehearsal gates are required before production cutover.
 - Live dated Pillar B discovery completed all four required tool queries. The
   validator rejected one article whose date evidence referred to another page;
   after verification and exclusion, five articles passed for June 7–September 7.

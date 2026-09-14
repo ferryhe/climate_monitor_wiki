@@ -23,6 +23,12 @@ from climate_monitor.management import (
 )
 
 
+requires_web_listening = pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="pinned web-listening dependency is installed only on Python 3.12+",
+)
+
+
 def _store(tmp_path: Path) -> TaskDefinitionStore:
     return TaskDefinitionStore(tmp_path / "task.json", tmp_path / "versions")
 
@@ -1682,39 +1688,39 @@ def test_site_provenance_requires_controlled_web_listening_history():
         runner._validate_site_claims({"items": [item]}, {"status": "not_configured", "candidates": []})
 
 
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_site_adapter_returns_stored_hash_bound_public_evidence(tmp_path, monkeypatch):
-    import climate_monitor.web_listening_adapter as adapter
-    from climate_monitor.models import CandidateItem, MonitorSource
+def _public_refresh_checkpoint():
+    from web_listening.artifact.site_state import SiteState
+    from web_listening.request.model import Budgets, ContentType, Scope
+    from web_listening.site_skill.model import SuccessChecks, ToolReference
+    from web_listening.site_skill.update import create_candidate
+    from web_listening.site_skill.validate import site_skill_to_mapping
+    from web_listening.tool_registry.manifest import ToolCategory
 
-    source = MonitorSource(key="wmo", abbreviation="WMO", full_name="WMO",
-                           url="https://wmo.int/")
-
-    def fake_collect(source, state_dir, scope, stage_checkpoint, update_checkpoint, _runtime, seed_outcomes):
-        state = adapter._state_path(state_dir, source, source.url)
-        staged = adapter._checkpoint_stage_path(state)
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        staged.write_text(json.dumps({"source": source.key, "seed": source.url,
-                                      "content_hash": "a" * 64}))
-        return [CandidateItem(title="Update", url="https://wmo.int/update",
-                              summary="Climate", source_name="WMO", lane="website",
-                              source_item_id="wmo-update")], []
-
-    monkeypatch.setattr(adapter, "collect_source_items", fake_collect)
-    _, _, evidence = adapter.collect_website_items_with_evidence(
-        [source], state_dir=tmp_path / "state", site_scopes={}
-    )
-    result = evidence["source_results"][0]
-    artifact = Path(result["artifact_path"])
-    assert artifact.is_file()
-    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == result["artifact_sha256"]
-    assert json.loads(artifact.read_bytes()) == result["manifest"]
-    contract = pytest.importorskip("web_listening.contracts.acquisition_batch")
-    assert contract.AcquisitionBatchResultV2.model_validate_json(
-        json.dumps(result["outcome"])
-    ).full_success
+    seed = "https://wmo.int/"
+    skill = create_candidate(
+        site_key="wmo.int", version=1, previous=None,
+        scope=Scope((seed,), ("https://wmo.int",), ("/",), (ContentType.HTML,)),
+        budgets=Budgets(4, 4096, 30, 1),
+        tool=ToolReference(
+            "acquisition.web_http", "1.0.0", ToolCategory.ACQUISITION,
+            frozenset({"http_get"}),
+        ),
+        success_checks=SuccessChecks(("text/html",), 1),
+        verified_at="2026-09-13T00:00:00Z",
+    ).skill
+    state = SiteState("wmo.int", "2026-09-13T00:00:00Z", skill.digest, True, ())
+    return {
+        "schema_version": "climate-web-listening-refresh-context.v1",
+        "upstream_revision": "ac2343f89bc7939736d85f049ebe2beac571034a",
+        "source_key": "wmo", "seed_url": seed,
+        "site_skill": site_skill_to_mapping(skill),
+        "site_state": json.loads(state.canonical_json_bytes()),
+    }
 
 
+
+
+@requires_web_listening
 def test_managed_site_checkpoints_share_monitor_state_and_finalize(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
 
@@ -1742,10 +1748,10 @@ def test_managed_site_checkpoints_share_monitor_state_and_finalize(tmp_path, mon
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     pending = checkpoint_dir / "wmo-state.json.pending-run.json"
     pending.write_text(json.dumps({
-        "schema_version": "web-listening-checkpoint-stage.v1",
+        "schema_version": "web-listening-new-checkpoint-stage.v1",
         "state_filename": "wmo-state.json",
         "candidate_urls": ["https://wmo.int/new"],
-        "checkpoint": {"content_hash": "a" * 64, "links": ["https://wmo.int/new"]},
+        "checkpoint": _public_refresh_checkpoint(),
     }))
     state_root = Path(binding["report_inputs"]["state_dir"])
     state_root.mkdir(parents=True, exist_ok=True)
@@ -1753,11 +1759,12 @@ def test_managed_site_checkpoints_share_monitor_state_and_finalize(tmp_path, mon
 
     assert runner._commit_controlled_site_checkpoints(binding) == 1
     assert not pending.exists()
-    assert json.loads((checkpoint_dir / "wmo-state.json").read_text())["links"] == [
-        "https://wmo.int/new"
-    ]
+    assert json.loads((checkpoint_dir / "wmo-state.json").read_text()) == (
+        _public_refresh_checkpoint()
+    )
 
 
+@requires_web_listening
 def test_managed_site_checkpoint_failure_discards_pending_state(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
 
@@ -1774,13 +1781,10 @@ def test_managed_site_checkpoint_failure_discards_pending_state(tmp_path, monkey
     assert not pending.exists()
 
     checkpoint = {
-        "schema_version": "web-listening-checkpoint-stage.v1",
+        "schema_version": "web-listening-new-checkpoint-stage.v1",
         "state_filename": "wmo-state.json",
         "candidate_urls": ["https://wmo.int/resumed"],
-        "checkpoint": {
-            "content_hash": "b" * 64,
-            "links": ["https://wmo.int/resumed"],
-        },
+        "checkpoint": _public_refresh_checkpoint(),
     }
     report_manifest = Path(binding["report_inputs"]["web_listening_manifest"])
     report_manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -1791,9 +1795,9 @@ def test_managed_site_checkpoint_failure_discards_pending_state(tmp_path, monkey
     (state_root / "seen_urls.json").write_text('["https://wmo.int/resumed"]\n')
 
     assert runner._commit_controlled_site_checkpoints(binding) == 1
-    assert json.loads((checkpoint_dir / "wmo-state.json").read_text())["links"] == [
-        "https://wmo.int/resumed"
-    ]
+    assert json.loads((checkpoint_dir / "wmo-state.json").read_text()) == (
+        _public_refresh_checkpoint()
+    )
 
 
 def test_adaptive_prompt_exposes_controlled_attempt_chain(tmp_path):
@@ -1856,7 +1860,6 @@ def test_runner_projects_truthful_multi_source_site_and_search_handoff(tmp_path)
     wmo_manifest = next(entry for entry in manifest if entry["source"]["source_id"] == "wmo")
     assert wmo_manifest["discovered_items"][0]["url"] == "https://wmo.int/report"
     assert [article["url"] for article in pillar["articles"]] == ["https://www.ipcc.ch/report"]
-    pytest.importorskip("web_listening.contracts.acquisition_batch")
     from scripts import run_climate_monitor as monitor
     prepared = monitor._read_prepare_inputs(
         Path(binding["report_inputs"]["acquisition_batch"]),
@@ -1992,7 +1995,6 @@ def test_runner_projects_and_invokes_existing_bound_report_path(tmp_path, monkey
     runner._write_report_inputs(binding, payload, site_context)
     assert all(Path(path).exists() for key, path in binding["report_inputs"].items()
                if key in {"acquisition_batch", "web_listening_manifest", "pillar_b_artifact"})
-    pytest.importorskip("web_listening.contracts.acquisition_batch")
     from scripts import run_climate_monitor as monitor
     prepared = monitor._read_prepare_inputs(
         Path(binding["report_inputs"]["acquisition_batch"]),
@@ -2144,7 +2146,7 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
     binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="fetch", attempt=1)
     binding_path = tmp_path / "runs" / "fetch" / "attempt-1.json"
     binding_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url, *, budget, site_key: {
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url, *, budget, site_key, site_scope: {
         "status": "ok", "selected_method": "web_http", "content": "controlled body",
         "content_hash": hashlib.sha256(b"controlled body").hexdigest(),
         "content_type": "text/plain", "final_url": url, "failure_reason": None,
@@ -2155,7 +2157,7 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
         ],
         "extra": {"extraction_metadata": {"status_code": 200}},
     })
-    payload = {"items": [{"url": "https://wmo.int/article", "source": "WMO",
+    payload = {"items": [{"url": "https://wmo.int/news/article", "source": "WMO",
                            "processing_status": "complete",
                            "processing_error": None, "evidence": {"content": "agent body"}}]}
     checked = runner._controlled_fetch_payload(binding_path, binding, payload)
@@ -2167,6 +2169,231 @@ def test_controlled_reader_replaces_agent_body_with_managed_capture(tmp_path, mo
     ]
     assert (binding_path.parent / evidence["content_ref"]).read_text() == "controlled body"
     assert (binding_path.parent / evidence["raw_snapshot_ref"]).is_file()
+
+
+def test_controlled_reader_preserves_public_attempt_outcomes_and_success_envelope(
+    tmp_path, monkeypatch,
+):
+    import climate_monitor.article_content_adapter as adapter
+    import scripts.run_agent_acquisition as runner
+
+    binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="attempts", attempt=1)
+    binding_path = tmp_path / "runs" / "attempts" / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True)
+    envelope = {
+        "job_id": "job-1", "status": "completed", "failure_code": None,
+        "errors": [{"code": "browser.challenge"}],
+        "usage": {"requests": 2, "bytes": 42, "runtime_ms": 12},
+        "result": {"status": "partial", "artifacts": [{"artifact_id": "derived"}]},
+    }
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, url, *, budget, site_key, site_scope: {
+        "status": "ok", "selected_method": "acquisition.web_http",
+        "content": "controlled body",
+        "content_hash": hashlib.sha256(b"controlled body").hexdigest(),
+        "content_type": "text/markdown", "final_url": url, "failure_reason": None,
+        "attempts": [
+            {"tool_id": "acquisition.web_http", "outcome": "succeeded", "http_status": 200},
+            {"tool_id": "transform.simple_html_markdown", "outcome": "succeeded",
+             "http_status": None},
+            {"tool_id": "acquisition.playwright", "outcome": "failed",
+             "http_status": None, "error": {"code": "browser.challenge"}},
+            {"tool_id": "acquisition.cloakbrowser", "outcome": "skipped",
+             "http_status": None, "requests": 0, "bytes_received": 0,
+             "error": {"code": "eligibility.not_installed"}},
+        ],
+        "extra": {"extraction_metadata": {"http_status": 200, "runtime_job": envelope}},
+    })
+    payload = {"items": [{
+        "url": "https://wmo.int/news/article", "source": "WMO",
+        "processing_status": "complete", "processing_error": None,
+        "evidence": {"content": "agent body"},
+    }]}
+
+    checked, events = runner._controlled_fetch_payload(
+        binding_path, binding, payload, return_events=True,
+    )
+    attempts = checked["items"][0]["evidence"]["attempts"]
+    assert [attempt["engine"] for attempt in attempts] == [
+        "acquisition.web_http", "transform.simple_html_markdown",
+        "acquisition.playwright", "acquisition.cloakbrowser",
+    ]
+    assert [attempt["status"] for attempt in attempts] == [
+        "success", "success", "failed", "unavailable",
+    ]
+    assert [attempt["outcome"] for attempt in attempts] == [
+        "succeeded", "succeeded", "failed", "skipped",
+    ]
+    assert attempts[2]["error"] == {"code": "browser.challenge"}
+    assert attempts[3]["error"] == {"code": "eligibility.not_installed"}
+    assert attempts[3]["requests"] == 0
+    assert "http_status" not in attempts[1]
+    assert "http_status" not in attempts[2]
+    assert "http_status" not in attempts[3]
+    assert [event["result"]["status"] for event in events] == [
+        "success", "success", "failed", "unavailable",
+    ]
+    from climate_registry.acquisition import _validate_fetch_attempts
+    assert _validate_fetch_attempts(attempts, evidence_status="ok") == attempts
+    raw = json.loads(
+        (binding_path.parent / checked["items"][0]["evidence"]["raw_snapshot_ref"])
+        .read_text(encoding="utf-8")
+    )
+    assert raw["extra"]["extraction_metadata"]["runtime_job"] == envelope
+
+
+def test_controlled_reader_content_addresses_cross_source_and_duplicate_captures(
+    tmp_path, monkeypatch,
+):
+    import climate_monitor.article_content_adapter as adapter
+    import scripts.run_agent_acquisition as runner
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="capture-identity", attempt=1,
+    )
+    binding["source_inventory"] = {"records": [
+        {"key": "psi", "abbreviation": "PSI", "full_name": "Principles for Sustainable Insurance",
+         "url": "https://www.unepfi.org/insurance/"},
+        {"key": "fit", "abbreviation": "FIT", "full_name": "Forum for Insurance Transition",
+         "url": "https://www.unepfi.org/category/news/"},
+    ]}
+    binding["site_scope_inventory"] = {"records": [
+        {"source_key": key, "seed_urls": [seed], "include_patterns": ["/category/news/**"],
+         "exclude_patterns": [], "include_source_url": True}
+        for key, seed in (
+            ("psi", "https://www.unepfi.org/insurance/"),
+            ("fit", "https://www.unepfi.org/category/news/"),
+        )
+    ]}
+    binding_path = tmp_path / "runs" / "capture-identity" / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True)
+    url = "https://www.unepfi.org/category/news/page/132/"
+
+    def fetch(article_id, requested_url, *, budget, site_key, site_scope):
+        body = f"controlled {site_key} body for {article_id}"
+        return {
+            "status": "ok", "selected_method": "acquisition.web_http",
+            "content": body, "content_hash": hashlib.sha256(body.encode()).hexdigest(),
+            "content_type": "text/markdown", "final_url": requested_url,
+            "failure_reason": None,
+            "attempts": [{"tool_id": "acquisition.web_http", "outcome": "succeeded",
+                          "http_status": 200}],
+            "extra": {"extraction_metadata": {
+                "http_status": 200, "article_id": article_id,
+                "reviewed_source_scope": {"source_key": site_key, **site_scope},
+            }},
+        }
+
+    monkeypatch.setattr(adapter, "fetch_article_content", fetch)
+    payload = {"items": [
+        {"url": url, "source": "PSI", "discovery_ref": "psi-result"},
+        {"url": url, "source": "FIT", "discovery_ref": "fit-result"},
+        {"url": url, "source": "PSI", "discovery_ref": "psi-second-result"},
+    ]}
+
+    first = runner._controlled_fetch_payload(binding_path, binding, payload)
+    captures = []
+    for item in first["items"]:
+        evidence = item["evidence"]
+        raw_path = binding_path.parent / evidence["raw_snapshot_ref"]
+        content_path = binding_path.parent / evidence["content_ref"]
+        assert raw_path.is_file() and content_path.is_file()
+        assert raw_path.stem.removesuffix(".reader") == evidence["raw_snapshot_sha256"]
+        assert content_path.stem.removesuffix(".content") == evidence["content_hash"]
+        assert hashlib.sha256(raw_path.read_bytes()).hexdigest() == evidence["raw_snapshot_sha256"]
+        assert hashlib.sha256(content_path.read_bytes()).hexdigest() == evidence["content_hash"]
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        assert raw["extra"]["extraction_metadata"]["reviewed_source_scope"]["source_key"] == (
+            "psi" if item["source"] == "PSI" else "fit"
+        )
+        captures.append((evidence["raw_snapshot_ref"], evidence["content_ref"],
+                         raw_path.read_bytes(), content_path.read_bytes()))
+    assert len({raw for raw, _content, _raw_bytes, _content_bytes in captures}) == 3
+    assert len({content for _raw, content, _raw_bytes, _content_bytes in captures}) == 3
+
+    replay = runner._controlled_fetch_payload(binding_path, binding, payload)
+    for item, expected in zip(replay["items"], captures):
+        evidence = item["evidence"]
+        assert (evidence["raw_snapshot_ref"], evidence["content_ref"]) == expected[:2]
+        assert (binding_path.parent / evidence["raw_snapshot_ref"]).read_bytes() == expected[2]
+        assert (binding_path.parent / evidence["content_ref"]).read_bytes() == expected[3]
+
+
+def test_controlled_reader_excludes_initial_candidate_before_acquisition(
+    tmp_path, monkeypatch,
+):
+    import climate_monitor.article_content_adapter as adapter
+    import scripts.run_agent_acquisition as runner
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="excluded", attempt=1,
+    )
+    binding["site_scope_inventory"] = {"records": [{
+        "source_key": "wmo", "seed_urls": ["https://wmo.int/allowed/"],
+        "include_patterns": ["/allowed/**"], "exclude_patterns": ["/private/"],
+    }]}
+    monkeypatch.setattr(
+        adapter, "fetch_article_content",
+        lambda *args, **kwargs: pytest.fail("excluded candidate reached acquisition"),
+    )
+    checked = runner._controlled_fetch_payload(
+        tmp_path / "runs" / "excluded" / "attempt-1.json", binding,
+        {"items": [{"url": "https://wmo.int/private/report", "source": "WMO"}]},
+    )
+    item = checked["items"][0]
+    assert item["processing_status"] == "failed"
+    assert "excluded by the reviewed site scope" in item["processing_error"]
+    assert len(item["evidence"]["attempts"]) == 1
+    assert item["evidence"]["attempts"][0]["engine"] == "fetch_article_content"
+    assert item["evidence"]["attempts"][0]["status"] == "failed"
+    assert item["evidence"]["raw_snapshot_ref"] is not None
+    raw_path = tmp_path / "runs" / "excluded" / item["evidence"]["raw_snapshot_ref"]
+    assert raw_path.is_file()
+    assert raw_path.stem.removesuffix(".reader") == item["evidence"]["raw_snapshot_sha256"]
+    assert hashlib.sha256(raw_path.read_bytes()).hexdigest() == item["evidence"]["raw_snapshot_sha256"]
+
+
+def test_controlled_reader_preserves_malformed_non_null_http_status_for_rejection(
+    tmp_path, monkeypatch,
+):
+    import climate_monitor.article_content_adapter as adapter
+    import scripts.run_agent_acquisition as runner
+    from climate_registry.acquisition import _validate_fetch_attempts
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="malformed-status", attempt=1,
+    )
+    path = tmp_path / "runs" / "malformed-status" / "attempt-1.json"
+    body = "controlled body"
+    monkeypatch.setattr(
+        adapter, "fetch_article_content",
+        lambda article_id, url, *, budget, site_key, site_scope: {
+            "status": "ok", "selected_method": "acquisition.web_http",
+            "content": body, "content_hash": hashlib.sha256(body.encode()).hexdigest(),
+            "content_type": "text/markdown", "final_url": url,
+            "failure_reason": None,
+            "attempts": [
+                {"tool_id": "acquisition.web_http", "outcome": "succeeded",
+                 "http_status": 200},
+                {"tool_id": "transform.simple_html_markdown", "outcome": "succeeded",
+                 "http_status": "200"},
+            ],
+            "extra": {"extraction_metadata": {"http_status": 200,
+                                                "runtime_job": {"job_id": "job"}}},
+        },
+    )
+    checked = runner._controlled_fetch_payload(
+        path, binding,
+        {"items": [{"url": "https://wmo.int/news/article", "source": "WMO"}]},
+    )
+    attempts = checked["items"][0]["evidence"]["attempts"]
+    assert attempts[1]["http_status"] == "200"
+    with pytest.raises(ValueError, match="http_status is invalid"):
+        _validate_fetch_attempts(attempts, evidence_status="ok")
+    raw = json.loads(
+        (path.parent / checked["items"][0]["evidence"]["raw_snapshot_ref"])
+        .read_text(encoding="utf-8")
+    )
+    assert raw["attempts"][1]["http_status"] == "200"
 
 
 def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkeypatch):
@@ -2190,19 +2417,28 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     binding_path.write_text(json.dumps(binding), encoding="utf-8")
     body = "controlled production body"
     body_hash = hashlib.sha256(body.encode()).hexdigest()
-    url = "https://wmo.int/article"
-    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, requested_url, *, budget, site_key: {
+    url = "https://wmo.int/news/article"
+    monkeypatch.setattr(adapter, "fetch_article_content", lambda article_id, requested_url, *, budget, site_key, site_scope: {
         "status": "ok",
-        "selected_method": "web_http",
+            "selected_method": "acquisition.web_http",
         "content": body,
         "content_hash": body_hash,
         "content_type": "text/plain",
         "final_url": requested_url,
         "failure_reason": None,
-        "attempts": [{
-            "tool": "web_http", "data_status": "present",
-            "attempted_at": binding["created_at"], "http_status": 200,
-        }],
+        "attempts": [
+            {"tool_id": "acquisition.web_http", "outcome": "succeeded",
+             "attempted_at": binding["created_at"], "http_status": 200},
+            {"tool_id": "transform.simple_html_markdown", "outcome": "succeeded",
+             "attempted_at": binding["created_at"], "http_status": None},
+            {"tool_id": "acquisition.playwright", "outcome": "failed",
+             "attempted_at": binding["created_at"], "http_status": None,
+             "error": {"code": "browser.challenge"}},
+            {"tool_id": "acquisition.cloakbrowser", "outcome": "skipped",
+             "attempted_at": binding["created_at"], "http_status": None,
+             "requests": 0, "bytes_received": 0,
+             "error": {"code": "eligibility.not_installed"}},
+        ],
         "extra": {"extraction_metadata": {"status_code": 200}},
     })
     payload = {
@@ -2246,7 +2482,15 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     assert loaded["payload_sha256"] == runner._canonical_digest(transformed)
     assert frozen["record_count"] == 1
     assert frozen["records"][0]["content"] == body
-    assert frozen["records"][0]["attempts"][0]["http_status"] == 200
+    stored_attempts = transformed["items"][0]["evidence"]["attempts"]
+    assert stored_attempts[0]["http_status"] == 200
+    assert [attempt["status"] for attempt in stored_attempts] == [
+        "success", "success", "failed", "unavailable",
+    ]
+    assert all(
+        "http_status" not in attempt
+        for attempt in stored_attempts[1:]
+    )
 
     frozen["reportability"] = build_reportability_projection(transformed, frozen)
     frozen_bytes = json.dumps(
@@ -2263,6 +2507,9 @@ def test_controlled_success_transforms_stores_reads_and_freezes(tmp_path, monkey
     monkeypatch.setattr(
         runner, "_run_report",
         lambda path, exact, **_kwargs: report_calls.append((path, exact)) or 0,
+    )
+    monkeypatch.setattr(
+        runner, "_validated_report_result", lambda *_args: {"item_count": 1},
     )
     monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda _binding: None)
     assert runner._resume_frozen_report(binding_path, binding) == 0
@@ -2349,12 +2596,13 @@ def test_container_and_console_rendering_include_management_runtime():
     assert "COPY monitoring/jobs ./monitoring/jobs" in dockerfile
     assert "COPY monitoring/supranational_sources.yaml ./monitoring/supranational_sources.yaml" in dockerfile
     assert "COPY monitoring/site_scopes.yaml ./monitoring/site_scopes.yaml" in dockerfile
-    assert "git clone --filter=blob:none https://github.com/NousResearch/hermes-agent.git" in dockerfile
-    assert "checkout 5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
+    assert "ARG HERMES_REVISION=5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
+    assert 'fetch --depth 1 --filter=blob:none origin "$HERMES_REVISION"' in dockerfile
+    assert "checkout --detach FETCH_HEAD" in dockerfile
     assert 'ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]' in dockerfile
     assert (
-        "web-listening @ git+https://github.com/ferryhe/web_listening.git@"
-        "fd541f07942d7cdcb6a554225bbcbfec2f20147f"
+        "web-listening @ git+https://github.com/ferryhe/web_listening_new.git@"
+        "ac2343f89bc7939736d85f049ebe2beac571034a"
     ) in requirements
     assert "climate_runtime:/app/output" in compose
     assert "CLIMATE_ACQUISITION_RUN_DIR: /app/output/acquisition-runs" in compose

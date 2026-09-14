@@ -1139,26 +1139,41 @@ def test_registry_acquisition_completeness_accepts_every_exact_occurrence():
     assert len(identity["manifest_sha256"]) == 64
 
 
-@pytest.mark.parametrize("missing", ["unselected", "failed_fetch", "failed_search", "duplicate_origin"])
-def test_registry_acquisition_completeness_rejects_every_omission(missing):
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_unselected", "missing_failed_fetch", "missing_failed_search",
+        "extra_manifest", "extra_payload", "repeated_payload",
+    ],
+)
+def test_registry_acquisition_completeness_rejects_occurrence_mismatch(mutation):
     manifest, pillar_b, batch = _completeness_contract()
-    if missing == "unselected":
+    if mutation == "missing_unselected":
         batch["items"].pop(0)
-    elif missing == "failed_fetch":
+    elif mutation == "missing_failed_fetch":
         batch["items"].pop(1)
-    elif missing == "failed_search":
+    elif mutation == "missing_failed_search":
         batch["searches"].pop(1)
-    else:
+    elif mutation == "extra_manifest":
         manifest["discovered_items"].append(
             {"item_id": "site-result-3", "url": "https://example.org/shared"}
         )
+    elif mutation == "extra_payload":
+        batch["items"].append(_item(
+            "https://example.org/shared", discovery_kind="site",
+            discovery_ref="site-result-extra", discovery_search_ref=None,
+            source="site-a", selected=False,
+        ))
+    else:
+        batch["items"].append(deepcopy(batch["items"][0]))
     with pytest.raises(ValueError, match="complete upstream acquisition manifest"):
         _validate_registry_acquisition_completeness(batch, manifest, pillar_b)
 
 
-def test_registry_acquisition_completeness_rejects_substituted_occurrence():
+@pytest.mark.parametrize("field", ["discovery_ref", "source"])
+def test_registry_acquisition_completeness_rejects_same_url_substitution(field):
     manifest, pillar_b, batch = _completeness_contract()
-    batch["items"][1]["discovery_ref"] = "substituted"
+    batch["items"][1][field] = "substituted"
     with pytest.raises(ValueError, match="complete upstream acquisition manifest"):
         _validate_registry_acquisition_completeness(batch, manifest, pillar_b)
 
@@ -1358,12 +1373,22 @@ def test_bound_prepare_uses_registry_selected_subset_for_immutable_handoff(
         lambda path: (binding, binding_path, None),
     )
     monkeypatch.setattr(monitor, "_enforce_production_paths", lambda *args, **kwargs: None)
+    managed_manifest = [{"source": {"source_id": "managed-source"}}]
+    managed_pillar = {"articles": []}
     monkeypatch.setattr(
-        monitor, "_read_prepare_inputs", lambda *args, **kwargs: ({}, [], {}, [], {})
+        monitor, "_read_prepare_inputs",
+        lambda *args, **kwargs: ({}, managed_manifest, managed_pillar, [], {}),
     )
     monkeypatch.setattr(
         monitor, "_select_authoring_candidates",
         lambda *args, **kwargs: (combined, (), {}),
+    )
+    completeness_calls = []
+    monkeypatch.setattr(
+        monitor, "_validate_registry_acquisition_completeness",
+        lambda acquisition, manifest, pillar: completeness_calls.append(
+            (acquisition, manifest, pillar)
+        ),
     )
 
     class SelectionValidated(Exception):
@@ -1378,9 +1403,78 @@ def test_bound_prepare_uses_registry_selected_subset_for_immutable_handoff(
     monkeypatch.setattr(monitor, "validate_retained_article_evidence", validate_selected_only)
     with pytest.raises(SelectionValidated):
         monitor._run_prepare(args, SimpleNamespace(error=pytest.fail))
+    assert completeness_calls == [(payload, managed_manifest, managed_pillar)]
 
 
-@pytest.mark.parametrize("mutation", ["missing", "extra", "wrong_selected"])
+def test_frozen_registry_selection_accepts_duplicate_unselected_occurrences(
+):
+    duplicate_url = "https://www.unepfi.org/category/news/page/132/"
+    selected_url = "https://www.ilo.org/publications/green-skills"
+    origins = (
+        SimpleNamespace(source="psi", discovery_ref="psi-page-132", url=duplicate_url),
+        SimpleNamespace(source="fit", discovery_ref="fit-page-132", url=duplicate_url),
+    )
+    candidates = (
+        SimpleNamespace(
+            canonical_url=monitor.canonical_url(duplicate_url), origins=origins,
+        ),
+        SimpleNamespace(
+            canonical_url=monitor.canonical_url(selected_url),
+            origins=(SimpleNamespace(
+                source="ilo", discovery_ref="ilo-green-skills", url=selected_url,
+            ),),
+        ),
+    )
+    evidence = {
+        "records": [{"requested_url": selected_url}],
+        "acquisition_dispositions": [
+            {"requested_url": duplicate_url, "selection_status": "unselected"},
+            {"requested_url": duplicate_url, "selection_status": "unselected"},
+            {"requested_url": selected_url, "selection_status": "selected"},
+        ],
+    }
+
+    selected = monitor._validated_registry_selection_urls(candidates, evidence)
+
+    assert selected == {monitor.canonical_url(selected_url)}
+    assert [(origin.source, origin.discovery_ref) for origin in candidates[0].origins] == [
+        ("psi", "psi-page-132"), ("fit", "fit-page-132"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("invalid", "candidate URL is invalid"),
+        ("missing", "candidates do not match"),
+        ("extra", "candidates do not match"),
+        ("duplicate", "candidate URL is duplicated"),
+    ],
+)
+def test_frozen_registry_selection_rejects_invalid_candidate_set(mutation, error):
+    first = "https://example.org/first"
+    second = "https://example.org/second"
+    candidates = [SimpleNamespace(canonical_url=first)]
+    dispositions = [
+        {"requested_url": first, "selection_status": "unselected"},
+    ]
+    if mutation == "invalid":
+        candidates[0].canonical_url = ""
+    elif mutation == "missing":
+        dispositions.append(
+            {"requested_url": second, "selection_status": "unselected"}
+        )
+    elif mutation == "extra":
+        candidates.append(SimpleNamespace(canonical_url=second))
+    else:
+        candidates.append(SimpleNamespace(canonical_url=first + "/"))
+    evidence = {"records": [], "acquisition_dispositions": dispositions}
+
+    with pytest.raises(ValueError, match=error):
+        monitor._validated_registry_selection_urls(candidates, evidence)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "wrong_selected", "duplicate"])
 def test_frozen_registry_selection_still_rejects_incorrect_selected_subset(mutation):
     selected_url = "https://www.iais.org/publications/gimar/"
     unselected_url = "https://www.ipcc.ch/news/"
@@ -1395,6 +1489,8 @@ def test_frozen_registry_selection_still_rejects_incorrect_selected_subset(mutat
         evidence["records"] = []
     elif mutation == "extra":
         evidence["records"].append({"requested_url": unselected_url})
+    elif mutation == "duplicate":
+        evidence["records"].append({"requested_url": selected_url})
     else:
         evidence["acquisition_dispositions"][0]["selection_status"] = "unselected"
         evidence["acquisition_dispositions"][1]["selection_status"] = "selected"

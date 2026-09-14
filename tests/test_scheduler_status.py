@@ -58,6 +58,14 @@ def _read_snapshot(directory: Path) -> dict:
     return json.loads((directory / "scheduler-status.json").read_text("utf-8"))
 
 
+def _pin_sep7_writer_clock(monkeypatch, stamp="2026-09-07T11:00:00Z"):
+    """Keep historical Sep 7 fixtures in their matching ET fortnight."""
+    monkeypatch.setattr(scheduler_status, "_now_utc", lambda: stamp)
+    monkeypatch.setattr(
+        scheduler_status, "_aware_now", lambda: _aware_from_iso(stamp),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. Happy path -- writes a snapshot with all four slots, each in a valid state
 # ---------------------------------------------------------------------------
@@ -296,6 +304,7 @@ def test_update_slot_resolves_directory_via_env(tmp_path, monkeypatch):
     directory = tmp_path / "from-env"
     directory.mkdir()
     monkeypatch.setenv("CLIMATE_JOB_STATUS_DIR", str(directory))
+    _pin_sep7_writer_clock(monkeypatch)
 
     scheduler_status.update_slot(
         "monitor",
@@ -315,6 +324,7 @@ def test_update_slot_explicit_status_dir_overrides_env(tmp_path, monkeypatch):
     env_directory.mkdir()
     explicit_directory.mkdir()
     monkeypatch.setenv("CLIMATE_JOB_STATUS_DIR", str(env_directory))
+    _pin_sep7_writer_clock(monkeypatch)
 
     scheduler_status.update_slot(
         "monitor",
@@ -355,9 +365,7 @@ def test_update_slot_passes_error_reason_via_result_code(tmp_path, monkeypatch):
 
     # Mock the writer's clock to a UTC moment after the test's finished_at
     # (08:00:02Z) so the read-side acceptance check accepts the snapshot.
-    monkeypatch.setattr(
-        scheduler_status, "_now_utc", lambda: "2026-09-07T08:01:00Z"
-    )
+    _pin_sep7_writer_clock(monkeypatch, "2026-09-07T08:01:00Z")
 
     scheduler_status.update_slot(
         "monitor",

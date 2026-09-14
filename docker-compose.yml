@@ -28,6 +28,7 @@ services:
       CLIMATE_MANAGED_WIKI_DIR: /pipeline/generated/wiki
       CLIMATE_REGISTRY_DB: /app/output/climate_registry.sqlite3
       CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING: ${CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING:-1}
+      CLIMATE_WEB_LISTENING_DATA_DIR: /opt/web-listening-data
       CLIMATE_REQUIRE_CONSOLE_AUTH: "1"
       CLIMATE_CONSOLE_USERNAME: ${CLIMATE_CONSOLE_USERNAME:-}
       CLIMATE_CONSOLE_PASSWORD_HASH: ${CLIMATE_CONSOLE_PASSWORD_HASH:-}
@@ -43,6 +44,7 @@ services:
       - ./article_metadata:/app/article_metadata
       - climate_runtime:/app/output
       - climate_runtime:/pipeline
+      - web_listening_runtime:/opt/web-listening-data
     expose:
       - "8501"
     healthcheck:
@@ -74,3 +76,5 @@ volumes:
   caddy_config:
   caddy_logs:
   climate_runtime:
+  web_listening_runtime:
+    name: climate_web_listening_issue126

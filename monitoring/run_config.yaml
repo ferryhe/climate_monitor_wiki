@@ -51,7 +51,3 @@ output:
   source_dir: sources
   wiki_dir: wiki
   write_empty_report: false
-web_listening:
-  project_path_env: WEB_LISTENING_PROJECT_PATH
-  data_dir: .tmp/web_listening
-  command: web-listening

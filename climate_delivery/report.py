@@ -50,6 +50,22 @@ class WeeklyReport:
     executive_summary: tuple[str, ...] = ()
 
 
+def has_weekly_report_structure(text: str) -> bool:
+    """Return whether text declares the required weekly report sections."""
+
+    if "Weekly Climate" in text and "Pillar A" in text and "Pillar B" in text:
+        return True
+    headings = tuple(
+        match.group(2).casefold()
+        for match in HEADING.finditer(text)
+        if len(match.group(1)) == 2
+    )
+    return REPORT_DATE.search(text) is not None and all(
+        any(required.casefold() in heading for heading in headings)
+        for required in ("Executive Summary", "Pillar A", "Pillar B", "Original Links")
+    )
+
+
 def _section(text: str, required: str) -> str:
     headings = list(HEADING.finditer(text))
     matches = [item for item in headings if len(item.group(1)) == 2 and required.casefold() in item.group(2).casefold()]

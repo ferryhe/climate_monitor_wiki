@@ -92,9 +92,12 @@ it never puts the full evidence in argv. Validate the selected runtime in isolat
 before changing the production job's environment.
 
 HTML evidence is retained unchanged and checked against its source content hash.
-For authoring, the monitor reuses `web_listening.blocks.normalizer.normalize_html`
-to send the complete Markdown body with its source hash; it does not impose a
-text cutoff. Each article invocation receives only one URL's evidence.
+Current governed URL retrieval selects the upstream Markdown derivative and
+verifies its bytes through `RuntimeService.open_owned_artifact`. The evidence
+record retains the original source artifact, selected derivative, resolution,
+attempts and hashes; it does not impose a text cutoff. Historical retained HTML
+is passed through byte-identically. Each article invocation receives only one
+URL's evidence.
 
 `--authoring-mode run` prepares once, then processes URLs serially. Each URL
 returns two relevance decisions plus summary, summary basis, evidence hash,
@@ -216,20 +219,28 @@ hook contract before acquisition starts; incompatible configuration stops the
 attempt. Global hooks, plugins and MCP configuration are not inherited. Provider
 environment and an optional private copy of OAuth credentials supply identity.
 
-The pinned public gateway supports governed HTTP, including for sources whose
-requested classification is browser. Evidence retains requested/effective
-engines; HTTP content is never represented as browser execution. The pinned
-`web_listening` SHA `fd541f07942d7cdcb6a554225bbcbfec2f20147f` article reader exposes
-the formal public `before_target_request` callback and `timeout_seconds` controls.
-Managed article reads use those controls to attach the durable request budget at
-actual target and redirect sends while retaining compiled transport ceilings; the
-same public gateway also preserves pacing lineage from the later reservation or
-actual request start across same-origin redirects. Governed document captures
-retain decoded-byte SHA identity, report unsupported document bodies honestly,
-and reject extensionless PDF/Office media before text hashing; the explicit
-legacy TreeCrawler fallback continues through its frozen DocumentProcessor.
-No private upstream patch or alternative crawler is used. A downstream complete
-canary remains required.
+The one installed distribution is `web-listening` 0.1.0 from
+`web_listening_new` revision `ac2343f89bc7939736d85f049ebe2beac571034a`.
+Site acquisition uses public explore/refresh requests; selected-URL retrieval
+uses the public targeted `Request`/`RuntimeService.retrieve` operation. Article
+retrieval uses the prevalidated candidate origin and exact canonical path and
+records HTML-navigation and cross-path/cross-origin redirect gaps. Both open the same
+persistent Runtime root. Requests allow only their frozen origins and paths and
+carry finite request, byte, time and tool-attempt budgets. The Runtime alone
+selects installed, enabled, healthy, qualified tools and records every attempt,
+policy rejection and exclusion. Climate reserves the maximum possible network
+requests before dispatch and reconciles only from returned measured usage;
+unknown failures retain their reservation. HTTP evidence is never labelled as
+browser execution. No private upstream patch or alternate crawler is used.
+
+The bridge exports one disposition and, when any seed succeeds, one manifest
+for each configured source. All individual seed outcomes, attempts and warnings
+remain inside that source evidence; partial seed coverage therefore stays
+partial even when its usable source export is updated or unchanged. When two
+same-source discoveries name the same canonical URL and verified body, the
+later discovery is retained as an unselected reuse origin without another
+fetch. A rejected unknown candidate handle remains an auditable rejected call
+and does not discard independently verified candidate receipts.
 
 An attempt can finish as `completed_with_gaps`. All selected source outcomes and
 artifacts survive Registry payload verification, report-input projection and

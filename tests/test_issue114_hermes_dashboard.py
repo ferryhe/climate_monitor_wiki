@@ -591,7 +591,9 @@ def test_unavailable_state_and_pinned_isolated_runtime(monkeypatch):
     entrypoint = (ROOT / "scripts" / "docker_entrypoint.sh").read_text(encoding="utf-8")
     caddy = (ROOT / "Caddyfile").read_text(encoding="utf-8")
     assert "node:22.22.0-bookworm-slim" in dockerfile
-    assert "checkout 5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
+    assert "ARG HERMES_REVISION=5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
+    assert 'fetch --depth 1 --filter=blob:none origin "$HERMES_REVISION"' in dockerfile
+    assert "checkout --detach FETCH_HEAD" in dockerfile
     assert "npm run build --workspace web" in dockerfile
     assert "npm run build --workspace ui-tui" in dockerfile
     assert "HERMES_HOME: /app/output/hermes" in compose

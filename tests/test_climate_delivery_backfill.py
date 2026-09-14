@@ -17,6 +17,15 @@ from climate_registry.annotations import load_article_annotations
 from climate_registry.audit import build_audit_registry
 
 
+ISSUE126_REPORT = (
+    Path(__file__).parent
+    / "fixtures"
+    / "issue126"
+    / "first_publisher_failure"
+    / "climate-monitor-2026-09-14.md"
+)
+
+
 def _item(title: str, summary: str, url: str) -> str:
     return f"- **{title}** (web)\n  - {summary}\n  🔗 {url}\n"
 
@@ -354,6 +363,41 @@ def test_missing_monitoring_statistics_and_legacy_reports_skip(tmp_path):
         report_date="2026-08-03",
     )
     assert legacy_result["skipped"][0]["reason"] == "legacy_report_incomplete_for_backfill"
+
+
+def test_backfill_accepts_frozen_daily_titled_weekly_report(tmp_path):
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    report = sources / ISSUE126_REPORT.name
+    report.write_bytes(ISSUE126_REPORT.read_bytes())
+    metadata = tmp_path / "article-artifacts"
+    _write_annotations(metadata, [report])
+    database = _registry(sources, tmp_path)
+
+    result = _run(
+        sources,
+        database,
+        metadata,
+        tmp_path / "output",
+        report_date="2026-09-14",
+        dry_run=True,
+    )
+
+    assert result["counts"] == {
+        "generated": 1,
+        "skipped": 0,
+        "already_valid": 0,
+        "failed": 0,
+    }
+    assert result["generated"] == [
+        {
+            "report_date": "2026-09-14",
+            "report_sha256": "59784ead668894609126c28ac55dbcf5c6d214b69de0f626fefa4734ae15abc4",
+            "pillar_a_updates": 0,
+            "pillar_b_updates": 4,
+            "action": "would_generate",
+        }
+    ]
 
 
 def test_duplicate_or_ambiguous_source_to_registry_mapping_skips(tmp_path):
