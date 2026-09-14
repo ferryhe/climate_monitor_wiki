@@ -1,0 +1,11 @@
+# Climate Monitor - 2026-09-14
+
+**Report Date:** 2026-09-14
+Source: [[sources/climate-monitor-2026-09-14]]
+
+## Summary
+
+Sites checked: 36, succeeded: 17, failed: 19 The evidence indicates that climate risk is intensifying while the timing and effectiveness of mitigation and adaptation remain critical. Near-term exceedance of 1.5°C is increasingly likely, raising the risk of extreme heat, flooding, wildfire, drought, irreversible impacts and adaptation limits. However, rapid emissions reductions, responsible carbon dioxide removal and integrated climate and clean-air measures could reduce warming, avoid physical damage and support a later return toward Paris Agreement goals. These benefits depend on strong monitoring, reporting, safeguards and sustained investment. For insurers and actuaries, increasing weather-related losses, substantial uninsured exposure and limited agricultural coverage highlight the need to strengthen catastrophe-risk assessment, scenario analysis, pricing discipline, reserving and capital planning. Improved climate, weather and hazard data can support more accurate underwriting and forecasting, while risk-sharing platforms, reinsurance, public-private partnerships and blended finance can expand capacity in vulnerable markets. Actuarial assessments should reflect changing hazard frequency and severity, uncertainty in climate pathways, exposure and vulnerability trends, adaptation effectiveness, transition risks and potential limits to insurability. The recommended response is to integrate forward-looking physical and transition scenarios into enterprise risk management, product design, underwriting, pricing, reserving and solvency assessments. Insurers should improve data and model governance, use credible monitoring and reporting for mitigation and carbon-removal claims, and regularly test portfolios against higher peak warming and prolonged overshoot. Priority should also be given to prevention and resilience measures, accessible agricultural and catastrophe-risk protection, and partnerships that mobilize public and private capital while maintaining underwriting discipline and transparent disclosure.
+
+## Tags
+#climate-monitor #weekly-report #2026-09-14
