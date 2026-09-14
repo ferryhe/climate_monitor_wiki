@@ -306,9 +306,10 @@ def test_bundled_manual_captures_preserve_dates_pillars_and_metadata():
         for item in (*august.articles, *september.articles)
     )
     assert all(
-        item.summary.endswith("no verified article synopsis was retained.")
+        item.summary and "no verified article synopsis was retained" not in item.summary
         for item in september.articles
     )
+    assert len({item.summary for item in september.articles}) == len(september.articles)
     taxonomy = load_article_taxonomy()
     allowed_categories = taxonomy.allowed_labels
     assert all(
