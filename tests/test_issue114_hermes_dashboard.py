@@ -1162,6 +1162,80 @@ def test_trusted_public_origin_pins_oauth_callback_and_rejects_header_input(monk
             oauth_callback_url(invalid_name)
 
 
+@pytest.mark.parametrize("version", ("0.20.0", "0.20.5"))
+def test_dashboard_launcher_loads_native_hermes_environment_before_server_import(
+    version, monkeypatch
+):
+    from types import ModuleType, SimpleNamespace
+
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+
+    events = []
+    hermes_home = "/srv/hermes-home"
+    env_loader = SimpleNamespace()
+
+    def load_hermes_dotenv(*, hermes_home):
+        events.append(("load", hermes_home, os.environ["EXPLICIT_VALUE"]))
+        monkeypatch.setenv("FEISHU_APP_ID", "loaded-app-id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "loaded-app-secret")
+        monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+        monkeypatch.setenv("HERMES_DASHBOARD_EXPECTED_VERSION", version)
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "19119")
+
+    env_loader.load_hermes_dotenv = load_hermes_dotenv
+    web_server = SimpleNamespace(_mcp_oauth_callback_url=lambda request, name: "unsafe")
+
+    def start_server(**kwargs):
+        events.append(
+            (
+                "start",
+                os.environ.get("FEISHU_APP_ID"),
+                os.environ.get("FEISHU_APP_SECRET"),
+                kwargs,
+            )
+        )
+
+    web_server.start_server = start_server
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = env_loader
+
+    def load_module(name):
+        if name == "web_server":
+            events.append(
+                (
+                    "import-server",
+                    os.environ.get("FEISHU_APP_ID"),
+                    os.environ.get("FEISHU_APP_SECRET"),
+                )
+            )
+            return web_server
+        raise AttributeError(name)
+
+    hermes_cli.__getattr__ = load_module
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda name: version)
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "http://stale.invalid")
+    monkeypatch.setenv("HERMES_DASHBOARD_EXPECTED_VERSION", "stale")
+    monkeypatch.setenv("HERMES_DASHBOARD_PORT", "invalid")
+    monkeypatch.setenv("HERMES_HOME", hermes_home)
+    monkeypatch.setenv("EXPLICIT_VALUE", "preserved")
+    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+
+    dashboard_server.main()
+
+    assert events == [
+        ("load", hermes_home, "preserved"),
+        ("import-server", "loaded-app-id", "loaded-app-secret"),
+        (
+            "start",
+            "loaded-app-id",
+            "loaded-app-secret",
+            {"host": "127.0.0.1", "port": 19119, "open_browser": False},
+        ),
+    ]
+
+
 def test_oauth_callback_uses_narrow_cookie_free_proxy_route(monkeypatch):
     import api_server
 

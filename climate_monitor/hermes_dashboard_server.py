@@ -87,7 +87,10 @@ def install_oauth_callback_adapter(
 
 
 def main() -> None:
-    trusted_public_origin()  # Fail before binding if deployment configuration is unsafe.
+    from hermes_cli import env_loader
+
+    env_loader.load_hermes_dotenv(hermes_home=os.getenv("HERMES_HOME") or None)
+    trusted_public_origin()  # Validate the effective post-bootstrap configuration.
     from hermes_cli import web_server
 
     install_oauth_callback_adapter(web_server)
