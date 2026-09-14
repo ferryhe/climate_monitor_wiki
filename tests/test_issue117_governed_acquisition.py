@@ -95,7 +95,6 @@ def install_runtime(monkeypatch):
     monkeypatch.setattr(adapter, "_runtime_service_type", lambda: Runtime)
 
 
-@requires_web_listening
 @pytest.mark.parametrize(
     "collector",
     ["collect_source_items", "collect_website_items", "collect_website_items_with_evidence"],
@@ -115,6 +114,7 @@ def test_missing_runtime_fails_once_before_any_seed(tmp_path, monkeypatch, colle
             getattr(adapter, collector)([source(), source("second")], state_dir=tmp_path)
 
 
+@requires_web_listening
 @pytest.mark.parametrize("collector", ["collect_website_items", "collect_website_items_with_evidence"])
 def test_bulk_uses_one_persistent_runtime_and_preserves_each_failure(
     tmp_path, monkeypatch, collector
