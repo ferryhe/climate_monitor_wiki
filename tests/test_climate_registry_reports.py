@@ -1,7 +1,19 @@
 from pathlib import Path
 
+import pytest
+
+from climate_delivery.errors import InputError
 from climate_monitor.taxonomy import load_article_taxonomy
 from climate_registry.reports import parse_historical_report, parse_report_directory
+
+
+ISSUE126_REPORT = (
+    Path(__file__).parent
+    / "fixtures"
+    / "issue126"
+    / "first_publisher_failure"
+    / "climate-monitor-2026-09-14.md"
+)
 
 
 def _write(tmp_path: Path, date: str, body: str) -> Path:
@@ -148,6 +160,41 @@ def test_current_weekly_parser_keeps_pillars(tmp_path):
     assert report.articles[0].categories == ("Physical Risk", "Insurance Risk")
     assert report.articles[0].keywords == ("flood", "pricing")
     assert report.articles[1].categories == ()
+
+
+def test_daily_titled_structured_weekly_report_uses_weekly_parser():
+    report = parse_historical_report(ISSUE126_REPORT)
+
+    assert report.title == "Daily Climate & Actuarial Monitor"
+    assert report.report_date == "2026-09-14"
+    assert report.sha256 == "59784ead668894609126c28ac55dbcf5c6d214b69de0f626fefa4734ae15abc4"
+    assert report.cadence == "weekly"
+    assert report.report_format == "weekly-pillars-v1"
+    assert (report.sites_checked, report.sites_succeeded, report.sites_failed) == (36, 17, 19)
+    assert len(report.articles) == 4
+    assert {item.pillar for item in report.articles} == {"B"}
+
+
+def test_daily_titled_malformed_weekly_structure_does_not_fall_back_to_legacy(tmp_path):
+    path = _write(
+        tmp_path,
+        "2026-08-10",
+        """# Daily Climate & Actuarial Monitor
+**Report Date:** 2026-08-10
+## Executive Summary
+- Sites checked: **2**, succeeded: **2**, failed: **1**
+## Pillar A
+- **Item** (web)
+  - Summary.
+  🔗 https://example.com/item
+## Pillar B
+## Original Links
+- https://example.com/item
+""",
+    )
+
+    with pytest.raises(InputError, match="succeeded and failed counts must sum"):
+        parse_historical_report(path)
 
 
 def test_historical_parser_hashes_the_same_byte_snapshot_it_parses(tmp_path, monkeypatch):

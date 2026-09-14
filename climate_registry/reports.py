@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
 
-from climate_delivery.report import parse_weekly_report
+from climate_delivery.report import has_weekly_report_structure, parse_weekly_report
 
 REPORT_NAME = re.compile(r"^climate-monitor-(\d{4}-\d{2}-\d{2})\.md$")
 HEADING = re.compile(r"^(#{1,3})\s+(.+?)\s*$")
@@ -355,7 +355,7 @@ def parse_historical_report(
         raise ValueError(f"unsupported report filename: {path.name}")
     raw = path.read_bytes() if raw is None else raw
     text = raw.decode("utf-8")
-    if "Pillar A" in text and "Pillar B" in text and "Weekly Climate" in text:
+    if has_weekly_report_structure(text):
         return _parse_weekly(path, raw, text, allow_offcycle=allow_offcycle)
     return _parse_legacy(path, raw, text, match.group(1))
 

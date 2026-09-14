@@ -18,6 +18,7 @@ from climate_monitor.run_ledger import RunLedgerReader, build_report_identity
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ISSUE126_REPORT_DIR = ROOT / "tests" / "fixtures" / "issue126" / "first_publisher_failure"
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -44,6 +45,25 @@ def _report(path: Path, day: str, body: str = "Weekly summary.") -> Path:
         ).encode("utf-8")
     )
     return path
+
+
+def test_pending_report_accepts_frozen_daily_titled_weekly_bundle(tmp_path):
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    report = reports / "climate-monitor-2026-09-14.md"
+    sidecar = reports / "climate-monitor-2026-09-14.semantics.json"
+    shutil.copyfile(ISSUE126_REPORT_DIR / report.name, report)
+    shutil.copyfile(ISSUE126_REPORT_DIR / sidecar.name, sidecar)
+
+    accepted = publisher.validate_pending_reports([report], source_dir=reports)
+
+    assert accepted == {
+        report: "59784ead668894609126c28ac55dbcf5c6d214b69de0f626fefa4734ae15abc4"
+    }
+    assert hashlib.sha256(report.read_bytes()).hexdigest() == accepted[report]
+    assert hashlib.sha256(sidecar.read_bytes()).hexdigest() == (
+        "1252a516b98f8d080c09170ea559fd5c25393cdef0e943ea7dcde9f5c04c4933"
+    )
 
 
 def _advance_main(remote: Path, workspace: Path, message: str) -> str:

@@ -1,0 +1,147 @@
+{
+  "article_count": 4,
+  "articles": [
+    {
+      "article_id": "f7d3fa3748ce9b3697855051a245b0a17b8e9a867d064b5ad3d8aa1940c59bd1",
+      "canonical_url": "https://irff.undp.org/news/designing-risk-sharing-platforms-agricultural-insurance-africa-key-takeaways-aio-2026",
+      "content_hash": "",
+      "lane": "research",
+      "position": 1,
+      "semantics": {
+        "categories": [
+          "Climate Risk",
+          "Insurance Risk",
+          "Adaptation & Resilience"
+        ],
+        "keywords": [
+          "agricultural insurance",
+          "climate shocks",
+          "risk-sharing platforms",
+          "underwriting capacity",
+          "reinsurance access",
+          "pricing discipline",
+          "public-private partnerships",
+          "insurance resilience"
+        ],
+        "schema_version": "article-semantic-bundle.v1",
+        "summary": "Agricultural insurance markets in Africa are increasingly exposed to climate shocks, while coverage remains limited. Discussions at the AIO 2026 Conference emphasized pooled risk-sharing platforms, public-private structures, underwriting capacity, reinsurance access, pricing discipline, and capital mobilization to expand resilient agricultural insurance.",
+        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+      },
+      "semantics_provenance": "agent_bundle",
+      "source": "irff",
+      "title": "Designing Risk-Sharing Platforms for Agricultural Insurance in Africa: Key Takeaways from AIO 2026",
+      "url": "https://irff.undp.org/news/designing-risk-sharing-platforms-agricultural-insurance-africa-key-takeaways-aio-2026"
+    },
+    {
+      "article_id": "b3ff89a1a5b7b9f375afe8aebe7e454f15ed694999ae4f9d66493892d7d69468",
+      "canonical_url": "https://irff.undp.org/news/undp-and-jupiter-intelligence-partner-boost-climate-resilience-developing-countries",
+      "content_hash": "",
+      "lane": "research",
+      "position": 2,
+      "semantics": {
+        "categories": [
+          "Climate Risk",
+          "Insurance Risk",
+          "Actuarial Modelling"
+        ],
+        "keywords": [
+          "climate-risk analytics",
+          "uninsured climate losses",
+          "insurance risk finance",
+          "catastrophe-risk assessment",
+          "flood risk",
+          "drought risk",
+          "adaptation strategies"
+        ],
+        "schema_version": "article-semantic-bundle.v1",
+        "summary": "UNDP and Jupiter Intelligence are partnering to provide developing countries with climate-risk data and analytics covering hazards including extreme heat, precipitation, flooding, and drought. The initiative aims to inform adaptation, public financial management, catastrophe-risk assessment, and the design of insurance risk-finance programs, helping address substantial uninsured climate losses.",
+        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+      },
+      "semantics_provenance": "agent_bundle",
+      "source": "irff",
+      "title": "UNDP and Jupiter Intelligence Partner to Boost Climate Resilience in Developing Countries",
+      "url": "https://irff.undp.org/news/undp-and-jupiter-intelligence-partner-boost-climate-resilience-developing-countries"
+    },
+    {
+      "article_id": "88969e443e2eb5200970a4ee4fae76eaad97bf71d22a54adf05ceef47aa82579",
+      "canonical_url": "https://wmo.int/media/news/wmo-invest-resilience-climate-risks-intensify",
+      "content_hash": "",
+      "lane": "research",
+      "position": 3,
+      "semantics": {
+        "categories": [
+          "Climate Risk",
+          "Physical Risk",
+          "Insurance Risk"
+        ],
+        "keywords": [
+          "weather-related catastrophe losses",
+          "climate risk",
+          "insurance losses",
+          "insurance pricing",
+          "forecasting",
+          "resilience",
+          "floods",
+          "wildfires"
+        ],
+        "schema_version": "article-semantic-bundle.v1",
+        "summary": "The WMO launched the WMO Commons to mobilize at least US$100 million over five years for weather, climate and water monitoring, forecasting and services that strengthen resilience to intensifying climate risks. The evidence cites US$318 billion in 2024 weather- and climate-related catastrophe losses, only 43% insured, and states that improved forecasts help insurers price risk more accurately.",
+        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+      },
+      "semantics_provenance": "agent_bundle",
+      "source": "wmo",
+      "title": "WMO: Invest in Resilience as Climate Risks Intensify",
+      "url": "https://wmo.int/media/news/wmo-invest-resilience-climate-risks-intensify"
+    },
+    {
+      "article_id": "328dd2109dbd521c85c5da39df47df48898d2c1160f2a668eae4dea9906e4b22",
+      "canonical_url": "https://www.wri.org/research/bonds-blended-finance-how-diverse-range-financial-instruments-are-financing-climate",
+      "content_hash": "",
+      "lane": "research",
+      "position": 4,
+      "semantics": {
+        "categories": [
+          "Adaptation & Resilience",
+          "Physical Risk",
+          "Insurance Risk"
+        ],
+        "keywords": [
+          "climate adaptation",
+          "physical climate risks",
+          "disaster risk financing",
+          "insurance risk transfer",
+          "risk reduction",
+          "risk management",
+          "blended finance"
+        ],
+        "schema_version": "article-semantic-bundle.v1",
+        "summary": "The study analyzes 11 financial instrument types used in 162 cases to finance adaptation to six physical climate risks, including disaster risk financing and insurance/risk transfer. It examines how these instruments enable physical risk reduction or management and mobilize capital for climate resilience.",
+        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+      },
+      "semantics_provenance": "agent_bundle",
+      "source": "wri",
+      "title": "From Bonds to Blended Finance: How a Diverse Range of Financial Instruments Are Financing Climate Adaptation and Resilience",
+      "url": "https://www.wri.org/research/bonds-blended-finance-how-diverse-range-financial-instruments-are-financing-climate"
+    }
+  ],
+  "provenance": {
+    "bundle_schema_version": "article-semantic-bundle.v1",
+    "generator": "climate_monitor.semantic_bundle",
+    "identity_scheme": "article-identity.v1"
+  },
+  "report": {
+    "date": "2026-09-14",
+    "filename": "climate-monitor-2026-09-14.md",
+    "sha256": "59784ead668894609126c28ac55dbcf5c6d214b69de0f626fefa4734ae15abc4"
+  },
+  "schema_version": "article-semantic-sidecar.v1",
+  "taxonomy": {
+    "schema_version": "article-category-taxonomy.v1",
+    "sha256": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94",
+    "taxonomy_id": "climate-actuarial-v1"
+  }
+}

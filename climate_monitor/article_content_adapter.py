@@ -550,16 +550,44 @@ def _runtime_job_payload(
                 "coverage_limitations": list(_BOUNDED_RETRIEVAL_LIMITATIONS),
             },
         }
-    with runtime.open_owned_artifact(selected["artifact_id"], caller_id) as opened:
-        content = opened.stream.read(opened.size_bytes + 1)
-        if len(content) != opened.size_bytes or hashlib.sha256(content).hexdigest() != selected["sha256"]:
-            raise ArticleContentAdapterError("content_hash_mismatch")
+    projection_errors: tuple[type[BaseException], ...] = (
+        ArticleContentAdapterError, OSError, UnicodeDecodeError,
+    )
     try:
+        from web_listening.artifact.model import ArtifactStoreError
+    except ImportError:
+        pass
+    else:
+        projection_errors += (ArtifactStoreError,)
+    try:
+        with runtime.open_owned_artifact(selected["artifact_id"], caller_id) as opened:
+            content = opened.stream.read(opened.size_bytes + 1)
+            if (
+                len(content) != opened.size_bytes
+                or hashlib.sha256(content).hexdigest() != selected["sha256"]
+            ):
+                raise ArticleContentAdapterError("content_hash_mismatch")
         text = content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ArticleContentAdapterError("cleaned_content_not_utf8") from exc
-    if not text.strip():
-        raise ArticleContentAdapterError("cleaned_content_empty")
+        if not text.strip():
+            raise ArticleContentAdapterError("cleaned_content_empty")
+    except projection_errors as exc:
+        return {
+            "status": "failed", "final_url": manifest.get("final_url"),
+            "attempts": attempts,
+            "failure_reason": f"{type(exc).__name__}: {exc}",
+            "extraction_metadata": {
+                "upstream_revision": "ac2343f89bc7939736d85f049ebe2beac571034a",
+                "runtime_job": copy.deepcopy(dict(raw)),
+                "reviewed_source_scope": copy.deepcopy(dict(reviewed_scope)),
+                "effective_request_scope": copy.deepcopy(dict(effective_scope)),
+                "coverage_limitations": list(_BOUNDED_RETRIEVAL_LIMITATIONS),
+                "artifact_error": {
+                    "type": type(exc).__name__,
+                    "code": getattr(exc, "code", None),
+                    "message": str(exc),
+                },
+            },
+        }
     selected_attempt = next((
         attempt for attempt in reversed(attempts)
         if attempt.get("tool_id", "").startswith("acquisition.")
