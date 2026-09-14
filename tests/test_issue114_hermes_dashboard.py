@@ -594,7 +594,7 @@ def test_unavailable_state_and_pinned_isolated_runtime(monkeypatch):
     assert "ARG HERMES_REVISION=5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
     assert 'fetch --depth 1 --filter=blob:none origin "$HERMES_REVISION"' in dockerfile
     assert "checkout --detach FETCH_HEAD" in dockerfile
-    assert "npm run build --workspace web" in dockerfile
+    assert "npm run build --workspace web -- --base=/hermes/" in dockerfile
     assert "npm run build --workspace ui-tui" in dockerfile
     assert "HERMES_HOME: /app/output/hermes" in compose
     assert "climate_runtime:/app/output" in compose
