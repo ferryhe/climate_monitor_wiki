@@ -111,6 +111,7 @@ class MonitorRunResult:
     # 09:00 climate_delivery, AC-5 dry-run) can report 57/42/15 without
     # re-validating. ``None`` for non-v2 callers.
     stats: Mapping[str, int] | None = None
+    acquisition_report_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -128,6 +129,8 @@ class MonitorRunResult:
             payload["provenance"] = _json_value(self.provenance)
         if self.stats is not None:
             payload["stats"] = _json_value(self.stats)
+        if self.acquisition_report_path is not None:
+            payload["acquisition_report_path"] = _safe_path(self.acquisition_report_path)
         return payload
 
     def to_json(self) -> str:

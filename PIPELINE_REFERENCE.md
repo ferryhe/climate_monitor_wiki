@@ -4,6 +4,15 @@ The program and artifact map for the modular weekly pipeline. See
 [README.md](README.md#new-flow) for the flowchart and
 [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) for editable prompts and scheduling.
 
+Weekly finalization writes `acquisition-report-YYYY-MM-DD.md` into the run's
+`report-staging/` directory and returns `acquisition_report_path` in its JSON
+result. This operator report contains source outcome counts, included article
+counts by pillar, coverage warnings/failure reasons, deduplication notes, and the
+public report SHA-256. It stays outside `sources/`, wiki ingestion, and delivery.
+The public weekly Markdown retains the checked/succeeded/failed totals but omits
+the Coverage Limitations section. Retrying finalization recreates the operator
+report from the frozen run evidence; it does not require another acquisition.
+
 ## Implementation and deployment status
 
 As of the 2026-09-08 SSH audit, the same-run prepare → serial URL authoring →
