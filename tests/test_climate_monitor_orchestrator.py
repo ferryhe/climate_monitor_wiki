@@ -285,14 +285,19 @@ dedupe:
 
 
 def test_run_monitor_fails_when_live_collection_fails_for_every_source(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source_config = tmp_path / "sources.yaml"
     run_config = tmp_path / "run_config.yaml"
+    source_dir = tmp_path / "isolated-sources"
+    imported_report = tmp_path / "sources" / f"climate-monitor-{date.today().isoformat()}.md"
+    imported_report.parent.mkdir()
+    imported_report.write_text("# Imported report\n", encoding="utf-8")
     source_config.write_text(
         "sources:\n  - key: bad\n    abbreviation: BAD\n    full_name: Bad Source\n    url: https://bad.example/\n",
         encoding="utf-8",
     )
     run_config.write_text(
-        """
+        f"""
 report_title: Daily Climate & Actuarial Monitor
 max_items_per_report: 12
 climate_keywords: [climate]
@@ -301,7 +306,7 @@ research_lane:
   lookback_days: 30
   queries: []
 output:
-  source_dir: sources
+  source_dir: {source_dir.as_posix()}
   wiki_dir: wiki
   write_empty_report: false
 """.strip(),
