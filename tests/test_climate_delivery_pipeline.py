@@ -190,7 +190,8 @@ def test_artifact_only_run_needs_no_mail_config_and_is_idempotent(
     assert not list(state.glob("*.json"))
 
 
-def test_more_than_twenty_gaps_survive_projection_report_pdf_and_manifest(tmp_path):
+def test_more_than_twenty_gaps_stay_in_operator_report_outside_public_delivery(tmp_path):
+    from climate_monitor.report_writer import render_acquisition_report
     failed_sources = []
     warnings = []
     for index in range(22):
@@ -244,9 +245,16 @@ def test_more_than_twenty_gaps_survive_projection_report_pdf_and_manifest(tmp_pa
     assert parsed.original_links == (
         "https://example.test/first", "https://example.test/second",
     )
-    assert all(f"source-{index:02d} seed" in text and f"reason-{index:02d}" in text
+    operator_text = render_acquisition_report(
+        report_date=date(2026, 8, 10), items=items,
+        stats={"total": 23, "updated": 1, "unchanged": 0,
+               "blocked": 0, "failed": 22, "unresolved": 0},
+        warnings=projection["limitations"], dedup_notes=[], report_sha256=parsed.sha256,
+    )
+    assert all(f"source-{index:02d} seed" in operator_text and f"reason-{index:02d}" in operator_text
                for index in range(22))
-    assert "Excluded filing" in text and "unsupported governed format" in text
+    assert "Excluded filing" in operator_text and "unsupported governed format" in operator_text
+    assert all(warning not in text for warning in projection["limitations"])
 
     result = run_delivery(
         report, tmp_path / "output", tmp_path / "state", None,
@@ -256,16 +264,16 @@ def test_more_than_twenty_gaps_survive_projection_report_pdf_and_manifest(tmp_pa
     summary_path = artifact_dir / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     notes = "\n".join(summary["monitoring_notes"])
-    assert all(f"source-{index:02d} seed" in notes and f"reason-{index:02d}" in notes
+    assert all(f"source-{index:02d}" not in notes and f"reason-{index:02d}" not in notes
                for index in range(22))
-    assert "Excluded filing" in notes and "unsupported governed format" in notes
+    assert "Excluded filing" not in notes and "unsupported governed format" not in notes
     pdf_text = " ".join(
         " ".join(page.extract_text().split())
         for page in PdfReader(artifact_dir / result["artifacts"]["pdf"]).pages
     )
-    assert all(f"source-{index:02d}" in pdf_text and f"reason-{index:02d}" in pdf_text
+    assert all(f"source-{index:02d}" not in pdf_text and f"reason-{index:02d}" not in pdf_text
                for index in range(22))
-    assert "Excluded filing" in pdf_text and "unsupported governed format" in pdf_text
+    assert "Excluded filing" not in pdf_text and "unsupported governed format" not in pdf_text
     manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["delivery"] == {"status": "artifact-only", "recipients": []}
     assert manifest["artifacts"]["summary"]["sha256"] == hashlib.sha256(

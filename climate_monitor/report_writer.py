@@ -173,10 +173,6 @@ def render_report(
                  "## Executive Summary", "",
                  f"- Sites checked: **{counts['total']}**, succeeded: **{succeeded}**, failed: **{failed}**",
                  "", executive_summary, ""]
-        if warnings:
-            lines += ["### Coverage Limitations", ""]
-            lines += _render_warnings(warnings)
-            lines.append("")
         for pillar in ("A", "B"):
             lines += [f"## Pillar {pillar}", ""]
             for index, item in enumerate(render_order(items), 1):
@@ -246,4 +242,30 @@ def render_report(
             "",
         ]
     )
+    return "\n".join(lines)
+
+
+def render_acquisition_report(
+    *, report_date: date, stats: dict[str, int], items: list[Any],
+    warnings: list[str], dedup_notes: list[str], report_sha256: str,
+) -> str:
+    """Render operator diagnostics separately from the public weekly report."""
+    from .weekly_monitor.authoring_contract import _validate_v2_stats_shape
+
+    counts = _validate_v2_stats_shape(stats)
+    pillar_b = sum(_item_value(item, "lane") == "research" for item in items)
+    lines = [
+        "# Acquisition Report", f"**Report Date:** {report_date.isoformat()}",
+        f"**Public report SHA-256:** {report_sha256 or 'No public report'}", "",
+        "## Collection Summary", "",
+        "| Source outcome | Count |", "| --- | ---: |",
+        *[f"| {name} | {counts[name]} |" for name in
+          ("total", "updated", "unchanged", "blocked", "failed", "unresolved")],
+        "", "Successful acquisition includes unchanged sources; it does not imply new articles.",
+        "", f"- Articles included: {len(items)} (Pillar A: {len(items) - pillar_b}; Pillar B: {pillar_b})",
+        "", "## Failures and Coverage Limitations", "",
+        *(_render_warnings(warnings) or ["- No acquisition warnings recorded."]),
+        "", "## Deduplication and Exclusions", "",
+        *(_render_warnings(dedup_notes) or ["- No deduplication notes recorded."]), "",
+    ]
     return "\n".join(lines)
