@@ -790,16 +790,23 @@ class RequestBudget:
                     "attempted_at": time.time(), "reason": str(exc)})
                 raise
 
-    def complete_tool(self, call_id, result, status):
+    def complete_tool(self, call_id, result, status, *, actual_units=None):
         with self._locked() as state:
             matching = [e for e in state["events"] if e.get("call_id") == call_id and e["event_kind"] == "tool"]
             if not matching:
                 return
             event = matching[0]
             if event.get("completed"):
-                if event.get("result") != result or event["status"] != status:
+                if (event.get("result") != result or event["status"] != status
+                        or (actual_units is not None
+                            and event.get("fetch_units") != actual_units)):
                     raise ValueError("tool completion differs from durable result")
                 return
+            if actual_units is not None:
+                if (type(actual_units) is not int or actual_units < 0
+                        or actual_units > event.get("fetch_units", 0)):
+                    raise ValueError("tool used more fetch units than it reserved")
+                event["fetch_units"] = actual_units
             if event["tool"] == "web_search":
                 # Reuse the transcript URL extraction contract, not model claims.
                 from scripts.run_agent_acquisition import _event_result_urls

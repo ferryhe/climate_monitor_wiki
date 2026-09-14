@@ -93,6 +93,7 @@ _LEGACY_AGENT_PROTOCOL = {
     "search_policy": "application-bounded.v1",
 }
 _CANDIDATE_SCHEMA_VERSION = "climate-agent-candidate-decisions.v2"
+_MAX_SITE_PROMPT_BYTES = 256 * 1024
 _V2_AGENT_PROTOCOL = {
     "version": V2_AGENT_PROTOCOL_VERSION,
     "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
@@ -643,6 +644,7 @@ def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
     source_results = evidence.get("source_results", [])
     return {
         "status": evidence.get("status", "failed"),
+        "full_success": evidence.get("full_success", False),
         "source_results": source_results,
         "candidates": [
             {**candidate, "source": candidate.get("source") or row.get("source")}
@@ -653,6 +655,132 @@ def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
         "runtime_seconds": sum(float(row.get("runtime_seconds", 0)) for row in source_results),
         "systemic_error": evidence.get("systemic_error"),
     }
+
+
+def _bounded_prompt_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[: limit - 15] + "...[truncated]"
+
+
+def _controlled_site_evidence_reference(
+    binding_path: Path, binding: Mapping[str, Any], site_context: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Persist complete controlled-site evidence outside the model context."""
+    path = binding_path.parent / f"attempt-{binding['attempt']}-controlled-site-evidence.json"
+    encoded = json.dumps(
+        site_context, ensure_ascii=False, sort_keys=True, indent=2
+    ).encode("utf-8") + b"\n"
+    _atomic_write(path, encoded)
+    return {
+        "path": path.name,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "source_count": len(site_context.get("source_results", [])),
+        "candidate_count": len(site_context.get("candidates", [])),
+        "attempt_count": len(site_context.get("attempts", [])),
+        "warning_count": len(site_context.get("warnings", [])),
+    }
+
+
+def _controlled_site_prompt_projection(
+    site_context: Mapping[str, Any], site_handle_context: list[dict[str, Any]],
+    evidence_reference: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep model input bounded while retaining every full fact durably."""
+    sources = []
+    for row in site_context.get("source_results", []):
+        outcome = row.get("outcome") if isinstance(row.get("outcome"), Mapping) else {}
+        dispositions = outcome.get("dispositions")
+        if not isinstance(dispositions, list):
+            dispositions = []
+        gaps = [{
+            "task_id": _bounded_prompt_text(item.get("task_id"), 160),
+            "disposition": _bounded_prompt_text(item.get("disposition"), 40),
+            "reason": _bounded_prompt_text(item.get("reason"), 300),
+        } for item in dispositions
+            if isinstance(item, Mapping)
+            and item.get("disposition") not in {"updated", "unchanged"}]
+        warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
+        sources.append({
+            "source": row.get("source"),
+            "status": row.get("status"),
+            "coverage_status": row.get("coverage_status"),
+            "disposition": row.get("disposition"),
+            "counts": copy.deepcopy(outcome.get("counts", {})),
+            "gaps": gaps[:10],
+            "omitted_gap_count": max(0, len(gaps) - 10),
+            "warnings": [_bounded_prompt_text(value, 500) for value in warnings[:3]],
+            "omitted_warning_count": max(0, len(warnings) - 3),
+            "artifact": {
+                "id": row.get("artifact_id"), "sha256": row.get("artifact_sha256"),
+            },
+        })
+    handles = [{
+        "result_handle": row.get("result_handle"),
+        "source_key": row.get("source_key"),
+        "url": row.get("url"),
+        "title": _bounded_prompt_text(row.get("title"), 200),
+        "summary": _bounded_prompt_text(row.get("summary"), 500),
+    } for row in site_handle_context]
+    projection = {
+        "status": site_context.get("status"),
+        "full_success": site_context.get("full_success"),
+        "systemic_error": _bounded_prompt_text(site_context.get("systemic_error"), 1000) or None,
+        "runtime_seconds": site_context.get("runtime_seconds"),
+        "durable_evidence": dict(evidence_reference),
+        "source_results": sources,
+        "candidate_handles": handles,
+        "candidate_handle_count": len(site_handle_context),
+        "omitted_candidate_handle_count": 0,
+        "warning_count": len(site_context.get("warnings", [])),
+        "limitations": [],
+    }
+
+    def size() -> int:
+        return len(json.dumps(
+            projection, ensure_ascii=False, sort_keys=True,
+        ).encode("utf-8"))
+
+    compacted = False
+    if size() > _MAX_SITE_PROMPT_BYTES:
+        for handle in handles:
+            handle["summary"] = ""
+        compacted = True
+    if size() > _MAX_SITE_PROMPT_BYTES:
+        for handle in handles:
+            handle["title"] = ""
+    if size() > _MAX_SITE_PROMPT_BYTES:
+        for source in sources:
+            gap_count = len(source["gaps"]) + source["omitted_gap_count"]
+            gap_dispositions = []
+            for gap in source["gaps"]:
+                disposition = gap["disposition"]
+                if disposition not in gap_dispositions:
+                    gap_dispositions.append(disposition)
+            warning_count = len(source["warnings"]) + source["omitted_warning_count"]
+            source["gaps"] = [
+                {"disposition": disposition}
+                for disposition in gap_dispositions
+            ]
+            source["omitted_gap_count"] = gap_count - len(source["gaps"])
+            source["warnings"] = []
+            source["omitted_warning_count"] = warning_count
+            source.pop("artifact", None)
+        projection["systemic_error"] = (
+            _bounded_prompt_text(projection["systemic_error"], 200) or None
+        )
+    if compacted:
+        projection["limitations"] = [
+            "Optional candidate and source display detail was compacted; every "
+            "governed candidate identity and the complete durable evidence remain available."
+        ]
+    required = size()
+    if required > _MAX_SITE_PROMPT_BYTES:
+        raise AcquisitionIncompleteError(
+            "complete governed candidate inventory exceeds model-context capacity: "
+            f"required_bytes={required}, allowed_bytes={_MAX_SITE_PROMPT_BYTES}, "
+            f"handle_count={len(handles)}"
+        )
+    return projection
 
 
 def _controlled_site_checkpoint_dir(binding: Mapping[str, Any]) -> Path:
@@ -778,16 +906,6 @@ def _reconcile_v3_candidate_tool_events(
     handles = {row["handle"]: row for row in ledger.result_handles()}
     identities: set[tuple[str, str]] = set()
     audits: list[dict[str, Any]] = []
-    unresolved: dict[tuple[str, str], list[int]] = {}
-
-    def mark_verified(event: Mapping[str, Any], tool: str) -> None:
-        key = (str(event["session_id"]), tool)
-        for index in unresolved.pop(key, []):
-            audits[index]["result"].update(
-                status="resolved_error",
-                resolved_by_tool_call_id=event["tool_call_id"],
-            )
-
     for event in events:
         identity = (event["session_id"], event["tool_call_id"])
         if identity in identities:
@@ -798,6 +916,16 @@ def _reconcile_v3_candidate_tool_events(
         result = _candidate_transcript_result(event.get("result"))
         if not isinstance(arguments, Mapping) or not isinstance(result, Mapping):
             raise ValueError("candidate tool transcript result is invalid")
+        expected_fields = (
+            {"result_handle", "source_key"}
+            if tool == "climate_stage_candidate" else
+            {"candidate_handle", "selected", "title", "summary", "selection_reason"}
+            if tool == "climate_finalize_candidate" else None
+        )
+        if expected_fields is None:
+            raise ValueError("candidate tool transcript tool is invalid")
+        if set(arguments) != expected_fields:
+            raise ValueError(f"candidate tool transcript {('stage' if tool == 'climate_stage_candidate' else 'finalize')} arguments differ")
         error = result.get("error")
         if (
             set(result) == {"error"}
@@ -806,6 +934,28 @@ def _reconcile_v3_candidate_tool_events(
             and len(error) <= 2000
         ):
             normalized_error = " ".join(error.split())[:1000]
+            known_rejection = False
+            if tool == "climate_stage_candidate":
+                handle = handles.get(arguments.get("result_handle"))
+                known_rejection = (
+                    handle is None
+                    and by_result.get(arguments.get("result_handle")) is None
+                    and normalized_error.endswith(
+                        "candidate result handle is not bound to this attempt/session"
+                    )
+                )
+            else:
+                matches = [
+                    receipt for receipt in receipts
+                    if receipt.get("candidate_handle") == arguments.get("candidate_handle")
+                    and receipt.get("state") in {"staged", "finalized"}
+                ]
+                known_rejection = (
+                    not matches
+                    and normalized_error.endswith(
+                        "candidate handle is not one staged receipt"
+                    )
+                )
             audits.append({
                 "session_id": event["session_id"],
                 "tool_call_id": event["tool_call_id"],
@@ -816,19 +966,14 @@ def _reconcile_v3_candidate_tool_events(
                 },
                 "result": {
                     "event_kind": "candidate_tool",
-                    "status": "unresolved_error",
+                    "status": "rejected_call" if known_rejection else "unresolved_error",
                     "error": normalized_error,
                 },
                 "attempted_at": event.get("attempted_at"),
                 "durable_status": "error",
             })
-            unresolved.setdefault((str(event["session_id"]), tool), []).append(
-                len(audits) - 1
-            )
             continue
         if tool == "climate_stage_candidate":
-            if set(arguments) != {"result_handle", "source_key"}:
-                raise ValueError("candidate tool transcript stage arguments differ")
             receipt = by_result.get(arguments.get("result_handle"))
             handle = handles.get(arguments.get("result_handle"))
             if (
@@ -845,16 +990,7 @@ def _reconcile_v3_candidate_tool_events(
             )
             if dict(result) != expected:
                 raise ValueError("candidate tool transcript stage result differs")
-            mark_verified(event, tool)
             continue
-        if tool != "climate_finalize_candidate":
-            raise ValueError("candidate tool transcript tool is invalid")
-        expected_fields = {
-            "candidate_handle", "selected", "title", "summary",
-            "selection_reason",
-        }
-        if set(arguments) != expected_fields:
-            raise ValueError("candidate tool transcript finalize arguments differ")
         matches = [
             receipt for receipt in receipts
             if receipt.get("candidate_handle") == arguments.get("candidate_handle")
@@ -893,7 +1029,6 @@ def _reconcile_v3_candidate_tool_events(
         }
         if dict(result) != expected:
             raise ValueError("candidate tool transcript final result differs")
-        mark_verified(event, tool)
     return audits
 
 
@@ -909,6 +1044,73 @@ def _candidate_transcript_result(value: Any) -> Any:
     if re.fullmatch(r"\n\n\[Tool loop warning: [^\r\n]+\]", suffix):
         return result
     return value
+
+
+def _reused_candidate_alias_item(
+    receipt: Mapping[str, Any], result: Mapping[str, Any],
+    receipts_by_result: Mapping[str, Mapping[str, Any]],
+    result_handles: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Project only the explicit same-source reuse receipt as its own origin."""
+    target_handle = receipt.get("reused_result_handle")
+    if receipt.get("state") != "superseded" or receipt.get("status") != "reused":
+        return None
+    if not isinstance(target_handle, str) or not target_handle:
+        raise ValueError("candidate reuse alias lacks its target handle")
+    target = receipts_by_result.get(target_handle)
+    target_result = result_handles.get(target_handle)
+    raw_item = receipt.get("item")
+    target_item = target.get("item") if isinstance(target, Mapping) else None
+    if not isinstance(target_result, Mapping) or not isinstance(raw_item, Mapping) or not isinstance(target_item, Mapping):
+        raise ValueError("candidate reuse alias target is unavailable")
+    source_key = receipt.get("source_key")
+    result_source = result.get("source_key") or source_key
+    target_source = target_result.get("source_key") or target.get("source_key")
+    same_date = all(
+        receipt.get(field) == target.get(field)
+        for field in ("date_status", "date_kind")
+    ) and all(
+        raw_item.get(field) == target_item.get(field)
+        for field in ("published_date", "publication_date_evidence")
+    )
+    if any((
+        not isinstance(source_key, str),
+        result_source != source_key,
+        target.get("source_key") != source_key,
+        target_source != source_key,
+        target_result.get("canonical_url") != result.get("canonical_url"),
+        not same_date,
+        raw_item.get("url") != target_item.get("url"),
+        raw_item.get("source") != target_item.get("source"),
+        raw_item.get("discovery_kind") != target_item.get("discovery_kind"),
+        raw_item.get("discovery_ref") != target_item.get("discovery_ref"),
+        raw_item.get("discovery_search_ref") != target_item.get("discovery_search_ref"),
+        raw_item.get("evidence") != target_item.get("evidence"),
+        receipt.get("controlled_events") != target.get("controlled_events"),
+        canonical_url(str(target_item.get("url") or "")) != target_result.get("canonical_url"),
+        target_item.get("source") != source_key,
+        target_item.get("discovery_kind") != target_result.get("discovery_kind", "search"),
+        target_item.get("discovery_ref") != target_result.get("discovery_ref", target_result.get("url")),
+        target_item.get("discovery_search_ref") != target_result.get("search_ref"),
+    )):
+        raise ValueError("candidate reuse alias binding differs from its verified target")
+    row = result.get("result_row")
+    if not isinstance(row, Mapping):
+        raise ValueError("candidate reuse alias lacks its trusted result row")
+    item = copy.deepcopy(dict(raw_item))
+    item.update({
+        "url": result["url"],
+        "source": source_key,
+        "title": str(row.get("title") or "")[:_FINAL_ANNOTATION_LIMITS["title"]],
+        "summary": "",
+        "discovered_at": _trusted_event_timestamp(result["attempted_at"]),
+        "discovery_kind": result.get("discovery_kind", "search"),
+        "discovery_ref": result.get("discovery_ref", result["url"]),
+        "discovery_search_ref": result.get("search_ref"),
+        "selected": False,
+        "selection_reason": "same-source canonical URL reused verified evidence; duplicate discovery retained",
+    })
+    return item
 
 
 def _trusted_tool_events(
@@ -2021,9 +2223,14 @@ def _validate_agent_payload(binding: Mapping[str, Any], payload: Any,
     return {**payload, "date_policy": copy.deepcopy(binding["date_policy"])}
 
 
-def _bound_source_key(
+class _ArticleScopeExclusion(ValueError):
+    """One candidate is outside its uniquely bound frozen source scope."""
+
+
+def _bound_source_scope(
     binding: Mapping[str, Any], declared: Any, *, require_exact: bool = False,
-) -> str:
+    url: str | None = None,
+) -> tuple[str, dict[str, Any]]:
     records = (binding.get("source_inventory") or {}).get("records") or []
     matches: set[str] = set()
     for record in records:
@@ -2050,7 +2257,51 @@ def _bound_source_key(
     ]
     if len(matching_scopes) != 1:
         raise ValueError("managed article reviewed site scope is not uniquely bound")
-    return selected
+    source_record = next(record for record in records if record.get("key") == selected)
+    scope_record = dict(matching_scopes[0])
+    governed_urls = [source_record.get("url"), *scope_record.get("seed_urls", [])]
+    allowed_origins = {
+        (urlsplit(value).scheme.lower(), urlsplit(value).netloc.lower())
+        for value in governed_urls if isinstance(value, str) and urlsplit(value).netloc
+    }
+    if url is not None:
+        target = urlsplit(url)
+        if (target.scheme.lower(), target.netloc.lower()) not in allowed_origins:
+            raise _ArticleScopeExclusion(
+                "managed article URL origin is outside the reviewed site scope"
+            )
+        from climate_monitor.models import SiteScope
+        from climate_monitor.web_listening_adapter import _url_allowed
+
+        reviewed_scope = SiteScope(
+            source_key=selected,
+            seed_urls=tuple(scope_record.get("seed_urls", ())),
+            include_patterns=tuple(scope_record.get("include_patterns", ())),
+            exclude_patterns=tuple(scope_record.get("exclude_patterns", ())),
+            include_source_url=scope_record.get("include_source_url", True),
+            fetch_mode=str(scope_record.get("fetch_mode", "")),
+            fetch_config_json=scope_record.get("fetch_config_json"),
+            notes=str(scope_record.get("notes", "")),
+        )
+        if not _url_allowed(url, reviewed_scope):
+            raise _ArticleScopeExclusion(
+                "managed article URL is excluded by the reviewed site scope"
+            )
+    return selected, {
+        "source_key": selected,
+        "allowed_origins": sorted(f"{scheme}://{netloc}" for scheme, netloc in allowed_origins),
+        "include_patterns": list(scope_record.get("include_patterns", [])),
+        "exclude_patterns": list(scope_record.get("exclude_patterns", [])),
+    }
+
+
+def _bound_source_key(
+    binding: Mapping[str, Any], declared: Any, *, require_exact: bool = False,
+    url: str | None = None,
+) -> str:
+    return _bound_source_scope(
+        binding, declared, require_exact=require_exact, url=url,
+    )[0]
 
 
 _STAGE_BODY_PREVIEW_LIMIT = 12_000
@@ -2292,16 +2543,25 @@ def _assemble_v3_payload(
     result_handles = {
         row["handle"]: row for row in ledger.result_handles()
     }
+    receipts = ledger.candidate_receipts()
+    receipts_by_result = {row["result_handle"]: row for row in receipts}
     items: list[dict[str, Any]] = []
     controlled_events: list[dict[str, Any]] = []
     accounted_handles: set[str] = set()
-    for receipt in ledger.candidate_receipts():
-        if receipt["state"] == "superseded":
-            continue
-        accounted_handles.add(receipt["result_handle"])
+    for receipt in receipts:
         result = result_handles.get(receipt.get("result_handle"))
         if result is None:
             raise ValueError("candidate receipt lacks its trusted result handle")
+        if receipt["state"] == "superseded":
+            alias_item = _reused_candidate_alias_item(
+                receipt, result, receipts_by_result, result_handles,
+            )
+            if alias_item is None:
+                continue
+            accounted_handles.add(receipt["result_handle"])
+            items.append(alias_item)
+            continue
+        accounted_handles.add(receipt["result_handle"])
         raw_item = receipt.get("item")
         if receipt["state"] == "in_progress" and not isinstance(raw_item, Mapping):
             reason = "candidate staging was interrupted before a durable receipt"
@@ -2410,10 +2670,23 @@ def _controlled_fetch_payload(
                 {"engine": "fetch_article_content", "status": "failed",
                  "event_kind": "precheck", "error": reason}]}
         else:
-            site_key = _bound_source_key(binding, item.get("source"))
-            record = fetch_article_content(
-                f"managed-{ordinal}", item["url"], budget=ledger, site_key=site_key,
-            )
+            try:
+                site_key, site_scope = _bound_source_scope(
+                    binding, item.get("source"), url=item["url"],
+                )
+            except _ArticleScopeExclusion as exc:
+                reason = str(exc)
+                if ledger:
+                    ledger.note("precheck", item["url"], reason,
+                                tool="controlled_article_fetch")
+                record = {
+                    "status": "unavailable", "failure_reason": reason, "attempts": [],
+                }
+            else:
+                record = fetch_article_content(
+                    f"managed-{ordinal}", item["url"], budget=ledger,
+                    site_key=site_key, site_scope=site_scope,
+                )
         attempted_at = _now()
         raw_attempts = record.get("attempts")
         if not isinstance(raw_attempts, list):
@@ -2421,10 +2694,18 @@ def _controlled_fetch_payload(
         attempts = []
         for raw in raw_attempts:
             attempt = dict(raw) if isinstance(raw, Mapping) else {"detail": str(raw)}
-            attempt.setdefault("engine", attempt.get("tool") or attempt.get("method")
+            attempt.setdefault("engine", attempt.get("tool_id") or attempt.get("tool") or attempt.get("method")
                                or "fetch_article_content")
-            status = attempt.get("status", attempt.get("data_status"))
-            attempt["status"] = "success" if status in {"ok", "present", "success"} else "failed"
+            original_status = attempt.get("status")
+            if original_status is not None:
+                attempt.setdefault("upstream_status", original_status)
+            status = attempt.get("outcome", original_status or attempt.get("data_status"))
+            attempt["status"] = {
+                "succeeded": "success", "failed": "failed", "skipped": "unavailable",
+                "ok": "success", "present": "success", "success": "success",
+            }.get(status, "failed")
+            if attempt.get("http_status") is None:
+                attempt.pop("http_status", None)
             attempt.setdefault("attempted_at", attempted_at)
             attempts.append(attempt)
         if not attempts:
@@ -2436,6 +2717,23 @@ def _controlled_fetch_payload(
             events.append({"tool": "controlled_article_fetch",
                            "arguments": {"url": item["url"]}, "result": attempt})
         method = record.get("selected_method")
+        if record.get("status") == "ok" and record.get("final_url"):
+            try:
+                _bound_source_scope(
+                    binding, item.get("source"), url=record["final_url"],
+                )
+            except _ArticleScopeExclusion as exc:
+                record["status"] = "failed"
+                record["failure_reason"] = (
+                    f"controlled reader final URL is outside the frozen source binding: {exc}"
+                )
+        raw_bytes = json.dumps(
+            record, ensure_ascii=False, sort_keys=True, default=str,
+        ).encode("utf-8")
+        raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        raw_path = capture_root / f"{raw_sha256}.reader.json"
+        _atomic_write(raw_path, raw_bytes)
+        raw_ref = f"managed/captures/{raw_sha256}.reader.json"
         if record.get("status") != "ok" or not method or not record.get("content"):
             reason = str(record.get("failure_reason") or "controlled reader returned no full content")
             item["processing_status"] = "failed"
@@ -2445,8 +2743,9 @@ def _controlled_fetch_payload(
                 "final_url": record.get("final_url") or item["url"],
                 "attempts": attempts,
                 "selected_method": None, "content_type": None, "content": None,
-                "content_hash": None, "content_ref": None, "raw_snapshot_ref": None,
-                "raw_snapshot_sha256": None, "classification": "error",
+                "content_hash": None, "content_ref": None,
+                "raw_snapshot_ref": raw_ref,
+                "raw_snapshot_sha256": raw_sha256, "classification": "error",
                 "failure_reason": reason, "http_status": None,
             }
             continue
@@ -2483,12 +2782,8 @@ def _controlled_fetch_payload(
         body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
         if record.get("content_hash") and record["content_hash"] != body_hash:
             raise ValueError("controlled reader content hash differs from returned body")
-        stem = hashlib.sha256(item["url"].encode("utf-8")).hexdigest()[:24]
-        content_path = capture_root / f"{stem}.content.txt"
-        raw_path = capture_root / f"{stem}.reader.json"
-        raw_bytes = json.dumps(record, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        content_path = capture_root / f"{body_hash}.content.txt"
         _atomic_write(content_path, body.encode("utf-8"))
-        _atomic_write(raw_path, raw_bytes)
         item["processing_status"] = "complete"
         item["processing_error"] = None
         item["evidence"] = {
@@ -2498,9 +2793,9 @@ def _controlled_fetch_payload(
             "selected_method": str(method),
             "content_type": record.get("content_type") or "text/plain",
             "content": body, "content_hash": body_hash,
-            "content_ref": f"managed/captures/{stem}.content.txt",
-            "raw_snapshot_ref": f"managed/captures/{stem}.reader.json",
-            "raw_snapshot_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            "content_ref": f"managed/captures/{body_hash}.content.txt",
+            "raw_snapshot_ref": raw_ref,
+            "raw_snapshot_sha256": raw_sha256,
             "classification": "full_content", "failure_reason": None,
             "http_status": http_status,
         }
@@ -2686,16 +2981,21 @@ def _write_report_inputs(
                 f"controlled source outcome is missing for {source['key']}"
             )
         dispositions = outcome.get("dispositions")
-        if (not isinstance(dispositions, list) or len(dispositions) != 1
-                or (outcome.get("full_success") is True and (
-                    dispositions[0].get("artifact_id") != manifest["manifest_id"]
-                    or outcome.get("counts", {}).get("valid_snapshots") != 1))
-                or (outcome.get("full_success") is not True and dispositions[0].get("artifact_id") is not None)) :
+        valid_snapshots = outcome.get("counts", {}).get("valid_snapshots")
+        successful = [
+            item for item in dispositions or []
+            if item.get("disposition") in {"updated", "unchanged"}
+        ]
+        if (not isinstance(dispositions, list) or not dispositions
+                or valid_snapshots != len(successful)
+                or any(item.get("artifact_id") != manifest["manifest_id"] for item in successful)
+                or any(item.get("artifact_id") is not None for item in dispositions
+                       if item.get("disposition") not in {"updated", "unchanged"})):
             raise AcquisitionIncompleteError(
                 f"controlled source outcome is not bound to a valid snapshot for {source['key']}"
             )
         outcomes.append(outcome)
-        if outcome.get("full_success") is True:
+        if valid_snapshots:
             manifests.append(manifest)
         else:
             diagnostic_manifests.append(manifest)
@@ -2757,6 +3057,97 @@ def _run_report(
         )
         result = subprocess.run(command, **run_options)
     return int(result.returncode)
+
+
+def _validated_report_result(
+    binding_path: Path, binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Read and verify the exact result emitted by a successful report process."""
+    from climate_monitor.semantic_bundle import (
+        semantic_sidecar_path,
+        verify_semantic_sidecar,
+    )
+    from climate_monitor.weekly_monitor.authoring_contract import (
+        _validate_v2_stats_shape,
+    )
+
+    path = binding_path.parent / f"attempt-{binding['attempt']}-report-result.json"
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError("successful report result is missing or invalid") from exc
+    if not isinstance(result, dict):
+        raise ValueError("successful report result must be an object")
+    if result.get("report_date") != binding["report_date"]:
+        raise ValueError("successful report result date differs from the frozen run")
+    item_count = result.get("item_count")
+    items = result.get("items")
+    if (not isinstance(item_count, int) or isinstance(item_count, bool)
+            or item_count < 0):
+        raise ValueError("successful report result item_count is invalid")
+    if not isinstance(items, list) or len(items) != item_count:
+        raise ValueError("successful report result items do not match item_count")
+    _validate_v2_stats_shape(result.get("stats"))
+    if not isinstance(result.get("synced"), bool):
+        raise ValueError("successful report result synced field is invalid")
+
+    report_path = Path(binding["report_inputs"]["source_dir"]) / (
+        f"climate-monitor-{binding['report_date']}.md"
+    )
+    if item_count == 0:
+        if (result.get("report_path") is not None
+                or result.get("report_sha256") != ""
+                or result.get("semantics_path") is not None
+                or result["synced"] is not False):
+            raise ValueError("zero-item report result contains report artifacts")
+        return result
+
+    sidecar_path = semantic_sidecar_path(report_path)
+    report_sha256 = result.get("report_sha256")
+    if (result.get("report_path") != report_path.name
+            or not isinstance(report_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", report_sha256) is None
+            or result.get("semantics_path") != sidecar_path.name):
+        raise ValueError("positive report result identity is invalid")
+    try:
+        report_bytes = report_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("positive report result artifact is missing") from exc
+    if hashlib.sha256(report_bytes).hexdigest() != report_sha256:
+        raise ValueError("positive report result hash is invalid")
+    sidecar = verify_semantic_sidecar(report_path, report_bytes=report_bytes)
+    if sidecar.get("article_count") != item_count:
+        raise ValueError("positive report result count differs from its semantic sidecar")
+    receipt_urls = []
+    for item in items:
+        if not isinstance(item, Mapping) or not isinstance(item.get("url"), str):
+            raise ValueError("positive report result items lack canonical URL identity")
+        try:
+            receipt_urls.append(canonical_url(item["url"]))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "positive report result items lack canonical URL identity"
+            ) from exc
+    sidecar_urls = [article.get("canonical_url") for article in sidecar["articles"]]
+    if sorted(receipt_urls) != sorted(sidecar_urls):
+        raise ValueError(
+            "positive report result items differ from its semantic sidecar"
+        )
+    return result
+
+
+def _final_reportability(
+    acquisition: Mapping[str, Any], report_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project final authored eligibility without changing the frozen acquisition."""
+    final = copy.deepcopy(dict(acquisition))
+    final["selected_record_count"] = report_result["item_count"]
+    if report_result["item_count"] == 0:
+        final.update(
+            outcome="no_eligible_information",
+            reportable=False,
+        )
+    return final
 
 
 def _invoke_hermes(
@@ -2891,15 +3282,23 @@ def _resume_frozen_report(
         _write_progress(binding_path, binding, stage="report_failed", error=error,
                         next_step="resume report authoring from the exact frozen input")
         return report_exit
+    report_result = _validated_report_result(binding_path, binding)
+    final_reportability = _final_reportability(reportability, report_result)
     _commit_controlled_site_checkpoints(binding)
     _write_result(binding_path, exit_code=0, retryable=False, error=None,
                   execution_complete=True,
-                  full_coverage=reportability["full_coverage"],
-                  outcome=reportability["outcome"], reportability=reportability)
+                  full_coverage=final_reportability["full_coverage"],
+                  outcome=final_reportability["outcome"],
+                  reportability=final_reportability)
     _write_progress(
         binding_path, binding,
-        stage=("report_completed" if reportability["full_coverage"]
-               else "report_completed_with_gaps"),
+        stage=("no_eligible_information"
+               if final_reportability["outcome"] == "no_eligible_information"
+               else ("report_completed" if final_reportability["full_coverage"]
+                     else "report_completed_with_gaps")),
+        next_step=("retain the truthful no-report outcome"
+                   if final_reportability["outcome"] == "no_eligible_information"
+                   else None),
     )
     return 0
 
@@ -2927,9 +3326,19 @@ def _execute_attempt(
         raise ValueError(f"unsupported binding schema at {binding_path}")
     _agent_protocol(binding)
     _validate_agent_prompt_protocol(binding)
-    resumed_report = _resume_frozen_report(
-        binding_path, binding, state_lock_descriptor=state_lock_descriptor,
-    )
+    try:
+        resumed_report = _resume_frozen_report(
+            binding_path, binding, state_lock_descriptor=state_lock_descriptor,
+        )
+    except Exception as exc:
+        _discard_controlled_site_checkpoints(binding)
+        error = f"Trusted acquisition validation failed: {type(exc).__name__}: {exc}"
+        _write_result(binding_path, exit_code=65, retryable=False, error=error)
+        _write_progress(
+            binding_path, binding, stage="terminal_failure", error=error,
+            next_step="inspect evidence and start a corrected new run",
+        )
+        return 65
     if resumed_report is not None:
         return resumed_report
     hermes = os.environ.get("HERMES_EXECUTABLE") or shutil.which("hermes")
@@ -3016,9 +3425,29 @@ def _execute_attempt(
             budget_limits.pop(key, None)
             prior_budget_usage.pop(key, None)
         remaining_budget_keys = ["fetch_attempts", "runtime_seconds"]
-    prompt_site_context = copy.deepcopy(site_context)
-    if candidate_handle_protocol(binding):
-        prompt_site_context["candidate_handles"] = site_handle_context
+    site_evidence_reference = _controlled_site_evidence_reference(
+        binding_path, binding, site_context,
+    )
+    try:
+        prompt_site_context = (
+            _controlled_site_prompt_projection(
+                site_context, site_handle_context, site_evidence_reference,
+            )
+            if candidate_handle_protocol(binding)
+            else copy.deepcopy(site_context)
+        )
+    except AcquisitionIncompleteError as exc:
+        _discard_controlled_site_checkpoints(binding)
+        error = f"Acquisition remains incomplete: {exc}"
+        _write_result(binding_path, exit_code=75, retryable=True, error=error)
+        _write_progress(
+            binding_path, binding, stage="terminal_partial", error=error,
+            next_step=(
+                "correct the governed candidate projection capacity before "
+                "resuming the complete unchanged inventory"
+            ),
+        )
+        return 75
     prompt_context = {
         "web_listening": prompt_site_context,
         "registry_history": registry_history,
@@ -3229,7 +3658,9 @@ def _execute_attempt(
             payload["search_decision"] = {
                 "status": "no_search", "reason": blocked_search_reason,
             }
-        payload["source_outcomes"] = copy.deepcopy(site_context.get("source_results", []))
+        payload["source_outcomes"] = json.loads(json.dumps(
+            site_context.get("source_results", []), ensure_ascii=False, allow_nan=False,
+        ))
         payload["source_coverage_status"] = str(site_context.get("status") or "unknown")
         payload["source_warnings"] = [
             str(value) for value in site_context.get("warnings", [])
@@ -3318,17 +3749,24 @@ def _execute_attempt(
                             next_step="resume report authoring from the exact frozen input",
                             events=all_events)
             return report_exit
+        report_result = _validated_report_result(binding_path, binding)
+        final_reportability = _final_reportability(reportability, report_result)
         _commit_controlled_site_checkpoints(binding)
         _write_result(binding_path, exit_code=0, retryable=False, error=None,
                       execution_complete=True,
-                      full_coverage=reportability["full_coverage"],
-                      outcome=reportability["outcome"], reportability=reportability)
+                      full_coverage=final_reportability["full_coverage"],
+                      outcome=final_reportability["outcome"],
+                      reportability=final_reportability)
         _write_progress(
             binding_path, binding,
-            stage=("report_completed" if reportability["full_coverage"]
-                   else "report_completed_with_gaps"),
-            next_step=(None if reportability["full_coverage"]
-                       else "publish only after retained limitations and final validation are reviewed"),
+            stage=("no_eligible_information"
+                   if final_reportability["outcome"] == "no_eligible_information"
+                   else ("report_completed" if final_reportability["full_coverage"]
+                         else "report_completed_with_gaps")),
+            next_step=("retain the truthful no-report outcome"
+                       if final_reportability["outcome"] == "no_eligible_information"
+                       else (None if final_reportability["full_coverage"]
+                             else "publish only after retained limitations and final validation are reviewed")),
             events=all_events,
         )
         return 0

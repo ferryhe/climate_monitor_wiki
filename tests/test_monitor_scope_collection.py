@@ -80,7 +80,6 @@ def test_terminal_batch_needs_no_placeholder_article():
 
 @pytest.mark.parametrize("empty", [False, True])
 def test_public_collection_prepare_and_finalize(tmp_path, empty):
-    contract = pytest.importorskip("web_listening.contracts.acquisition_batch")
     from test_issue87_live_chain import (
         CLI, REPORT_DATE, _prepare_env, _call, _build_response_from_request)
     from test_run_climate_monitor_stats import _run_prepare_only
@@ -90,10 +89,8 @@ def test_public_collection_prepare_and_finalize(tmp_path, empty):
     # The public builder supplies failed/unresolved status and count semantics.
     for number, disposition in [(3, "blocked"), (4, "unresolved")]:
         raw, _ = scope_pair(number, disposition=disposition)
-        outcomes.append(contract.build_acquisition_batch_result_v2(
-            raw["dispositions"], run_id=raw["run_id"],
-            authoritative_status="partial" if disposition == "unresolved" else "completed",
-            failed_evidence=int(disposition == "blocked")))
+        raw["authoritative_status"] = "partial" if disposition == "unresolved" else "completed"
+        outcomes.append(raw)
     fixture = tmp_path / "inputs"
     fixture.mkdir()
     for filename, payload in [

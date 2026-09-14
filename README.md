@@ -132,11 +132,11 @@ Titles are metadata: different URLs with the same title remain separate articles
 
 | Module | Program/package | Responsibility |
 |---|---|---|
-| Site acquisition (Pillar A) | External `web_listening` public batch/export APIs | Site monitoring, governed readers and same-run outcome/manifest artifacts |
+| Site acquisition (Pillar A) | `web_listening` `RuntimeService.explore_site` / `refresh_site` | Governed site exploration, immutable continuation state, actual attempts and climate outcome/manifest bridge artifacts |
 | Discovery (Pillar B) | Hermes tools + `weekly_monitor/prompt_loader.py`, `pillar_b_discovery.py` | Execute the editable search task; validate completed queries, report date and article publication evidence |
 | Prepare and queue | `scripts/run_climate_monitor.py` | Validate inputs, merge URLs, freeze evidence, run/resume each URL serially |
 | Candidate identity | `climate_monitor/article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | Canonical URLs, merged origins and artifact identities |
-| Evidence adapter | `climate_monitor/article_content_adapter.py` | Consume upstream public content results, preserve attempts/status/hashes and distinguish body, snippet and no evidence |
+| Evidence adapter | `climate_monitor/article_content_adapter.py` + public `Request`/`RuntimeService` | Resolve one prevalidated selected URL under an exact-path scope through the same Runtime root; verify derived content bytes and preserve the full job/result, source/derived identities, attempts and failures |
 | Optional page titles | `climate_monitor/article_title.py` | Extract the current page H1/title offline, preserving capitalization |
 | Authoring rules and validation | `climate_monitor/weekly_monitor/`, `climate_monitor/taxonomy.py` | Compose relevance rules, validate both relevance decisions, summary, categories and keywords |
 | Report/state transaction | `climate_monitor/orchestrator.py`, `seen_state.py` | Finalize the validated Markdown, sidecar, candidate evidence and URL history |
@@ -152,7 +152,7 @@ the monitor does not automatically perform Pillar B search.
 
 ```mermaid
 flowchart TD
-    A["Pillar A: web_listening<br/>same-run outcome + manifest"] --> P
+    A["Pillar A: governed Runtime<br/>site result + climate bridge artifacts"] --> P
     B["Pillar B: Hermes search<br/>completed queries + dated article evidence"] --> P
     P["Prepare: run_climate_monitor.py<br/>canonical URL merge + frozen evidence"] --> T
     T["Optional article_title helper<br/>verified page H1/title"] --> Q
@@ -385,12 +385,14 @@ There is no console queue, search wrapper, second executor, or report/publish
 bypass. Concurrent start/resume requests for the shared
 monitor state are rejected by an interprocess lock; the worker owns that lock
 from collection through report finalization. The scheduler snapshot remains separate from live
-acquisition status. The Python 3.12 image installs `web-listening` 3.2.0 and an
+acquisition status. The Python 3.12 image installs `web-listening` 0.1.0 from
+`web_listening_new` revision `ac2343f89bc7939736d85f049ebe2beac571034a` and an
 editable Hermes Agent 0.20.5 checkout from immutable source commits; Hermes is
 MIT-licensed, while `web-listening` is an internal source dependency with no
 license metadata declared at the pinned revision. The Compose runtime volume is
-seeded with the task definition only when empty, so later operator versions and
-run evidence persist across container replacement. This diagram describes
+seeded with the task definition only when empty. A separate whole-root volume
+persists upstream acquisition jobs, artifacts, lifecycle state and the qualified
+browser runtime across container replacement. This diagram describes
 implemented repository code, **not** evidence that production credentials,
 storage, or schedules were deployed. See
 [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) and [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md)

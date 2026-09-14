@@ -11,12 +11,9 @@ from scripts import run_climate_monitor as monitor
 
 
 def public_inputs(tmp_path):
-    contract = pytest.importorskip('web_listening.contracts.acquisition_batch')
-    run = SimpleNamespace(id=2, status='completed', pages_seen=1, files_seen=0,
-                          pages_changed=0, files_changed=0)
-    outcome = contract.acquisition_batch_result_v2_from_scope_run(
-        run, site_key='wri', requested_url='https://www.wri.org/insights',
-        artifact_id='manifest-wri-2')
+    outcome = json.loads((
+        Path(__file__).parent / 'fixtures/issue87/wri_repro/acquisition-batch-result.v2.json'
+    ).read_text())
     manifest = {'schema_version': 'web-listening-manifest.v1',
                 'manifest_id': 'manifest-wri-2',
                 'run': {'run_id': 'run-2', 'parent_run_id': '2'},
@@ -136,41 +133,6 @@ def test_monitor_preflight_checks_consumed_contract(tmp_path, monkeypatch, capsy
     assert not (tmp_path / 'staging').exists()
 
 
-@pytest.mark.parametrize('site_key,url', [(None, 'https://www.wri.org/insights/climate-risk'),
-                                 (None, 'https://www.ipcc.ch/report/ar6/syr/'),
-                                 (None, 'https://www.adb.org/news/climate-risk'),
-                                 ('bis', 'https://www.bis.org/climate-risk'),
-                                 ('bcbs', 'https://www.bis.org/climate-risk'),
-                                 ('psi', 'https://www.unepfi.org/climate-risk'),
-                                 ('fit', 'https://www.unepfi.org/climate-risk')])
-@pytest.mark.parametrize('explicit_root', [False, True])
-def test_default_reader_uses_real_governed_configuration(tmp_path, monkeypatch, explicit_root, site_key, url):
-    article = pytest.importorskip('web_listening.blocks.article_content')
-    from web_listening.contracts.tool_result import ToolResult
-    from climate_monitor import article_content_adapter as adapter
-    monkeypatch.setattr(article.settings, 'data_dir', tmp_path)
-    # Preserve the actual public reader and compiler. Only the I/O gateway and
-    # terminal transport are replaced; no provider is injected into climate.
-    class Gateway:
-        def close(self):
-            pass
-    monkeypatch.setattr('web_listening.blocks.governed_read.build_runtime_read_gateway',
-                        lambda **kwargs: Gateway())
-    calls = []
-    def terminal(url, **kwargs):
-        calls.append((url, kwargs))
-        return ToolResult(ok=True, has_data=False, data_status='no_content', data_count=0,
-                          tool='fetch_article_content', stop_reason='no_usable_content',
-                          data={'requested_url': url}, attempts=[])
-    monkeypatch.setattr(article, '_fetch_with_readers', terminal)
-    result = adapter.build_article_evidence_artifact(
-        [{'article_id': 'article', 'url': url, 'source_id': site_key}],
-        report_date='2026-09-07', **({'data_root': tmp_path} if explicit_root else {}))
-    assert len(calls) == 1, result['records']
-    if site_key:
-        assert calls[0][1]['profile'].site_key == site_key
-    assert Path(calls[0][1]['output_dir']).is_relative_to(tmp_path)
-    assert result['records'][0]['status'] != 'unavailable'
 
 
 @pytest.mark.parametrize("no_page_titles", [False, True])
@@ -349,13 +311,12 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
         assert not (staging / 'authoring_response.json').exists()
 
 
-def test_saved_batch_fixture_is_the_public_v2_contract():
-    contract = pytest.importorskip('web_listening.contracts.acquisition_batch')
+def test_saved_batch_fixture_is_the_climate_bridge_contract():
     payload = json.loads((monitor.ROOT / 'tests/fixtures/issue87/acquisition_batch_result.v2.57.json').read_text())
-    validated = contract.AcquisitionBatchResultV2.model_validate_json(json.dumps(payload))
-    assert validated.counts.requested == 57
-    assert validated.counts.succeeded == 42
-    assert validated.summary.failed == 15
+    validated = monitor._validate_climate_acquisition_outcome(payload)
+    assert validated['counts']['requested'] == 57
+    assert validated['counts']['succeeded'] == 42
+    assert validated['summary']['failed'] == 15
 
 
 def test_existing_response_stops_before_prepare_or_author(tmp_path, monkeypatch):
@@ -650,7 +611,7 @@ def test_partial_public_outcome_is_rejected_by_shared_boundary(tmp_path):
     for key in ('authoritative_status', 'status', 'full_success', 'summary'):
         payload.pop(key)
     op.write_text(json.dumps(payload))
-    with pytest.raises(SystemExit, match='public acquisition'):
+    with pytest.raises(SystemExit, match='invalid climate acquisition-batch-result.v2'):
         monitor._read_prepare_inputs(op, mp, bp)
 
 
@@ -700,12 +661,10 @@ def test_missing_authoring_identity_stops_before_prepare(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('fixture_index', [0, 1, 2])
-def test_dependency_free_saved_fixtures_match_public_model(fixture_index):
+def test_dependency_free_saved_fixtures_match_climate_validator(fixture_index):
     from issue87_outcome_fixture import FIXTURES, validate_fixture
-    contract = pytest.importorskip('web_listening.contracts.acquisition_batch')
     raw = FIXTURES[fixture_index].read_text()
-    assert validate_fixture(raw) == contract.AcquisitionBatchResultV2.model_validate_json(
-        raw).model_dump(mode='json', exclude_none=True)
+    assert validate_fixture(raw) == monitor._validate_climate_acquisition_outcome(json.loads(raw))
 
 
 @pytest.mark.parametrize('fixture_index', [0, 2])
@@ -727,14 +686,7 @@ def test_dependency_free_fixture_rejects_changed_payload(mutation, fixture_index
 
 @pytest.fixture
 def dependency_free_outcome(tmp_path, monkeypatch):
-    import builtins
     from issue87_outcome_fixture import FIXTURES
-    original_import = builtins.__import__
-    def without_upstream(name, *args, **kwargs):
-        if name == 'web_listening.contracts.acquisition_batch':
-            raise ModuleNotFoundError("No module named 'web_listening'", name='web_listening')
-        return original_import(name, *args, **kwargs)
-    monkeypatch.setattr(builtins, '__import__', without_upstream)
     monkeypatch.setenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN', '1')
     monkeypatch.setenv('CLIMATE_DRY_RUN_ROOT', str(tmp_path))
@@ -745,15 +697,16 @@ def dependency_free_outcome(tmp_path, monkeypatch):
 
 def test_dependency_free_outcome_is_explicit_and_strict(dependency_free_outcome, monkeypatch):
     path = dependency_free_outcome
+    original = path.read_text()
     assert monitor._read_outcome(path)['counts']['requested'] == 57
     payload = json.loads(path.read_text())
     del payload['summary']
     path.write_text(json.dumps(payload))
-    with pytest.raises(SystemExit, match='invalid public'):
+    with pytest.raises(SystemExit, match='invalid saved'):
         monitor._read_outcome(path)
+    path.write_text(original)
     monkeypatch.delenv('CLIMATE_DRY_RUN_OUTCOME_FIXTURE')
-    with pytest.raises(ModuleNotFoundError):
-        monitor._read_outcome(path)
+    assert monitor._read_outcome(path)['counts']['requested'] == 57
 
 
 def test_dependency_free_fixture_is_forbidden_in_production(dependency_free_outcome, monkeypatch):

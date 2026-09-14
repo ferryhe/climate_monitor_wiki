@@ -1,4 +1,5 @@
 """Request-boundary and durable-resume requirements, independent of live services."""
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,6 +148,13 @@ def _v3_binding(tmp_path, *, mode="unlimited"):
     value = build_task_binding(
         definition, task_version=1, run_id=f"v3-{mode}", attempt=1,
     )
+    # These tests exercise durable candidate-stage behavior independently of
+    # production source path rules; scope enforcement has dedicated boundary
+    # regressions in test_issue126_article_runtime_scope.py.
+    for scope in value["site_scope_inventory"]["records"]:
+        if scope["source_key"] == "wmo":
+            scope["include_patterns"] = ["/**"]
+            scope["exclude_patterns"] = []
     assert value["agent_protocol"] == V3_AGENT_PROTOCOL
     return value
 
@@ -554,20 +562,20 @@ def test_v2_cannot_register_candidate_result_handles(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("tool", "arguments"),
+    ("tool", "arguments", "rejection"),
     [
         ("climate_stage_candidate", {
             "result_handle": "result-" + "0" * 64, "source_key": "wmo",
-        }),
+        }, "candidate result handle is not bound to this attempt/session"),
         ("climate_finalize_candidate", {
             "candidate_handle": "candidate-" + "0" * 64,
             "selected": True, "title": "Forged", "summary": "Forged",
             "selection_reason": "Forged",
-        }),
+        }, "candidate handle is not one staged receipt"),
     ],
 )
-def test_v3_invalid_candidate_tool_transcript_cannot_disappear(
-    tmp_path, tool, arguments,
+def test_v3_rejected_unknown_candidate_call_is_audited_without_blocking_receipts(
+    tmp_path, tool, arguments, rejection,
 ):
     from climate_monitor.hermes_acquisition_hooks import attempt_home
     from climate_monitor.request_budget import RequestBudget, ledger_path
@@ -579,27 +587,55 @@ def test_v3_invalid_candidate_tool_transcript_cannot_disappear(
     _write_hermes_tool_events(attempt_home(task_binding), task_binding, [{
         "tool_call_id": f"call-invalid-{tool}", "tool": tool,
         "arguments": arguments,
-        "result": {"error": "tool rejected the unknown handle"},
+        "result": {"error": f"Error executing {tool}: {rejection}"},
     }])
     trusted = runner._trusted_tool_events(task_binding)
     assert trusted[0]["result"] == {
         "event_kind": "candidate_tool",
-        "status": "unresolved_error",
-        "error": "tool rejected the unknown handle",
+        "status": "rejected_call",
+        "error": f"Error executing {tool}: {rejection}",
     }
     provenance = runner._persist_tool_provenance(
         tmp_path / "attempt-1.json", task_binding, trusted,
     )
-    assert provenance["events"][0]["result"]["status"] == "unresolved_error"
-    with pytest.raises(ValueError, match="unresolved candidate tool transcript"):
-        runner._assemble_v3_payload(task_binding, trusted)
+    assert provenance["events"][0]["result"]["status"] == "rejected_call"
+    payload, controlled = runner._assemble_v3_payload(task_binding, trusted)
+    assert payload["items"] == [] and controlled == []
     assert RequestBudget(
         ledger_path(task_binding), task_binding,
     ).usage()["fetch_attempts"] == 0
 
 
-def test_v3_candidate_tool_error_can_be_corrected_without_hiding_audit(
-    tmp_path, monkeypatch,
+def test_v3_unrecognized_candidate_tool_error_remains_fatal(tmp_path):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    RequestBudget(ledger_path(task_binding), task_binding)
+    events = [{
+        "session_id": "session-1", "tool_call_id": "call-system",
+        "tool": "climate_finalize_candidate",
+        "arguments": {
+            "candidate_handle": "candidate-" + "0" * 64,
+            "selected": True, "title": "Title", "summary": "Summary",
+            "selection_reason": "Relevant",
+        },
+        "result": {
+            "event_kind": "candidate_tool", "status": "unresolved_error",
+            "error": "candidate receipt hash differs",
+        },
+        "durable_status": "error",
+    }]
+    with pytest.raises(ValueError, match="unresolved candidate tool transcript"):
+        runner._assemble_v3_payload(task_binding, events)
+
+
+@pytest.mark.parametrize("rejected_tool", [
+    "climate_stage_candidate", "climate_finalize_candidate",
+])
+@pytest.mark.parametrize("rejected_last", [False, True])
+def test_v3_candidate_request_rejection_is_order_independent(
+    tmp_path, monkeypatch, rejected_tool, rejected_last,
 ):
     from climate_monitor.hermes_acquisition_hooks import attempt_home
     from climate_monitor.request_budget import RequestBudget, ledger_path
@@ -629,19 +665,7 @@ def test_v3_candidate_tool_error_can_be_corrected_without_hiding_audit(
         binding_path, candidate_handle=staged["candidate_handle"],
         session_id="session-1", **annotations,
     )
-    _write_hermes_tool_events(attempt_home(task_binding), task_binding, [
-        {
-            "tool_call_id": "call-invalid-stage",
-            "tool": "climate_stage_candidate",
-            "arguments": {
-                "result_handle": "result-" + "0" * 64,
-                "source_key": "wmo",
-            },
-            "result": {
-                "error": "Error executing climate_stage_candidate: "
-                "candidate result handle is not bound to this attempt/session",
-            },
-        },
+    valid_events = [
         {
             "tool_call_id": "call-valid-stage",
             "tool": "climate_stage_candidate",
@@ -658,23 +682,39 @@ def test_v3_candidate_tool_error_can_be_corrected_without_hiding_audit(
             },
             "result": finalized,
         },
-    ])
+    ]
+    rejected = {
+        "tool_call_id": f"call-invalid-{rejected_tool}",
+        "tool": rejected_tool,
+        "arguments": ({
+            "result_handle": "result-" + "0" * 64, "source_key": "wmo",
+        } if rejected_tool == "climate_stage_candidate" else {
+            "candidate_handle": "candidate-" + "0" * 64,
+            "selected": True, "title": "Unknown", "summary": "Unknown",
+            "selection_reason": "Unknown",
+        }),
+        "result": {"error": (
+            "Error executing climate_stage_candidate: candidate result handle is not bound to this attempt/session"
+            if rejected_tool == "climate_stage_candidate" else
+            "Error executing climate_finalize_candidate: candidate handle is not one staged receipt"
+        )},
+    }
+    events = [*valid_events, rejected] if rejected_last else [rejected, *valid_events]
+    _write_hermes_tool_events(attempt_home(task_binding), task_binding, events)
 
     trusted = runner._trusted_tool_events(task_binding)
     assert [event["result"]["status"] for event in trusted] == [
-        "resolved_error",
+        "rejected_call",
     ]
-    assert trusted[0]["result"]["resolved_by_tool_call_id"] == "call-valid-stage"
     provenance = runner._persist_tool_provenance(
         binding_path, task_binding, trusted,
     )
     assert provenance["actual"]["fetch_attempts"] == 1
-    assert provenance["events"][0]["result"]["error"].startswith(
-        "Error executing climate_stage_candidate:"
-    )
+    assert provenance["events"][0]["result"]["error"].startswith("Error executing climate_")
     payload, controlled = runner._assemble_v3_payload(task_binding, trusted)
     assert len(payload["items"]) == 1
     assert payload["items"][0]["url"] == "https://wmo.int/article"
+    assert payload["items"][0]["selected"] is True
     assert len(controlled) == 1
     assert calls == [("https://wmo.int/article", "wmo")]
 
@@ -743,7 +783,8 @@ def test_v3_valid_candidate_tool_transcript_reconciles_all_receipt_states(
         raw_call="call-failed", query="WMO failed",
         url="https://wmo.int/failed",
     )
-    def fail_fetch(_item_id, url, *, budget, site_key):
+    def fail_fetch(_item_id, url, *, budget, site_key, site_scope):
+        assert site_scope["source_key"] == site_key
         calls.append((url, site_key))
         budget.claim("http", url, retry_key=f"article:{url}")
         return {
@@ -820,7 +861,8 @@ def test_v3_valid_candidate_tool_transcript_reconciles_all_receipt_states(
 def _install_v3_reader(monkeypatch, calls):
     from climate_monitor import article_content_adapter as article
 
-    def fetch(_item_id, url, *, budget, site_key):
+    def fetch(_item_id, url, *, budget, site_key, site_scope):
+        assert site_scope["source_key"] == site_key
         calls.append((url, site_key))
         budget.claim("http", url, retry_key=f"article:{url}")
         body = "Verified governed article body"
@@ -838,6 +880,219 @@ def _install_v3_reader(monkeypatch, calls):
         }
 
     monkeypatch.setattr(article, "fetch_article_content", fetch)
+
+
+def test_v3_same_source_reuse_alias_preserves_registry_origins_without_refetch(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
+    from scripts import run_agent_acquisition as runner, run_climate_monitor as monitor
+
+    task_binding = _v3_binding(tmp_path, mode="unlimited")
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding), encoding="utf-8")
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    candidates = [{
+        "url": "https://wmo.int/news/shared", "source": "wmo",
+        "title": "First discovery", "summary": "First source evidence",
+        "discovery_ref": "tnfd-like-artifact-1",
+        "observed_at": task_binding["created_at"],
+    }, {
+        "url": "https://wmo.int/news/shared", "source": "wmo",
+        "title": "Second discovery", "summary": "Second source evidence",
+        "discovery_ref": "tnfd-like-artifact-2",
+        "observed_at": task_binding["created_at"],
+    }]
+    first_handle, alias_handle = [
+        row["handle"] for row in ledger.register_site_candidate_handles(candidates)
+    ]
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    first = runner._stage_candidate_receipt(
+        path, result_handle=first_handle, source_key="wmo", session_id="session-1",
+    )
+    alias = runner._stage_candidate_receipt(
+        path, result_handle=alias_handle, source_key="wmo", session_id="session-1",
+    )
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=first["candidate_handle"], selected=True,
+        title="Selected WMO evidence", summary="Verified summary",
+        selection_reason="Relevant", session_id="session-1",
+    )
+
+    payload, controlled = runner._assemble_v3_payload(task_binding, [])
+    assert calls == [("https://wmo.int/news/shared", "wmo")]
+    assert len(controlled) == 1
+    assert len(payload["items"]) == 2
+    by_ref = {item["discovery_ref"]: item for item in payload["items"]}
+    assert by_ref["tnfd-like-artifact-1"]["selected"] is True
+    reused = by_ref["tnfd-like-artifact-2"]
+    assert reused["selected"] is False
+    assert reused["processing_status"] == "complete"
+    assert "duplicate discovery retained" in reused["selection_reason"]
+    assert reused["evidence"] == by_ref["tnfd-like-artifact-1"]["evidence"]
+    assert "not staged" not in reused["selection_reason"]
+
+    manifest = [{
+        "schema_version": "web-listening-manifest.v1", "manifest_id": "manifest-wmo",
+        "run": {"run_id": "run-wmo", "parent_run_id": "wmo"},
+        "source": {"source_id": "wmo", "tree_seed_url": "https://wmo.int/"},
+        "discovered_items": [
+            {"item_id": row["discovery_ref"], "url": row["url"],
+             "title": row["title"], "summary": row["summary"]}
+            for row in candidates
+        ],
+    }]
+    pillar = {
+        "schema_version": "pillar-b-discovery.v2",
+        "report_date": payload["report_date"], "date_policy": payload["date_policy"],
+        "search_decision": payload["search_decision"], "searches": [], "articles": [],
+    }
+    completeness = monitor._validate_registry_acquisition_completeness(
+        payload, manifest, pillar,
+    )
+    assert completeness["site_occurrence_count"] == 2
+    payload.update(
+        completed_at=task_binding["created_at"], source_outcomes=[],
+        source_coverage_status="completed", source_warnings=[],
+        systemic_error=None, blocked_tool_prechecks=[],
+    )
+    store_acquisition_batch(task_binding["registry_database"], payload)
+    loaded = load_acquisition_batch(
+        task_binding["registry_database"], task_binding["acquisition_batch_id"],
+    )
+    assert len(loaded["items"]) == 1
+    assert {origin["discovery_ref"] for origin in loaded["items"][0]["origins"]} == {
+        "tnfd-like-artifact-1", "tnfd-like-artifact-2",
+    }
+
+
+def test_multiseed_adapter_writer_prepare_and_registry_round_trip(
+    tmp_path, monkeypatch,
+):
+    from dataclasses import asdict
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.models import CandidateItem, MonitorSource, SiteScope
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    from climate_registry.acquisition import load_acquisition_batch, store_acquisition_batch
+    from scripts import run_agent_acquisition as runner, run_climate_monitor as monitor
+
+    task_binding = _v3_binding(tmp_path, mode="unlimited")
+    source_row = task_binding["source_inventory"]["records"][0]
+    source = MonitorSource(
+        **{**source_row, "tags": tuple(source_row.get("tags", ()))},
+    )
+    scope_row = next(
+        row for row in task_binding["site_scope_inventory"]["records"]
+        if row["source_key"] == source.key
+    )
+    scope = SiteScope(**{
+        **scope_row,
+        "seed_urls": tuple(scope_row["seed_urls"]),
+        "include_patterns": tuple(scope_row["include_patterns"]),
+        "exclude_patterns": tuple(scope_row["exclude_patterns"]),
+    })
+    successful = set(scope.seed_urls[:2])
+
+    def run(_runtime, source_value, _scope, seed_url, *_args):
+        if seed_url not in successful:
+            return {
+                "status": "rejected", "event_kind": "policy",
+                "error": "robots.forbidden",
+                "attempts": [{"tool_id": "acquisition.web_http", "outcome": "failed"}],
+                "candidates": [], "candidate_urls": [],
+            }
+        ordinal = scope.seed_urls.index(seed_url) + 1
+        candidate = CandidateItem(
+            title=f"WMO discovery {ordinal}",
+            url="https://wmo.int/news/shared", summary="Climate evidence",
+            source_name="WMO", lane="website",
+            detected_at=task_binding["created_at"], content_hash="a" * 64,
+            source_item_id=f"tnfd-like-artifact-{ordinal}",
+        )
+        return {
+            "status": "success", "event_kind": "source", "error": None,
+            "attempts": [{"tool_id": "acquisition.web_http", "outcome": "succeeded"}],
+            "candidates": [asdict(candidate)], "candidate_urls": [candidate.url],
+            "change_counts": {"added": 1, "changed": 0, "unchanged": 0,
+                              "missing": 0, "failed": 0, "unresolved": 0},
+            "observed_at": task_binding["created_at"],
+            "checkpoint": {
+                "schema_version": "climate-web-listening-refresh-context.v1",
+                "upstream_revision": adapter._UPSTREAM_REVISION,
+                "source_key": source_value.key, "seed_url": seed_url,
+                "site_skill": {}, "site_state": {},
+            },
+        }
+
+    monkeypatch.setattr(adapter, "_run_site_seed", run)
+    budget = RequestBudget(ledger_path(task_binding), task_binding)
+    _items, warnings, site_context = adapter._collect_website_evidence(
+        [source], state_dir=tmp_path / "site-state",
+        scopes={source.key: scope}, runtime=(None, None, budget),
+    )
+    row = site_context["source_results"][0]
+    assert warnings and row["status"] == "partial"
+    assert row["outcome"]["counts"]["requested"] == 1
+    assert row["outcome"]["counts"]["valid_snapshots"] == 1
+    assert row["outcome"]["full_success"] is False
+    assert len(row["manifest"]["seed_outcomes"]) == len(scope.seed_urls)
+    assert len(row["attempts"]) == len(scope.seed_urls)
+    assert row["outcome"]["dispositions"][0]["requested_url"] == source.url
+
+    handles = budget.register_site_candidate_handles(row["candidates"])
+    binding_path = tmp_path / "attempt-1.json"
+    binding_path.write_text(json.dumps(task_binding), encoding="utf-8")
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    primary = runner._stage_candidate_receipt(
+        binding_path, result_handle=handles[0]["handle"],
+        source_key=source.key, session_id="session-1",
+    )
+    alias = runner._stage_candidate_receipt(
+        binding_path, result_handle=handles[1]["handle"],
+        source_key=source.key, session_id="session-1",
+    )
+    runner._finalize_candidate_receipt(
+        binding_path, candidate_handle=primary["candidate_handle"], selected=True,
+        title="Selected WMO evidence", summary="Verified summary",
+        selection_reason="Relevant", session_id="session-1",
+    )
+    assert alias["status"] == "reused"
+    payload, controlled = runner._assemble_v3_payload(task_binding, [])
+    assert len(calls) == len(controlled) == 1
+
+    runner._write_report_inputs(task_binding, payload, site_context)
+    paths = task_binding["report_inputs"]
+    prepared = monitor._read_prepare_inputs(
+        Path(paths["acquisition_batch"]), Path(paths["web_listening_manifest"]),
+        Path(paths["pillar_b_artifact"]), report_date=task_binding["report_date"],
+        allow_incomplete_pillar_b=True, bound_managed=True,
+    )
+    assert prepared[4] == {
+        "total": 1, "updated": 1, "unchanged": 0,
+        "blocked": 0, "failed": 0, "unresolved": 0,
+    }
+    manifests = json.loads(Path(paths["web_listening_manifest"]).read_text())
+    pillar = json.loads(Path(paths["pillar_b_artifact"]).read_text())
+    completeness = monitor._validate_registry_acquisition_completeness(
+        payload, manifests, pillar,
+    )
+    assert completeness["site_occurrence_count"] == 2
+    payload.update(
+        source_outcomes=json.loads(json.dumps(site_context["source_results"])),
+        source_coverage_status=site_context["status"],
+        source_warnings=warnings, systemic_error=None, blocked_tool_prechecks=[],
+    )
+    store_acquisition_batch(task_binding["registry_database"], payload)
+    loaded = load_acquisition_batch(
+        task_binding["registry_database"], task_binding["acquisition_batch_id"],
+    )
+    assert len(loaded["items"]) == 1
+    assert {origin["discovery_ref"] for origin in loaded["items"][0]["origins"]} == {
+        "tnfd-like-artifact-1", "tnfd-like-artifact-2",
+    }
 
 
 def test_v3_stage_date_first_reader_receipt_is_idempotent_and_runner_owned(
@@ -1013,7 +1268,8 @@ def test_v3_unlimited_unknown_reads_and_failed_read_can_retry_without_tool_doubl
     )
     calls = []
 
-    def fetch(_item_id, url, *, budget, site_key):
+    def fetch(_item_id, url, *, budget, site_key, site_scope):
+        assert site_scope["source_key"] == site_key
         calls.append(url)
         budget.claim("http", url, retry_key=f"article:{url}")
         if len(calls) == 1:
@@ -1157,7 +1413,16 @@ def test_v3_interrupted_stage_is_explicit_gap_and_resume_reuses_verified_receipt
         "search_ref": resumed_ledger.result_handles()[-1]["search_ref"],
     }
     payload, _ = runner._assemble_v3_payload(resumed, [second_event])
-    assert len(payload["items"]) == 1
+    assert len(payload["items"]) == 2
+    primary = next(item for item in payload["items"] if item["selected"])
+    alias = next(item for item in payload["items"] if not item["selected"])
+    assert primary["selected"] is True
+    assert alias["selected"] is False
+    assert alias["processing_status"] == "complete"
+    assert alias["title"] == "again"
+    assert alias["discovery_search_ref"] == second_event["search_ref"]
+    assert alias["evidence"] == primary["evidence"]
+    assert "reused verified evidence" in alias["selection_reason"]
     assert resumed_ledger.usage()["fetch_attempts"] == 1
 
 
@@ -2509,6 +2774,293 @@ def test_report_process_receives_frozen_repository_commit(tmp_path, monkeypatch)
     assert command[command.index("--repository-commit-sha") + 1] == exact
 
 
+def _report_result_binding(tmp_path):
+    value = binding(tmp_path)
+    value.update(
+        report_date="2026-09-14",
+        report_inputs={"source_dir": str(tmp_path / "sources")},
+    )
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return value, path
+
+
+def _report_stats():
+    return {
+        "total": 1, "updated": 1, "unchanged": 0,
+        "blocked": 0, "failed": 0, "unresolved": 0,
+    }
+
+
+def _write_report_result(path, **overrides):
+    payload = {
+        "report_date": "2026-09-14", "report_path": None,
+        "report_sha256": "", "semantics_path": None,
+        "synced": False, "item_count": 0, "items": [],
+        "dedup_notes": [], "warnings": [], "stats": _report_stats(),
+    }
+    payload.update(overrides)
+    result_path = path.with_name("attempt-1-report-result.json")
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
+def test_successful_zero_item_report_result_is_valid_no_report(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path = _report_result_binding(tmp_path)
+    expected = _write_report_result(path)
+    assert runner._validated_report_result(path, task_binding) == expected
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        ({"report_date": "2026-09-15"}, "date differs"),
+        ({"item_count": True}, "item_count is invalid"),
+        ({"item_count": 1}, "items do not match"),
+        ({"report_path": "climate-monitor-2026-09-14.md"}, "contains report artifacts"),
+        ({"report_sha256": "a" * 64}, "contains report artifacts"),
+        ({"semantics_path": "climate-monitor-2026-09-14.semantics.json"}, "contains report artifacts"),
+        ({"synced": True}, "contains report artifacts"),
+        ({"stats": {"total": 1}}, "stats"),
+    ],
+)
+def test_successful_no_report_result_rejects_invalid_or_contradictory_receipts(
+    tmp_path, overrides, error,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path = _report_result_binding(tmp_path)
+    _write_report_result(path, **overrides)
+    with pytest.raises(ValueError, match=error):
+        runner._validated_report_result(path, task_binding)
+
+
+def test_successful_report_result_requires_real_report_semantics_and_count(tmp_path):
+    from datetime import date
+    from climate_monitor.semantic_bundle import commit_report_with_semantics
+    from test_climate_monitor_semantic_bundle import _item
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path = _report_result_binding(tmp_path)
+    report_path = Path(task_binding["report_inputs"]["source_dir"]) / (
+        "climate-monitor-2026-09-14.md"
+    )
+    item = _item(url="https://example.test/verified")
+    commit = commit_report_with_semantics(
+        report_path=report_path, report_date=date(2026, 9, 14),
+        report_text="# report\n**URL:** https://example.test/verified <br>\n",
+        items=[item],
+    )
+    expected = _write_report_result(
+        path,
+        report_path=report_path.name,
+        report_sha256=commit["report_sha256"],
+        semantics_path=Path(commit["sidecar_path"]).name,
+        item_count=1,
+        items=[{"url": item.url}],
+    )
+    assert runner._validated_report_result(path, task_binding) == expected
+
+    _write_report_result(
+        path,
+        report_path=report_path.name,
+        report_sha256=commit["report_sha256"],
+        semantics_path=Path(commit["sidecar_path"]).name,
+        item_count=1,
+        items=[{"url": "https://example.test/different"}],
+    )
+    with pytest.raises(ValueError, match="items differ"):
+        runner._validated_report_result(path, task_binding)
+
+    _write_report_result(
+        path,
+        report_path=report_path.name,
+        report_sha256=commit["report_sha256"],
+        semantics_path=Path(commit["sidecar_path"]).name,
+        item_count=2,
+        items=[{"url": item.url}, {"url": "https://example.test/other"}],
+    )
+    with pytest.raises(ValueError, match="count differs"):
+        runner._validated_report_result(path, task_binding)
+
+
+def test_successful_report_result_must_exist_and_be_an_object(tmp_path):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path = _report_result_binding(tmp_path)
+    with pytest.raises(ValueError, match="missing or invalid"):
+        runner._validated_report_result(path, task_binding)
+    result_path = path.with_name("attempt-1-report-result.json")
+    result_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be an object"):
+        runner._validated_report_result(path, task_binding)
+
+
+def _frozen_report_resume(tmp_path):
+    from climate_monitor.management import BINDING_SCHEMA
+
+    task_binding, path = _report_result_binding(tmp_path)
+    task_binding.update(
+        schema_version=BINDING_SCHEMA,
+        acquisition_batch_id="batch-resume",
+        registry_database=str(tmp_path / "registry.sqlite3"),
+        frozen_report_input=str(tmp_path / "frozen-report-input.json"),
+    )
+    task_binding["report_inputs"].update({
+        name: str(tmp_path / f"{name}.json")
+        for name in ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact")
+    })
+    task_binding["report_inputs"]["state_dir"] = str(tmp_path / "state")
+    reportability = {
+        "schema_version": "climate-reportability.v1",
+        "outcome": "completed_with_gaps", "reportable": True,
+        "full_coverage": False, "selected_record_count": 4,
+        "counts": {
+            "successful_sources": 6, "source_gaps": 14,
+            "coverage_warnings": 56, "failed_searches": 0,
+            "unresolved_items": 14, "blocked_tool_prechecks": 2,
+        },
+        "limitations": ["14 retained source gaps"],
+        "acquisition_payload_sha256": "b" * 64,
+    }
+    frozen = {"reportability": reportability, "record_count": 4}
+    frozen_path = Path(task_binding["frozen_report_input"])
+    frozen_path.write_text(json.dumps(frozen), encoding="utf-8")
+    path.with_name("attempt-1-acquisition.json").write_text("{}", encoding="utf-8")
+    for name in ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact"):
+        Path(task_binding["report_inputs"][name]).write_text("{}", encoding="utf-8")
+    path.write_text(json.dumps(task_binding), encoding="utf-8")
+    return task_binding, path, frozen_path, reportability
+
+
+def test_frozen_report_resume_projects_validated_zero_item_as_no_eligible(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import run_ledger
+    from scripts import hermes_job
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path, frozen_path, acquisition_reportability = _frozen_report_resume(
+        tmp_path
+    )
+    frozen_bytes = frozen_path.read_bytes()
+    monkeypatch.setattr(runner, "verify_reportable_freeze", lambda *_args, **_kwargs: None)
+
+    def report(_path, _binding, **_kwargs):
+        _write_report_result(path)
+        return 0
+
+    committed = []
+    monkeypatch.setattr(runner, "_run_report", report)
+    monkeypatch.setattr(
+        runner, "_commit_controlled_site_checkpoints",
+        lambda binding: committed.append(binding["run_id"]),
+    )
+    assert runner._execute_attempt(path) == 0
+    terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
+    progress = json.loads(path.with_name("progress.json").read_text())
+    assert terminal["outcome"] == "no_eligible_information"
+    assert terminal["reportability"] == {
+        **acquisition_reportability,
+        "outcome": "no_eligible_information",
+        "reportable": False,
+        "selected_record_count": 0,
+    }
+    assert terminal["full_coverage"] is False
+    assert terminal["execution_complete"] is True
+    assert terminal["exit_code"] == 0
+    assert terminal["retryable"] is False
+    assert progress["stage"] == "no_eligible_information"
+    assert progress["next_step"] == "retain the truthful no-report outcome"
+    assert frozen_path.read_bytes() == frozen_bytes
+    assert json.loads(frozen_bytes)["record_count"] == 4
+    assert committed == ["boundary"]
+
+    recorded = []
+    ledger_dir = tmp_path / "run-ledger"
+    ledger_dir.mkdir()
+    monkeypatch.setenv("CLIMATE_RUN_LEDGER_DIR", str(ledger_dir))
+    monkeypatch.setattr(
+        run_ledger, "append_attempt",
+        lambda _root, attempt, **_kwargs: recorded.append(attempt),
+    )
+    hermes_job.record_monitor_result(
+        "2026-09-14", {"terminal": terminal, "report": None}, 0, dry_run=False,
+    )
+    assert recorded[0]["status"] == "no_change"
+    assert recorded[0]["result_code"] == "no_eligible_information"
+    assert "report" not in recorded[0]
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        None,
+        "not-json",
+        {"report_date": "2026-09-15", "report_path": None, "report_sha256": "",
+         "semantics_path": None, "synced": False, "item_count": 0, "items": [],
+         "stats": _report_stats()},
+        {"report_date": "2026-09-14", "report_path": "unexpected.md",
+         "report_sha256": "", "semantics_path": None, "synced": False,
+         "item_count": 0, "items": [], "stats": _report_stats()},
+    ],
+    ids=["missing", "malformed", "wrong-date", "contradictory"],
+)
+def test_frozen_report_resume_records_success_receipt_validation_failure(
+    tmp_path, monkeypatch, receipt,
+):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path, frozen_path, _reportability = _frozen_report_resume(tmp_path)
+    frozen_bytes = frozen_path.read_bytes()
+    monkeypatch.setattr(runner, "verify_reportable_freeze", lambda *_args, **_kwargs: None)
+
+    def report(_path, _binding, **_kwargs):
+        result_path = path.with_name("attempt-1-report-result.json")
+        if isinstance(receipt, dict):
+            result_path.write_text(json.dumps(receipt), encoding="utf-8")
+        elif isinstance(receipt, str):
+            result_path.write_text(receipt, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(runner, "_run_report", report)
+    monkeypatch.setattr(
+        runner, "_commit_controlled_site_checkpoints",
+        lambda *_args: pytest.fail("invalid receipt must not commit checkpoints"),
+    )
+    assert runner._execute_attempt(path) == 65
+    terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
+    progress = json.loads(path.with_name("progress.json").read_text())
+    assert terminal["exit_code"] == 65
+    assert terminal["retryable"] is False
+    assert terminal["execution_complete"] is None
+    assert terminal["outcome"] is None
+    assert progress["stage"] == "terminal_failure"
+    assert frozen_path.read_bytes() == frozen_bytes
+
+
+def test_frozen_report_resume_keeps_nonzero_report_exit_retryable(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    _task_binding, path, frozen_path, _reportability = _frozen_report_resume(tmp_path)
+    frozen_bytes = frozen_path.read_bytes()
+    monkeypatch.setattr(runner, "verify_reportable_freeze", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_run_report", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        runner, "_validated_report_result",
+        lambda *_args: pytest.fail("failed report process has no successful receipt"),
+    )
+    assert runner._execute_attempt(path) == 1
+    terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert terminal["exit_code"] == 1
+    assert terminal["retryable"] is True
+    assert terminal["resume_phase"] == "report"
+    assert terminal["outcome"] is None
+    assert frozen_path.read_bytes() == frozen_bytes
+
+
 def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monkeypatch):
     import hashlib
     import subprocess
@@ -2704,13 +3256,12 @@ def test_hermes_pre_hook_blocks_handler_at_exact_boundary(tmp_path, tool):
 def test_unsupported_article_never_invokes_unguarded_reader(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter as article
     called = []
-    monkeypatch.setattr(article, "_import_public_reader", lambda: SimpleNamespace(
-        fetch_article_content=lambda url: called.append(url)))
+    monkeypatch.setattr(article, "_default_providers", lambda **kwargs: called.append(kwargs) or ())
     record = article.fetch_article_content("a", "https://example.test/", budget=budget(tmp_path))
-    assert called == []
+    assert len(called) == 1
     assert record["status"] == "unavailable"
-    assert "before_target_request" in record["failure_reason"]
-    assert record["attempts"][0]["event_kind"] == "unsupported"
+    assert "governed URL retrieval is unavailable" in record["failure_reason"]
+    assert record["attempts"] == []
 
 
 def test_receipt_is_hash_verified_and_shared_across_attempts(tmp_path):
@@ -3235,68 +3786,8 @@ def test_failed_source_projection_keeps_artifact_and_no_full_success(tmp_path):
     assert json.loads(path.read_text()) == manifest
 
 
-def seed_runtime(monkeypatch, sends, interrupt_at=None, outcomes=None):
-    from climate_monitor import web_listening_adapter as adapter
-    class Gateway:
-        user_agent = "web-listening-bot/1.0"
-        def close(self): pass
-        def read(self, url, *, before_target_request, **kwargs):
-            kind = outcomes(url) if outcomes else "success"
-            if kind == "rejected":
-                error = RuntimeError("governed policy refusal")
-                error.envelope = SimpleNamespace(model_dump=lambda **kwargs: {"reason_code": "policy.refused"})
-                raise error
-            before_target_request(url, SimpleNamespace(decision_id="authorized"))
-            sends.append(url)
-            if isinstance(kind, BaseException):
-                raise kind
-            if kind == "incomplete":
-                raise OSError("network temporarily unavailable")
-            return SimpleNamespace(final_url=url, status_code=200, fit_markdown="Climate risk evidence",
-                                   markdown="", content_text="", raw_html="", metadata_json={"links": []})
-    class Crawler:
-        def __init__(self, *, fetch_mode, read_gateway): self.gateway = read_gateway
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def fetch_page(self, url, **kwargs):
-            if interrupt_at is not None and len(sends) == interrupt_at:
-                raise KeyboardInterrupt("simulated worker crash after completed receipts")
-            return self.gateway.read(url)
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr(adapter, "_load_gateway_builder", lambda: lambda **kwargs: Gateway())
-    monkeypatch.setattr(adapter, "_load_web_listening", lambda: (Crawler, {
-        "compute_hash": lambda text: "a" * 64, "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-        "find_new_links": lambda old, new: [], "find_document_links": lambda links: [],
-    }))
 
 
-def test_seed_crash_resume_has_no_duplicate_completed_sends(tmp_path, monkeypatch):
-    from climate_monitor import web_listening_adapter as adapter
-    from climate_monitor.config import load_sources, load_site_scopes
-    sources = load_sources("monitoring/supranational_sources.yaml")
-    scopes = load_site_scopes("monitoring/site_scopes.yaml")
-    sends = []
-    first = budget(tmp_path, fetch=1200)
-    seed_runtime(monkeypatch, sends, interrupt_at=40)
-    with pytest.raises(KeyboardInterrupt):
-        adapter.collect_website_items_with_evidence(sources, state_dir=tmp_path / "seeds",
-                                                   site_scopes=scopes, budget=first)
-    assert len(sends) == 40
-    # No graceful finish: attempt 2 reconciles the interrupted attempt's time.
-    resumed = budget(tmp_path, fetch=1200, attempt=2)
-    seed_runtime(monkeypatch, sends)
-    _, warnings, evidence = adapter.collect_website_items_with_evidence(sources,
-        state_dir=tmp_path / "seeds", site_scopes=scopes, budget=resumed)
-    assert len(sends) == 115
-    from collections import Counter
-    scopes_by_key = {scope.source_key: scope for scope in scopes}
-    expected = [url for source in sources for url in adapter._seed_urls(source, scopes_by_key.get(source.key))]
-    # G20's host-only/root aliases collapse to one seed. There are 115 selected
-    # slots and 113 distinct URLs; shared institutions still own separate slots.
-    assert Counter(sends) == Counter(expected)
-    assert resumed.usage()["fetch_attempts"] == 115
-    assert len(evidence["source_results"]) == 36
-    assert evidence["full_success"] and not warnings
 
 
 def test_completed_with_gaps_status_never_says_report_completed(tmp_path):
@@ -3405,7 +3896,9 @@ def test_mixed_run_round_trips_truthful_no_eligible_status(tmp_path, monkeypatch
 def test_runner_completes_zero_item_as_truthful_no_report_and_round_trips_sources(
     tmp_path, monkeypatch,
 ):
+    from dataclasses import asdict
     import hashlib
+    from climate_monitor.models import CandidateItem
     from climate_registry.acquisition import load_acquisition_batch, readback_source_outcomes
     from test_issue94_management_console import _controlled_site_result
     import scripts.run_agent_acquisition as runner
@@ -3420,6 +3913,20 @@ def test_runner_completes_zero_item_as_truthful_no_report_and_round_trips_source
         _controlled_site_result(tmp_path, source, candidates=[], disposition="unchanged")
         for source in b["source_inventory"]["records"]
     ]
+    tuple_candidate = asdict(CandidateItem(
+        title="Candidate-bearing source receipt",
+        url="https://www.iais.org/candidate-bearing-source-receipt",
+        summary="Real CandidateItem shape retains tuple-valued taxonomy fields.",
+        source_name="IAIS", lane="website",
+        topics=("climate-risk",), categories=("insurance",), keywords=("risk",),
+    ))
+    assert isinstance(tuple_candidate["topics"], tuple)
+    source_results[0]["attempts"] = [{
+        "event_kind": "source",
+        "source_outcome": {
+            "status": "success", "candidates": [tuple_candidate],
+        },
+    }]
     for row in source_results:
         artifact = tmp_path / f"{row['source']}-manifest.json"
         raw = (json.dumps(row["manifest"], sort_keys=True, indent=2) + "\n").encode()
@@ -3467,6 +3974,12 @@ def test_runner_completes_zero_item_as_truthful_no_report_and_round_trips_source
     assert readback_source_outcomes(
         b["registry_database"], persisted_payload,
     ) == persisted_payload["source_outcomes"]
+    stored_candidate = persisted_payload["source_outcomes"][0]["attempts"][0][
+        "source_outcome"
+    ]["candidates"][0]
+    assert stored_candidate["topics"] == ["climate-risk"]
+    assert stored_candidate["categories"] == ["insurance"]
+    assert stored_candidate["keywords"] == ["risk"]
     assert len(persisted_payload["source_outcomes"]) == 2
     assert not Path(b["frozen_report_input"]).exists()
     assert report_calls == []
@@ -3501,7 +4014,7 @@ def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
     _path, _ledger, handle, event = _v3_completed_search(
         path.parent, binding, description=description,
         raw_call="call-date", query="WMO dated candidate",
-        url="https://wmo.int/date-candidate",
+        url="https://wmo.int/news/date-candidate",
     )
     staged = runner._stage_candidate_receipt(
         path, result_handle=handle, source_key="wmo", session_id="session-a",
@@ -3516,7 +4029,7 @@ def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
         _path, _ledger, eligible_handle, eligible_event = _v3_completed_search(
             path.parent, binding, description="7 Sep 2026",
             raw_call="call-eligible", query="WMO eligible candidate",
-            url="https://wmo.int/eligible-candidate",
+            url="https://wmo.int/news/eligible-candidate",
         )
         eligible = runner._stage_candidate_receipt(
             path, result_handle=eligible_handle, source_key="wmo",
@@ -3550,6 +4063,10 @@ def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
     monkeypatch.setattr(
         runner, "_run_report",
         lambda *_args, **_kwargs: report_calls.append(True) or 0,
+    )
+    monkeypatch.setattr(
+        runner, "_validated_report_result",
+        lambda *_args: {"item_count": 1},
     )
     monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda _binding: 0)
 
@@ -3587,7 +4104,7 @@ def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
     )
     dated_disposition = next(
         row for row in projection["acquisition_dispositions"]
-        if row["requested_url"] == "https://wmo.int/date-candidate"
+        if row["requested_url"] == "https://wmo.int/news/date-candidate"
     )
     assert dated_disposition["date_status"] == (
         "unknown_pending_review" if date_case == "unknown" else "outside_window"
@@ -3599,7 +4116,7 @@ def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
         )
     assert report_calls == ([True] if with_eligible else [])
     assert calls == (
-        [("https://wmo.int/eligible-candidate", "wmo")] if with_eligible else []
+        [("https://wmo.int/news/eligible-candidate", "wmo")] if with_eligible else []
     )
     assert not Path(binding["frozen_report_input"]).exists() or with_eligible
     assert service.progress(binding["run_id"])["stage"] == (
@@ -3612,85 +4129,6 @@ def test_v3_runner_uses_date_resolution_for_completion_and_reportability(
             "SELECT frozen_at IS NOT NULL FROM acquisition_batches WHERE batch_id=?",
             (binding["acquisition_batch_id"],),
         ).fetchone()[0] == 1
-
-
-def test_supported_article_redirect_is_guarded_at_public_provider_seam(tmp_path, monkeypatch):
-    from climate_monitor import article_content_adapter as article
-    sends = []
-    def reader(url, *, before_target_request, timeout_seconds, **kwargs):
-        for target in (url, url + 'redirect'):
-            before_target_request(target, None)
-            sends.append(target)
-        pytest.fail('redirect over the boundary must not complete')
-    monkeypatch.setattr(article, '_import_public_reader', lambda: SimpleNamespace(
-        fetch_article_content=reader, runtime_data_dir=lambda: tmp_path))
-    monkeypatch.setattr(article, '_load_site_scopes', lambda: {
-        'example': SimpleNamespace(seed_urls=['https://example.test/'])})
-    monkeypatch.setattr(article, '_prepare_public_configuration', lambda *args: (
-        SimpleNamespace(site_key='example', model_dump=lambda **kwargs: {}), tmp_path / 'scope.yaml'))
-    ledger = budget(tmp_path, fetch=1)
-    record = article.fetch_article_content('a', 'https://example.test/', budget=ledger)
-    assert sends == ['https://example.test/']
-    assert record['status'] != 'ok'
-    assert record['attempts'][0]['event_kind'] == 'precheck'
-    assert ledger.usage()['fetch_attempts'] == 1
-
-
-def _install_managed_public_article_result(
-    monkeypatch, tmp_path, *, shape, site_key="example", seed_url="https://example.test/",
-):
-    import hashlib
-    from climate_monitor import article_content_adapter as article
-
-    body = " ".join(["climate"] * 550)
-    body_hash = hashlib.sha256(body.encode()).hexdigest()
-    observed = {"sends": [], "output_dirs": [], "site_keys": [], "timeouts": []}
-
-    def reader(url, *, before_target_request, timeout_seconds, output_dir, **kwargs):
-        before_target_request(url, None)
-        observed["sends"].append(url)
-        observed["output_dirs"].append(output_dir)
-        observed["site_keys"].append(kwargs.get("site_key"))
-        observed["timeouts"].append(timeout_seconds)
-        output = Path(output_dir)
-        output.mkdir(parents=True, exist_ok=True)
-        content_ref = "article-body.txt"
-        if shape == "ref":
-            (output / content_ref).write_bytes(body.encode())
-        elif shape == "hash_mismatch":
-            (output / content_ref).write_bytes(b"different trusted artifact bytes")
-        elif shape in {"inline", "missing_ref"}:
-            content_ref = None
-        else:
-            raise AssertionError(f"unexpected fixture shape: {shape}")
-        data = {
-            "final_url": url,
-            "selected_method": "web_http",
-            "content_type": "text/html; charset=UTF-8",
-            "content_ref": content_ref,
-            "sha256": body_hash,
-            "truncated": False,
-            "extraction_metadata": {"status_code": 200, "word_count": 550},
-            "attempts": [{
-                "tool": "web_http", "data_status": "present", "http_status": 200,
-            }],
-        }
-        if shape == "inline":
-            data["full_text"] = body
-        return {"data_status": "present", "error": None, "data": data}
-
-    runtime_root = tmp_path / "upstream-runtime"
-    monkeypatch.setattr(article, "_import_public_reader", lambda: SimpleNamespace(
-        fetch_article_content=reader, runtime_data_dir=lambda: runtime_root,
-    ))
-    monkeypatch.setattr(article, "_load_site_scopes", lambda: {
-        site_key: SimpleNamespace(seed_urls=[seed_url]),
-    })
-    monkeypatch.setattr(article, "_prepare_public_configuration", lambda url, key, output: (
-        SimpleNamespace(site_key=key, model_dump=lambda **kwargs: {"site_key": key}),
-        output / "scope.yaml",
-    ))
-    return body, body_hash, observed
 
 
 def _managed_source_binding(tmp_path, *, records=None, scopes=None):
@@ -3718,83 +4156,6 @@ def test_bound_source_alias_maps_to_canonical_reviewed_scope(tmp_path, declared)
         "include_source_url": True,
     }])
     assert runner._bound_source_key(task_binding, declared) == "iais"
-
-
-def test_managed_reader_uses_bound_source_and_keeps_budget_guard(tmp_path, monkeypatch):
-    from climate_monitor.request_budget import RequestBudget, ledger_path
-    import scripts.run_agent_acquisition as runner
-
-    body, _body_hash, observed = _install_managed_public_article_result(
-        monkeypatch, tmp_path, shape="inline", site_key="iais",
-        seed_url="https://www.iais.org/",
-    )
-    task_binding = _managed_source_binding(tmp_path, records=[{
-        "key": "iais", "abbreviation": "IAIS",
-        "full_name": "International Association of Insurance Supervisors",
-    }], scopes=[{
-        "source_key": "iais", "seed_urls": ["https://www.iais.org/"],
-        "include_source_url": True,
-    }])
-    url = "https://www.iais.org/activities-topics/climate-risk"
-
-    checked = runner._controlled_fetch_payload(
-        tmp_path / "attempt-1.json", task_binding,
-        {"items": [{"url": url, "source": "IAIS"}]},
-    )
-
-    assert checked["items"][0]["evidence"]["content"] == body
-    assert observed["site_keys"] == ["iais"]
-    assert observed["sends"] == [url]
-    assert len(observed["timeouts"]) == 1 and observed["timeouts"][0] > 0
-    assert RequestBudget(ledger_path(task_binding), task_binding).usage()["fetch_attempts"] == 1
-
-
-@pytest.mark.parametrize("url", [
-    "https://iais.org/activities-topics/climate-risk",
-    "https://outside.example/climate-risk",
-])
-def test_managed_source_key_does_not_bypass_upstream_domain_policy(
-    tmp_path, monkeypatch, url,
-):
-    from climate_monitor import article_content_adapter as article
-    import scripts.run_agent_acquisition as runner
-
-    selected = []
-
-    def transport(_url, *, before_target_request, timeout_seconds, **kwargs):
-        pytest.fail("policy-rejected target reached transport")
-
-    monkeypatch.setattr(article, "_import_public_reader", lambda: SimpleNamespace(
-        fetch_article_content=transport,
-        runtime_data_dir=lambda: tmp_path,
-    ))
-    monkeypatch.setattr(article, "_load_site_scopes", lambda: {
-        "iais": SimpleNamespace(seed_urls=["https://www.iais.org/"]),
-    })
-
-    def reject_unreviewed(_url, site_key, _output):
-        selected.append(site_key)
-        raise ValueError("allowed_domains: target host is not reviewed")
-
-    monkeypatch.setattr(article, "_prepare_public_configuration", reject_unreviewed)
-    task_binding = _managed_source_binding(tmp_path, records=[{
-        "key": "iais", "abbreviation": "IAIS",
-        "full_name": "International Association of Insurance Supervisors",
-    }], scopes=[{
-        "source_key": "iais", "seed_urls": ["https://www.iais.org/"],
-        "include_source_url": True,
-    }])
-
-    checked = runner._controlled_fetch_payload(
-        tmp_path / "attempt-1.json", task_binding,
-        {"items": [{"url": url, "source": "iais"}]},
-    )
-
-    assert selected == ["iais"]
-    assert checked["items"][0]["processing_status"] == "failed"
-    assert "allowed_domains: target host is not reviewed" in (
-        checked["items"][0]["processing_error"]
-    )
 
 
 @pytest.mark.parametrize("records,scopes,declared,error", [
@@ -3827,65 +4188,26 @@ def test_managed_reader_rejects_ambiguous_source_or_scope_before_reader(
         )
 
 
-@pytest.mark.parametrize("shape", ["inline", "ref"])
-def test_managed_controlled_reader_captures_verified_public_content(
-    tmp_path, monkeypatch, shape,
-):
+def test_managed_source_binding_rejects_article_outside_reviewed_origins():
     import scripts.run_agent_acquisition as runner
 
-    body, body_hash, observed = _install_managed_public_article_result(
-        monkeypatch, tmp_path, shape=shape,
-    )
-    task_binding = _managed_source_binding(tmp_path)
-    binding_path = tmp_path / "attempt-1.json"
-    payload = {"items": [{"url": "https://example.test/article", "source": "example"}]}
-
-    checked = runner._controlled_fetch_payload(binding_path, task_binding, payload)
-
-    evidence = checked["items"][0]["evidence"]
-    assert checked["items"][0]["processing_status"] == "complete"
-    assert evidence["classification"] == "full_content"
-    assert evidence["content"] == body
-    assert evidence["content_hash"] == body_hash
-    assert evidence["selected_method"] == "web_http"
-    assert evidence["attempts"][0]["status"] == "success"
-    assert evidence["attempts"][0]["http_status"] == 200
-    assert observed["sends"] == ["https://example.test/article"]
-    assert len(observed["output_dirs"]) == 1
-    assert (binding_path.parent / evidence["content_ref"]).read_bytes() == body.encode()
-    raw = json.loads((binding_path.parent / evidence["raw_snapshot_ref"]).read_text())
-    assert raw["content_ref"] == (None if shape == "inline" else "article-body.txt")
-    assert raw["content_hash"] == body_hash
-    if shape == "ref":
-        assert (Path(observed["output_dirs"][0]) / raw["content_ref"]).read_bytes() == body.encode()
-
-
-@pytest.mark.parametrize(("shape", "error"), [
-    ("missing_ref", "content_ref_unresolvable"),
-    ("hash_mismatch", "content_hash_mismatch"),
-])
-def test_managed_controlled_reader_rejects_unverifiable_public_ref(
-    tmp_path, monkeypatch, shape, error,
-):
-    from climate_monitor import article_content_adapter as article
-    from climate_monitor.request_budget import RequestBudget, ledger_path
-    import scripts.run_agent_acquisition as runner
-
-    _body, _body_hash, observed = _install_managed_public_article_result(
-        monkeypatch, tmp_path, shape=shape,
-    )
-    task_binding = _managed_source_binding(tmp_path)
-    binding_path = tmp_path / "attempt-1.json"
-
-    with pytest.raises(article.ArticleContentAdapterError, match=error):
-        runner._controlled_fetch_payload(
-            binding_path, task_binding,
-            {"items": [{"url": "https://example.test/article", "source": "example"}]},
+    managed = {
+        "source_inventory": {"records": [{
+            "key": "wmo", "abbreviation": "WMO",
+            "full_name": "World Meteorological Organization",
+            "url": "https://wmo.int/",
+        }]},
+        "site_scope_inventory": {"records": [{
+            "source_key": "wmo", "seed_urls": ["https://wmo.int/news"],
+        }]},
+    }
+    assert runner._bound_source_key(
+        managed, "WMO", url="https://wmo.int/resources/report",
+    ) == "wmo"
+    with pytest.raises(ValueError, match="outside the reviewed site scope"):
+        runner._bound_source_key(
+            managed, "WMO", url="https://outside.example/resources/report",
         )
-
-    assert observed["sends"] == ["https://example.test/article"]
-    assert RequestBudget(ledger_path(task_binding), task_binding).usage()["fetch_attempts"] == 1
-    assert not list((binding_path.parent / "managed" / "captures").iterdir())
 
 
 def test_retries_remain_spent_after_failure_and_resume(tmp_path):
@@ -4031,24 +4353,6 @@ def test_replayed_search_completion_cannot_release_spent_results(tmp_path):
     assert ledger.usage()['search_results'] == before
 
 
-def test_incompatible_gateway_hook_fails_once_before_bulk(tmp_path, monkeypatch):
-    from climate_monitor import web_listening_adapter as adapter
-    from test_issue117_governed_acquisition import install_runtime, source
-    calls = install_runtime(monkeypatch)
-    class Crawler:
-        def __init__(self, **kwargs): pass
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def fetch_page(self, url, **kwargs):
-            calls['fetch'].append(url)
-            raise RuntimeError('reader cannot guard targets')
-    monkeypatch.setattr(adapter, '_load_web_listening', lambda: (Crawler, {}))
-    # The old public shape can read but cannot expose target sends.
-    monkeypatch.setattr(adapter, '_load_gateway_builder', lambda: lambda **kwargs: SimpleNamespace(
-        read=lambda url: None, close=lambda: None, user_agent='web-listening-bot/1.0'))
-    with pytest.raises(RuntimeError, match='preflight.*before_target_request'):
-        adapter.collect_website_items_with_evidence([source(), source('second')], state_dir=tmp_path)
-    assert calls['fetch'] == []
 
 
 def test_article_dependency_gap_round_trips_registry_and_status(tmp_path, monkeypatch):
@@ -4065,9 +4369,9 @@ def test_article_dependency_gap_round_trips_registry_and_status(tmp_path, monkey
     b = service.binding(started['run_id'])
     root = service._run_dir(started['run_id'])
     path = root / 'attempt-1.json'
-    monkeypatch.setattr(article, '_import_public_reader', lambda: SimpleNamespace(
-        fetch_article_content=lambda url: pytest.fail('unguarded article provider invoked')))
-    payload = _batch([_item(source='WMO', discovery_kind='site', discovery_ref='site:wmo',
+    monkeypatch.setattr(article, '_default_providers', lambda **kwargs: ())
+    payload = _batch([_item(url='https://wmo.int/news/article', source='WMO',
+                            discovery_kind='site', discovery_ref='site:wmo',
                             discovery_search_ref=None)],
         batch_id=b['acquisition_batch_id'], report_date=b['report_date'], searches=[],
         search_decision={'status': 'no_search', 'reason': 'No supplemental query was executed; article reader is unsupported'})
@@ -4078,10 +4382,14 @@ def test_article_dependency_gap_round_trips_registry_and_status(tmp_path, monkey
     runner._write_result(path, exit_code=0, retryable=False, error='Article dependency unsupported',
                          execution_complete=True, full_coverage=False)
     stored = load_acquisition_batch(b['registry_database'], b['acquisition_batch_id'])
-    assert stored['items'][0]['attempts'][0]['event_kind'] == 'unsupported'
+    assert stored['items'][0]['attempts'] == [{
+        'engine': 'fetch_article_content', 'status': 'failed',
+        'attempted_at': stored['items'][0]['attempts'][0]['attempted_at'],
+        'error': 'web_listening_new governed URL retrieval is unavailable',
+    }]
     status = service.progress(started['run_id'])
     assert status['stage'] == 'completed_with_gaps'
-    assert 'before_target_request' in status['items'][0]['error']
+    assert 'governed URL retrieval is unavailable' in status['items'][0]['error']
     assert status['search_decision']['status'] == 'no_search'
     assert 'No supplemental query' in status['search_decision']['reason']
     assert status['budget']['used']['fetch_attempts'] == 0
@@ -4229,8 +4537,12 @@ def _empty_agent_payload(binding, *, reason):
     }
 
 
+@pytest.mark.parametrize(
+    "report_item_count", [1, 0, "invalid"],
+    ids=["report", "all-ineligible", "invalid-receipt"],
+)
 def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, report_item_count,
 ):
     """Regression: the former blanket gap branch skipped report authoring."""
     from test_issue112_acquisition import _batch, _item
@@ -4311,11 +4623,16 @@ def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
         runner, "_run_report",
         lambda *args, **_kwargs: reports.append(args) or 0,
     )
+    def validate_report(*_args):
+        if report_item_count == "invalid":
+            raise ValueError("successful report result is invalid")
+        return {"item_count": report_item_count}
+
+    monkeypatch.setattr(runner, "_validated_report_result", validate_report)
     monkeypatch.setattr(runner, "_commit_controlled_site_checkpoints", lambda *args: 0)
 
     exit_code = runner._execute_attempt(path)
     terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
-    assert exit_code == 0, terminal
     assert reports
     assert sends == [source["url"]]
     assert prompts[0]["web_listening"]["source_results"][0]["status"] == "failed"
@@ -4330,11 +4647,319 @@ def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
     assert frozen["reportability"]["outcome"] == "completed_with_gaps"
     assert frozen["reportability"]["selected_record_count"] == 1
     assert any("upstream HTTP 503" in value for value in frozen["reportability"]["limitations"])
+    if report_item_count == "invalid":
+        assert exit_code == 65
+        assert terminal["exit_code"] == 65
+        assert terminal["retryable"] is False
+        assert terminal["execution_complete"] is None
+        assert terminal["outcome"] is None
+        progress = json.loads(path.with_name("progress.json").read_text())
+        assert progress["stage"] == "terminal_failure"
+        return
+    assert exit_code == 0, terminal
     result = terminal
-    assert result["outcome"] == "completed_with_gaps"
+    assert result["outcome"] == (
+        "completed_with_gaps" if report_item_count else "no_eligible_information"
+    )
+    assert result["reportability"]["selected_record_count"] == report_item_count
+    assert result["reportability"]["reportable"] is bool(report_item_count)
     assert result["execution_complete"] is True
     assert result["full_coverage"] is False
-    assert service.progress(b["run_id"])["stage"] == "report_completed_with_gaps"
+    assert service.progress(b["run_id"])["stage"] == (
+        "report_completed_with_gaps" if report_item_count else "no_eligible_information"
+    )
+
+
+def test_controlled_site_model_context_is_bounded_but_raw_evidence_is_complete(
+    tmp_path, monkeypatch,
+):
+    import scripts.run_agent_acquisition as runner
+
+    _service, binding, binding_path = _managed_attempt(tmp_path, monkeypatch)
+    source_results = []
+    candidates = []
+    handles = []
+    for ordinal in range(20):
+        source = f"source-{ordinal}"
+        url = f"https://example.org/{ordinal}"
+        disposition = "failed" if ordinal % 2 else "updated"
+        source_results.append({
+            "source": source,
+            "status": "failed" if disposition == "failed" else "partial",
+            "coverage_status": "incomplete",
+            "disposition": disposition,
+            "artifact_id": f"artifact-{ordinal}",
+            "artifact_sha256": f"{ordinal:064x}",
+            "warnings": [f"{source} upstream unavailable " + "w" * 20_000],
+            "outcome": {
+                "counts": {"requested": 1, "updated": int(disposition == "updated"),
+                           "failed": int(disposition == "failed")},
+                "dispositions": [{
+                    "task_id": source, "disposition": disposition,
+                    "reason": "scope.acquisition_failed" if disposition == "failed" else "scope.completed",
+                }],
+            },
+            "manifest": {
+                "seed_outcomes": {url: {"result": {"pages": ["x" * 200_000]}}},
+                "snapshot_evidence": [{"checkpoint": {"content": "y" * 100_000}}],
+            },
+            "attempts": [{"source_outcome": {"result": {"body": "z" * 100_000}}}],
+            "candidates": [{"url": url, "summary": "s" * 50_000}],
+        })
+        if ordinal < 17:
+            candidates.append({"url": url, "source": source})
+            handles.append({
+                "result_handle": f"site-result-{ordinal}", "source_key": source,
+                "url": url, "title": "Title " + "t" * 2_000,
+                "summary": "Summary " + "s" * 20_000,
+            })
+    site_context = {
+        "status": "completed", "full_success": False,
+        "source_results": source_results, "candidates": candidates,
+        "attempts": [attempt for row in source_results for attempt in row["attempts"]],
+        "warnings": [warning for row in source_results for warning in row["warnings"]],
+        "runtime_seconds": 12.5, "systemic_error": None,
+    }
+
+    reference = runner._controlled_site_evidence_reference(
+        binding_path, binding, site_context,
+    )
+    projection = runner._controlled_site_prompt_projection(site_context, handles, reference)
+    raw_path = binding_path.parent / reference["path"]
+    assert raw_path.stat().st_size > 5_000_000
+    assert json.loads(raw_path.read_text(encoding="utf-8")) == site_context
+    assert reference["sha256"] == hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    assert len(json.dumps(projection).encode()) <= runner._MAX_SITE_PROMPT_BYTES
+    assert len(runner._prompt(binding_path, binding, {"web_listening": projection}).encode()) < 512_000
+    assert len(projection["candidate_handles"]) == 17
+    assert projection["omitted_candidate_handle_count"] == 0
+    assert projection["source_results"][1]["status"] == "failed"
+    assert projection["source_results"][1]["gaps"] == [{
+        "task_id": "source-1", "disposition": "failed",
+        "reason": "scope.acquisition_failed",
+    }]
+    assert "upstream unavailable" in projection["source_results"][1]["warnings"][0]
+    assert "manifest" not in projection["source_results"][1]
+    assert "attempts" not in projection["source_results"][1]
+
+
+def test_governed_site_projection_exposes_129_handles_and_last_can_be_selected(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    task_binding = _v3_binding(tmp_path)
+    path = tmp_path / "attempt-1.json"
+    path.write_text(json.dumps(task_binding), encoding="utf-8")
+    candidates = []
+    for ordinal in range(129):
+        source = "iais" if ordinal == 1 else "wmo"
+        url = (
+            "https://wmo.int/news/shared-cross-source"
+            if ordinal < 2 else f"https://wmo.int/news/candidate-{ordinal}"
+        )
+        candidates.append({
+            "url": url, "source": source,
+            "title": f"Ordinary climate candidate {ordinal}",
+            "summary": f"Governed source-first evidence {ordinal}",
+            "discovery_ref": f"site-discovery-{ordinal}",
+            "observed_at": task_binding["created_at"],
+        })
+    ledger = RequestBudget(ledger_path(task_binding), task_binding)
+    minted = ledger.register_site_candidate_handles(candidates)
+    handle_context = [{
+        "result_handle": row["handle"], "source_key": row["source_key"],
+        "url": row["url"], "title": row["result_row"]["title"],
+        "summary": row["result_row"]["summary"],
+    } for row in minted]
+    projection = runner._controlled_site_prompt_projection(
+        {"status": "completed", "full_success": True, "source_results": [],
+         "warnings": [], "runtime_seconds": 1.0, "systemic_error": None},
+        handle_context,
+        {"path": "full.json", "sha256": "a" * 64, "candidate_count": 129},
+    )
+    assert [row["result_handle"] for row in projection["candidate_handles"]] == [
+        row["handle"] for row in minted
+    ]
+    assert projection["candidate_handle_count"] == 129
+    assert projection["omitted_candidate_handle_count"] == 0
+    assert projection["candidate_handles"][0]["url"] == projection["candidate_handles"][1]["url"]
+    assert projection["candidate_handles"][0]["source_key"] == "wmo"
+    assert projection["candidate_handles"][1]["source_key"] == "iais"
+
+    calls = []
+    _install_v3_reader(monkeypatch, calls)
+    last = minted[-1]
+    staged = runner._stage_candidate_receipt(
+        path, result_handle=last["handle"], source_key="wmo",
+        session_id="session-129",
+    )
+    assert staged["status"] == "staged"
+    runner._finalize_candidate_receipt(
+        path, candidate_handle=staged["candidate_handle"], selected=True,
+        title="Candidate 128", summary="Verified governed evidence",
+        selection_reason="Relevant climate evidence", session_id="session-129",
+    )
+    receipt = ledger.candidate_receipts()[0]
+    assert receipt["result_handle"] == last["handle"]
+    assert receipt["source_key"] == "wmo"
+    assert receipt["annotations"]["selected"] is True
+    assert receipt["item"]["url"] == last["url"]
+    assert calls == [(last["url"], "wmo")]
+
+
+def test_non_ascii_projection_compacts_details_without_losing_handle_inventory(
+    tmp_path, monkeypatch,
+):
+    import scripts.run_agent_acquisition as runner
+
+    source_results = []
+    for ordinal in range(36):
+        source_results.append({
+            "source": f"source-{ordinal}", "status": "partial",
+            "coverage_status": "incomplete", "disposition": "updated",
+            "artifact_id": f"artifact-{ordinal}",
+            "artifact_sha256": f"{ordinal:064x}",
+            "warnings": [("警告" * 400) for _ in range(3)],
+            "outcome": {
+                "counts": {"requested": 10, "updated": 1, "failed": 9},
+                "dispositions": [{
+                    "task_id": f"task-{ordinal}-{index}",
+                    "disposition": "failed",
+                    "reason": "取得失敗" * 300,
+                } for index in range(10)],
+            },
+        })
+    handles = [{
+        "result_handle": f"site-result-{ordinal:064x}",
+        "source_key": f"source-{ordinal % 36}",
+        "url": f"https://example.org/climate/{ordinal}",
+        "title": "気候タイトル" * 100,
+        "summary": "保険と気候リスクの要約" * 100,
+    } for ordinal in range(129)]
+    site_context = {
+        "status": "completed", "full_success": False,
+        "source_results": source_results,
+        "candidates": [{
+            "url": row["url"], "source": row["source_key"],
+            "discovery_ref": f"discovery-{ordinal}",
+        } for ordinal, row in enumerate(handles)],
+        "attempts": [], "warnings": ["警告" * 400],
+        "runtime_seconds": 12.5, "systemic_error": "一部取得失敗" * 100,
+    }
+    binding = {"attempt": 1}
+    binding_path = tmp_path / "attempt-1.json"
+    raw_before = json.loads(json.dumps(site_context, ensure_ascii=False))
+    reference = runner._controlled_site_evidence_reference(
+        binding_path, binding, site_context,
+    )
+    projection = runner._controlled_site_prompt_projection(
+        site_context, handles, reference,
+    )
+    encoded = json.dumps(
+        projection, ensure_ascii=False, sort_keys=True,
+    ).encode("utf-8")
+    assert len(encoded) <= runner._MAX_SITE_PROMPT_BYTES
+    assert [row["result_handle"] for row in projection["candidate_handles"]] == [
+        row["result_handle"] for row in handles
+    ]
+    assert all(row["summary"] == "" and row["title"] == ""
+               for row in projection["candidate_handles"])
+    assert all(not row["warnings"] and "artifact" not in row
+               for row in projection["source_results"])
+    assert all(row["gaps"] == [{"disposition": "failed"}]
+               for row in projection["source_results"])
+    assert projection["omitted_candidate_handle_count"] == 0
+    raw_path = binding_path.parent / reference["path"]
+    assert json.loads(raw_path.read_text(encoding="utf-8")) == raw_before
+    assert hashlib.sha256(raw_path.read_bytes()).hexdigest() == reference["sha256"]
+
+
+def test_site_projection_limit_is_inclusive(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    context = {
+        "status": "completed", "full_success": True, "source_results": [],
+        "warnings": [], "runtime_seconds": 1.0, "systemic_error": None,
+    }
+    handles = [{
+        "result_handle": "site-result-" + "1" * 64,
+        "source_key": "wmo", "url": "https://wmo.int/news/inclusive",
+        "title": "Inclusive", "summary": "Exact byte boundary",
+    }]
+    reference = {"path": "full.json", "sha256": "a" * 64, "candidate_count": 1}
+    expected = runner._controlled_site_prompt_projection(context, handles, reference)
+    exact_size = len(json.dumps(
+        expected, ensure_ascii=False, sort_keys=True,
+    ).encode("utf-8"))
+    monkeypatch.setattr(runner, "_MAX_SITE_PROMPT_BYTES", exact_size)
+    assert runner._controlled_site_prompt_projection(
+        context, handles, reference,
+    ) == expected
+
+
+def test_irreducible_handle_inventory_stops_before_hermes_and_promotion(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import scripts.run_agent_acquisition as runner
+
+    service, task_binding, binding_path = _managed_attempt(
+        tmp_path, monkeypatch, candidate_protocol=True,
+    )
+    candidate = {
+        "url": "https://wmo.int/news/" + "irreducible-identity-" * 20,
+        "source": "wmo", "title": "Optional", "summary": "Optional",
+        "discovery_ref": "site-capacity-boundary",
+        "observed_at": task_binding["created_at"],
+    }
+    context = {
+        "status": "completed", "full_success": False, "source_results": [],
+        "candidates": [candidate], "attempts": [], "warnings": [],
+        "runtime_seconds": 1.0, "systemic_error": None,
+    }
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
+    monkeypatch.setattr(runner, "_MAX_SITE_PROMPT_BYTES", 128)
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda _binding: context)
+    monkeypatch.setattr(runner, "_registry_history_context", lambda _binding: {})
+    monkeypatch.setattr(runner, "_prior_tool_usage", lambda *_args: runner._empty_tool_usage())
+    monkeypatch.setattr(
+        runner, "_persist_tool_provenance",
+        lambda *_args, **_kwargs: {"cumulative_actual": runner._empty_tool_usage()},
+    )
+    for name in ("_invoke_hermes", "_assemble_v3_payload", "_run_report",
+                 "_commit_controlled_site_checkpoints"):
+        monkeypatch.setattr(
+            runner, name,
+            lambda *_args, _name=name, **_kwargs: pytest.fail(
+                f"capacity failure reached {_name}"
+            ),
+        )
+    discarded = []
+    monkeypatch.setattr(
+        runner, "_discard_controlled_site_checkpoints",
+        lambda _binding: discarded.append(True),
+    )
+
+    assert runner._execute_locked(binding_path) == 75
+    terminal = json.loads(binding_path.with_name("attempt-1-result.json").read_text())
+    progress = json.loads(binding_path.with_name("progress.json").read_text())
+    assert terminal["exit_code"] == 75 and terminal["retryable"] is True
+    assert "required_bytes=" in terminal["error"]
+    assert "allowed_bytes=128" in terminal["error"]
+    assert "handle_count=1" in terminal["error"]
+    assert progress["stage"] == "terminal_partial"
+    assert "projection capacity" in progress["next_step"]
+    assert discarded == [True]
+    assert not binding_path.with_name("attempt-1-acquisition.json").exists()
+    assert not Path(task_binding["frozen_report_input"]).exists()
+    evidence_path = binding_path.with_name("attempt-1-controlled-site-evidence.json")
+    evidence_bytes = evidence_path.read_bytes()
+    assert json.loads(evidence_bytes) == context
+    trusted = RequestBudget(ledger_path(task_binding), task_binding).result_handles()
+    assert len(trusted) == 1 and trusted[0]["url"] == candidate["url"]
+    assert service.progress(task_binding["run_id"])["stage"] == "terminal_partial"
 
 
 def test_reportability_distinguishes_no_eligible_and_systemic_failure():
@@ -5091,7 +5716,7 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
         resumed_path.parent, resumed_binding, description="7 Sep 2026",
         session="session-2", raw_call="recovery-search",
         query="WMO recovered climate evidence",
-        url="https://wmo.int/recovered-evidence",
+        url="https://wmo.int/news/recovered-evidence",
     )
     staged = runner._stage_candidate_receipt(
         resumed_path, result_handle=handle, source_key="wmo", session_id="session-2",
@@ -5110,6 +5735,10 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
     monkeypatch.setattr(
         runner, "_run_report",
         lambda *_args, **_kwargs: report_calls.append(True) or 0,
+    )
+    monkeypatch.setattr(
+        runner, "_validated_report_result",
+        lambda *_args: {"item_count": 1},
     )
 
     assert runner._execute_locked(resumed_path) == 0
@@ -5135,9 +5764,9 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
         search_event["search_ref"]
     ]
     assert recovered_payload["search_decision"] == {"status": "attempted", "reason": None}
-    assert recovered_payload["items"][0]["url"] == "https://wmo.int/recovered-evidence"
+    assert recovered_payload["items"][0]["url"] == "https://wmo.int/news/recovered-evidence"
     assert report_calls == [True]
-    assert article_calls == [("https://wmo.int/recovered-evidence", "wmo")]
+    assert article_calls == [("https://wmo.int/news/recovered-evidence", "wmo")]
     assert service.progress(b["run_id"])["stage"] == "report_completed"
 
     provenance = json.loads(
@@ -5401,6 +6030,40 @@ def test_finished_partial_systemic_sequence_rearms_before_resume(tmp_path, monke
     assert resumed.usage()["fetch_attempts"] == 4
 
 
+def test_seed_crash_resume_reuses_completed_public_runtime_receipts(
+    tmp_path, monkeypatch,
+):
+    from collections import Counter
+    from climate_monitor import web_listening_adapter as adapter
+    from climate_monitor.config import load_site_scopes, load_sources
+
+    sources = load_sources("monitoring/supranational_sources.yaml")
+    scopes = load_site_scopes("monitoring/site_scopes.yaml")
+    sends = []
+    first = budget(tmp_path, fetch=1200)
+    seed_runtime(monkeypatch, sends, interrupt_at=40)
+    with pytest.raises(KeyboardInterrupt, match="simulated worker crash"):
+        adapter.collect_website_items_with_evidence(
+            sources, state_dir=tmp_path / "seeds", site_scopes=scopes, budget=first,
+        )
+    assert len(sends) == 40
+
+    resumed = budget(tmp_path, fetch=1200, attempt=2)
+    seed_runtime(monkeypatch, sends)
+    _, warnings, evidence = adapter.collect_website_items_with_evidence(
+        sources, state_dir=tmp_path / "seeds", site_scopes=scopes, budget=resumed,
+    )
+    scopes_by_key = {scope.source_key: scope for scope in scopes}
+    expected = [
+        url for source in sources
+        for url in adapter._seed_urls(source, scopes_by_key.get(source.key))
+    ]
+    assert Counter(sends) == Counter(expected)
+    assert resumed.usage()["fetch_attempts"] == len(expected)
+    assert len(evidence["source_results"]) == len(sources)
+    assert evidence["full_success"] and not warnings
+
+
 def test_lower_fetch_override_is_frozen(tmp_path):
     from climate_monitor.management import default_task_definition, build_task_binding
     from climate_registry.persistent import initialize_registry
@@ -5506,3 +6169,57 @@ def test_review_mixed_projection_matches_downstream_exports(tmp_path, monkeypatc
     diagnostics = json.loads(manifest_path.with_suffix('.diagnostics.json').read_text())
     assert {row['source']['source_id'] for row in diagnostics} == {'rejected', 'incomplete'}
     assert all(Path(row['artifact_path']).is_file() for row in context['source_results'])
+# Current public-Runtime seam for runner/systemic-state tests.  These tests do
+# not exercise upstream acquisition; focused adapter tests below do that.
+def seed_runtime(monkeypatch, sends, *, interrupt_at=None, outcomes=None):
+    from climate_monitor import web_listening_adapter as adapter
+
+    class Runtime:
+        @classmethod
+        def open(cls, _root):
+            return cls()
+
+        def close(self):
+            return None
+
+    calls = 0
+
+    def run(_service, source, _scope, seed_url, _state_dir, _config, ledger):
+        nonlocal calls
+        calls += 1
+        if interrupt_at is not None and calls > interrupt_at:
+            raise KeyboardInterrupt("simulated worker crash")
+        outcome = outcomes(seed_url) if outcomes else "success"
+        if outcome == "rejected":
+            return {"status": "rejected", "event_kind": "policy",
+                    "error": "policy.refused", "candidates": [],
+                    "candidate_urls": [], "attempts": []}
+        sends.append(seed_url)
+        call_id = f"fixture-{ledger.attempt}-{calls}-{source.key}"
+        ledger.claim("web_listening_site", seed_url, call_id=call_id, units=1,
+                     retry_key=f"site:{source.key}:{seed_url}")
+        result_status = "error" if isinstance(outcome, BaseException) else outcome
+        ledger.complete_tool(call_id, {"status": result_status},
+                             "ok" if outcome == "success" else "error",
+                             actual_units=1)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if outcome == "incomplete":
+            raise OSError("network temporarily unavailable")
+        return {
+            "status": "success", "event_kind": "source", "error": None,
+            "candidates": [], "candidate_urls": [], "attempts": [],
+            "observed_at": "2026-09-12T00:00:00+00:00",
+            "checkpoint": {
+                "schema_version": "climate-web-listening-refresh-context.v1",
+                "upstream_revision": adapter._UPSTREAM_REVISION,
+                "source_key": source.key, "seed_url": seed_url,
+                "site_skill": {}, "site_state": {},
+            },
+        }
+
+    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
+    monkeypatch.setattr(adapter, "_runtime_service_type", lambda: Runtime)
+    monkeypatch.setattr(adapter, "_run_site_seed", run)
+    monkeypatch.setattr(adapter, "_load_refresh_checkpoint", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_valid_refresh_checkpoint_mapping", lambda _value: True)

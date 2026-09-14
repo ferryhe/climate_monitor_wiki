@@ -163,7 +163,7 @@ jobs:
           assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256
           assert len(taxonomy.categories) == 8
           assert metadata.version("hermes-agent") == "0.20.5"
-          assert metadata.version("web-listening") == "3.2.0"
+          assert metadata.version("web-listening") == "0.1.0"
           assert __import__("shutil").which("hermes")
           assert int(version_parts[0]) == 4 and int(version_parts[1]) >= 23
 

@@ -6,19 +6,17 @@ providers are the test/CI seam; discovery and acquisition policy remain upstream
 
 from __future__ import annotations
 
+import copy
 import hashlib
-import importlib
 import json
 import logging
 import os
 import stat
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
-
-import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +25,7 @@ ARTICLE_EVIDENCE_DIGEST_VERSION = "article-evidence-digest.v1"
 RECORD_DIGEST_VERSION = "article-evidence-record-digest.v1"
 
 UNAVAILABLE_REASON = (
-    "web_listening#70 article_content fallback policy not yet available"
+    "web_listening_new governed URL retrieval is unavailable"
 )
 
 
@@ -265,37 +263,19 @@ class ArticleEvidenceRecord:
 # ---------------------------------------------------------------------------
 
 
-def _import_web_listening_contract() -> Any | None:
-    """Return the ``web_listening.contracts.article_content`` module if
-    importable, otherwise ``None``. Retained for PR #98 compatibility;
-    the public reader import is now probed first.
-    """
-
-    try:
-        return importlib.import_module("web_listening.contracts.article_content")
-    except Exception:
-        return None
-
-
 def check_dependencies() -> str:
-    """Return one of ``"available" | "partial" | "unavailable"``.
-
-    The public blocks.article_content reader takes precedence. The older
-    contracts.article_content/PROVIDERS probe remains a compatibility fallback:
-    available with providers, partial with just the module, otherwise unavailable.
-    Explicit provider injection is independent of this descriptive probe.
-    """
-
-    public = _import_public_reader()
-    if public is not None and callable(getattr(public, "fetch_article_content", None)):
-        return "available"
-    module = _import_web_listening_contract()
-    if module is None:
+    """Report whether the pinned public Runtime retrieval interfaces import."""
+    try:
+        from web_listening.request.model import Request, Scope  # noqa: F401
+        from web_listening.runtime.retrieval import (  # noqa: F401
+            RetrievalJobError,
+            RetrievalRequestError,
+        )
+        from web_listening.runtime.service import RuntimeService  # noqa: F401
+    except (ImportError, TypeError, ValueError):
         return "unavailable"
-    providers = getattr(module, "PROVIDERS", None)
-    if not providers:
-        return "partial"
-    return "available"
+    else:
+        return "available"
 
 
 # ---------------------------------------------------------------------------
@@ -330,13 +310,6 @@ def _unavailable_record(
 
 class ArticleContentAdapterError(RuntimeError):
     """Reject an untrustworthy evidence batch before publication."""
-
-
-def _import_public_reader():
-    try:
-        return importlib.import_module("web_listening.blocks.article_content")
-    except ImportError:
-        return None
 
 
 def resolve_content_ref(content_ref, content_hash, *, output_dir=None) -> bytes:
@@ -398,135 +371,215 @@ def resolve_content_ref(content_ref, content_hash, *, output_dir=None) -> bytes:
 # Default public provider (AC-1)
 # ---------------------------------------------------------------------------
 
-def _load_site_scopes() -> dict[str, Any]:
-    """Load the configured source identities used to select reviewed Site Skills."""
+def _runtime_service_type():
+    from web_listening.runtime.service import RuntimeService
 
-    from .config import load_site_scopes  # local import to avoid cycle
-
-    scopes_path = Path(__file__).resolve().parent.parent / "monitoring" / "site_scopes.yaml"
-    return {scope.source_key: scope for scope in load_site_scopes(scopes_path)}
+    return RuntimeService
 
 
-def _prepare_public_configuration(url: str, site_key: str, output_dir: Path):
-    """Resolve reviewed upstream configuration and compile its exact bindings.
+_BOUNDED_RETRIEVAL_LIMITATIONS = (
+    "HTML navigation is unsupported by bounded article retrieval.",
+    "Cross-path redirects are unsupported by the exact-path request.",
+    "Cross-origin redirects are unsupported; submit that reviewed URL separately.",
+)
 
-    Public registry validation and plan compilation own authority. No generated
-    profile or fallback reader can enlarge the reviewed Site Skill policy.
-    """
-    from web_listening.site_skill_registry import (
-        default_registry_root, list_site_skills, resolve_site_skill_contract,
-    )
-    from web_listening.blocks.acquisition_profile import AcquisitionProfile
-    from web_listening.blocks.monitor_scope_planner import (
-        MonitorScopePlan, compute_semantic_scope_fingerprint, render_yaml_text,
-    )
-    from web_listening.blocks.acquisition_execution_plan import compile_acquisition_execution_plan
-    from web_listening.executors.registry import default_preview_registry
-
-    matches = [item for item in list_site_skills()
-               if item["site_key"] == site_key and item["valid"]]
-    if len(matches) != 1:
-        raise ValueError("no unambiguous reviewed Site Skill")
-    selected = matches[0]
-    skill = resolve_site_skill_contract(
-        site_key=site_key, version=selected["version"],
-        package_sha256=selected["package_sha256"])
-    package = default_registry_root() / site_key / selected["version"]
-    # The reviewed recipe names its own profile; do not substitute climate's
-    # historical ungoverned profile fixtures.
-    recipes = [recipe for recipe in skill.manifest.recipes
-               if recipe.executor_id == "web_http"]
-    if len(recipes) != 1:
-        raise ValueError("no unambiguous reviewed article recipe")
-    recipe = recipes[0]
-    profile_payload = yaml.safe_load((package / recipe.profile_ref).read_text(encoding="utf-8"))
-    # Catalog packages carry registry metadata alongside AcquisitionProfile.
-    # Match upstream test_catalog_site_skill_workflow's public model preparation;
-    # safety.allowed_domains and all runtime policy fields remain validated.
-    profile_payload.pop("allowed_domains", None)
-    profile = AcquisitionProfile.model_validate(profile_payload, strict=True)
-    registry = default_preview_registry()
-    from datetime import datetime, timezone
-    bindings = {
-        "acquisition_profile_id": profile.profile_id,
-        "site_skill_version": skill.manifest.version,
-        "site_skill_package_sha256": skill.package_sha256,
-        "site_skill_recipe_id": recipe.recipe_id,
-        "site_skill_script_sha256": skill.script_sha256[recipe.entrypoint],
-        "executor_version": registry.metadata[recipe.executor_id].version,
-    }
-    scope = MonitorScopePlan(
-        scope_fingerprint="", site_key=site_key, display_name=site_key,
-        catalog="climate-monitor-wiki", generated_at=datetime.now(timezone.utc).isoformat(),
-        selection_review_status="approved", selection_mode="manual",
-        business_goal="Read the selected climate article", seed_url=url, homepage_url=url,
-        fetch_mode="http", fetch_config_json={}, tree_strategy="selected_scope",
-        tree_budget_profile="selected_scope_default", file_scope_mode="site_root",
-        allowed_page_prefixes=[urlparse(url).path or "/"], allowed_file_prefixes=[],
-        max_depth=1, max_pages=1, max_files=1, based_on=bindings,
-    )
-    scope_path = output_dir / "scope.yaml"
-    scope.scope_fingerprint = compute_semantic_scope_fingerprint(scope)
-    compile_acquisition_execution_plan(scope, profile, skill, registry)
-    scope_path.write_text(render_yaml_text(scope), encoding="utf-8")
-    return profile, scope_path
-
-
-def _default_providers(*, data_root: str | Path | None = None, site_key: str | None = None, budget: Any | None = None) -> tuple[Callable[..., Any], ...]:
-    """Use upstream configuration, its runtime data root, and the public reader."""
-    module = _import_public_reader()
-    if module is None or not callable(getattr(module, "fetch_article_content", None)):
+def _default_providers(
+    *, data_root: str | Path | None = None, site_key: str | None = None,
+    site_scope: Mapping[str, Any] | None = None, budget: Any | None = None,
+) -> tuple[Callable[..., Any], ...]:
+    """Resolve one URL through the pinned public persistent Runtime."""
+    if check_dependencies() != "available":
         return ()
-    site_scopes = _load_site_scopes()
-    runtime_root = Path(module.runtime_data_dir()).resolve()
-    root = Path(data_root).resolve() if data_root is not None else runtime_root
-    cache_root = root / ".cache" / "article_content"
+    default_root = Path(__file__).resolve().parent.parent / "monitoring/state/websites/.web-listening-runtime"
+    root = Path(data_root or os.environ.get("CLIMATE_WEB_LISTENING_DATA_DIR") or default_root).resolve()
 
     def public_reader(article_id: str, url: str) -> Any:
+        call_id = None
         try:
-            if not root.is_relative_to(runtime_root):
-                raise ValueError("data_root must be inside the upstream runtime data root")
-            if site_key is not None:
-                if site_key not in site_scopes:
-                    raise ValueError("no_reviewed_scope: unknown source identity")
-                selected_site = site_key
-            else:
-                host = (urlparse(url).hostname or "").lower()
-                matches = [key for key, scope in site_scopes.items()
-                           if host in {(urlparse(seed).hostname or "").lower()
-                                       for seed in scope.seed_urls or ()}]
-                if len(matches) != 1:
-                    raise ValueError("no_reviewed_scope: no unambiguous matching source")
-                selected_site = matches[0]
-            output_dir = cache_root / uuid.uuid4().hex
-            output_dir.mkdir(parents=True, exist_ok=True)
-            profile, scope_path = _prepare_public_configuration(url, selected_site, output_dir)
-            public_reader.output_dir = str(output_dir)
-            public_reader.site_key = profile.site_key
-            guarded = {}
+            from web_listening.request.model import Budgets, ContentType, Request, Scope
+            from web_listening.request.scope import canonicalize_url
+            from web_listening.runtime.retrieval import (
+                RetrievalJobError,
+                RetrievalRequestError,
+            )
+
+            reserved_units = 12
+            attempt_limit = 4
             if budget is not None:
-                operation = uuid.uuid4().hex
-                guarded = {
-                    "before_target_request": lambda target, decision: budget.claim(
-                        "http", target, operation=operation, retry_key=f"article:{url}") and None,
-                    "timeout_seconds": budget.remaining_seconds(),
+                remaining = budget.limits["fetch_attempts"] - budget.usage()["fetch_attempts"]
+                reserved_units = min(reserved_units, remaining)
+                attempt_limit = min(attempt_limit, remaining)
+                if reserved_units < 1:
+                    raise RuntimeError("fetch budget exhausted before URL retrieval")
+                call_id = uuid.uuid4().hex
+                budget.claim(
+                    "web_listening_url_fetch", url, call_id=call_id, units=reserved_units,
+                    retry_key=f"article:{url}",
+                )
+            seconds = 60 if budget is None else min(60, max(1, int(budget.remaining_seconds())))
+            canonical = canonicalize_url(url)
+            parsed = urlparse(canonical)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            path = parsed.path or "/"
+            reviewed = copy.deepcopy(dict(site_scope or {}))
+            allowed = reviewed.get("allowed_origins")
+            if allowed is not None and origin not in allowed:
+                raise ValueError("article origin is outside the reviewed source scope")
+            effective_scope = {
+                "seeds": [canonical], "allowed_origins": [origin],
+                "include_paths": [path], "content_types": ["html", "file"],
+            }
+            request = Request(
+                Scope((canonical,), (origin,), (path,), (ContentType.HTML, ContentType.FILE)),
+                None, True,
+                Budgets(reserved_units, 8 * 1024 * 1024, seconds, attempt_limit),
+            )
+            caller_id = "climate-monitor"
+            runtime = _runtime_service_type().open(root)
+            try:
+                try:
+                    retrieval = runtime.retrieve(request, caller_id=caller_id)
+                except (RetrievalRequestError, RetrievalJobError) as exc:
+                    job_id = exc.job_id
+                else:
+                    jobs = retrieval.get("jobs") if isinstance(retrieval, Mapping) else None
+                    if (
+                        not isinstance(jobs, list)
+                        or len(jobs) != 1
+                        or not isinstance(jobs[0], Mapping)
+                        or not isinstance(jobs[0].get("job_id"), str)
+                        or not jobs[0]["job_id"]
+                    ):
+                        raise RuntimeError(
+                            "targeted URL retrieval did not return exactly one job identity"
+                        )
+                    job_id = jobs[0]["job_id"]
+                completed = runtime.get_owned_job(job_id, caller_id)
+                if completed.result is None:
+                    raise RuntimeError("URL retrieval did not produce a terminal result")
+                raw = _runtime_job_mapping(completed)
+                payload = _runtime_job_payload(
+                    runtime, caller_id, raw,
+                    reviewed_scope=reviewed, effective_scope=effective_scope,
+                )
+            finally:
+                runtime.close()
+            if budget is not None and call_id is not None:
+                result = raw["result"]
+                actual = result["usage"]["requests"]
+                compact = {
+                    "status": result["status"], "failure_code": raw["failure_code"],
+                    "usage": result["usage"], "errors": result["errors"],
                 }
-            return module.fetch_article_content(
-                url, **guarded, profile=profile.model_dump(mode="json"), site_key=profile.site_key,
-                scope_path=str(scope_path), output_dir=str(output_dir), goal_preset="page_text")
+                budget.complete_tool(
+                    call_id, compact, "ok" if payload.get("status") == "present" else "error",
+                    actual_units=actual,
+                )
+            public_reader.site_key = site_key
+            return payload
         except Exception as exc:
+            if budget is not None and call_id is not None:
+                event = budget.tool_event(call_id)
+                if event is not None and not event.get("completed"):
+                    # No measured result exists, so keep the conservative
+                    # reservation spent rather than inventing a zero-request run.
+                    budget.complete_tool(
+                        call_id, {"error": f"{type(exc).__name__}: {exc}"}, "error",
+                    )
             record = _unavailable_record(
                 article_id=article_id, url=url,
                 failure_reason=f"{type(exc).__name__}: {exc}").to_dict()
-            from climate_monitor.request_budget import RequestBudgetError
-            if isinstance(exc, RequestBudgetError):
-                record["attempts"] = [{"engine": "fetch_article_content", "status": "failed",
-                                       "event_kind": "precheck", "error": str(exc)}]
             return record
 
     public_reader.output_dir = None
     public_reader.site_key = None
     return (public_reader,)
+
+
+def _runtime_job_mapping(job: Any) -> dict[str, Any]:
+    """Serialize every public Job field without inventing a URL-fetch envelope."""
+    payload: dict[str, Any] = {}
+    for item in fields(job):
+        value = getattr(job, item.name)
+        if item.name == "result" and value is not None:
+            payload[item.name] = value.to_dict()
+        elif hasattr(value, "value"):
+            payload[item.name] = value.value
+        else:
+            payload[item.name] = copy.deepcopy(value)
+    return payload
+
+
+def _runtime_job_payload(
+    runtime: Any, caller_id: str, raw: Mapping[str, Any],
+    *, reviewed_scope: Mapping[str, Any], effective_scope: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = raw.get("result")
+    if not isinstance(result, Mapping):
+        return {
+            "status": "failed", "final_url": None, "attempts": [],
+            "failure_reason": raw.get("failure_code") or "runtime job has no result",
+            "extraction_metadata": {
+                "upstream_revision": "ac2343f89bc7939736d85f049ebe2beac571034a",
+                "runtime_job": copy.deepcopy(dict(raw)),
+                "reviewed_source_scope": copy.deepcopy(dict(reviewed_scope)),
+                "effective_request_scope": copy.deepcopy(dict(effective_scope)),
+                "coverage_limitations": list(_BOUNDED_RETRIEVAL_LIMITATIONS),
+            },
+        }
+    attempts = [dict(attempt) for attempt in result.get("attempts", [])]
+    manifest = result.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    artifacts = result.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    source = next((item for item in artifacts if item.get("role") == "source"), None)
+    derived = [item for item in artifacts if item.get("role") == "derived"]
+    selected = derived[0] if derived else None
+    if not isinstance(source, Mapping) or selected is None:
+        errors = [item.get("code") for item in result.get("errors", []) if item.get("code")]
+        return {
+            "status": "failed", "final_url": manifest.get("final_url"),
+            "attempts": attempts,
+            "failure_reason": "; ".join(errors) or raw.get("failure_code")
+            or "no cleaned content artifact",
+            "extraction_metadata": {
+                "upstream_revision": "ac2343f89bc7939736d85f049ebe2beac571034a",
+                "runtime_job": copy.deepcopy(dict(raw)),
+                "reviewed_source_scope": copy.deepcopy(dict(reviewed_scope)),
+                "effective_request_scope": copy.deepcopy(dict(effective_scope)),
+                "coverage_limitations": list(_BOUNDED_RETRIEVAL_LIMITATIONS),
+            },
+        }
+    with runtime.open_owned_artifact(selected["artifact_id"], caller_id) as opened:
+        content = opened.stream.read(opened.size_bytes + 1)
+        if len(content) != opened.size_bytes or hashlib.sha256(content).hexdigest() != selected["sha256"]:
+            raise ArticleContentAdapterError("content_hash_mismatch")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ArticleContentAdapterError("cleaned_content_not_utf8") from exc
+    if not text.strip():
+        raise ArticleContentAdapterError("cleaned_content_empty")
+    selected_attempt = next((
+        attempt for attempt in reversed(attempts)
+        if attempt.get("tool_id", "").startswith("acquisition.")
+        and attempt.get("outcome") == "succeeded"
+    ), {})
+    return {
+        "status": "present", "final_url": manifest.get("final_url"), "attempts": attempts,
+        "selected_method": selected_attempt.get("tool_id"),
+        "content_type": selected["mime_type"], "content_ref": selected["artifact_id"],
+        "sha256": selected["sha256"], "content": text,
+        "extraction_metadata": {
+            "upstream_revision": "ac2343f89bc7939736d85f049ebe2beac571034a",
+            "source_artifact": dict(source), "derived_artifact": dict(selected),
+            "http_status": selected_attempt.get("http_status"),
+            "runtime_job": copy.deepcopy(dict(raw)),
+            "reviewed_source_scope": copy.deepcopy(dict(reviewed_scope)),
+            "effective_request_scope": copy.deepcopy(dict(effective_scope)),
+            "coverage_limitations": list(_BOUNDED_RETRIEVAL_LIMITATIONS),
+        },
+    }
 
 
 def _tool_mapping(value):
@@ -614,6 +667,7 @@ def fetch_article_content(
     snippet_input: str | None = None,
     budget: Any | None = None,
     site_key: str | None = None,
+    site_scope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Call provider[0] once; explicit providers override all dependency states.
 
@@ -623,28 +677,15 @@ def fetch_article_content(
     provider output directory is no longer available to the caller.
     """
     if budget is not None:
-        import inspect
-        module = _import_public_reader()
-        reader = getattr(module, "fetch_article_content", None)
-        required = {"before_target_request", "timeout_seconds"}
-        supported = callable(reader) and required.issubset(inspect.signature(reader).parameters)
-        if not supported:
-            reason = ("unsupported upstream article guard: installed public "
-                      "fetch_article_content is missing required before_target_request "
-                      "and timeout_seconds parameters; expected pinned web_listening "
-                      "fd541f07942d7cdcb6a554225bbcbfec2f20147f")
-            budget.note("unsupported", url, reason, tool="controlled_article_fetch")
-            record = _unavailable_record(article_id=article_id, url=url, failure_reason=reason).to_dict()
-            record["attempts"] = [{"engine": "fetch_article_content", "status": "failed",
-                                   "event_kind": "unsupported", "error": reason}]
-            return record
         if providers:
-            raise ValueError("managed article reads require the guarded public reader")
-        # Forward only through the normal reviewed provider, never a new reader.
-        providers = _default_providers(site_key=site_key, budget=budget)
+            raise ValueError("managed article reads require the public Runtime URL fetch")
+        providers = _default_providers(
+            site_key=site_key, site_scope=site_scope, budget=budget,
+        )
+    elif not providers:
+        providers = _default_providers()
     if not url:
         return _unavailable_record(article_id=article_id, url=url, failure_reason="missing url").to_dict()
-    providers = providers or _default_providers()
     if not providers:
         record = _unavailable_record(article_id=article_id, url=url).to_dict()
         if snippet_input:
@@ -833,7 +874,9 @@ def collect_evidence(
     output_dirs: dict[str, str] = {}
     for article in articles:
         providers = explicit_providers or _default_providers(
-            data_root=data_root, site_key=article.get("site_key") or article.get("source_id"))
+            data_root=data_root, site_key=article.get("site_key") or article.get("source_id"),
+            site_scope=article.get("site_scope"),
+        )
         # The default public reader updates ``provider.output_dir`` to the
         # per-call ``<data_root>/.cache/article_content/<uuid>`` (or the
         # upstream runtime data root when ``data_root`` is None)

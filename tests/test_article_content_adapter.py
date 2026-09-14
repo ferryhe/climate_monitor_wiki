@@ -75,54 +75,30 @@ class _FakeProvider:
 def ensure_unavailable(monkeypatch):
     """Force the dependency probe to report ``"unavailable"``.
 
-    Isolate both import boundaries, regardless of the installed package.
+    Isolate the public Runtime probe, regardless of the installed package.
     """
 
     import climate_monitor.article_content_adapter as adapter
 
-    monkeypatch.setattr(adapter, "_import_web_listening_contract", lambda: None)
-    monkeypatch.setattr(adapter, "_import_public_reader", lambda: None)
+    monkeypatch.setattr(adapter, "check_dependencies", lambda: "unavailable")
 
 
 @pytest.fixture()
 def force_available(monkeypatch):
-    """Inject a fake ``web_listening`` contract import surface."""
+    """Make the public Runtime dependency probe available."""
 
     import climate_monitor.article_content_adapter as adapter
 
-    sentinel_module = type(sys)("web_listening_fake")
-    sentinel_module.__path__ = []  # mark as package
-    contracts = type(sys)("web_listening_fake.contracts")
-    contracts.__path__ = []
-    article_content = type(sys)("web_listening_fake.contracts.article_content")
-    article_content.PROVIDERS = ("http", "browser", "stealth")
-
-    def _importer():
-        return article_content
-
-    monkeypatch.setattr(adapter, "_import_web_listening_contract", _importer)
-    return article_content
+    monkeypatch.setattr(adapter, "check_dependencies", lambda: "available")
 
 
 @pytest.fixture()
 def force_partial(monkeypatch):
-    """Contract present but no providers attached (e.g. still unconfigured)."""
+    """The new public Runtime has no misleading partial dependency state."""
 
     import climate_monitor.article_content_adapter as adapter
 
-    sentinel_module = type(sys)("web_listening_fake_partial")
-    sentinel_module.__path__ = []
-    contracts = type(sys)("web_listening_fake_partial.contracts")
-    contracts.__path__ = []
-    article_content = type(sys)("web_listening_fake_partial.contracts.article_content")
-    # No PROVIDERS attribute — partial.
-
-    def _importer():
-        return article_content
-
-    monkeypatch.setattr(adapter, "_import_web_listening_contract", _importer)
-    monkeypatch.setattr(adapter, "_import_public_reader", lambda: None)
-    return article_content
+    monkeypatch.setattr(adapter, "check_dependencies", lambda: "unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +114,12 @@ def test_check_dependencies_returns_unavailable_when_contract_missing(
     assert check_dependencies() == "unavailable"
 
 
-def test_check_dependencies_returns_partial_when_contract_present_without_providers(
+def test_missing_runtime_interface_is_unavailable_without_partial_claim(
     force_partial,
 ):
     from climate_monitor.article_content_adapter import check_dependencies
 
-    assert check_dependencies() == "partial"
+    assert check_dependencies() == "unavailable"
 
 
 def test_check_dependencies_returns_available_when_contract_and_providers_present(
@@ -172,7 +148,7 @@ def test_fetch_returns_unavailable_record_when_dependency_missing(ensure_unavail
     assert record["summary_basis"] == "none"
     assert (
         record["failure_reason"]
-        == "web_listening#70 article_content fallback policy not yet available"
+        == "web_listening_new governed URL retrieval is unavailable"
     )
     assert record["attempts"] == []
 
@@ -316,7 +292,7 @@ def test_collect_evidence_unavailable_path_emits_honest_records(ensure_unavailab
         assert record["summary_basis"] == "none"
         assert (
             record["failure_reason"]
-            == "web_listening#70 article_content fallback policy not yet available"
+            == "web_listening_new governed URL retrieval is unavailable"
         )
 
 
@@ -425,7 +401,7 @@ def test_artifact_unavailable_path_is_honest(tmp_path, ensure_unavailable):
     assert artifact["records"][0]["status"] == "unavailable"
     assert (
         artifact["records"][0]["failure_reason"]
-        == "web_listening#70 article_content fallback policy not yet available"
+        == "web_listening_new governed URL retrieval is unavailable"
     )
 
 
@@ -839,50 +815,48 @@ def test_artifact_digest_survives_reserialization(tmp_path):
     assert hashlib.sha256((adapter.ARTICLE_EVIDENCE_DIGEST_VERSION + "\n" + hashes).encode()).hexdigest() == artifact["artifact_digest"]
 
 
-def test_default_public_provider_passes_profile_scope_output_dir_kwargs(monkeypatch, tmp_path):
-    """AC-1: the default public provider must invoke upstream with the full
-    kwargs contract — profile + site_key + scope_path + output_dir +
-    goal_preset. The old url-only path is removed.
-    """
+def test_public_url_fetch_maps_verified_derived_artifact():
+    """AC-1/3: cleaned bytes come from the owned public Runtime artifact."""
 
+    import io
+    from contextlib import contextmanager
     from types import SimpleNamespace
-    captured: dict[str, Any] = {}
 
-    class ToolResult:
-        def model_dump(self):
-            return loopbacks.loopback_success_provider("a", "https://example.org/a")
+    body = b"# Cleaned content\n"
+    digest = hashlib.sha256(body).hexdigest()
 
-    def upstream(url, **kwargs):
-        captured["url"] = url
-        captured.update(kwargs)
-        return ToolResult()
+    class Runtime:
+        @contextmanager
+        def open_owned_artifact(self, artifact_id, caller_id):
+            assert (artifact_id, caller_id) == ("derived-1", "climate-monitor")
+            yield SimpleNamespace(stream=io.BytesIO(body), size_bytes=len(body))
 
-    module = SimpleNamespace(fetch_article_content=upstream, runtime_data_dir=lambda: tmp_path)
-    monkeypatch.setattr(adapter, "_load_site_scopes", lambda: {
-        "generic": SimpleNamespace(seed_urls=("https://example.org/",))})
-    profile = SimpleNamespace(site_key="generic", model_dump=lambda **kwargs: {"site_key": "generic"})
-    monkeypatch.setattr(adapter, "_prepare_public_configuration", lambda url, key, output:
-                        (profile, output / "scope.yaml"))
-    original = adapter.importlib.import_module
-    monkeypatch.setattr(adapter.importlib, "import_module", lambda name:
-        module if name == "web_listening.blocks.article_content" else original(name))
-    assert adapter.check_dependencies() == "available"
-    # We expect the verifier to raise ``content_ref_corrupt`` because the
-    # loopback ToolResult returns a content_ref that does not actually live
-    # in the new ``output_dir`` — the verifier correctly refuses to trust a
-    # referenced byte path that is not backed by an on-disk regular file.
-    with pytest.raises(adapter.ArticleContentAdapterError, match="content_ref_corrupt"):
-        adapter.build_article_evidence_artifact(
-            [{"article_id": "a", "url": "https://example.org/a"}], report_date="2026-09-07"
-        )
-    assert captured["url"] == "https://example.org/a"
-    assert isinstance(captured.get("profile"), Mapping)
-    assert captured["profile"]["site_key"] == captured.get("site_key")
-    assert captured["site_key"] in ("generic", "_generic")
-    assert captured["goal_preset"] == "page_text"
-    assert isinstance(captured.get("scope_path"), str)
-    assert isinstance(captured.get("output_dir"), str)
-    assert Path(captured["output_dir"]).exists()
+    source = {"artifact_id": "source-1", "role": "source", "sha256": "1" * 64,
+              "mime_type": "text/html", "source_url": "https://example.org/a"}
+    derived = {"artifact_id": "derived-1", "role": "derived", "sha256": digest,
+               "mime_type": "text/markdown", "source_url": "https://example.org/a"}
+    raw = {
+        "job_id": "job-1", "status": "completed", "failure_code": None,
+        "result": {
+            "status": "completed", "artifacts": [source, derived], "errors": [],
+            "usage": {"requests": 1, "bytes_received": len(body),
+                      "runtime_ms": 1, "tool_attempts": 2},
+            "manifest": {"final_url": "https://example.org/a"}, "attempts": [{
+            "tool_id": "acquisition.web_http", "outcome": "succeeded", "http_status": 200,
+            }],
+        },
+    }
+    payload = adapter._runtime_job_payload(
+        Runtime(), "climate-monitor", raw,
+        reviewed_scope={"source_key": "example"},
+        effective_scope={"include_paths": ["/a"]},
+    )
+    assert payload["status"] == "present"
+    assert payload["content"] == body.decode()
+    assert payload["content_ref"] == "derived-1"
+    assert payload["sha256"] == digest
+    assert payload["selected_method"] == "acquisition.web_http"
+    assert payload["extraction_metadata"]["runtime_job"] == raw
 
 
 def test_explicit_provider_overrides_unavailable_and_default(monkeypatch):
@@ -894,7 +868,6 @@ def test_explicit_provider_overrides_unavailable_and_default(monkeypatch):
 
 
 def test_unresolvable_default_ref_fails_closed(monkeypatch):
-    monkeypatch.setattr(adapter, "_import_public_reader", lambda: None)
     with pytest.raises(adapter.ArticleContentAdapterError, match="content_ref_unresolvable"):
         adapter.resolve_content_ref("missing", "0" * 64)
 

@@ -6,6 +6,7 @@ from datetime import date
 import pytest
 
 from climate_monitor.ai_filter import classify_candidate
+from climate_monitor import web_listening_adapter
 from climate_monitor.models import CandidateItem, MonitorSource, RunConfig, SiteScope
 from climate_monitor.research_search import (
     DEFAULT_SEARCH_MODEL,
@@ -395,6 +396,7 @@ def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_mer
         stage_checkpoint=False,
         update_checkpoint=True,
         _runtime=None,
+        seed_outcomes=None,
     ):
         checkpoint_calls.append(
             (source.key, stage_checkpoint, update_checkpoint)
@@ -425,680 +427,131 @@ def test_collect_website_items_preserves_duplicate_discovery_origins_for_url_mer
     assert checkpoint_calls == [("one", True, True), ("two", True, True)]
 
 
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_uses_scoped_seeds_and_filters_candidates(tmp_path, monkeypatch):
-    class Page:
-        def __init__(self, url: str, links: list[str], text: str):
-            self.final_url = url
-            self.fit_markdown = text
-            self.markdown = ""
-            self.content_text = ""
-            self.metadata_json = {"links": links}
-            self.raw_html = ""
+def test_public_site_result_preserves_scope_lanes_artifact_identity_and_attempts(tmp_path):
+    class Budget:
+        limits = {"fetch_attempts": 8}
 
-    class FakeCrawler:
-        fetched: list[str] = []
-        fetch_configs: list[dict] = []
-        fetch_counts: dict[str, int] = {}
+        def usage(self):
+            return {"fetch_attempts": 0}
 
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
+        def remaining_seconds(self):
+            return 60
 
-        def __enter__(self):
-            return self
+        def claim(self, *args, **kwargs):
+            return None
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+        def complete_tool(self, *args, **kwargs):
+            return None
 
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            self.fetched.append(url)
-            self.fetch_configs.append(fetch_config_json or {})
-            self.fetch_counts[url] = self.fetch_counts.get(url, 0) + 1
-            links = ["https://www.iais.org/events/agenda.pdf"]
-            if self.fetch_counts[url] > 1:
-                links.append("https://www.iais.org/climate/report.pdf")
-            return Page(
-                url,
-                links,
-                f"Climate page for {url} version {self.fetch_counts[url]}",
-            )
-
-    diff = {
-        "compute_hash": lambda text: f"hash:{text}",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
-        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="iais",
-        abbreviation="IAIS",
-        full_name="International Association of Insurance Supervisors",
-        url="https://www.iais.org/",
-    )
-    scope = SiteScope(
-        source_key="iais",
-        seed_urls=("https://www.iais.org/news/",),
-        include_patterns=("/news/", "/climate/"),
-        exclude_patterns=("/events/",),
-    )
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    baseline_items, baseline_warnings = collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
-
-    assert baseline_items == []
-    assert baseline_warnings == []
-    assert warnings == []
-    assert FakeCrawler.fetched == [
-        "https://www.iais.org/",
-        "https://www.iais.org/news/",
-        "https://www.iais.org/",
-        "https://www.iais.org/news/",
-    ]
-    assert all(config == {"user_agent": "web-listening-bot/1.0"} for config in FakeCrawler.fetch_configs)
-    assert len(list((tmp_path / "state").glob("*.json"))) == 2
-    saved_states = [json.loads(path.read_text(encoding="utf-8")) for path in (tmp_path / "state").glob("*.json")]
-    assert all("https://www.iais.org/events/agenda.pdf" not in state["links"] for state in saved_states)
-    item_urls = [item.url for item in items]
-    assert "https://www.iais.org/news/" not in item_urls
-    assert item_urls.count("https://www.iais.org/climate/report.pdf") == 2
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_staged_source_checkpoints_commit_only_covered_candidates_across_seeds(
-    tmp_path, monkeypatch
-):
-    source_url = "https://example.org/"
-    scoped_seed = "https://example.org/news/"
-    links_by_seed: dict[str, list[str]] = {source_url: [], scoped_seed: []}
-
-    class Page:
-        def __init__(self, url: str):
-            self.final_url = url
-            self.fit_markdown = f"Climate insurance page for {url}"
-            self.markdown = ""
-            self.content_text = ""
-            self.metadata_json = {"links": list(links_by_seed[url])}
-            self.raw_html = ""
-            self.status_code = 200
-
-    class FakeCrawler:
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json=None):
-            return Page(url)
-
-    diff = {
-        "compute_hash": lambda text: f"hash:{text}",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [],
-        "find_new_links": lambda previous, current: [
-            link for link in current if link not in previous
-        ],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url=source_url,
-    )
-    scope = SiteScope(
-        source_key="example",
-        seed_urls=(scoped_seed,),
-        include_patterns=("/updates/",),
-        exclude_patterns=(),
-    )
-    state_dir = tmp_path / "state"
-    first_url = "https://example.org/updates/first"
-    second_url = "https://example.org/updates/second"
-    third_url = "https://example.org/updates/third"
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr(
-        "climate_monitor.web_listening_adapter._load_web_listening",
-        lambda: (FakeCrawler, diff),
-    )
-
-    bootstrap_items, bootstrap_warnings = collect_source_items(
-        source=source, state_dir=state_dir, scope=scope
-    )
-    assert bootstrap_items == []
-    assert bootstrap_warnings == []
-    canonical_paths = sorted(state_dir.glob("*.json"))
-    assert len(canonical_paths) == 2
-    bootstrap_bytes = {path.name: path.read_bytes() for path in canonical_paths}
-
-    links_by_seed[source_url].append(first_url)
-    links_by_seed[scoped_seed].append(second_url)
-    staged_items, staged_warnings = collect_source_items(
-        source=source,
-        state_dir=state_dir,
-        scope=scope,
-        stage_checkpoint=True,
-    )
-
-    assert staged_warnings == []
-    assert {item.url for item in staged_items} == {first_url, second_url}
-    assert {path.name: path.read_bytes() for path in canonical_paths} == bootstrap_bytes
-    assert len(list(state_dir.glob("*.pending-run.json"))) == 2
-
-    assert commit_staged_source_checkpoints(
-        state_dir, committed_urls={first_url}
-    ) == 1
-    assert not list(state_dir.glob("*.pending-run.json"))
-
-    retry_items, retry_warnings = collect_source_items(
-        source=source,
-        state_dir=state_dir,
-        scope=scope,
-        stage_checkpoint=True,
-    )
-    assert retry_warnings == []
-    assert [item.url for item in retry_items] == [second_url]
-    assert commit_staged_source_checkpoints(
-        state_dir, committed_urls={first_url, second_url}
-    ) == 2
-
-    committed_states = [
-        json.loads(path.read_text(encoding="utf-8")) for path in canonical_paths
-    ]
-    assert {url for state in committed_states for url in state["links"]} == {
-        first_url,
-        second_url,
-    }
-
-    links_by_seed[source_url].append(third_url)
-    committed_bytes = {path.name: path.read_bytes() for path in canonical_paths}
-    read_only_items, read_only_warnings = collect_source_items(
-        source=source,
-        state_dir=state_dir,
-        scope=scope,
-        stage_checkpoint=True,
-        update_checkpoint=False,
-    )
-    assert read_only_warnings == []
-    assert [item.url for item in read_only_items] == [third_url]
-    assert {path.name: path.read_bytes() for path in canonical_paths} == committed_bytes
-    assert not list(state_dir.glob("*.pending-run.json"))
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_honors_scope_fetch_mode_and_config(tmp_path, monkeypatch):
-    class Page:
-        final_url = "https://www.oecd.org/en/topics/climate-change.html"
-        fit_markdown = "Climate page"
-        markdown = ""
-        content_text = ""
-        metadata_json = {"links": []}
-        raw_html = ""
-        status_code = 200
-
-    class FakeCrawler:
-        init_modes: list[str] = []
-        fetch_modes: list[str] = []
-        fetch_configs: list[dict] = []
-
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.init_modes.append(fetch_mode)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            self.fetch_modes.append(fetch_mode)
-            self.fetch_configs.append(fetch_config_json or {})
-            return Page()
-
-    diff = {
-        "compute_hash": lambda text: "hash",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [],
-        "find_new_links": lambda previous, current: [],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="oecd",
-        abbreviation="OECD",
-        full_name="Organisation for Economic Co-operation and Development",
-        url="https://www.oecd.org/",
-    )
-    scope = SiteScope(
-        source_key="oecd",
-        seed_urls=("https://www.oecd.org/en/topics/climate-change.html",),
-        include_patterns=("/topics/climate-change",),
-        exclude_patterns=(),
-        fetch_mode="browser",
-        fetch_config_json={
-            "user_agent_profile": "browser",
-            "wait_until": "domcontentloaded",
-            "extra_wait_ms": 2500,
+    payload = {
+        "status": "completed", "stop_reason": "source_exhausted",
+        "usage": {"requests": 2}, "errors": [],
+        "attempts": [{"tool_id": "acquisition.web_http", "outcome": "succeeded"}],
+        "site_skill_candidate": {"site_key": "example.test"},
+        "site_state": {
+            "generated_at": "2026-09-13T00:00:00Z",
+            "seed_page_text": "unrelated page-wide climate wording",
+            "pages": [
+                {"canonical_url": "https://example.test/", "artifact_id": "seed",
+                 "content_digest": "sha256:" + "0" * 64},
+                {"canonical_url": "https://example.test/news/update", "artifact_id": "html",
+                 "content_digest": "sha256:" + "1" * 64},
+                {"canonical_url": "https://example.test/reports/update.pdf", "artifact_id": "pdf",
+                 "content_digest": "sha256:" + "2" * 64},
+                {"canonical_url": "https://example.test/events/ignored", "artifact_id": "excluded",
+                 "content_digest": "sha256:" + "3" * 64},
+            ],
         },
-    )
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
-
-    assert FakeCrawler.init_modes == ["http"]
-    assert FakeCrawler.fetch_modes == ["http", "http"]
-    assert FakeCrawler.fetch_configs == [{"user_agent": "web-listening-bot/1.0"}] * 2
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_warns_when_seed_has_no_usable_information(tmp_path, monkeypatch):
-    class Page:
-        final_url = "https://www.example.org/empty"
-        fit_markdown = ""
-        markdown = ""
-        content_text = ""
-        metadata_json = {"link_count": 0, "word_count": 0, "source_kind": "html"}
-        raw_html = "<html><body></body></html>"
-        status_code = 200
-
-    class FakeCrawler:
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            return Page()
-
-    diff = {
-        "compute_hash": lambda text: "hash",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [],
-        "find_new_links": lambda previous, current: [],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
     }
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url="https://www.example.org/empty",
-    )
 
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+    class Result:
+        def to_dict(self):
+            return payload
 
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
+    class Runtime:
+        request = None
 
-    assert items == []
-    assert len(warnings) == 1
-    assert "no usable information" in warnings[0]
-    assert "words=0" in warnings[0]
-    assert "links=0" in warnings[0]
+        def explore_site(self, request):
+            self.request = request
+            return Result()
 
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_warns_when_seed_returns_security_verification(tmp_path, monkeypatch):
-    class Page:
-        final_url = "https://www.example.org/protected"
-        fit_markdown = "# www.example.org\n\n## Performing security verification"
-        markdown = ""
-        content_text = ""
-        metadata_json = {"link_count": 2, "word_count": 6, "source_kind": "html"}
-        raw_html = "<html><body>Performing security verification</body></html>"
-        status_code = 200
-
-    class FakeCrawler:
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            return Page()
-
-    diff = {
-        "compute_hash": lambda text: "hash",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [],
-        "find_new_links": lambda previous, current: [],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url="https://www.example.org/protected",
-    )
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
-
-    assert items == []
-    assert len(warnings) == 1
-    assert "blocked or rejected content marker `performing security verification`" in warnings[0]
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_allows_pages_with_incidental_human_verification_text(tmp_path, monkeypatch):
-    class Page:
-        final_url = "https://www.example.org/page"
-        fit_markdown = "Public climate disclosure update with a sign-in link to verify you are human."
-        markdown = ""
-        content_text = ""
-        metadata_json = {
-            "links": [
-                "https://www.example.org/climate/report.pdf",
-                "https://www.example.org/news/update",
-                "https://www.example.org/publications",
-            ]
-        }
-        raw_html = ""
-        status_code = 200
-
-    class FakeCrawler:
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            return Page()
-
-    diff = {
-        "compute_hash": lambda text: "hash",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
-        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url="https://www.example.org/page",
-    )
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
-
-    assert items == []
-    assert warnings == []
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_preserves_successful_seeds_when_later_seed_fails(tmp_path, monkeypatch):
-    class Page:
-        def __init__(self, links: list[str]):
-            self.final_url = "https://www.iais.org/"
-            self.fit_markdown = "Climate page"
-            self.markdown = ""
-            self.content_text = ""
-            self.metadata_json = {"links": links}
-            self.raw_html = ""
-
-    class FakeCrawler:
-        fetch_count = 0
-
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            if url.endswith("/broken/"):
-                raise RuntimeError("broken seed")
-            self.__class__.fetch_count += 1
-            links = []
-            if self.__class__.fetch_count > 1:
-                links.append("https://www.iais.org/climate/report.pdf")
-            return Page(links)
-
-    diff = {
-        "compute_hash": lambda text: "hash",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
-        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="iais",
-        abbreviation="IAIS",
-        full_name="International Association of Insurance Supervisors",
-        url="https://www.iais.org/",
-    )
+    source = MonitorSource("example", "EX", "Example", "https://example.test/")
     scope = SiteScope(
-        source_key="iais",
-        seed_urls=("https://www.iais.org/broken/",),
-        include_patterns=("/climate/",),
-        exclude_patterns=(),
+        "example", (), ("/news/", "/reports/"), ("/events/",),
+    )
+    runtime = Runtime()
+    receipt = web_listening_adapter._run_site_seed(
+        runtime, source, scope, source.url, tmp_path,
+        web_listening_adapter.gateway_configuration([source], {"example": scope}),
+        Budget(),
     )
 
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
+    assert runtime.request.scope.seeds == (source.url,)
+    assert runtime.request.scope.include_paths == ("/", "/news/**", "/reports/**")
+    assert receipt["attempts"] == payload["attempts"]
+    assert [(item["url"], item["lane"]) for item in receipt["candidates"]] == [
+        ("https://example.test/news/update", "website"),
+        ("https://example.test/reports/update.pdf", "document"),
+    ]
+    assert [item["source_item_id"] for item in receipt["candidates"]] == ["html", "pdf"]
+    assert [item["content_hash"] for item in receipt["candidates"]] == ["1" * 64, "2" * 64]
+    assert all("page-wide climate wording" not in item["evidence_text"]
+               for item in receipt["candidates"])
 
-    collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state", scope=scope)
 
-    assert [item.url for item in items] == ["https://www.iais.org/climate/report.pdf"]
-    assert len(warnings) == 1
-    assert "broken seed" in warnings[0]
+def test_public_site_policy_rejection_preserves_upstream_reason_and_attempts(tmp_path):
+    class Budget:
+        limits = {"fetch_attempts": 4}
+        def usage(self): return {"fetch_attempts": 0}
+        def remaining_seconds(self): return 60
+        def claim(self, *args, **kwargs): return None
+        def complete_tool(self, *args, **kwargs): return None
 
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_collect_source_items_emits_document_lane_for_doc_links_and_website_lane_for_other_links(tmp_path, monkeypatch):
-    class Page:
-        def __init__(self, links: list[str]):
-            self.final_url = "https://www.iais.org/"
-            self.fit_markdown = "Climate page"
-            self.markdown = ""
-            self.content_text = ""
-            self.metadata_json = {"links": links}
-            self.raw_html = ""
-
-    class FakeCrawler:
-        fetch_count = 0
-
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            self.__class__.fetch_count += 1
-            if self.__class__.fetch_count == 1:
-                return Page([])
-            return Page(
-                [
-                    "https://www.iais.org/climate/report.pdf",
-                    "https://www.iais.org/climate/news-update",
-                ]
-            )
-
-    diff = {
-        "compute_hash": lambda text: "hash",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
-        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
+    attempt = {"tool_id": "acquisition.playwright", "outcome": "failed"}
+    payload = {
+        "status": "rejected", "stop_reason": "rejected",
+        "usage": {"requests": 1}, "errors": [{"code": "robots.forbidden"}],
+        "attempts": [attempt], "site_skill_candidate": None, "site_state": None,
     }
-    source = MonitorSource(
-        key="iais",
-        abbreviation="IAIS",
-        full_name="International Association of Insurance Supervisors",
-        url="https://www.iais.org/",
+    class Runtime:
+        def explore_site(self, _request):
+            return type("Result", (), {"to_dict": lambda self: payload})()
+
+    source = MonitorSource("example", "EX", "Example", "https://example.test/")
+    receipt = web_listening_adapter._run_site_seed(
+        Runtime(), source, None, source.url, tmp_path,
+        web_listening_adapter.gateway_configuration([source], {}), Budget(),
+    )
+    assert receipt["status"] == "rejected"
+    assert receipt["event_kind"] == "policy"
+    assert receipt["error"] == "robots.forbidden"
+    assert receipt["attempts"] == [attempt]
+    assert receipt["candidates"] == []
+
+
+def test_staged_source_checkpoints_commit_only_fully_covered_seed_candidates(
+    tmp_path, monkeypatch,
+):
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    web_listening_adapter._save_checkpoint(
+        first, {"seed": "first"}, candidate_urls=["https://example.test/a"],
+        staged=True, update=True,
+    )
+    web_listening_adapter._save_checkpoint(
+        second, {"seed": "second"}, candidate_urls=["https://example.test/b"],
+        staged=True, update=True,
+    )
+    monkeypatch.setattr(
+        web_listening_adapter, "_valid_refresh_checkpoint_mapping", lambda value: True,
     )
 
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    baseline_items, baseline_warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
-
-    assert baseline_items == []
-    assert baseline_warnings == []
-    assert warnings == []
-    lanes_by_url = {item.url: item.lane for item in items}
-    assert lanes_by_url == {
-        "https://www.iais.org/climate/report.pdf": "document",
-        "https://www.iais.org/climate/news-update": "website",
-    }
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_live_document_link_uses_document_local_evidence_not_page_wide_text(tmp_path, monkeypatch):
-    class Page:
-        def __init__(self, links: list[str]):
-            self.final_url = "https://www.example.org/climate/"
-            self.fit_markdown = "Climate transition risk adaptation insurance supervision"
-            self.markdown = ""
-            self.content_text = ""
-            self.metadata_json = {"links": links}
-            self.raw_html = ""
-
-    class FakeCrawler:
-        fetch_count = 0
-
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            self.__class__.fetch_count += 1
-            if self.__class__.fetch_count == 1:
-                return Page([])
-            return Page(["https://www.example.org/files/board-minutes.pdf"])
-
-    diff = {
-        "compute_hash": lambda text: f"hash:{text}",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
-        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url="https://www.example.org/climate/",
-    )
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    collect_source_items(source=source, state_dir=tmp_path / "state")
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
-
-    assert warnings == []
-    document = next(item for item in items if item.lane == "document")
-    assert document.url == "https://www.example.org/files/board-minutes.pdf"
-    assert "Climate transition risk" not in document.evidence_text
-    assert document.evidence_text == "https://www.example.org/files/board-minutes.pdf Board Minutes"
-
-
-@pytest.mark.usefixtures("governed_adapter_runtime")
-def test_live_website_link_uses_link_evidence_not_seed_page_text(tmp_path, monkeypatch):
-    class Page:
-        def __init__(self, links: list[str]):
-            self.final_url = "https://www.example.org/climate/"
-            self.fit_markdown = "Climate adaptation insurance capital supervision seed page"
-            self.markdown = ""
-            self.content_text = ""
-            self.metadata_json = {"links": links}
-            self.raw_html = ""
-
-    class FakeCrawler:
-        fetch_count = 0
-
-        def __init__(self, *, fetch_mode: str, read_gateway):
-            assert read_gateway.user_agent == "web-listening-bot/1.0"
-            self.fetch_mode = fetch_mode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetch_page(self, url: str, *, fetch_mode: str, fetch_config_json: dict | None = None):
-            self.__class__.fetch_count += 1
-            if self.__class__.fetch_count == 1:
-                return Page([])
-            return Page(["https://www.example.org/news/barbados-precautionary-sba"])
-
-    diff = {
-        "compute_hash": lambda text: f"hash:{text}",
-        "extract_links": lambda html, base_url: [],
-        "find_document_links": lambda links: [link for link in links if link.endswith(".pdf")],
-        "find_new_links": lambda previous, current: [link for link in current if link not in previous],
-        "select_compare_text": lambda **kwargs: kwargs["fit_markdown"],
-    }
-    source = MonitorSource(
-        key="example",
-        abbreviation="EXAMPLE",
-        full_name="Example",
-        url="https://www.example.org/climate/",
-    )
-
-    monkeypatch.setenv("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING", "1")
-    monkeypatch.setattr("climate_monitor.web_listening_adapter._load_web_listening", lambda: (FakeCrawler, diff))
-
-    collect_source_items(source=source, state_dir=tmp_path / "state")
-    items, warnings = collect_source_items(source=source, state_dir=tmp_path / "state")
-
-    assert warnings == []
-    assert len(items) == 1
-    assert items[0].summary == "EXAMPLE added a new website link. Link text: Barbados Precautionary Sba."
-    assert items[0].evidence_text == "https://www.example.org/news/barbados-precautionary-sba Barbados Precautionary Sba"
-    classified = classify_candidate(items[0], _config())
-    assert classified.climate_related is False
-    assert classified.actuarial_related is False
+    assert commit_staged_source_checkpoints(
+        tmp_path, committed_urls={"https://example.test/a"},
+    ) == 1
+    assert json.loads(first.read_text()) == {"seed": "first"}
+    assert not second.exists()
+    assert not list(tmp_path.glob("*.pending-run.json"))
 
 
 def test_classify_candidate_sets_climate_and_actuarial_flags():

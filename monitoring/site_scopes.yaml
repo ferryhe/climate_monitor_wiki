@@ -210,10 +210,14 @@ site_scopes:
       - /research
       - /news
       - /publication
+      - /ext/en/home
+      - /ext/en/news
+      - /ext/en/research
+      - /ext/en/topic/climate-change
     exclude_patterns:
       - /jobs
       - /events
-    notes: Reviewed World Bank climate, research, news, and publication paths.
+    notes: Reviewed World Bank climate, research, news, publication, and current /ext/en redirects.
   - source_key: adb
     include_source_url: false
     seed_urls:
@@ -255,9 +259,10 @@ site_scopes:
       - /bcbs/
       - /bcbs/publications
       - climate
+      - /committees/bcbs/overview
     exclude_patterns:
       - /events/
-    notes: Reviewed BCBS index and publications paths on BIS.
+    notes: Reviewed BCBS index/publications and the current /committees/bcbs/overview redirect on BIS.
   - source_key: bis
     seed_urls:
       - https://www.bis.org/topic/green_finance.htm
@@ -360,10 +365,12 @@ site_scopes:
       - /green-jobs
       - /publications
       - /rss.xml
+      - /node/12681
+      - /research-and-publications
     exclude_patterns:
       - /events
       - /jobs
-    notes: Reviewed ILO just transition, publications, and RSS paths after old climate and resource news paths returned 404.
+    notes: Reviewed ILO just transition/publications plus current legacy redirects; RSS remains an explicit seed.
   - source_key: imf
     seed_urls:
       - https://www.imf.org/en/topics/climate-change
@@ -480,6 +487,8 @@ site_scopes:
       - /topics/climate
       - /news
       - /publication
+      - /themes/climate
+      - /resources/publication-series
     exclude_patterns:
       - /events
     fetch_mode: browser
@@ -488,7 +497,7 @@ site_scopes:
       wait_until: domcontentloaded
       extra_wait_ms: 2500
       timeout_ms: 25000
-    notes: Reviewed WMO climate topic, news, and publication paths after /media/news returned 404; GitHub runner requires browser_rendered.
+    notes: Reviewed WMO current /themes/climate, news, and /resources/publication-series redirects; browser remains preferred.
   - source_key: wri
     seed_urls:
       - https://www.wri.org/climate
