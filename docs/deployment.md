@@ -182,6 +182,73 @@ profiles, configuration, and session history on that same persistent tree.
 Recreating only `wiki` or toggling the Dashboard does not change the selected
 Hermes home.
 
+### Optional host-owned Hermes connection
+
+The application can instead proxy a Dashboard owned by the host. This is the
+mode that exposes the host Hermes configuration and its configured API, Feishu,
+and Discord connections. It is a shared, full-management connection: changes
+made by a logged-in website operator affect the host Hermes instance, and the
+Gateway shown in the Dashboard is the host Gateway. Enable it only when those
+operators should have the same management capability as a host Hermes user.
+
+Keep the host Hermes home private. Do not mount `/home/ubuntu/.hermes` or its
+configuration into the application container. The only shared directory is a
+private relay directory containing:
+
+- `dashboard.sock`, a Unix socket served by the host's native
+  `systemd-socket-proxyd` relay to the host Dashboard's loopback listener; and
+- `session-token`, the same session token supplied to the host Dashboard as
+  `HERMES_DASHBOARD_SESSION_TOKEN`.
+
+The host Dashboard must use its existing host interpreter and `HERMES_HOME`, a
+frontend built from that Hermes version with `/hermes/` as its base, and
+`CLIMATE_PUBLIC_ORIGIN` as the trusted callback origin. Versions 0.20.0 and
+0.20.5 have explicit callback-adapter support. The image defaults to its pinned
+0.20.5; a 0.20.0 host launcher must set
+`HERMES_DASHBOARD_EXPECTED_VERSION=0.20.0` so the adapter verifies the installed
+host package before binding. `HERMES_DASHBOARD_PORT=19119` selects the host
+loopback listener. Set `HERMES_WEB_DIST` to the exact 0.20.0 frontend built with
+the `/hermes/` base. Only the native Unix-socket relay is mounted into the
+container.
+
+Set the host relay directory and trusted origin in `.env`. Retain every Compose
+override already used by the production `wiki` service; omitting one removes
+that feature's environment and mount when the container is recreated. For the
+current full deployment, append the host override after the Registry, delivery,
+weekly-status, and scheduler-status overrides:
+
+```text
+HERMES_DASHBOARD_RELAY_DIR=/run/user/1000/climate-hermes-relay
+CLIMATE_PUBLIC_ORIGIN=https://climate.aiinforsearch.com
+```
+
+```bash
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml \
+  -f docker-compose.registry.yml \
+  -f docker-compose.delivery.yml \
+  -f docker-compose.update-status.yml \
+  -f docker-compose.job-status.yml \
+  -f docker-compose.host-hermes.yml \
+  up -d --build --no-deps wiki
+
+docker compose restart caddy
+```
+
+Complete the required tests against the new revision before this command. The
+`--build` step makes the recreated service use the image containing the UDS
+proxy code. If production does not use one of the four optional data/status
+overrides above, omit only that unused file; always preserve the complete set
+from the currently deployed service. Restarting Caddy immediately after
+recreating `wiki` makes it resolve the new application-container address.
+
+External mode reads the token file for each new HTTP request and WebSocket. A
+host Dashboard restart may therefore rotate the token without rebuilding the
+application image; existing WebSockets reconnect with the new token. In this
+mode the entrypoint does not start the image's pinned Dashboard child and does
+not create or modify `/app/output/hermes`. Removing the override returns to the
+default isolated, managed runtime and its existing `climate_runtime` state.
+
 ## Publishing and deploying weekly content
 
 The Hermes schedule invokes the locked publisher wrapper:

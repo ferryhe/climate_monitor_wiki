@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from agentic_wiki.wiki_agent import URL_RE
-from climate_monitor.report_writer import render_report
+from climate_monitor.report_writer import render_acquisition_report, render_report
 
 
 @dataclass(frozen=True)
@@ -239,20 +239,34 @@ def test_render_report_sanitizes_and_preserves_warning_lines():
     assert "warning 24" in text
 
 
-def test_weekly_report_retains_coverage_limitations_without_claiming_full_coverage():
+def test_weekly_report_separates_operator_diagnostics():
+    warnings = ["Pillar A source wmo was blocked: scope.acquisition_failed"]
+    stats = {
+        "total": 2, "updated": 1, "unchanged": 0,
+        "blocked": 1, "failed": 0, "unresolved": 0,
+    }
     text = render_report(
         report_date=date(2026, 9, 14),
         title="Weekly Climate Monitor",
         items=[],
         dedup_notes=[],
         sites_monitored=2,
-        warnings=["Pillar A source wmo was blocked: scope.acquisition_failed"],
-        weekly_stats={
-            "total": 2, "updated": 1, "unchanged": 0,
-            "blocked": 1, "failed": 0, "unresolved": 0,
-        },
+        warnings=warnings,
+        weekly_stats=stats,
         executive_summary="Verified eligible evidence was retained.",
     )
-    assert "### Coverage Limitations" in text
-    assert "- Pillar A source wmo was blocked: scope.acquisition_failed" in text
+    assert "Coverage Limitations" not in text
+    assert warnings[0] not in text
+    assert "succeeded: **1**, failed: **1**" in text
     assert "Verified eligible evidence was retained." in text
+    operator_text = render_acquisition_report(
+        report_date=date(2026, 9, 14), stats=stats, items=[],
+        warnings=warnings + [f"warning {i}" for i in range(30)],
+        dedup_notes=["Duplicate URL skipped"], report_sha256="a" * 64,
+    )
+    assert warnings[0] in operator_text
+    assert "warning 29" in operator_text
+    assert "| blocked | 1 |" in operator_text
+    assert "Pillar A: 0; Pillar B: 0" in operator_text
+    assert "Duplicate URL skipped" in operator_text
+    assert "a" * 64 in operator_text

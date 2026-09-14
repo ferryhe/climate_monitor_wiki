@@ -3066,6 +3066,8 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
     import subprocess
     from scripts import run_climate_monitor as monitor
     from climate_monitor.weekly_monitor.prompt_loader import LoadedPrompt
+    from climate_monitor.models import MonitorRunResult
+    from datetime import date
 
     exact = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"], cwd=monitor.ROOT,
@@ -3109,7 +3111,10 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
     }
     monkeypatch.setattr(monitor, "_read_staging_bundle", lambda _path: bundle)
     monkeypatch.setattr(monitor, "_verify_staging_digest", lambda *_args: None)
-    monkeypatch.setattr(monitor, "_validate_v2_stats_shape", lambda _stats: {})
+    monkeypatch.setattr(monitor, "_validate_v2_stats_shape", lambda _stats: {
+        "total": 0, "updated": 0, "unchanged": 0,
+        "blocked": 0, "failed": 0, "unresolved": 0,
+    })
     monkeypatch.setattr(monitor, "load_authoring_response", lambda _path: {})
     taxonomy = SimpleNamespace(sha256="taxonomy")
     monkeypatch.setattr(
@@ -3125,7 +3130,9 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
     observed = {}
     monkeypatch.setattr(
         monitor, "run_weekly_monitor",
-        lambda **kwargs: observed.update(kwargs) or "completed",
+        lambda **kwargs: observed.update(kwargs) or MonitorRunResult(
+            report_date=date(2026, 9, 7), report_path=None,
+        ),
     )
     source_dir = tmp_path / "sources"
     source_dir.mkdir()
@@ -3139,7 +3146,9 @@ def test_managed_finalize_passes_bound_commit_without_git_lookup(tmp_path, monke
         article_evidence_loopback="",
     )
 
-    assert monitor._run_finalize(args, SimpleNamespace(error=pytest.fail)) == "completed"
+    result = monitor._run_finalize(args, SimpleNamespace(error=pytest.fail))
+    assert result.report_path is None
+    assert Path(result.acquisition_report_path).is_file()
     assert observed["repository_commit_sha"] == exact
     assert observed["loaded_prompt"] is frozen_prompt
 
