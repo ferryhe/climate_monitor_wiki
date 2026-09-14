@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -19,13 +19,13 @@ from climate_monitor.console_auth import (
     _USER_DATABASE,
     get_jwt_strategy,
 )
+from climate_monitor.hermes_dashboard_server import validate_oauth_server_name
 
 COOKIE_NAME = "climate_console_session"
 HERMES_PREFIX = "/hermes"
 HERMES_SESSION_HEADER = "X-Hermes-Session-Token"
 BROWSER_SESSION_TOKEN_SENTINEL = "outer-proxy-authenticated"
 OAUTH_CALLBACK_UPSTREAM_PREFIX = "/api/mcp/oauth/callback/"
-_OAUTH_SERVER_NAME = re.compile(r"[A-Za-z0-9._~-]{1,128}\Z")
 _WEBSOCKET_LOGGER = logging.getLogger(f"{__name__}.upstream_websocket")
 # websockets DEBUG records include the request target, which contains the
 # pinned Dashboard's query-string credential. Proxy failures are translated to
@@ -63,18 +63,18 @@ def _upstream_base() -> str:
     return value
 
 
+def _upstream_socket() -> str | None:
+    value = os.getenv("HERMES_DASHBOARD_SOCKET", "").strip()
+    if value and not Path(value).is_absolute():
+        raise RuntimeError("HERMES_DASHBOARD_SOCKET must be an absolute path")
+    return value or None
+
+
 def _upstream_url(path: str, query: str = "", *, websocket: bool = False) -> str:
     parsed = urlsplit(_upstream_base())
     scheme = "ws" if websocket else parsed.scheme
     upstream_path = "/" + path.lstrip("/")
     return urlunsplit((scheme, parsed.netloc, upstream_path, query, ""))
-
-
-def validate_oauth_server_name(server_name: str) -> str:
-    """Require an MCP server identifier that is exactly one safe URL segment."""
-    if server_name in {".", ".."} or _OAUTH_SERVER_NAME.fullmatch(server_name) is None:
-        raise ValueError("OAuth server name must be one safe URL segment")
-    return server_name
 
 
 def oauth_callback_proxy_path(server_name: str, raw_path: bytes | None = None) -> str:
@@ -94,13 +94,24 @@ def oauth_callback_proxy_path(server_name: str, raw_path: bytes | None = None) -
 
 
 def _internal_session_token() -> str:
-    token = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN", "")
+    token_file = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", "").strip()
+    if _upstream_socket():
+        if not token_file or not Path(token_file).is_absolute():
+            raise RuntimeError(
+                "HERMES_DASHBOARD_SESSION_TOKEN_FILE must be an absolute path in external mode"
+            )
+        try:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError("Hermes Dashboard session token file is unavailable") from exc
+    else:
+        token = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN", "")
     if not token:
         raise RuntimeError("Hermes Dashboard internal session token is unavailable")
     return token
 
 
-def _websocket_query(query: str) -> str:
+def _websocket_query(query: str, token: str) -> str:
     # The pinned loopback Dashboard authenticates WebSockets only through its
     # token query parameter. Remove every client-supplied value before adding
     # the server-owned credential so a browser cannot override it.
@@ -109,11 +120,11 @@ def _websocket_query(query: str) -> str:
         for name, value in parse_qsl(query, keep_blank_values=True)
         if name != "token"
     ]
-    values.append(("token", _internal_session_token()))
+    values.append(("token", token))
     return urlencode(values)
 
 
-def _request_headers(request: Request) -> dict[str, str]:
+def _request_headers(request: Request, token: str) -> dict[str, str]:
     headers = {
         name: value
         for name, value in request.headers.items()
@@ -133,13 +144,12 @@ def _request_headers(request: Request) -> dict[str, str]:
     headers["X-Forwarded-Prefix"] = HERMES_PREFIX
     headers["X-Forwarded-Proto"] = "https"
     headers["Accept-Encoding"] = "identity"
-    headers[HERMES_SESSION_HEADER] = _internal_session_token()
+    headers[HERMES_SESSION_HEADER] = token
     return headers
 
 
-def _response_headers(headers: httpx.Headers) -> dict[str, str]:
+def _response_headers(headers: httpx.Headers, token: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    token = _internal_session_token()
     for name, value in headers.items():
         lower = name.lower()
         if lower in _HOP_BY_HOP | {"content-encoding", "content-length", "set-cookie"}:
@@ -156,7 +166,7 @@ def _response_headers(headers: httpx.Headers) -> dict[str, str]:
     return result
 
 
-def _response_content(content: bytes) -> bytes:
+def _response_content(content: bytes, token: str) -> bytes:
     # Loopback-mode Hermes deliberately bootstraps its token into index.html.
     # The outer proxy owns authentication instead, so redact that credential
     # (and any accidental echo from another endpoint) before bytes reach the
@@ -166,15 +176,15 @@ def _response_content(content: bytes) -> bytes:
     # Both HTTP and WS proxy paths discard this sentinel and inject the real
     # credential only on the loopback hop.
     return content.replace(
-        _internal_session_token().encode(),
+        token.encode(),
         BROWSER_SESSION_TOKEN_SENTINEL.encode(),
     )
 
 
-def _websocket_content(content: str | bytes) -> str | bytes:
+def _websocket_content(content: str | bytes, token: str) -> str | bytes:
     if isinstance(content, bytes):
-        return _response_content(content)
-    return content.replace(_internal_session_token(), BROWSER_SESSION_TOKEN_SENTINEL)
+        return _response_content(content, token)
+    return content.replace(token, BROWSER_SESSION_TOKEN_SENTINEL)
 
 
 def unavailable_response(path: str = "") -> Response:
@@ -205,6 +215,7 @@ async def proxy_http(
     expected_upstream_path: str | None = None,
 ) -> Response:
     try:
+        token = _internal_session_token()
         upstream_url = httpx.URL(_upstream_url(path, request.url.query))
         # The anonymous callback caller supplies an exact resolved path. Check
         # HTTPX's final normalized URL immediately before dispatch so it can
@@ -217,23 +228,27 @@ async def proxy_http(
         # This hop is always loopback and carries the private Dashboard token.
         # Never inherit HTTP(S)_PROXY or other HTTPX transport settings from the
         # container environment, even when NO_PROXY is absent or misconfigured.
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
+        client_options: dict[str, Any] = {
+            "timeout": 30.0,
+            "follow_redirects": False,
+            "trust_env": False,
+        }
+        socket_path = _upstream_socket()
+        if socket_path:
+            client_options["transport"] = httpx.AsyncHTTPTransport(uds=socket_path)
+        async with httpx.AsyncClient(**client_options) as client:
             upstream = await client.request(
                 request.method,
                 upstream_url,
-                headers=_request_headers(request),
+                headers=_request_headers(request, token),
                 content=await request.body(),
             )
     except (httpx.HTTPError, OSError, RuntimeError):
         return unavailable_response(path)
     return Response(
-        content=_response_content(upstream.content),
+        content=_response_content(upstream.content, token),
         status_code=upstream.status_code,
-        headers=_response_headers(upstream.headers),
+        headers=_response_headers(upstream.headers, token),
         media_type=None,
     )
 
@@ -282,27 +297,31 @@ async def _relay_browser_to_upstream(ws: WebSocket, upstream: Any, token: str) -
             await upstream.send(message["bytes"])
 
 
-async def _relay_upstream_to_browser(ws: WebSocket, upstream: Any, token: str) -> None:
+async def _relay_upstream_to_browser(
+    ws: WebSocket, upstream: Any, console_token: str, dashboard_token: str
+) -> None:
     try:
         async for message in upstream:
-            if not await console_session_is_valid(token):
+            if not await console_session_is_valid(console_token):
                 if ws.application_state.name == "CONNECTED":
                     await ws.close(code=4401, reason="session ended")
                 return
             if isinstance(message, bytes):
-                await ws.send_bytes(cast(bytes, _websocket_content(message)))
+                await ws.send_bytes(cast(bytes, _websocket_content(message, dashboard_token)))
             else:
-                await ws.send_text(cast(str, _websocket_content(message)))
+                await ws.send_text(cast(str, _websocket_content(message, dashboard_token)))
         close_code = upstream.close_code if upstream.close_code is not None else 1000
         await ws.close(
             code=int(close_code),
-            reason=cast(str, _websocket_content(upstream.close_reason or "")),
+            reason=cast(
+                str, _websocket_content(upstream.close_reason or "", dashboard_token)
+            ),
         )
     except websockets.exceptions.ConnectionClosed as exc:
         if ws.application_state.name == "CONNECTED":
             await ws.close(
                 code=int(exc.code),
-                reason=cast(str, _websocket_content(exc.reason)),
+                reason=cast(str, _websocket_content(exc.reason, dashboard_token)),
             )
 
 
@@ -312,8 +331,8 @@ async def _watch_session(token: str) -> None:
 
 
 async def proxy_websocket(ws: WebSocket, path: str) -> None:
-    token = ws.cookies.get(COOKIE_NAME, "")
-    if not await console_session_is_valid(token):
+    console_token = ws.cookies.get(COOKIE_NAME, "")
+    if not await console_session_is_valid(console_token):
         await ws.close(code=4401, reason="authentication required")
         return
     if not _same_origin(ws):
@@ -331,18 +350,34 @@ async def proxy_websocket(ws: WebSocket, path: str) -> None:
         "X-Forwarded-Proto": "https" if ws.url.scheme == "wss" else "http",
     }
     try:
-        async with websockets.connect(
-            _upstream_url(path, _websocket_query(ws.url.query), websocket=True),
-            origin=cast(Any, f"http://{base.netloc}"),
-            subprotocols=cast(Any, requested_protocols or None),
-            additional_headers=headers,
-            logger=_WEBSOCKET_LOGGER,
-            proxy=None,
-        ) as upstream:
+        dashboard_token = _internal_session_token()
+        upstream_url = _upstream_url(
+            path, _websocket_query(ws.url.query, dashboard_token), websocket=True
+        )
+        connection_options = {
+            "origin": cast(Any, f"http://{base.netloc}"),
+            "subprotocols": cast(Any, requested_protocols or None),
+            "additional_headers": headers,
+            "logger": _WEBSOCKET_LOGGER,
+            "proxy": None,
+        }
+        socket_path = _upstream_socket()
+        connection = (
+            websockets.unix_connect(path=socket_path, uri=upstream_url, **connection_options)
+            if socket_path
+            else websockets.connect(upstream_url, **connection_options)
+        )
+        async with connection as upstream:
             await ws.accept(subprotocol=upstream.subprotocol)
-            browser_task = asyncio.create_task(_relay_browser_to_upstream(ws, upstream, token))
-            upstream_task = asyncio.create_task(_relay_upstream_to_browser(ws, upstream, token))
-            session_task = asyncio.create_task(_watch_session(token))
+            browser_task = asyncio.create_task(
+                _relay_browser_to_upstream(ws, upstream, console_token)
+            )
+            upstream_task = asyncio.create_task(
+                _relay_upstream_to_browser(
+                    ws, upstream, console_token, dashboard_token
+                )
+            )
+            session_task = asyncio.create_task(_watch_session(console_token))
             tasks = {browser_task, upstream_task, session_task}
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             if session_task in done and ws.application_state.name == "CONNECTED":
