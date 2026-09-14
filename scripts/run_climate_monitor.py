@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -19,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from climate_monitor.orchestrator import run_monitor, read_candidate_history, resolve_seen_urls_path
 from climate_monitor.config import load_run_config
+from climate_monitor.report_writer import render_acquisition_report
 from climate_monitor.weekly_monitor.driver import run_weekly_monitor
 from climate_monitor.weekly_monitor.authoring_contract import (
     AUTHORING_REQUEST_SCHEMA_VERSION_V2,
@@ -1445,7 +1447,7 @@ def _run_finalize(args, parser) -> MonitorRunResult:
     # missing CLI args must NOT silently swap the date.
     finalized_report_date = date.fromisoformat(bundle["report_date"])
     model, provider = _resolve_authoring_identity(args.model, args.model_provider)
-    return run_weekly_monitor(
+    result = run_weekly_monitor(
         model=model, model_provider=provider,
         source_config_path=Path(args.source_config),
         run_config_path=Path(args.run_config),
@@ -1465,6 +1467,17 @@ def _run_finalize(args, parser) -> MonitorRunResult:
         providers=_parse_loopback_provider(args.article_evidence_loopback),
         repository_commit_sha=repository_commit_sha,
     )
+    # Keep diagnostics with the run, outside sources/ and the public wiki.
+    # Rebuild from frozen evidence even when finalization recovers a prior commit.
+    acquisition_report = staging_dir / f"acquisition-report-{report_date.isoformat()}.md"
+    temporary = acquisition_report.with_suffix(".md.tmp")
+    temporary.write_text(render_acquisition_report(
+        report_date=report_date, stats=validated_stats, items=list(result.items),
+        warnings=list((evidence_payload.get("reportability") or {}).get("limitations", [])),
+        dedup_notes=list(result.dedup_notes), report_sha256=result.report_sha256,
+    ), encoding="utf-8")
+    temporary.replace(acquisition_report)
+    return replace(result, acquisition_report_path=str(acquisition_report))
 
 
 def _resolve_authoring_identity(model="", provider="") -> tuple[str, str]:
@@ -2132,6 +2145,8 @@ def main() -> None:
         print(f"Wiki synced: {'yes' if result.synced else 'no'}")
     else:
         print("No monitor-matching updates found; no report written.")
+    if result.acquisition_report_path:
+        print(f"Acquisition report: {result.acquisition_report_path}")
     # Surface the article-evidence.v1 artifact path so downstream consumers
     # (Issue #93) can locate it without scanning ``source_dir``. The
     # orchestrator writes one artifact per run that survives long enough

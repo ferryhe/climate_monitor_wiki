@@ -351,6 +351,20 @@ def test_ac7_full_dry_run_chain_writes_report_and_no_seen(tmp_path):
     assert parsed["report_path"] == report[0].name
     assert parsed["report_sha256"] == hashlib.sha256(report[0].read_bytes()).hexdigest()
     assert parsed["stats"]["total"] == 57
+    acquisition_report = staging_dir / f"acquisition-report-{REPORT_DATE}.md"
+    assert parsed["acquisition_report_path"] == acquisition_report.name
+    operator_text = acquisition_report.read_text(encoding="utf-8")
+    assert "| total | 57 |" in operator_text
+    assert "| blocked | 14 |" in operator_text
+    assert parsed["report_sha256"] in operator_text
+    assert "Coverage Limitations" not in report[0].read_text(encoding="utf-8")
+    assert not list((tmp_path / "source_dir").glob("acquisition-report-*.md"))
+    original_report = report[0].read_bytes()
+    acquisition_report.unlink()
+    retried = _call(finalize.args, env=env)
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+    assert report[0].read_bytes() == original_report
+    assert acquisition_report.read_text(encoding="utf-8") == operator_text
 
 
 # ---------------------------------------------------------------------------
