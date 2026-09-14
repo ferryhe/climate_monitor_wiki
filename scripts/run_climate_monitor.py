@@ -1469,11 +1469,24 @@ def _run_finalize(args, parser) -> MonitorRunResult:
     )
     # Keep diagnostics with the run, outside sources/ and the public wiki.
     # Rebuild from frozen evidence even when finalization recovers a prior commit.
+    warnings = list((evidence_payload.get("reportability") or {}).get("limitations", []))
+    if not warnings:
+        # Older prepared evidence lacks the managed reportability projection.
+        # Its validated public artifacts still carry the authoritative reasons.
+        warnings = [
+            f"Pillar A source {row['site_key']} was {row['disposition']}: {row['reason']}"
+            for row in outcome.get("dispositions", [])
+            if row["disposition"] in {"blocked", "failed", "unresolved"}
+        ]
+        warnings.extend(
+            f"Pillar B search {row['search_ref']} failed: {row['error']}"
+            for row in pillar_b_payload.get("searches", []) if row["status"] == "failed"
+        )
     acquisition_report = staging_dir / f"acquisition-report-{report_date.isoformat()}.md"
     temporary = acquisition_report.with_suffix(".md.tmp")
     temporary.write_text(render_acquisition_report(
         report_date=report_date, stats=validated_stats, items=list(result.items),
-        warnings=list((evidence_payload.get("reportability") or {}).get("limitations", [])),
+        warnings=warnings,
         dedup_notes=list(result.dedup_notes), report_sha256=result.report_sha256,
     ), encoding="utf-8")
     temporary.replace(acquisition_report)

@@ -356,6 +356,8 @@ def test_ac7_full_dry_run_chain_writes_report_and_no_seen(tmp_path):
     operator_text = acquisition_report.read_text(encoding="utf-8")
     assert "| total | 57 |" in operator_text
     assert "| blocked | 14 |" in operator_text
+    assert operator_text.count("scope.blocked") == 14
+    assert "scope.failed" in operator_text
     assert parsed["report_sha256"] in operator_text
     assert "Coverage Limitations" not in report[0].read_text(encoding="utf-8")
     assert not list((tmp_path / "source_dir").glob("acquisition-report-*.md"))
