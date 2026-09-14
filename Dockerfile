@@ -13,7 +13,7 @@ RUN git init /opt/hermes-agent \
     && rm -rf /opt/hermes-agent/.git \
     && cd /opt/hermes-agent \
     && npm ci --workspace ui-tui --workspace web --include-workspace-root \
-    && npm run build --workspace web \
+    && npm run build --workspace web -- --base=/hermes/ \
     && npm run build --workspace ui-tui \
     && mkdir -p hermes_cli/tui_dist \
     && cp ui-tui/dist/entry.js hermes_cli/tui_dist/entry.js \

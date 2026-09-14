@@ -214,6 +214,64 @@ def test_loopback_http_proxy_ignores_environment_proxies(monkeypatch):
     ]
 
 
+def test_external_http_proxy_uses_uds_and_reloads_token_file(tmp_path, monkeypatch):
+    import api_server
+    import climate_monitor.hermes_dashboard as dashboard
+
+    _configure_auth(monkeypatch, api_server)
+    socket_path = tmp_path / "dashboard.sock"
+    token_file = tmp_path / "session-token"
+    first_token = "first-host-dashboard-token"
+    second_token = "rotated-host-dashboard-token"
+    token_file.write_text(first_token, encoding="utf-8")
+    monkeypatch.setenv("HERMES_DASHBOARD_SOCKET", str(socket_path))
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+    transport = object()
+    transport_calls: list[str] = []
+    requests: list[httpx.Request] = []
+    client_options: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        dashboard.httpx,
+        "AsyncHTTPTransport",
+        lambda *, uds: transport_calls.append(uds) or transport,
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_options.append(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, *, headers, content):
+            request = httpx.Request(method, url, headers=headers, content=content)
+            requests.append(request)
+            token = request.headers["x-hermes-session-token"]
+            return httpx.Response(200, content=f"token:{token}".encode())
+
+    monkeypatch.setattr(dashboard.httpx, "AsyncClient", FakeClient)
+    client = TestClient(api_server.app, base_url="https://testserver")
+    _login(client)
+
+    first = client.get("/hermes/api/config")
+    token_file.write_text(second_token, encoding="utf-8")
+    second = client.get("/hermes/api/config")
+
+    assert first.text == "token:outer-proxy-authenticated"
+    assert second.text == "token:outer-proxy-authenticated"
+    assert [request.headers["x-hermes-session-token"] for request in requests] == [
+        first_token,
+        second_token,
+    ]
+    assert transport_calls == [str(socket_path), str(socket_path)]
+    assert all(options["transport"] is transport for options in client_options)
+    assert all(options["trust_env"] is False for options in client_options)
+
+
 def test_logout_and_immediate_relogin_never_restore_replayed_session(monkeypatch):
     import api_server
 
@@ -467,6 +525,53 @@ def test_authenticated_websocket_relays_realtime_and_logout_closes_it(monkeypatc
     assert calls[0][1]["logger"].disabled is True
 
 
+def test_external_websocket_uses_uds_and_token_file(tmp_path, monkeypatch):
+    import api_server
+    import climate_monitor.hermes_dashboard as dashboard
+
+    _configure_auth(monkeypatch, api_server)
+    socket_path = tmp_path / "dashboard.sock"
+    token = "host-dashboard-websocket-token"
+    token_file = tmp_path / "session-token"
+    token_file.write_text(token, encoding="utf-8")
+    monkeypatch.setenv("HERMES_DASHBOARD_SOCKET", str(socket_path))
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+    upstream = _FakeUpstream(leaked_value=token)
+    calls = []
+
+    def unix_connect(*, path, uri, **kwargs):
+        calls.append((path, uri, kwargs))
+        return _FakeConnect(upstream)
+
+    monkeypatch.setattr(dashboard.websockets, "unix_connect", unix_connect)
+    monkeypatch.setattr(
+        dashboard.websockets,
+        "connect",
+        lambda *args, **kwargs: pytest.fail("TCP WebSocket transport was used"),
+    )
+    client = TestClient(api_server.app, base_url="https://testserver")
+    _login(client)
+
+    with client.websocket_connect(
+        "/hermes/api/pty?token=browser-token&profile=default",
+        headers={"origin": "https://testserver"},
+    ) as socket:
+        socket.send_text("continue-host-session")
+        assert socket.receive_text() == "credential:outer-proxy-authenticated"
+        assert socket.receive_text() == "tool-result:continue-host-session"
+        assert client.post("/api/manage/auth/logout").status_code == 204
+        message = socket.receive()
+        assert message["type"] == "websocket.close"
+        assert message["code"] == 4401
+
+    assert calls[0][0] == str(socket_path)
+    assert parse_qs(urlsplit(calls[0][1]).query) == {
+        "profile": ["default"],
+        "token": [token],
+    }
+    assert calls[0][2]["proxy"] is None
+
+
 def test_open_websocket_closes_when_shared_session_expires(monkeypatch):
     import api_server
     from climate_monitor.console_auth import ConsoleSessionStore
@@ -594,7 +699,7 @@ def test_unavailable_state_and_pinned_isolated_runtime(monkeypatch):
     assert "ARG HERMES_REVISION=5538bd1f933be2e94aca9755deca5cc59cccc553" in dockerfile
     assert 'fetch --depth 1 --filter=blob:none origin "$HERMES_REVISION"' in dockerfile
     assert "checkout --detach FETCH_HEAD" in dockerfile
-    assert "npm run build --workspace web" in dockerfile
+    assert "npm run build --workspace web -- --base=/hermes/" in dockerfile
     assert "npm run build --workspace ui-tui" in dockerfile
     assert "HERMES_HOME: /app/output/hermes" in compose
     assert "climate_runtime:/app/output" in compose
@@ -801,9 +906,15 @@ def test_shipped_application_logging_does_not_record_oauth_callback_query(tmp_pa
 
 def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_path):
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    host_override = (ROOT / "docker-compose.host-hermes.yml").read_text(
+        encoding="utf-8"
+    )
     deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
     assert "HERMES_DASHBOARD_ENABLED: ${HERMES_DASHBOARD_ENABLED:-0}" in compose
     assert "HERMES_HOME: /app/output/hermes" in compose
+    assert "HERMES_DASHBOARD_SOCKET: /run/host-hermes/dashboard.sock" in host_override
+    assert "HERMES_DASHBOARD_SESSION_TOKEN_FILE: /run/host-hermes/session-token" in host_override
+    assert ":/run/host-hermes:ro" in host_override
     assert "No home migration is required" in " ".join(deployment.split())
 
     marker = tmp_path / "application-started"
@@ -833,6 +944,63 @@ def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_pa
 
     assert result.returncode == 0, result.stderr
     assert marker.read_text(encoding="utf-8") == "wiki-chat-started"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="entrypoint lifecycle uses Unix paths")
+def test_external_entrypoint_uses_host_relay_without_starting_dashboard_child(
+    tmp_path,
+):
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    dashboard_started = tmp_path / "dashboard-started"
+    app_started = tmp_path / "app-started"
+    token_file = tmp_path / "session-token"
+    token_file.write_text("host-token", encoding="utf-8")
+    python_shim = shim_dir / "python"
+    python_shim.write_text(
+        """#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "climate_monitor.hermes_dashboard_server" ]; then
+    printf started > "$DASHBOARD_STARTED"
+    exit 19
+fi
+exec "$REAL_PYTHON" "$@"
+""",
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+    command = (
+        "from pathlib import Path; import sys; "
+        "Path(sys.argv[1]).write_text('host-relay-app-started', encoding='utf-8')"
+    )
+    env = os.environ | {
+        "CLIMATE_PUBLIC_ORIGIN": "https://climate.example",
+        "DASHBOARD_STARTED": str(dashboard_started),
+        "HERMES_DASHBOARD_ENABLED": "1",
+        "HERMES_DASHBOARD_SESSION_TOKEN_FILE": str(token_file),
+        "HERMES_DASHBOARD_SOCKET": str(tmp_path / "dashboard.sock"),
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        "REAL_PYTHON": sys.executable,
+    }
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(ROOT / "scripts" / "docker_entrypoint.sh"),
+            sys.executable,
+            "-c",
+            command,
+            str(app_started),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert app_started.read_text(encoding="utf-8") == "host-relay-app-started"
+    assert not dashboard_started.exists()
 
 
 def test_disabled_compose_keeps_baseline_persistent_hermes_home():
@@ -951,14 +1119,29 @@ def test_trusted_public_origin_pins_oauth_callback_and_rejects_header_input(monk
     )
 
     monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
-    fake = SimpleNamespace(_mcp_oauth_callback_url=lambda request, name: "unsafe")
-    install_oauth_callback_adapter(fake, version="0.20.5")
+    monkeypatch.delenv("HERMES_DASHBOARD_EXPECTED_VERSION", raising=False)
     hostile_request = SimpleNamespace(
         headers={"host": "attacker.example", "x-forwarded-host": "attacker.example"}
     )
-    assert fake._mcp_oauth_callback_url(hostile_request, "calendar-primary") == (
+    pinned = SimpleNamespace(_mcp_oauth_callback_url=lambda request, name: "unsafe")
+    install_oauth_callback_adapter(pinned, version="0.20.5")
+    assert pinned._mcp_oauth_callback_url(hostile_request, "calendar-primary") == (
         "https://climate.example/hermes/api/mcp/oauth/callback/calendar-primary"
     )
+    host = SimpleNamespace(_mcp_oauth_callback_url=lambda request, name: "unsafe")
+    install_oauth_callback_adapter(
+        host, version="0.20.0", expected_version="0.20.0"
+    )
+    assert host._mcp_oauth_callback_url(hostile_request, "calendar-primary") == (
+        "https://climate.example/hermes/api/mcp/oauth/callback/calendar-primary"
+    )
+    unsupported = SimpleNamespace(_mcp_oauth_callback_url=lambda request, name: "unsafe")
+    with pytest.raises(RuntimeError, match="unsupported HERMES_DASHBOARD_EXPECTED_VERSION"):
+        install_oauth_callback_adapter(
+            unsupported, version="0.20.1", expected_version="0.20.1"
+        )
+    with pytest.raises(RuntimeError, match="expected 0.20.5, found 0.20.0"):
+        install_oauth_callback_adapter(unsupported, version="0.20.0")
     assert oauth_callback_url("mail") == (
         "https://climate.example/hermes/api/mcp/oauth/callback/mail"
     )
@@ -977,6 +1160,80 @@ def test_trusted_public_origin_pins_oauth_callback_and_rejects_header_input(monk
     for invalid_name in ("", ".", "..", "calendar/primary", r"calendar\primary", "%2e%2e"):
         with pytest.raises(ValueError):
             oauth_callback_url(invalid_name)
+
+
+@pytest.mark.parametrize("version", ("0.20.0", "0.20.5"))
+def test_dashboard_launcher_loads_native_hermes_environment_before_server_import(
+    version, monkeypatch
+):
+    from types import ModuleType, SimpleNamespace
+
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+
+    events = []
+    hermes_home = "/srv/hermes-home"
+    env_loader = SimpleNamespace()
+
+    def load_hermes_dotenv(*, hermes_home):
+        events.append(("load", hermes_home, os.environ["EXPLICIT_VALUE"]))
+        monkeypatch.setenv("FEISHU_APP_ID", "loaded-app-id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "loaded-app-secret")
+        monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+        monkeypatch.setenv("HERMES_DASHBOARD_EXPECTED_VERSION", version)
+        monkeypatch.setenv("HERMES_DASHBOARD_PORT", "19119")
+
+    env_loader.load_hermes_dotenv = load_hermes_dotenv
+    web_server = SimpleNamespace(_mcp_oauth_callback_url=lambda request, name: "unsafe")
+
+    def start_server(**kwargs):
+        events.append(
+            (
+                "start",
+                os.environ.get("FEISHU_APP_ID"),
+                os.environ.get("FEISHU_APP_SECRET"),
+                kwargs,
+            )
+        )
+
+    web_server.start_server = start_server
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = env_loader
+
+    def load_module(name):
+        if name == "web_server":
+            events.append(
+                (
+                    "import-server",
+                    os.environ.get("FEISHU_APP_ID"),
+                    os.environ.get("FEISHU_APP_SECRET"),
+                )
+            )
+            return web_server
+        raise AttributeError(name)
+
+    hermes_cli.__getattr__ = load_module
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda name: version)
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "http://stale.invalid")
+    monkeypatch.setenv("HERMES_DASHBOARD_EXPECTED_VERSION", "stale")
+    monkeypatch.setenv("HERMES_DASHBOARD_PORT", "invalid")
+    monkeypatch.setenv("HERMES_HOME", hermes_home)
+    monkeypatch.setenv("EXPLICIT_VALUE", "preserved")
+    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+
+    dashboard_server.main()
+
+    assert events == [
+        ("load", hermes_home, "preserved"),
+        ("import-server", "loaded-app-id", "loaded-app-secret"),
+        (
+            "start",
+            "loaded-app-id",
+            "loaded-app-secret",
+            {"host": "127.0.0.1", "port": 19119, "open_browser": False},
+        ),
+    ]
 
 
 def test_oauth_callback_uses_narrow_cookie_free_proxy_route(monkeypatch):

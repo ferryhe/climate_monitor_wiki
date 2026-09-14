@@ -41,6 +41,18 @@ fi
 if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
     : "${CLIMATE_PUBLIC_ORIGIN:?trusted public HTTPS origin is required for Hermes OAuth callbacks}"
     python -c 'from climate_monitor.hermes_dashboard_server import trusted_public_origin; trusted_public_origin()'
+    if [ -n "${HERMES_DASHBOARD_SOCKET:-}" ]; then
+        : "${HERMES_DASHBOARD_SESSION_TOKEN_FILE:?host Dashboard token file is required in external mode}"
+        case "$HERMES_DASHBOARD_SOCKET:$HERMES_DASHBOARD_SESSION_TOKEN_FILE" in
+            /*:/*) ;;
+            *) echo "host Dashboard socket and token file paths must be absolute" >&2; exit 78 ;;
+        esac
+        if [ ! -r "$HERMES_DASHBOARD_SESSION_TOKEN_FILE" ]; then
+            echo "host Dashboard token file is not readable" >&2
+            exit 78
+        fi
+        exec "$@"
+    fi
     export HERMES_HOME="${HERMES_HOME:-/app/output/hermes}"
     if [ -z "${HERMES_DASHBOARD_SESSION_TOKEN:-}" ]; then
         HERMES_DASHBOARD_SESSION_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
