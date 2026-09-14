@@ -145,9 +145,9 @@ class FakeGhRunner:
         self.close_calls = 0
         self.race_on_create = False
 
-    def __call__(self, args, *, cwd: Path, check: bool = True):
+    def __call__(self, args, *, cwd: Path, check: bool = True, env=None):
         if args[0] != "gh":
-            return publisher.run_command(args, cwd=cwd, check=check)
+            return publisher.run_command(args, cwd=cwd, check=check, env=env)
         if args[1:3] == ["pr", "list"]:
             payload = f'{{"url":"{self.pr_url}"}}' if self.pr_url else ""
             return subprocess.CompletedProcess(args, 0, f"[{payload}]" if payload else "[]", "")
@@ -209,6 +209,59 @@ def _publish(production: Path, reports: Path, runner: FakeGhRunner):
         runner=runner,
         verifier=lambda _checkout, _runner: None,
     )
+
+
+def test_verify_checkout_removes_only_live_scheduler_values(monkeypatch, tmp_path):
+    removed = {
+        "CLIMATE_SCHEDULE": "biweekly-et",
+        "CLIMATE_RUN_LEDGER_DIR": "/live/ledger",
+        "CLIMATE_REPORTS_DIR": "/live/reports",
+        "CLIMATE_JOB_STATUS_DIR": "/live/status",
+        "CLIMATE_PUBLISH_LOCK": "/live/publish.lock",
+        "REPORT_DATE": "2026-09-14",
+    }
+    for name, value in removed.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PUBLISHER_TEST_MARKER", "preserved")
+    parent = os.environ.copy()
+    calls = []
+
+    def runner(args, *, cwd, check=True, env=None):
+        calls.append((args, cwd, check, env))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    # Pre-fix equivalent: a direct child copy would leak every live value above.
+    assert all(os.environ[name] == value for name, value in removed.items())
+
+    publisher.verify_checkout(tmp_path, runner)
+
+    expected = parent.copy()
+    for name in removed:
+        expected.pop(name)
+    assert [call[0] for call in calls] == [
+        [sys.executable, "-m", "pytest", "-q"],
+        ["node", "--check", "showcase/app.js"],
+    ]
+    assert all(call[1] == tmp_path and call[2] for call in calls)
+    assert all(call[3] == expected for call in calls)
+    assert os.environ == parent
+
+
+def test_verify_checkout_propagates_verification_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLIMATE_REPORTS_DIR", "/live/reports")
+    calls = []
+
+    def runner(args, *, cwd, check=True, env=None):
+        calls.append((args, env))
+        if args[0] == "node":
+            raise publisher.PublishError("node verification failed")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    with pytest.raises(publisher.PublishError, match="node verification failed"):
+        publisher.verify_checkout(tmp_path, runner)
+
+    assert [call[0][0] for call in calls] == [sys.executable, "node"]
+    assert all("CLIMATE_REPORTS_DIR" not in call[1] for call in calls)
 
 
 def test_direct_script_entrypoint_bootstraps_repository_imports(tmp_path):

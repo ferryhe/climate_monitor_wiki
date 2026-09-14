@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import secrets
 import shutil
@@ -20,7 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -82,9 +83,10 @@ def run_command(
     *,
     cwd: Path,
     check: bool = True,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        list(args), cwd=cwd, text=True, capture_output=True, check=False
+        list(args), cwd=cwd, text=True, capture_output=True, check=False, env=env
     )
     if check and result.returncode:
         detail = (result.stderr or result.stdout).strip()
@@ -377,8 +379,18 @@ def validate_remote_branch(
 
 
 def verify_checkout(checkout: Path, runner: CommandRunner = run_command) -> None:
-    runner([sys.executable, "-m", "pytest", "-q"], cwd=checkout)
-    runner(["node", "--check", "showcase/app.js"], cwd=checkout)
+    env = os.environ.copy()
+    for name in (
+        "CLIMATE_SCHEDULE",
+        "CLIMATE_RUN_LEDGER_DIR",
+        "CLIMATE_REPORTS_DIR",
+        "CLIMATE_JOB_STATUS_DIR",
+        "CLIMATE_PUBLISH_LOCK",
+        "REPORT_DATE",
+    ):
+        env.pop(name, None)
+    runner([sys.executable, "-m", "pytest", "-q"], cwd=checkout, env=env)
+    runner(["node", "--check", "showcase/app.js"], cwd=checkout, env=env)
 
 
 def _stage_and_validate(
