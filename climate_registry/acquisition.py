@@ -27,7 +27,7 @@ from .contract import validate_registry_contract
 from .errors import RegistryInputError
 
 BATCH_SCHEMA_VERSION = "pre-report-acquisition-batch.v1"
-ACQUISITION_WRITER_SCHEMA_VERSION = 10
+ACQUISITION_WRITER_SCHEMA_VERSION = 12
 _SHA256_LENGTH = 64
 
 

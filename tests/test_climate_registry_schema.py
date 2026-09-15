@@ -41,16 +41,16 @@ def test_schema_v9_upgrades_trigger_without_changing_acquisition_data():
     connection.commit()
 
     assert validate_registry_contract(connection) == 9
-    assert apply_migrations(connection) == [10]
+    assert apply_migrations(connection, target_version=10) == [10]
     assert connection.execute("SELECT * FROM acquisition_batches").fetchall() == before
     assert connection.execute("PRAGMA user_version").fetchone() == (10,)
     assert validate_registry_contract(connection) == 10
-    assert apply_migrations(connection) == []
+    assert apply_migrations(connection, target_version=10) == []
 
 
 def test_v10_trigger_allows_only_search_backed_forward_decision_transition():
     connection = sqlite3.connect(":memory:")
-    apply_migrations(connection)
+    apply_migrations(connection, target_version=10)
     connection.execute(
         "INSERT INTO acquisition_batches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
@@ -136,7 +136,7 @@ def test_v10_contract_rejects_v9_trigger_with_claimed_v10_metadata():
 def test_v9_contract_rejects_unversioned_v10_trigger():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=9)
-    connection.executescript(MIGRATIONS[-1][2])
+    connection.executescript(next(sql for version, _, sql in MIGRATIONS if version == 10))
 
     with pytest.raises(SchemaContractError, match="triggers contract"):
         validate_registry_contract(connection)
@@ -145,10 +145,10 @@ def test_v9_contract_rejects_unversioned_v10_trigger():
 def test_migrations_are_idempotent_and_enable_foreign_keys():
     connection = sqlite3.connect(":memory:")
 
-    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert apply_migrations(connection) == []
     assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
-    assert connection.execute("PRAGMA user_version").fetchone() == (10,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (12,)
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -295,9 +295,9 @@ def test_v2_to_v3_preserves_existing_rows_and_defaults_to_summary_excerpt():
         for table in ("sources", "articles", "article_versions", "reports", "discoveries")
     }
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
-    assert connection.execute("PRAGMA user_version").fetchone() == (10,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (12,)
     assert connection.execute(
         "SELECT current_content_version_id, display_policy FROM articles WHERE article_id = 'a'"
     ).fetchone() == (None, "summary_excerpt")
@@ -383,7 +383,7 @@ def test_v2_to_v3_preserves_the_historical_audit_baseline_counts():
         for table in counts_before
     } == counts_before
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
     assert {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

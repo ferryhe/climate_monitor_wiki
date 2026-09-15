@@ -84,6 +84,37 @@ REQUIRED_TABLE_COLUMNS = {
         "content_version_id", "content_ref", "raw_snapshot_ref", "raw_snapshot_sha256", "attempts_json",
         "processing_status", "processing_error", "resolved_by_fetch_id",
     },
+    "meeting_runs": {
+        "meeting_run_id", "processing_key", "batch_id", "attempt", "status",
+        "prompt_version", "prompt_sha256", "prompt_text", "provider", "model",
+        "task_version", "retry_of_meeting_run_id", "input_sha256",
+        "started_at", "completed_at", "item_count", "succeeded_count",
+        "failed_count", "unavailable_count", "candidate_count", "error_message",
+    },
+    "meeting_run_items": {
+        "meeting_run_id", "acquisition_item_id", "content_version_id", "article_id", "source_url",
+        "content_sha256", "status", "candidate_count", "error_message", "processed_at",
+    },
+    "climate_events": {
+        "event_id", "record_version", "name", "event_type", "organizer", "status",
+        "date_precision", "start_date", "end_date", "raw_time_text", "event_timezone",
+        "location", "online_url", "deadline_type", "deadline_date", "relevance_reason",
+        "needs_confirmation", "source_count", "created_at", "updated_at",
+    },
+    "climate_event_versions": {
+        "event_id", "record_version", "state_json", "state_sha256", "meeting_run_id",
+        "recorded_at",
+    },
+    "climate_event_sources": {
+        "event_source_id", "event_id", "content_version_id", "article_id",
+        "meeting_run_id", "source_url", "content_sha256", "candidate_json",
+        "candidate_sha256", "date_evidence", "deadline_evidence", "status_evidence",
+        "observed_at", "candidate_ordinal", "interpretation_seq",
+    },
+    "meeting_snapshots": {
+        "snapshot_id", "created_at", "query_json", "base_date", "timezone",
+        "records_json", "coverage_json", "snapshot_sha256",
+    },
 }
 
 # Tables introduced per migration. The contract is validated per deployed
@@ -92,14 +123,19 @@ REQUIRED_TABLE_COLUMNS = {
 _V4_TABLES = frozenset({"article_capture_resolutions"})
 _V5_TABLES = frozenset({"article_semantics"})
 _V7_TABLES = frozenset({"acquisition_batches", "acquisition_searches", "acquisition_items"})
+_V11_TABLES = frozenset({
+    "meeting_runs", "meeting_run_items", "climate_events", "climate_event_versions",
+    "climate_event_sources", "meeting_snapshots",
+})
 
-V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES
-V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES
-V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES
+V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES - _V11_TABLES
+V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES - _V11_TABLES
+V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES - _V11_TABLES
 V6_TABLES = V5_TABLES
-V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V11_TABLES
+V11_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -111,7 +147,7 @@ def _required_tables(version: int) -> frozenset[str]:
         return V5_TABLES
     if version == 6:
         return V6_TABLES
-    return V7_TABLES
+    return V11_TABLES if version >= 11 else V7_TABLES
 
 
 def _required_columns(table: str, version: int) -> set[str]:
@@ -120,6 +156,8 @@ def _required_columns(table: str, version: int) -> set[str]:
         columns.remove("report_id")
     if table == "acquisition_items" and version < 8:
         columns.remove("resolved_by_fetch_id")
+    if table == "climate_event_sources" and version < 12:
+        columns -= {"candidate_ordinal", "interpretation_seq"}
     return columns
 
 REQUIRED_FOREIGN_KEYS = {
@@ -183,6 +221,28 @@ REQUIRED_FOREIGN_KEYS = {
         ("article_content_versions", ("article_id", "content_version_id"),
          ("article_id", "content_version_id")),
     },
+    "meeting_runs": {
+        ("acquisition_batches", ("batch_id",), ("batch_id",)),
+        ("meeting_runs", ("retry_of_meeting_run_id",), ("meeting_run_id",)),
+    },
+    "meeting_run_items": {
+        ("meeting_runs", ("meeting_run_id",), ("meeting_run_id",)),
+        ("acquisition_items", ("acquisition_item_id",), ("acquisition_item_id",)),
+        ("article_content_versions", ("content_version_id",), ("content_version_id",)),
+        ("article_content_versions", ("article_id", "content_version_id"),
+         ("article_id", "content_version_id")),
+    },
+    "climate_event_versions": {
+        ("climate_events", ("event_id",), ("event_id",)),
+        ("meeting_runs", ("meeting_run_id",), ("meeting_run_id",)),
+    },
+    "climate_event_sources": {
+        ("climate_events", ("event_id",), ("event_id",)),
+        ("article_content_versions", ("content_version_id",), ("content_version_id",)),
+        ("meeting_runs", ("meeting_run_id",), ("meeting_run_id",)),
+        ("article_content_versions", ("article_id", "content_version_id"),
+         ("article_id", "content_version_id")),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -209,6 +269,10 @@ REQUIRED_TRIGGERS = frozenset(
         "acquisition_batches_reconcile_before_freeze",
         "acquisition_searches_reconcile_failures_only",
         "acquisition_items_reconcile_resolution_only",
+        "climate_event_versions_are_append_only_update",
+        "climate_event_versions_are_append_only_delete",
+        "meeting_snapshots_are_immutable_update",
+        "meeting_snapshots_are_immutable_delete",
     }
 )
 
@@ -229,6 +293,12 @@ REQUIRED_INDEXES = frozenset(
         "idx_acquisition_items_article_discovered",
         "idx_acquisition_items_content_version",
         "idx_acquisition_items_resolution",
+        "idx_meeting_runs_batch_status",
+        "idx_meeting_run_items_status",
+        "idx_climate_events_dates",
+        "idx_climate_events_organizer",
+        "idx_climate_event_sources_event",
+        "idx_climate_event_sources_content",
     }
 )
 
@@ -323,6 +393,13 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version < 11:
+        names = names - {
+            "climate_event_versions_are_append_only_update",
+            "climate_event_versions_are_append_only_delete",
+            "meeting_snapshots_are_immutable_update",
+            "meeting_snapshots_are_immutable_delete",
+        }
     old_reconciliation_triggers = {
         "acquisition_batches_are_append_only_update",
         "acquisition_searches_are_append_only_update",
@@ -351,6 +428,9 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version < 11:
+        names = frozenset(name for name in names if not name.startswith("idx_meeting_")
+                          and not name.startswith("idx_climate_event"))
     if version < 8:
         names = names - {"idx_acquisition_items_resolution"}
     if version < 7:

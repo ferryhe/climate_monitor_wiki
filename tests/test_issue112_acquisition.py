@@ -937,7 +937,7 @@ def test_acquisition_writer_rejects_schema_v9_with_actionable_error(tmp_path):
 
     with pytest.raises(
         RegistryInputError,
-        match="acquisition writes require registry schema 10; found schema 9; migrate the registry",
+        match="acquisition writes require registry schema 12; found schema 9; migrate the registry",
     ):
         store_acquisition_batch(database.resolve(), _batch([_item()]))
 

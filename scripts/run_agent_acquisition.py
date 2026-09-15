@@ -20,6 +20,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -234,6 +235,12 @@ def _prompt(
         })
         for name, value in definition["prompts"].items()
     }
+    public_meeting = public_binding.get("meeting")
+    if isinstance(public_meeting, dict):
+        public_meeting.pop("prompt_text", None)
+    definition_meeting = (public_binding.get("definition") or {}).get("meeting")
+    if isinstance(definition_meeting, dict) and isinstance(definition_meeting.get("prompt"), dict):
+        definition_meeting["prompt"].pop("text", None)
     correction_path = binding_path.parent / f"attempt-{binding['attempt'] - 1}-result.json"
     correction = ""
     if correction_path.is_file():
@@ -3023,6 +3030,69 @@ def _write_report_inputs(
                                                    indent=2).encode() + b"\n")
 
 
+def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> dict[str, Any]:
+    """Launch optional meeting work after durable body readback; never affect report state."""
+    meeting = binding.get("meeting")
+    if not isinstance(meeting, Mapping) or meeting.get("enabled") is not True:
+        return {"status": "disabled"}
+    meeting_attempt = time.time_ns()
+    path = binding_path.parent / f"meeting-auto-{meeting_attempt}.json"
+    result_path = path.with_name(path.stem + "-result.json")
+    try:
+        from climate_monitor.meetings import active_meeting_run
+
+        active = active_meeting_run(binding["registry_database"], binding["acquisition_batch_id"])
+        if active is not None:
+            return {
+                "status": "running", "meeting_run_id": active["meeting_run_id"], "reused": True,
+            }
+        worker_binding = {
+            "schema_version": "climate-meeting-worker-binding.v1",
+            "acquisition_run_id": binding["run_id"],
+            "acquisition_batch_id": binding["acquisition_batch_id"],
+            "registry_database": binding["registry_database"],
+            "meeting_attempt": meeting_attempt,
+            "retry_failed": False,
+            "retry_meeting_run_id": None,
+            "task_version": binding["task_version"],
+            "prompt_version": meeting["prompt_version"],
+            "prompt_sha256": meeting["prompt_sha256"],
+            "prompt_text": meeting["prompt_text"],
+            "provider": meeting["provider"],
+            "model": meeting["model"],
+        }
+        _atomic_write(
+            path,
+            json.dumps(worker_binding, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
+        )
+        log = path.with_suffix(".log").open("ab")
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(ROOT / "scripts" / "run_meeting_extraction.py"),
+                 "--binding", str(path.resolve())],
+                cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True, close_fds=True,
+            )
+            threading.Thread(
+                target=process.wait, name=f"meeting-reaper-{process.pid}", daemon=True,
+            ).start()
+        finally:
+            log.close()
+        return {"status": "launched", "pid": process.pid, "binding": str(path)}
+    except Exception as exc:
+        # The meeting branch is deliberately isolated from the report outcome and exit code.
+        try:
+            _atomic_write(
+                result_path,
+                json.dumps({
+                    "status": "launch_failed", "error": f"{type(exc).__name__}: {str(exc)[:800]}"
+                }, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
+            )
+        except Exception:
+            pass
+        return {"status": "launch_failed", "error": str(exc)[:800]}
+
+
 def _run_report(
     binding_path: Path, binding: Mapping[str, Any], *,
     state_lock_descriptor: int | None = None,
@@ -3682,6 +3752,10 @@ def _execute_attempt(
         frozen = _store_readback_and_freeze(
             binding, payload, cumulative_actual=provenance["cumulative_actual"], allow_unresolved=gaps
         )
+        try:
+            _launch_meeting_worker(binding_path, binding)
+        except Exception:
+            pass
         reportability = _reportability_projection(
             payload, frozen, site_context, blocked_tool_prechecks, gaps=gaps,
         )

@@ -469,7 +469,7 @@ def _manage_call(callback):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="Management record not found.") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -599,6 +599,75 @@ def console_run_progress(run_id: str, user: ConsolePrincipal) -> dict[str, Any]:
 @app.get("/api/manage/runs/{run_id}/items/{item_id:path}", include_in_schema=False)
 def console_item_detail(run_id: str, item_id: str, user: ConsolePrincipal) -> dict[str, Any]:
     return _manage_call(lambda: _management_service().item_detail(run_id, item_id))
+
+
+@app.post("/api/manage/runs/{run_id}/meetings", include_in_schema=False)
+def console_start_meetings(run_id: str, payload: dict[str, Any], user: ConsolePrincipal) -> dict[str, Any]:
+    if set(payload) - {"retry_failed"} or type(payload.get("retry_failed", False)) is not bool:
+        raise HTTPException(status_code=422, detail="meeting start accepts only retry_failed boolean")
+    return _manage_call(lambda: _management_service().start_meetings(
+        run_id, retry_failed=payload.get("retry_failed", False),
+    ))
+
+
+@app.get("/api/manage/runs/{run_id}/meetings", include_in_schema=False)
+def console_meeting_progress(run_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(lambda: _management_service().meeting_progress(run_id))
+
+
+def _meeting_filters(
+    *, organizer: str | None, event_types: str | None, start_date: str | None,
+    end_date: str | None, include_unknown: bool, include_deadlines: bool,
+    include_cancelled: bool, include_retrospective: bool, base_date: str | None,
+    timezone_name: str,
+) -> dict[str, Any]:
+    return {
+        "organizer": organizer,
+        "event_types": [value.strip() for value in event_types.split(",") if value.strip()]
+        if event_types else None,
+        "start_date": start_date, "end_date": end_date,
+        "include_unknown": include_unknown, "include_deadlines": include_deadlines,
+        "include_cancelled": include_cancelled,
+        "include_retrospective": include_retrospective,
+        "base_date": base_date, "timezone_name": timezone_name,
+    }
+
+
+@app.get("/api/manage/meetings", include_in_schema=False)
+def console_meetings(
+    user: ConsolePrincipal, organizer: str | None = None, event_types: str | None = None,
+    start_date: str | None = None, end_date: str | None = None,
+    include_unknown: bool = False, include_deadlines: bool = False,
+    include_cancelled: bool = False, include_retrospective: bool = False,
+    base_date: str | None = None, timezone_name: str = "America/New_York",
+) -> dict[str, Any]:
+    filters = _meeting_filters(
+        organizer=organizer, event_types=event_types, start_date=start_date, end_date=end_date,
+        include_unknown=include_unknown, include_deadlines=include_deadlines,
+        include_cancelled=include_cancelled, include_retrospective=include_retrospective,
+        base_date=base_date, timezone_name=timezone_name,
+    )
+    return _manage_call(lambda: _management_service().meeting_events(**filters))
+
+
+@app.post("/api/manage/meeting-snapshots", include_in_schema=False)
+def console_freeze_meeting_snapshot(payload: dict[str, Any], user: ConsolePrincipal) -> dict[str, Any]:
+    allowed = {
+        "organizer", "event_types", "start_date", "end_date", "include_unknown",
+        "include_deadlines", "include_cancelled", "include_retrospective", "base_date",
+        "timezone_name",
+    }
+    if set(payload) - allowed:
+        raise HTTPException(status_code=422, detail="unexpected meeting snapshot filter")
+    return _manage_call(lambda: _management_service().freeze_meeting_snapshot(**payload))
+
+
+@app.get("/api/manage/meeting-snapshots/{snapshot_id}", include_in_schema=False)
+def console_meeting_snapshot(snapshot_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    from climate_monitor.meetings import load_snapshot
+
+    database = _management_service().store.load()["definition"]["runtime"]["registry_database"]
+    return _manage_call(lambda: load_snapshot(database, snapshot_id))
 
 
 app.mount("/wiki", StaticFiles(directory=WIKI_DIR), name="wiki")

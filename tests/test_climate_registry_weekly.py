@@ -748,6 +748,12 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
 def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
     connection = sqlite3.connect(weekly_fixture.database)
     with connection:
+        connection.execute("DROP TABLE meeting_snapshots")
+        connection.execute("DROP TABLE climate_event_sources")
+        connection.execute("DROP TABLE climate_event_versions")
+        connection.execute("DROP TABLE climate_events")
+        connection.execute("DROP TABLE meeting_run_items")
+        connection.execute("DROP TABLE meeting_runs")
         connection.execute("DROP TABLE acquisition_items")
         connection.execute("DROP TABLE acquisition_searches")
         connection.execute("DROP TABLE acquisition_batches")
@@ -771,7 +777,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 10
+    ).status()["schema_version"] == 12
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository
