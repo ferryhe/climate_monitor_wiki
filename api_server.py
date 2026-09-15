@@ -469,7 +469,7 @@ def _manage_call(callback):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="Management record not found.") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:

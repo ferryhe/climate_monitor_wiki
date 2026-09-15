@@ -12,6 +12,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Iterator
 
+from climate_registry.contract import SUPPORTED_SCHEMA_VERSIONS
+
 from .report_artifact_identity import (
     ArtifactIdentity,
     ArtifactIdentityError,
@@ -232,7 +234,7 @@ def _validate_registry(
         connection = sqlite3.connect(database_uri, uri=True)
         connection.row_factory = sqlite3.Row
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in {2, 3, 4, 5, 6, 7, 8, 9, 10}:
+        if version != 2 and version not in SUPPORTED_SCHEMA_VERSIONS:
             raise RepairPreflightError("Registry database schema is unsupported")
         rows = connection.execute(
             "SELECT report_id, report_date, filename, report_sha256 "
