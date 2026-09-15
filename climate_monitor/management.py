@@ -62,6 +62,7 @@ _PROMPT_FILES = {
     "article_summary": ("v1", "article-summary-v1.prompt.md"),
     "executive_summary": ("v1", "executive-summary-v1.prompt.md"),
 }
+MEETING_PROMPT_FILE = PROMPT_ROOT / "meeting-extraction-v1.prompt.md"
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SOURCE_INVENTORY_PATH = Path(__file__).resolve().parents[1] / "monitoring" / "supranational_sources.yaml"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +201,10 @@ def default_task_definition() -> dict[str, Any]:
             "version": "v1",
         },
         "prompts": prompts,
+        "meeting": {
+            "enabled": False,
+            "prompt": {"version": "v1", "text": MEETING_PROMPT_FILE.read_text(encoding="utf-8")},
+        },
     }
 
 
@@ -231,9 +236,9 @@ def _validate_date_policy(value: Any) -> dict[str, Any]:
 def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("task definition must be an object")
-    expected = {"schema_version", "task_id", "parameters", "runtime", "taxonomy", "prompts"}
-    if set(value) != expected:
-        raise ValueError(f"task definition fields must be exactly {sorted(expected)}")
+    required = {"schema_version", "task_id", "parameters", "runtime", "taxonomy", "prompts"}
+    if set(value) not in {frozenset(required), frozenset(required | {"meeting"})}:
+        raise ValueError(f"task definition fields must be exactly {sorted(required)} with optional meeting")
     if value.get("schema_version") != TASK_SCHEMA:
         raise ValueError(f"unsupported task definition schema_version; expected {TASK_SCHEMA}")
     task_id = str(value.get("task_id", "")).strip()
@@ -344,6 +349,28 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("article_summary prompt contract is missing climate_related")
     if "executive_summary" not in normalized_prompts["executive_summary"]["text"]:
         raise ValueError("executive_summary prompt contract is missing executive_summary")
+    meeting = value.get("meeting")
+    if meeting is None:
+        normalized_meeting = {
+            "enabled": False,
+            "prompt": {"version": "v1", "text": MEETING_PROMPT_FILE.read_text(encoding="utf-8")},
+        }
+    else:
+        if not isinstance(meeting, Mapping) or set(meeting) != {"enabled", "prompt"}:
+            raise ValueError("meeting must contain only enabled and prompt")
+        if type(meeting.get("enabled")) is not bool:
+            raise ValueError("meeting enabled must be a boolean")
+        prompt = meeting.get("prompt")
+        if not isinstance(prompt, Mapping) or set(prompt) != {"version", "text"}:
+            raise ValueError("meeting prompt must contain only version and text")
+        prompt_version = str(prompt.get("version", "")).strip()
+        prompt_text = _normalize_text(str(prompt.get("text", "")))
+        if not prompt_version or not prompt_text.strip():
+            raise ValueError("meeting prompt version and text are required")
+        normalized_meeting = {
+            "enabled": meeting["enabled"],
+            "prompt": {"version": prompt_version, "text": prompt_text},
+        }
     return {
         "schema_version": TASK_SCHEMA,
         "task_id": task_id,
@@ -359,6 +386,7 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
         "runtime": {"registry_database": str(database), "run_root": str(run_root)},
         "taxonomy": {key: str(taxonomy[key]).strip() for key in ("schema_version", "path", "version")},
         "prompts": normalized_prompts,
+        "meeting": normalized_meeting,
     }
 
 
@@ -405,10 +433,16 @@ def definition_view(definition: Mapping[str, Any], *, version: int) -> dict[str,
         "effective": effective,
         "resolved_date_range": _resolved_date_range(effective["parameters"]),
         "effective_prompts": copy.deepcopy(normalized["prompts"]),
+        "effective_meeting": {
+            "enabled": normalized["meeting"]["enabled"],
+            "prompt": copy.deepcopy(normalized["meeting"]["prompt"]),
+            "prompt_sha256": _text_sha(normalized["meeting"]["prompt"]["text"]),
+        },
         "hashes": {
             "definition_sha256": _sha(normalized),
             "effective_sha256": _sha(effective),
             "components": copy.deepcopy(effective["prompt_hashes"]),
+            "meeting": _text_sha(normalized["meeting"]["prompt"]["text"]),
         },
     }
 
@@ -484,20 +518,28 @@ class TaskDefinitionStore:
                 "saved_by": "repository-bootstrap",
                 "definition_sha256": _sha(definition),
                 "definition": definition,
+                "_raw_definition": copy.deepcopy(definition),
             }
         if not isinstance(payload, dict) or payload.get("schema_version") != STATE_SCHEMA:
             raise ValueError(f"unsupported or malformed task state at {self.active_path}")
         if not isinstance(payload.get("version"), int) or payload["version"] < 1:
             raise ValueError("task state version must be a positive integer")
-        payload["definition"] = validate_task_definition(payload.get("definition", {}))
-        if payload.get("definition_sha256") != _sha(payload["definition"]):
+        raw_definition = payload.get("definition", {})
+        if payload.get("definition_sha256") != _sha(raw_definition):
             raise ValueError("task definition hash mismatch")
+        payload["_raw_definition"] = copy.deepcopy(raw_definition)
+        payload["definition"] = validate_task_definition(raw_definition)
         return payload
 
-    def load(self) -> dict[str, Any]:
+    def load(self, *, include_raw: bool = False) -> dict[str, Any]:
         state = self._state()
         result = definition_view(state["definition"], version=state["version"])
+        # Historical states predate the optional meeting section.  Keep their
+        # stored identity readable even though the API supplies a disabled UI default.
+        result["hashes"]["definition_sha256"] = state["definition_sha256"]
         result.update(saved_at=state["saved_at"], saved_by=state["saved_by"])
+        if include_raw:
+            result["_raw_definition"] = copy.deepcopy(state["_raw_definition"])
         return result
 
     def preview(self, definition: Mapping[str, Any]) -> dict[str, Any]:
@@ -535,7 +577,16 @@ class TaskDefinitionStore:
             assert current is not None
             previous_path = self.version_root / f"{previous:08d}.json"
             if not previous_path.exists():
-                previous_encoded = json.dumps(current, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+                stored = json.loads(self.active_path.read_text(encoding="utf-8"))
+                if stored.get("schema_version") == STATE_SCHEMA:
+                    # Preserve historical definitions and their original hash exactly;
+                    # validation may have supplied a disabled optional meeting section.
+                    previous_encoded = self.active_path.read_bytes()
+                else:
+                    previous_encoded = json.dumps(
+                        {key: value for key, value in current.items() if key != "_raw_definition"},
+                        ensure_ascii=False, sort_keys=True, indent=2
+                    ).encode("utf-8") + b"\n"
                 _atomic_write(previous_path, previous_encoded)
         version_path = self.version_root / f"{version:08d}.json"
         if version_path.exists():
@@ -574,18 +625,28 @@ class TaskDefinitionStore:
                 return state
             raise KeyError(f"task version {version} not found")
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("version") != version or payload.get("definition_sha256") != _sha(validate_task_definition(payload["definition"])):
+        if payload.get("version") != version or payload.get("definition_sha256") != _sha(payload.get("definition", {})):
             raise ValueError(f"task version {version} is invalid")
+        payload["_raw_definition"] = copy.deepcopy(payload["definition"])
+        payload["definition"] = validate_task_definition(payload["definition"])
         return payload
 
     def diff(self, old_version: int, new_version: int) -> dict[str, Any]:
         old, new = self._version(old_version), self._version(new_version)
         old_view, new_view = definition_view(old["definition"], version=old_version), definition_view(new["definition"], version=new_version)
+        old_view["hashes"]["definition_sha256"] = old["definition_sha256"]
+        new_view["hashes"]["definition_sha256"] = new["definition_sha256"]
         return {
             "old_version": old_version,
             "new_version": new_version,
             "effective_changed": old_view["hashes"]["effective_sha256"] != new_view["hashes"]["effective_sha256"],
             "changed_components": [name for name in PROMPT_NAMES if old_view["hashes"]["components"][name] != new_view["hashes"]["components"][name]],
+            "meeting_changed": (
+                old_view["effective_meeting"]["enabled"] != new_view["effective_meeting"]["enabled"]
+                or old_view["hashes"]["meeting"] != new_view["hashes"]["meeting"]
+                or old_view["effective_meeting"]["prompt"]["version"]
+                != new_view["effective_meeting"]["prompt"]["version"]
+            ),
             "old_hashes": old_view["hashes"],
             "new_hashes": new_view["hashes"],
         }
@@ -618,9 +679,16 @@ def managed_report_inputs(definition: Mapping[str, Any], run_id: str) -> dict[st
 def build_task_binding(
     definition: Mapping[str, Any], *, task_version: int, run_id: str,
     attempt: int, created_at: datetime | None = None,
+    definition_sha256: str | None = None,
 ) -> dict[str, Any]:
+    raw_definition = copy.deepcopy(dict(definition))
+    raw_sha256 = _sha(raw_definition)
+    if definition_sha256 is not None and definition_sha256 != raw_sha256:
+        raise ValueError("task definition hash mismatch")
     normalized = validate_task_definition(definition)
     view = definition_view(normalized, version=task_version)
+    if definition_sha256 is not None:
+        view["hashes"]["definition_sha256"] = definition_sha256
     parameters = normalized["parameters"]
     frozen_at = created_at or _utc_now()
     repository_commit_sha = resolve_repository_commit_sha()
@@ -670,6 +738,14 @@ def build_task_binding(
         "governed_gateway": gateway,
         "provider": parameters["provider"],
         "model": parameters["model"],
+        "meeting": {
+            "enabled": normalized["meeting"]["enabled"],
+            "prompt_version": normalized["meeting"]["prompt"]["version"],
+            "prompt_sha256": view["hashes"]["meeting"],
+            "prompt_text": normalized["meeting"]["prompt"]["text"],
+            "provider": parameters["provider"],
+            "model": parameters["model"],
+        },
         "agent_protocol": {
             "version": AGENT_PROTOCOL_VERSION,
             "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
@@ -681,7 +757,7 @@ def build_task_binding(
         "registry_database": normalized["runtime"]["registry_database"],
         "frozen_report_input": str(run_root / run_id / "frozen-report-input.json"),
         "report_inputs": managed_report_inputs(normalized, run_id),
-        "definition": normalized,
+        "definition": raw_definition if definition_sha256 is not None else normalized,
     }
 
 
@@ -689,7 +765,10 @@ Launcher = Callable[[dict[str, Any]], int | Mapping[str, Any]]
 
 
 class ManagementService:
-    def __init__(self, *, store: TaskDefinitionStore, runtime_root: str | Path, launcher: Launcher | None = None):
+    def __init__(
+        self, *, store: TaskDefinitionStore, runtime_root: str | Path,
+        launcher: Launcher | None = None, meeting_launcher: Launcher | None = None,
+    ):
         self.store = store
         configured = Path(store.load()["definition"]["runtime"]["run_root"])
         supplied = _canonical_directory(runtime_root, "run root")
@@ -697,6 +776,7 @@ class ManagementService:
             raise ValueError("management runtime root must equal the task definition run_root")
         self.runtime_root = configured
         self._launcher = launcher or self._launch_process
+        self._meeting_launcher = meeting_launcher or self._launch_meeting_process
 
     @classmethod
     def from_environment(cls) -> "ManagementService":
@@ -806,13 +886,203 @@ class ManagementService:
             log.close()
         return process.pid
 
+    def _launch_meeting_process(self, binding: dict[str, Any]) -> int:
+        run_dir = self._run_dir(binding["acquisition_run_id"])
+        binding_path = run_dir / f"meeting-{binding['meeting_attempt']}.json"
+        _atomic_write(
+            binding_path,
+            json.dumps(binding, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
+        )
+        script = Path(__file__).resolve().parents[1] / "scripts" / "run_meeting_extraction.py"
+        log = (run_dir / f"meeting-{binding['meeting_attempt']}.log").open("ab")
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(script), "--binding", str(binding_path.resolve())],
+                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.DEVNULL,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
+            )
+            threading.Thread(target=process.wait, name=f"meeting-reaper-{process.pid}", daemon=True).start()
+        finally:
+            log.close()
+        return process.pid
+
+    def start_meetings(self, run_id: str, *, retry_failed: bool = False) -> dict[str, Any]:
+        """Start meeting extraction for an already stored acquisition batch."""
+        acquisition = self.binding(run_id)
+        loaded = self.store.load()
+        meeting = loaded["definition"]["meeting"]
+        if not meeting["enabled"]:
+            raise RuntimeError("meeting module is disabled in the active saved task version")
+        # Readback proves the requested batch exists before launching an isolated child.
+        load_acquisition_batch(acquisition["registry_database"], acquisition["acquisition_batch_id"])
+        from climate_monitor.meetings import active_meeting_run
+
+        active = active_meeting_run(
+            acquisition["registry_database"], acquisition["acquisition_batch_id"],
+        )
+        if active is not None:
+            return {
+                "accepted": True, "run_id": run_id, "meeting_attempt": None, "pid": None,
+                "task_version": active.get("task_version", loaded["version"]),
+                "prompt_version": active.get("prompt_version", meeting["prompt"]["version"]),
+                "prompt_sha256": active.get("prompt_sha256", loaded["hashes"]["meeting"]),
+                "retry_meeting_run_id": active.get("retry_of_meeting_run_id"),
+                "meeting_run_id": active["meeting_run_id"], "attached": True,
+            }
+        attempt = int(time.time_ns())
+        retry_run = None
+        if retry_failed:
+            from climate_monitor.meetings import meeting_retry_run
+
+            retry_run = meeting_retry_run(
+                acquisition["registry_database"], batch_id=acquisition["acquisition_batch_id"],
+            )
+            if retry_run is None:
+                raise RuntimeError("no partial or failed meeting run is available to retry")
+            prompt_version = retry_run["prompt_version"]
+            prompt_sha256 = retry_run["prompt_sha256"]
+            prompt_text = retry_run["prompt_text"]
+            provider = retry_run["provider"]
+            model = retry_run["model"]
+            task_version = retry_run["task_version"]
+        else:
+            prompt_version = meeting["prompt"]["version"]
+            prompt_sha256 = loaded["hashes"]["meeting"]
+            prompt_text = meeting["prompt"]["text"]
+            provider = loaded["definition"]["parameters"]["provider"]
+            model = loaded["definition"]["parameters"]["model"]
+            task_version = loaded["version"]
+        binding = {
+            "schema_version": "climate-meeting-worker-binding.v1",
+            "acquisition_run_id": run_id,
+            "acquisition_batch_id": acquisition["acquisition_batch_id"],
+            "registry_database": acquisition["registry_database"],
+            "meeting_attempt": attempt,
+            "retry_failed": retry_failed,
+            "retry_meeting_run_id": retry_run["meeting_run_id"] if retry_run else None,
+            "task_version": task_version,
+            "prompt_version": prompt_version,
+            "prompt_sha256": prompt_sha256,
+            "prompt_text": prompt_text,
+            "provider": provider,
+            "model": model,
+        }
+        launched = self._meeting_launcher(copy.deepcopy(binding))
+        launch = dict(launched) if isinstance(launched, Mapping) else {"pid": launched}
+        return {
+            "accepted": True, "run_id": run_id, "meeting_attempt": attempt,
+            "pid": launch.get("pid"), "task_version": task_version,
+            "prompt_version": binding["prompt_version"], "prompt_sha256": binding["prompt_sha256"],
+            "retry_meeting_run_id": binding["retry_meeting_run_id"],
+        }
+
+    def meeting_progress(self, run_id: str) -> dict[str, Any]:
+        from climate_monitor.meetings import meeting_status
+
+        binding = self.binding(run_id)
+        status = meeting_status(
+            binding["registry_database"], batch_id=binding["acquisition_batch_id"],
+        )
+        frozen = binding.get("meeting") or {"enabled": False}
+        return {
+            "acquisition_run_id": run_id, "batch_id": binding["acquisition_batch_id"],
+            "automatic_enabled": bool(frozen.get("enabled")),
+            "automatic_worker": self._automatic_meeting_result(run_id, binding),
+            **status,
+        }
+
+    def _automatic_meeting_result(
+        self, run_id: str, acquisition_binding: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        run_dir = self._run_dir(run_id)
+        candidates = []
+        for path in run_dir.glob("meeting-auto-*-result.json"):
+            match = re.fullmatch(r"meeting-auto-(\d+)-result\.json", path.name)
+            if match:
+                candidates.append((int(match.group(1)), path))
+        if not candidates:
+            return None
+        meeting_attempt, result_path = max(candidates)
+        binding_path = result_path.with_name(result_path.name.removesuffix("-result.json") + ".json")
+        try:
+            worker_binding = json.loads(binding_path.read_text(encoding="utf-8"))
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            bound_database = Path(worker_binding["registry_database"]).resolve()
+            expected_database = Path(acquisition_binding["registry_database"]).resolve()
+            if (
+                worker_binding.get("schema_version") != "climate-meeting-worker-binding.v1"
+                or worker_binding.get("meeting_attempt") != meeting_attempt
+                or worker_binding.get("acquisition_run_id") != run_id
+                or worker_binding.get("acquisition_batch_id") != acquisition_binding["acquisition_batch_id"]
+                or bound_database != expected_database
+                or not isinstance(result, Mapping)
+            ):
+                raise ValueError("meeting worker result binding mismatch")
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {"status": "result_unreadable", "error": "meeting worker result could not be read"}
+        if result.get("status") not in {"launch_failed", "worker_failed"}:
+            return None
+        return {
+            "status": result["status"],
+            "error": " ".join(str(result.get("error") or "meeting worker failed").split())[:800],
+        }
+
+    def _meeting_query_context(self) -> tuple[str, dict[str, Any]]:
+        from climate_monitor.meetings import meeting_status
+
+        loaded = self.store.load()
+        database = loaded["definition"]["runtime"]["registry_database"]
+        context = {
+            "meeting_enabled": loaded["definition"]["meeting"]["enabled"],
+            "target_batch_id": None,
+            "task_version": loaded["version"],
+        }
+        if self.runtime_root.exists():
+            for path in sorted(self.runtime_root.iterdir(), reverse=True):
+                binding_path = path / "binding.json"
+                if not binding_path.is_file():
+                    continue
+                try:
+                    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if binding.get("task_id") != loaded["definition"]["task_id"]:
+                    continue
+                context.update(
+                    meeting_enabled=bool((binding.get("meeting") or {}).get("enabled")),
+                    target_batch_id=binding.get("acquisition_batch_id"),
+                    task_version=binding.get("task_version"),
+                )
+                if context["target_batch_id"]:
+                    runs = meeting_status(database, batch_id=context["target_batch_id"])["runs"]
+                    if runs:
+                        context.update(meeting_enabled=True, task_version=runs[0]["task_version"])
+                break
+        return database, context
+
+    def meeting_events(self, **filters: Any) -> dict[str, Any]:
+        from climate_monitor.meetings import query_events
+
+        database, context = self._meeting_query_context()
+        return query_events(database, **filters, **context)
+
+    def freeze_meeting_snapshot(self, **filters: Any) -> dict[str, Any]:
+        from climate_monitor.meetings import freeze_snapshot
+
+        database, context = self._meeting_query_context()
+        return freeze_snapshot(database, **filters, **context)
+
     def start(self, *, trigger: str = "manual", now: datetime | None = None) -> dict[str, Any]:
         if trigger not in {"manual", "scheduled"}:
             raise ValueError("trigger must be manual or scheduled")
-        loaded = self.store.load()
+        loaded = self.store.load(include_raw=True)
         stamp = now or _utc_now()
         run_id = stamp.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4)
-        binding = build_task_binding(loaded["definition"], task_version=loaded["version"], run_id=run_id, attempt=1, created_at=stamp)
+        binding = build_task_binding(
+            loaded["_raw_definition"], task_version=loaded["version"], run_id=run_id,
+            attempt=1, created_at=stamp,
+            definition_sha256=loaded["hashes"]["definition_sha256"],
+        )
         binding["trigger"] = trigger
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
@@ -1328,5 +1598,20 @@ def load_active_prompt(name: str, *, task_path: str | Path | None = None) -> dic
         "version": component["version"],
         "text": component["text"],
         "sha256": loaded["hashes"]["components"][name],
+        "path": str(store.active_path),
+    }
+
+
+def load_active_meeting(*, task_path: str | Path | None = None) -> dict[str, Any]:
+    """Load the optional meeting component without expanding PROMPT_NAMES."""
+    store = TaskDefinitionStore(
+        task_path or os.environ.get("CLIMATE_TASK_CONFIG", str(DEFAULT_TASK_PATH)),
+        os.environ.get("CLIMATE_TASK_VERSION_DIR", str(DEFAULT_VERSION_ROOT)),
+    )
+    loaded = store.load()
+    meeting = loaded["definition"]["meeting"]
+    return {
+        "enabled": meeting["enabled"], "version": meeting["prompt"]["version"],
+        "text": meeting["prompt"]["text"], "sha256": loaded["hashes"]["meeting"],
         "path": str(store.active_path),
     }

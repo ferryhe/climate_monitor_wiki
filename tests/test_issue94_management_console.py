@@ -233,6 +233,249 @@ def test_task_definition_round_trip_preview_versions_and_restore(tmp_path):
     assert restored["definition"]["prompts"] == first["definition"]["prompts"]
 
 
+def test_optional_meeting_component_preserves_five_prompts_and_legacy_state_hash(tmp_path):
+    from climate_monitor.management import PROMPT_NAMES, _sha
+
+    definition = _definition(tmp_path)
+    legacy = dict(definition)
+    legacy.pop("meeting")
+    legacy_hash = _sha(legacy)
+    state = {
+        "schema_version": "climate-acquisition-task-state.v1", "version": 1,
+        "saved_at": "2026-09-10T00:00:00Z", "saved_by": "legacy",
+        "definition_sha256": legacy_hash, "definition": legacy,
+    }
+    store = _store(tmp_path)
+    store.active_path.write_text(json.dumps(state), encoding="utf-8")
+    loaded = store.load()
+
+    assert PROMPT_NAMES == (
+        "acquisition_task", "search_guidance", "relevance", "article_summary",
+        "executive_summary",
+    )
+    assert loaded["definition"]["meeting"]["enabled"] is False
+    assert loaded["hashes"]["definition_sha256"] == legacy_hash
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs", launcher=lambda binding: 4321,
+    )
+    coverage = service.meeting_events(base_date="2027-01-01", timezone_name="UTC")["coverage"]
+    assert coverage == {
+        "status": "disabled", "meeting_enabled": False, "task_version": 1,
+        "target_batch_id": None, "target_meeting_run_id": None,
+        "target_processed": False, "returned_record_count": 0,
+        "records_scope": "registry_current_records", "uses_existing_records": False,
+    }
+    started = service.start(trigger="manual")
+    binding = service.binding(started["run_id"])
+    assert binding["definition"] == legacy
+    assert _sha(binding["definition"]) == binding["definition_sha256"] == legacy_hash
+    assert binding["meeting"]["enabled"] is False
+    assert service.binding(started["run_id"]) == binding
+    changed = json.loads(json.dumps(loaded["definition"]))
+    changed["meeting"]["enabled"] = True
+    saved = store.save(changed, expected_version=1, actor="operator")
+    diff = store.diff(1, 2)
+    assert diff["changed_components"] == []
+    assert diff["meeting_changed"] is True
+    assert saved["hashes"]["definition_sha256"] != legacy_hash
+    assert saved["hashes"]["meeting"] == saved["effective_meeting"]["prompt_sha256"]
+
+
+def test_meeting_auto_launch_is_disabled_or_failure_isolated(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    path = tmp_path / "attempt-1.json"
+    path.write_text("{}", encoding="utf-8")
+    assert runner._launch_meeting_worker(path, {"meeting": {"enabled": False}}) == {
+        "status": "disabled"
+    }
+    binding = {
+        "run_id": "run", "acquisition_batch_id": "batch", "registry_database": str(tmp_path / "db"),
+        "task_version": 3,
+        "meeting": {
+            "enabled": True, "prompt_version": "v1", "prompt_sha256": "a" * 64,
+            "prompt_text": "prompt", "provider": "openai-codex", "model": "model",
+        },
+    }
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("no runtime")))
+    result = runner._launch_meeting_worker(path, binding)
+    assert result["status"] == "launch_failed"
+    saved = list(tmp_path.glob("meeting-auto-*-result.json"))
+    assert len(saved) == 1
+    assert json.loads(saved[0].read_text())["status"] == "launch_failed"
+    monkeypatch.setattr(
+        runner, "_atomic_write",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("sidecar unavailable")),
+    )
+    assert runner._launch_meeting_worker(path, binding)["status"] == "launch_failed"
+
+
+def test_meeting_worker_result_is_bound_and_reported_separately(tmp_path):
+    store = _store(tmp_path)
+    definition = _definition(tmp_path)
+    definition["meeting"]["enabled"] = True
+    saved = store.save(definition, actor="operator")
+    run_id = "20260907T08000000-sidecar"
+    binding = build_task_binding(
+        saved["definition"], task_version=1, run_id=run_id, attempt=1,
+        created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir()
+    (run_dir / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
+    worker = {
+        "schema_version": "climate-meeting-worker-binding.v1",
+        "acquisition_run_id": run_id,
+        "acquisition_batch_id": binding["acquisition_batch_id"],
+        "registry_database": binding["registry_database"],
+        "meeting_attempt": 123,
+    }
+    (run_dir / "meeting-auto-123.json").write_text(json.dumps(worker), encoding="utf-8")
+    (run_dir / "meeting-auto-123-result.json").write_text(json.dumps({
+        "status": "launch_failed", "error": "OSError: unavailable",
+    }), encoding="utf-8")
+    service = ManagementService(store=store, runtime_root=tmp_path / "runs")
+
+    progress = service.meeting_progress(run_id)
+
+    assert progress["status"] == "not_processed"
+    assert progress["automatic_worker"] == {
+        "status": "launch_failed", "error": "OSError: unavailable",
+    }
+    worker["acquisition_run_id"] = "other-run"
+    (run_dir / "meeting-auto-123.json").write_text(json.dumps(worker), encoding="utf-8")
+    assert service.meeting_progress(run_id)["automatic_worker"] == {
+        "status": "result_unreadable", "error": "meeting worker result could not be read",
+    }
+
+
+def test_manual_meeting_retry_uses_failed_run_frozen_configuration(tmp_path, monkeypatch):
+    import climate_monitor.management as management
+    import climate_monitor.meetings as meetings
+
+    store = _store(tmp_path)
+    definition = _definition(tmp_path)
+    definition["meeting"].update(enabled=True)
+    definition["meeting"]["prompt"] = {"version": "v1", "text": "frozen v1"}
+    saved = store.save(definition, actor="operator")
+    run_id = "20260907T08000000-run"
+    binding = build_task_binding(
+        saved["definition"], task_version=1, run_id=run_id, attempt=1,
+        created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir()
+    (run_dir / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
+
+    changed = json.loads(json.dumps(saved["definition"]))
+    changed["meeting"]["prompt"] = {"version": "v2", "text": "current v2"}
+    changed["parameters"].update(provider="openai-api", model="model-v2")
+    store.save(changed, expected_version=1, actor="operator")
+    frozen_run = {
+        "meeting_run_id": "meeting-original-1", "status": "partial",
+        "prompt_version": "v1", "prompt_sha256": hashlib.sha256(b"frozen v1").hexdigest(),
+        "prompt_text": "frozen v1", "provider": "openai-codex", "model": "gpt-5.6-sol-900k",
+        "task_version": 1,
+    }
+    monkeypatch.setattr(management, "load_acquisition_batch", lambda *args: {})
+    monkeypatch.setattr(meetings, "meeting_retry_run", lambda *args, **kwargs: frozen_run)
+    launched = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        meeting_launcher=lambda value: launched.append(value) or 123,
+    )
+
+    result = service.start_meetings(run_id, retry_failed=True)
+
+    assert result["retry_meeting_run_id"] == "meeting-original-1"
+    assert launched[0]["retry_meeting_run_id"] == "meeting-original-1"
+    assert (launched[0]["prompt_version"], launched[0]["prompt_text"]) == ("v1", "frozen v1")
+    assert (launched[0]["provider"], launched[0]["model"], launched[0]["task_version"]) == (
+        "openai-codex", "gpt-5.6-sol-900k", 1,
+    )
+
+
+def test_manual_meeting_active_worker_is_attached_without_second_launch(tmp_path, monkeypatch):
+    import climate_monitor.management as management
+    import climate_monitor.meetings as meetings
+
+    store = _store(tmp_path)
+    definition = _definition(tmp_path)
+    definition["meeting"]["enabled"] = True
+    saved = store.save(definition, actor="operator")
+    run_id = "20260907T08000000-run"
+    binding = build_task_binding(
+        saved["definition"], task_version=1, run_id=run_id, attempt=1,
+        created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir()
+    (run_dir / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
+    monkeypatch.setattr(management, "load_acquisition_batch", lambda *args: {})
+    monkeypatch.setattr(meetings, "active_meeting_run", lambda *args: {
+        "meeting_run_id": "meeting-running-1", "task_version": 1,
+        "prompt_version": "v1", "prompt_sha256": "a" * 64,
+        "retry_of_meeting_run_id": None,
+    })
+    launched = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs",
+        meeting_launcher=lambda value: launched.append(value) or 123,
+    )
+
+    result = service.start_meetings(run_id)
+
+    assert result["attached"] is True
+    assert result["meeting_run_id"] == "meeting-running-1"
+    assert launched == []
+
+
+def test_meeting_ui_surfaces_process_retry_and_status_failures(tmp_path):
+    from climate_registry.acquisition import store_acquisition_batch
+    from test_issue112_acquisition import _batch
+
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="bootstrap")
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / "runs", meeting_launcher=lambda binding: 123,
+    )
+    run_id = service.start(trigger="manual")["run_id"]
+
+    with pytest.raises(RuntimeError, match="disabled"):
+        service.start_meetings(run_id)
+
+    enabled = store.load()["definition"]
+    enabled["meeting"]["enabled"] = True
+    store.save(enabled, expected_version=1, actor="operator")
+    with pytest.raises(KeyError, match="unknown acquisition batch"):
+        service.start_meetings(run_id)
+
+    binding = service.binding(run_id)
+    store_acquisition_batch(
+        binding["registry_database"],
+        _batch(
+            [], batch_id=binding["acquisition_batch_id"], report_date=binding["report_date"],
+            policy=binding["date_policy"],
+        ),
+    )
+    with pytest.raises(RuntimeError, match="no partial or failed meeting run"):
+        service.start_meetings(run_id, retry_failed=True)
+    with pytest.raises(KeyError, match="not found"):
+        service.meeting_progress("missing-run")
+
+    browser_code = (Path(__file__).parents[1] / "management_ui" / "manage.js").read_text()
+    assert "function showMeetingError(error)" in browser_code
+    assert "{status: 'error', error: error?.message || String(error)}" in browser_code
+    assert "async function selectRun(id) { try {" in browser_code
+    assert "async function processMeetings(retryFailed) { try {" in browser_code
+    assert "catch (error) { showMeetingError(error); }" in browser_code
+    assert "$('#start-meetings').onclick = () => processMeetings(false)" in browser_code
+    assert "$('#retry-meetings').onclick = () => processMeetings(true)" in browser_code
+    markup = (Path(__file__).parents[1] / "management_ui" / "index.html").read_text()
+    assert "Confirmation count is the current count for events linked to this run" in markup
+    assert "Success counts are article bodies processed" in markup
+
+
 def test_invalid_save_is_atomic_and_windows_newlines_hash_identically(tmp_path):
     store = _store(tmp_path)
     definition = _definition(tmp_path)
@@ -874,7 +1117,10 @@ def test_management_routes_require_server_verified_session_and_logout(monkeypatc
     _configure_console_auth(monkeypatch, api_server)
     client = TestClient(api_server.app, base_url="https://testserver")
 
-    for path in ("/manage", "/api/manage/config", "/api/manage/versions", "/api/manage/progress"):
+    for path in (
+        "/manage", "/api/manage/config", "/api/manage/versions", "/api/manage/progress",
+        "/api/manage/meetings",
+    ):
         response = client.get(path, follow_redirects=False)
         assert response.status_code in {401, 303}, path
         assert "acquisition_task" not in response.text
@@ -883,6 +1129,9 @@ def test_management_routes_require_server_verified_session_and_logout(monkeypatc
     assert bad.status_code == 400
     assert client.post("/api/manage/auth/login", data={"username": "operator", "password": "correct horse"}).status_code == 204
     assert client.get("/api/manage/config").status_code == 200
+    meetings = client.get("/api/manage/meetings", params={"timezone_name": "UTC"})
+    assert meetings.status_code == 200
+    assert meetings.json()["coverage"]["status"] == "disabled"
     assert client.get("/manage").status_code == 200
     asset = client.get("/manage/assets/manage.js")
     assert asset.status_code == 200
@@ -890,6 +1139,43 @@ def test_management_routes_require_server_verified_session_and_logout(monkeypatc
     assert "provider-native-unbounded" in browser_code
     assert "LEGACY_SEARCH_BUDGETS.has(key)" in browser_code
     assert "delete budgets[key]" in browser_code
+    assert "meeting_prompt" in browser_code
+    assert "function showMeetingError(error)" in browser_code
+    assert "$('#meeting-progress').textContent = JSON.stringify({status: 'error', error: error?.message" in browser_code
+    assert "$('#start-meetings').onclick = () => processMeetings(false)" in browser_code
+    assert "$('#retry-meetings').onclick = () => processMeetings(true)" in browser_code
+
+    started = client.post("/api/manage/runs", json={}).json()
+    run_id = started["run_id"]
+    disabled = client.post(f"/api/manage/runs/{run_id}/meetings", json={})
+    assert disabled.status_code == 409
+    assert "disabled" in disabled.json()["detail"]
+    enabled = store.load()["definition"]
+    enabled["meeting"]["enabled"] = True
+    store.save(enabled, expected_version=1, actor="operator")
+    missing_batch = client.post(f"/api/manage/runs/{run_id}/meetings", json={})
+    assert missing_batch.status_code == 404
+    assert "not found" in missing_batch.json()["detail"]
+
+    from climate_registry.acquisition import store_acquisition_batch
+    from test_issue112_acquisition import _batch
+
+    binding = service.binding(run_id)
+    store_acquisition_batch(
+        binding["registry_database"],
+        _batch(
+            [], batch_id=binding["acquisition_batch_id"], report_date=binding["report_date"],
+            policy=binding["date_policy"],
+        ),
+    )
+    no_retry = client.post(
+        f"/api/manage/runs/{run_id}/meetings", json={"retry_failed": True},
+    )
+    assert no_retry.status_code == 409
+    assert "no partial or failed meeting run" in no_retry.json()["detail"]
+    status_error = client.get("/api/manage/runs/missing-run/meetings")
+    assert status_error.status_code == 404
+    assert "not found" in status_error.json()["detail"]
     logout_match = re.search(r"\$\('#logout'\)\.onclick.*?api\('([^']+)'", browser_code)
     assert logout_match is not None
     logout_endpoint = logout_match.group(1)
@@ -1295,6 +1581,70 @@ def test_agent_prompt_exposes_business_components_as_references_only(tmp_path):
         assert component["text"] not in prompt
         assert f"{name}@{component['version']}" in prompt
         assert binding["prompt_hashes"][name] in prompt
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("legacy_protocol", [False, True])
+def test_acquisition_prompt_never_contains_meeting_prompt_text(
+    tmp_path, monkeypatch, enabled, legacy_protocol,
+):
+    import scripts.run_agent_acquisition as runner
+
+    marker = "MEETING-PROMPT-PRIVATE-UNIQUE"
+    definition = _definition(tmp_path)
+    definition["meeting"] = {"enabled": enabled, "prompt": {"version": "v9", "text": marker}}
+    binding = build_task_binding(
+        definition, task_version=1, run_id=f"prompt-meeting-{enabled}-{legacy_protocol}", attempt=1,
+    )
+    if legacy_protocol:
+        binding = _legacy_agent_binding(binding)
+    path = tmp_path / "attempt-1.json"
+    prompt = runner._prompt(path, binding)
+
+    assert marker not in prompt
+    assert binding["meeting"]["prompt_text"] == marker
+    assert binding["definition"]["meeting"]["prompt"]["text"] == marker
+    if not enabled:
+        assert runner._launch_meeting_worker(path, binding) == {"status": "disabled"}
+        return
+
+    worker_bindings = []
+
+    class Process:
+        pid = 4321
+
+        def wait(self):
+            return 0
+
+    def popen(command, **kwargs):
+        worker_path = Path(command[command.index("--binding") + 1])
+        worker_bindings.append(json.loads(worker_path.read_text(encoding="utf-8")))
+        return Process()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    assert runner._launch_meeting_worker(path, binding)["status"] == "launched"
+    assert worker_bindings[0]["prompt_text"] == marker
+    assert worker_bindings[0]["prompt_version"] == "v9"
+
+
+def test_meeting_auto_launch_attaches_to_active_worker(tmp_path, monkeypatch):
+    import climate_monitor.meetings as meetings
+    import scripts.run_agent_acquisition as runner
+
+    definition = _definition(tmp_path)
+    definition["meeting"]["enabled"] = True
+    binding = build_task_binding(definition, task_version=1, run_id="active-meeting", attempt=1)
+    monkeypatch.setattr(meetings, "active_meeting_run", lambda *args: {
+        "meeting_run_id": "meeting-running-1",
+    })
+    monkeypatch.setattr(
+        runner.subprocess, "Popen",
+        lambda *args, **kwargs: pytest.fail("active meeting worker must not launch again"),
+    )
+
+    assert runner._launch_meeting_worker(tmp_path / "attempt-1.json", binding) == {
+        "status": "running", "meeting_run_id": "meeting-running-1", "reused": True,
+    }
 
 
 def test_resume_merge_reuses_completed_evidence_without_repeating_it(tmp_path):

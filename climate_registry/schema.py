@@ -766,6 +766,219 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         END;
         """,
     ),
+    (
+        11,
+        "meeting_extraction_and_snapshots",
+        """
+        CREATE TABLE meeting_runs (
+            meeting_run_id TEXT PRIMARY KEY,
+            processing_key TEXT NOT NULL,
+            batch_id TEXT NOT NULL REFERENCES acquisition_batches(batch_id),
+            attempt INTEGER NOT NULL CHECK (attempt > 0),
+            status TEXT NOT NULL CHECK (status IN (
+                'running', 'succeeded', 'partial', 'failed', 'no_content'
+            )),
+            prompt_version TEXT NOT NULL,
+            prompt_sha256 TEXT NOT NULL CHECK (
+                length(prompt_sha256) = 64 AND prompt_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            prompt_text TEXT NOT NULL CHECK (length(trim(prompt_text)) > 0),
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            task_version INTEGER NOT NULL CHECK (task_version > 0),
+            retry_of_meeting_run_id TEXT REFERENCES meeting_runs(meeting_run_id),
+            input_sha256 TEXT NOT NULL CHECK (
+                length(input_sha256) = 64 AND input_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            item_count INTEGER NOT NULL CHECK (item_count >= 0),
+            succeeded_count INTEGER NOT NULL DEFAULT 0 CHECK (succeeded_count >= 0),
+            failed_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+            unavailable_count INTEGER NOT NULL DEFAULT 0 CHECK (unavailable_count >= 0),
+            candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (candidate_count >= 0),
+            error_message TEXT,
+            UNIQUE (processing_key, attempt)
+        );
+
+        CREATE TABLE meeting_run_items (
+            meeting_run_id TEXT NOT NULL REFERENCES meeting_runs(meeting_run_id),
+            acquisition_item_id TEXT NOT NULL REFERENCES acquisition_items(acquisition_item_id),
+            content_version_id TEXT REFERENCES article_content_versions(content_version_id),
+            article_id TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            content_sha256 TEXT CHECK (content_sha256 IS NULL OR (
+                length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+            )),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'unavailable')),
+            candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (candidate_count >= 0),
+            error_message TEXT,
+            processed_at TEXT,
+            PRIMARY KEY (meeting_run_id, acquisition_item_id),
+            FOREIGN KEY (article_id, content_version_id)
+                REFERENCES article_content_versions(article_id, content_version_id)
+        );
+
+        CREATE TABLE climate_events (
+            event_id TEXT PRIMARY KEY,
+            record_version INTEGER NOT NULL CHECK (record_version > 0),
+            name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+            event_type TEXT NOT NULL CHECK (event_type IN (
+                'meeting', 'conference', 'summit', 'webinar', 'deadline', 'retrospective'
+            )),
+            organizer TEXT,
+            status TEXT NOT NULL CHECK (status IN (
+                'scheduled', 'tentative', 'postponed', 'cancelled', 'conflict', 'retrospective'
+            )),
+            date_precision TEXT NOT NULL CHECK (date_precision IN (
+                'day', 'month', 'quarter', 'year', 'unknown'
+            )),
+            start_date TEXT,
+            end_date TEXT,
+            raw_time_text TEXT,
+            event_timezone TEXT,
+            location TEXT,
+            online_url TEXT,
+            deadline_type TEXT CHECK (deadline_type IS NULL OR deadline_type IN (
+                'registration', 'consultation', 'expert_review'
+            )),
+            deadline_date TEXT,
+            relevance_reason TEXT,
+            needs_confirmation INTEGER NOT NULL CHECK (needs_confirmation IN (0, 1)),
+            source_count INTEGER NOT NULL CHECK (source_count > 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE climate_event_versions (
+            event_id TEXT NOT NULL REFERENCES climate_events(event_id),
+            record_version INTEGER NOT NULL CHECK (record_version > 0),
+            state_json TEXT NOT NULL,
+            state_sha256 TEXT NOT NULL CHECK (
+                length(state_sha256) = 64 AND state_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            meeting_run_id TEXT NOT NULL REFERENCES meeting_runs(meeting_run_id),
+            recorded_at TEXT NOT NULL,
+            PRIMARY KEY (event_id, record_version)
+        );
+
+        CREATE TABLE climate_event_sources (
+            event_source_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL REFERENCES climate_events(event_id),
+            content_version_id TEXT NOT NULL REFERENCES article_content_versions(content_version_id),
+            article_id TEXT NOT NULL,
+            meeting_run_id TEXT NOT NULL REFERENCES meeting_runs(meeting_run_id),
+            source_url TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL CHECK (
+                length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            candidate_json TEXT NOT NULL,
+            candidate_sha256 TEXT NOT NULL CHECK (
+                length(candidate_sha256) = 64 AND candidate_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            date_evidence TEXT,
+            deadline_evidence TEXT,
+            status_evidence TEXT,
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY (article_id, content_version_id)
+                REFERENCES article_content_versions(article_id, content_version_id),
+            UNIQUE (event_id, content_version_id)
+        );
+
+        CREATE TABLE meeting_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            query_json TEXT NOT NULL,
+            base_date TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            records_json TEXT NOT NULL,
+            coverage_json TEXT NOT NULL,
+            snapshot_sha256 TEXT NOT NULL UNIQUE CHECK (
+                length(snapshot_sha256) = 64 AND snapshot_sha256 NOT GLOB '*[^0-9a-f]*'
+            )
+        );
+
+        CREATE INDEX idx_meeting_runs_batch_status
+            ON meeting_runs(batch_id, status, started_at DESC);
+        CREATE INDEX idx_meeting_run_items_status
+            ON meeting_run_items(meeting_run_id, status);
+        CREATE INDEX idx_climate_events_dates
+            ON climate_events(start_date, end_date, event_type, status);
+        CREATE INDEX idx_climate_events_organizer
+            ON climate_events(organizer);
+        CREATE INDEX idx_climate_event_sources_event
+            ON climate_event_sources(event_id, observed_at DESC);
+        CREATE INDEX idx_climate_event_sources_content
+            ON climate_event_sources(content_version_id);
+
+        CREATE TRIGGER climate_event_versions_are_append_only_update
+        BEFORE UPDATE ON climate_event_versions BEGIN
+            SELECT RAISE(ABORT, 'climate event versions are append-only');
+        END;
+        CREATE TRIGGER climate_event_versions_are_append_only_delete
+        BEFORE DELETE ON climate_event_versions BEGIN
+            SELECT RAISE(ABORT, 'climate event versions are append-only');
+        END;
+        CREATE TRIGGER meeting_snapshots_are_immutable_update
+        BEFORE UPDATE ON meeting_snapshots BEGIN
+            SELECT RAISE(ABORT, 'meeting snapshots are immutable');
+        END;
+        CREATE TRIGGER meeting_snapshots_are_immutable_delete
+        BEFORE DELETE ON meeting_snapshots BEGIN
+            SELECT RAISE(ABORT, 'meeting snapshots are immutable');
+        END;
+        """,
+    ),
+    (
+        12,
+        "versioned_meeting_interpretations",
+        """
+        ALTER TABLE climate_event_sources RENAME TO climate_event_sources_v11;
+
+        CREATE TABLE climate_event_sources (
+            event_source_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL REFERENCES climate_events(event_id),
+            content_version_id TEXT NOT NULL REFERENCES article_content_versions(content_version_id),
+            article_id TEXT NOT NULL,
+            meeting_run_id TEXT NOT NULL REFERENCES meeting_runs(meeting_run_id),
+            candidate_ordinal INTEGER NOT NULL CHECK (candidate_ordinal > 0),
+            interpretation_seq INTEGER NOT NULL CHECK (interpretation_seq > 0),
+            source_url TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL CHECK (
+                length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            candidate_json TEXT NOT NULL,
+            candidate_sha256 TEXT NOT NULL CHECK (
+                length(candidate_sha256) = 64 AND candidate_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            date_evidence TEXT,
+            deadline_evidence TEXT,
+            status_evidence TEXT,
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY (article_id, content_version_id)
+                REFERENCES article_content_versions(article_id, content_version_id),
+            UNIQUE (event_id, content_version_id, meeting_run_id, candidate_ordinal)
+        );
+
+        INSERT INTO climate_event_sources (
+            event_source_id, event_id, content_version_id, article_id, meeting_run_id,
+            candidate_ordinal, interpretation_seq, source_url, content_sha256,
+            candidate_json, candidate_sha256, date_evidence, deadline_evidence,
+            status_evidence, observed_at
+        )
+        SELECT event_source_id, event_id, content_version_id, article_id, meeting_run_id,
+               1, 1, source_url, content_sha256, candidate_json, candidate_sha256,
+               date_evidence, deadline_evidence, status_evidence, observed_at
+        FROM climate_event_sources_v11;
+
+        DROP TABLE climate_event_sources_v11;
+
+        CREATE INDEX idx_climate_event_sources_event
+            ON climate_event_sources(event_id, observed_at DESC);
+        CREATE INDEX idx_climate_event_sources_content
+            ON climate_event_sources(content_version_id);
+        """,
+    ),
 )
 
 

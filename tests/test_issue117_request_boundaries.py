@@ -4503,7 +4503,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
 
 def _managed_attempt(
     tmp_path, monkeypatch, *, source_keys=None, budget_overrides=None,
-    candidate_protocol=False, date_policy=None,
+    candidate_protocol=False, date_policy=None, meeting_enabled=False,
 ):
     from test_issue94_management_console import _store, _definition
     from climate_monitor.management import ManagementService
@@ -4513,6 +4513,7 @@ def _managed_attempt(
     monkeypatch.setenv("CLIMATE_MANAGED_WIKI_DIR", str(tmp_path / "managed-wiki"))
     store = _store(tmp_path)
     definition = _definition(tmp_path)
+    definition["meeting"]["enabled"] = meeting_enabled
     if source_keys is not None:
         definition["parameters"]["source_keys"] = source_keys
     if budget_overrides is not None:
@@ -4547,11 +4548,12 @@ def _empty_agent_payload(binding, *, reason):
 
 
 @pytest.mark.parametrize(
-    "report_item_count", [1, 0, "invalid"],
-    ids=["report", "all-ineligible", "invalid-receipt"],
+    ("report_item_count", "meeting_raises"),
+    [(1, False), (0, False), ("invalid", False), ("systemic", False), (1, True)],
+    ids=["report", "all-ineligible", "invalid-receipt", "systemic-with-content", "meeting-failure"],
 )
 def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
-    tmp_path, monkeypatch, report_item_count,
+    tmp_path, monkeypatch, report_item_count, meeting_raises,
 ):
     """Regression: the former blanket gap branch skipped report authoring."""
     from test_issue112_acquisition import _batch, _item
@@ -4560,7 +4562,7 @@ def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
     import scripts.run_agent_acquisition as runner
     import os
 
-    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    service, b, path = _managed_attempt(tmp_path, monkeypatch, meeting_enabled=True)
     monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/true")
     source = b["source_inventory"]["records"][0]
     if os.name == "nt":
@@ -4587,6 +4589,8 @@ def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
         **evidence, "candidates": [], "warnings": warnings,
         "attempts": source_row["attempts"],
     }
+    if report_item_count == "systemic":
+        site_context["systemic_error"] = "all controlled readers failed"
     search_item = _item(
         url="https://example.org/pillar-b-recovery",
         source="Example Institute", published_date=b["report_date"],
@@ -4627,6 +4631,34 @@ def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
         lambda *args, **kwargs: {"cumulative_actual": runner._empty_tool_usage()},
     )
     monkeypatch.setattr(runner, "_unresolved_tool_prechecks", lambda *args: [])
+    order = []
+    original_store = runner._store_readback_and_freeze
+    original_projection = runner._reportability_projection
+    original_write_inputs = runner._write_report_inputs
+
+    def store(*args, **kwargs):
+        frozen = original_store(*args, **kwargs)
+        order.append("stored")
+        return frozen
+
+    def project(*args, **kwargs):
+        order.append("projected")
+        return original_projection(*args, **kwargs)
+
+    def write_inputs(*args, **kwargs):
+        order.append("report-inputs")
+        return original_write_inputs(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_store_readback_and_freeze", store)
+    monkeypatch.setattr(runner, "_reportability_projection", project)
+    monkeypatch.setattr(runner, "_write_report_inputs", write_inputs)
+    def launch(*_args, **_kwargs):
+        order.append("meeting")
+        if meeting_raises:
+            raise OSError("meeting sidecar unavailable")
+        return {"status": "launched"}
+
+    monkeypatch.setattr(runner, "_launch_meeting_worker", launch)
     reports = []
     monkeypatch.setattr(
         runner, "_run_report",
@@ -4642,6 +4674,15 @@ def test_pillar_a_failure_can_use_recorded_pillar_b_evidence_and_finish_report(
 
     exit_code = runner._execute_attempt(path)
     terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert order.count("meeting") == 1
+    assert order.index("stored") < order.index("meeting") < order.index("projected")
+    assert order.index("meeting") < order.index("report-inputs")
+    if report_item_count == "systemic":
+        assert not reports
+        assert exit_code == 75
+        assert terminal["outcome"] == "systemic_failure"
+        assert terminal["exit_code"] == 75
+        return
     assert reports
     assert sends == [source["url"]]
     assert prompts[0]["web_listening"]["source_results"][0]["status"] == "failed"
