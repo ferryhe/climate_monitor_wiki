@@ -117,7 +117,9 @@ def _write_hermes_tool_events(
         connection.execute(
             "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
             (session_id,
-             f"climate-acquisition-{binding['run_id']}-{binding['attempt']}",
+             (f"climate-acquisition-{binding['run_id']}-{binding['attempt']}"
+              if "provider" in binding and "model" in binding
+              else f"climate-acquisition-{binding['run_id']}"),
              binding["created_at"]),
         )
         message_id = 1
@@ -2296,6 +2298,15 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
     binding_path = run_dir / "attempt-2.json"
     assert resumed["acquisition_batch_id"] == first["acquisition_batch_id"]
     assert resumed["repository_commit_sha"] == first["repository_commit_sha"]
+    from climate_monitor.hermes_identity import IDENTITY_FILE, IDENTITY_SCHEMA
+    (run_dir / IDENTITY_FILE).write_text(json.dumps({
+        "schema_version": IDENTITY_SCHEMA,
+        "session_id": "20260910_080000_abcdef",
+        "source": f"climate-acquisition-{resumed['run_id']}",
+        "provider": "observed-provider",
+        "model": "observed-model",
+        "observed_at": "2026-09-10T08:00:00Z",
+    }), encoding="utf-8")
 
     def enter_report(command, **_kwargs):
         loaded, loaded_path = monitor._load_task_binding(

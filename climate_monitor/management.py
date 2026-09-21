@@ -188,8 +188,6 @@ def default_task_definition() -> dict[str, Any]:
                 "retries_per_item": 2,
                 "runtime_seconds": 3600,
             },
-            "provider": "openai-api",
-            "model": "gpt-5.6-luna",
         },
         "runtime": {
             "registry_database": str(database),
@@ -247,9 +245,13 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
     params = value.get("parameters")
     if not isinstance(params, Mapping):
         raise ValueError("parameters must be an object")
-    parameter_fields = {"report_date", "timezone", "source_keys", "date_policy", "budgets", "provider", "model"}
-    if set(params) != parameter_fields:
-        raise ValueError(f"parameters fields must be exactly {sorted(parameter_fields)}")
+    parameter_fields = {"report_date", "timezone", "source_keys", "date_policy", "budgets"}
+    legacy_parameter_fields = parameter_fields | {"provider", "model"}
+    if set(params) not in {frozenset(parameter_fields), frozenset(legacy_parameter_fields)}:
+        raise ValueError(
+            f"parameters fields must be exactly {sorted(parameter_fields)}; "
+            "historical definitions may also contain provider and model"
+        )
     report_date_value = str(params.get("report_date", ""))
     if report_date_value != "auto":
         try:
@@ -282,9 +284,12 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(number, bool) or not isinstance(number, int) or number < (0 if key == "retries_per_item" else 1):
             raise ValueError(f"budget {key} must be a valid positive integer")
         normalized_budgets[key] = number
-    provider, model = str(params.get("provider", "")).strip(), str(params.get("model", "")).strip()
-    if not provider or not model:
-        raise ValueError("provider and model are required")
+    legacy_identity: dict[str, str] = {}
+    if set(params) == legacy_parameter_fields:
+        provider, model = str(params.get("provider", "")).strip(), str(params.get("model", "")).strip()
+        if not provider or not model:
+            raise ValueError("historical provider and model must both be non-empty")
+        legacy_identity = {"provider": provider, "model": model}
     runtime = value.get("runtime")
     if not isinstance(runtime, Mapping) or set(runtime) != {"registry_database", "run_root"}:
         raise ValueError("runtime must contain only registry_database and run_root")
@@ -380,14 +385,25 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
             "source_keys": normalized_keys,
             "date_policy": _validate_date_policy(params["date_policy"]),
             "budgets": normalized_budgets,
-            "provider": provider,
-            "model": model,
+            **legacy_identity,
         },
         "runtime": {"registry_database": str(database), "run_root": str(run_root)},
         "taxonomy": {key: str(taxonomy[key]).strip() for key in ("schema_version", "path", "version")},
         "prompts": normalized_prompts,
         "meeting": normalized_meeting,
     }
+
+
+def without_task_model_overrides(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a new-definition payload that inherits the Hermes defaults."""
+    definition = copy.deepcopy(dict(value))
+    parameters = definition.get("parameters")
+    if isinstance(parameters, Mapping):
+        normalized_parameters = dict(parameters)
+        normalized_parameters.pop("provider", None)
+        normalized_parameters.pop("model", None)
+        definition["parameters"] = normalized_parameters
+    return definition
 
 
 def _resolved_report_date(parameters: Mapping[str, Any], now: datetime | None = None) -> date:
@@ -547,14 +563,14 @@ class TaskDefinitionStore:
             version = self._state()["version"]
         except FileNotFoundError:
             version = 0
-        return definition_view(definition, version=version)
+        return definition_view(without_task_model_overrides(definition), version=version)
 
     def save(self, definition: Mapping[str, Any], *, expected_version: int | None = None, actor: str) -> dict[str, Any]:
         with _exclusive_lock(self.active_path.parent / ".task-definition.lock"):
             return self._save_locked(definition, expected_version=expected_version, actor=actor)
 
     def _save_locked(self, definition: Mapping[str, Any], *, expected_version: int | None, actor: str) -> dict[str, Any]:
-        normalized = validate_task_definition(definition)
+        normalized = validate_task_definition(without_task_model_overrides(definition))
         current: dict[str, Any] | None = None
         try:
             current = self._state()
@@ -652,7 +668,11 @@ class TaskDefinitionStore:
         }
 
     def restore(self, version: int, *, expected_version: int, actor: str) -> dict[str, Any]:
-        return self.save(self._version(version)["definition"], expected_version=expected_version, actor=actor)
+        return self.save(
+            without_task_model_overrides(self._version(version)["definition"]),
+            expected_version=expected_version,
+            actor=actor,
+        )
 
 
 def managed_report_inputs(definition: Mapping[str, Any], run_id: str) -> dict[str, str]:
@@ -713,7 +733,7 @@ def build_task_binding(
         [MonitorSource(**record) for record in source_inventory["records"]], scopes,
         budget_limit=parameters["budgets"]["fetch_attempts"],
     )
-    return {
+    binding = {
         "schema_version": BINDING_SCHEMA,
         "run_id": run_id,
         "attempt": attempt,
@@ -736,15 +756,11 @@ def build_task_binding(
         "source_inventory": source_inventory,
         "site_scope_inventory": scope_inventory,
         "governed_gateway": gateway,
-        "provider": parameters["provider"],
-        "model": parameters["model"],
         "meeting": {
             "enabled": normalized["meeting"]["enabled"],
             "prompt_version": normalized["meeting"]["prompt"]["version"],
             "prompt_sha256": view["hashes"]["meeting"],
             "prompt_text": normalized["meeting"]["prompt"]["text"],
-            "provider": parameters["provider"],
-            "model": parameters["model"],
         },
         "agent_protocol": {
             "version": AGENT_PROTOCOL_VERSION,
@@ -759,6 +775,10 @@ def build_task_binding(
         "report_inputs": managed_report_inputs(normalized, run_id),
         "definition": raw_definition if definition_sha256 is not None else normalized,
     }
+    if "provider" in parameters:
+        binding.update(provider=parameters["provider"], model=parameters["model"])
+        binding["meeting"].update(provider=parameters["provider"], model=parameters["model"])
+    return binding
 
 
 Launcher = Callable[[dict[str, Any]], int | Mapping[str, Any]]
@@ -896,10 +916,24 @@ class ManagementService:
         script = Path(__file__).resolve().parents[1] / "scripts" / "run_meeting_extraction.py"
         log = (run_dir / f"meeting-{binding['meeting_attempt']}.log").open("ab")
         try:
+            launch_options: dict[str, Any] = {
+                "cwd": Path(__file__).resolve().parents[1],
+                "stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT,
+                "start_new_session": True, "close_fds": True,
+            }
+            if "hermes_home" in binding:
+                environment = {
+                    key: value for key, value in os.environ.items()
+                    if key not in {"DEPLOYMENT_SECRET", "RELOAD_TOKEN"}
+                }
+                environment.update({
+                    "HERMES_HOME": binding["hermes_home"],
+                    "HERMES_REDACT_SECRETS": "true",
+                })
+                launch_options["env"] = environment
             process = subprocess.Popen(
                 [sys.executable, str(script), "--binding", str(binding_path.resolve())],
-                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.DEVNULL,
-                stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
+                **launch_options,
             )
             threading.Thread(target=process.wait, name=f"meeting-reaper-{process.pid}", daemon=True).start()
         finally:
@@ -949,8 +983,19 @@ class ManagementService:
             prompt_version = meeting["prompt"]["version"]
             prompt_sha256 = loaded["hashes"]["meeting"]
             prompt_text = meeting["prompt"]["text"]
-            provider = loaded["definition"]["parameters"]["provider"]
-            model = loaded["definition"]["parameters"]["model"]
+            if "provider" in acquisition and "model" in acquisition:
+                provider = acquisition["provider"]
+                model = acquisition["model"]
+            else:
+                from climate_monitor.hermes_identity import load_effective_identity
+
+                identity = load_effective_identity(acquisition)
+                if identity is None:
+                    raise RuntimeError(
+                        "Hermes effective identity is unavailable; start a fresh managed run"
+                    )
+                provider = identity["provider"]
+                model = identity["model"]
             task_version = loaded["version"]
         binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
@@ -967,6 +1012,10 @@ class ManagementService:
             "provider": provider,
             "model": model,
         }
+        if not ("provider" in acquisition and "model" in acquisition):
+            from climate_monitor.hermes_acquisition_hooks import attempt_home
+
+            binding["hermes_home"] = str(attempt_home(acquisition))
         launched = self._meeting_launcher(copy.deepcopy(binding))
         launch = dict(launched) if isinstance(launched, Mapping) else {"pid": launched}
         return {
