@@ -4,6 +4,7 @@ import sys
 import threading
 import os
 import time
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -71,6 +72,35 @@ def _post(client, operation, **payload):
     return client.post(
         f"/v1/{operation}", json=payload,
         headers={TOKEN_HEADER: "relay-token"},
+    )
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    result = {}
+    for path in root.rglob("*"):
+        key = ("file:" if path.is_file() else "dir:") + str(path.relative_to(root))
+        result[key] = path.read_bytes() if path.is_file() else b""
+    return result
+
+
+def _materialized_service(tmp_path: Path) -> ManagementService:
+    from climate_registry.persistent import initialize_registry
+
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    definition = default_task_definition()
+    definition["parameters"].update(
+        report_date="2026-09-07", source_keys=["wmo"], timezone="UTC",
+    )
+    definition["runtime"].update(
+        registry_database=str(database), run_root=str(run_root),
+    )
+    store = TaskDefinitionStore(tmp_path / "task.json", tmp_path / "versions")
+    store.save(definition, actor="test")
+    return ManagementService(
+        store=store, runtime_root=run_root, execution_backend="host-dashboard",
     )
 
 
@@ -303,6 +333,156 @@ def test_history_direct_read_rejects_binding_from_another_backend(monkeypatch):
     assert "frozen to local" in rejected.value.detail
 
 
+@pytest.mark.parametrize("state", ["missing", "bootstrap"])
+def test_inactive_local_archive_never_bootstraps_or_changes_files(
+    monkeypatch, tmp_path, state,
+):
+    import api_server
+    import climate_monitor.management as management
+    import climate_registry.persistent as persistent
+
+    task_path = tmp_path / "task.json"
+    if state == "bootstrap":
+        task_path.write_text(json.dumps({
+            "schema_version": "climate-acquisition-task-bootstrap.v1",
+            "created_at": "2026-09-10T00:00:00Z",
+        }), encoding="utf-8")
+    before = _tree_bytes(tmp_path)
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(task_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(tmp_path / "versions"))
+    monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "host.sock"))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+
+    def side_effect(*_args, **_kwargs):
+        pytest.fail("archive discovery attempted a write/bootstrap/lock/launch seam")
+
+    monkeypatch.setattr(management, "default_task_definition", side_effect)
+    monkeypatch.setattr(management, "_atomic_write", side_effect)
+    monkeypatch.setattr(management, "_exclusive_lock", side_effect)
+    monkeypatch.setattr(persistent, "initialize_registry", side_effect)
+    monkeypatch.setattr(ManagementService, "_launch_process", side_effect)
+    monkeypatch.setattr(Path, "mkdir", side_effect)
+
+    with pytest.raises(FileNotFoundError, match="not configured|not materialized"):
+        history_service_from_environment("local")
+
+    real_history = api_server._history_service
+    monkeypatch.setattr(api_server, "active_backend_from_environment", lambda: "host-dashboard")
+    monkeypatch.setattr(
+        api_server, "_history_service",
+        lambda backend: real_history(backend) if backend == "local" else object(),
+    )
+    sources = api_server.console_history_sources(object())
+    assert sources[0]["backend"] == "local"
+    assert sources[0]["available"] is False
+    with pytest.raises(api_server.HTTPException) as unavailable:
+        api_server.console_history_versions("local", object())
+    assert unavailable.value.status_code == 503
+    assert _tree_bytes(tmp_path) == before
+
+
+def test_materialized_local_archive_reads_without_any_file_change(monkeypatch, tmp_path):
+    import climate_monitor.management as management
+    import climate_registry.persistent as persistent
+
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+    database = tmp_path / "registry.sqlite3"
+    persistent.initialize_registry(database)
+    definition = default_task_definition()
+    definition["parameters"].update(
+        report_date="2026-09-07", source_keys=["wmo"], timezone="UTC",
+    )
+    definition["runtime"].update(
+        registry_database=str(database), run_root=str(run_root),
+    )
+    task_path = tmp_path / "task.json"
+    store = TaskDefinitionStore(task_path, tmp_path / "versions")
+    saved = store.save(definition, actor="test")
+    before = _tree_bytes(tmp_path)
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(task_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(tmp_path / "versions"))
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "host.sock"))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+
+    def side_effect(*_args, **_kwargs):
+        pytest.fail("materialized archive read attempted a mutation seam")
+
+    monkeypatch.setattr(management, "default_task_definition", side_effect)
+    monkeypatch.setattr(management, "_atomic_write", side_effect)
+    monkeypatch.setattr(management, "_exclusive_lock", side_effect)
+    monkeypatch.setattr(persistent, "initialize_registry", side_effect)
+    monkeypatch.setattr(ManagementService, "_launch_process", side_effect)
+    monkeypatch.setattr(Path, "mkdir", side_effect)
+
+    archive = history_service_from_environment("local")
+    assert archive.store.load()["hashes"]["definition_sha256"] == saved["hashes"]["definition_sha256"]
+    assert archive.store.versions()[0]["version"] == 1
+    assert archive.list_runs() == []
+    with pytest.raises(RuntimeError, match="read-only"):
+        archive.store.save(definition, actor="forbidden")
+    assert _tree_bytes(tmp_path) == before
+
+
+def test_materialized_archive_run_evidence_survives_missing_registry(monkeypatch, tmp_path):
+    service = _materialized_service(tmp_path)
+    run_dir = service.runtime_root / "retained-run"
+    run_dir.mkdir()
+    (run_dir / "binding.json").write_text(json.dumps({
+        "schema_version": "climate-acquisition-run-binding.v1",
+        "attempt": 1,
+        "execution_backend": "local",
+    }), encoding="utf-8")
+    Path(service.store.load()["definition"]["runtime"]["registry_database"]).unlink()
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(service.store.active_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(service.store.version_root))
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "host.sock"))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+
+    archive = history_service_from_environment("local")
+    assert archive.binding("retained-run")["attempt"] == 1
+    with pytest.raises(ValueError, match="registry database"):
+        archive.store.load()
+
+
+def test_history_only_service_reports_unmaterialized_content_without_bootstrap(
+    monkeypatch, tmp_path,
+):
+    import climate_monitor.management as management
+
+    task_path = tmp_path / "task.json"
+    task_path.write_text(
+        '{"schema_version":"climate-acquisition-task-bootstrap.v1"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(task_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(tmp_path / "versions"))
+    monkeypatch.setattr(
+        management, "default_task_definition",
+        lambda: pytest.fail("history-only service bootstrapped a definition"),
+    )
+    before = _tree_bytes(tmp_path)
+    service = ManagementService.archive_from_environment(
+        execution_backend="host-dashboard",
+    )
+    app = create_managed_backend_app(
+        service, capability_loader=lambda: _capabilities(tmp_path),
+        token_loader=lambda: "relay-token", read_only=True,
+    )
+    with TestClient(app) as client:
+        capabilities = _post(client, "capabilities").json()["result"]
+        assert capabilities["read_only"] is True
+        assert capabilities["archive_available"] is False
+        unavailable = _post(client, "config_load").json()
+        assert unavailable["ok"] is False
+        assert "not materialized" in unavailable["error"]["message"]
+        runs = _post(client, "runs_list").json()
+        assert runs["ok"] is False
+        assert "not materialized" in runs["error"]["message"]
+    assert _tree_bytes(tmp_path) == before
+
+
 def test_external_mode_fails_closed_without_backend_and_local_mode_is_unchanged(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_DASHBOARD_SOCKET", str(tmp_path / "dashboard.sock"))
     monkeypatch.setenv(
@@ -402,7 +582,10 @@ def test_history_socket_never_selects_host_execution(monkeypatch, tmp_path):
     import climate_monitor.managed_backend as backend
 
     local = object()
-    host_history = object()
+    host_history = SimpleNamespace(
+        store=SimpleNamespace(load=lambda: {"version": 1}),
+        capabilities={"archive_available": True},
+    )
     monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
     monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
     monkeypatch.setenv(
@@ -421,16 +604,34 @@ def test_history_socket_never_selects_host_execution(monkeypatch, tmp_path):
     assert history_service_from_environment("host-dashboard") is host_history
 
 
+def test_history_socket_reports_unmaterialized_host_archive(monkeypatch, tmp_path):
+    import climate_monitor.managed_backend as backend
+
+    unavailable = SimpleNamespace(capabilities={
+        "archive_available": False,
+        "archive_error": "task history is not materialized",
+    })
+    monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    monkeypatch.setenv("HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"))
+    monkeypatch.setattr(
+        backend, "HostManagementService",
+        lambda path, read_only=False: unavailable,
+    )
+    with pytest.raises(FileNotFoundError, match="not materialized"):
+        history_service_from_environment("host-dashboard")
+
+
 def test_host_active_reads_local_archive_without_using_host_paths(monkeypatch, tmp_path):
     import climate_monitor.managed_backend as backend
 
     active_host = object()
-    local_archive = object()
+    local_archive = SimpleNamespace(archive_error=None)
     monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
     monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
     monkeypatch.setattr(backend, "HostManagementService", lambda path: active_host)
     monkeypatch.setattr(
-        ManagementService, "from_environment", classmethod(lambda cls: local_archive),
+        ManagementService, "archive_from_environment", classmethod(lambda cls: local_archive),
     )
     assert management_service_from_environment() is active_host
     assert history_service_from_environment("local") is local_archive
@@ -502,11 +703,7 @@ def test_host_dashboard_adapter_starts_managed_service_after_loading_host_enviro
     monkeypatch, tmp_path,
 ):
     import climate_monitor.hermes_dashboard_server as dashboard_server
-    import climate_monitor.managed_backend as managed_backend
-    import uvicorn
-
     events = []
-    started = threading.Event()
     service = _RecordingService()
     env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: events.append(("dotenv", kwargs)))
     web_server = SimpleNamespace(
@@ -525,12 +722,8 @@ def test_host_dashboard_adapter_starts_managed_service_after_loading_host_enviro
     monkeypatch.setitem(sys.modules, "climate_monitor.management", management_module)
     monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
     monkeypatch.setattr(
-        managed_backend, "create_managed_backend_app",
-        lambda selected, read_only=False: events.append(("app", selected, read_only)) or object(),
-    )
-    monkeypatch.setattr(
-        uvicorn, "run",
-        lambda **kwargs: (events.append(("managed", kwargs)), started.set()),
+        dashboard_server, "_start_relays",
+        lambda selected, specs: events.append(("relays", selected, specs)) or [],
     )
     monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
     monkeypatch.setenv("HERMES_HOME", "/home/host-user/.hermes")
@@ -543,20 +736,178 @@ def test_host_dashboard_adapter_starts_managed_service_after_loading_host_enviro
     monkeypatch.setenv("HERMES_DASHBOARD_PORT", "19119")
 
     dashboard_server.main()
-    assert started.wait(2)
-    deadline = time.monotonic() + 2
-    while sum(event[0] == "managed" for event in events) < 2 and time.monotonic() < deadline:
-        time.sleep(0.01)
     assert events[0] == ("dotenv", {"hermes_home": "/home/host-user/.hermes"})
     assert ("management", {"execution_backend": "host-dashboard"}) in events
-    managed = [event[1] for event in events if event[0] == "managed"]
-    assert {value["uds"] for value in managed} == {
-        str(tmp_path / "managed.sock"), str(tmp_path / "history.sock"),
-    }
-    apps = [event for event in events if event[0] == "app"]
-    assert {(event[1] is service, event[2]) for event in apps} == {
-        (True, False), (True, True),
-    }
+    relay_event = next(event for event in events if event[0] == "relays")
+    assert relay_event[1] is service
+    assert relay_event[2] == [
+        (str(tmp_path / "managed.sock"), False, "climate-managed-host"),
+        (str(tmp_path / "history.sock"), True, "climate-managed-history"),
+    ]
+    assert events[-1][0] == "dashboard"
+
+
+def test_history_only_adapter_uses_archive_constructor(monkeypatch, tmp_path):
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+
+    events = []
+    archive = object()
+    web_server = SimpleNamespace(
+        _mcp_oauth_callback_url=lambda request, name: "unsafe",
+        start_server=lambda **kwargs: events.append(("dashboard", kwargs)),
+    )
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+    hermes_cli.web_server = web_server
+    management_module = ModuleType("climate_monitor.management")
+    management_module.ManagementService = SimpleNamespace(
+        from_environment=lambda **kwargs: pytest.fail("history-only adapter used active constructor"),
+        archive_from_environment=lambda **kwargs: events.append(("archive", kwargs)) or archive,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "climate_monitor.management", management_module)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
+    monkeypatch.setattr(
+        dashboard_server, "_start_relays",
+        lambda service, specs: events.append(("relays", service, specs)) or [],
+    )
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+    monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
+    monkeypatch.setenv("HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"))
+
+    dashboard_server.main()
+    assert ("archive", {"execution_backend": "host-dashboard"}) in events
+    relay = next(event for event in events if event[0] == "relays")
+    assert relay[1] is archive
+    assert relay[2] == [
+        (str(tmp_path / "history.sock"), True, "climate-managed-history"),
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires real Unix sockets")
+def test_host_adapter_waits_for_real_managed_and_history_capabilities(
+    monkeypatch, tmp_path,
+):
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+    import climate_monitor.managed_backend as managed_backend
+
+    service = _materialized_service(tmp_path)
+    events = []
+    env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+
+    def start_dashboard(**_kwargs):
+        active = managed_backend.HostManagementService(tmp_path / "managed.sock")
+        history = managed_backend.HostManagementService(
+            tmp_path / "history.sock", read_only=True,
+        )
+        events.append((active.capabilities["read_only"], history.capabilities["read_only"]))
+
+    web_server = SimpleNamespace(
+        _mcp_oauth_callback_url=lambda request, name: "unsafe",
+        start_server=start_dashboard,
+    )
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = env_loader
+    hermes_cli.web_server = web_server
+    management_module = ModuleType("climate_monitor.management")
+    management_module.ManagementService = SimpleNamespace(
+        from_environment=lambda **kwargs: service,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "climate_monitor.management", management_module)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
+    monkeypatch.setattr(managed_backend, "host_capabilities", lambda: _capabilities(tmp_path))
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
+    monkeypatch.setenv("HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"))
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "relay-token")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", raising=False)
+
+    dashboard_server.main()
+    assert events == [(False, True)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires real Unix sockets")
+@pytest.mark.parametrize("failed_socket", ["managed", "history"])
+def test_host_adapter_bind_failure_stops_other_relay_and_never_starts_dashboard(
+    monkeypatch, tmp_path, failed_socket,
+):
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+    import climate_monitor.managed_backend as managed_backend
+
+    service = _materialized_service(tmp_path)
+    events = []
+    web_server = SimpleNamespace(
+        _mcp_oauth_callback_url=lambda request, name: "unsafe",
+        start_server=lambda **kwargs: events.append("dashboard"),
+    )
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+    hermes_cli.web_server = web_server
+    management_module = ModuleType("climate_monitor.management")
+    management_module.ManagementService = SimpleNamespace(
+        from_environment=lambda **kwargs: service,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "climate_monitor.management", management_module)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
+    monkeypatch.setattr(managed_backend, "host_capabilities", lambda: _capabilities(tmp_path))
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "relay-token")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", raising=False)
+    long_socket = tmp_path / (("x" * 150) + ".sock")
+    managed_socket = long_socket if failed_socket == "managed" else tmp_path / "managed.sock"
+    history_socket = long_socket if failed_socket == "history" else ""
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(managed_socket))
+    if history_socket:
+        monkeypatch.setenv("HERMES_MANAGED_HISTORY_SOCKET", str(history_socket))
+    else:
+        monkeypatch.delenv("HERMES_MANAGED_HISTORY_SOCKET", raising=False)
+
+    with pytest.raises(RuntimeError, match="relay failed during startup"):
+        dashboard_server.main()
+    assert events == []
+    if failed_socket == "history":
+        with pytest.raises(FileNotFoundError, match="unavailable"):
+            managed_backend.HostManagementService(tmp_path / "managed.sock")
+
+
+def test_relay_readiness_timeout_is_bounded_and_stops_thread(monkeypatch, tmp_path):
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+    import climate_monitor.managed_backend as managed_backend
+    import uvicorn
+
+    servers = []
+
+    class Server:
+        def __init__(self, _config):
+            self.should_exit = False
+            servers.append(self)
+
+        def run(self):
+            while not self.should_exit:
+                time.sleep(0.001)
+
+    monkeypatch.setattr(uvicorn, "Config", lambda **kwargs: kwargs)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    monkeypatch.setattr(managed_backend, "create_managed_backend_app", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        managed_backend, "HostManagementService",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            FileNotFoundError("host managed backend is unavailable")
+        ),
+    )
+    monkeypatch.setattr(dashboard_server, "_RELAY_START_TIMEOUT", 0.05)
+    monkeypatch.setattr(dashboard_server, "_RELAY_STOP_TIMEOUT", 0.2)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="readiness timed out"):
+        dashboard_server._start_relays(
+            _RecordingService(),
+            [(str(tmp_path / "managed.sock"), False, "climate-managed-host")],
+        )
+    assert time.monotonic() - started < 1
+    assert servers and servers[0].should_exit is True
 
 
 def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, monkeypatch):

@@ -516,16 +516,24 @@ def _exclusive_lock_nowait(path: Path):
 
 
 class TaskDefinitionStore:
-    def __init__(self, active_path: str | Path = DEFAULT_TASK_PATH, version_root: str | Path = DEFAULT_VERSION_ROOT):
+    def __init__(
+        self, active_path: str | Path = DEFAULT_TASK_PATH,
+        version_root: str | Path = DEFAULT_VERSION_ROOT, *, archive_only: bool = False,
+    ):
         self.active_path = Path(active_path)
         self.version_root = Path(version_root)
+        self.archive_only = archive_only
 
-    def _state(self) -> dict[str, Any]:
+    def _state(self, *, validate_definition: bool = True) -> dict[str, Any]:
         try:
             payload = json.loads(self.active_path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
             raise FileNotFoundError(f"task definition not configured: {self.active_path}") from exc
         if isinstance(payload, dict) and payload.get("schema_version") == "climate-acquisition-task-bootstrap.v1":
+            if self.archive_only:
+                raise FileNotFoundError(
+                    f"task history is not materialized: {self.active_path}"
+                )
             definition = default_task_definition()
             return {
                 "schema_version": STATE_SCHEMA,
@@ -544,8 +552,20 @@ class TaskDefinitionStore:
         if payload.get("definition_sha256") != _sha(raw_definition):
             raise ValueError("task definition hash mismatch")
         payload["_raw_definition"] = copy.deepcopy(raw_definition)
-        payload["definition"] = validate_task_definition(raw_definition)
+        if validate_definition:
+            payload["definition"] = validate_task_definition(raw_definition)
         return payload
+
+    def archive_runtime_root(self) -> Path:
+        state = self._state(validate_definition=False)
+        definition = state["definition"]
+        runtime = definition.get("runtime") if isinstance(definition, Mapping) else None
+        if not isinstance(runtime, Mapping) or not str(runtime.get("run_root", "")).strip():
+            raise ValueError("archived task run root is unavailable")
+        run_root = Path(str(runtime["run_root"]))
+        if not run_root.is_absolute():
+            raise ValueError("archived task run root must be absolute")
+        return run_root
 
     def load(self, *, include_raw: bool = False) -> dict[str, Any]:
         state = self._state()
@@ -566,6 +586,8 @@ class TaskDefinitionStore:
         return definition_view(without_task_model_overrides(definition), version=version)
 
     def save(self, definition: Mapping[str, Any], *, expected_version: int | None = None, actor: str) -> dict[str, Any]:
+        if self.archive_only:
+            raise RuntimeError("archive task definitions are read-only")
         with _exclusive_lock(self.active_path.parent / ".task-definition.lock"):
             return self._save_locked(definition, expected_version=expected_version, actor=actor)
 
@@ -821,6 +843,34 @@ class ManagementService:
             store=store, runtime_root=override or configured,
             execution_backend=execution_backend,
         )
+
+    @classmethod
+    def archive_from_environment(
+        cls, *, execution_backend: str = "local",
+    ) -> "ManagementService":
+        """Construct a retained-history reader without bootstrapping active state."""
+        store = TaskDefinitionStore(
+            os.environ.get("CLIMATE_TASK_CONFIG", str(DEFAULT_TASK_PATH)),
+            os.environ.get("CLIMATE_TASK_VERSION_DIR", str(DEFAULT_VERSION_ROOT)),
+            archive_only=True,
+        )
+        service = cls.__new__(cls)
+        service.store = store
+        service.execution_backend = execution_backend
+
+        def reject_launch(_binding: Mapping[str, Any]) -> int:
+            raise RuntimeError("archive backends are read-only")
+
+        service._launcher = service._meeting_launcher = reject_launch
+        try:
+            service.runtime_root = store.archive_runtime_root()
+            service.archive_error = None
+        except (FileNotFoundError, ValueError) as exc:
+            service.runtime_root = Path(
+                os.environ.get("CLIMATE_ACQUISITION_RUN_DIR", str(store.active_path.parent))
+            )
+            service.archive_error = exc
+        return service
 
     def _run_dir(self, run_id: str) -> Path:
         if not _SAFE_RUN_ID.fullmatch(run_id):

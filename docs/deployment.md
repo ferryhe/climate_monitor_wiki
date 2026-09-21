@@ -219,6 +219,10 @@ available. Read-only routes below that prefix preserve `(backend, run_id)` and
 list/detail/item/meeting evidence, and existing snapshot readback. Diff is
 always within one backend. All POST/PUT/PATCH/DELETE history requests are
 rejected; history selection never changes the active execution backend.
+An inactive archive is materialized only when it has a saved task state.
+A missing task file or repository bootstrap marker is reported as unavailable;
+history reads never create a Registry, run directory, version, lock, or default
+definition to make that source appear usable.
 
 The fixed read entrypoints are:
 
@@ -260,10 +264,16 @@ explicitly selects the bounded host execution backend and does not require the
 container-only `HERMES_DASHBOARD_SOCKET`. A configured Dashboard socket without
 the managed socket remains an error, while neither socket selects local mode.
 
-Before binding the managed socket, the adapter requires the exact protocol,
+Before starting the Dashboard listener, the adapter starts every configured
+management/history UDS under a five-second bounded supervisor and makes an
+authenticated `capabilities` call through each socket. The response must have
+the exact protocol, host backend, and expected read/write role. It also requires
 one of the supported Hermes package versions, an executable Hermes CLI, and the
-complete `chat` option contract used by acquisition and report authoring. A
-missing or incompatible capability is a startup error. This repository provides
+complete `chat` option contract used by acquisition and report authoring. A bind
+failure, early server exit, timeout, authentication failure, or incompatible
+capability stops any relay already started and fails adapter startup; there is
+no retry or local fallback. A reachable read-only relay can separately report
+that its archived task content is unavailable. This repository provides
 the bounded adapter and tests; creating
 or changing the host service unit/socket relay is a separate controlled
 installation step and is not performed by application deployment.

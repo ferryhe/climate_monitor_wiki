@@ -143,11 +143,20 @@ def create_managed_backend_app(
                 result["runtime_root"] = str(service.runtime_root)
                 result["active_task_path"] = str(service.store.active_path)
                 result["read_only"] = read_only
+                archive_error = getattr(service, "archive_error", None)
+                if read_only:
+                    unavailable = isinstance(archive_error, (FileNotFoundError, ValueError))
+                    result["archive_available"] = not unavailable
+                    if unavailable:
+                        result["archive_error"] = str(archive_error)
                 return {"ok": True, "result": result}
             if read_only and operation not in _READ_OPERATIONS:
                 raise RuntimeError(
                     f"history backend is read-only; operation {operation} is unavailable"
                 )
+            archive_error = getattr(service, "archive_error", None)
+            if read_only and isinstance(archive_error, (FileNotFoundError, ValueError)):
+                raise type(archive_error)(str(archive_error))
             callback = operations.get(operation)
             if callback is None:
                 raise KeyError("unsupported managed backend operation")
@@ -198,11 +207,15 @@ class HostManagementService:
     """Synchronous facade whose every operation executes in the host adapter."""
     is_remote = True
 
-    def __init__(self, socket_path: str | Path, *, read_only: bool = False):
+    def __init__(
+        self, socket_path: str | Path, *, read_only: bool = False,
+        timeout: float = 30.0,
+    ):
         path = Path(socket_path)
         if not path.is_absolute():
             raise RuntimeError("HERMES_MANAGED_SOCKET must be an absolute path")
         self.socket_path = path
+        self.timeout = timeout
         capabilities = self._call("capabilities")
         if (
             capabilities.get("protocol") != PROTOCOL_VERSION
@@ -216,18 +229,24 @@ class HostManagementService:
         self.store = HostTaskDefinitionStore(self, capabilities["active_task_path"])
 
     def _call(self, operation: str, **payload: Any) -> Any:
+        token = _token()
         try:
             with httpx.Client(
                 transport=httpx.HTTPTransport(uds=str(self.socket_path)),
-                base_url="http://managed-host", timeout=30.0, trust_env=False,
+                base_url="http://managed-host", timeout=self.timeout, trust_env=False,
             ) as client:
                 response = client.post(
                     f"/v1/{operation}", json=payload,
-                    headers={TOKEN_HEADER: _token()},
+                    headers={TOKEN_HEADER: token},
                 )
-                response.raise_for_status()
-                envelope = response.json()
         except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
+            raise FileNotFoundError("host managed backend is unavailable") from exc
+        if response.status_code == 401:
+            raise RuntimeError("host managed backend authentication failed")
+        try:
+            response.raise_for_status()
+            envelope = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
             raise FileNotFoundError("host managed backend is unavailable") from exc
         if envelope.get("ok") is True:
             return envelope.get("result")
@@ -294,8 +313,16 @@ def history_service_from_environment(backend: str, *, active_service: Any | None
     if backend == "local":
         from climate_monitor.management import ManagementService
 
-        return ManagementService.from_environment()
+        service = ManagementService.archive_from_environment()
+        if service.archive_error is not None:
+            raise type(service.archive_error)(str(service.archive_error))
+        return service
     history_socket = os.getenv("HERMES_MANAGED_HISTORY_SOCKET", "").strip()
     if not history_socket:
         raise FileNotFoundError("host-dashboard archive is not configured")
-    return HostManagementService(history_socket, read_only=True)
+    service = HostManagementService(history_socket, read_only=True)
+    if service.capabilities.get("archive_available") is False:
+        raise FileNotFoundError(
+            str(service.capabilities.get("archive_error") or "host-dashboard archive is unavailable")
+        )
+    return service
