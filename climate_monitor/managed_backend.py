@@ -88,6 +88,7 @@ def _operations(service: Any) -> dict[str, Callable[..., Any]]:
     return {
         "config_load": service.store.load,
         "config_versions": service.store.versions,
+        "config_version": service.store.version,
         "config_diff": service.store.diff,
         "config_preview": service.store.preview,
         "config_save": service.store.save,
@@ -108,10 +109,18 @@ def _operations(service: Any) -> dict[str, Callable[..., Any]]:
     }
 
 
+_READ_OPERATIONS = {
+    "config_load", "config_versions", "config_version", "config_diff",
+    "runs_list", "run_binding", "run_progress", "run_result", "item_detail",
+    "meetings_progress", "meetings_events", "meeting_snapshot_load",
+}
+
+
 def create_managed_backend_app(
     service: Any,
     *, capability_loader: Callable[[], dict[str, Any]] = host_capabilities,
     token_loader: Callable[[], str] = _token,
+    read_only: bool = False,
 ) -> FastAPI:
     """Expose only the fixed management operations needed by this application."""
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
@@ -133,7 +142,12 @@ def create_managed_backend_app(
                 result = dict(capabilities)
                 result["runtime_root"] = str(service.runtime_root)
                 result["active_task_path"] = str(service.store.active_path)
+                result["read_only"] = read_only
                 return {"ok": True, "result": result}
+            if read_only and operation not in _READ_OPERATIONS:
+                raise RuntimeError(
+                    f"history backend is read-only; operation {operation} is unavailable"
+                )
             callback = operations.get(operation)
             if callback is None:
                 raise KeyError("unsupported managed backend operation")
@@ -158,6 +172,9 @@ class HostTaskDefinitionStore:
     def versions(self) -> list[dict[str, Any]]:
         return self._client._call("config_versions")
 
+    def version(self, version: int) -> dict[str, Any]:
+        return self._client._call("config_version", version=version)
+
     def diff(self, old_version: int, new_version: int) -> dict[str, Any]:
         return self._client._call("config_diff", old_version=old_version, new_version=new_version)
 
@@ -181,15 +198,20 @@ class HostManagementService:
     """Synchronous facade whose every operation executes in the host adapter."""
     is_remote = True
 
-    def __init__(self, socket_path: str | Path):
+    def __init__(self, socket_path: str | Path, *, read_only: bool = False):
         path = Path(socket_path)
         if not path.is_absolute():
             raise RuntimeError("HERMES_MANAGED_SOCKET must be an absolute path")
         self.socket_path = path
         capabilities = self._call("capabilities")
-        if capabilities.get("protocol") != PROTOCOL_VERSION or capabilities.get("backend") != "host-dashboard":
+        if (
+            capabilities.get("protocol") != PROTOCOL_VERSION
+            or capabilities.get("backend") != "host-dashboard"
+            or bool(capabilities.get("read_only")) != read_only
+        ):
             raise RuntimeError("host managed backend capabilities are incompatible")
         self.capabilities = capabilities
+        self.read_only = read_only
         self.runtime_root = Path(capabilities["runtime_root"])
         self.store = HostTaskDefinitionStore(self, capabilities["active_task_path"])
 
@@ -241,17 +263,39 @@ class HostManagementService:
 
 
 def management_service_from_environment() -> Any:
-    """Select the host backend only when external Dashboard mode is configured."""
+    """Select explicit host execution, or the unchanged local backend."""
     dashboard_socket = os.getenv("HERMES_DASHBOARD_SOCKET", "").strip()
     managed_socket = os.getenv("HERMES_MANAGED_SOCKET", "").strip()
-    if dashboard_socket:
-        if not managed_socket:
-            raise RuntimeError(
-                "external Hermes Dashboard requires the host managed backend"
-            )
-        return HostManagementService(managed_socket)
     if managed_socket:
-        raise RuntimeError("HERMES_MANAGED_SOCKET requires external Hermes Dashboard mode")
+        return HostManagementService(managed_socket)
+    if dashboard_socket:
+        raise RuntimeError("external Hermes Dashboard requires the host managed backend")
     from climate_monitor.management import ManagementService
 
     return ManagementService.from_environment()
+
+
+def active_backend_from_environment() -> str:
+    managed_socket = os.getenv("HERMES_MANAGED_SOCKET", "").strip()
+    if managed_socket:
+        return "host-dashboard"
+    if os.getenv("HERMES_DASHBOARD_SOCKET", "").strip():
+        raise RuntimeError("external Hermes Dashboard requires the host managed backend")
+    return "local"
+
+
+def history_service_from_environment(backend: str, *, active_service: Any | None = None) -> Any:
+    """Return one explicit read source without changing the execution backend."""
+    if backend not in {"local", "host-dashboard"}:
+        raise ValueError("history backend must be local or host-dashboard")
+    active_backend = active_backend_from_environment()
+    if backend == active_backend:
+        return active_service if active_service is not None else management_service_from_environment()
+    if backend == "local":
+        from climate_monitor.management import ManagementService
+
+        return ManagementService.from_environment()
+    history_socket = os.getenv("HERMES_MANAGED_HISTORY_SOCKET", "").strip()
+    if not history_socket:
+        raise FileNotFoundError("host-dashboard archive is not configured")
+    return HostManagementService(history_socket, read_only=True)

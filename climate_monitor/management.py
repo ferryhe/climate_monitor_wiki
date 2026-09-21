@@ -667,6 +667,13 @@ class TaskDefinitionStore:
             "new_hashes": new_view["hashes"],
         }
 
+    def version(self, version: int) -> dict[str, Any]:
+        state = self._version(version)
+        result = definition_view(state["definition"], version=version)
+        result["hashes"]["definition_sha256"] = state["definition_sha256"]
+        result.update(saved_at=state["saved_at"], saved_by=state["saved_by"])
+        return result
+
     def restore(self, version: int, *, expected_version: int, actor: str) -> dict[str, Any]:
         return self.save(
             without_task_model_overrides(self._version(version)["definition"]),

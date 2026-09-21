@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sys
 import threading
+import os
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -12,6 +15,7 @@ from climate_monitor.managed_backend import (
     PROTOCOL_VERSION,
     TOKEN_HEADER,
     create_managed_backend_app,
+    history_service_from_environment,
     management_service_from_environment,
 )
 from climate_monitor.management import ManagementService, TaskDefinitionStore, default_task_definition
@@ -40,6 +44,7 @@ class _RecordingStore:
     def __init__(self, calls): self.calls = calls
     def load(self, **kwargs): self.calls.append(("load", kwargs)); return {"definition": {}}
     def versions(self): self.calls.append(("versions", {})); return []
+    def version(self, **kwargs): self.calls.append(("version", kwargs)); return kwargs
     def diff(self, **kwargs): self.calls.append(("diff", kwargs)); return kwargs
     def preview(self, **kwargs): self.calls.append(("preview", kwargs)); return kwargs
     def save(self, **kwargs): self.calls.append(("save", kwargs)); return kwargs
@@ -110,6 +115,34 @@ def test_host_backend_rejects_requests_without_the_relay_token(tmp_path):
     assert service.calls == []
 
 
+def test_history_socket_allows_reads_and_rejects_every_mutation(tmp_path):
+    service = _RecordingService()
+    app = create_managed_backend_app(
+        service, capability_loader=lambda: _capabilities(tmp_path),
+        token_loader=lambda: "relay-token", read_only=True,
+    )
+    mutations = {
+        "config_preview": {"definition": {}},
+        "config_save": {"definition": {}, "actor": "x"},
+        "config_restore": {"version": 1, "expected_version": 1, "actor": "x"},
+        "run_start": {"trigger": "manual"},
+        "run_resume": {"run_id": "same"},
+        "run_attach_or_resume": {"run_id": "same"},
+        "meetings_start": {"run_id": "same", "retry_failed": True},
+        "meeting_snapshot_freeze": {},
+    }
+    with TestClient(app) as client:
+        capabilities = _post(client, "capabilities").json()["result"]
+        assert capabilities["read_only"] is True
+        assert _post(client, "config_version", version=1).json()["ok"] is True
+        calls_after_read = list(service.calls)
+        for operation, payload in mutations.items():
+            rejected = _post(client, operation, **payload).json()
+            assert rejected["ok"] is False
+            assert "history backend is read-only" in rejected["error"]["message"]
+    assert service.calls == calls_after_read
+
+
 def test_host_backend_routes_config_crud_run_readback_resume_and_meetings_to_one_service(tmp_path):
     service = _RecordingService()
     app = create_managed_backend_app(
@@ -119,6 +152,7 @@ def test_host_backend_routes_config_crud_run_readback_resume_and_meetings_to_one
     operations = [
         ("config_load", {}),
         ("config_versions", {}),
+        ("config_version", {"version": 1}),
         ("config_preview", {"definition": {"task_id": "weekly"}}),
         ("config_save", {"definition": {}, "expected_version": 1, "actor": "operator"}),
         ("config_restore", {"version": 1, "expected_version": 2, "actor": "operator"}),
@@ -180,8 +214,100 @@ def test_manage_routes_report_unavailable_and_incompatible_backend_without_fallb
     assert incompatible.value.detail == "host managed backend protocol is incompatible"
 
 
+def test_history_api_keeps_overlapping_backend_identities_and_is_read_only(monkeypatch):
+    import api_server
+
+    class Store:
+        def __init__(self, backend): self.backend = backend
+        def versions(self): return [{"version": 1, "definition_sha256": self.backend}]
+        def version(self, version): return {"version": version, "hashes": {"definition_sha256": self.backend}}
+        def diff(self, old_version, new_version): return {"old_version": old_version, "new_version": new_version}
+
+    class History:
+        def __init__(self, backend): self.backend, self.store = backend, Store(backend)
+        def list_runs(self): return [{"run_id": "same-run", "stage": "completed"}]
+        def binding(self, run_id): return {"run_id": run_id, "execution_backend": self.backend}
+        def progress(self, run_id): return {"run_id": run_id, "items": [{"item_id": "same-item"}]}
+        def meeting_progress(self, run_id): return {"acquisition_run_id": run_id, "runs": []}
+        def item_detail(self, run_id, item_id): return {"run_id": run_id, "item_id": item_id}
+        def meeting_events(self, **filters): return {"filters": filters, "events": []}
+        def load_meeting_snapshot(self, snapshot_id): return {"snapshot_id": snapshot_id}
+
+    services = {backend: History(backend) for backend in ("local", "host-dashboard")}
+    monkeypatch.setattr(api_server, "active_backend_from_environment", lambda: "host-dashboard")
+    monkeypatch.setattr(api_server, "_history_service", services.__getitem__)
+    principal = object()
+
+    sources = api_server.console_history_sources(principal)
+    assert sources == [
+        {"backend": "local", "active": False, "available": True},
+        {"backend": "host-dashboard", "active": True, "available": True},
+    ]
+    assert api_server.console_history_versions("local", principal)[0]["backend"] == "local"
+    assert api_server.console_history_versions("host-dashboard", principal)[0]["backend"] == "host-dashboard"
+    assert api_server.console_history_version("local", 1, principal)["version"]["hashes"]["definition_sha256"] == "local"
+    assert api_server.console_history_version("host-dashboard", 1, principal)["version"]["hashes"]["definition_sha256"] == "host-dashboard"
+    assert api_server.console_history_diff("local", 1, 1, principal)["backend"] == "local"
+    assert api_server.console_history_runs("local", principal)[0] == {
+        "run_id": "same-run", "stage": "completed", "backend": "local",
+    }
+    assert api_server.console_history_runs("host-dashboard", principal)[0]["backend"] == "host-dashboard"
+    detail = api_server.console_history_run("host-dashboard", "same-run", principal)
+    assert (detail["backend"], detail["run_id"]) == ("host-dashboard", "same-run")
+    assert api_server.console_history_item(
+        "local", "same-run", "same-item", principal,
+    )["backend"] == "local"
+    assert api_server.console_history_meetings(
+        "host-dashboard", principal,
+    )["backend"] == "host-dashboard"
+    assert api_server.console_history_snapshot(
+        "local", "same-snapshot", principal,
+    )["snapshot"]["snapshot_id"] == "same-snapshot"
+    with pytest.raises(api_server.HTTPException) as rejected:
+        api_server.reject_history_mutation("local", "runs/same-run/resume", principal)
+    assert rejected.value.status_code == 409
+
+
+def test_history_source_reports_disconnected_archive_without_hiding_local(monkeypatch):
+    import api_server
+
+    local = object()
+    monkeypatch.setattr(api_server, "active_backend_from_environment", lambda: "local")
+    monkeypatch.setattr(
+        api_server, "_history_service",
+        lambda backend: local if backend == "local" else (_ for _ in ()).throw(
+            FileNotFoundError("host-dashboard archive is unavailable")
+        ),
+    )
+    assert api_server.console_history_sources(object()) == [
+        {"backend": "local", "active": True, "available": True},
+        {
+            "backend": "host-dashboard", "active": False,
+            "available": False, "reason": "host-dashboard archive is unavailable",
+        },
+    ]
+
+
+def test_history_direct_read_rejects_binding_from_another_backend(monkeypatch):
+    import api_server
+
+    service = SimpleNamespace(
+        binding=lambda run_id: {"run_id": run_id, "execution_backend": "local"},
+        progress=lambda run_id: pytest.fail("mismatched binding must stop before read"),
+        meeting_progress=lambda run_id: pytest.fail("mismatched binding must stop before read"),
+    )
+    monkeypatch.setattr(api_server, "_history_service", lambda backend: service)
+    with pytest.raises(api_server.HTTPException) as rejected:
+        api_server.console_history_run("host-dashboard", "same-run", object())
+    assert rejected.value.status_code == 409
+    assert "frozen to local" in rejected.value.detail
+
+
 def test_external_mode_fails_closed_without_backend_and_local_mode_is_unchanged(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_DASHBOARD_SOCKET", str(tmp_path / "dashboard.sock"))
+    monkeypatch.setenv(
+        "HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"),
+    )
     monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
     with pytest.raises(RuntimeError, match="requires the host managed backend"):
         management_service_from_environment()
@@ -191,6 +317,141 @@ def test_external_mode_fails_closed_without_backend_and_local_mode_is_unchanged(
         ManagementService, "from_environment", classmethod(lambda cls: "local-service")
     )
     assert management_service_from_environment() == "local-service"
+
+
+def test_managed_socket_alone_selects_host_backend_for_host_cli(monkeypatch, tmp_path):
+    import climate_monitor.managed_backend as backend
+
+    selected = object()
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    monkeypatch.setattr(backend, "HostManagementService", lambda path: selected)
+    monkeypatch.setattr(
+        ManagementService, "from_environment",
+        classmethod(lambda cls: pytest.fail("managed socket must not fall back locally")),
+    )
+    assert management_service_from_environment() is selected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a real Unix socket and fcntl")
+def test_managed_socket_only_factory_and_scheduler_preflight_use_host_binding(
+    monkeypatch, tmp_path,
+):
+    import uvicorn
+    from climate_registry.persistent import initialize_registry
+    from scripts import hermes_job
+
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    definition = default_task_definition()
+    definition["parameters"].update(
+        report_date="2026-09-07", source_keys=["wmo"], timezone="UTC",
+    )
+    definition["runtime"].update(
+        registry_database=str(database), run_root=str(run_root),
+    )
+    store = TaskDefinitionStore(tmp_path / "task.json", tmp_path / "versions")
+    store.save(definition, actor="test")
+    launched = []
+    host_service = ManagementService(
+        store=store, runtime_root=run_root, execution_backend="host-dashboard",
+        launcher=lambda binding: launched.append(binding) or 101,
+    )
+    app = create_managed_backend_app(
+        host_service, capability_loader=lambda: _capabilities(tmp_path),
+        token_loader=lambda: "relay-token",
+    )
+    socket_path = tmp_path / "managed.sock"
+    server = uvicorn.Server(uvicorn.Config(
+        app, uds=str(socket_path), log_level="warning", access_log=False,
+    ))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not socket_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert socket_path.exists()
+
+    for name in ("sources", "wiki", "state", "ledger"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(socket_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "relay-token")
+    monkeypatch.setenv("CLIMATE_MANAGED_SOURCE_DIR", str(tmp_path / "sources"))
+    monkeypatch.setenv("CLIMATE_MANAGED_WIKI_DIR", str(tmp_path / "wiki"))
+    monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("CLIMATE_SOURCE_DIR", str(tmp_path / "sources"))
+    monkeypatch.setenv("CLIMATE_RUN_LEDGER_DIR", str(tmp_path / "ledger"))
+    try:
+        selected = hermes_job.managed_monitor_preflight("2026-09-07")
+        started = selected.start(
+            trigger="scheduled", now=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        )
+        binding = selected.binding(started["run_id"])
+        assert binding["execution_backend"] == "host-dashboard"
+        assert launched[0]["execution_backend"] == "host-dashboard"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_history_socket_never_selects_host_execution(monkeypatch, tmp_path):
+    import climate_monitor.managed_backend as backend
+
+    local = object()
+    host_history = object()
+    monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    monkeypatch.setenv(
+        "HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"),
+    )
+    monkeypatch.setattr(
+        ManagementService, "from_environment", classmethod(lambda cls: local),
+    )
+    monkeypatch.setattr(
+        backend, "HostManagementService",
+        lambda path, read_only=False: host_history if read_only else pytest.fail(
+            "history connection must not select host execution"
+        ),
+    )
+    assert management_service_from_environment() is local
+    assert history_service_from_environment("host-dashboard") is host_history
+
+
+def test_host_active_reads_local_archive_without_using_host_paths(monkeypatch, tmp_path):
+    import climate_monitor.managed_backend as backend
+
+    active_host = object()
+    local_archive = object()
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    monkeypatch.setattr(backend, "HostManagementService", lambda path: active_host)
+    monkeypatch.setattr(
+        ManagementService, "from_environment", classmethod(lambda cls: local_archive),
+    )
+    assert management_service_from_environment() is active_host
+    assert history_service_from_environment("local") is local_archive
+
+
+def test_history_relay_disconnect_does_not_change_active_local_backend(monkeypatch, tmp_path):
+    local = object()
+    monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    monkeypatch.setenv(
+        "HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "missing-history.sock"),
+    )
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(tmp_path / "missing-token"),
+    )
+    monkeypatch.setattr(
+        ManagementService, "from_environment", classmethod(lambda cls: local),
+    )
+    assert management_service_from_environment() is local
+    with pytest.raises((FileNotFoundError, RuntimeError), match="unavailable|token file"):
+        history_service_from_environment("host-dashboard")
 
 
 def test_incompatible_host_protocol_is_rejected_before_accepting_operations():
@@ -219,12 +480,22 @@ def test_external_mode_never_falls_back_when_host_backend_is_unavailable(monkeyp
 def test_host_compose_mounts_only_bounded_relay_and_requires_managed_socket():
     root = Path(__file__).resolve().parents[1]
     override = (root / "docker-compose.host-hermes.yml").read_text(encoding="utf-8")
+    history_override = (root / "docker-compose.host-hermes-history.yml").read_text(
+        encoding="utf-8"
+    )
     entrypoint = (root / "scripts" / "docker_entrypoint.sh").read_text(encoding="utf-8")
+    management_page = (root / "management_ui" / "index.html").read_text(
+        encoding="utf-8"
+    )
     assert "HERMES_MANAGED_SOCKET: /run/host-hermes/managed.sock" in override
     assert ":/run/host-hermes:ro" in override
     assert ".hermes" not in override
+    assert "HERMES_MANAGED_HISTORY_SOCKET: /run/host-hermes/history.sock" in history_override
+    assert "HERMES_MANAGED_SOCKET:" not in history_override
+    assert ".hermes" not in history_override
     assert "host managed backend socket is required in external mode" in entrypoint
     assert 'if [ -z "${HERMES_DASHBOARD_SOCKET:-}" ]; then' in entrypoint
+    assert 'href="/api/manage/history"' in management_page
 
 
 def test_host_dashboard_adapter_starts_managed_service_after_loading_host_environment(
@@ -255,7 +526,7 @@ def test_host_dashboard_adapter_starts_managed_service_after_loading_host_enviro
     monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
     monkeypatch.setattr(
         managed_backend, "create_managed_backend_app",
-        lambda selected: events.append(("app", selected)) or object(),
+        lambda selected, read_only=False: events.append(("app", selected, read_only)) or object(),
     )
     monkeypatch.setattr(
         uvicorn, "run",
@@ -264,17 +535,28 @@ def test_host_dashboard_adapter_starts_managed_service_after_loading_host_enviro
     monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
     monkeypatch.setenv("HERMES_HOME", "/home/host-user/.hermes")
     monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
+    monkeypatch.setenv(
+        "HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"),
+    )
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "relay-token")
     monkeypatch.setenv("HERMES_DASHBOARD_EXPECTED_VERSION", "0.20.5")
     monkeypatch.setenv("HERMES_DASHBOARD_PORT", "19119")
 
     dashboard_server.main()
     assert started.wait(2)
+    deadline = time.monotonic() + 2
+    while sum(event[0] == "managed" for event in events) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert events[0] == ("dotenv", {"hermes_home": "/home/host-user/.hermes"})
     assert ("management", {"execution_backend": "host-dashboard"}) in events
-    managed = next(value for name, value in events if name == "managed")
-    assert managed["uds"] == str(tmp_path / "managed.sock")
-    assert next(value for name, value in events if name == "app") is service
+    managed = [event[1] for event in events if event[0] == "managed"]
+    assert {value["uds"] for value in managed} == {
+        str(tmp_path / "managed.sock"), str(tmp_path / "history.sock"),
+    }
+    apps = [event for event in events if event[0] == "app"]
+    assert {(event[1] is service, event[2]) for event in apps} == {
+        (True, False), (True, True),
+    }
 
 
 def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, monkeypatch):
@@ -304,6 +586,31 @@ def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, m
     result_path.write_text('{"exit_code": 75, "retryable": true}', encoding="utf-8")
     service.resume(result["run_id"])
     assert launched[-1]["execution_backend"] == "host-dashboard"
+
+
+def test_version_read_preserves_stored_identity(tmp_path):
+    from climate_registry.persistent import initialize_registry
+
+    run_root = tmp_path / "runs"
+    run_root.mkdir()
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    definition = default_task_definition()
+    definition["parameters"].update(
+        report_date="2026-09-07", source_keys=["wmo"], timezone="UTC",
+    )
+    definition["runtime"].update(
+        registry_database=str(database), run_root=str(run_root),
+    )
+    store = TaskDefinitionStore(tmp_path / "task.json", tmp_path / "versions")
+    saved = store.save(definition, actor="one")
+    original_hash = saved["hashes"]["definition_sha256"]
+    changed = saved["definition"]
+    changed["parameters"]["report_date"] = "2026-09-14"
+    store.save(changed, expected_version=1, actor="two")
+    historical = store.version(1)
+    assert historical["version"] == 1
+    assert historical["hashes"]["definition_sha256"] == original_hash
 
 
 def test_legacy_binding_without_backend_remains_readable(tmp_path):

@@ -97,26 +97,35 @@ def main() -> None:
 
     install_oauth_callback_adapter(web_server)
     managed_socket = os.getenv("HERMES_MANAGED_SOCKET", "").strip()
-    if managed_socket:
-        socket_path = Path(managed_socket)
-        if not socket_path.is_absolute():
-            raise ValueError("HERMES_MANAGED_SOCKET must be an absolute path")
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
-        socket_path.unlink(missing_ok=True)
+    history_socket = os.getenv("HERMES_MANAGED_HISTORY_SOCKET", "").strip()
+    if managed_socket or history_socket:
+        if managed_socket and managed_socket == history_socket:
+            raise ValueError("managed execution and history sockets must be different")
         from climate_monitor.managed_backend import create_managed_backend_app
         from climate_monitor.management import ManagementService
         import uvicorn
 
         service = ManagementService.from_environment(execution_backend="host-dashboard")
-        managed_app = create_managed_backend_app(service)
-        threading.Thread(
-            target=uvicorn.run,
-            kwargs={
-                "app": managed_app, "uds": str(socket_path),
-                "log_level": "warning", "access_log": False,
-            },
-            name="climate-managed-host", daemon=True,
-        ).start()
+        for socket_value, read_only, name in (
+            (managed_socket, False, "climate-managed-host"),
+            (history_socket, True, "climate-managed-history"),
+        ):
+            if not socket_value:
+                continue
+            socket_path = Path(socket_value)
+            if not socket_path.is_absolute():
+                raise ValueError(f"{name} socket must be an absolute path")
+            socket_path.parent.mkdir(parents=True, exist_ok=True)
+            socket_path.unlink(missing_ok=True)
+            managed_app = create_managed_backend_app(service, read_only=read_only)
+            threading.Thread(
+                target=uvicorn.run,
+                kwargs={
+                    "app": managed_app, "uds": str(socket_path),
+                    "log_level": "warning", "access_log": False,
+                },
+                name=name, daemon=True,
+            ).start()
     try:
         port = int(os.getenv("HERMES_DASHBOARD_PORT", "9119"))
     except ValueError as exc:
