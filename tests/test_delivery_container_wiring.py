@@ -62,7 +62,10 @@ def test_base_and_delivery_override_render_independently(tmp_path):
     assert declared["read_only"] is True
     assert declared["bind"] == {"create_host_path": False}
 
-    environment = os.environ | {"OPENAI_API_KEY": "", "RELOAD_TOKEN": ""}
+    environment = os.environ | {
+        "OPENAI_API_KEY": "", "RELOAD_TOKEN": "",
+        "SITE_HOST": "127.0.0.1", "PUBLIC_HOST": "public.example.test",
+    }
     base = _docker_config("docker-compose.yml", environment=environment)
     assert all(item.get("target") != "/delivery-output" for item in base["services"]["wiki"]["volumes"])
 

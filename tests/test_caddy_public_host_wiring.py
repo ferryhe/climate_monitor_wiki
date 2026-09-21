@@ -167,3 +167,9 @@ def test_empty_var_fails_closed_at_the_raw_caddyfile_level(guarded_var):
         "guard above is still the real defense and must stay in place "
         "regardless"
     )
+
+
+@pytest.mark.parametrize("guarded_var", GUARDED_VARS)
+def test_required_host_is_documented_in_env_example(guarded_var):
+    lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert f"{guarded_var}=" in lines

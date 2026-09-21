@@ -78,10 +78,10 @@ an existing-production update, where configuration and tokens must be preserved.
 ```bash
 cd /home/ubuntu/climate_monitor_wiki
 
-# SITE_HOST, PUBLIC_HOST, and CLIMATE_PUBLIC_ORIGIN have no defaults in
-# docker-compose.yml/Caddyfile — compose refuses to start without them, so
-# all three must be set here at install time. Replace the example values
-# below with this host's real private IP and public DNS hostname.
+# SITE_HOST and PUBLIC_HOST have no defaults — compose refuses to start
+# without them. CLIMATE_PUBLIC_ORIGIN may be empty while the Dashboard is
+# disabled, but set it here so the public-host pair starts in sync. Replace
+# the example values with this host's real private IP and public DNS hostname.
 printf 'SITE_HOST=%s\nPUBLIC_HOST=%s\nCLIMATE_PUBLIC_ORIGIN=https://%s\nRELOAD_TOKEN=%s\n' \
   "172.31.10.77" "example.org" "example.org" "$(openssl rand -hex 24)" > .env
 chmod 600 .env
@@ -135,7 +135,11 @@ TLS connect error: error:0A000438:SSL routines::tlsv1 alert internal error
 The `Caddyfile` sets `default_sni {$SITE_HOST}` to fix this. `SITE_HOST` has
 no default — compose refuses to start without it, so it must be set in
 `.env` at install time (see First run above). If you change the host IP,
-update `SITE_HOST` in `.env` and `docker compose up -d`.
+update `SITE_HOST` in `.env`, reuse the exact complete Compose override set
+described in the public-host procedure below, and run its `safe_compose`
+command with `up -d --no-deps --force-recreate caddy`. Do not run a bare
+`docker compose up -d`, which can recreate `wiki` without its deployed
+Registry, delivery, and status overrides.
 
 ## Changing the public hostname
 
@@ -150,14 +154,25 @@ work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
 1. Point DNS for the new hostname at this host.
 2. Update `PUBLIC_HOST` and `CLIMATE_PUBLIC_ORIGIN` together in `.env` — they
    must stay in sync (same host, different shape).
-3. Recreate **both** services so each picks up its own variable:
+3. Recreate **both** services using the exact complete Compose override set
+   currently deployed. Omitting an existing override removes its mounts and
+   environment. For the full deployment:
    ```bash
-   docker compose up -d wiki caddy
+   .venv/bin/python -m scripts.safe_compose \
+     -f docker-compose.yml \
+     -f docker-compose.registry.yml \
+     -f docker-compose.delivery.yml \
+     -f docker-compose.update-status.yml \
+     -f docker-compose.job-status.yml \
+     up -d --force-recreate wiki caddy
    ```
+   Include `-f docker-compose.host-hermes.yml` before `up` only when that
+   deployment uses host Hermes. Omit only overrides not used by that deployment;
+   preserve every other deployed override as well.
    `docker restart` is not sufficient here: a restart re-executes the
    existing container with its already-baked-in environment, it does not
-   re-read `.env` — only `docker compose up -d <service>` (which recreates
-   the container) picks up a changed variable's *value*. Do not substitute
+   re-read `.env`. Recreating both services with the complete configuration
+   picks up each changed variable's *value*. Do not substitute
    a restart for either service in this step.
 4. Verify all of the following before considering the switch complete:
    ```bash
@@ -179,7 +194,7 @@ work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
 A plain `caddy reload` is not reliable here if `.env` or the `Caddyfile` was
 just rewritten by an editing tool: some tools replace the file via a new
 inode, and Docker's single-file bind mount stays pinned to the old
-(now-unlinked) inode. `docker compose up -d <service>` (step 3) forces
+(now-unlinked) inode. The recreation command in step 3 forces
 Docker to re-resolve the mount as part of recreating the container.
 
 ## Operations

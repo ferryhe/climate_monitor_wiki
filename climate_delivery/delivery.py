@@ -279,19 +279,9 @@ def _prepare_messages(
         message["From"] = formataddr((config.smtp.from_name, config.smtp.from_address))
         message["To"] = recipient.address
         message["Date"] = format_datetime(now, usegmt=True)
-        # This domain suffix is a stable email-protocol identity namespace
-        # (RFC 5322 Message-ID), not a public website URL. It is part of the
-        # deterministic Message-ID contract: the same content must produce
-        # the same Message-ID across retries and across code versions, and
-        # delivery state's message_fingerprint binds to it implicitly.
-        # Do NOT update this to match the current public site domain --
-        # doing so silently changes the Message-ID for any report whose
-        # delivery state predates the change, breaking the "same content ->
-        # same Message-ID" guarantee those old records rely on for
-        # idempotent retry/dedup, even though the aiinforsearch.com site
-        # itself has been retired. Changing this deliberately requires a
-        # versioned migration (see PR #145 review discussion), not a
-        # plain string replacement.
+        # Stable RFC 5322 identity namespace, not a website URL. Delivery
+        # state does not store this suffix, so changing it requires an
+        # explicit versioned migration rather than a public-host rename.
         message["Message-ID"] = (
             f"<climate-delivery.{summary['report']['sha256']}.{recipient.id}."
             f"{fingerprints[recipient.id][:24]}@climate.aiinforsearch.com>"

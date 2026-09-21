@@ -79,14 +79,15 @@ def main() -> int:
     # location that happens to match the sibling convention. Checked here
     # (after date validation) rather than at import time so --date errors
     # and --help still work without the env var set.
-    try:
-        artifacts = Path(os.environ["CLIMATE_ARTIFACT_ROOT"])
-    except KeyError:
+    artifact_root = os.environ.get("CLIMATE_ARTIFACT_ROOT", "")
+    if not artifact_root.strip():
         print(
             "ERROR: CLIMATE_ARTIFACT_ROOT is required (no default) — point "
             "it explicitly at the production delivery-artifacts directory path"
         )
         return 1
+
+    artifacts = Path(artifact_root)
 
     md_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not md_path.exists():
