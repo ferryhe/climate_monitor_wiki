@@ -69,7 +69,7 @@
 }
 
 # Public site — served over automatic (public-CA) HTTPS at the real hostname.
-https://aiclimate.aiforactuaries.org {
+https://{$PUBLIC_HOST:aiclimate.aiforactuaries.org} {
 	import climate-wiki-site
 }
 
@@ -81,7 +81,7 @@ https://{$SITE_HOST:172.31.10.77} {
 }
 
 # Plain HTTP redirects to HTTPS so http://<host> still lands on the app.
-http://aiclimate.aiforactuaries.org {
+http://{$PUBLIC_HOST:aiclimate.aiforactuaries.org} {
 	redir https://{host}{uri} permanent
 }
 

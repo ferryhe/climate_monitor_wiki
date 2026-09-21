@@ -62,6 +62,7 @@ services:
       - wiki
     environment:
       SITE_HOST: ${SITE_HOST:-172.31.10.77}
+      PUBLIC_HOST: ${PUBLIC_HOST:-aiclimate.aiforactuaries.org}
     ports:
       - "80:80"
       - "443:443"

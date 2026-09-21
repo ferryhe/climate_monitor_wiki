@@ -6,10 +6,11 @@ private IP remains available for internal health checks with Caddy's internal
 CA.
 
 The addresses below are recorded installation examples. For an existing server,
-read the deployed `SITE_HOST` and record the current commit and service state;
-do not infer live configuration from this document. Current pipeline cutover
-gates and wrapper ownership are in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md)
-and [PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md).
+read the deployed `PUBLIC_HOST` and `SITE_HOST` from `.env` and record the
+current commit and service state; do not infer live configuration from this
+document. Current pipeline cutover gates and wrapper ownership are in
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md) and
+[PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md).
 
 ## Stack
 
@@ -129,6 +130,23 @@ TLS connect error: error:0A000438:SSL routines::tlsv1 alert internal error
 
 The `Caddyfile` sets `default_sni {$SITE_HOST}` to fix this. If you change the
 host IP, update `SITE_HOST` in `.env` and `docker compose up -d`.
+
+## Changing the public hostname
+
+The public site block reads `{$PUBLIC_HOST}` from `.env` instead of a
+hardcoded domain, so switching hostnames never requires a code change or PR:
+
+1. Point DNS for the new hostname at this host.
+2. Update `PUBLIC_HOST` (bare hostname, no scheme) and `CLIMATE_PUBLIC_ORIGIN`
+   (full `https://` origin) together in `.env` — they must stay in sync.
+3. `docker compose up -d caddy` (or `docker restart climate-wiki-caddy`) to
+   pick up the change.
+
+A plain `caddy reload` is not reliable here if `.env` or the `Caddyfile` was
+just rewritten by an editing tool: some tools replace the file via a new
+inode, and Docker's single-file bind mount stays pinned to the old
+(now-unlinked) inode. A full container restart forces Docker to re-resolve
+the mount.
 
 ## Operations
 
