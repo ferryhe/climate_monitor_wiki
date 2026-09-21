@@ -45,7 +45,10 @@ def host_capabilities() -> dict[str, Any]:
         raise RuntimeError(f"host managed backend Hermes {version} is unsupported")
     configured = os.getenv("HERMES_EXECUTABLE") or "hermes"
     executable = shutil.which(configured) if not Path(configured).is_absolute() else configured
-    if not executable or not Path(executable).is_file():
+    if not executable:
+        raise RuntimeError("host managed backend Hermes executable is unavailable")
+    executable = str(Path(executable).resolve())
+    if not Path(executable).is_file():
         raise RuntimeError("host managed backend Hermes executable is unavailable")
     try:
         help_result = subprocess.run(
@@ -62,6 +65,7 @@ def host_capabilities() -> dict[str, Any]:
     if help_result.returncode or not all(flag in help_text for flag in required_flags):
         raise RuntimeError("host managed backend Hermes chat contract is incompatible")
     home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).resolve()
+    os.environ["HERMES_EXECUTABLE"] = executable
     return {
         "protocol": PROTOCOL_VERSION,
         "backend": "host-dashboard",
@@ -73,7 +77,7 @@ def host_capabilities() -> dict[str, Any]:
             "python": sys.executable,
             "hermes_home": str(home),
             "hermes_version": version,
-            "hermes_executable": str(Path(executable).resolve()),
+            "hermes_executable": executable,
         },
     }
 

@@ -23,7 +23,12 @@ from climate_monitor.managed_backend import (
     history_service_from_environment,
     management_service_from_environment,
 )
-from climate_monitor.management import ManagementService, TaskDefinitionStore, default_task_definition
+from climate_monitor.management import (
+    ManagementService,
+    TaskDefinitionStore,
+    build_task_binding,
+    default_task_definition,
+)
 
 
 def _capabilities(tmp_path: Path) -> dict:
@@ -108,24 +113,33 @@ def _materialized_service(tmp_path: Path) -> ManagementService:
     )
 
 
-@pytest.mark.parametrize("selection", ["configured", "unset", "empty"])
+@pytest.mark.parametrize("selection", ["configured", "relative", "unset", "empty"])
 def test_host_capabilities_selects_configured_or_path_hermes(
     tmp_path, monkeypatch, selection,
 ):
     import climate_monitor.managed_backend as managed_backend
 
-    executable = tmp_path / "hermes"
+    executable = tmp_path / "host-bin" / "hermes"
+    executable.parent.mkdir()
     executable.write_text("test executable", encoding="utf-8")
+    relative = str(executable.relative_to(tmp_path))
+    monkeypatch.chdir(tmp_path)
     if selection == "configured":
         monkeypatch.setenv("HERMES_EXECUTABLE", str(executable.resolve()))
+    elif selection == "relative":
+        monkeypatch.setenv("HERMES_EXECUTABLE", relative)
     elif selection == "empty":
         monkeypatch.setenv("HERMES_EXECUTABLE", "")
     else:
         monkeypatch.delenv("HERMES_EXECUTABLE", raising=False)
     lookups = []
+
+    def lookup(value):
+        lookups.append(value)
+        return relative if selection == "relative" else str(executable.resolve())
+
     monkeypatch.setattr(
-        managed_backend.shutil, "which",
-        lambda value: lookups.append(value) or str(executable.resolve()),
+        managed_backend.shutil, "which", lookup,
     )
     monkeypatch.setattr(
         managed_backend.importlib.metadata, "version", lambda _name: "0.20.5",
@@ -146,9 +160,131 @@ def test_host_capabilities_selects_configured_or_path_hermes(
     monkeypatch.setattr(managed_backend.subprocess, "run", probe)
     capabilities = managed_backend.host_capabilities()
 
-    assert lookups == ([] if selection == "configured" else ["hermes"])
+    assert lookups == {
+        "configured": [], "relative": [relative], "unset": ["hermes"],
+        "empty": ["hermes"],
+    }[selection]
     assert probes[0][0] == [str(executable.resolve()), "chat", "--help"]
     assert capabilities["host"]["hermes_executable"] == str(executable.resolve())
+    assert os.environ["HERMES_EXECUTABLE"] == str(executable.resolve())
+
+
+def test_host_capability_probe_failure_does_not_freeze_executable(tmp_path, monkeypatch):
+    import climate_monitor.managed_backend as managed_backend
+
+    executable = tmp_path / "host-bin" / "hermes"
+    executable.parent.mkdir()
+    executable.write_text("test executable", encoding="utf-8")
+    relative = str(executable.relative_to(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_EXECUTABLE", relative)
+    monkeypatch.setattr(managed_backend.shutil, "which", lambda _value: relative)
+    monkeypatch.setattr(
+        managed_backend.importlib.metadata, "version", lambda _name: "0.20.5",
+    )
+    monkeypatch.setattr(
+        managed_backend.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="chat contract is incompatible"):
+        managed_backend.host_capabilities()
+    assert os.environ["HERMES_EXECUTABLE"] == relative
+
+
+def test_host_readiness_freezes_relative_executable_for_acquisition_child(
+    tmp_path, monkeypatch,
+):
+    import climate_monitor.managed_backend as managed_backend
+    from climate_registry.persistent import initialize_registry
+    from scripts import run_agent_acquisition as runner
+
+    executable = tmp_path / "host-bin" / "hermes"
+    executable.parent.mkdir()
+    executable.write_text("test executable", encoding="utf-8")
+    relative = str(executable.relative_to(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_EXECUTABLE", relative)
+    monkeypatch.setattr(managed_backend.shutil, "which", lambda _value: relative)
+    monkeypatch.setattr(
+        managed_backend.importlib.metadata, "version", lambda _name: "0.20.5",
+    )
+    monkeypatch.setattr(
+        managed_backend.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "--ignore-rules --max-turns --query-file --quiet "
+                "--reasoning --resume --source --toolsets"
+            ),
+            stderr="",
+        ),
+    )
+    managed_backend.host_capabilities()
+
+    monkeypatch.setenv("CLIMATE_REPOSITORY_COMMIT_SHA", "a" * 40)
+    database = tmp_path / "registry.sqlite3"
+    run_root = tmp_path / "runs"
+    initialize_registry(database)
+    run_root.mkdir()
+    definition = default_task_definition()
+    definition["parameters"].update(
+        report_date="2026-09-07", source_keys=["wmo"], timezone="UTC",
+    )
+    definition["runtime"].update(
+        registry_database=str(database), run_root=str(run_root),
+    )
+    binding = build_task_binding(
+        definition, task_version=1, run_id="relative-executable", attempt=1,
+    )
+    binding_path = Path(binding["checkpoint_dir"]).parent / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    prompt = binding_path.parent / "prompt.md"
+    prompt.write_text("test", encoding="utf-8")
+    run_home = binding_path.parent / "hermes-runtime"
+    run_home.mkdir()
+    launched = {}
+
+    def install(command, supplied_path, supplied_binding, environment):
+        assert supplied_path == binding_path
+        assert supplied_binding == binding
+        launched["hook_command"] = command
+        return environment, run_home
+
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait():
+            return 0
+
+    monkeypatch.setattr(runner, "install_hooks", install)
+    monkeypatch.setattr(
+        runner, "RequestBudget",
+        lambda *args, **kwargs: SimpleNamespace(remaining_seconds=lambda: 60),
+    )
+    monkeypatch.setattr(runner, "bind_effective_identity", lambda *args: None)
+    monkeypatch.setattr(
+        runner.subprocess, "Popen",
+        lambda command, **kwargs: launched.update(command=command, **kwargs) or Process(),
+    )
+    command = runner._hermes_command(
+        os.environ["HERMES_EXECUTABLE"], binding, prompt,
+    )
+    assert runner._invoke_hermes(
+        command, binding_path.parent / "response.txt", binding_path, binding,
+        runner.time.monotonic() + 60,
+    ) == 0
+    frozen = str(executable.resolve())
+    assert launched["command"][0] == frozen
+    assert launched["hook_command"][0] == frozen
+    assert launched["cwd"] == run_home
+    assert launched["env"]["HERMES_EXECUTABLE"] == frozen
 
 
 def test_bounded_host_backend_exposes_only_fixed_operations_and_host_identity(
