@@ -281,7 +281,7 @@ def _prepare_messages(
         message["Date"] = format_datetime(now, usegmt=True)
         message["Message-ID"] = (
             f"<climate-delivery.{summary['report']['sha256']}.{recipient.id}."
-            f"{fingerprints[recipient.id][:24]}@climate.aiinforsearch.com>"
+            f"{fingerprints[recipient.id][:24]}@aiclimate.aiforactuaries.org>"
         )
         message.set_content(plain_body)
         message.add_alternative(html_body, subtype="html")

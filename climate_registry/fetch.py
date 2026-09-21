@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol, Sequence
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-USER_AGENT = "ClimateMonitorRegistry/1.0 (+https://climate.aiinforsearch.com/)"
+USER_AGENT = "ClimateMonitorRegistry/1.0 (+https://aiclimate.aiforactuaries.org/)"
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_MAX_REDIRECTS = 3

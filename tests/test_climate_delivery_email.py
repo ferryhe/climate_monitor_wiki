@@ -171,7 +171,7 @@ def test_mime_has_utc_date_and_payload_bound_stable_unique_address_free_message_
         assert parsed_date == now
         assert parsed_date.tzinfo == timezone.utc
         assert re.fullmatch(
-            rf"<climate-delivery\.{'a' * 64}\.{recipient.id}\.[0-9a-f]{{24}}@climate\.aiinforsearch\.com>",
+            rf"<climate-delivery\.{'a' * 64}\.{recipient.id}\.[0-9a-f]{{24}}@aiclimate\.aiforactuaries\.org>",
             str(message["Message-ID"]),
         )
         assert recipient.address not in str(message["Message-ID"])
