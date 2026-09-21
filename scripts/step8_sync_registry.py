@@ -34,18 +34,30 @@ if not PYTHON.exists():
     # Fall back to the interpreter running this script (e.g. Render, where the
     # /home/ubuntu venv path does not exist).
     PYTHON = Path(sys.executable)
-DB = Path(
-    os.environ.get(
-        "CLIMATE_REGISTRY_DB",
-        str(HOME.parent / "climate_monitor_data" / "registry" / "article-registry.sqlite3"),
+# Registry DB/backup dir are writable production targets. Unlike the
+# read-only source paths above, these must never be guessed from a sibling
+# directory: running this script from a temporary clone or worktree with
+# CLIMATE_REGISTRY_DB unset must not silently initialize a brand-new, empty
+# Registry at some /tmp/... location that happens to match the sibling
+# convention — that would make a rollback command appear to succeed while
+# actually writing into a disconnected state tree. Require the env var
+# explicitly; an operator pointing it at a path that does not exist yet
+# (first-deploy bootstrap) is a legitimate, explicit choice and is not
+# blocked here.
+try:
+    DB = Path(os.environ["CLIMATE_REGISTRY_DB"])
+except KeyError:
+    sys.exit(
+        "CLIMATE_REGISTRY_DB is required (no default) — point it explicitly "
+        "at the production Registry database path"
     )
-)
-BACKUP_DIR = Path(
-    os.environ.get(
-        "CLIMATE_REGISTRY_BACKUP_DIR",
-        str(HOME.parent / "climate_monitor_data" / "registry" / "backups"),
+try:
+    BACKUP_DIR = Path(os.environ["CLIMATE_REGISTRY_BACKUP_DIR"])
+except KeyError:
+    sys.exit(
+        "CLIMATE_REGISTRY_BACKUP_DIR is required (no default) — point it "
+        "explicitly at the production backup directory path"
     )
-)
 
 
 def run_cli(args: list[str]) -> dict:

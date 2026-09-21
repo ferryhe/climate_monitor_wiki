@@ -9,7 +9,7 @@
 # a site block and aborts the handshake with "tlsv1 alert internal error".
 {
 	auto_https disable_redirects
-	default_sni {$SITE_HOST:172.31.10.77}
+	default_sni {$SITE_HOST}
 
 	# Runtime/error logs go to container stdout/stderr and are retained by the
 	# Docker logging driver. Preserve request paths for outage diagnosis, but
@@ -75,7 +75,7 @@ https://{$PUBLIC_HOST} {
 
 # Internal site — private VPC IP, used by the host's own health-check loop.
 # Kept on Caddy's internal CA; do not point external users here.
-https://{$SITE_HOST:172.31.10.77} {
+https://{$SITE_HOST} {
 	tls internal
 	import climate-wiki-site
 }
@@ -85,6 +85,6 @@ http://{$PUBLIC_HOST} {
 	redir https://{host}{uri} permanent
 }
 
-http://{$SITE_HOST:172.31.10.77} {
+http://{$SITE_HOST} {
 	redir https://{host}{uri} permanent
 }

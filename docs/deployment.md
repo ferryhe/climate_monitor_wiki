@@ -78,8 +78,12 @@ an existing-production update, where configuration and tokens must be preserved.
 ```bash
 cd /home/ubuntu/climate_monitor_wiki
 
-# Generate the reload token + pin the host IP (file is gitignored, chmod 600).
-printf 'SITE_HOST=172.31.10.77\nRELOAD_TOKEN=%s\n' "$(openssl rand -hex 24)" > .env
+# SITE_HOST, PUBLIC_HOST, and CLIMATE_PUBLIC_ORIGIN have no defaults in
+# docker-compose.yml/Caddyfile — compose refuses to start without them, so
+# all three must be set here at install time. Replace the example values
+# below with this host's real private IP and public DNS hostname.
+printf 'SITE_HOST=%s\nPUBLIC_HOST=%s\nCLIMATE_PUBLIC_ORIGIN=https://%s\nRELOAD_TOKEN=%s\n' \
+  "172.31.10.77" "example.org" "example.org" "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 
 CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
@@ -128,25 +132,55 @@ options block, Caddy cannot match a site block and aborts the handshake with:
 TLS connect error: error:0A000438:SSL routines::tlsv1 alert internal error
 ```
 
-The `Caddyfile` sets `default_sni {$SITE_HOST}` to fix this. If you change the
-host IP, update `SITE_HOST` in `.env` and `docker compose up -d`.
+The `Caddyfile` sets `default_sni {$SITE_HOST}` to fix this. `SITE_HOST` has
+no default — compose refuses to start without it, so it must be set in
+`.env` at install time (see First run above). If you change the host IP,
+update `SITE_HOST` in `.env` and `docker compose up -d`.
 
 ## Changing the public hostname
 
 The public site block reads `{$PUBLIC_HOST}` from `.env` instead of a
-hardcoded domain, so switching hostnames never requires a code change or PR:
+hardcoded domain, so switching hostnames never requires a code change or PR.
+`PUBLIC_HOST` (bare hostname) belongs to the `caddy` service; `CLIMATE_PUBLIC_ORIGIN`
+(full `https://` origin) belongs to the `wiki` service (it builds Hermes
+dashboard OAuth callback and WebSocket-Origin checks) — **both must be
+updated and both containers must be recreated**, or the hostname will
+work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
 
 1. Point DNS for the new hostname at this host.
-2. Update `PUBLIC_HOST` (bare hostname, no scheme) and `CLIMATE_PUBLIC_ORIGIN`
-   (full `https://` origin) together in `.env` — they must stay in sync.
-3. `docker compose up -d caddy` (or `docker restart climate-wiki-caddy`) to
-   pick up the change.
+2. Update `PUBLIC_HOST` and `CLIMATE_PUBLIC_ORIGIN` together in `.env` — they
+   must stay in sync (same host, different shape).
+3. Recreate **both** services so each picks up its own variable:
+   ```bash
+   docker compose up -d wiki caddy
+   ```
+   `docker restart` is not sufficient here: a restart re-executes the
+   existing container with its already-baked-in environment, it does not
+   re-read `.env` — only `docker compose up -d <service>` (which recreates
+   the container) picks up a changed variable's *value*. Do not substitute
+   a restart for either service in this step.
+4. Verify all of the following before considering the switch complete:
+   ```bash
+   # Caddy is serving the new hostname
+   curl -s -o /dev/null -w '%{http_code}\n' https://<new-host>/api/config   # 200
+
+   # wiki picked up the new CLIMATE_PUBLIC_ORIGIN (not the old one)
+   docker exec climate-wiki-app printenv CLIMATE_PUBLIC_ORIGIN
+
+   # the old hostname no longer serves this deployment
+   curl -sk -o /dev/null -w '%{http_code}\n' https://<old-host>/ || true
+   ```
+   `CLIMATE_PUBLIC_ORIGIN` is not exposed via any HTTP response (it only
+   gates the Hermes dashboard's WebSocket same-origin check internally in
+   `climate_monitor/hermes_dashboard.py`), so checking the container's own
+   environment directly is the only way to confirm `wiki` actually picked
+   up the change.
 
 A plain `caddy reload` is not reliable here if `.env` or the `Caddyfile` was
 just rewritten by an editing tool: some tools replace the file via a new
 inode, and Docker's single-file bind mount stays pinned to the old
-(now-unlinked) inode. A full container restart forces Docker to re-resolve
-the mount.
+(now-unlinked) inode. `docker compose up -d <service>` (step 3) forces
+Docker to re-resolve the mount as part of recreating the container.
 
 ## Operations
 
