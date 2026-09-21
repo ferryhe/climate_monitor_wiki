@@ -131,6 +131,7 @@ def test_host_capabilities_selects_configured_or_path_hermes(
     elif selection == "empty":
         monkeypatch.setenv("HERMES_EXECUTABLE", "")
     else:
+        monkeypatch.setenv("HERMES_EXECUTABLE", "")
         monkeypatch.delenv("HERMES_EXECUTABLE", raising=False)
     lookups = []
 
