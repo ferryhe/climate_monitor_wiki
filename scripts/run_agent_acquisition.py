@@ -91,6 +91,8 @@ _MANAGED_REPORT_ENV = (
     "CLIMATE_MANAGED_STATE_DIR", "CLIMATE_MANAGED_SOURCE_DIR", "CLIMATE_MANAGED_WIKI_DIR",
 )
 _BLOCKED_APPLICATION_SECRETS = {"DEPLOYMENT_SECRET", "RELOAD_TOKEN"}
+_HOST_EXECUTION_FIELD = "host_execution_fingerprint"
+_SOURCE_HERMES_HOME_ENV = "CLIMATE_MANAGED_SOURCE_HERMES_HOME"
 _LEGACY_AGENT_PROTOCOL = {
     "version": "legacy-model-search-ledger.v1",
     "search_policy": "application-bounded.v1",
@@ -145,6 +147,63 @@ def _minimal_environment(_provider: str | None = None) -> dict[str, str]:
     environment = {key: os.environ[key] for key in keys if os.environ.get(key)}
     environment.update({"PYTHONUNBUFFERED": "1", "HERMES_REDACT_SECRETS": "true"})
     return environment
+
+
+def _host_execution_fingerprint(
+    binding: Mapping[str, Any], *, environment: Mapping[str, str] | None = None,
+    source_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return one secret-free fingerprint of the current host Hermes inputs."""
+    from climate_monitor.managed_backend import _host_execution_identity
+
+    supplied = dict(environment) if environment is not None else _minimal_environment()
+    if source_home is None:
+        source_home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+    identity = _host_execution_identity(source_home=source_home)
+    credentials = {
+        name: supplied[name]
+        for name in sorted(_provider_credential_names())
+        if supplied.get(name)
+    }
+    run_id = str(binding.get("run_id") or binding.get("acquisition_run_id") or "")
+    if not run_id:
+        raise RuntimeError("managed host execution identity is unavailable; start a fresh run")
+    return {
+        "user": identity["user"],
+        "uid": identity["uid"],
+        "python": identity["python"],
+        "source_hermes_home": identity["hermes_home"],
+        "hermes_executable": identity["hermes_executable"],
+        "hermes_version": identity["hermes_version"],
+        "credentials_sha256": hashlib.sha256(canonical_json_bytes({
+            "run_id": run_id, "credentials": credentials,
+        })).hexdigest(),
+    }
+
+
+def _assert_host_execution_fingerprint(
+    binding: Mapping[str, Any], *, environment: Mapping[str, str] | None = None,
+    source_home: str | Path | None = None,
+    private_home: str | Path | None = None,
+) -> None:
+    """Reject host-managed execution when the measured Hermes inputs drift."""
+    if str(binding.get("execution_backend") or "local") != "host-dashboard":
+        return
+    expected = binding.get(_HOST_EXECUTION_FIELD)
+    if not isinstance(expected, Mapping):
+        raise RuntimeError(
+            "managed host execution identity is unavailable; start a fresh run"
+        )
+    supplied = dict(environment) if environment is not None else _minimal_environment()
+    current = _host_execution_fingerprint(
+        binding, environment=supplied, source_home=source_home,
+    )
+    if dict(expected) != current:
+        raise RuntimeError("managed host execution identity changed; start a fresh run")
+    if private_home is not None:
+        actual_home = supplied.get("HERMES_HOME")
+        if not actual_home or Path(actual_home).resolve() != Path(private_home).resolve():
+            raise RuntimeError("managed host execution identity changed; start a fresh run")
 
 
 def _report_environment(_provider: str | None = None) -> dict[str, str]:
@@ -3094,6 +3153,13 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
         }
         if not ("provider" in binding and "model" in binding):
             worker_binding["hermes_home"] = str(attempt_home(binding))
+        if binding.get("execution_backend") == "host-dashboard":
+            worker_binding.update(
+                execution_backend="host-dashboard",
+                host_execution_fingerprint=copy.deepcopy(
+                    binding["host_execution_fingerprint"]
+                ),
+            )
         _atomic_write(
             path,
             json.dumps(worker_binding, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
@@ -3105,9 +3171,22 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
                 "stderr": subprocess.STDOUT, "start_new_session": True, "close_fds": True,
             }
             if "hermes_home" in worker_binding:
+                source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
                 launch_options["env"] = {
-                    **_minimal_environment(), "HERMES_HOME": worker_binding["hermes_home"],
+                    **_minimal_environment(),
+                    "HERMES_HOME": worker_binding["hermes_home"],
+                    _SOURCE_HERMES_HOME_ENV: source_home,
                 }
+            if worker_binding.get("execution_backend") == "host-dashboard":
+                _assert_host_execution_fingerprint(
+                    worker_binding,
+                    environment=launch_options.get("env", os.environ),
+                    source_home=(
+                        launch_options.get("env", {}).get(_SOURCE_HERMES_HOME_ENV)
+                        or os.environ.get("HERMES_HOME")
+                    ),
+                    private_home=worker_binding.get("hermes_home"),
+                )
             process = subprocess.Popen(
                 [sys.executable, str(ROOT / "scripts" / "run_meeting_extraction.py"),
                  "--binding", str(path.resolve())],
@@ -3164,7 +3243,17 @@ def _run_report(
     ):
         environment = _report_environment(binding.get("provider"))
         if not legacy_override:
+            source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
             environment["HERMES_HOME"] = str(attempt_home(binding))
+            environment[_SOURCE_HERMES_HOME_ENV] = source_home
+        if binding.get("execution_backend") == "host-dashboard":
+            _assert_host_execution_fingerprint(
+                binding, environment=environment,
+                source_home=environment.get(_SOURCE_HERMES_HOME_ENV),
+                private_home=(
+                    str(attempt_home(binding)) if not legacy_override else None
+                ),
+            )
         run_options: dict[str, Any] = {
             "cwd": ROOT,
             "env": environment,
@@ -3282,6 +3371,12 @@ def _invoke_hermes(
     )
     budget.remaining_seconds()
     environment, home = install_hooks(command, binding_path, binding, _minimal_environment())
+    if binding.get("execution_backend") == "host-dashboard":
+        _assert_host_execution_fingerprint(
+            binding, environment=environment,
+            source_home=os.environ.get("HERMES_HOME") or Path.home() / ".hermes",
+            private_home=attempt_home(binding),
+        )
     budget.remaining_seconds()
     with response_path.open("wb") as response:
         process = subprocess.Popen(
@@ -3463,6 +3558,12 @@ def _execute_attempt(
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise ValueError(f"unsupported binding schema at {binding_path}")
+    source_home = os.environ.get(_SOURCE_HERMES_HOME_ENV)
+    _assert_host_execution_fingerprint(
+        binding, environment=os.environ,
+        source_home=(source_home or os.environ.get("HERMES_HOME") or Path.home() / ".hermes"),
+        private_home=attempt_home(binding) if source_home else None,
+    )
     _agent_protocol(binding)
     _validate_agent_prompt_protocol(binding)
     try:

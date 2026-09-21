@@ -111,7 +111,10 @@ def _history_service(backend: str) -> Any:
     active = active_backend_from_environment()
     return history_service_from_environment(
         backend,
-        active_service=_management_service() if backend == active else None,
+        active_service=(
+            _management_service()
+            if active == "host-dashboard" and backend == active else None
+        ),
     )
 
 

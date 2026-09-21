@@ -1530,6 +1530,18 @@ def _resolve_authoring_identity(model="", provider="") -> tuple[str, str]:
 
 def _configure_managed_authoring(args, binding: dict) -> None:
     """Use a legacy override or bind a new run to its observed Hermes route."""
+    args.managed_binding = binding
+    if binding.get("execution_backend") == "host-dashboard":
+        from scripts.run_agent_acquisition import (
+            _SOURCE_HERMES_HOME_ENV,
+            _assert_host_execution_fingerprint,
+        )
+
+        _assert_host_execution_fingerprint(
+            binding, environment=os.environ,
+            source_home=os.environ.get(_SOURCE_HERMES_HOME_ENV),
+            private_home=attempt_home(binding),
+        )
     if "provider" in binding and "model" in binding:
         args.model = binding["model"]
         args.model_provider = binding["provider"]
@@ -1563,6 +1575,18 @@ def _authoring_environment(args) -> dict[str, str]:
     managed_home = getattr(args, "managed_hermes_home", "")
     if managed_home:
         environment["HERMES_HOME"] = managed_home
+    binding = getattr(args, "managed_binding", None)
+    if binding and binding.get("execution_backend") == "host-dashboard":
+        from scripts.run_agent_acquisition import (
+            _SOURCE_HERMES_HOME_ENV,
+            _assert_host_execution_fingerprint,
+        )
+
+        _assert_host_execution_fingerprint(
+            binding, environment=environment,
+            source_home=os.environ.get(_SOURCE_HERMES_HOME_ENV),
+            private_home=managed_home or None,
+        )
     return environment
 
 

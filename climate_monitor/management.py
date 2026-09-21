@@ -886,6 +886,10 @@ class ManagementService:
             raise RuntimeError(
                 f"managed run is frozen to the {bound} backend; start a fresh run"
             )
+        if bound == "host-dashboard":
+            from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+            _assert_host_execution_fingerprint(binding)
 
     @staticmethod
     def _state_lock_path(binding: Mapping[str, Any]) -> Path:
@@ -957,6 +961,10 @@ class ManagementService:
         return None
 
     def _launch_process(self, binding: dict[str, Any]) -> int:
+        if binding.get("execution_backend") == "host-dashboard":
+            from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+            _assert_host_execution_fingerprint(binding)
         attempt_path = self._attempt_path(binding["run_id"], binding["attempt"])
         script = Path(__file__).resolve().parents[1] / "scripts" / "run_agent_acquisition.py"
         log_path = self._run_dir(binding["run_id"]) / f"attempt-{binding['attempt']}.log"
@@ -993,15 +1001,30 @@ class ManagementService:
                 "start_new_session": True, "close_fds": True,
             }
             if "hermes_home" in binding:
+                source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
                 environment = {
                     key: value for key, value in os.environ.items()
                     if key not in {"DEPLOYMENT_SECRET", "RELOAD_TOKEN"}
                 }
                 environment.update({
                     "HERMES_HOME": binding["hermes_home"],
+                    "CLIMATE_MANAGED_SOURCE_HERMES_HOME": source_home,
                     "HERMES_REDACT_SECRETS": "true",
                 })
                 launch_options["env"] = environment
+            if binding.get("execution_backend") == "host-dashboard":
+                from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+                _assert_host_execution_fingerprint(
+                    binding,
+                    environment=launch_options.get("env", os.environ),
+                    source_home=(
+                        launch_options.get("env", {}).get(
+                            "CLIMATE_MANAGED_SOURCE_HERMES_HOME"
+                        ) or os.environ.get("HERMES_HOME")
+                    ),
+                    private_home=binding.get("hermes_home"),
+                )
             process = subprocess.Popen(
                 [sys.executable, str(script), "--binding", str(binding_path.resolve())],
                 **launch_options,
@@ -1088,6 +1111,13 @@ class ManagementService:
             from climate_monitor.hermes_acquisition_hooks import attempt_home
 
             binding["hermes_home"] = str(attempt_home(acquisition))
+        if acquisition.get("execution_backend") == "host-dashboard":
+            binding.update(
+                execution_backend="host-dashboard",
+                host_execution_fingerprint=copy.deepcopy(
+                    acquisition["host_execution_fingerprint"]
+                ),
+            )
         launched = self._meeting_launcher(copy.deepcopy(binding))
         launch = dict(launched) if isinstance(launched, Mapping) else {"pid": launched}
         return {
@@ -1212,6 +1242,10 @@ class ManagementService:
             execution_backend=self.execution_backend,
         )
         binding["trigger"] = trigger
+        if self.execution_backend == "host-dashboard":
+            from scripts.run_agent_acquisition import _host_execution_fingerprint
+
+            binding["host_execution_fingerprint"] = _host_execution_fingerprint(binding)
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
                 existing = self._existing_scheduled_run(binding)

@@ -5,6 +5,7 @@ import threading
 import os
 import time
 import json
+import hashlib
 import shutil
 import socket
 import subprocess
@@ -46,6 +47,24 @@ def _capabilities(tmp_path: Path) -> dict:
             "hermes_executable": "/host/venv/bin/hermes",
         },
     }
+
+
+def _mock_host_execution_identity(monkeypatch, tmp_path: Path) -> None:
+    import climate_monitor.managed_backend as managed_backend
+
+    home = tmp_path / "host-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_EXECUTABLE", str(tmp_path / "host-bin" / "hermes"))
+    monkeypatch.setattr(
+        managed_backend, "_host_execution_identity",
+        lambda *, source_home=None: {
+            "user": "host-user", "uid": 1001,
+            "python": "/host/venv/bin/python",
+            "hermes_home": str(Path(source_home).resolve()),
+            "hermes_version": "0.20.5",
+            "hermes_executable": str(tmp_path / "host-bin" / "hermes"),
+        },
+    )
 
 
 class _RecordingStore:
@@ -699,6 +718,43 @@ def test_inactive_local_archive_never_bootstraps_or_changes_files(
     assert _tree_bytes(tmp_path) == before
 
 
+@pytest.mark.parametrize("state", ["missing", "bootstrap"])
+def test_active_local_history_never_constructs_writable_service_or_changes_files(
+    monkeypatch, tmp_path, state,
+):
+    import api_server
+    import climate_monitor.management as management
+    import climate_registry.persistent as persistent
+
+    task_path = tmp_path / "task.json"
+    if state == "bootstrap":
+        task_path.write_text(json.dumps({
+            "schema_version": "climate-acquisition-task-bootstrap.v1",
+            "created_at": "2026-09-10T00:00:00Z",
+        }), encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(task_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(tmp_path / "versions"))
+    monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR", str(tmp_path / "runs"))
+    monkeypatch.delenv("HERMES_MANAGED_SOCKET", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("active local history attempted bootstrap/write service construction")
+
+    monkeypatch.setattr(api_server, "_management_service", forbidden)
+    monkeypatch.setattr(management, "default_task_definition", forbidden)
+    monkeypatch.setattr(management, "_atomic_write", forbidden)
+    monkeypatch.setattr(management, "_exclusive_lock", forbidden)
+    monkeypatch.setattr(persistent, "initialize_registry", forbidden)
+    monkeypatch.setattr(ManagementService, "_launch_process", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+
+    with pytest.raises(FileNotFoundError, match="not configured|not materialized"):
+        api_server._history_service("local")
+    assert _tree_snapshot(tmp_path) == before
+
+
 def test_materialized_local_archive_reads_without_any_file_change(monkeypatch, tmp_path):
     import climate_monitor.management as management
     import climate_registry.persistent as persistent
@@ -970,6 +1026,8 @@ def test_managed_socket_only_factory_and_scheduler_preflight_use_host_binding(
     import uvicorn
     from climate_registry.persistent import initialize_registry
     from scripts import hermes_job
+
+    _mock_host_execution_identity(monkeypatch, tmp_path)
 
     run_root = tmp_path / "runs"
     run_root.mkdir()
@@ -1674,6 +1732,8 @@ def test_ready_real_uds_relay_exit_closes_peer_and_fails_process(tmp_path):
 def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, monkeypatch):
     from climate_registry.persistent import initialize_registry
 
+    _mock_host_execution_identity(monkeypatch, tmp_path)
+
     definition = default_task_definition()
     definition["parameters"].update(
         report_date="2026-09-07", source_keys=["wmo"], timezone="UTC",
@@ -1698,6 +1758,258 @@ def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, m
     result_path.write_text('{"exit_code": 75, "retryable": true}', encoding="utf-8")
     service.resume(result["run_id"])
     assert launched[-1]["execution_backend"] == "host-dashboard"
+
+
+@pytest.mark.parametrize(
+    "drift", ["unchanged", "executable", "credential-change", "credential-add", "credential-remove"],
+)
+def test_host_run_freezes_nonsecret_execution_identity_and_rejects_restart_drift(
+    tmp_path, monkeypatch, drift,
+):
+    import climate_monitor.managed_backend as managed_backend
+
+    materialized = _materialized_service(tmp_path)
+    launched = []
+    current = {"executable": "/host/bin/hermes-a"}
+    source_home = tmp_path / "source-hermes"
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret-a")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def identity(*, source_home=None):
+        return {
+            "user": "host-user", "uid": 1001,
+            "python": "/host/venv/bin/python",
+            "hermes_home": str(Path(source_home).resolve()),
+            "hermes_version": "0.20.5",
+            "hermes_executable": current["executable"],
+        }
+
+    monkeypatch.setattr(
+        managed_backend, "_host_execution_identity", identity, raising=False,
+    )
+    service = ManagementService(
+        store=materialized.store, runtime_root=materialized.runtime_root,
+        execution_backend="host-dashboard",
+        launcher=lambda binding: launched.append(binding) or 123,
+    )
+    started = service.start()
+    binding = service.binding(started["run_id"])
+    frozen = binding["host_execution_fingerprint"]
+    serialized = json.dumps(binding, sort_keys=True)
+    assert frozen == launched[0]["host_execution_fingerprint"]
+    assert set(frozen) == {
+        "user", "uid", "python", "source_hermes_home", "hermes_executable",
+        "hermes_version", "credentials_sha256",
+    }
+    assert "test-secret-a" not in serialized
+    assert "OPENAI_API_KEY" not in serialized
+    result_path = (
+        materialized.runtime_root / started["run_id"] / "attempt-1-result.json"
+    )
+    result_path.write_text('{"exit_code": 75, "retryable": true}', encoding="utf-8")
+
+    if drift == "executable":
+        current["executable"] = "/host/bin/hermes-b"
+    elif drift == "credential-change":
+        monkeypatch.setenv("OPENAI_API_KEY", "test-secret-b")
+    elif drift == "credential-add":
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-secret-added")
+    elif drift == "credential-remove":
+        monkeypatch.delenv("OPENAI_API_KEY")
+
+    if drift == "unchanged":
+        service.resume(started["run_id"])
+        assert len(launched) == 2
+        assert launched[-1]["host_execution_fingerprint"] == frozen
+    else:
+        with pytest.raises(RuntimeError, match="execution identity changed.*fresh run") as exc:
+            service.resume(started["run_id"])
+        assert "test-secret" not in str(exc.value)
+        assert len(launched) == 1
+        assert service.binding(started["run_id"])["host_execution_fingerprint"] == frozen
+
+
+@pytest.mark.parametrize(
+    ("mode", "allowed"),
+    [
+        ("first", True), ("resume", True), ("source-drift", False),
+        ("executable-drift", False), ("credential-drift", False),
+    ],
+)
+def test_acquisition_child_precheck_distinguishes_source_and_private_home(
+    tmp_path, monkeypatch, mode, allowed,
+):
+    import climate_monitor.managed_backend as managed_backend
+    from climate_monitor.hermes_acquisition_hooks import attempt_home
+    from scripts import run_agent_acquisition as runner
+
+    current = {"executable": "/host/bin/hermes-a"}
+    source_home = tmp_path / "source-home"
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "child-test-secret-a")
+    monkeypatch.delenv(runner._SOURCE_HERMES_HOME_ENV, raising=False)
+    monkeypatch.setattr(
+        managed_backend, "_host_execution_identity",
+        lambda *, source_home=None: {
+            "user": "host-user", "uid": 1001,
+            "python": "/host/venv/bin/python",
+            "hermes_home": str(Path(source_home).resolve()),
+            "hermes_version": "0.20.5",
+            "hermes_executable": current["executable"],
+        },
+    )
+    binding = {
+        "schema_version": "climate-acquisition-run-binding.v1",
+        "execution_backend": "host-dashboard", "run_id": "child-precheck",
+        "checkpoint_dir": str(tmp_path / "run" / "checkpoint"),
+    }
+    binding["host_execution_fingerprint"] = runner._host_execution_fingerprint(binding)
+    private_home = attempt_home(binding)
+    if mode != "first":
+        monkeypatch.setenv("HERMES_HOME", str(private_home))
+        monkeypatch.setenv(runner._SOURCE_HERMES_HOME_ENV, str(source_home))
+    if mode == "source-drift":
+        monkeypatch.setenv(runner._SOURCE_HERMES_HOME_ENV, str(tmp_path / "other-source"))
+    elif mode == "executable-drift":
+        current["executable"] = "/host/bin/hermes-b"
+    elif mode == "credential-drift":
+        monkeypatch.setenv("OPENAI_API_KEY", "child-test-secret-b")
+    binding_path = tmp_path / "attempt-1.json"
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+
+    class PrecheckPassed(Exception):
+        pass
+
+    monkeypatch.setattr(
+        runner, "_agent_protocol",
+        lambda _binding: (_ for _ in ()).throw(PrecheckPassed()),
+    )
+    if allowed:
+        with pytest.raises(PrecheckPassed):
+            runner._execute_attempt(binding_path)
+    else:
+        with pytest.raises(RuntimeError, match="execution identity changed.*fresh run") as exc:
+            runner._execute_attempt(binding_path)
+        assert "child-test-secret" not in str(exc.value)
+
+
+def test_legacy_host_binding_requires_fresh_run_but_legacy_local_remains_compatible():
+    host = object.__new__(ManagementService)
+    host.execution_backend = "host-dashboard"
+    with pytest.raises(RuntimeError, match="execution identity.*fresh run"):
+        host._assert_binding_backend({"execution_backend": "host-dashboard"})
+
+    local = object.__new__(ManagementService)
+    local.execution_backend = "local"
+    local._assert_binding_backend({"execution_backend": "local"})
+
+
+def test_every_host_hermes_child_boundary_checks_frozen_execution_identity(
+    tmp_path, monkeypatch,
+):
+    from climate_monitor import meetings
+    from scripts import run_agent_acquisition as runner
+    from scripts import run_climate_monitor as monitor
+    from scripts import run_meeting_extraction as meeting_worker
+
+    class BoundaryChecked(RuntimeError):
+        pass
+
+    checked = []
+
+    def reject(binding, **kwargs):
+        checked.append((binding, kwargs))
+        raise BoundaryChecked("managed host execution identity changed; start a fresh run")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Hermes child launched before execution identity validation")
+
+    monkeypatch.setattr(runner, "_assert_host_execution_fingerprint", reject)
+    monkeypatch.setattr(runner.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(runner.subprocess, "run", forbidden)
+    monkeypatch.setattr(meeting_worker.subprocess, "run", forbidden)
+    monkeypatch.setattr("climate_monitor.management.subprocess.Popen", forbidden)
+    monkeypatch.setattr(meetings, "active_meeting_run", lambda *args: None)
+    monkeypatch.setattr(runner, "_effective_route", lambda _binding: ("provider", "model"))
+    monkeypatch.setattr(
+        runner, "RequestBudget",
+        lambda *args, **kwargs: SimpleNamespace(remaining_seconds=lambda: 60),
+    )
+    private_home = tmp_path / "runs" / "boundary" / "hermes-runtime"
+    private_home.mkdir(parents=True)
+    binding_path = private_home.parent / "attempt-1.json"
+    binding_path.write_text("{}", encoding="utf-8")
+    binding = {
+        "execution_backend": "host-dashboard",
+        "host_execution_fingerprint": {"credentials_sha256": "frozen"},
+        "run_id": "boundary", "attempt": 1,
+        "budgets": {"runtime_seconds": 60},
+        "checkpoint_dir": str(private_home.parent / "checkpoint"),
+        "repository_commit_sha": "a" * 40,
+        "report_inputs": {
+            "acquisition_batch": str(tmp_path / "batch.json"),
+            "web_listening_manifest": str(tmp_path / "manifest.json"),
+            "pillar_b_artifact": str(tmp_path / "pillar.json"),
+            "staging_dir": str(tmp_path / "staging"),
+            "state_dir": str(tmp_path / "state"),
+            "source_dir": str(tmp_path / "sources"),
+            "wiki_dir": str(tmp_path / "wiki"),
+        },
+        "meeting": {
+            "enabled": True, "prompt_version": "v1",
+            "prompt_sha256": "0" * 64, "prompt_text": "meeting prompt",
+        },
+        "registry_database": str(tmp_path / "registry.sqlite3"),
+        "acquisition_batch_id": "batch-boundary", "task_version": 1,
+    }
+    private_environment = {
+        **runner._minimal_environment(), "HERMES_HOME": str(private_home),
+    }
+    monkeypatch.setattr(
+        runner, "install_hooks",
+        lambda *args: (private_environment, private_home),
+    )
+
+    with pytest.raises(BoundaryChecked):
+        runner._invoke_hermes(
+            ["hermes", "chat"], private_home.parent / "response.txt",
+            binding_path, binding, runner.time.monotonic() + 60,
+        )
+    with pytest.raises(BoundaryChecked):
+        runner._run_report(binding_path, binding)
+
+    args = SimpleNamespace(
+        managed_binding=binding, managed_hermes_home=str(private_home),
+    )
+    with pytest.raises(BoundaryChecked):
+        monitor._authoring_environment(args)
+
+    automatic = runner._launch_meeting_worker(binding_path, binding)
+    assert automatic["status"] == "launch_failed"
+    assert "execution identity changed" in automatic["error"]
+
+    service = object.__new__(ManagementService)
+    service.runtime_root = tmp_path / "runs"
+    manual_binding = {
+        "acquisition_run_id": "boundary", "meeting_attempt": 2,
+        "hermes_home": str(private_home),
+        "execution_backend": "host-dashboard",
+        "host_execution_fingerprint": binding["host_execution_fingerprint"],
+    }
+    with pytest.raises(BoundaryChecked):
+        service._launch_meeting_process(manual_binding)
+
+    body = "meeting body"
+    with pytest.raises(BoundaryChecked):
+        meeting_worker._extractor(
+            "provider", "model", hermes_home=str(private_home), binding=manual_binding,
+        )({
+            "prompt": "extract", "content_version_id": "content-1",
+            "content_sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "source_url": "https://example.test/report", "article_body": body,
+        })
+    assert len(checked) == 6
 
 
 def test_version_read_preserves_stored_identity(tmp_path):

@@ -40,8 +40,8 @@ def _token() -> str:
     return value
 
 
-def host_capabilities() -> dict[str, Any]:
-    """Validate the exact host runtime before accepting managed operations."""
+def _host_execution_identity(*, source_home: str | Path | None = None) -> dict[str, Any]:
+    """Measure the verified host identity used by managed Hermes children."""
     try:
         version = importlib.metadata.version("hermes-agent")
     except importlib.metadata.PackageNotFoundError as exc:
@@ -77,6 +77,25 @@ def host_capabilities() -> dict[str, Any]:
         raise RuntimeError(
             f"host managed backend Hermes CLI {cli_version} differs from package {version}"
         )
+    home = Path(
+        source_home
+        if source_home is not None else
+        os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))
+    ).resolve()
+    return {
+        "user": getpass.getuser(),
+        "uid": os.getuid() if hasattr(os, "getuid") else None,
+        "python": sys.executable,
+        "hermes_home": str(home),
+        "hermes_version": version,
+        "hermes_executable": executable,
+    }
+
+
+def host_capabilities() -> dict[str, Any]:
+    """Validate the exact host runtime before accepting managed operations."""
+    host = _host_execution_identity()
+    executable = host["hermes_executable"]
     try:
         help_result = subprocess.run(
             [executable, "chat", "--help"], capture_output=True, text=True,
@@ -91,21 +110,13 @@ def host_capabilities() -> dict[str, Any]:
     )
     if help_result.returncode or not all(flag in help_text for flag in required_flags):
         raise RuntimeError("host managed backend Hermes chat contract is incompatible")
-    home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).resolve()
     os.environ["HERMES_EXECUTABLE"] = executable
     return {
         "protocol": PROTOCOL_VERSION,
         "backend": "host-dashboard",
         "runtime_root": None,
         "active_task_path": None,
-        "host": {
-            "user": getpass.getuser(),
-            "uid": os.getuid() if hasattr(os, "getuid") else None,
-            "python": sys.executable,
-            "hermes_home": str(home),
-            "hermes_version": version,
-            "hermes_executable": executable,
-        },
+        "host": host,
     }
 
 
@@ -339,8 +350,6 @@ def history_service_from_environment(backend: str, *, active_service: Any | None
     if backend not in {"local", "host-dashboard"}:
         raise ValueError("history backend must be local or host-dashboard")
     active_backend = active_backend_from_environment()
-    if backend == active_backend:
-        return active_service if active_service is not None else management_service_from_environment()
     if backend == "local":
         from climate_monitor.management import ManagementService
 
@@ -348,6 +357,8 @@ def history_service_from_environment(backend: str, *, active_service: Any | None
         if service.archive_error is not None:
             raise type(service.archive_error)(str(service.archive_error))
         return service
+    if backend == active_backend:
+        return active_service if active_service is not None else management_service_from_environment()
     history_socket = os.getenv("HERMES_MANAGED_HISTORY_SOCKET", "").strip()
     if not history_socket:
         raise FileNotFoundError("host-dashboard archive is not configured")
