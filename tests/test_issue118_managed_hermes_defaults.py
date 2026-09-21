@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -151,25 +152,167 @@ def test_command_defaults_first_turn_then_resumes_observed_session(tmp_path):
     assert "Hermes acquisition process exited" in error
 
 
-def test_environment_keeps_all_default_provider_credentials_but_not_app_secrets(monkeypatch):
+@pytest.mark.parametrize(
+    ("diagnostic", "exit_code", "expected"),
+    [
+        (
+            "No usable credentials found for provider 'openai-api'.",
+            78,
+            (False, "terminal_failure", "fix Hermes default configuration and create a new run"),
+        ),
+        (
+            "No usable credentials found for provider 'openai-api'.",
+            124,
+            (True, "retryable_failure", "resume the same frozen run"),
+        ),
+        (
+            "It looks like Hermes isn't configured yet -- no API keys or providers found.",
+            78,
+            (False, "terminal_failure", "fix Hermes default configuration and create a new run"),
+        ),
+        (
+            "It looks like Hermes isn't configured yet -- no API keys or providers found.",
+            124,
+            (True, "retryable_failure", "resume the same frozen run"),
+        ),
+        (
+            "AuthError: provider token refresh failed",
+            78,
+            (True, "retryable_failure", "resume the same frozen run"),
+        ),
+        (
+            "Hermes acquisition process exited with 70",
+            70,
+            (True, "retryable_failure", "resume the same frozen run"),
+        ),
+    ],
+)
+def test_missing_default_diagnostic_disposition(tmp_path, diagnostic, exit_code, expected):
     from scripts import run_agent_acquisition as runner
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="classification", attempt=1,
+    )
+    assert runner._hermes_failure_disposition(binding, diagnostic, exit_code) == expected
+
+    legacy = build_task_binding(
+        _definition(tmp_path, legacy=True),
+        task_version=1, run_id="legacy-classification", attempt=1,
+    )
+    assert runner._hermes_failure_disposition(
+        legacy, diagnostic, exit_code,
+    ) == (True, "retryable_failure", "resume the same frozen run")
+
+
+def test_environment_keeps_all_default_provider_credentials_but_not_app_secrets(
+    tmp_path, monkeypatch,
+):
+    from scripts import run_agent_acquisition as runner
+    import climate_monitor.managed_backend as managed_backend
 
     monkeypatch.setenv("OPENAI_API_KEY", "openai")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "anthropic-token")
+    monkeypatch.setenv("GH_TOKEN", "github-copilot")
+    monkeypatch.setenv("HF_TOKEN", "huggingface")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://unit-provider.invalid/v1")
+    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "unit-copilot-command")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "unit-copilot-cli")
+    monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--unit-copilot-arg")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "unit-model")
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "unit-provider")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "unit-op-token")
+    monkeypatch.setenv("API_BASE_URL", "https://application.invalid/v1")
     monkeypatch.setenv("CUSTOM_DEFAULT_API_KEY", "custom")
     monkeypatch.setenv("RELOAD_TOKEN", "do-not-pass")
     monkeypatch.setenv("DEPLOYMENT_SECRET", "do-not-pass")
     environment = runner._minimal_environment("openai")
     assert environment["OPENAI_API_KEY"] == "openai"
     assert environment["ANTHROPIC_API_KEY"] == "anthropic"
+    assert environment["ANTHROPIC_TOKEN"] == "anthropic-token"
+    assert environment["GH_TOKEN"] == "github-copilot"
+    assert environment["HF_TOKEN"] == "huggingface"
+    assert environment["OPENAI_BASE_URL"] == "https://unit-provider.invalid/v1"
+    assert environment["HERMES_COPILOT_ACP_COMMAND"] == "unit-copilot-command"
+    assert environment["COPILOT_CLI_PATH"] == "unit-copilot-cli"
+    assert environment["HERMES_COPILOT_ACP_ARGS"] == "--unit-copilot-arg"
+    assert environment["HERMES_INFERENCE_MODEL"] == "unit-model"
+    assert environment["HERMES_INFERENCE_PROVIDER"] == "unit-provider"
+    assert environment["OP_SERVICE_ACCOUNT_TOKEN"] == "unit-op-token"
     assert environment["CUSTOM_DEFAULT_API_KEY"] == "custom"
+    assert "API_BASE_URL" not in environment
     assert "RELOAD_TOKEN" not in environment
     assert "DEPLOYMENT_SECRET" not in environment
+    assert runner._PINNED_PROVIDER_ROUTE_ENV == {
+        "OPENROUTER_BASE_URL", "OPENAI_BASE_URL", "XAI_BASE_URL",
+        "HERMES_QWEN_BASE_URL", "LM_BASE_URL", "COPILOT_ACP_BASE_URL",
+        "GLM_BASE_URL", "KIMI_BASE_URL", "STEPFUN_BASE_URL",
+        "MINIMAX_BASE_URL", "MINIMAX_CN_BASE_URL", "DEEPSEEK_BASE_URL",
+        "DASHSCOPE_BASE_URL", "ALIBABA_CODING_PLAN_BASE_URL",
+        "OPENCODE_ZEN_BASE_URL", "OPENCODE_GO_BASE_URL",
+        "KILOCODE_BASE_URL", "HF_BASE_URL", "NOVITA_BASE_URL",
+        "NVIDIA_BASE_URL", "XIAOMI_BASE_URL", "TOKENHUB_BASE_URL",
+        "ARCEE_BASE_URL", "GMI_BASE_URL", "ACTUAL_BASE_URL",
+        "UPSTAGE_BASE_URL", "OLLAMA_BASE_URL", "AZURE_FOUNDRY_BASE_URL",
+        "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
+        "HERMES_COPILOT_ACP_ARGS", "HERMES_INFERENCE_MODEL",
+        "HERMES_INFERENCE_PROVIDER", "OP_SERVICE_ACCOUNT_TOKEN",
+    }
+
+    monkeypatch.setattr(managed_backend, "_host_execution_identity", lambda **_kwargs: {
+        "user": "host-user", "uid": 1001, "python": "/host/python",
+        "hermes_home": "/host/.hermes", "hermes_executable": "/host/hermes",
+        "hermes_version": "0.20.5",
+    })
+    binding = {"run_id": "provider-credential-map"}
+    fingerprint = runner._host_execution_fingerprint(
+        binding, environment=environment, source_home="/host/.hermes",
+    )
+    changed = dict(environment, OPENAI_BASE_URL="https://changed-provider.invalid/v1")
+    assert runner._host_execution_fingerprint(
+        binding, environment=changed, source_home="/host/.hermes",
+    )["credentials_sha256"] != fingerprint["credentials_sha256"]
+    changed = dict(environment, HERMES_COPILOT_ACP_COMMAND="changed-copilot-command")
+    assert runner._host_execution_fingerprint(
+        binding, environment=changed, source_home="/host/.hermes",
+    )["credentials_sha256"] != fingerprint["credentials_sha256"]
+    changed = dict(environment, API_BASE_URL="https://changed-application.invalid/v1")
+    assert runner._host_execution_fingerprint(
+        binding, environment=changed, source_home="/host/.hermes",
+    )["credentials_sha256"] == fingerprint["credentials_sha256"]
+    assert not any(
+        secret in json.dumps(fingerprint)
+        for secret in (
+            "anthropic-token", "github-copilot", "huggingface",
+            "https://unit-provider.invalid/v1", "unit-copilot-command",
+            "unit-copilot-cli", "--unit-copilot-arg",
+        )
+    )
+
+    response_path = tmp_path / "hermes-response.txt"
+    response_path.write_text(
+        "anthropic-token github-copilot huggingface "
+        "https://unit-provider.invalid/v1 unit-copilot-command "
+        "unit-copilot-cli --unit-copilot-arg",
+        encoding="utf-8",
+    )
+    error = runner._hermes_process_error(response_path, 78, phase="acquisition")
+    assert "[REDACTED]" in error
+    assert not any(
+        secret in error
+        for secret in (
+            "anthropic-token", "github-copilot", "huggingface",
+            "https://unit-provider.invalid/v1", "unit-copilot-command",
+            "unit-copilot-cli", "--unit-copilot-arg",
+        )
+    )
 
 
 def test_run_home_freezes_ordinary_hermes_config_and_credentials(tmp_path, monkeypatch):
     import yaml
-    from climate_monitor.hermes_acquisition_hooks import install_hooks
+    from climate_monitor.hermes_acquisition_hooks import (
+        CREDENTIAL_INPUTS_STATE, install_hooks,
+    )
 
     binding = build_task_binding(
         _definition(tmp_path), task_version=1, run_id="config", attempt=1,
@@ -185,6 +328,7 @@ def test_run_home_freezes_ordinary_hermes_config_and_credentials(tmp_path, monke
     )
     (source_home / ".env").write_text("DEFAULT_PROVIDER_KEY=secret\n", encoding="utf-8")
     (source_home / "auth.json").write_text('{"token":"secret"}', encoding="utf-8")
+    (source_home / ".op.env").write_text("OP_SERVICE_ACCOUNT_TOKEN=secret\n", encoding="utf-8")
     executable = tmp_path / "hermes"
     executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
     executable.chmod(0o755)
@@ -205,11 +349,19 @@ def test_run_home_freezes_ordinary_hermes_config_and_credentials(tmp_path, monke
     }
     assert (home / ".env").read_text(encoding="utf-8") == "DEFAULT_PROVIDER_KEY=secret\n"
     assert (home / "auth.json").is_file()
+    assert (home / ".op.env").read_text(encoding="utf-8") == (
+        "OP_SERVICE_ACCOUNT_TOKEN=secret\n"
+    )
 
     (source_home / "config.yaml").write_text(
         "model:\n  provider: changed-provider\n  default: changed-model\n",
         encoding="utf-8",
     )
+    (source_home / ".env").write_text("DEFAULT_PROVIDER_KEY=changed\n", encoding="utf-8")
+    (source_home / "auth.json").write_text('{"token":"changed"}', encoding="utf-8")
+    (source_home / ".op.env").write_text("OP_SERVICE_ACCOUNT_TOKEN=changed\n", encoding="utf-8")
+    (home / "auth.json").write_text('{"token":"private-refresh"}', encoding="utf-8")
+    (home / ".op.env").write_text("OP_SERVICE_ACCOUNT_TOKEN=private-refresh\n", encoding="utf-8")
     resumed = dict(binding, attempt=2)
     install_hooks(
         [str(executable), "chat"], binding_path, resumed,
@@ -217,6 +369,473 @@ def test_run_home_freezes_ordinary_hermes_config_and_credentials(tmp_path, monke
     )
     still_frozen = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     assert still_frozen["model"] == frozen["model"]
+    assert (home / ".env").read_text(encoding="utf-8") == "DEFAULT_PROVIDER_KEY=secret\n"
+    assert (home / "auth.json").read_text(encoding="utf-8") == '{"token":"private-refresh"}'
+    assert (home / ".op.env").read_text(encoding="utf-8") == (
+        "OP_SERVICE_ACCOUNT_TOKEN=private-refresh\n"
+    )
+    state = json.loads((home / CREDENTIAL_INPUTS_STATE).read_text(encoding="utf-8"))
+    assert state["files"] == {
+        "config.yaml": True, ".env": True, ".op.env": True, "auth.json": True,
+    }
+    assert "secret" not in json.dumps(state)
+
+
+def test_completed_input_snapshot_survives_governed_config_interruption(
+    tmp_path, monkeypatch,
+):
+    import yaml
+    import climate_monitor.hermes_acquisition_hooks as hooks
+    from scripts import run_agent_acquisition as runner
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="config-interruption", attempt=1,
+    )
+    binding_path = Path(binding["checkpoint_dir"]).parent / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    source_home = tmp_path / "ordinary-hermes"
+    source_home.mkdir()
+    original_config = (
+        "model:\n  provider: custom:unit\n  default: first-model\n"
+        "providers:\n  unit:\n    key_env: CUSTOM_ROUTE_TOKEN\n"
+    )
+    (source_home / "config.yaml").write_text(original_config, encoding="utf-8")
+    executable = tmp_path / "hermes"
+    executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(
+        hooks.subprocess, "run",
+        lambda *args, **kwargs: type(
+            "Result", (), {
+                "returncode": 0,
+                "stdout": "climate acquisition hooks verified",
+                "stderr": "",
+            },
+        )(),
+    )
+    original_write = hooks._write_immutable
+
+    def interrupt_governed_config(path, raw, message):
+        if path.name == "config.yaml":
+            raise OSError("interrupted before governed config")
+        original_write(path, raw, message)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(hooks, "_write_immutable", interrupt_governed_config)
+        with pytest.raises(OSError, match="governed config"):
+            hooks.install_hooks(
+                [str(executable), "chat"], binding_path, binding,
+                {
+                    "PATH": str(tmp_path), "HERMES_HOME": str(source_home),
+                    "CUSTOM_ROUTE_TOKEN": "first-token",
+                },
+                managed_environment_names={"CUSTOM_ROUTE_TOKEN"},
+            )
+
+    home = hooks.attempt_home(binding)
+    complete_path = home / ".managed-inputs-complete.json"
+    source_snapshot = home / ".managed-source" / "config.yaml"
+    assert complete_path.is_file()
+    assert "first-token" not in complete_path.read_text(encoding="utf-8")
+    assert source_snapshot.read_text(
+        encoding="utf-8"
+    ) == original_config
+    if os.name != "nt":
+        import stat
+        assert stat.S_IMODE(complete_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(source_snapshot.stat().st_mode) == 0o600
+    (source_home / "config.yaml").write_text("providers: [\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    monkeypatch.setenv("CUSTOM_ROUTE_TOKEN", "changed-token")
+
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait():
+            return 0
+
+    launched = {}
+    monkeypatch.setattr(
+        runner, "RequestBudget",
+        lambda *args, **kwargs: SimpleNamespace(remaining_seconds=lambda: 60),
+    )
+    monkeypatch.setattr(runner, "bind_effective_identity", lambda *args: None)
+    monkeypatch.setattr(
+        runner.subprocess, "Popen",
+        lambda command, **kwargs: launched.update(command=command, **kwargs) or Process(),
+    )
+    assert runner._invoke_hermes(
+        [str(executable), "chat"], home.parent / "retry-response.txt",
+        binding_path, dict(binding, attempt=2), runner.time.monotonic() + 60,
+    ) == 0
+    resumed_environment = launched["env"]
+    governed = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert governed["model"] == {
+        "provider": "custom:unit", "default": "first-model",
+    }
+    assert resumed_environment["CUSTOM_ROUTE_TOKEN"] == "first-token"
+
+
+def test_nonempty_private_home_without_complete_snapshot_never_resamples(
+    tmp_path, monkeypatch,
+):
+    import climate_monitor.hermes_acquisition_hooks as hooks
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="incomplete-private", attempt=1,
+    )
+    binding_path = Path(binding["checkpoint_dir"]).parent / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    home = hooks.attempt_home(binding)
+    home.mkdir()
+    (home / "config.yaml").write_text("model: private-old\n", encoding="utf-8")
+    (home / ".env").write_text("CUSTOM_ROUTE_TOKEN=private-old\n", encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in home.iterdir()}
+    source_home = tmp_path / "ordinary-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text(
+        "providers:\n  changed:\n    key_env: CUSTOM_ROUTE_TOKEN\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "hermes"
+    executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    with pytest.raises(ValueError, match="initialization is incomplete"):
+        hooks.install_hooks(
+            [str(executable), "chat"], binding_path, binding,
+            {
+                "PATH": str(tmp_path), "HERMES_HOME": str(source_home),
+                "CUSTOM_ROUTE_TOKEN": "changed-token",
+            },
+            managed_environment_names={"CUSTOM_ROUTE_TOKEN"},
+        )
+    assert {path.name: path.read_bytes() for path in home.iterdir()} == before
+
+
+@pytest.mark.parametrize("artifacts", [
+    (".managed-inputs-complete.json",),
+    (".managed-credential-inputs.json",),
+    (".managed-provider-environment.json",),
+    (".managed-credential-inputs.json", ".managed-provider-environment.json"),
+    (".managed-inputs-complete.json", ".managed-credential-inputs.json"),
+    (".managed-inputs-complete.json", ".managed-provider-environment.json"),
+])
+def test_partial_managed_input_snapshot_is_rejected_without_writes(tmp_path, artifacts):
+    import climate_monitor.hermes_acquisition_hooks as hooks
+
+    home = tmp_path / "partial" / str(len(artifacts))
+    home.mkdir(parents=True)
+    for name in artifacts:
+        (home / name).write_text("{}", encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in home.iterdir()}
+    with pytest.raises(ValueError, match="managed Hermes input snapshot"):
+        hooks._freeze_credential_inputs(tmp_path / "ordinary-hermes", home)
+    assert {path.name: path.read_bytes() for path in home.iterdir()} == before
+
+
+def test_managed_provider_environment_freezes_first_local_values(tmp_path, monkeypatch):
+    import stat
+    import climate_monitor.hermes_acquisition_hooks as hooks
+    from scripts import run_agent_acquisition as runner
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="environment-freeze", attempt=1,
+    )
+    binding_path = Path(binding["checkpoint_dir"]).parent / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    source_home = tmp_path / "ordinary-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text(
+        "model:\n  provider: custom:unit\n  default: unit-model\n"
+        "providers:\n  unit:\n    name: Unit\n"
+        "    base_url: https://unit.invalid/v1\n"
+        "    key_env: CUSTOM_ROUTE_TOKEN\n"
+        "custom_providers:\n  - name: Late\n"
+        "    base_url: https://late.invalid/v1\n"
+        "    key_env: LATE_CUSTOM_TOKEN\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "hermes"
+    executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(
+        hooks.subprocess, "run",
+        lambda *args, **kwargs: type(
+            "Result", (), {
+                "returncode": 0,
+                "stdout": "climate acquisition hooks verified",
+                "stderr": "",
+            },
+        )(),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    monkeypatch.setenv("CUSTOM_ROUTE_TOKEN", "custom-first")
+    monkeypatch.delenv("LATE_CUSTOM_TOKEN", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://provider-first.invalid/v1")
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "provider-first")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "model-first")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "op-first")
+    monkeypatch.setenv("API_BASE_URL", "https://application-first.invalid/v1")
+
+    names = runner._provider_credential_names(source_home)
+    first, home = hooks.install_hooks(
+        [str(executable), "chat"], binding_path, binding,
+        runner._minimal_environment(source_home=source_home),
+        managed_environment_names=names,
+    )
+    assert first["CUSTOM_ROUTE_TOKEN"] == "custom-first"
+    assert first["OPENAI_BASE_URL"] == "https://provider-first.invalid/v1"
+    assert first["HERMES_INFERENCE_PROVIDER"] == "provider-first"
+    assert first["HERMES_INFERENCE_MODEL"] == "model-first"
+    assert first["OP_SERVICE_ACCOUNT_TOKEN"] == "op-first"
+    assert "LATE_CUSTOM_TOKEN" not in first
+    assert "API_BASE_URL" not in first
+
+    monkeypatch.setenv("CUSTOM_ROUTE_TOKEN", "custom-changed")
+    monkeypatch.setenv("LATE_CUSTOM_TOKEN", "late-added")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://provider-changed.invalid/v1")
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "provider-changed")
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "model-changed")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "op-changed")
+    (source_home / "config.yaml").write_text("providers: [\n", encoding="utf-8")
+
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait():
+            return 0
+
+    launched = {}
+    monkeypatch.setattr(
+        runner, "RequestBudget",
+        lambda *args, **kwargs: SimpleNamespace(remaining_seconds=lambda: 60),
+    )
+    monkeypatch.setattr(runner, "bind_effective_identity", lambda *args: None)
+    monkeypatch.setattr(
+        runner.subprocess, "Popen",
+        lambda command, **kwargs: launched.update(command=command, **kwargs) or Process(),
+    )
+    assert runner._invoke_hermes(
+        [str(executable), "chat"], home.parent / "resume-response.txt",
+        binding_path, dict(binding, attempt=2), runner.time.monotonic() + 60,
+    ) == 0
+    resumed = launched["env"]
+    assert launched["cwd"] == home
+    assert resumed["HERMES_HOME"] == str(home)
+    assert resumed[runner._SOURCE_HERMES_HOME_ENV] == str(source_home)
+    for name in (
+        "CUSTOM_ROUTE_TOKEN", "OPENAI_BASE_URL", "HERMES_INFERENCE_PROVIDER",
+        "HERMES_INFERENCE_MODEL", "OP_SERVICE_ACCOUNT_TOKEN",
+    ):
+        assert resumed[name] == first[name]
+    assert "LATE_CUSTOM_TOKEN" not in resumed
+    assert "API_BASE_URL" not in resumed
+
+    downstream = runner._managed_child_environment(
+        binding, source_home=source_home,
+    )
+    assert downstream["CUSTOM_ROUTE_TOKEN"] == "custom-first"
+    assert downstream["OPENAI_BASE_URL"] == "https://provider-first.invalid/v1"
+    assert "LATE_CUSTOM_TOKEN" not in downstream
+    assert "API_BASE_URL" not in downstream
+    state_path = home / hooks.MANAGED_ENVIRONMENT_STATE
+    if os.name != "nt":
+        assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    assert "application-first" not in state_path.read_text(encoding="utf-8")
+    response_path = home.parent / "frozen-environment-error.txt"
+    response_path.write_text(
+        "custom-first op-first https://provider-first.invalid/v1",
+        encoding="utf-8",
+    )
+    error = runner._hermes_process_error(
+        response_path, 78, phase="acquisition", binding=binding,
+    )
+    assert "[REDACTED]" in error
+    assert not any(value in error for value in (
+        "custom-first", "op-first", "https://provider-first.invalid/v1",
+    ))
+
+
+def test_run_home_never_adds_credentials_missing_at_first_install(tmp_path, monkeypatch):
+    from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks
+
+    binding = build_task_binding(
+        _definition(tmp_path), task_version=1, run_id="missing-credentials", attempt=1,
+    )
+    binding_path = Path(binding["checkpoint_dir"]).parent / "attempt-1.json"
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    source_home = tmp_path / "ordinary-hermes"
+    source_home.mkdir()
+    executable = tmp_path / "hermes"
+    executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    executable.chmod(0o755)
+    verification_results = iter([
+        type("Result", (), {
+            "returncode": 1, "stdout": "", "stderr": "interrupted initialization",
+        })(),
+        type("Result", (), {
+            "returncode": 0,
+            "stdout": "climate acquisition hooks verified",
+            "stderr": "",
+        })(),
+    ])
+    monkeypatch.setattr(
+        "climate_monitor.hermes_acquisition_hooks.subprocess.run",
+        lambda *args, **kwargs: next(verification_results),
+    )
+    with pytest.raises(ValueError, match="installation incompatible"):
+        install_hooks(
+            [str(executable), "chat"], binding_path, binding,
+            {"PATH": str(tmp_path), "HERMES_HOME": str(source_home)},
+        )
+    home = attempt_home(binding)
+    (source_home / "config.yaml").write_text(
+        "model:\n  provider: late-provider\n  default: late-model\n",
+        encoding="utf-8",
+    )
+    (source_home / ".env").write_text("LATE_KEY=late-secret\n", encoding="utf-8")
+    (source_home / "auth.json").write_text('{"token":"late-secret"}', encoding="utf-8")
+    (source_home / ".op.env").write_text("OP_SERVICE_ACCOUNT_TOKEN=late-secret\n", encoding="utf-8")
+
+    install_hooks(
+        [str(executable), "chat"], binding_path, dict(binding, attempt=2),
+        {"PATH": str(tmp_path), "HERMES_HOME": str(source_home)},
+    )
+    assert not (home / ".env").exists()
+    assert not (home / "auth.json").exists()
+    assert not (home / ".op.env").exists()
+    assert "model" not in json.loads((home / "config.yaml").read_text(encoding="utf-8"))
+    state_path = home / ".managed-credential-inputs.json"
+    state_before = state_path.read_bytes()
+    assert json.loads(state_before)["files"] == {
+        "config.yaml": False, ".env": False, ".op.env": False,
+        "auth.json": False,
+    }
+    assert "late-secret" not in state_path.read_text(encoding="utf-8")
+
+
+def test_credential_snapshot_survives_interruption_and_concurrent_initialization(
+    tmp_path, monkeypatch,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    import climate_monitor.hermes_acquisition_hooks as hooks
+
+    source_home = tmp_path / "ordinary-hermes"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text('{"token":"first"}', encoding="utf-8")
+    captured_home = tmp_path / "captured-hermes"
+    captured_home.mkdir()
+    original_copy = hooks._copy_frozen_credential
+
+    def change_source_after_read(raw, destination):
+        (source_home / "auth.json").write_text(
+            '{"token":"changed-during-copy"}', encoding="utf-8",
+        )
+        original_copy(raw, destination)
+
+    with monkeypatch.context() as changing:
+        changing.setattr(hooks, "_copy_frozen_credential", change_source_after_read)
+        hooks._freeze_credential_inputs(source_home, captured_home)
+    assert (captured_home / "auth.json").read_text(encoding="utf-8") == '{"token":"first"}'
+
+    (source_home / "auth.json").write_text('{"token":"first"}', encoding="utf-8")
+    home = tmp_path / "private-hermes"
+    home.mkdir()
+
+    def stop_after_snapshot(_raw, _destination):
+        (source_home / "auth.json").write_text(
+            '{"token":"changed-after-snapshot"}', encoding="utf-8",
+        )
+        raise OSError("interrupted after snapshot")
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            hooks, "_copy_frozen_credential", stop_after_snapshot,
+        )
+        with pytest.raises(OSError, match="interrupted after snapshot"):
+            hooks._freeze_credential_inputs(source_home, home)
+
+    state_path = home / hooks.CREDENTIAL_INPUTS_STATE
+    initializing = home / f"{hooks.CREDENTIAL_INPUTS_STATE}.initializing"
+    assert not state_path.exists()
+    assert initializing.read_bytes() == b""
+    (source_home / ".env").write_text("LATE_KEY=late-secret\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="incomplete"):
+        hooks._freeze_credential_inputs(source_home, home)
+    assert not state_path.exists()
+    assert not (home / "auth.json").exists()
+    assert not (home / ".env").exists()
+    assert not (home / ".op.env").exists()
+
+    environment_home = tmp_path / "interrupted-environment"
+    environment_home.mkdir()
+    original_create_once = hooks._create_once
+
+    def stop_before_environment_state(path, raw):
+        if path.name == hooks.MANAGED_ENVIRONMENT_STATE:
+            raise OSError("interrupted before environment state")
+        original_create_once(path, raw)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(hooks, "_create_once", stop_before_environment_state)
+        with pytest.raises(OSError, match="environment state"):
+            hooks._freeze_credential_inputs(
+                source_home, environment_home,
+                {"CUSTOM_ROUTE_TOKEN": "first"}, {"CUSTOM_ROUTE_TOKEN"},
+            )
+    assert not (environment_home / hooks.MANAGED_ENVIRONMENT_STATE).exists()
+    assert (
+        environment_home / f"{hooks.CREDENTIAL_INPUTS_STATE}.initializing"
+    ).read_bytes() == b""
+    with pytest.raises(ValueError, match="incomplete"):
+        hooks._freeze_credential_inputs(
+            source_home, environment_home,
+            {"CUSTOM_ROUTE_TOKEN": "changed"}, {"CUSTOM_ROUTE_TOKEN"},
+        )
+
+    (source_home / "auth.json").write_text('{"token":"first"}', encoding="utf-8")
+    concurrent_home = tmp_path / "concurrent-hermes"
+    concurrent_home.mkdir()
+
+    def concurrent_freeze(_index):
+        try:
+            hooks._freeze_credential_inputs(source_home, concurrent_home)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        concurrent_results = list(pool.map(concurrent_freeze, range(2)))
+    assert None in concurrent_results
+    assert all(
+        result is None or "initialization is incomplete" in result
+        for result in concurrent_results
+    )
+    hooks._freeze_credential_inputs(source_home, concurrent_home)
+    concurrent_state = json.loads(
+        (concurrent_home / hooks.CREDENTIAL_INPUTS_STATE).read_text(encoding="utf-8")
+    )
+    assert concurrent_state["files"] == {
+        "config.yaml": False, ".env": True, ".op.env": False,
+        "auth.json": True,
+    }
+    assert (concurrent_home / ".env").read_text(encoding="utf-8") == "LATE_KEY=late-secret\n"
+    assert (concurrent_home / "auth.json").read_text(encoding="utf-8") == '{"token":"first"}'
 
 
 def test_actual_session_usage_is_persisted_and_mismatch_rejected(tmp_path):
@@ -288,9 +907,21 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
     (run_dir / IDENTITY_FILE).write_text(json.dumps(_identity(binding)), encoding="utf-8")
+    from climate_monitor import hermes_acquisition_hooks as hooks
+
+    source_home = tmp_path / "ordinary-hermes"
+    source_home.mkdir()
+    hooks.attempt_home(binding).mkdir()
+    hooks._freeze_credential_inputs(
+        source_home, hooks.attempt_home(binding),
+        {"OPENAI_BASE_URL": "https://first-route.invalid/v1"},
+        {"OPENAI_BASE_URL"},
+    )
     executable = str((tmp_path / "host-bin" / "hermes").resolve())
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
     monkeypatch.setenv("HERMES_EXECUTABLE", executable)
     monkeypatch.setenv("PATH", str(tmp_path / "decoy-bin"))
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://changed-route.invalid/v1")
 
     observed = {}
     monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: (
@@ -307,6 +938,7 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     stable_home = str(attempt_home(binding))
     assert observed["env"]["HERMES_HOME"] == stable_home
     assert observed["env"]["HERMES_EXECUTABLE"] == executable
+    assert observed["env"]["OPENAI_BASE_URL"] == "https://first-route.invalid/v1"
 
     class FakeProcess:
         pid = 456
@@ -332,6 +964,9 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     assert automatic_binding["hermes_home"] == stable_home
     assert automatic_launch["env"]["HERMES_HOME"] == stable_home
     assert automatic_launch["env"]["HERMES_EXECUTABLE"] == executable
+    assert automatic_launch["env"]["OPENAI_BASE_URL"] == (
+        "https://first-route.invalid/v1"
+    )
 
     launched = []
     monkeypatch.setattr(management, "load_acquisition_batch", lambda *args: {})
@@ -357,6 +992,7 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     service._launch_meeting_process(launched[0])
     assert manual_launch["env"]["HERMES_HOME"] == stable_home
     assert manual_launch["env"]["HERMES_EXECUTABLE"] == executable
+    assert manual_launch["env"]["OPENAI_BASE_URL"] == "https://first-route.invalid/v1"
     assert "RELOAD_TOKEN" not in manual_launch["env"]
     assert "DEPLOYMENT_SECRET" not in manual_launch["env"]
 

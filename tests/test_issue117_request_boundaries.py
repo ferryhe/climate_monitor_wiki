@@ -4465,7 +4465,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
     path.write_text(json.dumps(b))
     environments = {}
 
-    def install(command, binding_path, supplied, environment):
+    def install(command, binding_path, supplied, environment, **_kwargs):
         environments["hermes-hook"] = environment
         return environment, tmp_path
 
@@ -5087,9 +5087,9 @@ def test_primary_hermes_failure_retains_sanitized_process_error(tmp_path, monkey
         assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
         assert "sk-test-secret" not in value["error"]
         assert "did not persist the bound acquisition session" not in value["error"]
-    assert result["retryable"] is True
-    assert status["stage"] == "retryable_failure"
-    assert status["next_step"] == "resume the same frozen run"
+    assert result["retryable"] is False
+    assert status["stage"] == "terminal_failure"
+    assert status["next_step"] == "fix Hermes default configuration and create a new run"
     assert exit_code == 78
 
 
@@ -5213,7 +5213,14 @@ def test_failed_hermes_without_session_database_retains_process_error(
         assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
         assert "sk-missing-db-secret" not in value["error"]
         assert "durable session database is unavailable" not in value["error"]
-    assert result["retryable"] is True
+    assert result["retryable"] is (exit_code == 124)
+    if exit_code == 124:
+        assert status["next_step"] == "resume the same frozen run"
+    else:
+        assert status["stage"] == "terminal_failure"
+        assert status["next_step"] == (
+            "fix Hermes default configuration and create a new run"
+        )
 
 
 def test_structured_provider_credentials_are_redacted_from_result_and_progress(

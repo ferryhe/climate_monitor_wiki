@@ -986,6 +986,10 @@ class ManagementService:
         return process.pid
 
     def _launch_meeting_process(self, binding: dict[str, Any]) -> int:
+        if binding.get("execution_backend") == "host-dashboard":
+            from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+            _assert_host_execution_fingerprint(binding)
         run_dir = self._run_dir(binding["acquisition_run_id"])
         binding_path = run_dir / f"meeting-{binding['meeting_attempt']}.json"
         _atomic_write(
@@ -1002,16 +1006,11 @@ class ManagementService:
             }
             if "hermes_home" in binding:
                 source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
-                environment = {
-                    key: value for key, value in os.environ.items()
-                    if key not in {"DEPLOYMENT_SECRET", "RELOAD_TOKEN"}
-                }
-                environment.update({
-                    "HERMES_HOME": binding["hermes_home"],
-                    "CLIMATE_MANAGED_SOURCE_HERMES_HOME": source_home,
-                    "HERMES_REDACT_SECRETS": "true",
-                })
-                launch_options["env"] = environment
+                from scripts.run_agent_acquisition import _managed_child_environment
+
+                launch_options["env"] = _managed_child_environment(
+                    binding, source_home=source_home,
+                )
             if binding.get("execution_backend") == "host-dashboard":
                 from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
 

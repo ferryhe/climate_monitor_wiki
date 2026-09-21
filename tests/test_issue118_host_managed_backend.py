@@ -352,7 +352,7 @@ def test_host_readiness_freezes_relative_executable_for_acquisition_child(
     run_home.mkdir()
     launched = {}
 
-    def install(command, supplied_path, supplied_binding, environment):
+    def install(command, supplied_path, supplied_binding, environment, **_kwargs):
         assert supplied_path == binding_path
         assert supplied_binding == binding
         launched["hook_command"] = command
@@ -1761,7 +1761,10 @@ def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, m
 
 
 @pytest.mark.parametrize(
-    "drift", ["unchanged", "executable", "credential-change", "credential-add", "credential-remove"],
+    "drift", [
+        "unchanged", "executable", "credential-change", "credential-add",
+        "credential-remove", "route-change", "custom-route-change",
+    ],
 )
 def test_host_run_freezes_nonsecret_execution_identity_and_rejects_restart_drift(
     tmp_path, monkeypatch, drift,
@@ -1772,8 +1775,17 @@ def test_host_run_freezes_nonsecret_execution_identity_and_rejects_restart_drift
     launched = []
     current = {"executable": "/host/bin/hermes-a"}
     source_home = tmp_path / "source-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text(
+        "providers:\n  unit:\n    name: Unit\n"
+        "    base_url: https://unit.invalid/v1\n"
+        "    key_env: CUSTOM_ROUTE_TOKEN\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(source_home))
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret-a")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://host-route-a.invalid/v1")
+    monkeypatch.setenv("CUSTOM_ROUTE_TOKEN", "custom-route-a")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     def identity(*, source_home=None):
@@ -1817,6 +1829,10 @@ def test_host_run_freezes_nonsecret_execution_identity_and_rejects_restart_drift
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-secret-added")
     elif drift == "credential-remove":
         monkeypatch.delenv("OPENAI_API_KEY")
+    elif drift == "route-change":
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://host-route-b.invalid/v1")
+    elif drift == "custom-route-change":
+        monkeypatch.setenv("CUSTOM_ROUTE_TOKEN", "custom-route-b")
 
     if drift == "unchanged":
         service.resume(started["run_id"])
@@ -1968,7 +1984,7 @@ def test_every_host_hermes_child_boundary_checks_frozen_execution_identity(
     }
     monkeypatch.setattr(
         runner, "install_hooks",
-        lambda *args: (private_environment, private_home),
+        lambda *args, **kwargs: (private_environment, private_home),
     )
 
     with pytest.raises(BoundaryChecked):

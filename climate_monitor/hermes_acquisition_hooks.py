@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import yaml
 
 from climate_monitor.request_budget import (
@@ -22,6 +23,15 @@ from climate_monitor.request_budget import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SEARCH_IDENTITY_PLUGIN_ID = "climate-acquisition-search-identity"
+CREDENTIAL_INPUTS_STATE = ".managed-credential-inputs.json"
+MANAGED_ENVIRONMENT_STATE = ".managed-provider-environment.json"
+MANAGED_INPUTS_COMPLETE = ".managed-inputs-complete.json"
+MANAGED_SOURCE_HOME = ".managed-source"
+_CREDENTIAL_INPUTS_SCHEMA = "managed-hermes-inputs.v3"
+_MANAGED_ENVIRONMENT_SCHEMA = "managed-hermes-provider-environment.v1"
+_MANAGED_INPUTS_COMPLETE_SCHEMA = "managed-hermes-inputs-complete.v1"
+_CREDENTIAL_INPUTS = (".env", ".op.env", "auth.json")
+_INPUT_FILES = ("config.yaml", *_CREDENTIAL_INPUTS)
 
 
 def attempt_home(binding):
@@ -38,6 +48,176 @@ def _write_immutable(path, raw, message):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(raw)
     path.chmod(0o600)
+
+
+def _create_once(path, raw):
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+        else:
+            path.chmod(0o600)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _copy_frozen_credential(raw, destination):
+    try:
+        descriptor = os.open(
+            destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+        )
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(raw)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def _read_frozen_inputs(home):
+    home = Path(home)
+    state_path = home / CREDENTIAL_INPUTS_STATE
+    environment_path = home / MANAGED_ENVIRONMENT_STATE
+    complete_path = home / MANAGED_INPUTS_COMPLETE
+    source_home = home / MANAGED_SOURCE_HOME
+    if (home / f"{CREDENTIAL_INPUTS_STATE}.initializing").exists():
+        raise ValueError("managed Hermes input snapshot initialization is incomplete")
+    try:
+        snapshot = json.loads(state_path.read_text(encoding="utf-8"))
+        environment_snapshot = json.loads(environment_path.read_text(encoding="utf-8"))
+        complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("managed Hermes input snapshot is unreadable") from exc
+    files = snapshot.get("files") if isinstance(snapshot, dict) else None
+    values = (
+        environment_snapshot.get("values")
+        if isinstance(environment_snapshot, dict) else None
+    )
+    if (
+        not isinstance(files, dict)
+        or snapshot.get("schema_version") != _CREDENTIAL_INPUTS_SCHEMA
+        or set(snapshot) != {"schema_version", "files"}
+        or set(files) != set(_INPUT_FILES)
+        or not all(isinstance(value, bool) for value in files.values())
+        or not isinstance(values, dict)
+        or environment_snapshot.get("schema_version") != _MANAGED_ENVIRONMENT_SCHEMA
+        or set(environment_snapshot) != {"schema_version", "values"}
+        or not all(
+            isinstance(name, str) and name
+            and isinstance(value, str) and value
+            for name, value in values.items()
+        )
+        or not isinstance(complete, dict)
+        or complete.get("schema_version") != _MANAGED_INPUTS_COMPLETE_SCHEMA
+        or set(complete) != {"schema_version"}
+        or not source_home.is_dir()
+        or files["config.yaml"] != (source_home / "config.yaml").is_file()
+    ):
+        raise ValueError("managed Hermes input snapshot is incompatible")
+    if any(files[name] and not (home / name).is_file() for name in _CREDENTIAL_INPUTS):
+        raise ValueError("managed Hermes input snapshot initialization is incomplete")
+    return values
+
+
+def _apply_frozen_environment(environment, names, values):
+    frozen = dict(environment)
+    for name in set(names) | set(values):
+        frozen.pop(name, None)
+    frozen.update(values)
+    return frozen
+
+
+def _freeze_credential_inputs(
+    source_home, home, environment=None, managed_environment_names=(),
+):
+    source_home = Path(source_home)
+    home = Path(home)
+    state_path = home / CREDENTIAL_INPUTS_STATE
+    environment_path = home / MANAGED_ENVIRONMENT_STATE
+    complete_path = home / MANAGED_INPUTS_COMPLETE
+    initializing = home / f"{CREDENTIAL_INPUTS_STATE}.initializing"
+    supplied = dict(environment or {})
+    names = set(managed_environment_names)
+    if complete_path.exists():
+        values = _read_frozen_inputs(home)
+    else:
+        if any(home.iterdir()):
+            raise ValueError("managed Hermes input snapshot initialization is incomplete")
+        try:
+            descriptor = os.open(
+                initializing, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+            )
+        except FileExistsError as exc:
+            raise ValueError(
+                "managed Hermes input snapshot initialization is incomplete"
+            ) from exc
+        os.close(descriptor)
+        complete = False
+        try:
+            frozen = {}
+            for name in _INPUT_FILES:
+                try:
+                    frozen[name] = (source_home / name).read_bytes()
+                except FileNotFoundError:
+                    frozen[name] = None
+            frozen_environment = {
+                name: supplied[name]
+                for name in sorted(names)
+                if supplied.get(name)
+            }
+            snapshot = {
+                "schema_version": _CREDENTIAL_INPUTS_SCHEMA,
+                "files": {name: raw is not None for name, raw in frozen.items()},
+            }
+            environment_snapshot = {
+                "schema_version": _MANAGED_ENVIRONMENT_SCHEMA,
+                "values": frozen_environment,
+            }
+            frozen_source_home = home / MANAGED_SOURCE_HOME
+            frozen_source_home.mkdir(mode=0o700)
+            if frozen["config.yaml"] is not None:
+                _copy_frozen_credential(
+                    frozen["config.yaml"], frozen_source_home / "config.yaml",
+                )
+            for name in _CREDENTIAL_INPUTS:
+                raw = frozen[name]
+                if raw is not None:
+                    _copy_frozen_credential(raw, home / name)
+            _create_once(
+                state_path,
+                json.dumps(snapshot, sort_keys=True).encode("utf-8") + b"\n",
+            )
+            _create_once(
+                environment_path,
+                json.dumps(environment_snapshot, sort_keys=True).encode("utf-8") + b"\n",
+            )
+            _create_once(
+                complete_path,
+                json.dumps({
+                    "schema_version": _MANAGED_INPUTS_COMPLETE_SCHEMA,
+                }, sort_keys=True).encode("utf-8") + b"\n",
+            )
+            complete = True
+        finally:
+            if complete:
+                initializing.unlink(missing_ok=True)
+        values = _read_frozen_inputs(home)
+    return _apply_frozen_environment(supplied, names, values)
+
+
+def load_frozen_managed_environment(home, environment, managed_environment_names):
+    values = _read_frozen_inputs(Path(home))
+    return _apply_frozen_environment(
+        environment, managed_environment_names, values,
+    )
 
 
 def transform_search_tool_result(
@@ -183,9 +363,17 @@ def _install_search_identity_plugin(home, binding_path):
     )
 
 
-def install_hooks(command, binding_path, binding, environment):
+def install_hooks(
+    command, binding_path, binding, environment, *, managed_environment_names=(),
+):
     home = attempt_home(binding)
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    source_home = Path(environment.get("HERMES_HOME") or Path.home() / ".hermes")
+    # Freeze presence before any later installation step can fail. Private
+    # auth.json updates (including OAuth refresh) are never overwritten.
+    environment = _freeze_credential_inputs(
+        source_home, home, environment, managed_environment_names,
+    )
     runtime_binding = home / "managed-binding.json"
     runtime_binding.write_text(
         json.dumps(binding, ensure_ascii=False, sort_keys=True), encoding="utf-8",
@@ -193,12 +381,10 @@ def install_hooks(command, binding_path, binding, environment):
     runtime_binding.chmod(0o600)
     hook = shlex.join([sys.executable, str(ROOT / "scripts/acquisition_budget_hook.py"),
                        "--binding", str(runtime_binding)])
-    source_home = Path(environment.get("HERMES_HOME") or Path.home() / ".hermes")
-    source_config = source_home / "config.yaml"
+    source_config = home / MANAGED_SOURCE_HOME / "config.yaml"
     config_path = home / "config.yaml"
-    frozen_source = config_path if config_path.is_file() else source_config
-    if frozen_source.is_file():
-        loaded_config = yaml.safe_load(frozen_source.read_text(encoding="utf-8"))
+    if source_config.is_file():
+        loaded_config = yaml.safe_load(source_config.read_text(encoding="utf-8"))
         if loaded_config is not None and not isinstance(loaded_config, dict):
             raise ValueError("Hermes default configuration is not an object")
         config = dict(loaded_config or {})
@@ -220,16 +406,6 @@ def install_hooks(command, binding_path, binding, environment):
     _write_immutable(
         config_path, raw, "immutable attempt Hermes hook configuration differs",
     )
-    # Freeze the ordinary user's credential/config inputs once per managed run.
-    # OAuth refreshes remain confined to this private copy and later resumes do
-    # not drift when the ambient Hermes configuration changes.
-    for name in ("auth.json", ".env"):
-        source = source_home / name
-        destination_path = home / name
-        if source.is_file() and not destination_path.exists():
-            fd = os.open(destination_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as destination:
-                destination.write(source.read_bytes())
     env = {**environment, "HERMES_HOME": str(home), "HERMES_ACCEPT_HOOKS": "1"}
     env.pop("HERMES_SAFE_MODE", None)
     env.pop("HERMES_ENABLE_PROJECT_PLUGINS", None)

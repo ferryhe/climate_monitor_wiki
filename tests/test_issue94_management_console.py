@@ -974,10 +974,17 @@ def test_adversarial_agent_output_cannot_execute_or_escape_binding(monkeypatch, 
     # This fake emits hostile output; it is not an installed Hermes runtime.
     # Hook installation/fail-closed dispatch have their own Issue #117 tests.
     # Keep the real subprocess and environment filtering under test here.
-    def fake_hook_install(command, supplied_path, supplied_binding, environment):
+    def fake_hook_install(
+        command, supplied_path, supplied_binding, environment, *,
+        managed_environment_names,
+    ):
         assert command[0] == str(fake)
         assert supplied_path == binding_path
         assert canonical_json_bytes(supplied_binding) == canonical_json_bytes(binding)
+        assert "OPENAI_API_KEY" in managed_environment_names
+        assert not {"DEPLOYMENT_SECRET", "RELOAD_TOKEN"} & set(
+            managed_environment_names
+        )
         return environment, tmp_path
 
     monkeypatch.setattr(runner, "install_hooks", fake_hook_install)
@@ -2307,6 +2314,12 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
         "model": "observed-model",
         "observed_at": "2026-09-10T08:00:00Z",
     }), encoding="utf-8")
+    from climate_monitor.hermes_acquisition_hooks import (
+        _freeze_credential_inputs, attempt_home,
+    )
+    private_home = attempt_home(resumed)
+    private_home.mkdir()
+    _freeze_credential_inputs(tmp_path / "ordinary-hermes", private_home)
 
     def enter_report(command, **_kwargs):
         loaded, loaded_path = monitor._load_task_binding(
