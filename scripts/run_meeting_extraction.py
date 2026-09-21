@@ -67,18 +67,24 @@ def run(binding: dict) -> dict:
     required = {
         "schema_version", "acquisition_run_id", "acquisition_batch_id", "registry_database",
         "meeting_attempt", "retry_failed", "task_version", "prompt_version", "prompt_sha256",
-        "prompt_text", "provider", "model", "retry_meeting_run_id",
+        "prompt_text", "retry_meeting_run_id",
     }
-    if set(binding) != required or binding.get("schema_version") != "climate-meeting-worker-binding.v1":
+    if (not required <= set(binding) <= required | {"provider", "model"}
+            or binding.get("schema_version") != "climate-meeting-worker-binding.v1"):
         raise ValueError("invalid meeting worker binding")
+    identity_fields = {"provider", "model"} & binding.keys()
+    if identity_fields and (identity_fields != {"provider", "model"} or not all(
+        isinstance(binding[key], str) and binding[key].strip() for key in identity_fields
+    )):
+        raise ValueError("provider and model must both be absent or non-empty strings")
     prompt = str(binding["prompt_text"]).replace("\r\n", "\n").replace("\r", "\n")
     if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != binding["prompt_sha256"]:
         raise ValueError("meeting worker prompt hash mismatch")
     return process_batch(
         binding["registry_database"], binding["acquisition_batch_id"],
         prompt_text=prompt, prompt_version=binding["prompt_version"],
-        provider=binding["provider"], model=binding["model"],
-        extractor=_extractor(binding["provider"], binding["model"]),
+        provider=binding.get("provider", ""), model=binding.get("model", ""),
+        extractor=_extractor(binding.get("provider", ""), binding.get("model", "")),
         retry_failed=bool(binding["retry_failed"]),
         retry_meeting_run_id=binding["retry_meeting_run_id"],
         task_version=int(binding["task_version"]),

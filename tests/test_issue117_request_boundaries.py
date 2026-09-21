@@ -5756,7 +5756,10 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
         "model", "agent_protocol", "checkpoint_dir", "registry_database",
         "frozen_report_input", "report_inputs", "definition",
     ):
-        assert resumed_binding[key] == b[key]
+        if key in {"provider", "model"} and key not in b:
+            assert key not in resumed_binding
+        else:
+            assert resumed_binding[key] == b[key]
 
     resumed_sends = []
     seed_runtime(monkeypatch, resumed_sends)
