@@ -1645,7 +1645,7 @@ class ManagementService:
             stage = "systemic_failure"
         from climate_monitor.request_budget import RequestBudget, ledger_path
         if ledger_path(binding).is_file():
-            used_budget = RequestBudget(ledger_path(binding), binding).usage()
+            used_budget = RequestBudget.usage_from_existing(ledger_path(binding), binding)
         updated_at = persisted.get("updated_at") or runtime.get("heartbeat_at") or runtime.get("launched_at") or binding["created_at"]
         try:
             age = (_utc_now() - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))).total_seconds()

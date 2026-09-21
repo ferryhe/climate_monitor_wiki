@@ -92,6 +92,20 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     return result
 
 
+def _tree_snapshot(root: Path) -> dict[str, tuple]:
+    result = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        metadata = path.stat()
+        result[str(path.relative_to(root))] = (
+            "file" if path.is_file() else "dir",
+            path.read_bytes() if path.is_file() else b"",
+            metadata.st_mtime_ns,
+            metadata.st_mode,
+            metadata.st_ino,
+        )
+    return result
+
+
 def _materialized_service(tmp_path: Path) -> ManagementService:
     from climate_registry.persistent import initialize_registry
 
@@ -111,6 +125,36 @@ def _materialized_service(tmp_path: Path) -> ManagementService:
     return ManagementService(
         store=store, runtime_root=run_root, execution_backend="host-dashboard",
     )
+
+
+def _materialized_budget_run(tmp_path: Path, monkeypatch):
+    from climate_monitor.request_budget import RequestBudget, ledger_path
+    import climate_monitor.request_budget as request_budget
+
+    if os.name == "nt":
+        original_open = request_budget.os.open
+        directory_sync_file = tmp_path / "windows-directory-sync"
+
+        def portable_open(value, flags, *args):
+            if Path(value).is_dir():
+                return original_open(directory_sync_file, os.O_RDWR | os.O_CREAT, 0o600)
+            return original_open(value, flags, *args)
+
+        monkeypatch.setattr(request_budget.os, "open", portable_open)
+
+    materialized = _materialized_service(tmp_path)
+    writer = ManagementService(
+        store=materialized.store, runtime_root=materialized.runtime_root,
+        execution_backend="local", launcher=lambda binding: 123,
+    )
+    started = writer.start(
+        trigger="manual", now=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    binding = writer.binding(started["run_id"])
+    ledger = RequestBudget(ledger_path(binding), binding)
+    ledger.claim("http", "https://example.test/article")
+    ledger.finish()
+    return materialized, started, binding, ledger.usage()
 
 
 @pytest.mark.parametrize("selection", ["configured", "relative", "unset", "empty"])
@@ -696,6 +740,108 @@ def test_materialized_local_archive_reads_without_any_file_change(monkeypatch, t
     with pytest.raises(RuntimeError, match="read-only"):
         archive.store.save(definition, actor="forbidden")
     assert _tree_bytes(tmp_path) == before
+
+
+def test_archive_progress_and_list_runs_read_existing_budget_without_writes(
+    monkeypatch, tmp_path,
+):
+    import climate_monitor.request_budget as request_budget
+
+    materialized, started, binding, expected_usage = _materialized_budget_run(
+        tmp_path, monkeypatch,
+    )
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(materialized.store.active_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(materialized.store.version_root))
+    monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR", str(materialized.runtime_root))
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "host.sock"))
+    monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
+    archive = history_service_from_environment("local")
+    before = _tree_snapshot(tmp_path)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("archive budget read attempted a write/lock seam")
+
+    original_path_open = Path.open
+    original_read_text = Path.read_text
+    original_os_open = request_budget.os.open
+    budget_path = request_budget.ledger_path(binding)
+    budget_reads = []
+
+    def guarded_path_open(path, mode="r", *args, **kwargs):
+        if path.suffix == ".lock" and any(flag in mode for flag in "aw+"):
+            forbidden()
+        return original_path_open(path, mode, *args, **kwargs)
+
+    def guarded_os_open(path, flags, *args, **kwargs):
+        if str(path).endswith(".tmp"):
+            forbidden()
+        return original_os_open(path, flags, *args, **kwargs)
+
+    def counted_read_text(path, *args, **kwargs):
+        if path == budget_path:
+            budget_reads.append(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    monkeypatch.setattr(Path, "open", guarded_path_open)
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+    monkeypatch.setattr(request_budget.fcntl, "flock", forbidden)
+    monkeypatch.setattr(request_budget.os, "chmod", forbidden)
+    monkeypatch.setattr(request_budget.os, "replace", forbidden)
+    monkeypatch.setattr(request_budget.os, "open", guarded_os_open)
+
+    progress = archive.progress(started["run_id"])
+    runs = archive.list_runs()
+    assert progress["budget"]["used"] == expected_usage
+    assert runs[0]["run_id"] == started["run_id"]
+    assert runs[0]["budget"]["used"] == expected_usage
+    assert budget_reads == [budget_path, budget_path]
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("failure", ["missing", "digest", "identity", "limits"])
+def test_existing_budget_usage_failures_never_write(
+    monkeypatch, tmp_path, failure,
+):
+    import climate_monitor.request_budget as request_budget
+
+    _materialized, _started, binding, _usage = _materialized_budget_run(
+        tmp_path, monkeypatch,
+    )
+    path = request_budget.ledger_path(binding)
+    if failure == "missing":
+        path.unlink()
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if failure == "digest":
+            payload["active"] = 99
+        elif failure == "identity":
+            payload["identity"] = "0" * 64
+            state = {key: value for key, value in payload.items() if key != "sha256"}
+            payload["sha256"] = request_budget.digest(state)
+        else:
+            payload["limits"]["fetch_attempts"] += 1
+            state = {key: value for key, value in payload.items() if key != "sha256"}
+            payload["sha256"] = request_budget.digest(state)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("failed archive budget read attempted a write/lock seam")
+
+    monkeypatch.setattr(request_budget.RequestBudget, "_locked", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    monkeypatch.setattr(request_budget.fcntl, "flock", forbidden)
+    monkeypatch.setattr(request_budget.os, "chmod", forbidden)
+    monkeypatch.setattr(request_budget.os, "open", forbidden)
+    monkeypatch.setattr(request_budget.os, "replace", forbidden)
+    with pytest.raises((FileNotFoundError, ValueError), match=(
+        None if failure == "missing" else
+        "digest differs" if failure == "digest" else
+        "identity/limits differ"
+    )):
+        request_budget.RequestBudget.usage_from_existing(path, binding)
+    assert _tree_snapshot(tmp_path) == before
 
 
 def test_history_run_detail_keeps_real_progress_when_registry_is_missing(monkeypatch, tmp_path):
