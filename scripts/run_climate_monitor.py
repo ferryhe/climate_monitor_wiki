@@ -1070,7 +1070,7 @@ def _run_prepare(args, parser) -> int:
                 "task_binding": {
                     "path": str(task_binding_path), "sha256": hashlib.sha256(task_binding_path.read_bytes()).hexdigest(),
                     "task_version": task_binding["task_version"], "effective_sha256": task_binding["effective_sha256"],
-                    "provider": task_binding["provider"], "model": task_binding["model"],
+                    **{key: task_binding[key] for key in ("provider", "model") if key in task_binding},
                     "checkpoint_dir": task_binding["checkpoint_dir"],
                 },
             }
@@ -1191,7 +1191,7 @@ def _run_prepare(args, parser) -> int:
     }
     if task_binding is not None:
         bundle_payload["execution_binding"] = {
-            "provider": task_binding["provider"], "model": task_binding["model"],
+            **{key: task_binding[key] for key in ("provider", "model") if key in task_binding},
             "repository_commit_sha": task_binding["repository_commit_sha"],
             "article_summary_sha256": task_binding["prompt_hashes"]["article_summary"],
             "executive_summary_sha256": task_binding["prompt_hashes"]["executive_summary"],
@@ -1377,8 +1377,8 @@ def _run_finalize(args, parser) -> MonitorRunResult:
             str(binding_path)
         )
         prompt = _bound_prompt(binding, "article_summary", binding_path)
-        if (execution_binding.get("provider") != binding["provider"]
-                or execution_binding.get("model") != binding["model"]
+        if (execution_binding.get("provider") != binding.get("provider")
+                or execution_binding.get("model") != binding.get("model")
                 or execution_binding.get("repository_commit_sha")
                 != binding["repository_commit_sha"]):
             raise SystemExit("bound provider/model/repository commit changed since prepare")
@@ -1446,7 +1446,8 @@ def _run_finalize(args, parser) -> MonitorRunResult:
     # so the orchestrator always sees the prepare-blessed date. Stale or
     # missing CLI args must NOT silently swap the date.
     finalized_report_date = date.fromisoformat(bundle["report_date"])
-    model, provider = _resolve_authoring_identity(args.model, args.model_provider)
+    model, provider = ((binding.get("model", ""), binding.get("provider", ""))
+                       if execution_binding else _resolve_authoring_identity(args.model, args.model_provider))
     result = run_weekly_monitor(
         model=model, model_provider=provider,
         source_config_path=Path(args.source_config),
@@ -1743,7 +1744,7 @@ def _verify_authoring_resume(args, staging, bundle):
         bound, bound_path, bound_taxonomy = _load_task_binding_with_taxonomy(str(path))
         prepared_prompt_sha = _bound_prompt(bound, "article_summary", bound_path).sha256
         prepared_taxonomy_sha = bound_taxonomy.sha256
-        if args.model != bound["model"] or args.model_provider != bound["provider"]:
+        if args.model != bound.get("model", "") or args.model_provider != bound.get("provider", ""):
             raise SystemExit("bound provider/model changed; use fresh staging")
         if (getattr(args, "repository_commit_sha", "")
                 != bound["repository_commit_sha"]
@@ -1780,15 +1781,16 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
         bound, bound_path, bound_taxonomy = _load_task_binding_with_taxonomy(
             args.task_binding
         )
-        args.model = bound["model"]
-        args.model_provider = bound["provider"]
+        args.model = bound.get("model", "")
+        args.model_provider = bound.get("provider", "")
         supplied_commit = getattr(args, "repository_commit_sha", "")
         if supplied_commit and supplied_commit != bound["repository_commit_sha"]:
             raise SystemExit("--repository-commit-sha differs from the immutable task binding")
         args.repository_commit_sha = bound["repository_commit_sha"]
     if response_path.exists() and not (staging / "authoring_run.json").exists():
         raise SystemExit("authoring response already exists without a resumable URL run")
-    args.model, args.model_provider = _resolve_authoring_identity(args.model, args.model_provider)
+    if not getattr(args, "task_binding", ""):
+        args.model, args.model_provider = _resolve_authoring_identity(args.model, args.model_provider)
     if not (staging / "bundle.json").exists():
         with redirect_stdout(sys.stderr):
             _run_prepare(args, parser)

@@ -127,9 +127,13 @@ def _now() -> str:
 
 
 def _minimal_environment(provider: str) -> dict[str, str]:
-    """Allow only OS/runtime settings and the selected provider credential."""
+    """Allow OS/runtime settings and known credentials for Hermes provider selection."""
     keys = set(_BASE_ENV)
     keys.update(_PROVIDER_ENV.get(provider.lower(), ()))
+    if not provider:
+        # Hermes selects its ambient provider; retain the existing credential allowlist.
+        keys.update(key for values in _PROVIDER_ENV.values() for key in values)
+        keys.update(("HERMES_INFERENCE_PROVIDER", "HERMES_INFERENCE_MODEL"))
     environment = {key: os.environ[key] for key in keys if os.environ.get(key)}
     environment.update({"PYTHONUNBUFFERED": "1", "HERMES_REDACT_SECRETS": "true"})
     return environment
@@ -479,12 +483,14 @@ def _hermes_command(
     runtime = int(binding["budgets"]["runtime_seconds"] if runtime_seconds is None else runtime_seconds)
     command = [
         hermes, "chat", "--quiet", "--source", _session_source(binding),
-        "--provider", str(binding["provider"]), "--model", str(binding["model"]),
         "--toolsets", (
             "web,browser,climate_acquisition"
             if candidate_handle_protocol(binding) else "web,browser"
         ),
     ]
+    for key in ("provider", "model"):
+        if key in binding:
+            command.extend([f"--{key}", str(binding[key])])
     if not provider_native_unbounded_search(binding):
         command.extend([
             "--max-turns",
@@ -3046,6 +3052,11 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
             return {
                 "status": "running", "meeting_run_id": active["meeting_run_id"], "reused": True,
             }
+        identity = {key: meeting[key] for key in ("provider", "model") if key in meeting}
+        if identity and (set(identity) != {"provider", "model"} or not all(
+            isinstance(value, str) and value.strip() for value in identity.values()
+        )):
+            raise ValueError("provider and model must both be absent or non-empty strings")
         worker_binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
             "acquisition_run_id": binding["run_id"],
@@ -3058,8 +3069,7 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
             "prompt_version": meeting["prompt_version"],
             "prompt_sha256": meeting["prompt_sha256"],
             "prompt_text": meeting["prompt_text"],
-            "provider": meeting["provider"],
-            "model": meeting["model"],
+            **identity,
         }
         _atomic_write(
             path,
@@ -3105,11 +3115,13 @@ def _run_report(
         "--web-listening-manifest", paths["web_listening_manifest"],
         "--pillar-b-artifact", paths["pillar_b_artifact"], "--staging-dir", paths["staging_dir"],
         "--state-dir", paths["state_dir"], "--source-dir", paths["source_dir"],
-        "--wiki-dir", paths["wiki_dir"], "--model-provider", str(binding["provider"]),
-        "--model", str(binding["model"]), "--repository-commit-sha",
+        "--wiki-dir", paths["wiki_dir"], "--repository-commit-sha",
         str(binding["repository_commit_sha"]),
         "--json",
     ]
+    for key, flag in (("provider", "--model-provider"), ("model", "--model")):
+        if key in binding:
+            command.extend([flag, str(binding[key])])
     result_path = binding_path.parent / f"attempt-{binding['attempt']}-report-result.json"
     with (
         _exclusive_lock(binding_path.parent / ".run.lock") as report_lock_descriptor,
@@ -3117,7 +3129,7 @@ def _run_report(
     ):
         run_options: dict[str, Any] = {
             "cwd": ROOT,
-            "env": _report_environment(str(binding["provider"])),
+            "env": _report_environment(str(binding.get("provider", ""))),
             "stdout": output,
         }
         run_options["pass_fds"] = tuple(
@@ -3228,7 +3240,7 @@ def _invoke_hermes(
     budget = RequestBudget(ledger_path(binding), binding)
     budget.remaining_seconds()
     environment, home = install_hooks(command, binding_path, binding,
-                                      _minimal_environment(str(binding["provider"])))
+                                      _minimal_environment(str(binding.get("provider", ""))))
     budget.remaining_seconds()
     with response_path.open("wb") as response:
         process = subprocess.Popen(

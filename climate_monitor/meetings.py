@@ -1225,6 +1225,10 @@ def process_batch(
     task_version: int = 1,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    if (provider, model) != ("", "") and not all(
+        isinstance(value, str) and value.strip() for value in (provider, model)
+    ):
+        raise ValueError("provider and model must both be empty or non-empty strings")
     with _meeting_batch_lock(database, batch_id, blocking=False) as acquired:
         if not acquired:
             connection = _open(database)
@@ -1263,8 +1267,9 @@ def _process_batch(
 ) -> dict[str, Any]:
     """Extract and persist meetings for every saved body in one acquisition batch."""
     prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
-    if not prompt_text.strip() or not prompt_version.strip() or not provider.strip() or not model.strip():
-        raise ValueError("prompt version/text and effective provider/model are required")
+    # Empty identity fields persist the absence of a task override (Hermes defaults).
+    if not prompt_text.strip() or not prompt_version.strip():
+        raise ValueError("prompt version/text are required")
     if type(task_version) is not int or task_version < 1:
         raise ValueError("task_version must be a positive integer")
     connection = _open(database, write=True)
@@ -1355,6 +1360,11 @@ def _process_batch(
                        ORDER BY ai.ordinal""",
                     (batch_id,),
                 )]
+        # Retry/recovery can replace the caller's identity with a persisted pair.
+        if (provider, model) != ("", "") and not all(
+            isinstance(value, str) and value.strip() for value in (provider, model)
+        ):
+            raise ValueError("provider and model must both be empty or non-empty strings")
         inputs = [{key: item[key] for key in (
             "acquisition_item_id", "article_id", "content_version_id", "source_url", "content_sha256"
         )} for item in items]

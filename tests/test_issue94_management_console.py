@@ -53,6 +53,19 @@ def _definition(tmp_path: Path) -> dict:
     return value
 
 
+def _historical_binding(definition, **kwargs):
+    """Model an already-frozen pre-#139 run, including its override and hashes."""
+    from climate_monitor.management import _sha, effective_task
+
+    binding = build_task_binding(definition, **kwargs)
+    binding["definition"] = json.loads(json.dumps(definition))
+    for configuration in (binding, binding["meeting"]):
+        configuration.update({key: definition["parameters"][key] for key in ("provider", "model")})
+    binding["definition_sha256"] = _sha(definition)
+    binding["effective_sha256"] = _sha(effective_task(definition))
+    return binding
+
+
 def _linux_lock_holder(lock_path: Path, marker: Path) -> subprocess.Popen:
     code = (
         "import fcntl,os,pathlib,sys,time; "
@@ -267,8 +280,12 @@ def test_optional_meeting_component_preserves_five_prompts_and_legacy_state_hash
     }
     started = service.start(trigger="manual")
     binding = service.binding(started["run_id"])
-    assert binding["definition"] == legacy
-    assert _sha(binding["definition"]) == binding["definition_sha256"] == legacy_hash
+    expected_execution = json.loads(json.dumps(legacy))
+    for key in ("provider", "model"):
+        expected_execution["parameters"].pop(key)
+    assert binding["definition"] == expected_execution
+    assert _sha(binding["definition"]) == binding["definition_sha256"]
+    assert store.load()["hashes"]["definition_sha256"] == legacy_hash
     assert binding["meeting"]["enabled"] is False
     assert service.binding(started["run_id"]) == binding
     changed = json.loads(json.dumps(loaded["definition"]))
@@ -437,7 +454,8 @@ def test_meeting_ui_surfaces_process_retry_and_status_failures(tmp_path):
     store = _store(tmp_path)
     store.save(_definition(tmp_path), actor="bootstrap")
     service = ManagementService(
-        store=store, runtime_root=tmp_path / "runs", meeting_launcher=lambda binding: 123,
+        store=store, runtime_root=tmp_path / "runs", launcher=lambda binding: 123,
+        meeting_launcher=lambda binding: 123,
     )
     run_id = service.start(trigger="manual")["run_id"]
 
@@ -447,6 +465,13 @@ def test_meeting_ui_surfaces_process_retry_and_status_failures(tmp_path):
     enabled = store.load()["definition"]
     enabled["meeting"]["enabled"] = True
     store.save(enabled, expected_version=1, actor="operator")
+    with pytest.raises(RuntimeError, match="disabled.*frozen"):
+        service.start_meetings(run_id)
+    # Error handling for an enabled module requires a newly frozen run.
+    (tmp_path / "runs" / run_id / "attempt-1-result.json").write_text(
+        json.dumps({"exit_code": 1, "retryable": False})
+    )
+    run_id = service.start(trigger="manual")["run_id"]
     with pytest.raises(KeyError, match="unknown acquisition batch"):
         service.start_meetings(run_id)
 
@@ -1000,7 +1025,7 @@ def test_existing_monitor_consumes_exact_frozen_binding_not_active_config(tmp_pa
     store = _store(tmp_path)
     original = _definition(tmp_path)
     store.save(original, actor="operator")
-    binding = build_task_binding(original, task_version=1, run_id="monitor-bound", attempt=1)
+    binding = _historical_binding(original, task_version=1, run_id="monitor-bound", attempt=1)
     run_dir = Path(binding["checkpoint_dir"]).parent
     run_dir.mkdir()
     binding_path = run_dir / "attempt-1.json"
@@ -1153,6 +1178,13 @@ def test_management_routes_require_server_verified_session_and_logout(monkeypatc
     enabled = store.load()["definition"]
     enabled["meeting"]["enabled"] = True
     store.save(enabled, expected_version=1, actor="operator")
+    frozen_disabled = client.post(f"/api/manage/runs/{run_id}/meetings", json={})
+    assert frozen_disabled.status_code == 409
+    assert "disabled" in frozen_disabled.json()["detail"]
+    (tmp_path / "runs" / run_id / "attempt-1-result.json").write_text(
+        json.dumps({"exit_code": 1, "retryable": False})
+    )
+    run_id = client.post("/api/manage/runs", json={}).json()["run_id"]
     missing_batch = client.post(f"/api/manage/runs/{run_id}/meetings", json={})
     assert missing_batch.status_code == 404
     assert "not found" in missing_batch.json()["detail"]
@@ -2325,7 +2357,7 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
 def test_runner_projects_and_invokes_existing_bound_report_path(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
 
-    binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="report", attempt=1)
+    binding = _historical_binding(_definition(tmp_path), task_version=1, run_id="report", attempt=1)
     item = {"url": "https://wmo.int/r", "title": "Report", "summary": "Climate evidence",
             "source": "WMO", "discovery_kind": "search", "discovery_ref": "https://wmo.int/r",
             "discovery_search_ref": "search-1", "published_date": binding["report_date"],
