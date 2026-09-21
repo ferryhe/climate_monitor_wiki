@@ -30,7 +30,11 @@ from climate_monitor.run_ledger import (
     LedgerUnavailableError,
     RunLedgerReader,
 )
-from climate_monitor.management import ManagementService
+from climate_monitor.managed_backend import (
+    active_backend_from_environment,
+    history_service_from_environment,
+    management_service_from_environment,
+)
 from climate_monitor.console_auth import (
     ConsoleUser,
     auth_router,
@@ -90,17 +94,38 @@ app.state.limiter = _LOGIN_LIMITER
 
 responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
 RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
-management_service: ManagementService | None = None
+management_service: Any | None = None
 ConsolePrincipal = Annotated[ConsoleUser, Depends(current_console_user)]
 OptionalConsolePrincipal = Annotated[ConsoleUser | None, Depends(optional_console_user)]
 
 
-def _management_service() -> ManagementService:
+def _management_service() -> Any:
     """Initialize console-only state only after an authenticated console call."""
     global management_service
     if management_service is None:
-        management_service = ManagementService.from_environment()
+        management_service = management_service_from_environment()
     return management_service
+
+
+def _history_service(backend: str) -> Any:
+    active = active_backend_from_environment()
+    return history_service_from_environment(
+        backend,
+        active_service=(
+            _management_service()
+            if active == "host-dashboard" and backend == active else None
+        ),
+    )
+
+
+def _history_binding(service: Any, backend: str, run_id: str) -> dict[str, Any]:
+    binding = service.binding(run_id)
+    bound_backend = str(binding.get("execution_backend") or "local")
+    if bound_backend != backend:
+        raise RuntimeError(
+            f"run {run_id} is frozen to {bound_backend}, not {backend}"
+        )
+    return binding
 
 # --- Input validation constants ---
 MAX_MESSAGE_LENGTH = 8000          # Maximum characters per user message
@@ -546,12 +571,12 @@ def console_asset(filename: str, user: ConsolePrincipal) -> FileResponse:
 
 @app.get("/api/manage/config", include_in_schema=False)
 def console_config(user: ConsolePrincipal) -> dict[str, Any]:
-    return _manage_call(_management_service().store.load)
+    return _manage_call(lambda: _management_service().store.load())
 
 
 @app.get("/api/manage/versions", include_in_schema=False)
 def console_versions(user: ConsolePrincipal) -> list[dict[str, Any]]:
-    return _manage_call(_management_service().store.versions)
+    return _manage_call(lambda: _management_service().store.versions())
 
 
 @app.get("/api/manage/diff", include_in_schema=False)
@@ -576,7 +601,7 @@ def console_restore(version: int, user: ConsolePrincipal, expected_version: int)
 
 @app.get("/api/manage/progress", include_in_schema=False)
 def console_all_progress(user: ConsolePrincipal) -> list[dict[str, Any]]:
-    return _manage_call(_management_service().list_runs)
+    return _manage_call(lambda: _management_service().list_runs())
 
 
 @app.post("/api/manage/runs", include_in_schema=False)
@@ -664,10 +689,139 @@ def console_freeze_meeting_snapshot(payload: dict[str, Any], user: ConsolePrinci
 
 @app.get("/api/manage/meeting-snapshots/{snapshot_id}", include_in_schema=False)
 def console_meeting_snapshot(snapshot_id: str, user: ConsolePrincipal) -> dict[str, Any]:
-    from climate_monitor.meetings import load_snapshot
+    return _manage_call(lambda: _management_service().load_meeting_snapshot(snapshot_id))
 
-    database = _management_service().store.load()["definition"]["runtime"]["registry_database"]
-    return _manage_call(lambda: load_snapshot(database, snapshot_id))
+
+@app.get("/api/manage/history", include_in_schema=False)
+def console_history_sources(user: ConsolePrincipal) -> list[dict[str, Any]]:
+    def load() -> list[dict[str, Any]]:
+        active = active_backend_from_environment()
+        result = []
+        for backend in ("local", "host-dashboard"):
+            try:
+                _history_service(backend)
+                result.append({"backend": backend, "active": backend == active, "available": True})
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                result.append({
+                    "backend": backend, "active": backend == active,
+                    "available": False, "reason": str(exc),
+                })
+        return result
+
+    return _manage_call(load)
+
+
+@app.get("/api/manage/history/{backend}/versions", include_in_schema=False)
+def console_history_versions(backend: str, user: ConsolePrincipal) -> list[dict[str, Any]]:
+    return _manage_call(lambda: [
+        {"backend": backend, **value}
+        for value in _history_service(backend).store.versions()
+    ])
+
+
+@app.get("/api/manage/history/{backend}/versions/{version}", include_in_schema=False)
+def console_history_version(backend: str, version: int, user: ConsolePrincipal) -> dict[str, Any]:
+    return _manage_call(lambda: {
+        "backend": backend,
+        "version": _history_service(backend).store.version(version),
+    })
+
+
+@app.get("/api/manage/history/{backend}/diff", include_in_schema=False)
+def console_history_diff(
+    backend: str, old_version: int, new_version: int, user: ConsolePrincipal,
+) -> dict[str, Any]:
+    return _manage_call(lambda: {
+        "backend": backend,
+        "diff": _history_service(backend).store.diff(old_version, new_version),
+    })
+
+
+@app.get("/api/manage/history/{backend}/runs", include_in_schema=False)
+def console_history_runs(backend: str, user: ConsolePrincipal) -> list[dict[str, Any]]:
+    def load() -> list[dict[str, Any]]:
+        service = _history_service(backend)
+        rows = service.list_runs()
+        for row in rows:
+            _history_binding(service, backend, row["run_id"])
+            row["backend"] = backend
+        return rows
+
+    return _manage_call(load)
+
+
+@app.get("/api/manage/history/{backend}/runs/{run_id}", include_in_schema=False)
+def console_history_run(backend: str, run_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    def load() -> dict[str, Any]:
+        service = _history_service(backend)
+        binding = _history_binding(service, backend, run_id)
+        progress = service.progress(run_id)
+        try:
+            meetings = service.meeting_progress(run_id)
+        except (FileNotFoundError, ValueError):
+            meetings = {
+                "status": "unavailable",
+                "reason": "Meeting evidence is unavailable for this archived run.",
+            }
+        return {
+            "backend": backend, "run_id": run_id, "binding": binding,
+            "progress": progress, "meetings": meetings,
+        }
+
+    return _manage_call(load)
+
+
+@app.get("/api/manage/history/{backend}/runs/{run_id}/items/{item_id:path}", include_in_schema=False)
+def console_history_item(
+    backend: str, run_id: str, item_id: str, user: ConsolePrincipal,
+) -> dict[str, Any]:
+    def load() -> dict[str, Any]:
+        service = _history_service(backend)
+        _history_binding(service, backend, run_id)
+        return {"backend": backend, **service.item_detail(run_id, item_id)}
+
+    return _manage_call(load)
+
+
+@app.get("/api/manage/history/{backend}/meetings", include_in_schema=False)
+def console_history_meetings(
+    backend: str, user: ConsolePrincipal, organizer: str | None = None,
+    event_types: str | None = None, start_date: str | None = None,
+    end_date: str | None = None, include_unknown: bool = False,
+    include_deadlines: bool = False, include_cancelled: bool = False,
+    include_retrospective: bool = False, base_date: str | None = None,
+    timezone_name: str = "America/New_York",
+) -> dict[str, Any]:
+    filters = _meeting_filters(
+        organizer=organizer, event_types=event_types, start_date=start_date,
+        end_date=end_date, include_unknown=include_unknown,
+        include_deadlines=include_deadlines, include_cancelled=include_cancelled,
+        include_retrospective=include_retrospective, base_date=base_date,
+        timezone_name=timezone_name,
+    )
+    return _manage_call(lambda: {
+        "backend": backend,
+        "meetings": _history_service(backend).meeting_events(**filters),
+    })
+
+
+@app.get("/api/manage/history/{backend}/meeting-snapshots/{snapshot_id}", include_in_schema=False)
+def console_history_snapshot(
+    backend: str, snapshot_id: str, user: ConsolePrincipal,
+) -> dict[str, Any]:
+    return _manage_call(lambda: {
+        "backend": backend,
+        "snapshot": _history_service(backend).load_meeting_snapshot(snapshot_id),
+    })
+
+
+@app.api_route(
+    "/api/manage/history/{backend}/{path:path}",
+    methods=["POST", "PUT", "PATCH", "DELETE"], include_in_schema=False,
+)
+def reject_history_mutation(backend: str, path: str, user: ConsolePrincipal) -> None:
+    del backend, path
+    raise HTTPException(status_code=409, detail="history backends are read-only")
 
 
 app.mount("/wiki", StaticFiles(directory=WIKI_DIR), name="wiki")

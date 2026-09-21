@@ -188,8 +188,6 @@ def default_task_definition() -> dict[str, Any]:
                 "retries_per_item": 2,
                 "runtime_seconds": 3600,
             },
-            "provider": "openai-api",
-            "model": "gpt-5.6-luna",
         },
         "runtime": {
             "registry_database": str(database),
@@ -247,9 +245,13 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
     params = value.get("parameters")
     if not isinstance(params, Mapping):
         raise ValueError("parameters must be an object")
-    parameter_fields = {"report_date", "timezone", "source_keys", "date_policy", "budgets", "provider", "model"}
-    if set(params) != parameter_fields:
-        raise ValueError(f"parameters fields must be exactly {sorted(parameter_fields)}")
+    parameter_fields = {"report_date", "timezone", "source_keys", "date_policy", "budgets"}
+    legacy_parameter_fields = parameter_fields | {"provider", "model"}
+    if set(params) not in {frozenset(parameter_fields), frozenset(legacy_parameter_fields)}:
+        raise ValueError(
+            f"parameters fields must be exactly {sorted(parameter_fields)}; "
+            "historical definitions may also contain provider and model"
+        )
     report_date_value = str(params.get("report_date", ""))
     if report_date_value != "auto":
         try:
@@ -282,9 +284,12 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(number, bool) or not isinstance(number, int) or number < (0 if key == "retries_per_item" else 1):
             raise ValueError(f"budget {key} must be a valid positive integer")
         normalized_budgets[key] = number
-    provider, model = str(params.get("provider", "")).strip(), str(params.get("model", "")).strip()
-    if not provider or not model:
-        raise ValueError("provider and model are required")
+    legacy_identity: dict[str, str] = {}
+    if set(params) == legacy_parameter_fields:
+        provider, model = str(params.get("provider", "")).strip(), str(params.get("model", "")).strip()
+        if not provider or not model:
+            raise ValueError("historical provider and model must both be non-empty")
+        legacy_identity = {"provider": provider, "model": model}
     runtime = value.get("runtime")
     if not isinstance(runtime, Mapping) or set(runtime) != {"registry_database", "run_root"}:
         raise ValueError("runtime must contain only registry_database and run_root")
@@ -380,14 +385,25 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
             "source_keys": normalized_keys,
             "date_policy": _validate_date_policy(params["date_policy"]),
             "budgets": normalized_budgets,
-            "provider": provider,
-            "model": model,
+            **legacy_identity,
         },
         "runtime": {"registry_database": str(database), "run_root": str(run_root)},
         "taxonomy": {key: str(taxonomy[key]).strip() for key in ("schema_version", "path", "version")},
         "prompts": normalized_prompts,
         "meeting": normalized_meeting,
     }
+
+
+def without_task_model_overrides(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a new-definition payload that inherits the Hermes defaults."""
+    definition = copy.deepcopy(dict(value))
+    parameters = definition.get("parameters")
+    if isinstance(parameters, Mapping):
+        normalized_parameters = dict(parameters)
+        normalized_parameters.pop("provider", None)
+        normalized_parameters.pop("model", None)
+        definition["parameters"] = normalized_parameters
+    return definition
 
 
 def _resolved_report_date(parameters: Mapping[str, Any], now: datetime | None = None) -> date:
@@ -500,16 +516,24 @@ def _exclusive_lock_nowait(path: Path):
 
 
 class TaskDefinitionStore:
-    def __init__(self, active_path: str | Path = DEFAULT_TASK_PATH, version_root: str | Path = DEFAULT_VERSION_ROOT):
+    def __init__(
+        self, active_path: str | Path = DEFAULT_TASK_PATH,
+        version_root: str | Path = DEFAULT_VERSION_ROOT, *, archive_only: bool = False,
+    ):
         self.active_path = Path(active_path)
         self.version_root = Path(version_root)
+        self.archive_only = archive_only
 
-    def _state(self) -> dict[str, Any]:
+    def _state(self, *, validate_definition: bool = True) -> dict[str, Any]:
         try:
             payload = json.loads(self.active_path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
             raise FileNotFoundError(f"task definition not configured: {self.active_path}") from exc
         if isinstance(payload, dict) and payload.get("schema_version") == "climate-acquisition-task-bootstrap.v1":
+            if self.archive_only:
+                raise FileNotFoundError(
+                    f"task history is not materialized: {self.active_path}"
+                )
             definition = default_task_definition()
             return {
                 "schema_version": STATE_SCHEMA,
@@ -528,8 +552,20 @@ class TaskDefinitionStore:
         if payload.get("definition_sha256") != _sha(raw_definition):
             raise ValueError("task definition hash mismatch")
         payload["_raw_definition"] = copy.deepcopy(raw_definition)
-        payload["definition"] = validate_task_definition(raw_definition)
+        if validate_definition:
+            payload["definition"] = validate_task_definition(raw_definition)
         return payload
+
+    def archive_runtime_root(self) -> Path:
+        state = self._state(validate_definition=False)
+        definition = state["definition"]
+        runtime = definition.get("runtime") if isinstance(definition, Mapping) else None
+        if not isinstance(runtime, Mapping) or not str(runtime.get("run_root", "")).strip():
+            raise ValueError("archived task run root is unavailable")
+        run_root = Path(str(runtime["run_root"]))
+        if not run_root.is_absolute():
+            raise ValueError("archived task run root must be absolute")
+        return run_root
 
     def load(self, *, include_raw: bool = False) -> dict[str, Any]:
         state = self._state()
@@ -547,14 +583,16 @@ class TaskDefinitionStore:
             version = self._state()["version"]
         except FileNotFoundError:
             version = 0
-        return definition_view(definition, version=version)
+        return definition_view(without_task_model_overrides(definition), version=version)
 
     def save(self, definition: Mapping[str, Any], *, expected_version: int | None = None, actor: str) -> dict[str, Any]:
+        if self.archive_only:
+            raise RuntimeError("archive task definitions are read-only")
         with _exclusive_lock(self.active_path.parent / ".task-definition.lock"):
             return self._save_locked(definition, expected_version=expected_version, actor=actor)
 
     def _save_locked(self, definition: Mapping[str, Any], *, expected_version: int | None, actor: str) -> dict[str, Any]:
-        normalized = validate_task_definition(definition)
+        normalized = validate_task_definition(without_task_model_overrides(definition))
         current: dict[str, Any] | None = None
         try:
             current = self._state()
@@ -651,8 +689,19 @@ class TaskDefinitionStore:
             "new_hashes": new_view["hashes"],
         }
 
+    def version(self, version: int) -> dict[str, Any]:
+        state = self._version(version)
+        result = definition_view(state["definition"], version=version)
+        result["hashes"]["definition_sha256"] = state["definition_sha256"]
+        result.update(saved_at=state["saved_at"], saved_by=state["saved_by"])
+        return result
+
     def restore(self, version: int, *, expected_version: int, actor: str) -> dict[str, Any]:
-        return self.save(self._version(version)["definition"], expected_version=expected_version, actor=actor)
+        return self.save(
+            without_task_model_overrides(self._version(version)["definition"]),
+            expected_version=expected_version,
+            actor=actor,
+        )
 
 
 def managed_report_inputs(definition: Mapping[str, Any], run_id: str) -> dict[str, str]:
@@ -680,6 +729,7 @@ def build_task_binding(
     definition: Mapping[str, Any], *, task_version: int, run_id: str,
     attempt: int, created_at: datetime | None = None,
     definition_sha256: str | None = None,
+    execution_backend: str = "local",
 ) -> dict[str, Any]:
     raw_definition = copy.deepcopy(dict(definition))
     raw_sha256 = _sha(raw_definition)
@@ -713,13 +763,14 @@ def build_task_binding(
         [MonitorSource(**record) for record in source_inventory["records"]], scopes,
         budget_limit=parameters["budgets"]["fetch_attempts"],
     )
-    return {
+    binding = {
         "schema_version": BINDING_SCHEMA,
         "run_id": run_id,
         "attempt": attempt,
         "trigger": "manual",
         "created_at": _rfc3339(frozen_at),
         "task_id": normalized["task_id"],
+        "execution_backend": execution_backend,
         "task_version": task_version,
         "definition_sha256": view["hashes"]["definition_sha256"],
         "effective_sha256": view["hashes"]["effective_sha256"],
@@ -736,15 +787,11 @@ def build_task_binding(
         "source_inventory": source_inventory,
         "site_scope_inventory": scope_inventory,
         "governed_gateway": gateway,
-        "provider": parameters["provider"],
-        "model": parameters["model"],
         "meeting": {
             "enabled": normalized["meeting"]["enabled"],
             "prompt_version": normalized["meeting"]["prompt"]["version"],
             "prompt_sha256": view["hashes"]["meeting"],
             "prompt_text": normalized["meeting"]["prompt"]["text"],
-            "provider": parameters["provider"],
-            "model": parameters["model"],
         },
         "agent_protocol": {
             "version": AGENT_PROTOCOL_VERSION,
@@ -759,6 +806,10 @@ def build_task_binding(
         "report_inputs": managed_report_inputs(normalized, run_id),
         "definition": raw_definition if definition_sha256 is not None else normalized,
     }
+    if "provider" in parameters:
+        binding.update(provider=parameters["provider"], model=parameters["model"])
+        binding["meeting"].update(provider=parameters["provider"], model=parameters["model"])
+    return binding
 
 
 Launcher = Callable[[dict[str, Any]], int | Mapping[str, Any]]
@@ -768,6 +819,7 @@ class ManagementService:
     def __init__(
         self, *, store: TaskDefinitionStore, runtime_root: str | Path,
         launcher: Launcher | None = None, meeting_launcher: Launcher | None = None,
+        execution_backend: str = "local",
     ):
         self.store = store
         configured = Path(store.load()["definition"]["runtime"]["run_root"])
@@ -775,18 +827,50 @@ class ManagementService:
         if supplied != configured:
             raise ValueError("management runtime root must equal the task definition run_root")
         self.runtime_root = configured
+        self.execution_backend = execution_backend
         self._launcher = launcher or self._launch_process
         self._meeting_launcher = meeting_launcher or self._launch_meeting_process
 
     @classmethod
-    def from_environment(cls) -> "ManagementService":
+    def from_environment(cls, *, execution_backend: str = "local") -> "ManagementService":
         store = TaskDefinitionStore(
             os.environ.get("CLIMATE_TASK_CONFIG", str(DEFAULT_TASK_PATH)),
             os.environ.get("CLIMATE_TASK_VERSION_DIR", str(DEFAULT_VERSION_ROOT)),
         )
         configured = Path(store.load()["definition"]["runtime"]["run_root"])
         override = os.environ.get("CLIMATE_ACQUISITION_RUN_DIR")
-        return cls(store=store, runtime_root=override or configured)
+        return cls(
+            store=store, runtime_root=override or configured,
+            execution_backend=execution_backend,
+        )
+
+    @classmethod
+    def archive_from_environment(
+        cls, *, execution_backend: str = "local",
+    ) -> "ManagementService":
+        """Construct a retained-history reader without bootstrapping active state."""
+        store = TaskDefinitionStore(
+            os.environ.get("CLIMATE_TASK_CONFIG", str(DEFAULT_TASK_PATH)),
+            os.environ.get("CLIMATE_TASK_VERSION_DIR", str(DEFAULT_VERSION_ROOT)),
+            archive_only=True,
+        )
+        service = cls.__new__(cls)
+        service.store = store
+        service.execution_backend = execution_backend
+
+        def reject_launch(_binding: Mapping[str, Any]) -> int:
+            raise RuntimeError("archive backends are read-only")
+
+        service._launcher = service._meeting_launcher = reject_launch
+        try:
+            service.runtime_root = store.archive_runtime_root()
+            service.archive_error = None
+        except (FileNotFoundError, ValueError) as exc:
+            service.runtime_root = Path(
+                os.environ.get("CLIMATE_ACQUISITION_RUN_DIR", str(store.active_path.parent))
+            )
+            service.archive_error = exc
+        return service
 
     def _run_dir(self, run_id: str) -> Path:
         if not _SAFE_RUN_ID.fullmatch(run_id):
@@ -795,6 +879,17 @@ class ManagementService:
 
     def _attempt_path(self, run_id: str, attempt: int) -> Path:
         return self._run_dir(run_id) / f"attempt-{attempt}.json"
+
+    def _assert_binding_backend(self, binding: Mapping[str, Any]) -> None:
+        bound = str(binding.get("execution_backend") or "local")
+        if bound != self.execution_backend:
+            raise RuntimeError(
+                f"managed run is frozen to the {bound} backend; start a fresh run"
+            )
+        if bound == "host-dashboard":
+            from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+            _assert_host_execution_fingerprint(binding)
 
     @staticmethod
     def _state_lock_path(binding: Mapping[str, Any]) -> Path:
@@ -866,6 +961,10 @@ class ManagementService:
         return None
 
     def _launch_process(self, binding: dict[str, Any]) -> int:
+        if binding.get("execution_backend") == "host-dashboard":
+            from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+            _assert_host_execution_fingerprint(binding)
         attempt_path = self._attempt_path(binding["run_id"], binding["attempt"])
         script = Path(__file__).resolve().parents[1] / "scripts" / "run_agent_acquisition.py"
         log_path = self._run_dir(binding["run_id"]) / f"attempt-{binding['attempt']}.log"
@@ -887,6 +986,10 @@ class ManagementService:
         return process.pid
 
     def _launch_meeting_process(self, binding: dict[str, Any]) -> int:
+        if binding.get("execution_backend") == "host-dashboard":
+            from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+            _assert_host_execution_fingerprint(binding)
         run_dir = self._run_dir(binding["acquisition_run_id"])
         binding_path = run_dir / f"meeting-{binding['meeting_attempt']}.json"
         _atomic_write(
@@ -896,10 +999,34 @@ class ManagementService:
         script = Path(__file__).resolve().parents[1] / "scripts" / "run_meeting_extraction.py"
         log = (run_dir / f"meeting-{binding['meeting_attempt']}.log").open("ab")
         try:
+            launch_options: dict[str, Any] = {
+                "cwd": Path(__file__).resolve().parents[1],
+                "stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT,
+                "start_new_session": True, "close_fds": True,
+            }
+            if "hermes_home" in binding:
+                source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+                from scripts.run_agent_acquisition import _managed_child_environment
+
+                launch_options["env"] = _managed_child_environment(
+                    binding, source_home=source_home,
+                )
+            if binding.get("execution_backend") == "host-dashboard":
+                from scripts.run_agent_acquisition import _assert_host_execution_fingerprint
+
+                _assert_host_execution_fingerprint(
+                    binding,
+                    environment=launch_options.get("env", os.environ),
+                    source_home=(
+                        launch_options.get("env", {}).get(
+                            "CLIMATE_MANAGED_SOURCE_HERMES_HOME"
+                        ) or os.environ.get("HERMES_HOME")
+                    ),
+                    private_home=binding.get("hermes_home"),
+                )
             process = subprocess.Popen(
                 [sys.executable, str(script), "--binding", str(binding_path.resolve())],
-                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.DEVNULL,
-                stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
+                **launch_options,
             )
             threading.Thread(target=process.wait, name=f"meeting-reaper-{process.pid}", daemon=True).start()
         finally:
@@ -909,6 +1036,7 @@ class ManagementService:
     def start_meetings(self, run_id: str, *, retry_failed: bool = False) -> dict[str, Any]:
         """Start meeting extraction for an already stored acquisition batch."""
         acquisition = self.binding(run_id)
+        self._assert_binding_backend(acquisition)
         loaded = self.store.load()
         meeting = loaded["definition"]["meeting"]
         if not meeting["enabled"]:
@@ -949,8 +1077,19 @@ class ManagementService:
             prompt_version = meeting["prompt"]["version"]
             prompt_sha256 = loaded["hashes"]["meeting"]
             prompt_text = meeting["prompt"]["text"]
-            provider = loaded["definition"]["parameters"]["provider"]
-            model = loaded["definition"]["parameters"]["model"]
+            if "provider" in acquisition and "model" in acquisition:
+                provider = acquisition["provider"]
+                model = acquisition["model"]
+            else:
+                from climate_monitor.hermes_identity import load_effective_identity
+
+                identity = load_effective_identity(acquisition)
+                if identity is None:
+                    raise RuntimeError(
+                        "Hermes effective identity is unavailable; start a fresh managed run"
+                    )
+                provider = identity["provider"]
+                model = identity["model"]
             task_version = loaded["version"]
         binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
@@ -967,6 +1106,17 @@ class ManagementService:
             "provider": provider,
             "model": model,
         }
+        if not ("provider" in acquisition and "model" in acquisition):
+            from climate_monitor.hermes_acquisition_hooks import attempt_home
+
+            binding["hermes_home"] = str(attempt_home(acquisition))
+        if acquisition.get("execution_backend") == "host-dashboard":
+            binding.update(
+                execution_backend="host-dashboard",
+                host_execution_fingerprint=copy.deepcopy(
+                    acquisition["host_execution_fingerprint"]
+                ),
+            )
         launched = self._meeting_launcher(copy.deepcopy(binding))
         launch = dict(launched) if isinstance(launched, Mapping) else {"pid": launched}
         return {
@@ -1072,6 +1222,12 @@ class ManagementService:
         database, context = self._meeting_query_context()
         return freeze_snapshot(database, **filters, **context)
 
+    def load_meeting_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        from climate_monitor.meetings import load_snapshot
+
+        database = self.store.load()["definition"]["runtime"]["registry_database"]
+        return load_snapshot(database, snapshot_id)
+
     def start(self, *, trigger: str = "manual", now: datetime | None = None) -> dict[str, Any]:
         if trigger not in {"manual", "scheduled"}:
             raise ValueError("trigger must be manual or scheduled")
@@ -1082,8 +1238,13 @@ class ManagementService:
             loaded["_raw_definition"], task_version=loaded["version"], run_id=run_id,
             attempt=1, created_at=stamp,
             definition_sha256=loaded["hashes"]["definition_sha256"],
+            execution_backend=self.execution_backend,
         )
         binding["trigger"] = trigger
+        if self.execution_backend == "host-dashboard":
+            from scripts.run_agent_acquisition import _host_execution_fingerprint
+
+            binding["host_execution_fingerprint"] = _host_execution_fingerprint(binding)
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
                 existing = self._existing_scheduled_run(binding)
@@ -1137,6 +1298,7 @@ class ManagementService:
     def resume(self, run_id: str) -> dict[str, Any]:
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             binding = self.binding(run_id)
+            self._assert_binding_backend(binding)
             with _exclusive_lock_nowait(self._state_lock_path(binding)):
                 self._assert_no_startup_owner(binding, exclude_run_id=run_id)
                 return self._resume_locked(run_id)
@@ -1145,6 +1307,7 @@ class ManagementService:
         """Attach to the exact live attempt or resume one stale attempt."""
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             current = self.binding(run_id)
+            self._assert_binding_backend(current)
             run_dir = self._run_dir(run_id)
 
             def terminal_result(binding: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1330,6 +1493,20 @@ class ManagementService:
                 result.append(self.progress(path.name))
         return result
 
+    def run_result(self, run_id: str, attempt: int) -> dict[str, Any] | None:
+        binding = self.binding(run_id)
+        if attempt != binding["attempt"]:
+            raise ValueError("managed run attempt does not match current binding")
+        result_path = self._run_dir(run_id) / f"attempt-{attempt}-result.json"
+        if not result_path.is_file():
+            return None
+        terminal = json.loads(result_path.read_text(encoding="utf-8"))
+        report = None
+        report_path = self._run_dir(run_id) / f"attempt-{attempt}-report-result.json"
+        if report_path.is_file():
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        return {"terminal": terminal, "report": report}
+
     def progress(self, run_id: str) -> dict[str, Any]:
         binding = self.binding(run_id)
         runtime_path = self._run_dir(run_id) / "runtime.json"
@@ -1501,7 +1678,7 @@ class ManagementService:
             stage = "systemic_failure"
         from climate_monitor.request_budget import RequestBudget, ledger_path
         if ledger_path(binding).is_file():
-            used_budget = RequestBudget(ledger_path(binding), binding).usage()
+            used_budget = RequestBudget.usage_from_existing(ledger_path(binding), binding)
         updated_at = persisted.get("updated_at") or runtime.get("heartbeat_at") or runtime.get("launched_at") or binding["created_at"]
         try:
             age = (_utc_now() - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))).total_seconds()

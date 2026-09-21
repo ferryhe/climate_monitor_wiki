@@ -11,9 +11,19 @@ from climate_monitor import schedule
 def service(tmp_path, monkeypatch):
     run = tmp_path / 'run-1'
     run.mkdir()
+    def run_result(_run_id, attempt):
+        terminal = run / f'attempt-{attempt}-result.json'
+        if not terminal.is_file():
+            return None
+        report = run / f'attempt-{attempt}-report-result.json'
+        return {
+            'terminal': json.loads(terminal.read_text()),
+            'report': json.loads(report.read_text()) if report.is_file() else None,
+        }
     svc = SimpleNamespace(runtime_root=tmp_path,
                           start=lambda **kw: {'accepted': True, 'run_id': 'run-1', 'attempt': 1},
-                          binding=lambda run_id: {'budgets': {'runtime_seconds': 10}})
+                          binding=lambda run_id: {'budgets': {'runtime_seconds': 10}},
+                          run_result=run_result)
     monkeypatch.setattr(job, 'managed_monitor_preflight', lambda day, **kwargs: svc)
     records = []
     monkeypatch.setattr(job, 'record_monitor_result', lambda *args, **kwargs: records.append((args, kwargs)))
@@ -38,7 +48,7 @@ def test_success_without_report_receipt_cannot_mark_completion(tmp_path, monkeyp
         'run_id': 'run-1', 'attempt': 1, 'exit_code': 0,
         'execution_complete': True, 'full_coverage': True,
     }))
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(job.Blocked, match='managed_report_result_missing'):
         job.dispatch_managed_monitor('2026-09-14', dry_run=False)
     assert records == []
 
@@ -252,6 +262,14 @@ def test_explicit_recovery_resumes_same_run_and_carries_exact_terminal(
 
     svc = SimpleNamespace(
         runtime_root=tmp_path, binding=binding, attach_or_resume=resume,
+        run_result=lambda _run_id, attempt: {
+            'terminal': json.loads(
+                (run_dir / f'attempt-{attempt}-result.json').read_text()
+            ),
+            'report': json.loads(
+                (run_dir / f'attempt-{attempt}-report-result.json').read_text()
+            ) if (run_dir / f'attempt-{attempt}-report-result.json').is_file() else None,
+        },
     )
     monkeypatch.setattr(job, 'managed_monitor_preflight', lambda *a, **k: svc)
     records = []

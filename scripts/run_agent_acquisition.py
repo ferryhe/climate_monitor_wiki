@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -68,7 +69,14 @@ from climate_monitor.request_budget import (
     provider_native_unbounded_search,
     search_identity_suffix,
 )
-from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks
+from climate_monitor.hermes_acquisition_hooks import (
+    MANAGED_ENVIRONMENT_STATE,
+    MANAGED_SOURCE_HOME,
+    attempt_home,
+    install_hooks,
+    load_frozen_managed_environment,
+)
+from climate_monitor.hermes_identity import bind_effective_identity, load_effective_identity
 
 AcquisitionBudgetError = RequestBudgetError
 
@@ -77,18 +85,35 @@ _PROVIDER_ENV = {
     "openai": ("OPENAI_API_KEY",),
     "openai-api": ("OPENAI_API_KEY",),
     "openai-codex": (),
-    "anthropic": ("ANTHROPIC_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
     "openrouter": ("OPENROUTER_API_KEY",),
     "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "xai": ("XAI_API_KEY",),
-    "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+    "github-copilot": ("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
+    "huggingface": ("HF_TOKEN",),
 }
-_BASE_ENV = ("PATH", "HOME", "HERMES_HOME", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
+_PINNED_PROVIDER_ROUTE_ENV = {
+    "OPENROUTER_BASE_URL", "OPENAI_BASE_URL", "XAI_BASE_URL",
+    "HERMES_QWEN_BASE_URL", "LM_BASE_URL", "COPILOT_ACP_BASE_URL",
+    "GLM_BASE_URL", "KIMI_BASE_URL", "STEPFUN_BASE_URL",
+    "MINIMAX_BASE_URL", "MINIMAX_CN_BASE_URL", "DEEPSEEK_BASE_URL",
+    "DASHSCOPE_BASE_URL", "ALIBABA_CODING_PLAN_BASE_URL",
+    "OPENCODE_ZEN_BASE_URL", "OPENCODE_GO_BASE_URL", "KILOCODE_BASE_URL",
+    "HF_BASE_URL", "NOVITA_BASE_URL", "NVIDIA_BASE_URL", "XIAOMI_BASE_URL",
+    "TOKENHUB_BASE_URL", "ARCEE_BASE_URL", "GMI_BASE_URL", "ACTUAL_BASE_URL",
+    "UPSTAGE_BASE_URL", "OLLAMA_BASE_URL", "AZURE_FOUNDRY_BASE_URL",
+    "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH", "HERMES_COPILOT_ACP_ARGS",
+    "HERMES_INFERENCE_MODEL", "HERMES_INFERENCE_PROVIDER", "OP_SERVICE_ACCOUNT_TOKEN",
+}
+_BASE_ENV = ("PATH", "HOME", "HERMES_HOME", "HERMES_EXECUTABLE", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
 _MANAGED_REPORT_ENV = (
     "CLIMATE_MANAGED_STATE_DIR", "CLIMATE_MANAGED_SOURCE_DIR", "CLIMATE_MANAGED_WIKI_DIR",
 )
+_BLOCKED_APPLICATION_SECRETS = {"DEPLOYMENT_SECRET", "RELOAD_TOKEN"}
+_HOST_EXECUTION_FIELD = "host_execution_fingerprint"
+_SOURCE_HERMES_HOME_ENV = "CLIMATE_MANAGED_SOURCE_HERMES_HOME"
 _LEGACY_AGENT_PROTOCOL = {
     "version": "legacy-model-search-ledger.v1",
     "search_policy": "application-bounded.v1",
@@ -126,19 +151,164 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _minimal_environment(provider: str) -> dict[str, str]:
-    """Allow only OS/runtime settings and the selected provider credential."""
+def _custom_provider_key_env_names(source_home: str | Path | None) -> set[str]:
+    if source_home is None:
+        source_home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+    try:
+        raw = (Path(source_home) / "config.yaml").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    try:
+        config = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ValueError("Hermes default configuration is unreadable") from exc
+    if config is None:
+        return set()
+    if not isinstance(config, dict):
+        raise ValueError("Hermes default configuration is not an object")
+    entries = []
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        entries.extend(value for value in providers.values() if isinstance(value, dict))
+    custom = config.get("custom_providers")
+    if isinstance(custom, list):
+        entries.extend(value for value in custom if isinstance(value, dict))
+    names = set()
+    for entry in entries:
+        name = entry.get("key_env") or entry.get("api_key_env")
+        if isinstance(name, str):
+            name = name.strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                names.add(name)
+    return names
+
+
+def _provider_credential_names(source_home: str | Path | None = None) -> set[str]:
+    names = {name for values in _PROVIDER_ENV.values() for name in values}
+    names.update(_PINNED_PROVIDER_ROUTE_ENV)
+    names.update(_custom_provider_key_env_names(source_home))
+    names.update(
+        name for name in os.environ
+        if re.search(
+            r"(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|GITHUB_TOKEN|CREDENTIALS)$",
+            name,
+        )
+        or name.startswith(("AWS_", "AZURE_", "VERTEX_"))
+    )
+    return names - _BLOCKED_APPLICATION_SECRETS
+
+
+def _minimal_environment(
+    _provider: str | None = None, *, source_home: str | Path | None = None,
+) -> dict[str, str]:
+    """Allow runtime settings and every credential Hermes may default to."""
     keys = set(_BASE_ENV)
-    keys.update(_PROVIDER_ENV.get(provider.lower(), ()))
+    keys.update(_provider_credential_names(source_home))
     environment = {key: os.environ[key] for key in keys if os.environ.get(key)}
     environment.update({"PYTHONUNBUFFERED": "1", "HERMES_REDACT_SECRETS": "true"})
     return environment
 
 
-def _report_environment(provider: str) -> dict[str, str]:
+def _host_execution_fingerprint(
+    binding: Mapping[str, Any], *, environment: Mapping[str, str] | None = None,
+    source_home: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return one secret-free fingerprint of the current host Hermes inputs."""
+    from climate_monitor.managed_backend import _host_execution_identity
+
+    if source_home is None:
+        source_home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+    supplied = (
+        dict(environment) if environment is not None
+        else _minimal_environment(source_home=source_home)
+    )
+    identity = _host_execution_identity(source_home=source_home)
+    credentials = {
+        name: supplied[name]
+        for name in sorted(_provider_credential_names(source_home))
+        if supplied.get(name)
+    }
+    run_id = str(binding.get("run_id") or binding.get("acquisition_run_id") or "")
+    if not run_id:
+        raise RuntimeError("managed host execution identity is unavailable; start a fresh run")
+    return {
+        "user": identity["user"],
+        "uid": identity["uid"],
+        "python": identity["python"],
+        "source_hermes_home": identity["hermes_home"],
+        "hermes_executable": identity["hermes_executable"],
+        "hermes_version": identity["hermes_version"],
+        "credentials_sha256": hashlib.sha256(canonical_json_bytes({
+            "run_id": run_id, "credentials": credentials,
+        })).hexdigest(),
+    }
+
+
+def _assert_host_execution_fingerprint(
+    binding: Mapping[str, Any], *, environment: Mapping[str, str] | None = None,
+    source_home: str | Path | None = None,
+    private_home: str | Path | None = None,
+) -> None:
+    """Reject host-managed execution when the measured Hermes inputs drift."""
+    if str(binding.get("execution_backend") or "local") != "host-dashboard":
+        return
+    expected = binding.get(_HOST_EXECUTION_FIELD)
+    if not isinstance(expected, Mapping):
+        raise RuntimeError(
+            "managed host execution identity is unavailable; start a fresh run"
+        )
+    supplied = (
+        dict(environment) if environment is not None
+        else _minimal_environment(source_home=source_home)
+    )
+    current = _host_execution_fingerprint(
+        binding, environment=supplied, source_home=source_home,
+    )
+    if dict(expected) != current:
+        raise RuntimeError("managed host execution identity changed; start a fresh run")
+    if private_home is not None:
+        actual_home = supplied.get("HERMES_HOME")
+        if not actual_home or Path(actual_home).resolve() != Path(private_home).resolve():
+            raise RuntimeError("managed host execution identity changed; start a fresh run")
+
+
+def _report_environment(
+    _provider: str | None = None, *, source_home: str | Path | None = None,
+) -> dict[str, str]:
     """Preserve frozen managed path overrides for the trusted report process."""
-    environment = _minimal_environment(provider)
+    environment = _minimal_environment(source_home=source_home)
     environment.update({key: os.environ[key] for key in _MANAGED_REPORT_ENV if os.environ.get(key)})
+    return environment
+
+
+def _managed_child_environment(
+    binding: Mapping[str, Any], *, source_home: str | Path | None = None,
+    report: bool = False,
+) -> dict[str, str]:
+    """Load the run-private provider environment captured by the first turn."""
+    if source_home is None:
+        source_home = (
+            os.environ.get(_SOURCE_HERMES_HOME_ENV)
+            or os.environ.get("HERMES_HOME")
+            or Path.home() / ".hermes"
+        )
+    source_home = Path(source_home)
+    home = (
+        Path(binding["hermes_home"])
+        if binding.get("hermes_home") else attempt_home(binding)
+    )
+    environment = (
+        _report_environment(source_home=home)
+        if report else _minimal_environment(source_home=home)
+    )
+    environment = load_frozen_managed_environment(
+        home, environment,
+        _provider_credential_names(home),
+    )
+    environment.update({
+        "HERMES_HOME": str(home),
+        _SOURCE_HERMES_HOME_ENV: str(source_home),
+    })
     return environment
 
 
@@ -470,7 +640,20 @@ BOUND ACQUISITION INSTRUCTIONS:
 
 
 def _session_source(binding: Mapping[str, Any]) -> str:
-    return f"climate-acquisition-{binding['run_id']}-{binding['attempt']}"
+    if "provider" in binding and "model" in binding:
+        return f"climate-acquisition-{binding['run_id']}-{binding['attempt']}"
+    return f"climate-acquisition-{binding['run_id']}"
+
+
+def _effective_route(binding: Mapping[str, Any]) -> tuple[str, str]:
+    if "provider" in binding and "model" in binding:
+        return str(binding["provider"]), str(binding["model"])
+    evidence = load_effective_identity(binding)
+    if evidence is None:
+        raise ValueError(
+            "Hermes effective identity is unavailable; start a fresh managed run"
+        )
+    return evidence["provider"], evidence["model"]
 
 
 def _hermes_command(
@@ -479,12 +662,17 @@ def _hermes_command(
     runtime = int(binding["budgets"]["runtime_seconds"] if runtime_seconds is None else runtime_seconds)
     command = [
         hermes, "chat", "--quiet", "--source", _session_source(binding),
-        "--provider", str(binding["provider"]), "--model", str(binding["model"]),
         "--toolsets", (
             "web,browser,climate_acquisition"
             if candidate_handle_protocol(binding) else "web,browser"
         ),
     ]
+    if "provider" in binding and "model" in binding:
+        command.extend(["--provider", str(binding["provider"]), "--model", str(binding["model"])])
+    else:
+        evidence = load_effective_identity(binding)
+        if evidence is not None:
+            command.extend(["--resume", evidence["session_id"]])
     if not provider_native_unbounded_search(binding):
         command.extend([
             "--max-turns",
@@ -3039,6 +3227,8 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
     path = binding_path.parent / f"meeting-auto-{meeting_attempt}.json"
     result_path = path.with_name(path.stem + "-result.json")
     try:
+        if binding.get("execution_backend") == "host-dashboard":
+            _assert_host_execution_fingerprint(binding)
         from climate_monitor.meetings import active_meeting_run
 
         active = active_meeting_run(binding["registry_database"], binding["acquisition_batch_id"])
@@ -3046,6 +3236,7 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
             return {
                 "status": "running", "meeting_run_id": active["meeting_run_id"], "reused": True,
             }
+        provider, model = _effective_route(binding)
         worker_binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
             "acquisition_run_id": binding["run_id"],
@@ -3058,20 +3249,47 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
             "prompt_version": meeting["prompt_version"],
             "prompt_sha256": meeting["prompt_sha256"],
             "prompt_text": meeting["prompt_text"],
-            "provider": meeting["provider"],
-            "model": meeting["model"],
+            "provider": provider,
+            "model": model,
         }
+        if not ("provider" in binding and "model" in binding):
+            worker_binding["hermes_home"] = str(attempt_home(binding))
+        if binding.get("execution_backend") == "host-dashboard":
+            worker_binding.update(
+                execution_backend="host-dashboard",
+                host_execution_fingerprint=copy.deepcopy(
+                    binding["host_execution_fingerprint"]
+                ),
+            )
         _atomic_write(
             path,
             json.dumps(worker_binding, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
         )
         log = path.with_suffix(".log").open("ab")
         try:
+            launch_options: dict[str, Any] = {
+                "cwd": ROOT, "stdin": subprocess.DEVNULL, "stdout": log,
+                "stderr": subprocess.STDOUT, "start_new_session": True, "close_fds": True,
+            }
+            if "hermes_home" in worker_binding:
+                source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+                launch_options["env"] = _managed_child_environment(
+                    binding, source_home=source_home,
+                )
+            if worker_binding.get("execution_backend") == "host-dashboard":
+                _assert_host_execution_fingerprint(
+                    worker_binding,
+                    environment=launch_options.get("env", os.environ),
+                    source_home=(
+                        launch_options.get("env", {}).get(_SOURCE_HERMES_HOME_ENV)
+                        or os.environ.get("HERMES_HOME")
+                    ),
+                    private_home=worker_binding.get("hermes_home"),
+                )
             process = subprocess.Popen(
                 [sys.executable, str(ROOT / "scripts" / "run_meeting_extraction.py"),
                  "--binding", str(path.resolve())],
-                cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                start_new_session=True, close_fds=True,
+                **launch_options,
             )
             threading.Thread(
                 target=process.wait, name=f"meeting-reaper-{process.pid}", daemon=True,
@@ -3097,6 +3315,8 @@ def _run_report(
     binding_path: Path, binding: Mapping[str, Any], *,
     state_lock_descriptor: int | None = None,
 ) -> int:
+    if binding.get("execution_backend") == "host-dashboard":
+        _assert_host_execution_fingerprint(binding)
     paths = binding["report_inputs"]
     command = [
         sys.executable, str(ROOT / "scripts" / "run_climate_monitor.py"),
@@ -3105,19 +3325,40 @@ def _run_report(
         "--web-listening-manifest", paths["web_listening_manifest"],
         "--pillar-b-artifact", paths["pillar_b_artifact"], "--staging-dir", paths["staging_dir"],
         "--state-dir", paths["state_dir"], "--source-dir", paths["source_dir"],
-        "--wiki-dir", paths["wiki_dir"], "--model-provider", str(binding["provider"]),
-        "--model", str(binding["model"]), "--repository-commit-sha",
+        "--wiki-dir", paths["wiki_dir"], "--repository-commit-sha",
         str(binding["repository_commit_sha"]),
         "--json",
     ]
+    legacy_override = "provider" in binding and "model" in binding
+    if legacy_override:
+        command.extend([
+            "--model-provider", str(binding["provider"]),
+            "--model", str(binding["model"]),
+        ])
+    else:
+        _effective_route(binding)  # Require bound evidence without turning it into an override.
     result_path = binding_path.parent / f"attempt-{binding['attempt']}-report-result.json"
     with (
         _exclusive_lock(binding_path.parent / ".run.lock") as report_lock_descriptor,
         result_path.open("w", encoding="utf-8") as output,
     ):
+        environment = _report_environment(binding.get("provider"))
+        if not legacy_override:
+            source_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+            environment = _managed_child_environment(
+                binding, source_home=source_home, report=True,
+            )
+        if binding.get("execution_backend") == "host-dashboard":
+            _assert_host_execution_fingerprint(
+                binding, environment=environment,
+                source_home=environment.get(_SOURCE_HERMES_HOME_ENV),
+                private_home=(
+                    str(attempt_home(binding)) if not legacy_override else None
+                ),
+            )
         run_options: dict[str, Any] = {
             "cwd": ROOT,
-            "env": _report_environment(str(binding["provider"])),
+            "env": environment,
             "stdout": output,
         }
         run_options["pass_fds"] = tuple(
@@ -3226,9 +3467,39 @@ def _invoke_hermes(
 ) -> int:
     """Run one bounded turn in the acquisition feedback loop."""
     budget = RequestBudget(ledger_path(binding), binding)
+    default_identity_pending = (
+        not ("provider" in binding and "model" in binding)
+        and load_effective_identity(binding) is None
+    )
     budget.remaining_seconds()
-    environment, home = install_hooks(command, binding_path, binding,
-                                      _minimal_environment(str(binding["provider"])))
+    source_home = (
+        os.environ.get(_SOURCE_HERMES_HOME_ENV)
+        or os.environ.get("HERMES_HOME")
+        or Path.home() / ".hermes"
+    )
+    home = attempt_home(binding)
+    if (home / "config.yaml").is_file():
+        config_home = home
+    elif home.is_dir() and any(home.iterdir()):
+        config_home = home / MANAGED_SOURCE_HOME
+    else:
+        config_home = Path(source_home)
+    environment = _minimal_environment(source_home=config_home)
+    environment.update({
+        "HERMES_HOME": str(source_home),
+        _SOURCE_HERMES_HOME_ENV: str(source_home),
+    })
+    environment, home = install_hooks(
+        command, binding_path, binding,
+        environment,
+        managed_environment_names=_provider_credential_names(config_home),
+    )
+    if binding.get("execution_backend") == "host-dashboard":
+        _assert_host_execution_fingerprint(
+            binding, environment=environment,
+            source_home=source_home,
+            private_home=attempt_home(binding),
+        )
     budget.remaining_seconds()
     with response_path.open("wb") as response:
         process = subprocess.Popen(
@@ -3249,10 +3520,24 @@ def _invoke_hermes(
             except (OSError, sqlite3.Error, ValueError):
                 pass
             time.sleep(1)
-    return process.wait()
+    exit_code = process.wait()
+    if not ("provider" in binding and "model" in binding):
+        try:
+            bind_effective_identity(binding, home, _session_source(binding))
+        except ValueError as exc:
+            if default_identity_pending and exit_code == 0:
+                raise ValueError(
+                    f"Hermes default configuration/effective identity is unusable: {exc}"
+                ) from exc
+            if not default_identity_pending:
+                raise
+    return exit_code
 
 
-def _hermes_process_error(response_path: Path, exit_code: int, *, phase: str) -> str:
+def _hermes_process_error(
+    response_path: Path, exit_code: int, *, phase: str,
+    binding: Mapping[str, Any] | None = None,
+) -> str:
     """Return one bounded operator-visible error without exposing credentials."""
     base = (
         f"Hermes {phase} exceeded the bound runtime"
@@ -3266,9 +3551,19 @@ def _hermes_process_error(response_path: Path, exit_code: int, *, phase: str) ->
             detail = response.read().decode("utf-8", errors="replace")
     except OSError:
         return base
-    sensitive_names = {name for names in _PROVIDER_ENV.values() for name in names}
+    sensitive_environment: Mapping[str, str] = os.environ
+    sensitive_home: Path | None = None
+    if binding is not None and not ("provider" in binding and "model" in binding):
+        private_home = attempt_home(binding)
+        if (private_home / MANAGED_ENVIRONMENT_STATE).is_file():
+            try:
+                sensitive_environment = _managed_child_environment(binding)
+            except (OSError, ValueError):
+                return base
+            sensitive_home = private_home
+    sensitive_names = _provider_credential_names(sensitive_home)
     for name in sensitive_names:
-        value = os.environ.get(name)
+        value = sensitive_environment.get(name)
         if value:
             detail = detail.replace(value, "[REDACTED]")
     detail = re.sub(
@@ -3288,6 +3583,30 @@ def _hermes_process_error(response_path: Path, exit_code: int, *, phase: str) ->
     detail = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}\b", "[REDACTED]", detail)
     detail = " ".join(detail.split())[-1000:]
     return f"{base}: {detail}" if detail else base
+
+
+def _hermes_failure_disposition(
+    binding: Mapping[str, Any], error: str, exit_code: int,
+) -> tuple[bool, str, str]:
+    missing_default = (
+        not ("provider" in binding and "model" in binding)
+        and (
+            "No inference provider is configured." in error
+            or "It looks like Hermes isn't configured yet -- "
+               "no API keys or providers found." in error
+            or re.search(
+                r"(?:No API key|No usable credentials) found for provider "
+                r"'[^'\r\n]+'\.",
+                error,
+            ) is not None
+        )
+    )
+    if exit_code != 124 and missing_default:
+        return (
+            False, "terminal_failure",
+            "fix Hermes default configuration and create a new run",
+        )
+    return True, "retryable_failure", "resume the same frozen run"
 
 
 def _adaptive_feedback_prompt(
@@ -3394,6 +3713,12 @@ def _execute_attempt(
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise ValueError(f"unsupported binding schema at {binding_path}")
+    source_home = os.environ.get(_SOURCE_HERMES_HOME_ENV)
+    _assert_host_execution_fingerprint(
+        binding, environment=os.environ,
+        source_home=(source_home or os.environ.get("HERMES_HOME") or Path.home() / ".hermes"),
+        private_home=attempt_home(binding) if source_home else None,
+    )
     _agent_protocol(binding)
     _validate_agent_prompt_protocol(binding)
     try:
@@ -3558,17 +3883,21 @@ def _execute_attempt(
             _enforce_cumulative_budgets(
                 binding, invocation_provenance["cumulative_actual"]
             )
-        if exit_code == 124:
-            _discard_controlled_site_checkpoints(binding)
-            error = _hermes_process_error(response_path, exit_code, phase="acquisition")
-            _write_result(binding_path, exit_code=124, retryable=True, error=error)
-            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
-            return 124
         if exit_code:
             _discard_controlled_site_checkpoints(binding)
-            error = _hermes_process_error(response_path, exit_code, phase="acquisition")
-            _write_result(binding_path, exit_code=exit_code, retryable=True, error=error)
-            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
+            error = _hermes_process_error(
+                response_path, exit_code, phase="acquisition", binding=binding,
+            )
+            retryable, stage, next_step = _hermes_failure_disposition(
+                binding, error, exit_code,
+            )
+            _write_result(
+                binding_path, exit_code=exit_code, retryable=retryable, error=error,
+            )
+            _write_progress(
+                binding_path, binding, stage=stage, error=error,
+                next_step=next_step,
+            )
             return exit_code
         candidate_payload = None
         if not candidate_handle_protocol(binding):
@@ -3649,15 +3978,19 @@ def _execute_attempt(
                 )
                 _discard_controlled_site_checkpoints(binding)
                 error = _hermes_process_error(
-                    feedback_response, feedback_exit, phase="adaptive feedback"
+                    feedback_response, feedback_exit, phase="adaptive feedback",
+                    binding=binding,
+                )
+                retryable, stage, next_step = _hermes_failure_disposition(
+                    binding, error, feedback_exit,
                 )
                 _write_result(
-                    binding_path, exit_code=feedback_exit, retryable=True,
+                    binding_path, exit_code=feedback_exit, retryable=retryable,
                     error=error,
                 )
                 _write_progress(
-                    binding_path, binding, stage="retryable_failure", error=error,
-                    next_step="resume the same frozen run", events=all_events,
+                    binding_path, binding, stage=stage, error=error,
+                    next_step=next_step, events=all_events,
                 )
                 return feedback_exit
             if feedback_exit == 0:
@@ -3884,7 +4217,9 @@ def main() -> int:
     group.add_argument("--scheduled-start", action="store_true")
     args = parser.parse_args()
     if args.scheduled_start:
-        result = ManagementService.from_environment().start(trigger="scheduled")
+        from climate_monitor.managed_backend import management_service_from_environment
+
+        result = management_service_from_environment().start(trigger="scheduled")
         print(json.dumps(result, sort_keys=True))
         return 0
     return execute(args.binding)

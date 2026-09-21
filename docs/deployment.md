@@ -197,8 +197,46 @@ private relay directory containing:
 
 - `dashboard.sock`, a Unix socket served by the host's native
   `systemd-socket-proxyd` relay to the host Dashboard's loopback listener; and
+- `managed.sock`, the bounded application-management socket served directly by
+  the same host adapter process; and
+- `history.sock`, an optional read-only socket for host history after execution
+  is switched back to the local backend; and
 - `session-token`, the same session token supplied to the host Dashboard as
   `HERMES_DASHBOARD_SESSION_TOKEN`.
+
+External mode is all-or-nothing for `/manage`: task configuration, versions,
+run bindings, locks/PIDs, progress, report results, Registry reads, and
+automatic/manual meeting work all execute through `managed.sock`. The
+container neither opens host paths nor checks host PIDs, and it never falls
+back to its local management store if this socket is absent or incompatible.
+Existing runs remain tagged with their original backend. They are readable but
+must not be resumed by a different backend; start a fresh run instead.
+
+The authenticated console links to `/api/manage/history`, which reports the
+two explicit sources (`local` and `host-dashboard`) and whether each is
+available. Read-only routes below that prefix preserve `(backend, run_id)` and
+`(backend, version)` identity and expose version list/read/diff, run
+list/detail/item/meeting evidence, and existing snapshot readback. Diff is
+always within one backend. All POST/PUT/PATCH/DELETE history requests are
+rejected; history selection never changes the active execution backend.
+An inactive archive is materialized only when it has a saved task state.
+A missing task file or repository bootstrap marker is reported as unavailable;
+history reads never create a Registry, run directory, version, lock, or default
+definition to make that source appear usable.
+
+The fixed read entrypoints are:
+
+```text
+GET /api/manage/history
+GET /api/manage/history/{backend}/versions
+GET /api/manage/history/{backend}/versions/{version}
+GET /api/manage/history/{backend}/diff?old_version=1&new_version=2
+GET /api/manage/history/{backend}/runs
+GET /api/manage/history/{backend}/runs/{run_id}
+GET /api/manage/history/{backend}/runs/{run_id}/items/{item_id}
+GET /api/manage/history/{backend}/meetings
+GET /api/manage/history/{backend}/meeting-snapshots/{snapshot_id}
+```
 
 The host Dashboard must use its existing host interpreter and `HERMES_HOME`, a
 frontend built from that Hermes version with `/hermes/` as its base, and
@@ -210,6 +248,43 @@ host package before binding. `HERMES_DASHBOARD_PORT=19119` selects the host
 loopback listener. Set `HERMES_WEB_DIST` to the exact 0.20.0 frontend built with
 the `/hermes/` base. Only the native Unix-socket relay is mounted into the
 container.
+
+Launch `python -m climate_monitor.hermes_dashboard_server` as the intended host
+user with `HERMES_MANAGED_SOCKET` and `HERMES_MANAGED_HISTORY_SOCKET` set to
+different absolute relay-directory paths for `managed.sock` and
+`history.sock`. Its environment must also set the host-owned
+`CLIMATE_TASK_CONFIG`, `CLIMATE_TASK_VERSION_DIR`, and
+`CLIMATE_ACQUISITION_RUN_DIR`; task definitions must name the host's canonical
+Registry, source, wiki, state, and run paths. The adapter loads the normal host
+Hermes dotenv before it creates the management service, so jobs and ordinary
+Dashboard chat use the same user, interpreter, `HERMES_HOME`, provider defaults,
+and credentials. The container receives none of those credentials.
+Host scheduler/manual CLI processes set `HERMES_MANAGED_SOCKET` only; that
+explicitly selects the bounded host execution backend and does not require the
+container-only `HERMES_DASHBOARD_SOCKET`. A configured Dashboard socket without
+the managed socket remains an error, while neither socket selects local mode.
+
+Before starting the Dashboard listener, the adapter starts every configured
+management/history UDS under a five-second bounded supervisor and makes an
+authenticated `capabilities` call through each socket. The response must have
+the exact protocol, host backend, and expected read/write role. It also requires
+one of the supported Hermes package versions, an executable Hermes CLI, and the
+complete `chat` option contract used by acquisition and report authoring. A bind
+failure, early server exit, timeout, authentication failure, or incompatible
+capability stops any relay already started and fails adapter startup; there is
+no retry or local fallback. A reachable read-only relay can separately report
+that its archived task content is unavailable. This repository provides
+the bounded adapter and tests; creating
+or changing the host service unit/socket relay is a separate controlled
+installation step and is not performed by application deployment.
+
+When switching execution back to local mode, omit
+`docker-compose.host-hermes.yml` and retain host readback with
+`docker-compose.host-hermes-history.yml`. That override mounts only the private
+relay and sets `HERMES_MANAGED_HISTORY_SOCKET`; it does not set
+`HERMES_MANAGED_SOCKET`, so local remains the sole mutation/launch owner. If the
+history relay is unavailable, `/api/manage/history` reports the host archive as
+unavailable while local operations and local history continue normally.
 
 Set the host relay directory and trusted origin in `.env`. Retain every Compose
 override already used by the production `wiki` service; omitting one removes
@@ -246,7 +321,8 @@ External mode reads the token file for each new HTTP request and WebSocket. A
 host Dashboard restart may therefore rotate the token without rebuilding the
 application image; existing WebSockets reconnect with the new token. In this
 mode the entrypoint does not start the image's pinned Dashboard child and does
-not create or modify `/app/output/hermes`. Removing the override returns to the
+not create or modify `/app/output/hermes`, local task configuration, or local
+run directories. Removing the override returns to the
 default isolated, managed runtime and its existing `climate_runtime` state.
 
 ## Publishing and deploying weekly content

@@ -63,6 +63,8 @@ from climate_monitor.candidate_snapshot import (
 )
 from climate_monitor.models import CandidateItem, MonitorRunResult
 from climate_monitor.seen_state import _write_atomic, pending_seen_url_delta_path
+from climate_monitor.hermes_acquisition_hooks import attempt_home
+from climate_monitor.hermes_identity import load_effective_identity, observe_session_route
 
 
 PREPARE_BUNDLE_SCHEMA = "climate-monitor-prepare-bundle.v2"
@@ -132,10 +134,14 @@ def _load_task_binding_with_taxonomy(
         "prompt_hashes": expected_prompt_hashes,
         "prompt_versions": expected_prompt_versions,
         "effective_sha256": _sha(effective),
-        "provider": parameters.get("provider"), "model": parameters.get("model"),
         "budgets": parameters.get("budgets"), "source_keys": parameters.get("source_keys"),
         "registry_database": (definition.get("runtime") or {}).get("registry_database"),
     }
+    if "provider" in parameters and "model" in parameters:
+        expected.update(provider=parameters["provider"], model=parameters["model"])
+    if ({key for key in ("provider", "model") if key in binding}
+            != {key for key in ("provider", "model") if key in parameters}):
+        raise SystemExit("task binding provider/model presence differs from its definition")
     expected_checkpoint = Path(definition["runtime"]["run_root"]) / binding["run_id"] / "checkpoint"
     expected_lineage_id = f"acq-{binding['run_id']}"
     expected.update({
@@ -984,6 +990,7 @@ def _run_prepare(args, parser) -> int:
         if supplied_commit and supplied_commit != task_binding["repository_commit_sha"]:
             raise SystemExit("--repository-commit-sha differs from the immutable task binding")
         args.repository_commit_sha = task_binding["repository_commit_sha"]
+        _configure_managed_authoring(args, task_binding)
     outcome_path = Path(args.acquisition_batch).resolve()
     manifest_path = Path(args.web_listening_manifest).resolve()
     pillar_b_path = Path(args.pillar_b_artifact).resolve()
@@ -1039,6 +1046,7 @@ def _run_prepare(args, parser) -> int:
         outcome, manifest, pillar_b, records)
     registry_identity = None
     if task_binding is not None:
+        effective_model, effective_provider = _effective_authoring_identity(args)
         try:
             frozen_path = Path(task_binding["frozen_report_input"])
             if not frozen_path.is_file():
@@ -1070,7 +1078,7 @@ def _run_prepare(args, parser) -> int:
                 "task_binding": {
                     "path": str(task_binding_path), "sha256": hashlib.sha256(task_binding_path.read_bytes()).hexdigest(),
                     "task_version": task_binding["task_version"], "effective_sha256": task_binding["effective_sha256"],
-                    "provider": task_binding["provider"], "model": task_binding["model"],
+                    "provider": effective_provider, "model": effective_model,
                     "checkpoint_dir": task_binding["checkpoint_dir"],
                 },
             }
@@ -1190,13 +1198,17 @@ def _run_prepare(args, parser) -> int:
         "request_sha256": request["request_sha256"],
     }
     if task_binding is not None:
+        effective_model, effective_provider = _effective_authoring_identity(args)
         bundle_payload["execution_binding"] = {
-            "provider": task_binding["provider"], "model": task_binding["model"],
+            "provider": effective_provider, "model": effective_model,
             "repository_commit_sha": task_binding["repository_commit_sha"],
             "article_summary_sha256": task_binding["prompt_hashes"]["article_summary"],
             "executive_summary_sha256": task_binding["prompt_hashes"]["executive_summary"],
             "effective_sha256": task_binding["effective_sha256"],
         }
+        managed_home = getattr(args, "managed_hermes_home", "")
+        if managed_home:
+            bundle_payload["execution_binding"]["hermes_home"] = managed_home
         bundle_payload["staging_digest_inputs"].append("execution_binding")
     if registry_identity is not None:
         bundle_payload["registry_acquisition"] = registry_identity
@@ -1376,9 +1388,13 @@ def _run_finalize(args, parser) -> MonitorRunResult:
         binding, binding_path, taxonomy = _load_task_binding_with_taxonomy(
             str(binding_path)
         )
+        _configure_managed_authoring(args, binding)
         prompt = _bound_prompt(binding, "article_summary", binding_path)
-        if (execution_binding.get("provider") != binding["provider"]
-                or execution_binding.get("model") != binding["model"]
+        legacy_provider = binding.get("provider")
+        legacy_model = binding.get("model")
+        if (((legacy_provider is not None or legacy_model is not None)
+                and (execution_binding.get("provider") != legacy_provider
+                     or execution_binding.get("model") != legacy_model))
                 or execution_binding.get("repository_commit_sha")
                 != binding["repository_commit_sha"]):
             raise SystemExit("bound provider/model/repository commit changed since prepare")
@@ -1446,7 +1462,17 @@ def _run_finalize(args, parser) -> MonitorRunResult:
     # so the orchestrator always sees the prepare-blessed date. Stale or
     # missing CLI args must NOT silently swap the date.
     finalized_report_date = date.fromisoformat(bundle["report_date"])
-    model, provider = _resolve_authoring_identity(args.model, args.model_provider)
+    if execution_binding:
+        model, provider = _effective_authoring_identity(args)
+    else:
+        model, provider = _resolve_authoring_identity(args.model, args.model_provider)
+    if execution_binding and (
+        model != execution_binding.get("model")
+        or provider != execution_binding.get("provider")
+        or getattr(args, "managed_hermes_home", "")
+        != execution_binding.get("hermes_home", "")
+    ):
+        raise SystemExit("managed Hermes effective identity changed since prepare")
     result = run_weekly_monitor(
         model=model, model_provider=provider,
         source_config_path=Path(args.source_config),
@@ -1502,11 +1528,71 @@ def _resolve_authoring_identity(model="", provider="") -> tuple[str, str]:
     return model, provider
 
 
+def _configure_managed_authoring(args, binding: dict) -> None:
+    """Use a legacy override or bind a new run to its observed Hermes route."""
+    args.managed_binding = binding
+    if binding.get("execution_backend") == "host-dashboard":
+        from scripts.run_agent_acquisition import (
+            _SOURCE_HERMES_HOME_ENV,
+            _assert_host_execution_fingerprint,
+        )
+
+        _assert_host_execution_fingerprint(
+            binding, environment=os.environ,
+            source_home=os.environ.get(_SOURCE_HERMES_HOME_ENV),
+            private_home=attempt_home(binding),
+        )
+    if "provider" in binding and "model" in binding:
+        args.model = binding["model"]
+        args.model_provider = binding["provider"]
+        args.managed_effective_identity = None
+        args.managed_hermes_home = ""
+        return
+    try:
+        evidence = load_effective_identity(binding)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    expected_source = f"climate-acquisition-{binding['run_id']}"
+    if evidence is None or evidence["source"] != expected_source:
+        raise SystemExit(
+            "managed Hermes effective identity is missing; start a fresh managed run"
+        )
+    args.model = ""
+    args.model_provider = ""
+    args.managed_effective_identity = evidence
+    args.managed_hermes_home = str(attempt_home(binding))
+
+
+def _effective_authoring_identity(args) -> tuple[str, str]:
+    evidence = getattr(args, "managed_effective_identity", None)
+    if evidence:
+        return evidence["model"], evidence["provider"]
+    return args.model, args.model_provider
+
+
+def _authoring_environment(args) -> dict[str, str]:
+    environment = {**os.environ, "HERMES_STREAM_RETRIES": "0"}
+    managed_home = getattr(args, "managed_hermes_home", "")
+    if managed_home:
+        environment["HERMES_HOME"] = managed_home
+    binding = getattr(args, "managed_binding", None)
+    if binding and binding.get("execution_backend") == "host-dashboard":
+        from scripts.run_agent_acquisition import (
+            _SOURCE_HERMES_HOME_ENV,
+            _assert_host_execution_fingerprint,
+        )
+
+        _assert_host_execution_fingerprint(
+            binding, environment=environment,
+            source_home=os.environ.get(_SOURCE_HERMES_HOME_ENV),
+            private_home=managed_home or None,
+        )
+    return environment
+
+
 def _parse_hermes_quiet_response(stdout: str, stderr: str):
     """Validate quiet-mode diagnostics separately from the complete JSON payload."""
-    import re
-    if not re.fullmatch(r"session_id: [0-9]{8}_[0-9]{6}_[0-9a-f]{6}", stderr.strip()):
-        raise ValueError("missing, malformed, or unexpected Hermes stderr session_id")
+    _hermes_quiet_session_id(stderr)
     warning = "Warning: Unknown toolsets: none\n"
     response = stdout.removeprefix(warning)
     # v2026.9.7 emits this fixed startup notice even in quiet mode.
@@ -1521,6 +1607,32 @@ def _parse_hermes_quiet_response(stdout: str, stderr: str):
     if fenced:
         response = fenced.group(1)
     return json.loads(response)
+
+
+def _hermes_quiet_session_id(stderr: str) -> str:
+    match = re.fullmatch(
+        r"session_id: ([0-9]{8}_[0-9]{6}_[0-9a-f]{6})", stderr.strip()
+    )
+    if match is None:
+        raise ValueError("missing, malformed, or unexpected Hermes stderr session_id")
+    return match.group(1)
+
+
+def _verify_managed_authoring_route(args, stderr: str) -> None:
+    evidence = getattr(args, "managed_effective_identity", None)
+    if not evidence:
+        return
+    try:
+        provider, model = observe_session_route(
+            Path(args.managed_hermes_home), _hermes_quiet_session_id(stderr)
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            "managed Hermes effective identity could not be verified; "
+            "start a fresh managed run"
+        ) from exc
+    if (provider, model) != (evidence["provider"], evidence["model"]):
+        raise SystemExit("Hermes effective identity changed; start a fresh managed run")
 
 
 def _hermes_authoring_invocation(
@@ -1544,7 +1656,8 @@ def _hermes_authoring_invocation(
         )
     if not {"--max-turns", "--reasoning", "--ignore-rules"}.issubset(options):
         raise SystemExit("Hermes authoring requires bounded-turn and reasoning controls")
-    command = ["hermes", "chat", "--query-file", "-", "--quiet", "--toolsets", "none",
+    command = [os.environ.get("HERMES_EXECUTABLE") or "hermes",
+               "chat", "--query-file", "-", "--quiet", "--toolsets", "none",
                "--max-turns", "1", "--reasoning", "none", "--ignore-rules"]
     if model:
         command += ["--model", model]
@@ -1669,8 +1782,13 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
     """One independent invocation; atomically retain validated work for resume."""
     import subprocess
     import time
-    identity = _canonical_digest({"instruction": instruction, "model": args.model,
-                                  "provider": args.model_provider})
+    effective_model, effective_provider = _effective_authoring_identity(args)
+    identity = _canonical_digest({
+        "instruction": instruction,
+        "model": effective_model,
+        "provider": effective_provider,
+        "hermes_home": getattr(args, "managed_hermes_home", ""),
+    })
     prior = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     if prior and prior.get("input_sha256") != identity:
         raise SystemExit("authoring checkpoint input changed; use fresh staging")
@@ -1701,7 +1819,7 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
     try:
         completed = subprocess.run(command, input=stdin, text=True, encoding="utf-8",
             capture_output=True, cwd=ROOT, timeout=args.authoring_timeout,
-            env={**os.environ, "HERMES_STREAM_RETRIES": "0"})
+            env=_authoring_environment(args))
         diagnostic = {"returncode": completed.returncode, "stdout": completed.stdout,
                       "stderr": completed.stderr, "request_sha256": record["request_sha256"],
                       "seconds": round(time.monotonic() - started, 3)}
@@ -1710,6 +1828,16 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
             raise ValueError("Hermes authoring response absent or failed")
         phase = "parse"
         raw = _parse_hermes_quiet_response(completed.stdout, completed.stderr)
+        phase = "identity"
+        try:
+            _verify_managed_authoring_route(args, completed.stderr)
+        except SystemExit as exc:
+            record.update(
+                status="failed", error_stage=phase, error_type=type(exc).__name__,
+                error=str(exc), seconds=round(time.monotonic() - started, 3),
+            )
+            _write_atomic(path, _canonical_bytes(record))
+            raise
         phase = "validate"
         result = validate(raw)
     except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError, KeyError) as exc:
@@ -1743,8 +1871,17 @@ def _verify_authoring_resume(args, staging, bundle):
         bound, bound_path, bound_taxonomy = _load_task_binding_with_taxonomy(str(path))
         prepared_prompt_sha = _bound_prompt(bound, "article_summary", bound_path).sha256
         prepared_taxonomy_sha = bound_taxonomy.sha256
-        if args.model != bound["model"] or args.model_provider != bound["provider"]:
+        execution = bundle["execution_binding"]
+        effective_model, effective_provider = _effective_authoring_identity(args)
+        if (effective_model != execution.get("model")
+                or effective_provider != execution.get("provider")
+                or getattr(args, "managed_hermes_home", "")
+                != execution.get("hermes_home", "")):
             raise SystemExit("bound provider/model changed; use fresh staging")
+        if (("provider" in bound or "model" in bound)
+                and (args.model != bound.get("model")
+                     or args.model_provider != bound.get("provider"))):
+            raise SystemExit("legacy task provider/model changed; use fresh staging")
         if (getattr(args, "repository_commit_sha", "")
                 != bound["repository_commit_sha"]
                 or bundle["execution_binding"].get("repository_commit_sha")
@@ -1756,8 +1893,10 @@ def _verify_authoring_resume(args, staging, bundle):
     if (prepared_prompt_sha != bundle["prompt"]["sha256"]
             or prepared_taxonomy_sha != bundle["taxonomy"]["sha256"]):
         raise SystemExit("prepared authoring prompt or taxonomy changed")
+    effective_model, effective_provider = _effective_authoring_identity(args)
     identity = {"schema_version": "weekly-url-authoring-run.v1", "bundle_digest": bundle["bundle_digest"],
-                "model": args.model, "provider": args.model_provider,
+                "model": effective_model, "provider": effective_provider,
+                "hermes_home": getattr(args, "managed_hermes_home", ""),
                 "output_paths": {key: str(Path(getattr(args, key)).resolve())
                                  for key in ("state_dir", "source_dir", "wiki_dir")}}
     path = staging / "authoring_run.json"
@@ -1780,15 +1919,17 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
         bound, bound_path, bound_taxonomy = _load_task_binding_with_taxonomy(
             args.task_binding
         )
-        args.model = bound["model"]
-        args.model_provider = bound["provider"]
+        _configure_managed_authoring(args, bound)
         supplied_commit = getattr(args, "repository_commit_sha", "")
         if supplied_commit and supplied_commit != bound["repository_commit_sha"]:
             raise SystemExit("--repository-commit-sha differs from the immutable task binding")
         args.repository_commit_sha = bound["repository_commit_sha"]
     if response_path.exists() and not (staging / "authoring_run.json").exists():
         raise SystemExit("authoring response already exists without a resumable URL run")
-    args.model, args.model_provider = _resolve_authoring_identity(args.model, args.model_provider)
+    if bound is None or ("provider" in bound and "model" in bound):
+        args.model, args.model_provider = _resolve_authoring_identity(
+            args.model, args.model_provider
+        )
     if not (staging / "bundle.json").exists():
         with redirect_stdout(sys.stderr):
             _run_prepare(args, parser)
@@ -1804,8 +1945,10 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
     constraints = asdict(taxonomy.constraints)
     constraints["disallowed_keywords"] = sorted(constraints["disallowed_keywords"])
     try:
-        help_result = subprocess.run(["hermes", "chat", "--help"], text=True,
-                                     capture_output=True, cwd=ROOT, timeout=30)
+        help_result = subprocess.run(
+            [os.environ.get("HERMES_EXECUTABLE") or "hermes", "chat", "--help"], text=True,
+                                     capture_output=True, cwd=ROOT, timeout=30,
+                                     env=_authoring_environment(args))
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SystemExit("Hermes authoring capabilities unavailable") from exc
     if help_result.returncode:

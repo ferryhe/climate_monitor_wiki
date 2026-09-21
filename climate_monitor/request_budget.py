@@ -118,21 +118,7 @@ def ledger_path(binding):
 
 class RequestBudget:
     def __init__(self, path, binding, *, prior=None):
-        self.path = Path(path)
-        self.attempt = int(binding["attempt"])
-        identity_fields = {
-            key: binding.get(key) for key in (
-            "run_id", "effective_sha256", "budgets", "source_inventory",
-            "site_scope_inventory", "governed_gateway", "date_policy", "report_date",
-            )
-        }
-        # Preserve the exact pre-v2 digest for already-frozen legacy runs.
-        if "agent_protocol" in binding:
-            identity_fields["agent_protocol"] = binding["agent_protocol"]
-        self.identity = digest(identity_fields)
-        self.limits = dict(binding["budgets"])
-        self.provider_native_search = provider_native_unbounded_search(binding)
-        self.candidate_handles = candidate_handle_protocol(binding)
+        self._bind(path, binding)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked(create=True) as state:
             now = time.time()
@@ -162,6 +148,34 @@ class RequestBudget:
                 spent = self._runtime(state, now)
                 state["attempts"][key] = {"started": now, "finished": None,
                                          "deadline": now + max(0, self.limits["runtime_seconds"] - spent)}
+
+    def _bind(self, path, binding):
+        self.path = Path(path)
+        self.attempt = int(binding["attempt"])
+        identity_fields = {
+            key: binding.get(key) for key in (
+            "run_id", "effective_sha256", "budgets", "source_inventory",
+            "site_scope_inventory", "governed_gateway", "date_policy", "report_date",
+            )
+        }
+        # Preserve the exact pre-v2 digest for already-frozen legacy runs.
+        if "agent_protocol" in binding:
+            identity_fields["agent_protocol"] = binding["agent_protocol"]
+        self.identity = digest(identity_fields)
+        self.limits = dict(binding["budgets"])
+        self.provider_native_search = provider_native_unbounded_search(binding)
+        self.candidate_handles = candidate_handle_protocol(binding)
+
+    @classmethod
+    def usage_from_existing(cls, path, binding, attempt=None):
+        budget = cls.__new__(cls)
+        budget._bind(path, binding)
+        state = json.loads(budget.path.read_text(encoding="utf-8"))
+        expected = state.pop("sha256", None)
+        if expected != digest(state):
+            raise ValueError("request ledger digest differs")
+        budget._validate(state)
+        return budget._usage(state, attempt)
 
     @contextmanager
     def _locked(self, *, create=False, write=True):
