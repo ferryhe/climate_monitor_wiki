@@ -26,16 +26,19 @@ if [ "${CLIMATE_REQUIRE_CONSOLE_AUTH:-}" = "1" ]; then
     esac
 fi
 
-# Seed mutable runtime configuration exactly once. Existing operator state wins.
-if [ -n "${CLIMATE_TASK_CONFIG:-}" ] && [ ! -e "$CLIMATE_TASK_CONFIG" ]; then
-    mkdir -p "$(dirname "$CLIMATE_TASK_CONFIG")"
-    cp /app/monitoring/jobs/weekly-climate-monitor-08h/task-definition.json "$CLIMATE_TASK_CONFIG"
-fi
-if [ -n "${CLIMATE_TASK_VERSION_DIR:-}" ]; then
-    mkdir -p "$CLIMATE_TASK_VERSION_DIR"
-fi
-if [ -n "${CLIMATE_ACQUISITION_RUN_DIR:-}" ]; then
-    mkdir -p "$CLIMATE_ACQUISITION_RUN_DIR"
+# Seed mutable runtime configuration exactly once for the local backend.
+# External Dashboard mode owns all management state on the host.
+if [ -z "${HERMES_DASHBOARD_SOCKET:-}" ]; then
+    if [ -n "${CLIMATE_TASK_CONFIG:-}" ] && [ ! -e "$CLIMATE_TASK_CONFIG" ]; then
+        mkdir -p "$(dirname "$CLIMATE_TASK_CONFIG")"
+        cp /app/monitoring/jobs/weekly-climate-monitor-08h/task-definition.json "$CLIMATE_TASK_CONFIG"
+    fi
+    if [ -n "${CLIMATE_TASK_VERSION_DIR:-}" ]; then
+        mkdir -p "$CLIMATE_TASK_VERSION_DIR"
+    fi
+    if [ -n "${CLIMATE_ACQUISITION_RUN_DIR:-}" ]; then
+        mkdir -p "$CLIMATE_ACQUISITION_RUN_DIR"
+    fi
 fi
 
 if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
@@ -43,9 +46,10 @@ if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
     python -c 'from climate_monitor.hermes_dashboard_server import trusted_public_origin; trusted_public_origin()'
     if [ -n "${HERMES_DASHBOARD_SOCKET:-}" ]; then
         : "${HERMES_DASHBOARD_SESSION_TOKEN_FILE:?host Dashboard token file is required in external mode}"
-        case "$HERMES_DASHBOARD_SOCKET:$HERMES_DASHBOARD_SESSION_TOKEN_FILE" in
-            /*:/*) ;;
-            *) echo "host Dashboard socket and token file paths must be absolute" >&2; exit 78 ;;
+        : "${HERMES_MANAGED_SOCKET:?host managed backend socket is required in external mode}"
+        case "$HERMES_DASHBOARD_SOCKET:$HERMES_MANAGED_SOCKET:$HERMES_DASHBOARD_SESSION_TOKEN_FILE" in
+            /*:/*:/*) ;;
+            *) echo "host Dashboard, managed backend, and token file paths must be absolute" >&2; exit 78 ;;
         esac
         if [ ! -r "$HERMES_DASHBOARD_SESSION_TOKEN_FILE" ]; then
             echo "host Dashboard token file is not readable" >&2

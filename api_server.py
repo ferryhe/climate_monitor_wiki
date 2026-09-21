@@ -30,7 +30,7 @@ from climate_monitor.run_ledger import (
     LedgerUnavailableError,
     RunLedgerReader,
 )
-from climate_monitor.management import ManagementService
+from climate_monitor.managed_backend import management_service_from_environment
 from climate_monitor.console_auth import (
     ConsoleUser,
     auth_router,
@@ -90,16 +90,16 @@ app.state.limiter = _LOGIN_LIMITER
 
 responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
 RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
-management_service: ManagementService | None = None
+management_service: Any | None = None
 ConsolePrincipal = Annotated[ConsoleUser, Depends(current_console_user)]
 OptionalConsolePrincipal = Annotated[ConsoleUser | None, Depends(optional_console_user)]
 
 
-def _management_service() -> ManagementService:
+def _management_service() -> Any:
     """Initialize console-only state only after an authenticated console call."""
     global management_service
     if management_service is None:
-        management_service = ManagementService.from_environment()
+        management_service = management_service_from_environment()
     return management_service
 
 # --- Input validation constants ---
@@ -546,12 +546,12 @@ def console_asset(filename: str, user: ConsolePrincipal) -> FileResponse:
 
 @app.get("/api/manage/config", include_in_schema=False)
 def console_config(user: ConsolePrincipal) -> dict[str, Any]:
-    return _manage_call(_management_service().store.load)
+    return _manage_call(lambda: _management_service().store.load())
 
 
 @app.get("/api/manage/versions", include_in_schema=False)
 def console_versions(user: ConsolePrincipal) -> list[dict[str, Any]]:
-    return _manage_call(_management_service().store.versions)
+    return _manage_call(lambda: _management_service().store.versions())
 
 
 @app.get("/api/manage/diff", include_in_schema=False)
@@ -576,7 +576,7 @@ def console_restore(version: int, user: ConsolePrincipal, expected_version: int)
 
 @app.get("/api/manage/progress", include_in_schema=False)
 def console_all_progress(user: ConsolePrincipal) -> list[dict[str, Any]]:
-    return _manage_call(_management_service().list_runs)
+    return _manage_call(lambda: _management_service().list_runs())
 
 
 @app.post("/api/manage/runs", include_in_schema=False)
@@ -664,10 +664,7 @@ def console_freeze_meeting_snapshot(payload: dict[str, Any], user: ConsolePrinci
 
 @app.get("/api/manage/meeting-snapshots/{snapshot_id}", include_in_schema=False)
 def console_meeting_snapshot(snapshot_id: str, user: ConsolePrincipal) -> dict[str, Any]:
-    from climate_monitor.meetings import load_snapshot
-
-    database = _management_service().store.load()["definition"]["runtime"]["registry_database"]
-    return _manage_call(lambda: load_snapshot(database, snapshot_id))
+    return _manage_call(lambda: _management_service().load_meeting_snapshot(snapshot_id))
 
 
 app.mount("/wiki", StaticFiles(directory=WIKI_DIR), name="wiki")

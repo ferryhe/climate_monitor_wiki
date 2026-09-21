@@ -913,6 +913,7 @@ def test_dashboard_is_opt_in_and_disabled_mode_starts_wiki_without_origin(tmp_pa
     assert "HERMES_DASHBOARD_ENABLED: ${HERMES_DASHBOARD_ENABLED:-0}" in compose
     assert "HERMES_HOME: /app/output/hermes" in compose
     assert "HERMES_DASHBOARD_SOCKET: /run/host-hermes/dashboard.sock" in host_override
+    assert "HERMES_MANAGED_SOCKET: /run/host-hermes/managed.sock" in host_override
     assert "HERMES_DASHBOARD_SESSION_TOKEN_FILE: /run/host-hermes/session-token" in host_override
     assert ":/run/host-hermes:ro" in host_override
     assert "No home migration is required" in " ".join(deployment.split())
@@ -956,6 +957,9 @@ def test_external_entrypoint_uses_host_relay_without_starting_dashboard_child(
     app_started = tmp_path / "app-started"
     token_file = tmp_path / "session-token"
     token_file.write_text("host-token", encoding="utf-8")
+    container_task = tmp_path / "container-task.json"
+    container_versions = tmp_path / "container-versions"
+    container_runs = tmp_path / "container-runs"
     python_shim = shim_dir / "python"
     python_shim.write_text(
         """#!/bin/sh
@@ -978,6 +982,10 @@ exec "$REAL_PYTHON" "$@"
         "HERMES_DASHBOARD_ENABLED": "1",
         "HERMES_DASHBOARD_SESSION_TOKEN_FILE": str(token_file),
         "HERMES_DASHBOARD_SOCKET": str(tmp_path / "dashboard.sock"),
+        "HERMES_MANAGED_SOCKET": str(tmp_path / "managed.sock"),
+        "CLIMATE_TASK_CONFIG": str(container_task),
+        "CLIMATE_TASK_VERSION_DIR": str(container_versions),
+        "CLIMATE_ACQUISITION_RUN_DIR": str(container_runs),
         "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
         "REAL_PYTHON": sys.executable,
     }
@@ -1001,6 +1009,9 @@ exec "$REAL_PYTHON" "$@"
     assert result.returncode == 0, result.stderr
     assert app_started.read_text(encoding="utf-8") == "host-relay-app-started"
     assert not dashboard_started.exists()
+    assert not container_task.exists()
+    assert not container_versions.exists()
+    assert not container_runs.exists()
 
 
 def test_disabled_compose_keeps_baseline_persistent_hermes_home():

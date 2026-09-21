@@ -3966,7 +3966,9 @@ def main() -> int:
     group.add_argument("--scheduled-start", action="store_true")
     args = parser.parse_args()
     if args.scheduled_start:
-        result = ManagementService.from_environment().start(trigger="scheduled")
+        from climate_monitor.managed_backend import management_service_from_environment
+
+        result = management_service_from_environment().start(trigger="scheduled")
         print(json.dumps(result, sort_keys=True))
         return 0
     return execute(args.binding)

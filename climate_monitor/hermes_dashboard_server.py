@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import re
+import threading
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -94,6 +96,27 @@ def main() -> None:
     from hermes_cli import web_server
 
     install_oauth_callback_adapter(web_server)
+    managed_socket = os.getenv("HERMES_MANAGED_SOCKET", "").strip()
+    if managed_socket:
+        socket_path = Path(managed_socket)
+        if not socket_path.is_absolute():
+            raise ValueError("HERMES_MANAGED_SOCKET must be an absolute path")
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        socket_path.unlink(missing_ok=True)
+        from climate_monitor.managed_backend import create_managed_backend_app
+        from climate_monitor.management import ManagementService
+        import uvicorn
+
+        service = ManagementService.from_environment(execution_backend="host-dashboard")
+        managed_app = create_managed_backend_app(service)
+        threading.Thread(
+            target=uvicorn.run,
+            kwargs={
+                "app": managed_app, "uds": str(socket_path),
+                "log_level": "warning", "access_log": False,
+            },
+            name="climate-managed-host", daemon=True,
+        ).start()
     try:
         port = int(os.getenv("HERMES_DASHBOARD_PORT", "9119"))
     except ValueError as exc:

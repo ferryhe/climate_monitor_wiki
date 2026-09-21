@@ -551,14 +551,15 @@ def _validate_managed_recovery_binding(service, definition, binding, run_id, day
 def managed_monitor_preflight(
     day, *, planning=False, dry_run=False, resume_run_id=None,
 ):
-    from climate_monitor.management import ManagementService, _resolved_report_date, managed_report_inputs
+    from climate_monitor.management import _resolved_report_date, managed_report_inputs
+    from climate_monitor.managed_backend import management_service_from_environment
     from scripts.run_agent_acquisition import _validate_agent_prompt_protocol
     from climate_monitor.request_budget import (
         AGENT_PROTOCOL_VERSION, CANDIDATE_RECEIPT_POLICY,
         PROVIDER_NATIVE_SEARCH_POLICY,
     )
 
-    service = ManagementService.from_environment()
+    service = management_service_from_environment()
     definition = service.store.load()['definition']
     binding = None
     if resume_run_id is not None:
@@ -624,13 +625,12 @@ def dispatch_managed_monitor(day, *, dry_run, resume_run_id=None):
     except RuntimeError as exc:
         raise Blocked(str(exc)) from exc
     binding = service.binding(launched['run_id'])
-    run_dir = service.runtime_root / launched['run_id']
-    terminal = run_dir / f"attempt-{launched['attempt']}-result.json"
     deadline = time.monotonic() + binding['budgets']['runtime_seconds'] + 300
     rc, result = 124, None
     while time.monotonic() < deadline:
-        if terminal.is_file():
-            finished = json.loads(terminal.read_text())
+        completed = service.run_result(launched['run_id'], launched['attempt'])
+        if completed is not None:
+            finished = completed['terminal']
             if (finished.get('run_id') != launched['run_id']
                     or finished.get('attempt') != launched['attempt']):
                 raise Blocked('managed_result_identity_mismatch')
@@ -641,12 +641,9 @@ def dispatch_managed_monitor(day, *, dry_run, resume_run_id=None):
                 if finished.get('outcome') == 'no_eligible_information':
                     result = {'terminal': finished, 'report': None}
                 else:
-                    result = {
-                        'terminal': finished,
-                        'report': json.loads(
-                            (run_dir / f"attempt-{launched['attempt']}-report-result.json").read_text()
-                        ),
-                    }
+                    if completed['report'] is None:
+                        raise Blocked('managed_report_result_missing')
+                    result = completed
             break
         time.sleep(2)
     record_monitor_result(day, result, rc, dry_run=dry_run)

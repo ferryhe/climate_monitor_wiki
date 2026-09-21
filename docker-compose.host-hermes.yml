@@ -3,6 +3,7 @@ services:
     environment:
       HERMES_DASHBOARD_ENABLED: "1"
       HERMES_DASHBOARD_SOCKET: /run/host-hermes/dashboard.sock
+      HERMES_MANAGED_SOCKET: /run/host-hermes/managed.sock
       HERMES_DASHBOARD_SESSION_TOKEN_FILE: /run/host-hermes/session-token
     volumes:
       - ${HERMES_DASHBOARD_RELAY_DIR:?set HERMES_DASHBOARD_RELAY_DIR to the host relay directory}:/run/host-hermes:ro

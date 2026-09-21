@@ -197,8 +197,18 @@ private relay directory containing:
 
 - `dashboard.sock`, a Unix socket served by the host's native
   `systemd-socket-proxyd` relay to the host Dashboard's loopback listener; and
+- `managed.sock`, the bounded application-management socket served directly by
+  the same host adapter process; and
 - `session-token`, the same session token supplied to the host Dashboard as
   `HERMES_DASHBOARD_SESSION_TOKEN`.
+
+External mode is all-or-nothing for `/manage`: task configuration, versions,
+run bindings, locks/PIDs, progress, report results, Registry reads, and
+automatic/manual meeting work all execute through `managed.sock`. The
+container neither opens host paths nor checks host PIDs, and it never falls
+back to its local management store if this socket is absent or incompatible.
+Existing runs remain tagged with their original backend. They are readable but
+must not be resumed by a different backend; start a fresh run instead.
 
 The host Dashboard must use its existing host interpreter and `HERMES_HOME`, a
 frontend built from that Hermes version with `/hermes/` as its base, and
@@ -210,6 +220,24 @@ host package before binding. `HERMES_DASHBOARD_PORT=19119` selects the host
 loopback listener. Set `HERMES_WEB_DIST` to the exact 0.20.0 frontend built with
 the `/hermes/` base. Only the native Unix-socket relay is mounted into the
 container.
+
+Launch `python -m climate_monitor.hermes_dashboard_server` as the intended host
+user with `HERMES_MANAGED_SOCKET` set to the absolute relay-directory path for
+`managed.sock`. Its environment must also set the host-owned
+`CLIMATE_TASK_CONFIG`, `CLIMATE_TASK_VERSION_DIR`, and
+`CLIMATE_ACQUISITION_RUN_DIR`; task definitions must name the host's canonical
+Registry, source, wiki, state, and run paths. The adapter loads the normal host
+Hermes dotenv before it creates the management service, so jobs and ordinary
+Dashboard chat use the same user, interpreter, `HERMES_HOME`, provider defaults,
+and credentials. The container receives none of those credentials.
+
+Before binding the managed socket, the adapter requires the exact protocol,
+one of the supported Hermes package versions, an executable Hermes CLI, and the
+complete `chat` option contract used by acquisition and report authoring. A
+missing or incompatible capability is a startup error. This repository provides
+the bounded adapter and tests; creating
+or changing the host service unit/socket relay is a separate controlled
+installation step and is not performed by application deployment.
 
 Set the host relay directory and trusted origin in `.env`. Retain every Compose
 override already used by the production `wiki` service; omitting one removes
@@ -246,7 +274,8 @@ External mode reads the token file for each new HTTP request and WebSocket. A
 host Dashboard restart may therefore rotate the token without rebuilding the
 application image; existing WebSockets reconnect with the new token. In this
 mode the entrypoint does not start the image's pinned Dashboard child and does
-not create or modify `/app/output/hermes`. Removing the override returns to the
+not create or modify `/app/output/hermes`, local task configuration, or local
+run directories. Removing the override returns to the
 default isolated, managed runtime and its existing `climate_runtime` state.
 
 ## Publishing and deploying weekly content

@@ -700,6 +700,7 @@ def build_task_binding(
     definition: Mapping[str, Any], *, task_version: int, run_id: str,
     attempt: int, created_at: datetime | None = None,
     definition_sha256: str | None = None,
+    execution_backend: str = "local",
 ) -> dict[str, Any]:
     raw_definition = copy.deepcopy(dict(definition))
     raw_sha256 = _sha(raw_definition)
@@ -740,6 +741,7 @@ def build_task_binding(
         "trigger": "manual",
         "created_at": _rfc3339(frozen_at),
         "task_id": normalized["task_id"],
+        "execution_backend": execution_backend,
         "task_version": task_version,
         "definition_sha256": view["hashes"]["definition_sha256"],
         "effective_sha256": view["hashes"]["effective_sha256"],
@@ -788,6 +790,7 @@ class ManagementService:
     def __init__(
         self, *, store: TaskDefinitionStore, runtime_root: str | Path,
         launcher: Launcher | None = None, meeting_launcher: Launcher | None = None,
+        execution_backend: str = "local",
     ):
         self.store = store
         configured = Path(store.load()["definition"]["runtime"]["run_root"])
@@ -795,18 +798,22 @@ class ManagementService:
         if supplied != configured:
             raise ValueError("management runtime root must equal the task definition run_root")
         self.runtime_root = configured
+        self.execution_backend = execution_backend
         self._launcher = launcher or self._launch_process
         self._meeting_launcher = meeting_launcher or self._launch_meeting_process
 
     @classmethod
-    def from_environment(cls) -> "ManagementService":
+    def from_environment(cls, *, execution_backend: str = "local") -> "ManagementService":
         store = TaskDefinitionStore(
             os.environ.get("CLIMATE_TASK_CONFIG", str(DEFAULT_TASK_PATH)),
             os.environ.get("CLIMATE_TASK_VERSION_DIR", str(DEFAULT_VERSION_ROOT)),
         )
         configured = Path(store.load()["definition"]["runtime"]["run_root"])
         override = os.environ.get("CLIMATE_ACQUISITION_RUN_DIR")
-        return cls(store=store, runtime_root=override or configured)
+        return cls(
+            store=store, runtime_root=override or configured,
+            execution_backend=execution_backend,
+        )
 
     def _run_dir(self, run_id: str) -> Path:
         if not _SAFE_RUN_ID.fullmatch(run_id):
@@ -815,6 +822,13 @@ class ManagementService:
 
     def _attempt_path(self, run_id: str, attempt: int) -> Path:
         return self._run_dir(run_id) / f"attempt-{attempt}.json"
+
+    def _assert_binding_backend(self, binding: Mapping[str, Any]) -> None:
+        bound = str(binding.get("execution_backend") or "local")
+        if bound != self.execution_backend:
+            raise RuntimeError(
+                f"managed run is frozen to the {bound} backend; start a fresh run"
+            )
 
     @staticmethod
     def _state_lock_path(binding: Mapping[str, Any]) -> Path:
@@ -943,6 +957,7 @@ class ManagementService:
     def start_meetings(self, run_id: str, *, retry_failed: bool = False) -> dict[str, Any]:
         """Start meeting extraction for an already stored acquisition batch."""
         acquisition = self.binding(run_id)
+        self._assert_binding_backend(acquisition)
         loaded = self.store.load()
         meeting = loaded["definition"]["meeting"]
         if not meeting["enabled"]:
@@ -1121,6 +1136,12 @@ class ManagementService:
         database, context = self._meeting_query_context()
         return freeze_snapshot(database, **filters, **context)
 
+    def load_meeting_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        from climate_monitor.meetings import load_snapshot
+
+        database = self.store.load()["definition"]["runtime"]["registry_database"]
+        return load_snapshot(database, snapshot_id)
+
     def start(self, *, trigger: str = "manual", now: datetime | None = None) -> dict[str, Any]:
         if trigger not in {"manual", "scheduled"}:
             raise ValueError("trigger must be manual or scheduled")
@@ -1131,6 +1152,7 @@ class ManagementService:
             loaded["_raw_definition"], task_version=loaded["version"], run_id=run_id,
             attempt=1, created_at=stamp,
             definition_sha256=loaded["hashes"]["definition_sha256"],
+            execution_backend=self.execution_backend,
         )
         binding["trigger"] = trigger
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
@@ -1186,6 +1208,7 @@ class ManagementService:
     def resume(self, run_id: str) -> dict[str, Any]:
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             binding = self.binding(run_id)
+            self._assert_binding_backend(binding)
             with _exclusive_lock_nowait(self._state_lock_path(binding)):
                 self._assert_no_startup_owner(binding, exclude_run_id=run_id)
                 return self._resume_locked(run_id)
@@ -1194,6 +1217,7 @@ class ManagementService:
         """Attach to the exact live attempt or resume one stale attempt."""
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             current = self.binding(run_id)
+            self._assert_binding_backend(current)
             run_dir = self._run_dir(run_id)
 
             def terminal_result(binding: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1378,6 +1402,20 @@ class ManagementService:
             if path.is_dir() and (path / "binding.json").exists():
                 result.append(self.progress(path.name))
         return result
+
+    def run_result(self, run_id: str, attempt: int) -> dict[str, Any] | None:
+        binding = self.binding(run_id)
+        if attempt != binding["attempt"]:
+            raise ValueError("managed run attempt does not match current binding")
+        result_path = self._run_dir(run_id) / f"attempt-{attempt}-result.json"
+        if not result_path.is_file():
+            return None
+        terminal = json.loads(result_path.read_text(encoding="utf-8"))
+        report = None
+        report_path = self._run_dir(run_id) / f"attempt-{attempt}-report-result.json"
+        if report_path.is_file():
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        return {"terminal": terminal, "report": report}
 
     def progress(self, run_id: str) -> dict[str, Any]:
         binding = self.binding(run_id)
