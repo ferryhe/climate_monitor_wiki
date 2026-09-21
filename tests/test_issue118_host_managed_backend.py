@@ -108,6 +108,49 @@ def _materialized_service(tmp_path: Path) -> ManagementService:
     )
 
 
+@pytest.mark.parametrize("selection", ["configured", "unset", "empty"])
+def test_host_capabilities_selects_configured_or_path_hermes(
+    tmp_path, monkeypatch, selection,
+):
+    import climate_monitor.managed_backend as managed_backend
+
+    executable = tmp_path / "hermes"
+    executable.write_text("test executable", encoding="utf-8")
+    if selection == "configured":
+        monkeypatch.setenv("HERMES_EXECUTABLE", str(executable.resolve()))
+    elif selection == "empty":
+        monkeypatch.setenv("HERMES_EXECUTABLE", "")
+    else:
+        monkeypatch.delenv("HERMES_EXECUTABLE", raising=False)
+    lookups = []
+    monkeypatch.setattr(
+        managed_backend.shutil, "which",
+        lambda value: lookups.append(value) or str(executable.resolve()),
+    )
+    monkeypatch.setattr(
+        managed_backend.importlib.metadata, "version", lambda _name: "0.20.5",
+    )
+    probes = []
+
+    def probe(command, **kwargs):
+        probes.append((command, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "--ignore-rules --max-turns --query-file --quiet "
+                "--reasoning --resume --source --toolsets"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(managed_backend.subprocess, "run", probe)
+    capabilities = managed_backend.host_capabilities()
+
+    assert lookups == ([] if selection == "configured" else ["hermes"])
+    assert probes[0][0] == [str(executable.resolve()), "chat", "--help"]
+    assert capabilities["host"]["hermes_executable"] == str(executable.resolve())
+
+
 def test_bounded_host_backend_exposes_only_fixed_operations_and_host_identity(
     tmp_path, monkeypatch,
 ):

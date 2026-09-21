@@ -43,7 +43,7 @@ def host_capabilities() -> dict[str, Any]:
         raise RuntimeError("host managed backend has no Hermes installation") from exc
     if version not in SUPPORTED_HERMES_VERSIONS:
         raise RuntimeError(f"host managed backend Hermes {version} is unsupported")
-    configured = os.getenv("HERMES_EXECUTABLE", "hermes")
+    configured = os.getenv("HERMES_EXECUTABLE") or "hermes"
     executable = shutil.which(configured) if not Path(configured).is_absolute() else configured
     if not executable or not Path(executable).is_file():
         raise RuntimeError("host managed backend Hermes executable is unavailable")
