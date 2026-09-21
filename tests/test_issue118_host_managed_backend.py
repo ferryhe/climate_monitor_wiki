@@ -5,6 +5,10 @@ import threading
 import os
 import time
 import json
+import shutil
+import socket
+import subprocess
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -773,8 +777,70 @@ def test_host_compose_mounts_only_bounded_relay_and_requires_managed_socket():
     assert "HERMES_MANAGED_SOCKET:" not in history_override
     assert ".hermes" not in history_override
     assert "host managed backend socket is required in external mode" in entrypoint
-    assert 'if [ -z "${HERMES_DASHBOARD_SOCKET:-}" ]; then' in entrypoint
+    assert (
+        'if [ -z "${HERMES_DASHBOARD_SOCKET:-}" ] '
+        '&& [ -z "${HERMES_MANAGED_SOCKET:-}" ]; then'
+    ) in entrypoint
     assert 'href="/api/manage/history"' in management_page
+
+
+@pytest.mark.parametrize(
+    ("mode", "selectors", "existing_task", "expected_copy", "expected_mkdirs"),
+    [
+        ("managed", {"HERMES_MANAGED_SOCKET": "/relay/managed.sock"}, False, 0, 0),
+        ("dashboard", {"HERMES_DASHBOARD_SOCKET": "/relay/dashboard.sock"}, False, 0, 0),
+        ("local", {}, False, 1, 3),
+        ("history", {"HERMES_MANAGED_HISTORY_SOCKET": "/relay/history.sock"}, False, 1, 3),
+        ("existing", {}, True, 0, 2),
+    ],
+)
+def test_entrypoint_seeds_only_the_local_execution_backend(
+    tmp_path, mode, selectors, existing_task, expected_copy, expected_mkdirs,
+):
+    shell = shutil.which("sh")
+    if not shell and os.name == "nt":
+        git_shell = Path(r"C:\Program Files\Git\usr\bin\sh.exe")
+        shell = str(git_shell) if git_shell.is_file() else None
+    if not shell:
+        pytest.skip("requires a POSIX shell")
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    log = tmp_path / "operations.log"
+    for command in ("cp", "mkdir"):
+        shim = shim_dir / command
+        shim.write_text(
+            f'#!/bin/sh\nprintf "%s %s\\n" "{command}" "$*" >> "$ENTRYPOINT_LOG"\n',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+    task = tmp_path / "config" / "task.json"
+    if existing_task:
+        task.parent.mkdir()
+        task.write_text("retained-task", encoding="utf-8")
+    env = os.environ | selectors | {
+        "CLIMATE_TASK_CONFIG": task.as_posix(),
+        "CLIMATE_TASK_VERSION_DIR": (tmp_path / "versions").as_posix(),
+        "CLIMATE_ACQUISITION_RUN_DIR": (tmp_path / "runs").as_posix(),
+        "ENTRYPOINT_LOG": log.as_posix(),
+        "HERMES_DASHBOARD_ENABLED": "0",
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+    for name in (
+        "HERMES_DASHBOARD_SOCKET", "HERMES_MANAGED_SOCKET",
+        "HERMES_MANAGED_HISTORY_SOCKET",
+    ):
+        if name not in selectors:
+            env.pop(name, None)
+    result = subprocess.run(
+        [shell, str(Path(__file__).resolve().parents[1] / "scripts" / "docker_entrypoint.sh"), "/usr/bin/true"],
+        env=env, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    operations = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    assert sum(line.startswith("cp ") for line in operations) == expected_copy, (mode, operations)
+    assert sum(line.startswith("mkdir ") for line in operations) == expected_mkdirs, (mode, operations)
+    if existing_task:
+        assert task.read_text(encoding="utf-8") == "retained-task"
 
 
 def test_host_dashboard_adapter_starts_managed_service_after_loading_host_environment(
@@ -986,6 +1052,255 @@ def test_relay_readiness_timeout_is_bounded_and_stops_thread(monkeypatch, tmp_pa
         )
     assert time.monotonic() - started < 1
     assert servers and servers[0].should_exit is True
+
+
+@pytest.mark.parametrize("failed_index", [0, 1])
+@pytest.mark.parametrize("raised", [False, True])
+def test_ready_relay_exit_fails_adapter_and_stops_peer(
+    monkeypatch, tmp_path, failed_index, raised,
+):
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+
+    dashboard_entered = threading.Event()
+    events = []
+
+    class RelayServer:
+        def __init__(self, fails=False):
+            self.should_exit = False
+            self.fails = fails
+
+        def run(self):
+            if self.fails:
+                assert dashboard_entered.wait(1)
+                if raised:
+                    raise RuntimeError("relay boom")
+                return
+            while not self.should_exit:
+                time.sleep(0.001)
+
+    relays = []
+    for index, name in enumerate(("climate-managed-host", "climate-managed-history")):
+        server = RelayServer(fails=index == failed_index)
+        failures = []
+        thread = threading.Thread(
+            target=dashboard_server._run_relay, args=(server, failures), daemon=True,
+        )
+        thread.start()
+        relays.append((server, thread, failures, name))
+
+    def start_dashboard(**_kwargs):
+        dashboard_entered.set()
+        try:
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            events.append("dashboard-interrupted")
+            return
+        raise AssertionError("relay death did not interrupt the Dashboard")
+
+    web_server = SimpleNamespace(
+        _mcp_oauth_callback_url=lambda request, name: "unsafe",
+        start_server=start_dashboard,
+    )
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+    hermes_cli.web_server = web_server
+    management_module = ModuleType("climate_monitor.management")
+    management_module.ManagementService = SimpleNamespace(
+        from_environment=lambda **kwargs: object(),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "climate_monitor.management", management_module)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
+    monkeypatch.setattr(dashboard_server, "_start_relays", lambda service, specs: relays)
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
+    monkeypatch.setenv("HERMES_MANAGED_HISTORY_SOCKET", str(tmp_path / "history.sock"))
+
+    failed_name = relays[failed_index][3]
+    with pytest.raises(RuntimeError, match=failed_name):
+        dashboard_server.main()
+    assert events == ["dashboard-interrupted"]
+    assert all(server.should_exit for server, *_rest in relays)
+    assert all(not thread.is_alive() for _server, thread, _failures, _name in relays)
+
+
+def test_ordinary_dashboard_exit_stops_relays_without_false_failure(monkeypatch, tmp_path):
+    import climate_monitor.hermes_dashboard_server as dashboard_server
+
+    server = SimpleNamespace(should_exit=False)
+
+    def relay():
+        while not server.should_exit:
+            time.sleep(0.001)
+
+    thread = threading.Thread(target=relay, daemon=True)
+    thread.start()
+    relays = [(server, thread, [], "climate-managed-host")]
+    web_server = SimpleNamespace(
+        _mcp_oauth_callback_url=lambda request, name: "unsafe",
+        start_server=lambda **kwargs: None,
+    )
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+    hermes_cli.web_server = web_server
+    management_module = ModuleType("climate_monitor.management")
+    management_module.ManagementService = SimpleNamespace(
+        from_environment=lambda **kwargs: object(),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "climate_monitor.management", management_module)
+    monkeypatch.setattr(dashboard_server.importlib.metadata, "version", lambda _name: "0.20.5")
+    monkeypatch.setattr(dashboard_server, "_start_relays", lambda service, specs: relays)
+    monkeypatch.setenv("CLIMATE_PUBLIC_ORIGIN", "https://climate.example")
+    monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "managed.sock"))
+    monkeypatch.delenv("HERMES_MANAGED_HISTORY_SOCKET", raising=False)
+
+    dashboard_server.main()
+    assert server.should_exit is True
+    assert not thread.is_alive()
+
+
+def test_noncooperating_dashboard_is_bounded_in_disposable_subprocess(tmp_path):
+    code = textwrap.dedent("""
+        import os, sys, threading, time
+        from pathlib import Path
+        from types import ModuleType, SimpleNamespace
+        import climate_monitor.hermes_dashboard_server as dashboard_server
+
+        entered = threading.Event()
+        server = SimpleNamespace(should_exit=False)
+        failures = []
+        def relay():
+            entered.wait()
+        thread = threading.Thread(target=relay, daemon=True)
+        thread.start()
+        relays = [(server, thread, failures, "climate-managed-host")]
+        dashboard_server._start_relays = lambda service, specs: relays
+        dashboard_server._DASHBOARD_STOP_TIMEOUT = 0.1
+        dashboard_server.importlib.metadata.version = lambda name: "0.20.5"
+
+        def start_server(**kwargs):
+            entered.set()
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                while True:
+                    time.sleep(1)
+
+        hermes_cli = ModuleType("hermes_cli")
+        hermes_cli.env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+        hermes_cli.web_server = SimpleNamespace(
+            _mcp_oauth_callback_url=lambda request, name: "unsafe",
+            start_server=start_server,
+        )
+        sys.modules["hermes_cli"] = hermes_cli
+        management = ModuleType("climate_monitor.management")
+        management.ManagementService = SimpleNamespace(from_environment=lambda **kwargs: object())
+        sys.modules["climate_monitor.management"] = management
+        os.environ.update(
+            CLIMATE_PUBLIC_ORIGIN="https://climate.example",
+            HERMES_MANAGED_SOCKET=str(Path.cwd() / "managed.sock"),
+        )
+        dashboard_server.main()
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode != 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires real Unix sockets")
+def test_ready_real_uds_relay_exit_closes_peer_and_fails_process(tmp_path):
+    managed_socket = tmp_path / "managed.sock"
+    history_socket = tmp_path / "history.sock"
+    code = textwrap.dedent("""
+        import os, sys, threading, time
+        from pathlib import Path
+        from types import ModuleType, SimpleNamespace
+        import climate_monitor.hermes_dashboard_server as dashboard_server
+        import climate_monitor.managed_backend as managed_backend
+
+        root = Path(sys.argv[1])
+        managed_socket = Path(sys.argv[2])
+        history_socket = Path(sys.argv[3])
+        class Surface:
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: {}
+        store = Surface()
+        store.active_path = root / "task.json"
+        service = Surface()
+        service.store = store
+        service.runtime_root = root / "runs"
+        service.archive_error = None
+        capabilities = {
+            "protocol": managed_backend.PROTOCOL_VERSION,
+            "backend": "host-dashboard",
+            "runtime_root": str(service.runtime_root),
+            "active_task_path": str(store.active_path),
+            "host": {},
+        }
+        create_app = managed_backend.create_managed_backend_app
+        managed_backend.create_managed_backend_app = lambda target, read_only=False: create_app(
+            target, read_only=read_only,
+            capability_loader=lambda: capabilities,
+            token_loader=lambda: "relay-token",
+        )
+        dashboard_server.importlib.metadata.version = lambda name: "0.20.5"
+        original_start_relays = dashboard_server._start_relays
+        dashboard_entered = threading.Event()
+
+        def start_relays(target, specs):
+            relays = original_start_relays(target, specs)
+            def stop_managed():
+                dashboard_entered.wait()
+                relays[0][0].should_exit = True
+            threading.Thread(target=stop_managed, daemon=True).start()
+            return relays
+
+        dashboard_server._start_relays = start_relays
+        def start_server(**kwargs):
+            dashboard_entered.set()
+            try:
+                while True:
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                return
+
+        hermes_cli = ModuleType("hermes_cli")
+        hermes_cli.env_loader = SimpleNamespace(load_hermes_dotenv=lambda **kwargs: None)
+        hermes_cli.web_server = SimpleNamespace(
+            _mcp_oauth_callback_url=lambda request, name: "unsafe",
+            start_server=start_server,
+        )
+        sys.modules["hermes_cli"] = hermes_cli
+        management = ModuleType("climate_monitor.management")
+        management.ManagementService = SimpleNamespace(
+            from_environment=lambda **kwargs: service,
+        )
+        sys.modules["climate_monitor.management"] = management
+        os.environ.pop("HERMES_DASHBOARD_SESSION_TOKEN_FILE", None)
+        os.environ.update(
+            CLIMATE_PUBLIC_ORIGIN="https://climate.example",
+            HERMES_DASHBOARD_SESSION_TOKEN="relay-token",
+            HERMES_MANAGED_SOCKET=str(managed_socket),
+            HERMES_MANAGED_HISTORY_SOCKET=str(history_socket),
+        )
+        dashboard_server.main()
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path), str(managed_socket), str(history_socket)],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "climate-managed-host relay exited after readiness" in result.stderr
+    for path in (managed_socket, history_socket):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            with pytest.raises(OSError):
+                client.connect(str(path))
 
 
 def test_new_host_binding_freezes_backend_and_resume_does_not_rebind(tmp_path, monkeypatch):

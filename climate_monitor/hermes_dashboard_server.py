@@ -8,6 +8,7 @@ operator-owned configuration and leaves the Dashboard in session-token mode.
 """
 from __future__ import annotations
 
+import _thread
 import importlib.metadata
 import os
 import re
@@ -23,6 +24,8 @@ SUPPORTED_HERMES_VERSIONS = {HOST_HERMES_VERSION, PINNED_HERMES_VERSION}
 _OAUTH_SERVER_NAME = re.compile(r"[A-Za-z0-9._~-]{1,128}\Z")
 _RELAY_START_TIMEOUT = 5.0
 _RELAY_STOP_TIMEOUT = 2.0
+_RELAY_WATCH_INTERVAL = 0.02
+_DASHBOARD_STOP_TIMEOUT = 5.0
 
 
 def validate_oauth_server_name(server_name: str) -> str:
@@ -164,6 +167,24 @@ def _start_relays(
         raise
 
 
+def _watch_relays(
+    relays: list[tuple[Any, threading.Thread, list[BaseException], str]],
+    stop: threading.Event,
+    dashboard_done: threading.Event,
+    relay_failure: list[str],
+) -> None:
+    while not stop.wait(_RELAY_WATCH_INTERVAL):
+        for _server, thread, failures, name in relays:
+            if failures or not thread.is_alive():
+                outcome = "failed" if failures else "exited"
+                relay_failure.append(f"{name} relay {outcome} after readiness")
+                _stop_relays(relays)
+                _thread.interrupt_main()
+                if not dashboard_done.wait(_DASHBOARD_STOP_TIMEOUT):
+                    os._exit(1)
+                return
+
+
 def main() -> None:
     from hermes_cli import env_loader
 
@@ -196,10 +217,32 @@ def main() -> None:
             (history_socket, True, "climate-managed-history"),
         ) if spec[0]]
         relays = _start_relays(service, specs)
+    watcher_stop = threading.Event()
+    dashboard_done = threading.Event()
+    relay_failure: list[str] = []
+    watcher = None
+    if relays:
+        watcher = threading.Thread(
+            target=_watch_relays,
+            args=(relays, watcher_stop, dashboard_done, relay_failure),
+            name="climate-relay-watch",
+            daemon=True,
+        )
+        watcher.start()
     try:
-        web_server.start_server(host="127.0.0.1", port=port, open_browser=False)
+        try:
+            web_server.start_server(host="127.0.0.1", port=port, open_browser=False)
+        except KeyboardInterrupt:
+            if not relay_failure:
+                raise
     finally:
+        dashboard_done.set()
+        watcher_stop.set()
+        if watcher is not None:
+            watcher.join(_RELAY_STOP_TIMEOUT)
         _stop_relays(relays)
+    if relay_failure:
+        raise RuntimeError(relay_failure[0])
 
 
 if __name__ == "__main__":

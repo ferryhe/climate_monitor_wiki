@@ -27,8 +27,8 @@ if [ "${CLIMATE_REQUIRE_CONSOLE_AUTH:-}" = "1" ]; then
 fi
 
 # Seed mutable runtime configuration exactly once for the local backend.
-# External Dashboard mode owns all management state on the host.
-if [ -z "${HERMES_DASHBOARD_SOCKET:-}" ]; then
+# External host-managed mode owns all management state on the host.
+if [ -z "${HERMES_DASHBOARD_SOCKET:-}" ] && [ -z "${HERMES_MANAGED_SOCKET:-}" ]; then
     if [ -n "${CLIMATE_TASK_CONFIG:-}" ] && [ ! -e "$CLIMATE_TASK_CONFIG" ]; then
         mkdir -p "$(dirname "$CLIMATE_TASK_CONFIG")"
         cp /app/monitoring/jobs/weekly-climate-monitor-08h/task-definition.json "$CLIMATE_TASK_CONFIG"
