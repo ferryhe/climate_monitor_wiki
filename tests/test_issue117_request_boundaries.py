@@ -5079,14 +5079,98 @@ def test_primary_hermes_failure_retains_sanitized_process_error(tmp_path, monkey
     monkeypatch.setattr(runner, "_trusted_tool_events", trusted)
     monkeypatch.setattr(runner, "_invoke_hermes", invoke)
     exit_code = runner._execute_locked(path)
-    status = service.progress(b["run_id"])
+    status = json.loads(path.with_name("progress.json").read_text())
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     for value in (status, result):
         assert "No usable credentials found for provider 'openai-api'" in value["error"]
+        assert "default configuration is missing" not in value["error"]
         assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
         assert "sk-test-secret" not in value["error"]
         assert "did not persist the bound acquisition session" not in value["error"]
+    assert result["retryable"] is True
+    assert status["stage"] == "retryable_failure"
+    assert status["next_step"] == "resume the same frozen run"
     assert exit_code == 78
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "Failed to initialize agent: upstream temporarily unavailable",
+        "AuthError: provider token refresh failed",
+    ],
+)
+def test_transient_first_failure_without_usage_remains_retryable(
+    tmp_path, monkeypatch, diagnostic,
+):
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        response_path.write_text(diagnostic)
+        return 70
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    assert runner._execute_locked(path) == 70
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    progress = json.loads(path.with_name("progress.json").read_text())
+    assert result["retryable"] is True
+    assert progress["stage"] == "retryable_failure"
+    assert progress["next_step"] == "resume the same frozen run"
+    for value in (result, progress):
+        assert diagnostic in value["error"]
+        assert "default configuration is missing" not in value["error"]
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "No inference provider is configured.",
+        "No API key found for provider 'openai-api'. OPENAI_API_KEY=sk-default-secret",
+    ],
+)
+def test_explicit_missing_default_is_terminal_and_resume_requires_new_run(
+    tmp_path, monkeypatch, diagnostic,
+):
+    import scripts.run_agent_acquisition as runner
+
+    service, b, path = _managed_attempt(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_EXECUTABLE", "/bin/false")
+    monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
+        "status": "completed", "source_results": [], "attempts": [], "candidates": [],
+    })
+
+    def invoke(command, response_path, binding_path, binding, deadline):
+        response_path.write_text(diagnostic)
+        return 78
+
+    monkeypatch.setattr(runner, "_invoke_hermes", invoke)
+    assert runner._execute_locked(path) == 78
+    result_path = path.with_name("attempt-1-result.json")
+    progress_path = path.with_name("progress.json")
+    result = json.loads(result_path.read_text())
+    progress = service.progress(b["run_id"])
+    assert result["retryable"] is False
+    assert progress["stage"] == "terminal_failure"
+    assert "fix Hermes default configuration" in progress["next_step"]
+    assert "new run" in progress["next_step"]
+    assert "sk-default-secret" not in json.dumps([result, progress])
+    before = {
+        candidate: candidate.read_bytes()
+        for candidate in (path, result_path, progress_path)
+    }
+    monkeypatch.setenv("OPENAI_API_KEY", "externally-corrected")
+    with pytest.raises(RuntimeError, match="terminal and non-retryable"):
+        service.resume(b["run_id"])
+    assert {
+        candidate: candidate.read_bytes()
+        for candidate in (path, result_path, progress_path)
+    } == before
 
 
 @pytest.mark.parametrize(
@@ -5125,9 +5209,11 @@ def test_failed_hermes_without_session_database_retains_process_error(
     for value in (status, result):
         assert expected_root in value["error"]
         assert detail in value["error"]
+        assert "default configuration is missing" not in value["error"]
         assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
         assert "sk-missing-db-secret" not in value["error"]
         assert "durable session database is unavailable" not in value["error"]
+    assert result["retryable"] is True
 
 
 def test_structured_provider_credentials_are_redacted_from_result_and_progress(
@@ -5187,7 +5273,16 @@ def test_successful_hermes_path_keeps_missing_database_validation_strict(tmp_pat
     assert runner._trusted_tool_events(b, allow_missing_session=True) == []
 
 
-def test_feedback_hermes_failure_retains_sanitized_process_error(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("feedback_detail", "expected_retryable"),
+    [
+        ("Adaptive provider failed.", True),
+        ("No API key found for provider 'openai-api'.", False),
+    ],
+)
+def test_feedback_hermes_failure_retains_sanitized_process_error(
+    tmp_path, monkeypatch, feedback_detail, expected_retryable,
+):
     import scripts.run_agent_acquisition as runner
 
     service, b, path = _managed_attempt(tmp_path, monkeypatch)
@@ -5206,7 +5301,7 @@ def test_feedback_hermes_failure_retains_sanitized_process_error(tmp_path, monke
             response_path.write_text("{}")
             return 0
         response_path.write_text(
-            "Adaptive provider failed. OPENAI_API_KEY=sk-feedback-secret"
+            f"{feedback_detail} OPENAI_API_KEY=sk-feedback-secret"
         )
         return 79
 
@@ -5230,19 +5325,29 @@ def test_feedback_hermes_failure_retains_sanitized_process_error(tmp_path, monke
         lambda database, value: value["source_outcomes"],
     )
     exit_code = runner._execute_locked(path)
-    status = service.progress(b["run_id"])
+    status = json.loads(path.with_name("progress.json").read_text())
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     for value in (status, result):
-        assert "Adaptive provider failed" in value["error"]
+        assert feedback_detail in value["error"]
         assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
         assert "sk-feedback-secret" not in value["error"]
         assert "did not persist the bound acquisition session" not in value["error"]
+    assert result["retryable"] is expected_retryable
+    assert status["stage"] == (
+        "retryable_failure" if expected_retryable else "terminal_failure"
+    )
+    assert status["next_step"] == (
+        "resume the same frozen run"
+        if expected_retryable
+        else "fix Hermes default configuration and create a new run"
+    )
     assert exit_code == 79
 
 
 def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
     tmp_path, monkeypatch,
 ):
+    from climate_monitor.hermes_identity import IDENTITY_FILE, IDENTITY_SCHEMA
     from test_issue94_management_console import _write_hermes_tool_events
     from climate_monitor.hermes_acquisition_hooks import attempt_home
     from climate_monitor.request_budget import RequestBudget, ledger_path
@@ -5253,6 +5358,16 @@ def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
     monkeypatch.setattr(runner, "_controlled_site_context", lambda binding: {
         "status": "completed", "source_results": [], "attempts": [], "candidates": [],
     })
+    identity_path = Path(b["checkpoint_dir"]).parent / IDENTITY_FILE
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    identity_path.write_text(json.dumps({
+        "schema_version": IDENTITY_SCHEMA,
+        "session_id": "session-existing-identity",
+        "source": f"climate-acquisition-{b['run_id']}",
+        "provider": "configured-provider",
+        "model": "configured-model",
+        "observed_at": "2026-09-20T08:00:00Z",
+    }))
 
     def invoke(command, response_path, binding_path, binding, deadline):
         ledger = RequestBudget(ledger_path(binding), binding)
@@ -5277,7 +5392,9 @@ def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
     for value in (status, result):
         assert "Hermes acquisition process exited with 78" in value["error"]
         assert "PRIMARY PROVIDER ROOT: upstream authentication failed" in value["error"]
+        assert "default configuration is missing" not in value["error"]
         assert "transcript lacks durable completion" not in value["error"]
+    assert result["retryable"] is True
     assert provenance["cumulative_actual"]["search_attempts"] == 1
     assert provenance["cumulative_actual"]["search_results"] == 0
     assert provenance["cumulative_actual"]["runtime_seconds"] > 0

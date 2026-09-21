@@ -138,18 +138,17 @@ def test_command_defaults_first_turn_then_resumes_observed_session(tmp_path):
     legacy_command = runner._hermes_command("hermes", legacy, prompt)
     assert legacy_command[legacy_command.index("--provider") + 1] == "openai-codex"
     assert legacy_command[legacy_command.index("--model") + 1] == "legacy-model"
+    assert runner._hermes_failure_disposition(
+        legacy, "No API key found for provider 'openai-codex'.", 78,
+    ) == (True, "retryable_failure", "resume the same frozen run")
 
     response = tmp_path / "failed.txt"
     response.write_text("provider authentication failed", encoding="utf-8")
     error = runner._hermes_process_error(
-        response, 1, phase="acquisition", default_identity_pending=True,
+        response, 1, phase="acquisition",
     )
-    assert "default configuration is missing or unusable" in error
-    content_error = runner._hermes_process_error(
-        response, 1, phase="acquisition", default_identity_pending=False,
-    )
-    assert "default configuration" not in content_error
-    assert "Hermes acquisition process exited" in content_error
+    assert "default configuration" not in error
+    assert "Hermes acquisition process exited" in error
 
 
 def test_environment_keeps_all_default_provider_credentials_but_not_app_secrets(monkeypatch):

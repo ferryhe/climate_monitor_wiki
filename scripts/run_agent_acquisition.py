@@ -3413,7 +3413,6 @@ def _invoke_hermes(
 
 def _hermes_process_error(
     response_path: Path, exit_code: int, *, phase: str,
-    default_identity_pending: bool = False,
 ) -> str:
     """Return one bounded operator-visible error without exposing credentials."""
     base = (
@@ -3421,8 +3420,6 @@ def _hermes_process_error(
         if exit_code == 124
         else f"Hermes {phase} process exited with {exit_code}"
     )
-    if default_identity_pending and exit_code != 124:
-        base = f"Hermes default configuration is missing or unusable ({base})"
     try:
         with response_path.open("rb") as response:
             response.seek(0, os.SEEK_END)
@@ -3452,6 +3449,27 @@ def _hermes_process_error(
     detail = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}\b", "[REDACTED]", detail)
     detail = " ".join(detail.split())[-1000:]
     return f"{base}: {detail}" if detail else base
+
+
+def _hermes_failure_disposition(
+    binding: Mapping[str, Any], error: str, exit_code: int,
+) -> tuple[bool, str, str]:
+    missing_default = (
+        not ("provider" in binding and "model" in binding)
+        and (
+            "No inference provider is configured." in error
+            or re.search(
+                r"No API key found for provider '[^'\r\n]+'\.",
+                error,
+            ) is not None
+        )
+    )
+    if exit_code != 124 and missing_default:
+        return (
+            False, "terminal_failure",
+            "fix Hermes default configuration and create a new run",
+        )
+    return True, "retryable_failure", "resume the same frozen run"
 
 
 def _adaptive_feedback_prompt(
@@ -3712,18 +3730,11 @@ def _execute_attempt(
     _atomic_write(prompt_path, _prompt(binding_path, binding, prompt_context).encode("utf-8"))
     response_path = binding_path.parent / f"attempt-{binding['attempt']}.response.txt"
     remaining_runtime = max(1, int(deadline - time.monotonic()))
-    default_identity_pending = (
-        not ("provider" in binding and "model" in binding)
-        and load_effective_identity(binding) is None
-    )
     command = _hermes_command(hermes, binding, prompt_path, runtime_seconds=remaining_runtime)
     _write_progress(binding_path, binding, stage="acquiring")
     try:
         exit_code = _invoke_hermes(
             command, response_path, binding_path, binding, deadline
-        )
-        default_identity_pending = (
-            default_identity_pending and load_effective_identity(binding) is None
         )
         if exit_code:
             trusted_events = _failed_invocation_tool_events(binding)
@@ -3735,23 +3746,21 @@ def _execute_attempt(
             _enforce_cumulative_budgets(
                 binding, invocation_provenance["cumulative_actual"]
             )
-        if exit_code == 124:
-            _discard_controlled_site_checkpoints(binding)
-            error = _hermes_process_error(
-                response_path, exit_code, phase="acquisition",
-                default_identity_pending=default_identity_pending,
-            )
-            _write_result(binding_path, exit_code=124, retryable=True, error=error)
-            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
-            return 124
         if exit_code:
             _discard_controlled_site_checkpoints(binding)
             error = _hermes_process_error(
                 response_path, exit_code, phase="acquisition",
-                default_identity_pending=default_identity_pending,
             )
-            _write_result(binding_path, exit_code=exit_code, retryable=True, error=error)
-            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
+            retryable, stage, next_step = _hermes_failure_disposition(
+                binding, error, exit_code,
+            )
+            _write_result(
+                binding_path, exit_code=exit_code, retryable=retryable, error=error,
+            )
+            _write_progress(
+                binding_path, binding, stage=stage, error=error,
+                next_step=next_step,
+            )
             return exit_code
         candidate_payload = None
         if not candidate_handle_protocol(binding):
@@ -3834,13 +3843,16 @@ def _execute_attempt(
                 error = _hermes_process_error(
                     feedback_response, feedback_exit, phase="adaptive feedback"
                 )
+                retryable, stage, next_step = _hermes_failure_disposition(
+                    binding, error, feedback_exit,
+                )
                 _write_result(
-                    binding_path, exit_code=feedback_exit, retryable=True,
+                    binding_path, exit_code=feedback_exit, retryable=retryable,
                     error=error,
                 )
                 _write_progress(
-                    binding_path, binding, stage="retryable_failure", error=error,
-                    next_step="resume the same frozen run", events=all_events,
+                    binding_path, binding, stage=stage, error=error,
+                    next_step=next_step, events=all_events,
                 )
                 return feedback_exit
             if feedback_exit == 0:
