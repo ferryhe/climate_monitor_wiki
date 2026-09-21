@@ -26,7 +26,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(Path(__file__).resolve().parents[1])))
 SOURCES = Path(os.environ.get("CLIMATE_WIKI_SOURCES", str(HOME / "sources")))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
@@ -37,13 +37,13 @@ if not PYTHON.exists():
 DB = Path(
     os.environ.get(
         "CLIMATE_REGISTRY_DB",
-        "/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3",
+        str(HOME.parent / "climate_monitor_data" / "registry" / "article-registry.sqlite3"),
     )
 )
 BACKUP_DIR = Path(
     os.environ.get(
         "CLIMATE_REGISTRY_BACKUP_DIR",
-        "/home/ubuntu/climate_monitor_data/registry/backups",
+        str(HOME.parent / "climate_monitor_data" / "registry" / "backups"),
     )
 )
 

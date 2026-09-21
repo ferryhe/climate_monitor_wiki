@@ -32,7 +32,7 @@ from climate_monitor.candidate_aggregation import (
 )
 from scripts.step2_save_state import validate_final_report_bundle_bytes
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(ROOT)))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 CATEGORY_LABELS = {

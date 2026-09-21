@@ -7,7 +7,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(Path(__file__).resolve().parents[1])))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 
 # Only these URL patterns indicate actual events

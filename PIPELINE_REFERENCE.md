@@ -165,6 +165,16 @@ scripts, `step5_build_md.py`, `step6_render_pdf.py`,
 inventory still found legacy jobs enabled, so they cannot yet be described as
 unused or deleted safely.
 
+Their env-var defaults (`CLIMATE_WIKI_HOME`, `CLIMATE_WL_REPO`,
+`CLIMATE_ARTIFACT_ROOT`, `CLIMATE_REGISTRY_DB`, `CLIMATE_REGISTRY_BACKUP_DIR`,
+`CLIMATE_WL_STATE`) resolve relative to this script's own repo checkout
+(`Path(__file__).resolve().parents[1]`) and its conventional sibling
+directories (`web_listening/`, `climate_delivery_artifacts/`,
+`climate_monitor_data/` next to this repo) instead of a hardcoded
+`/home/ubuntu/...` path, so a manual rollback run works on any host that
+follows the same sibling-directory layout without editing tracked files.
+Set the env var explicitly when a host's layout differs.
+
 After the unique new schedule is verified, disable old scheduler callers, check
 remaining imports/tests and remove obsolete code/configuration made redundant by
 the replacement. Keep historical reports and required compatibility contracts.

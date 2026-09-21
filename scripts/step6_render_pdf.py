@@ -12,9 +12,9 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(Path(__file__).resolve().parents[1])))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
-ARTIFACTS = Path(os.environ.get("CLIMATE_ARTIFACT_ROOT", "/home/ubuntu/climate_delivery_artifacts"))
+ARTIFACTS = Path(os.environ.get("CLIMATE_ARTIFACT_ROOT", str(HOME.parent / "climate_delivery_artifacts")))
 PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 if not PYTHON.exists():
     # Fall back to the interpreter running this script (e.g. Render, where the
