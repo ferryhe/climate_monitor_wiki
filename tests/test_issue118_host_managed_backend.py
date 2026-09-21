@@ -284,6 +284,7 @@ def test_history_api_keeps_overlapping_backend_identities_and_is_read_only(monke
     assert api_server.console_history_runs("host-dashboard", principal)[0]["backend"] == "host-dashboard"
     detail = api_server.console_history_run("host-dashboard", "same-run", principal)
     assert (detail["backend"], detail["run_id"]) == ("host-dashboard", "same-run")
+    assert detail["meetings"] == {"acquisition_run_id": "same-run", "runs": []}
     assert api_server.console_history_item(
         "local", "same-run", "same-item", principal,
     )["backend"] == "local"
@@ -331,6 +332,52 @@ def test_history_direct_read_rejects_binding_from_another_backend(monkeypatch):
         api_server.console_history_run("host-dashboard", "same-run", object())
     assert rejected.value.status_code == 409
     assert "frozen to local" in rejected.value.detail
+
+
+def test_history_run_core_failures_and_unknown_meeting_errors_are_not_hidden(monkeypatch):
+    import api_server
+
+    missing = SimpleNamespace(
+        binding=lambda run_id: (_ for _ in ()).throw(FileNotFoundError("missing run")),
+        progress=lambda run_id: pytest.fail("missing binding must stop before progress"),
+        meeting_progress=lambda run_id: pytest.fail("missing binding must stop before meetings"),
+    )
+    monkeypatch.setattr(api_server, "_history_service", lambda backend: missing)
+    with pytest.raises(api_server.HTTPException) as not_found:
+        api_server.console_history_run("local", "missing-run", object())
+    assert not_found.value.status_code == 503
+
+    broken_meeting = SimpleNamespace(
+        binding=lambda run_id: {"run_id": run_id, "execution_backend": "local"},
+        progress=lambda run_id: {"run_id": run_id, "stage": "retained"},
+        meeting_progress=lambda run_id: (_ for _ in ()).throw(
+            RuntimeError("unexpected meeting failure")
+        ),
+    )
+    monkeypatch.setattr(api_server, "_history_service", lambda backend: broken_meeting)
+    with pytest.raises(api_server.HTTPException) as unknown:
+        api_server.console_history_run("local", "retained-run", object())
+    assert unknown.value.status_code == 409
+    assert unknown.value.detail == "unexpected meeting failure"
+
+
+def test_history_run_marks_incompatible_meeting_schema_unavailable(monkeypatch):
+    import api_server
+
+    service = SimpleNamespace(
+        binding=lambda run_id: {"run_id": run_id, "execution_backend": "local"},
+        progress=lambda run_id: {"run_id": run_id, "stage": "retained"},
+        meeting_progress=lambda run_id: (_ for _ in ()).throw(
+            ValueError("registry schema is incompatible")
+        ),
+    )
+    monkeypatch.setattr(api_server, "_history_service", lambda backend: service)
+    detail = api_server.console_history_run("local", "retained-run", object())
+    assert detail["progress"]["stage"] == "retained"
+    assert detail["meetings"] == {
+        "status": "unavailable",
+        "reason": "Meeting evidence is unavailable for this archived run.",
+    }
 
 
 @pytest.mark.parametrize("state", ["missing", "bootstrap"])
@@ -425,25 +472,56 @@ def test_materialized_local_archive_reads_without_any_file_change(monkeypatch, t
     assert _tree_bytes(tmp_path) == before
 
 
-def test_materialized_archive_run_evidence_survives_missing_registry(monkeypatch, tmp_path):
-    service = _materialized_service(tmp_path)
-    run_dir = service.runtime_root / "retained-run"
-    run_dir.mkdir()
-    (run_dir / "binding.json").write_text(json.dumps({
-        "schema_version": "climate-acquisition-run-binding.v1",
-        "attempt": 1,
-        "execution_backend": "local",
-    }), encoding="utf-8")
-    Path(service.store.load()["definition"]["runtime"]["registry_database"]).unlink()
-    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(service.store.active_path))
-    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(service.store.version_root))
+def test_history_run_detail_keeps_real_progress_when_registry_is_missing(monkeypatch, tmp_path):
+    import api_server
+    import climate_monitor.management as management
+    import climate_registry.persistent as persistent
+
+    materialized = _materialized_service(tmp_path)
+    writer = ManagementService(
+        store=materialized.store, runtime_root=materialized.runtime_root,
+        execution_backend="local", launcher=lambda binding: 123,
+    )
+    started = writer.start(
+        trigger="manual", now=datetime(2026, 9, 7, tzinfo=timezone.utc),
+    )
+    binding = writer.binding(started["run_id"])
+    Path(binding["registry_database"]).unlink()
+    before = _tree_bytes(tmp_path)
+    monkeypatch.setenv("CLIMATE_TASK_CONFIG", str(materialized.store.active_path))
+    monkeypatch.setenv("CLIMATE_TASK_VERSION_DIR", str(materialized.store.version_root))
     monkeypatch.setenv("HERMES_MANAGED_SOCKET", str(tmp_path / "host.sock"))
     monkeypatch.delenv("HERMES_DASHBOARD_SOCKET", raising=False)
 
-    archive = history_service_from_environment("local")
-    assert archive.binding("retained-run")["attempt"] == 1
-    with pytest.raises(ValueError, match="registry database"):
-        archive.store.load()
+    def side_effect(*_args, **_kwargs):
+        pytest.fail("history run detail attempted a write/bootstrap/lock/launch seam")
+
+    monkeypatch.setattr(management, "default_task_definition", side_effect)
+    monkeypatch.setattr(management, "_atomic_write", side_effect)
+    monkeypatch.setattr(management, "_exclusive_lock", side_effect)
+    monkeypatch.setattr(persistent, "initialize_registry", side_effect)
+    monkeypatch.setattr(ManagementService, "_launch_process", side_effect)
+    monkeypatch.setattr(Path, "mkdir", side_effect)
+    api_server.app.dependency_overrides[api_server.current_console_user] = lambda: object()
+    try:
+        with TestClient(api_server.app) as client:
+            response = client.get(
+                f"/api/manage/history/local/runs/{started['run_id']}"
+            )
+    finally:
+        api_server.app.dependency_overrides.pop(api_server.current_console_user, None)
+
+    assert response.status_code == 200
+    detail = response.json()
+    assert (detail["backend"], detail["run_id"]) == ("local", started["run_id"])
+    assert detail["binding"]["execution_backend"] == "local"
+    assert detail["progress"]["run_id"] == started["run_id"]
+    assert detail["progress"]["stage"] == "running"
+    assert detail["meetings"] == {
+        "status": "unavailable",
+        "reason": "Meeting evidence is unavailable for this archived run.",
+    }
+    assert _tree_bytes(tmp_path) == before
 
 
 def test_history_only_service_reports_unmaterialized_content_without_bootstrap(

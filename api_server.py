@@ -752,10 +752,17 @@ def console_history_run(backend: str, run_id: str, user: ConsolePrincipal) -> di
     def load() -> dict[str, Any]:
         service = _history_service(backend)
         binding = _history_binding(service, backend, run_id)
+        progress = service.progress(run_id)
+        try:
+            meetings = service.meeting_progress(run_id)
+        except (FileNotFoundError, ValueError):
+            meetings = {
+                "status": "unavailable",
+                "reason": "Meeting evidence is unavailable for this archived run.",
+            }
         return {
             "backend": backend, "run_id": run_id, "binding": binding,
-            "progress": service.progress(run_id),
-            "meetings": service.meeting_progress(run_id),
+            "progress": progress, "meetings": meetings,
         }
 
     return _manage_call(load)
