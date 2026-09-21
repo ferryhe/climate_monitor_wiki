@@ -1,15 +1,16 @@
 # Deployment: Docker + Caddy HTTPS
 
 The wiki runs as two containers behind Caddy. The public site is available at
-`https://climate.aiinforsearch.com` with Caddy-managed public-CA TLS. The host's
+`https://aiclimate.aiforactuaries.org` with Caddy-managed public-CA TLS. The host's
 private IP remains available for internal health checks with Caddy's internal
 CA.
 
 The addresses below are recorded installation examples. For an existing server,
-read the deployed `SITE_HOST` and record the current commit and service state;
-do not infer live configuration from this document. Current pipeline cutover
-gates and wrapper ownership are in [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md)
-and [PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md).
+read the deployed `PUBLIC_HOST` and `SITE_HOST` from `.env` and record the
+current commit and service state; do not infer live configuration from this
+document. Current pipeline cutover gates and wrapper ownership are in
+[PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md) and
+[PIPELINE_CONFIG.md](../PIPELINE_CONFIG.md).
 
 ## Stack
 
@@ -77,8 +78,12 @@ an existing-production update, where configuration and tokens must be preserved.
 ```bash
 cd /home/ubuntu/climate_monitor_wiki
 
-# Generate the reload token + pin the host IP (file is gitignored, chmod 600).
-printf 'SITE_HOST=172.31.10.77\nRELOAD_TOKEN=%s\n' "$(openssl rand -hex 24)" > .env
+# SITE_HOST and PUBLIC_HOST have no defaults — compose refuses to start
+# without them. CLIMATE_PUBLIC_ORIGIN may be empty while the Dashboard is
+# disabled, but set it here so the public-host pair starts in sync. Replace
+# the example values with this host's real private IP and public DNS hostname.
+printf 'SITE_HOST=%s\nPUBLIC_HOST=%s\nCLIMATE_PUBLIC_ORIGIN=https://%s\nRELOAD_TOKEN=%s\n' \
+  "172.31.10.77" "example.org" "example.org" "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 
 CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
@@ -95,8 +100,8 @@ before acquisition and reuse it for report provenance on resume.
 Verify:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://climate.aiinforsearch.com/  # 301 -> HTTPS
-curl -s -o /dev/null -w '%{http_code}\n' https://climate.aiinforsearch.com/api/config  # 200
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://aiclimate.aiforactuaries.org/  # 301 -> HTTPS
+curl -s -o /dev/null -w '%{http_code}\n' https://aiclimate.aiforactuaries.org/api/config  # 200
 curl -sk -o /dev/null -w '%{http_code}\n' https://172.31.10.77/api/config   # 200
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
 ```
@@ -104,7 +109,7 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  #
 ## Certificate trust
 
 Caddy automatically obtains and renews a publicly trusted certificate for
-`climate.aiinforsearch.com`; DNS must resolve to this host and ports 80/443 must
+`aiclimate.aiforactuaries.org`; DNS must resolve to this host and ports 80/443 must
 be reachable for issuance and renewal.
 
 The private-IP site uses Caddy's local CA, so clients connecting to the IP show
@@ -127,8 +132,70 @@ options block, Caddy cannot match a site block and aborts the handshake with:
 TLS connect error: error:0A000438:SSL routines::tlsv1 alert internal error
 ```
 
-The `Caddyfile` sets `default_sni {$SITE_HOST}` to fix this. If you change the
-host IP, update `SITE_HOST` in `.env` and `docker compose up -d`.
+The `Caddyfile` sets `default_sni {$SITE_HOST}` to fix this. `SITE_HOST` has
+no default — compose refuses to start without it, so it must be set in
+`.env` at install time (see First run above). If you change the host IP,
+update `SITE_HOST` in `.env`, reuse the exact complete Compose override set
+described in the public-host procedure below, and run its `safe_compose`
+command with `up -d --no-deps --force-recreate caddy`. Do not run a bare
+`docker compose up -d`, which can recreate `wiki` without its deployed
+Registry, delivery, and status overrides.
+
+## Changing the public hostname
+
+The public site block reads `{$PUBLIC_HOST}` from `.env` instead of a
+hardcoded domain, so switching hostnames never requires a code change or PR.
+`PUBLIC_HOST` (bare hostname) belongs to the `caddy` service; `CLIMATE_PUBLIC_ORIGIN`
+(full `https://` origin) belongs to the `wiki` service (it builds Hermes
+dashboard OAuth callback and WebSocket-Origin checks) — **both must be
+updated and both containers must be recreated**, or the hostname will
+work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
+
+1. Point DNS for the new hostname at this host.
+2. Update `PUBLIC_HOST` and `CLIMATE_PUBLIC_ORIGIN` together in `.env` — they
+   must stay in sync (same host, different shape).
+3. Recreate **both** services using the exact complete Compose override set
+   currently deployed. Omitting an existing override removes its mounts and
+   environment. For the full deployment:
+   ```bash
+   .venv/bin/python -m scripts.safe_compose \
+     -f docker-compose.yml \
+     -f docker-compose.registry.yml \
+     -f docker-compose.delivery.yml \
+     -f docker-compose.update-status.yml \
+     -f docker-compose.job-status.yml \
+     up -d --force-recreate wiki caddy
+   ```
+   Include `-f docker-compose.host-hermes.yml` before `up` only when that
+   deployment uses host Hermes. Omit only overrides not used by that deployment;
+   preserve every other deployed override as well.
+   `docker restart` is not sufficient here: a restart re-executes the
+   existing container with its already-baked-in environment, it does not
+   re-read `.env`. Recreating both services with the complete configuration
+   picks up each changed variable's *value*. Do not substitute
+   a restart for either service in this step.
+4. Verify all of the following before considering the switch complete:
+   ```bash
+   # Caddy is serving the new hostname
+   curl -s -o /dev/null -w '%{http_code}\n' https://<new-host>/api/config   # 200
+
+   # wiki picked up the new CLIMATE_PUBLIC_ORIGIN (not the old one)
+   docker exec climate-wiki-app printenv CLIMATE_PUBLIC_ORIGIN
+
+   # the old hostname no longer serves this deployment
+   curl -sk -o /dev/null -w '%{http_code}\n' https://<old-host>/ || true
+   ```
+   `CLIMATE_PUBLIC_ORIGIN` is not exposed via any HTTP response (it only
+   gates the Hermes dashboard's WebSocket same-origin check internally in
+   `climate_monitor/hermes_dashboard.py`), so checking the container's own
+   environment directly is the only way to confirm `wiki` actually picked
+   up the change.
+
+A plain `caddy reload` is not reliable here if `.env` or the `Caddyfile` was
+just rewritten by an editing tool: some tools replace the file via a new
+inode, and Docker's single-file bind mount stays pinned to the old
+(now-unlinked) inode. The recreation command in step 3 forces
+Docker to re-resolve the mount as part of recreating the container.
 
 ## Operations
 
@@ -165,7 +232,7 @@ recreating the application service:
 
 ```text
 HERMES_DASHBOARD_ENABLED=1
-CLIMATE_PUBLIC_ORIGIN=https://climate.aiinforsearch.com
+CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
 ```
 
 The origin must be the exact browser-facing HTTPS origin with no path,
@@ -219,7 +286,7 @@ weekly-status, and scheduler-status overrides:
 
 ```text
 HERMES_DASHBOARD_RELAY_DIR=/run/user/1000/climate-hermes-relay
-CLIMATE_PUBLIC_ORIGIN=https://climate.aiinforsearch.com
+CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
 ```
 
 ```bash
@@ -427,9 +494,9 @@ docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
 docker compose restart caddy
 
-curl --fail-with-body -sS https://climate.aiinforsearch.com/api/health
+curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/health
 
-curl --fail-with-body -sS https://climate.aiinforsearch.com/api/registry/status \
+curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/registry/status \
   | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("available") is True; print(data)'
 ```
 

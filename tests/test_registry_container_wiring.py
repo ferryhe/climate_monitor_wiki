@@ -126,6 +126,7 @@ def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
     if not docker:
         pytest.skip("Docker CLI is not installed")
     environment = os.environ | {
+        "SITE_HOST": "127.0.0.1", "PUBLIC_HOST": "public.example.test",
         "CLIMATE_REGISTRY_HOST_DIR": str(tmp_path.resolve()),
         "OPENAI_API_KEY": "",
         "RELOAD_TOKEN": "",

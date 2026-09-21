@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Ingest weekly Climate & Actuarial Monitor reports into the wiki repo.
 
-Source of truth: /home/ubuntu/web_listening/data/reports/climate-monitor-YYYY-MM-DD.md
-produced by the weekly Hermes cron job (job f5259a8ec2d9, Mondays 08:00 UTC).
+Source of truth: <CLIMATE_REPORTS_DIR>/climate-monitor-YYYY-MM-DD.md
+(default: a sibling ``web_listening/data/reports`` directory next to this
+repo checkout), produced by the weekly Hermes cron job (job f5259a8ec2d9,
+Mondays 08:00 UTC).
 
 This script copies any report not yet present under sources/, then regenerates
 the wiki pages with the weekly cadence. Git publication is deliberately handled
@@ -16,13 +18,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REPORT_DIR = Path("/home/ubuntu/web_listening/data/reports")
+DEFAULT_REPORT_DIR = Path(
+    os.environ.get("CLIMATE_REPORTS_DIR", str(REPO_ROOT.parent / "web_listening" / "data" / "reports"))
+)
 REPORT_RE = re.compile(r"^climate-monitor-(\d{4}-\d{2}-\d{2})\.md$")
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))

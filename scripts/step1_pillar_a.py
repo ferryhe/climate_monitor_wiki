@@ -16,9 +16,9 @@ if str(ROOT) not in sys.path:
 
 from climate_monitor.dedupe import canonical_url
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(ROOT)))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
-WL_REPO = Path(os.environ.get("CLIMATE_WL_REPO", "/home/ubuntu/web_listening"))
+WL_REPO = Path(os.environ.get("CLIMATE_WL_REPO", str(ROOT.parent / "web_listening")))
 SITE_DB = WL_REPO / "data" / "web_listening.db"
 STATE_FILE = WL_REPO / "data" / "article_state.json"
 

@@ -279,6 +279,9 @@ def _prepare_messages(
         message["From"] = formataddr((config.smtp.from_name, config.smtp.from_address))
         message["To"] = recipient.address
         message["Date"] = format_datetime(now, usegmt=True)
+        # Stable RFC 5322 identity namespace, not a website URL. Delivery
+        # state does not store this suffix, so changing it requires an
+        # explicit versioned migration rather than a public-host rename.
         message["Message-ID"] = (
             f"<climate-delivery.{summary['report']['sha256']}.{recipient.id}."
             f"{fingerprints[recipient.id][:24]}@climate.aiinforsearch.com>"

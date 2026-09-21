@@ -61,7 +61,8 @@ services:
     depends_on:
       - wiki
     environment:
-      SITE_HOST: ${SITE_HOST:-172.31.10.77}
+      SITE_HOST: ${SITE_HOST:?SITE_HOST is required}
+      PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST is required}
     ports:
       - "80:80"
       - "443:443"

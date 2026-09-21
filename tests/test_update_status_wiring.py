@@ -156,6 +156,7 @@ def test_base_registry_and_update_status_compose_overrides_render_together(tmp_p
     registry.mkdir()
     ledger.mkdir()
     environment = os.environ | {
+        "SITE_HOST": "127.0.0.1", "PUBLIC_HOST": "public.example.test",
         "CLIMATE_REGISTRY_HOST_DIR": str(registry.resolve()),
         "CLIMATE_UPDATE_STATUS_HOST_DIR": str(ledger.resolve()),
         "OPENAI_API_KEY": "",

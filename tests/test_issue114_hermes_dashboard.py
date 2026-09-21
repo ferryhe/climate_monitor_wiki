@@ -1007,7 +1007,9 @@ def test_disabled_compose_keeps_baseline_persistent_hermes_home():
     docker = shutil.which("docker")
     if not docker:
         pytest.skip("Docker CLI is not installed")
-    environment = os.environ.copy()
+    environment = os.environ | {
+        "SITE_HOST": "127.0.0.1", "PUBLIC_HOST": "public.example.test",
+    }
     environment.pop("HERMES_DASHBOARD_ENABLED", None)
     environment.pop("CLIMATE_PUBLIC_ORIGIN", None)
     rendered = subprocess.run(

@@ -46,7 +46,9 @@ from climate_registry.selection import (  # noqa: E402
     plan_selection,
 )
 
-DEFAULT_REPORT_DIR = Path("/home/ubuntu/web_listening/data/reports")
+DEFAULT_REPORT_DIR = Path(
+    os.environ.get("CLIMATE_REPORTS_DIR", str(REPO_ROOT.parent / "web_listening" / "data" / "reports"))
+)
 BRANCH = "codex/hermes-weekly-monitor"
 BASE_BRANCH = "main"
 CANDIDATE_PREFIX = "codex/hermes-weekly-candidate-"

@@ -165,6 +165,35 @@ scripts, `step5_build_md.py`, `step6_render_pdf.py`,
 inventory still found legacy jobs enabled, so they cannot yet be described as
 unused or deleted safely.
 
+As of this writing (PR #145), `~/.hermes/cron/jobs.json` on the production
+host has every job that calls one of these scripts by name set to
+`"enabled": false`; the only currently-enabled jobs are the five
+`issue124-*.sh` wrappers, which call `scripts/hermes_job.py` — a different,
+fully env-var-driven entrypoint that never imports or shells out to any of
+these legacy scripts. This does not contradict the SSH-inventory finding
+above (a separate, dated audit); if a future inventory finds one of these
+scripts' jobs re-enabled, treat that as new information superseding this
+note, not as evidence this note was wrong.
+
+Their env-var defaults (`CLIMATE_WIKI_HOME`, `CLIMATE_WL_REPO`,
+`CLIMATE_WL_STATE`) resolve relative to this script's own repo checkout
+(`Path(__file__).resolve().parents[1]`) and its conventional sibling
+directories (`web_listening/` next to this repo) instead of a hardcoded
+`/home/ubuntu/...` path, so a manual rollback run works on any host that
+follows the same sibling-directory layout without editing tracked files.
+Set the env var explicitly when a host's layout differs.
+
+`CLIMATE_ARTIFACT_ROOT`, `CLIMATE_REGISTRY_DB`, and
+`CLIMATE_REGISTRY_BACKUP_DIR` are different: these are writable production
+targets (rendered PDFs, the Registry database, its backups), not read-only
+sources, so they have **no default at all** and must be set explicitly.
+Guessing a sibling-directory default for a writable path let a script run
+from a temporary clone or worktree silently initialize a brand-new, empty
+Registry/artifact tree at a guessed location instead of failing — a
+rollback command could appear to succeed while never touching the real
+production state. See `tests/test_writable_paths_require_explicit_env.py`
+for the regression coverage.
+
 After the unique new schedule is verified, disable old scheduler callers, check
 remaining imports/tests and remove obsolete code/configuration made redundant by
 the replacement. Keep historical reports and required compatibility contracts.

@@ -12,9 +12,8 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(Path(__file__).resolve().parents[1])))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
-ARTIFACTS = Path(os.environ.get("CLIMATE_ARTIFACT_ROOT", "/home/ubuntu/climate_delivery_artifacts"))
 PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 if not PYTHON.exists():
     # Fall back to the interpreter running this script (e.g. Render, where the
@@ -73,6 +72,23 @@ def main() -> int:
         return 1
     args.date = parsed_date.isoformat()
 
+    # ARTIFACTS is a writable production target (rendered PDFs land here) —
+    # unlike REPORTS above, it must never be guessed from a sibling
+    # directory. Running this script from a temporary clone with
+    # CLIMATE_ARTIFACT_ROOT unset must not silently write into some /tmp/...
+    # location that happens to match the sibling convention. Checked here
+    # (after date validation) rather than at import time so --date errors
+    # and --help still work without the env var set.
+    artifact_root = os.environ.get("CLIMATE_ARTIFACT_ROOT", "")
+    if not artifact_root.strip():
+        print(
+            "ERROR: CLIMATE_ARTIFACT_ROOT is required (no default) — point "
+            "it explicitly at the production delivery-artifacts directory path"
+        )
+        return 1
+
+    artifacts = Path(artifact_root)
+
     md_path = REPORTS / f"climate-monitor-{args.date}.md"
     if not md_path.exists():
         print(f"ERROR: markdown not found: {md_path}")
@@ -81,7 +97,7 @@ def main() -> int:
     data = md_path.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
 
-    out_dir = ARTIFACTS / args.date / sha
+    out_dir = artifacts / args.date / sha
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = out_dir / f"climate-monitor-{args.date}.pdf"
 

@@ -45,10 +45,10 @@ from climate_registry.selection import (
     _validate_public_http_url,
 )
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(ROOT)))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 STATE_FILE = Path(
-    os.environ.get("CLIMATE_WL_STATE", "/home/ubuntu/web_listening/data/article_state.json")
+    os.environ.get("CLIMATE_WL_STATE", str(HOME.parent / "web_listening" / "data" / "article_state.json"))
 )
 
 PILLAR_A_ITEM_FIELDS = frozenset({"title", "url", "categories"})

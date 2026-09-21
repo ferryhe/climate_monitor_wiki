@@ -26,7 +26,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", "/home/ubuntu/climate_monitor_wiki"))
+HOME = Path(os.environ.get("CLIMATE_WIKI_HOME", str(Path(__file__).resolve().parents[1])))
 SOURCES = Path(os.environ.get("CLIMATE_WIKI_SOURCES", str(HOME / "sources")))
 REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "reports")))
 PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
@@ -34,18 +34,6 @@ if not PYTHON.exists():
     # Fall back to the interpreter running this script (e.g. Render, where the
     # /home/ubuntu venv path does not exist).
     PYTHON = Path(sys.executable)
-DB = Path(
-    os.environ.get(
-        "CLIMATE_REGISTRY_DB",
-        "/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3",
-    )
-)
-BACKUP_DIR = Path(
-    os.environ.get(
-        "CLIMATE_REGISTRY_BACKUP_DIR",
-        "/home/ubuntu/climate_monitor_data/registry/backups",
-    )
-)
 
 
 def run_cli(args: list[str]) -> dict:
@@ -94,6 +82,19 @@ def main() -> int:
         print(f"ERROR: report date {args.date} is not a Monday; pass --allow-offcycle to override")
         return 1
 
+    # Require explicit writable targets after argument/date validation. Missing
+    # paths remain valid for operator-selected first-deploy initialization.
+    for variable in ("CLIMATE_REGISTRY_DB", "CLIMATE_REGISTRY_BACKUP_DIR"):
+        if not os.environ.get(variable, "").strip():
+            print(
+                f"ERROR: {variable} is required (no default) — point it "
+                "explicitly at the production Registry database or backup path",
+                file=sys.stderr,
+            )
+            return 1
+    db = Path(os.environ["CLIMATE_REGISTRY_DB"])
+    backup_dir = Path(os.environ["CLIMATE_REGISTRY_BACKUP_DIR"])
+
     # The registry ingests only from deployed SOURCES (the append-mostly source
     # of truth). Generated candidates must first go through the isolated
     # rolling-PR publisher, review, merge, and deployment. Copying a candidate
@@ -122,12 +123,12 @@ def main() -> int:
 
     # First-run bootstrap: plan-update/update refuse a missing database
     # (fail-closed), so initialize the schema before the first sync.
-    if not DB.exists():
-        init = run_cli(["init", "--database", str(DB)])
-        print(f"Initialized registry database: {DB} (schema v{init.get('schema_version')})")
+    if not db.exists():
+        init = run_cli(["init", "--database", str(db)])
+        print(f"Initialized registry database: {db} (schema v{init.get('schema_version')})")
 
     try:
-        plan_args = ["plan-update", "--source-dir", str(SOURCES), "--database", str(DB)]
+        plan_args = ["plan-update", "--source-dir", str(SOURCES), "--database", str(db)]
         if args.allow_offcycle:
             plan_args.append("--allow-offcycle")
         plan = run_cli(plan_args)
@@ -150,8 +151,8 @@ def main() -> int:
         update_args = [
             "update",
             "--source-dir", str(SOURCES),
-            "--database", str(DB),
-            "--backup-dir", str(BACKUP_DIR),
+            "--database", str(db),
+            "--backup-dir", str(backup_dir),
         ]
         if args.allow_offcycle:
             update_args.append("--allow-offcycle")
