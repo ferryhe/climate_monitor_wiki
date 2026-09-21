@@ -1632,7 +1632,8 @@ def _hermes_authoring_invocation(
         )
     if not {"--max-turns", "--reasoning", "--ignore-rules"}.issubset(options):
         raise SystemExit("Hermes authoring requires bounded-turn and reasoning controls")
-    command = ["hermes", "chat", "--query-file", "-", "--quiet", "--toolsets", "none",
+    command = [os.environ.get("HERMES_EXECUTABLE") or "hermes",
+               "chat", "--query-file", "-", "--quiet", "--toolsets", "none",
                "--max-turns", "1", "--reasoning", "none", "--ignore-rules"]
     if model:
         command += ["--model", model]
@@ -1920,7 +1921,8 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
     constraints = asdict(taxonomy.constraints)
     constraints["disallowed_keywords"] = sorted(constraints["disallowed_keywords"])
     try:
-        help_result = subprocess.run(["hermes", "chat", "--help"], text=True,
+        help_result = subprocess.run(
+            [os.environ.get("HERMES_EXECUTABLE") or "hermes", "chat", "--help"], text=True,
                                      capture_output=True, cwd=ROOT, timeout=30,
                                      env=_authoring_environment(args))
     except (OSError, subprocess.TimeoutExpired) as exc:

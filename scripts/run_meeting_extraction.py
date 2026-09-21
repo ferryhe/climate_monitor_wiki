@@ -35,7 +35,8 @@ def _extractor(provider: str, model: str, *, hermes_home: str | None = None):
         if help_text is None:
             try:
                 help_result = subprocess.run(
-                    ["hermes", "chat", "--help"], capture_output=True, text=True,
+                    [os.environ.get("HERMES_EXECUTABLE") or "hermes", "chat", "--help"],
+                    capture_output=True, text=True,
                     encoding="utf-8", cwd=ROOT, timeout=30, env=environment,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:

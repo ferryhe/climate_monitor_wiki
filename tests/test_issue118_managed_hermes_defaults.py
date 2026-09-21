@@ -289,6 +289,9 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
     (run_dir / IDENTITY_FILE).write_text(json.dumps(_identity(binding)), encoding="utf-8")
+    executable = str((tmp_path / "host-bin" / "hermes").resolve())
+    monkeypatch.setenv("HERMES_EXECUTABLE", executable)
+    monkeypatch.setenv("PATH", str(tmp_path / "decoy-bin"))
 
     observed = {}
     monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: (
@@ -304,6 +307,7 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
 
     stable_home = str(attempt_home(binding))
     assert observed["env"]["HERMES_HOME"] == stable_home
+    assert observed["env"]["HERMES_EXECUTABLE"] == executable
 
     class FakeProcess:
         pid = 456
@@ -328,6 +332,7 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     )
     assert automatic_binding["hermes_home"] == stable_home
     assert automatic_launch["env"]["HERMES_HOME"] == stable_home
+    assert automatic_launch["env"]["HERMES_EXECUTABLE"] == executable
 
     launched = []
     monkeypatch.setattr(management, "load_acquisition_batch", lambda *args: {})
@@ -352,6 +357,7 @@ def test_report_and_manual_meeting_use_observed_run_identity(tmp_path, monkeypat
     )
     service._launch_meeting_process(launched[0])
     assert manual_launch["env"]["HERMES_HOME"] == stable_home
+    assert manual_launch["env"]["HERMES_EXECUTABLE"] == executable
     assert "RELOAD_TOKEN" not in manual_launch["env"]
     assert "DEPLOYMENT_SECRET" not in manual_launch["env"]
 
@@ -384,6 +390,9 @@ def test_managed_authoring_reuses_home_without_task_override(tmp_path, monkeypat
 
     stable_home = str(attempt_home(binding))
     _write_session_route(Path(stable_home))
+    executable = str((tmp_path / "host-bin" / "hermes").resolve())
+    monkeypatch.setenv("HERMES_EXECUTABLE", executable)
+    monkeypatch.setenv("PATH", str(tmp_path / "decoy-bin"))
     calls = []
 
     def fake_run(command, **kwargs):
@@ -403,6 +412,7 @@ def test_managed_authoring_reuses_home_without_task_override(tmp_path, monkeypat
 
     assert len(calls) == 2
     for command, kwargs in calls:
+        assert command[0] == executable
         assert "--provider" not in command and "--model" not in command
         assert kwargs["env"]["HERMES_HOME"] == stable_home
 
@@ -423,6 +433,9 @@ def test_managed_authoring_reuses_home_without_task_override(tmp_path, monkeypat
 def test_managed_meeting_reuses_home_without_task_override(tmp_path, monkeypatch):
     from scripts import run_meeting_extraction as meeting_worker
 
+    executable = str((tmp_path / "host-bin" / "hermes").resolve())
+    monkeypatch.setenv("HERMES_EXECUTABLE", executable)
+    monkeypatch.setenv("PATH", str(tmp_path / "decoy-bin"))
     calls = []
 
     def fake_run(command, **kwargs):
@@ -456,6 +469,7 @@ def test_managed_meeting_reuses_home_without_task_override(tmp_path, monkeypatch
     assert result == {"meetings": []}
     assert len(calls) == 2
     for command, kwargs in calls:
+        assert command[0] == executable
         assert kwargs["env"]["HERMES_HOME"] == hermes_home
         if "--help" not in command:
             assert "--provider" not in command and "--model" not in command
@@ -489,3 +503,87 @@ def test_managed_meeting_reuses_home_without_task_override(tmp_path, monkeypatch
     legacy_command = calls[-1][0]
     assert legacy_command[legacy_command.index("--provider") + 1] == "legacy-provider"
     assert legacy_command[legacy_command.index("--model") + 1] == "legacy-model"
+
+
+@pytest.mark.parametrize("selection", ["configured", "unset", "empty"])
+def test_report_help_probe_uses_selected_hermes_executable(
+    tmp_path, monkeypatch, selection,
+):
+    from scripts import run_climate_monitor as monitor
+
+    executable = str((tmp_path / "host-bin" / "hermes").resolve())
+    if selection == "configured":
+        monkeypatch.setenv("HERMES_EXECUTABLE", executable)
+        expected = executable
+    elif selection == "empty":
+        monkeypatch.setenv("HERMES_EXECUTABLE", "")
+        expected = "hermes"
+    else:
+        monkeypatch.delenv("HERMES_EXECUTABLE", raising=False)
+        expected = "hermes"
+    monkeypatch.setenv("PATH", str(tmp_path / "decoy-bin"))
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    for name, payload in (
+        ("bundle.json", {}),
+        ("v2_authoring_request.json", {"articles": []}),
+        ("article_evidence.json", {"records": []}),
+    ):
+        (staging / name).write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(monitor, "_read_staging_bundle", lambda path: {})
+    monkeypatch.setattr(monitor, "_verify_authoring_resume", lambda *args: None)
+    monkeypatch.setattr(monitor, "_verify_candidate_selection", lambda *args: None)
+    monkeypatch.setattr(monitor, "_candidate_items_from_evidence", lambda *args: [])
+
+    class ProbeSeen(Exception):
+        pass
+
+    def probe(command, **kwargs):
+        assert command == [expected, "chat", "--help"]
+        assert kwargs["env"].get("HERMES_EXECUTABLE") == {
+            "configured": executable, "empty": "", "unset": None,
+        }[selection]
+        raise ProbeSeen
+
+    monkeypatch.setattr("subprocess.run", probe)
+    args = SimpleNamespace(
+        staging_dir=str(staging), task_binding="", model="legacy-model",
+        model_provider="legacy-provider",
+    )
+    with pytest.raises(ProbeSeen):
+        monitor._run_authoring_sequence(args, None)
+
+
+@pytest.mark.parametrize("selection", ["unset", "empty"])
+def test_authoring_and_meeting_fall_back_to_path_hermes(monkeypatch, selection):
+    from scripts import run_climate_monitor as monitor
+    from scripts import run_meeting_extraction as meeting_worker
+
+    if selection == "empty":
+        monkeypatch.setenv("HERMES_EXECUTABLE", "")
+    else:
+        monkeypatch.delenv("HERMES_EXECUTABLE", raising=False)
+    help_text = "--query-file --max-turns --reasoning --ignore-rules"
+    command, _stdin = monitor._hermes_authoring_invocation(help_text, "author")
+    assert command[0] == "hermes"
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "--help" in command:
+            return SimpleNamespace(returncode=0, stdout=help_text, stderr="")
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps({"meetings": []}),
+            stderr="session_id: 20260920_080000_abcdef",
+        )
+
+    monkeypatch.setattr(meeting_worker.subprocess, "run", fake_run)
+    body = "meeting evidence"
+    meeting_worker._extractor("legacy-provider", "legacy-model")({
+        "prompt": "Extract meetings.",
+        "content_version_id": "content-1",
+        "content_sha256": hashlib.sha256(body.encode()).hexdigest(),
+        "source_url": "https://example.com/report",
+        "article_body": body,
+    })
+    assert [call[0] for call in calls] == ["hermes", "hermes"]
