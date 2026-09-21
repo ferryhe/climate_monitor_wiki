@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+import yaml
+
 from climate_monitor.request_budget import (
     RequestBudget,
     candidate_handle_protocol,
@@ -187,6 +189,29 @@ def install_hooks(command, binding_path, binding, environment):
         "pre_tool_call": [{"command": hook, "timeout": 15, "fail_closed": True}],
         "post_tool_call": [{"command": hook, "timeout": 15}],
     }, "mcp_servers": {}, "memory": {"memory_enabled": False, "user_profile_enabled": False}}
+    ambient_home = Path(environment.get("HERMES_HOME") or Path.home() / ".hermes")
+    if "provider" not in binding and "model" not in binding:
+        ambient_config_path = ambient_home / "config.yaml"
+        if ambient_config_path.is_file():
+            ambient_config = yaml.safe_load(ambient_config_path.read_text())
+            model = ambient_config.get("model") if isinstance(ambient_config, dict) else None
+            if isinstance(model, str):
+                model = {"default": model}
+            if isinstance(model, dict):
+                # Hermes resolves the ambient route from config. Copy only route
+                # names; credentials remain in the existing auth/env channels.
+                default = model.get("default") or model.get("model")
+                provider = model.get("provider")
+                if isinstance(default, dict):
+                    nested_provider = default.get("provider")
+                    if isinstance(nested_provider, str) and nested_provider.strip():
+                        provider = nested_provider
+                    default = default.get("model") or default.get("default")
+                route = {key: value for key, value in
+                         (("default", default), ("provider", provider))
+                         if isinstance(value, str) and value.strip()}
+                if route:
+                    config["model"] = route
     if candidate_handle_protocol(binding):
         config["tools"] = {"tool_search": {"enabled": "off"}}
     if provider_native_unbounded_search(binding):
@@ -199,7 +224,7 @@ def install_hooks(command, binding_path, binding, environment):
     )
     # OAuth refreshes are confined to this attempt's private copy. Never copy
     # global hooks/plugins/MCP/environment configuration into the subprocess.
-    auth = Path(environment.get("HERMES_HOME") or Path.home() / ".hermes") / "auth.json"
+    auth = ambient_home / "auth.json"
     if auth.is_file() and not (home / "auth.json").exists():
         fd = os.open(home / "auth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as destination:

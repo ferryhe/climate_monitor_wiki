@@ -248,8 +248,8 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(params, Mapping):
         raise ValueError("parameters must be an object")
     parameter_fields = {"report_date", "timezone", "source_keys", "date_policy", "budgets", "provider", "model"}
-    if set(params) != parameter_fields:
-        raise ValueError(f"parameters fields must be exactly {sorted(parameter_fields)}")
+    if not parameter_fields - {"provider", "model"} <= set(params) <= parameter_fields:
+        raise ValueError(f"parameters fields must be {sorted(parameter_fields - {'provider', 'model'})} with optional provider/model")
     report_date_value = str(params.get("report_date", ""))
     if report_date_value != "auto":
         try:
@@ -282,9 +282,13 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(number, bool) or not isinstance(number, int) or number < (0 if key == "retries_per_item" else 1):
             raise ValueError(f"budget {key} must be a valid positive integer")
         normalized_budgets[key] = number
-    provider, model = str(params.get("provider", "")).strip(), str(params.get("model", "")).strip()
-    if not provider or not model:
-        raise ValueError("provider and model are required")
+    if (("provider" in params) != ("model" in params)
+            or ("provider" in params and not all(
+                isinstance(params[key], str) and params[key].strip()
+                for key in ("provider", "model")
+            ))):
+        raise ValueError("provider and model must both be absent or non-empty strings")
+    provider, model = params.get("provider", "").strip(), params.get("model", "").strip()
     runtime = value.get("runtime")
     if not isinstance(runtime, Mapping) or set(runtime) != {"registry_database", "run_root"}:
         raise ValueError("runtime must contain only registry_database and run_root")
@@ -380,8 +384,8 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
             "source_keys": normalized_keys,
             "date_policy": _validate_date_policy(params["date_policy"]),
             "budgets": normalized_budgets,
-            "provider": provider,
-            "model": model,
+            **({"provider": provider} if "provider" in params else {}),
+            **({"model": model} if "model" in params else {}),
         },
         "runtime": {"registry_database": str(database), "run_root": str(run_root)},
         "taxonomy": {key: str(taxonomy[key]).strip() for key in ("schema_version", "path", "version")},
@@ -685,10 +689,14 @@ def build_task_binding(
     raw_sha256 = _sha(raw_definition)
     if definition_sha256 is not None and definition_sha256 != raw_sha256:
         raise ValueError("task definition hash mismatch")
-    normalized = validate_task_definition(definition)
+    # Validate historical identity before deriving a new execution definition.
+    # Stored definitions and already-frozen bindings are never migrated.
+    normalized = validate_task_definition(raw_definition)
+    for key in ("provider", "model"):
+        raw_definition["parameters"].pop(key, None)
+        normalized["parameters"].pop(key, None)
+    execution_definition = raw_definition if definition_sha256 is not None else normalized
     view = definition_view(normalized, version=task_version)
-    if definition_sha256 is not None:
-        view["hashes"]["definition_sha256"] = definition_sha256
     parameters = normalized["parameters"]
     frozen_at = created_at or _utc_now()
     repository_commit_sha = resolve_repository_commit_sha()
@@ -721,7 +729,7 @@ def build_task_binding(
         "created_at": _rfc3339(frozen_at),
         "task_id": normalized["task_id"],
         "task_version": task_version,
-        "definition_sha256": view["hashes"]["definition_sha256"],
+        "definition_sha256": _sha(execution_definition),
         "effective_sha256": view["hashes"]["effective_sha256"],
         "repository_commit_sha": repository_commit_sha,
         "taxonomy_sha256": view["effective"]["taxonomy_sha256"],
@@ -736,15 +744,11 @@ def build_task_binding(
         "source_inventory": source_inventory,
         "site_scope_inventory": scope_inventory,
         "governed_gateway": gateway,
-        "provider": parameters["provider"],
-        "model": parameters["model"],
         "meeting": {
             "enabled": normalized["meeting"]["enabled"],
             "prompt_version": normalized["meeting"]["prompt"]["version"],
             "prompt_sha256": view["hashes"]["meeting"],
             "prompt_text": normalized["meeting"]["prompt"]["text"],
-            "provider": parameters["provider"],
-            "model": parameters["model"],
         },
         "agent_protocol": {
             "version": AGENT_PROTOCOL_VERSION,
@@ -757,7 +761,7 @@ def build_task_binding(
         "registry_database": normalized["runtime"]["registry_database"],
         "frozen_report_input": str(run_root / run_id / "frozen-report-input.json"),
         "report_inputs": managed_report_inputs(normalized, run_id),
-        "definition": raw_definition if definition_sha256 is not None else normalized,
+        "definition": execution_definition,
     }
 
 
@@ -909,10 +913,9 @@ class ManagementService:
     def start_meetings(self, run_id: str, *, retry_failed: bool = False) -> dict[str, Any]:
         """Start meeting extraction for an already stored acquisition batch."""
         acquisition = self.binding(run_id)
-        loaded = self.store.load()
-        meeting = loaded["definition"]["meeting"]
-        if not meeting["enabled"]:
-            raise RuntimeError("meeting module is disabled in the active saved task version")
+        meeting = acquisition.get("meeting") or {"enabled": False}
+        if not retry_failed and not meeting["enabled"]:
+            raise RuntimeError("meeting module is disabled in the frozen acquisition task version")
         # Readback proves the requested batch exists before launching an isolated child.
         load_acquisition_batch(acquisition["registry_database"], acquisition["acquisition_batch_id"])
         from climate_monitor.meetings import active_meeting_run
@@ -923,9 +926,9 @@ class ManagementService:
         if active is not None:
             return {
                 "accepted": True, "run_id": run_id, "meeting_attempt": None, "pid": None,
-                "task_version": active.get("task_version", loaded["version"]),
-                "prompt_version": active.get("prompt_version", meeting["prompt"]["version"]),
-                "prompt_sha256": active.get("prompt_sha256", loaded["hashes"]["meeting"]),
+                "task_version": active.get("task_version", acquisition["task_version"]),
+                "prompt_version": active.get("prompt_version", meeting.get("prompt_version")),
+                "prompt_sha256": active.get("prompt_sha256", meeting.get("prompt_sha256")),
                 "retry_meeting_run_id": active.get("retry_of_meeting_run_id"),
                 "meeting_run_id": active["meeting_run_id"], "attached": True,
             }
@@ -942,16 +945,20 @@ class ManagementService:
             prompt_version = retry_run["prompt_version"]
             prompt_sha256 = retry_run["prompt_sha256"]
             prompt_text = retry_run["prompt_text"]
-            provider = retry_run["provider"]
-            model = retry_run["model"]
+            identity = {key: retry_run[key] for key in ("provider", "model") if key in retry_run}
+            if identity == {"provider": "", "model": ""}:
+                identity = {}  # Persisted absence is an empty pair, never a partial pair.
             task_version = retry_run["task_version"]
         else:
-            prompt_version = meeting["prompt"]["version"]
-            prompt_sha256 = loaded["hashes"]["meeting"]
-            prompt_text = meeting["prompt"]["text"]
-            provider = loaded["definition"]["parameters"]["provider"]
-            model = loaded["definition"]["parameters"]["model"]
-            task_version = loaded["version"]
+            prompt_version = meeting["prompt_version"]
+            prompt_sha256 = meeting["prompt_sha256"]
+            prompt_text = meeting["prompt_text"]
+            identity = {key: meeting[key] for key in ("provider", "model") if key in meeting}
+            task_version = acquisition["task_version"]
+        if identity and (set(identity) != {"provider", "model"} or not all(
+            isinstance(value, str) and value.strip() for value in identity.values()
+        )):
+            raise ValueError("provider and model must both be absent or non-empty strings")
         binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
             "acquisition_run_id": run_id,
@@ -964,8 +971,7 @@ class ManagementService:
             "prompt_version": prompt_version,
             "prompt_sha256": prompt_sha256,
             "prompt_text": prompt_text,
-            "provider": provider,
-            "model": model,
+            **identity,
         }
         launched = self._meeting_launcher(copy.deepcopy(binding))
         launch = dict(launched) if isinstance(launched, Mapping) else {"pid": launched}
