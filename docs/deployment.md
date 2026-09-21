@@ -1,7 +1,7 @@
 # Deployment: Docker + Caddy HTTPS
 
 The wiki runs as two containers behind Caddy. The public site is available at
-`https://climate.aiinforsearch.com` with Caddy-managed public-CA TLS. The host's
+`https://aiclimate.aiforactuaries.org` with Caddy-managed public-CA TLS. The host's
 private IP remains available for internal health checks with Caddy's internal
 CA.
 
@@ -95,8 +95,8 @@ before acquisition and reuse it for report provenance on resume.
 Verify:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://climate.aiinforsearch.com/  # 301 -> HTTPS
-curl -s -o /dev/null -w '%{http_code}\n' https://climate.aiinforsearch.com/api/config  # 200
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://aiclimate.aiforactuaries.org/  # 301 -> HTTPS
+curl -s -o /dev/null -w '%{http_code}\n' https://aiclimate.aiforactuaries.org/api/config  # 200
 curl -sk -o /dev/null -w '%{http_code}\n' https://172.31.10.77/api/config   # 200
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
 ```
@@ -104,7 +104,7 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  #
 ## Certificate trust
 
 Caddy automatically obtains and renews a publicly trusted certificate for
-`climate.aiinforsearch.com`; DNS must resolve to this host and ports 80/443 must
+`aiclimate.aiforactuaries.org`; DNS must resolve to this host and ports 80/443 must
 be reachable for issuance and renewal.
 
 The private-IP site uses Caddy's local CA, so clients connecting to the IP show
@@ -165,7 +165,7 @@ recreating the application service:
 
 ```text
 HERMES_DASHBOARD_ENABLED=1
-CLIMATE_PUBLIC_ORIGIN=https://climate.aiinforsearch.com
+CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
 ```
 
 The origin must be the exact browser-facing HTTPS origin with no path,
@@ -219,7 +219,7 @@ weekly-status, and scheduler-status overrides:
 
 ```text
 HERMES_DASHBOARD_RELAY_DIR=/run/user/1000/climate-hermes-relay
-CLIMATE_PUBLIC_ORIGIN=https://climate.aiinforsearch.com
+CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
 ```
 
 ```bash
@@ -427,9 +427,9 @@ docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
 docker compose restart caddy
 
-curl --fail-with-body -sS https://climate.aiinforsearch.com/api/health
+curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/health
 
-curl --fail-with-body -sS https://climate.aiinforsearch.com/api/registry/status \
+curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/registry/status \
   | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("available") is True; print(data)'
 ```
 
