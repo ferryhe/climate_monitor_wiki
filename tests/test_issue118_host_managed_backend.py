@@ -149,11 +149,17 @@ def test_host_capabilities_selects_configured_or_path_hermes(
 
     def probe(command, **kwargs):
         probes.append((command, kwargs))
+        if command[1:] == ["--version"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Hermes Agent v0.20.5 (2026.8.19)\ndiagnostic: ready\n",
+                stderr="",
+            )
         return SimpleNamespace(
             returncode=0,
             stdout=(
                 "--ignore-rules --max-turns --query-file --quiet "
-                "--reasoning --resume --source --toolsets"
+                "--reasoning --resume --run-budget --source --toolsets"
             ),
             stderr="",
         )
@@ -165,12 +171,30 @@ def test_host_capabilities_selects_configured_or_path_hermes(
         "configured": [], "relative": [relative], "unset": ["hermes"],
         "empty": ["hermes"],
     }[selection]
-    assert probes[0][0] == [str(executable.resolve()), "chat", "--help"]
+    assert [probe[0] for probe in probes] == [
+        [str(executable.resolve()), "--version"],
+        [str(executable.resolve()), "chat", "--help"],
+    ]
     assert capabilities["host"]["hermes_executable"] == str(executable.resolve())
     assert os.environ["HERMES_EXECUTABLE"] == str(executable.resolve())
 
 
-def test_host_capability_probe_failure_does_not_freeze_executable(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "package_version", "cli_output", "error"),
+    [
+        ("mismatch", "0.20.5", "Hermes Agent v0.20.0", "differs from package"),
+        ("unsupported", "0.20.5", "Hermes Agent v9.9.9", "is unsupported"),
+        ("missing", "0.20.5", "diagnostic only", "version is unavailable"),
+        ("invalid", "0.20.5", "Hermes Agent 0.20.5", "version is unavailable"),
+        ("version_exit", "0.20.5", "", "version probe failed"),
+        ("version_oserror", "0.20.5", "", "CLI is unusable"),
+        ("version_timeout", "0.20.5", "", "CLI is unusable"),
+        ("help_flags", "0.20.5", "Hermes Agent v0.20.5", "chat contract is incompatible"),
+    ],
+)
+def test_host_capability_failure_does_not_freeze_executable(
+    tmp_path, monkeypatch, failure, package_version, cli_output, error,
+):
     import climate_monitor.managed_backend as managed_backend
 
     executable = tmp_path / "host-bin" / "hermes"
@@ -181,14 +205,31 @@ def test_host_capability_probe_failure_does_not_freeze_executable(tmp_path, monk
     monkeypatch.setenv("HERMES_EXECUTABLE", relative)
     monkeypatch.setattr(managed_backend.shutil, "which", lambda _value: relative)
     monkeypatch.setattr(
-        managed_backend.importlib.metadata, "version", lambda _name: "0.20.5",
-    )
-    monkeypatch.setattr(
-        managed_backend.subprocess, "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="failed"),
+        managed_backend.importlib.metadata, "version", lambda _name: package_version,
     )
 
-    with pytest.raises(RuntimeError, match="chat contract is incompatible"):
+    def probe(command, **kwargs):
+        if command[1:] == ["--version"]:
+            if failure == "version_oserror":
+                raise OSError("failed")
+            if failure == "version_timeout":
+                raise subprocess.TimeoutExpired(command, 15)
+            return SimpleNamespace(
+                returncode=1 if failure == "version_exit" else 0,
+                stdout=cli_output,
+                stderr="",
+            )
+        flags = (
+            "--ignore-rules --max-turns --query-file --quiet --reasoning "
+            "--resume --source --toolsets"
+        )
+        if failure != "help_flags":
+            flags += " --run-budget"
+        return SimpleNamespace(returncode=0, stdout=flags, stderr="")
+
+    monkeypatch.setattr(managed_backend.subprocess, "run", probe)
+
+    with pytest.raises(RuntimeError, match=error):
         managed_backend.host_capabilities()
     assert os.environ["HERMES_EXECUTABLE"] == relative
 
@@ -212,13 +253,14 @@ def test_host_readiness_freezes_relative_executable_for_acquisition_child(
     )
     monkeypatch.setattr(
         managed_backend.subprocess, "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0,
+        lambda command, **kwargs: SimpleNamespace(
+            returncode=0, stderr="",
             stdout=(
+                "Hermes Agent v0.20.5 (2026.8.19)\ndiagnostic: ready\n"
+                if command[1:] == ["--version"] else
                 "--ignore-rules --max-turns --query-file --quiet "
-                "--reasoning --resume --source --toolsets"
+                "--reasoning --resume --run-budget --source --toolsets"
             ),
-            stderr="",
         ),
     )
     managed_backend.host_capabilities()

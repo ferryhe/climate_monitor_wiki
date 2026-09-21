@@ -4,6 +4,7 @@ from __future__ import annotations
 import getpass
 import importlib.metadata
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -19,6 +20,10 @@ from climate_monitor.hermes_dashboard_server import SUPPORTED_HERMES_VERSIONS
 
 PROTOCOL_VERSION = "climate-managed-host.v1"
 TOKEN_HEADER = "X-Climate-Managed-Token"
+_HERMES_VERSION_TITLE = re.compile(
+    r"\AHermes Agent v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"
+    r"(?: \([0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}\))?\Z"
+)
 
 
 def _token() -> str:
@@ -51,6 +56,28 @@ def host_capabilities() -> dict[str, Any]:
     if not Path(executable).is_file():
         raise RuntimeError("host managed backend Hermes executable is unavailable")
     try:
+        version_result = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True,
+            timeout=15, check=False, env=os.environ.copy(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("host managed backend Hermes CLI is unusable") from exc
+    if version_result.returncode:
+        raise RuntimeError("host managed backend Hermes CLI version probe failed")
+    cli_version = next((
+        match.group("version")
+        for line in (version_result.stdout + "\n" + version_result.stderr).splitlines()
+        if (match := _HERMES_VERSION_TITLE.fullmatch(line)) is not None
+    ), None)
+    if cli_version is None:
+        raise RuntimeError("host managed backend Hermes CLI version is unavailable")
+    if cli_version not in SUPPORTED_HERMES_VERSIONS:
+        raise RuntimeError(f"host managed backend Hermes CLI {cli_version} is unsupported")
+    if cli_version != version:
+        raise RuntimeError(
+            f"host managed backend Hermes CLI {cli_version} differs from package {version}"
+        )
+    try:
         help_result = subprocess.run(
             [executable, "chat", "--help"], capture_output=True, text=True,
             timeout=15, check=False, env=os.environ.copy(),
@@ -60,7 +87,7 @@ def host_capabilities() -> dict[str, Any]:
     help_text = help_result.stdout + help_result.stderr
     required_flags = (
         "--ignore-rules", "--max-turns", "--query-file", "--quiet",
-        "--reasoning", "--resume", "--source", "--toolsets",
+        "--reasoning", "--resume", "--run-budget", "--source", "--toolsets",
     )
     if help_result.returncode or not all(flag in help_text for flag in required_flags):
         raise RuntimeError("host managed backend Hermes chat contract is incompatible")
