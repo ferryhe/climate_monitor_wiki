@@ -228,9 +228,9 @@ gates: each item is a stop condition, not a warning.
 
 1. **Pin the target.** Record the target commit and the running image
    (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
-   image tagged for rollback. `~/.hermes/issue124-scheduler.json` pins
-   `expected_revision` and `expected_image_id`; update both in the same change that
-   starts the new image so a stale pin cannot silently pass.
+   image tagged for rollback. The host's scheduler configuration for the four slots
+   pins `expected_revision` and `expected_image_id`; update both in the same change
+   that starts the new image so a stale pin cannot silently pass.
 2. **Registry schema — both databases.** Compare the schema the new image requires
    (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
    `PRAGMA user_version` of **each** database in the table below. The acquisition
@@ -260,8 +260,12 @@ at the required schema before the write side runs:
 
 | Database | Host path | In-container path | Writer |
 | --- | --- | --- | --- |
-| Public/site Registry | `/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3` | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
-| Runtime Registry | `/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data/climate_registry.sqlite3` | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
+| Public/site Registry | the directory named by `CLIMATE_REGISTRY_HOST_DIR` (required, no default — see `docker-compose.registry.yml`) | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
+| Runtime Registry | the `climate_runtime` Compose volume (`docker volume inspect` for the host path) | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
+
+Deployment-specific values — host paths, hostnames and credentials — live only in the
+untracked `.env` and on the host. Tracked documentation refers to them by the
+environment variable or Compose key that names them, never by value.
 
 ## Optional Hermes Dashboard
 
