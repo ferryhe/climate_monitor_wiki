@@ -229,10 +229,21 @@ until every gate below passes.
 
 1. **Pin the target.** Record the target commit and the running image
    (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
-   image tagged for rollback. The host's scheduler configuration for the four slots
-   pins `expected_revision` and `expected_image_id`; update both in the same change
-   that starts the new image. Start the new image only after step 2 passes: a schema
-   mismatch makes the write side fail closed.
+   image tagged for rollback. The scheduler that owns the four slots
+   (`monitor`, `email`, `publisher`, `registry` — `SCHEDULE` in
+   `scripts/hermes_job.py`) lives on the host, outside this repository, and pins the
+   revision and image it will accept; update those pins in the same change
+   that starts the new image. What this repository can verify is the slot's own
+   preflight: the wrappers in `scripts/hermes_job_<slot>.sh` pass it through, and it
+   validates without dispatch or writes:
+
+   ```bash
+   # prints {"status": "preflight_passed", ...}
+   .venv/bin/python scripts/hermes_job.py <slot> --preflight
+   ```
+
+   Run it against the target image before enabling the slot, and start the new image
+   only after step 2 passes: a schema mismatch makes the write side fail closed.
 2. **Registry schema — both databases.** Compare the schema the new image requires
    (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
    `PRAGMA user_version` of **each** database in the table below. Both files must be
@@ -291,9 +302,12 @@ at the required schema before the write side runs:
 | Public/site Registry | the directory named by `CLIMATE_REGISTRY_HOST_DIR` (required, no default — see `docker-compose.registry.yml`) | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
 | Runtime Registry | the `climate_runtime` Compose volume (`docker volume inspect` for the host path) | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
 
-Deployment-specific values — host paths, hostnames and credentials — live only in the
-untracked `.env` and on the host. Tracked documentation refers to them by the
-environment variable or Compose key that names them, never by value.
+Deployment-specific values — host paths, hostnames and credentials — belong to the
+host and to the untracked `.env`, not to tracked documentation: new and edited content
+refers to them by the environment variable or Compose key that names them, never by
+value. Older sections of this document and of
+[biweekly-et-deployment.md](biweekly-et-deployment.md) still carry literal host values
+written before that rule; replacing them is tracked separately.
 
 ## Optional Hermes Dashboard
 
