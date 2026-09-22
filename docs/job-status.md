@@ -153,8 +153,8 @@ and application slot writer share the stable external
 same-occurrence merging retains a newer verified application completion while
 Hermes is catching up, but a newer execution or fortnight supersedes it. The
 observed production execution database is
-`/home/ubuntu/.hermes/cron/executions.db`, and IDs must be read back from
-`/home/ubuntu/.hermes/cron/jobs.json` into a separate sanitized map. Exporter
+`$HERMES_HOME/cron/executions.db`, and IDs must be read back from
+`$HERMES_HOME/cron/jobs.json` into a separate sanitized map. Exporter
 systemd timer installation and scheduler cutover remain unperformed and require their
 own deployment evidence.
 

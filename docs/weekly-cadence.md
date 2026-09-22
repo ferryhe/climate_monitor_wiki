@@ -59,8 +59,8 @@ count reads "weekly report pages", and page tags are `#weekly-report` instead of
 ### 4. Ingest script
 
 `scripts/ingest_weekly_reports.py` copies reports from the monitoring job's
-output directory (`/home/ubuntu/web_listening/data/reports/`) into `sources/`,
-then runs the weekly sync.
+output directory (`CLIMATE_REPORTS_DIR`, default `../web_listening/data/reports/`) into
+`sources/`, then runs the weekly sync.
 
 **Only Monday-dated reports are ingested by default.** The report directory also
 contains manual re-runs and debugging passes (Sun/Tue/Fri files) that are

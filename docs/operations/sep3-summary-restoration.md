@@ -38,7 +38,7 @@ Reviewed on 2026-09-14. Historical `c66b7ab` supplied article prose; `0d221d2` r
 
 ## Retained snapshot provenance
 
-Database: `/home/ubuntu/web_listening/data/web_listening.db`, read-only. Only the relevant listing descriptions were used; a homepage excerpt was not treated as a full article.
+Database: `<web-listening-db>` (host path, read-only). Only the relevant listing descriptions were used; a homepage excerpt was not treated as a full article.
 
 - Snapshot 803: `https://www.afdb.org/en`, captured `2026-09-01T23:34:53.873927+00:00`, retained markdown SHA-256 `948add740b3cf2da061ba35dfe4de245fab405778c63b70087d529236498d84b`.
 - Snapshot 834: `https://www.earthdata.nasa.gov/`, captured `2026-09-01T23:36:36.161392+00:00`, retained markdown SHA-256 `3427ec87273df0353be59257b3ecd8fbc9f842d2ad2fabbedf7a31427801b945`.
@@ -54,7 +54,7 @@ The one-off candidate was built from a consistent SQLite backup, preserving sche
 - Production database SHA-256 stayed `52fa67bb4618136febfe1183d56b3ab4a9e713896ba8a77a9e42eb17ff91a985`.
 - Consistent backup SHA-256: `355bf20cce3f67de54bdeb717e9947c70b44a24bf7c26e5fc9fa670fe4f0e7e4`.
 - Validated candidate SHA-256: `9d42941737264eb83c6686e4a56842931f7b58cb40eb3c8da8137eadc03bcf54`.
-- Server receipt and snapshots: `/home/ubuntu/climate_monitor_data/manual-recovery/sep3-summary-restoration-v5/validated.json`. One-off preparation script: `/tmp/sep3_candidate.py` (retained with the recovery bundle). Earlier v1–v4 directories are aborted validation attempts and must not be promoted.
+- Server receipt and snapshots: `<host-data-dir>/manual-recovery/sep3-summary-restoration-v5/validated.json`. One-off preparation script: `/tmp/sep3_candidate.py` (retained with the recovery bundle). Earlier v1–v4 directories are aborted validation attempts and must not be promoted.
 
 Before a future deployment, recheck the live baseline. If another sync has written to it, rebuild and validate from the fresh backup; never overwrite newer data with this candidate. Source and Registry identity must be coordinated with the existing exact-SHA backup/restore gate and a service reload. This content PR does not authorize that deployment or email delivery.
 

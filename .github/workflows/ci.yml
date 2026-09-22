@@ -79,6 +79,11 @@ jobs:
           set -euo pipefail
           python -m compileall climate_monitor climate_registry
 
+      - name: Check tracked files for host-specific paths
+        run: |
+          set -euo pipefail
+          python scripts/check_tracked_host_paths.py
+
       - name: Check frontend JavaScript syntax
         run: |
           set -euo pipefail
