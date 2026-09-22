@@ -1,0 +1,47 @@
+{
+  "commit": "5538bd1f933be2e94aca9755deca5cc59cccc553",
+  "helpers": [
+    {
+      "key": "tools/xai_http.py:get_env_value",
+      "source": "def get_env_value(name: str, default=None):\n    \"\"\"Read ``name`` from ``~/.hermes/.env`` first, then ``os.environ``.\n\n    Wraps :func:`hermes_cli.config.get_env_value` so tests can patch\n    ``tools.xai_http.get_env_value`` to inject dotenv-only secrets into the\n    xAI credential resolver.\n    \"\"\"\n    try:\n        from hermes_cli.config import get_env_value as _hermes_get_env_value\n    except ImportError:\n        return os.environ.get(name, default)\n\n    value = _hermes_get_env_value(name)\n    return value if value is not None else default\n",
+      "source_sha256": "a49207d9e8e48a450d61f91d28aa60d6fbf752e310ce19d41c570efeabcb1716",
+      "ast311": "ab2e4e36abde4ae43a993797b64396e20041e5723813b19ef7f528c4a4282156",
+      "ast312": "dc5f210a69fed26b9217594e0b54e9f0c4753bbfa072a62d7d813b270e2153a1"
+    },
+    {
+      "key": "agent/web_search_provider.py:get_provider_env",
+      "source": "def get_provider_env(name: str) -> str:\n    \"\"\"Config-aware env lookup for web providers.\n\n    Resolves *name* via :func:`hermes_cli.config.get_env_value` (checks\n    ``os.environ`` first, then ``~/.hermes/.env``) so credentials set\n    through Hermes' config layer are visible even when they were never\n    exported into the process environment \u2014 gateway sessions, delegate\n    children, and subprocess agent runs (issue #40190). Falls back to a\n    bare ``os.getenv`` when the config module is unavailable (stripped\n    installs, early import contexts).\n\n    Returns the stripped value, or ``\"\"`` when unset.\n    \"\"\"\n    val: Optional[str] = None\n    try:\n        from hermes_cli.config import get_env_value\n\n        val = get_env_value(name)\n    except Exception:  # noqa: BLE001 \u2014 config layer optional here\n        val = None\n    if val is None:\n        val = os.getenv(name, \"\")\n    return (val or \"\").strip()\n",
+      "source_sha256": "d8bb8e37c5b5e814efb7f92d59a6dd19e9281d0b3596f7be425bd96d0c749fc9",
+      "ast311": "cd44de6c536d89d7fa6edc57a78329c2194175e08199a4cbc8c312cc6b29e5bf",
+      "ast312": "5f85f8a3beea7a24126b872337409a60ce7e2c36b6f20c462a39aeefd3b9d706"
+    },
+    {
+      "key": "tools/managed_tool_gateway.py:build_vendor_gateway_url",
+      "source": "def build_vendor_gateway_url(vendor: str) -> str:\n    \"\"\"Return the gateway origin for a specific vendor.\"\"\"\n    vendor_key = f\"{vendor.upper().replace('-', '_')}_GATEWAY_URL\"\n    explicit_vendor_url = os.getenv(vendor_key, \"\").strip().rstrip(\"/\")\n    if explicit_vendor_url:\n        return explicit_vendor_url\n\n    shared_scheme = get_tool_gateway_scheme()\n    shared_domain = os.getenv(\"TOOL_GATEWAY_DOMAIN\", \"\").strip().strip(\"/\")\n    if shared_domain:\n        return f\"{shared_scheme}://{vendor}-gateway.{shared_domain}\"\n\n    return f\"{shared_scheme}://{vendor}-gateway.{_DEFAULT_TOOL_GATEWAY_DOMAIN}\"\n",
+      "source_sha256": "4c17e6263a33f168531ac5d9f4f75b39b48be4b68682000c830d37eeef643ef9",
+      "ast311": "da2a71ff0681e017cf3d2ee99f8744f7aa69834819cf422ac6685603c39a0403",
+      "ast312": "6246e435806165a3d22dd5438c7444ed5bf206d16de1ddc250bca1e0e3b29bf2"
+    },
+    {
+      "key": "tools/web_tools.py:_env_value",
+      "source": "def _env_value(name: str) -> str:\n    \"\"\"Resolve ``name`` via Hermes config-aware env, falling back to process env.\n\n    Mirrors the SearXNG provider's ``_searxng_url()`` so that values set\n    through Hermes' config/.env layer (``hermes config set``, ``hermes tools``)\n    are honored here too \u2014 not just raw process-env exports. Without this,\n    a config-only ``SEARXNG_URL`` (or any provider key) leaves the backend\n    auto-detect cascade and ``check_web_api_key()`` blind to it. See #34290.\n    \"\"\"\n    try:\n        from hermes_cli.config import get_env_value\n\n        val = get_env_value(name)\n    except Exception:\n        val = None\n    if val is None:\n        val = os.getenv(name, \"\")\n    return (val or \"\").strip()\n",
+      "source_sha256": "d5ad30993fecd4773332da8351b724179c906fa5b8622e3338f8e9cc26eebf25",
+      "ast311": "abb1cab77267e3e9262c4765331ab534ffb7da34316061ba51a0d6786b9ecaed",
+      "ast312": "f4c76d716dd6b3280105c9dbaf8013e59fd6074e7853903ee24fbb7bc8cb89a7"
+    },
+    {
+      "key": "tools/web_tools.py:_has_env",
+      "source": "def _has_env(name: str) -> bool:\n    return bool(_env_value(name))\n",
+      "source_sha256": "e70012912a7da5c2c0f2fec73879eb1958cfab7d4b418503baae6c99e6a4a14e",
+      "ast311": "1c363b932da8e3a3e68b13f6f55b687902c7b62442b51839a528debfeece2f25",
+      "ast312": "d2cf256b7050751854d58ac70a2fa1d89ba09601427a9692e369ea94e67b3557"
+    },
+    {
+      "key": "tools/web_tools.py:_rescue_eligible",
+      "source": "def _rescue_eligible(provider) -> bool:\n    \"\"\"True when a failed call on *provider* should get a one-shot rescue.\n\n    Eligible: the call ran a keyed/configured path \u2014 either a non-ring\n    backend (searxng, brave-free, xai, custom plugins, managed gateway) or\n    a ring vendor operating in keyed mode. NOT eligible: the call already\n    went through the keyless ring (its failure means the ring was walked;\n    re-walking would just repeat it).\n    \"\"\"\n    if not _keyless_rescue_enabled():\n        return False\n    if provider is None:\n        return False\n    try:\n        from plugins.web.keyless_mcp import _KEYLESS_RING, use_keyless\n\n        name = getattr(provider, \"name\", \"\")\n        if name in _KEYLESS_RING:\n            key_var = {\n                \"exa\": \"EXA_API_KEY\",\n                \"parallel\": \"PARALLEL_API_KEY\",\n                \"tavily\": \"TAVILY_API_KEY\",\n                \"firecrawl\": \"FIRECRAWL_API_KEY\",\n                \"keenable\": \"KEENABLE_API_KEY\",\n            }.get(name, \"\")\n            from agent.web_search_provider import get_provider_env\n\n            api_key = get_provider_env(key_var) if key_var else \"\"\n            # Keyless-mode ring vendors already walked the ring on failure.\n            return not use_keyless(name, api_key)\n        return True\n    except Exception as exc:  # noqa: BLE001 \u2014 rescue is best-effort\n        logger.debug(\"rescue eligibility check failed: %s\", exc)\n        return False\n",
+      "source_sha256": "3d01588775273e2be86f6dc679636344ac7aabc2cef529f378d7baa2ca7d38a9",
+      "ast311": "de395c54eb835046d76c9bc9d27c30e22c1c4449f6a653229bbff06cc6bc9d20",
+      "ast312": "d29371a1144b098e189e8da8b4a70db602ee6a3756f5d7547847b6619f4a644a"
+    }
+  ]
+}

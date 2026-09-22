@@ -861,8 +861,13 @@ def test_v3_valid_candidate_tool_transcript_reconciles_all_receipt_states(
 def _install_v3_reader(monkeypatch, calls):
     from climate_monitor import article_content_adapter as article
 
-    def fetch(_item_id, url, *, budget, site_key, site_scope):
+    def fetch(_item_id, url, *, budget, site_key, site_scope, data_root=None, reader_home=None):
         assert site_scope["source_key"] == site_key
+        if reader_home is not None:
+            assert Path(reader_home).name.startswith("attempt-")
+            assert Path(data_root) == Path(reader_home).parents[1] / "managed/web-listening-runtime"
+        else:
+            assert data_root is None
         calls.append((url, site_key))
         budget.claim("http", url, retry_key=f"article:{url}")
         body = "Verified governed article body"
@@ -3325,6 +3330,8 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
 
     b = new_protocol_binding(tmp_path)
     path = tmp_path / "attempt-1.json"
+    from climate_monitor.hermes_identity import create_snapshot
+    b["hermes_snapshot"] = create_snapshot(path.parent, source=f"climate-acquisition-{b['run_id']}")
     path.write_text(json.dumps(b))
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{sys.executable}\n")
@@ -3338,7 +3345,7 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
     )
 
     config = json.loads((home / "config.yaml").read_text())
-    assert config["plugins"] == {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
+    assert config["plugins"] == {"enabled": ["climate-frozen-identity", SEARCH_IDENTITY_PLUGIN_ID]}
     assert "tools" not in config
     plugin = home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID
     assert json.loads((plugin / "plugin.yaml").read_text())["hooks"] == [
@@ -3346,19 +3353,24 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
     ]
     source = (plugin / "__init__.py").read_text()
     assert "transform_tool_result" in source
-    assert repr(str(path.resolve())) in source
+    assert str(path.resolve()) not in source
+    seal = json.loads(Path(_env["CLIMATE_ACQUISITION_ATTEMPT"]).read_text())
+    assert seal["binding_path"] == str(path.resolve())
+    assert seal["snapshot"] == b["hermes_snapshot"]
 
     legacy = binding(tmp_path / "legacy")
-    legacy_path = tmp_path / "legacy-attempt.json"
+    legacy_path = tmp_path / "legacy" / "legacy-attempt.json"
+    legacy_path.parent.mkdir(exist_ok=True)
+    legacy["hermes_snapshot"] = create_snapshot(legacy_path.parent, source=f"climate-acquisition-{legacy['run_id']}")
     legacy_path.write_text(json.dumps(legacy))
     _env, legacy_home = install_hooks(
         [str(executable)], legacy_path, legacy,
         {"PATH": __import__("os").environ["PATH"]},
     )
     legacy_config = json.loads((legacy_home / "config.yaml").read_text())
-    assert "plugins" not in legacy_config
+    assert legacy_config["plugins"] == {"enabled": ["climate-frozen-identity"]}
     assert "tools" not in legacy_config
-    assert not (legacy_home / "plugins").exists()
+    assert not (legacy_home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID).exists()
 
 
 def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
@@ -4435,9 +4447,15 @@ def test_incompatible_hermes_installation_never_launches_attempt(tmp_path, monke
     b = binding(tmp_path)
     b['provider'] = 'openai-codex'
     path = tmp_path / 'attempt-1.json'
+    from climate_monitor.hermes_identity import create_snapshot
+    b['hermes_snapshot'] = create_snapshot(path.parent)
     path.write_text(json.dumps(b))
+    # The caller's argv no longer selects Hermes. Damage the frozen launcher
+    # itself so this remains an incompatible-runtime launch regression.
+    import os
+    Path(os.environ['HERMES_EXECUTABLE']).write_text('#!/bin/sh\nexit 0\n')
     monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('incompatible attempt launched'))
-    with pytest.raises(ValueError, match='Hermes Python'):
+    with pytest.raises(ValueError, match='runtime drifted.*start a fresh run'):
         runner._invoke_hermes(['/bin/true'], tmp_path/'response.txt', path, b, runner.time.monotonic()+60)
 
 
@@ -4450,7 +4468,8 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
         cwd=Path(__file__).resolve().parents[1], check=True,
         capture_output=True, text=True,
     ).stdout.strip()
-    monkeypatch.setenv("OPENAI_API_KEY", "provider-credential")
+    credential = __import__("secrets").token_hex(24)
+    monkeypatch.setenv("OPENAI_API_KEY", credential)
     monkeypatch.setenv("RELOAD_TOKEN", "must-not-leak")
     b = binding(tmp_path)
     b.update(provider="openai-api", model="test-model", repository_commit_sha=exact)
@@ -4463,11 +4482,18 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
     }
     path = tmp_path / "attempt-1.json"
     path.write_text(json.dumps(b))
+    from climate_monitor.hermes_identity import create_snapshot, prepare_home
+    b["hermes_snapshot"] = create_snapshot(tmp_path, source=f"climate-acquisition-{b['run_id']}")
+    path.write_text(json.dumps(b))
     environments = {}
 
     def install(command, binding_path, supplied, environment):
         environments["hermes-hook"] = environment
-        return environment, tmp_path
+        home = tmp_path / "hermes-private/test"
+        from climate_monitor.hermes_identity import _write, _bytes
+        _, config, frozen_env = prepare_home(tmp_path, b["hermes_snapshot"], home, source=f"climate-acquisition-{b['run_id']}")
+        _write(home / 'config.yaml', _bytes(config))
+        return frozen_env, home
 
     class Process:
         pid = 123
@@ -4480,6 +4506,8 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
 
     def popen(*args, **kwargs):
         environments["hermes-process"] = kwargs["env"]
+        from hermes_offline_runtime import successful_api_lifecycle
+        successful_api_lifecycle(Path(kwargs['cwd']), kwargs['env'])
         return Process()
 
     monkeypatch.setattr(runner, "install_hooks", install)
@@ -4497,7 +4525,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
     monkeypatch.setattr(runner.subprocess, "run", run)
     assert runner._run_report(path, b) == 0
     for environment in environments.values():
-        assert environment["OPENAI_API_KEY"] == "provider-credential"
+        assert bool(environment["OPENAI_API_KEY"] == credential)
         assert "RELOAD_TOKEN" not in environment
 
 

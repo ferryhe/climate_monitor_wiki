@@ -1524,6 +1524,20 @@ def _parse_hermes_quiet_response(stdout: str, stderr: str):
     return json.loads(response)
 
 
+def _managed_inference_runtime(args):
+    if not getattr(args, "task_binding", ""):
+        return "hermes", {**os.environ, "HERMES_STREAM_RETRIES": "0"}, ROOT
+    from climate_monitor.hermes_identity import inference_runtime
+    path = Path(args.task_binding).resolve(strict=True)
+    binding = json.loads(path.read_text(encoding="utf-8"))
+    executable, environment, home = inference_runtime(
+        path.parent, binding.get("hermes_snapshot"), purpose="report",
+        source=f"climate-acquisition-{binding['run_id']}",
+    )
+    environment["HERMES_STREAM_RETRIES"] = "0"
+    return executable, environment, home
+
+
 def _hermes_authoring_invocation(
     help_stdout: str,
     instruction: str,
@@ -1676,6 +1690,11 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
     if prior and prior.get("input_sha256") != identity:
         raise SystemExit("authoring checkpoint input changed; use fresh staging")
     if prior.get("status") == "completed":
+        # Saved managed output still requires its bound runtime and identity.
+        if getattr(args, 'task_binding', ''):
+            from climate_monitor.hermes_identity import require_effective_identity
+            _, environment, home = _managed_inference_runtime(args)
+            require_effective_identity(home.parent, environment['HERMES_SESSION_SOURCE'])
         # A saved success never bypasses the production validator.
         return validate(prior["response"])
     query = instruction
@@ -1700,9 +1719,13 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
     started = time.monotonic()
     phase = "invoke"
     try:
-        completed = subprocess.run(command, input=stdin, text=True, encoding="utf-8",
-            capture_output=True, cwd=ROOT, timeout=args.authoring_timeout,
-            env={**os.environ, "HERMES_STREAM_RETRIES": "0"})
+        executable, environment, home = _managed_inference_runtime(args)
+        command[:1] = executable if isinstance(executable, list) else [executable]
+        from climate_monitor.hermes_identity import auth_execution
+        with auth_execution(home, enabled=bool(getattr(args, "task_binding", "")), require_identity=True) as auth_result:
+            completed = subprocess.run(command, input=stdin, text=True, encoding="utf-8",
+                capture_output=True, cwd=home, timeout=args.authoring_timeout, env=environment)
+            auth_result["returncode"] = completed.returncode
         diagnostic = {"returncode": completed.returncode, "stdout": completed.stdout,
                       "stderr": completed.stderr, "request_sha256": record["request_sha256"],
                       "seconds": round(time.monotonic() - started, 3)}
@@ -1806,8 +1829,12 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
     constraints = asdict(taxonomy.constraints)
     constraints["disallowed_keywords"] = sorted(constraints["disallowed_keywords"])
     try:
-        help_result = subprocess.run(["hermes", "chat", "--help"], text=True,
-                                     capture_output=True, cwd=ROOT, timeout=30)
+        executable, environment, home = _managed_inference_runtime(args)
+        help_result = subprocess.run([*(executable if isinstance(executable, list) else [executable]), "chat", "--help"], text=True,
+                                     capture_output=True, cwd=home, env=environment, timeout=30)
+        if getattr(args, "task_binding", ""):
+            from climate_monitor.hermes_auth_state import verify_auth
+            verify_auth(home)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SystemExit("Hermes authoring capabilities unavailable") from exc
     if help_result.returncode:

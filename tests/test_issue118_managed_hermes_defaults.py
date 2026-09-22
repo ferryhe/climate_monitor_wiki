@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -121,6 +122,9 @@ def test_automatic_meeting_worker_preserves_optional_identity(tmp_path, monkeypa
     definition = _definition(tmp_path)
     definition['meeting']['enabled'] = True
     binding = build_task_binding(definition, task_version=1, run_id='automatic', attempt=1)
+    from climate_monitor.hermes_identity import create_snapshot
+    binding['hermes_snapshot'] = create_snapshot(tmp_path, source='climate-acquisition-automatic')
+    (tmp_path / 'attempt-1.json').write_text(json.dumps(binding))
     if override:
         binding['meeting'].update(provider='openai-codex', model='legacy-model')
     monkeypatch.setattr(meetings, 'active_meeting_run', lambda *a: None)
@@ -188,7 +192,7 @@ def test_manual_retry_reuses_persisted_failed_identity_after_active_disable(tmp_
     service.start_meetings(started['run_id'])
     first = launched[-1]
 
-    def failing_extractor(*args):
+    def failing_extractor(*args, **kwargs):
         def fail(request):
             raise ValueError('temporary extraction failure')
         return fail
@@ -209,7 +213,7 @@ def test_manual_retry_reuses_persisted_failed_identity_after_active_disable(tmp_
         assert (key in retry) == override
         assert retry.get(key) == first.get(key)
     identities = []
-    monkeypatch.setattr(worker, '_extractor', lambda provider, model: identities.append((provider, model)) or (lambda request: {'events': []}))
+    monkeypatch.setattr(worker, '_extractor', lambda provider, model, binding_path=None, **kwargs: identities.append((provider, model)) or (lambda request: {'events': []}))
     retried = worker.run(retry)
     assert retried['status'] == 'succeeded'
     assert identities == [('openai-codex', 'legacy-model') if override else ('', '')]
@@ -217,6 +221,7 @@ def test_manual_retry_reuses_persisted_failed_identity_after_active_disable(tmp_
 
 def test_managed_report_authoring_omits_flags_despite_cli_and_ambient_identity(tmp_path, monkeypatch):
     from datetime import date
+    from pathlib import Path
     from types import SimpleNamespace
     from climate_monitor.management import build_task_binding
     from climate_monitor.models import CandidateItem
@@ -227,6 +232,8 @@ def test_managed_report_authoring_omits_flags_despite_cli_and_ambient_identity(t
     run_dir = tmp_path / 'runs' / 'authoring'
     run_dir.mkdir()
     binding_path = run_dir / 'attempt-1.json'
+    from climate_monitor.hermes_identity import create_snapshot
+    binding['hermes_snapshot'] = create_snapshot(run_dir)
     binding_path.write_text(json.dumps(binding))
     evidence = _view_evidence('Environmental article without an insurance connection.')
     item = CandidateItem(title='Environment', url=evidence['records'][0]['requested_url'],
@@ -246,10 +253,17 @@ def test_managed_report_authoring_omits_flags_despite_cli_and_ambient_identity(t
     monkeypatch.setattr(monitor, '_run_finalize', lambda *a: 0)
     commands = []
 
+    real_subprocess_run = subprocess.run
     def hermes(command, **kwargs):
+        if '-c' in command:
+            return real_subprocess_run(command, **kwargs)
         if '--help' in command:
             return SimpleNamespace(returncode=0, stdout=_help_with_query_file())
+        from hermes_offline_runtime import successful_api_lifecycle
+        successful_api_lifecycle(Path(kwargs['cwd']), kwargs['env'])
         commands.append(command)
+        auth = Path(kwargs['cwd']) / 'auth.json'
+        auth.write_text(json.dumps({'providers': {'test': {'refresh_token': __import__('secrets').token_hex(24)}}}))
         return SimpleNamespace(returncode=0, stderr='session_id: 20260908_120234_3b2f4b\n', stdout=json.dumps({
             'climate_related': True, 'actuarial_related': False, 'summary': '',
             'summary_basis': 'none', 'evidence_hash': None, 'categories': [], 'keywords': []}))
@@ -260,6 +274,8 @@ def test_managed_report_authoring_omits_flags_despite_cli_and_ambient_identity(t
     args = SimpleNamespace(staging_dir=str(tmp_path), task_binding=str(binding_path),
                            model='cli-model', model_provider='cli-provider', authoring_timeout=5)
     assert monitor._run_authoring_sequence(args, None) == 0
+    assert len(list((run_dir / 'hermes-private/auth-generations').glob('*.json'))) == 2
+    monitor._managed_inference_runtime(args)  # report resume verifies the sealed refresh
     assert len(commands) == 1
     assert '--provider' not in commands[0] and '--model' not in commands[0]
     assert args.model == args.model_provider == ''
@@ -452,7 +468,7 @@ def ambient_route_installation(tmp_path, monkeypatch):
     from test_issue94_management_console import _historical_binding
 
     ambient = tmp_path / 'ambient-hermes'
-    ambient.mkdir()
+    ambient.mkdir(mode=0o700)
     route = {'default': 'sentinel-default-model', 'provider': 'sentinel-provider'}
     ambient_config = {
         'model': {**route, 'api_key': 'raw-model-credential',
@@ -472,9 +488,8 @@ def ambient_route_installation(tmp_path, monkeypatch):
     (ambient / 'auth.json').write_text('{"credential": "raw-auth-credential"}')
     monkeypatch.delenv('HERMES_INFERENCE_MODEL', raising=False)
     monkeypatch.delenv('HERMES_INFERENCE_PROVIDER', raising=False)
-    executable = tmp_path / 'hermes'
-    executable.write_text(f'#!{sys.executable}\n')
-    executable.chmod(0o700)
+    from pathlib import Path
+    executable = Path(os.environ['HERMES_EXECUTABLE'])
 
     def install(*, legacy=False, encoding='default'):
         expected_route = dict(route)
@@ -495,11 +510,24 @@ def ambient_route_installation(tmp_path, monkeypatch):
         definition = _definition(tmp_path)
         builder = _historical_binding if legacy else build_task_binding
         binding = builder(definition, task_version=1, run_id='route', attempt=1)
-        binding_path = tmp_path / 'attempt-1.json'
-        binding_path.write_text(json.dumps(binding))
+        run_dir = Path(binding['checkpoint_dir']).parent
+        run_dir.mkdir(parents=True, mode=0o700)
+        binding_path = run_dir / 'attempt-1.json'
         command = _hermes_command(str(executable), binding, tmp_path / 'prompt.txt')
         environment = {'PATH': os.environ['PATH'], 'HERMES_HOME': str(ambient),
                        'OPENAI_API_KEY': 'raw-env-credential'}
+        from climate_monitor.hermes_identity import create_snapshot
+        for name in ('config.yaml', 'auth.json'):
+            (ambient / name).chmod(0o600)
+        binding['hermes_snapshot'] = create_snapshot(run_dir, environ={**environment, 'HERMES_EXECUTABLE': str(executable)})
+        binding_path.write_text(json.dumps(binding))
+        expected_route = ambient_config['model']
+        if encoding in ('alias', 'nested'):
+            expected_route = dict(expected_route)
+            expected_route.pop('model', None)
+            expected_route['default'] = 'sentinel-default-model'
+        # Hermes normalizes aliases before inference. An explicitly configured
+        # outer provider wins over a nested provider in both supported releases.
         # Only the external Hermes hook-runtime verifier is stubbed.
         # The installer, generated files, argv and child environment are real.
         with monkeypatch.context() as verifier:
@@ -513,7 +541,7 @@ def ambient_route_installation(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('legacy', [False, True])
 @pytest.mark.parametrize('encoding', ['default', 'scalar', 'alias', 'nested'])
-def test_config_only_ambient_route_is_preserved_only_without_override(ambient_route_installation, legacy, encoding):
+def test_frozen_route_is_preserved_with_optional_legacy_cli_override(ambient_route_installation, legacy, encoding):
     import sys
     command, environment, home, route = ambient_route_installation(legacy=legacy, encoding=encoding)
     assert 'HERMES_INFERENCE_MODEL' not in environment
@@ -525,7 +553,7 @@ def test_config_only_ambient_route_is_preserved_only_without_override(ambient_ro
         'print(json.dumps(config.get("model", {})))'],
         env=environment, capture_output=True, text=True, check=True)
     if legacy:
-        assert json.loads(result.stdout) == {}
+        assert json.loads(result.stdout) == route
         assert command[command.index('--provider') + 1] == 'openai-codex'
         assert command[command.index('--model') + 1] == 'gpt-5.6-sol-900k'
     else:
@@ -534,23 +562,31 @@ def test_config_only_ambient_route_is_preserved_only_without_override(ambient_ro
 
 
 @pytest.mark.parametrize('encoding', ['default', 'scalar', 'alias', 'nested'])
-def test_ambient_route_installation_excludes_unrelated_settings_and_credentials(ambient_route_installation, encoding):
+def test_frozen_route_retains_private_credentials_but_excludes_unrelated_settings(ambient_route_installation, encoding):
     import yaml
     from climate_monitor.hermes_acquisition_hooks import SEARCH_IDENTITY_PLUGIN_ID
 
     command, environment, home, route = ambient_route_installation(encoding=encoding)
     raw = (home / 'config.yaml').read_text()
     config = yaml.safe_load(raw)
-    assert 'raw-' not in raw
-    assert 'ambient-' not in raw
-    assert set(config) <= {'model', 'hooks_auto_accept', 'hooks', 'mcp_servers', 'memory', 'plugins', 'tools'}
+    assert 'raw-root-credential' not in raw
+    assert 'ambient-setting' not in raw
+    assert 'ambient-hook' not in raw
+    assert 'ambient-mcp' not in raw
+    assert 'ambient-plugin' not in raw
+    assert set(config) <= {'model', 'providers', 'custom_providers', 'hooks_auto_accept', 'hooks', 'mcp_servers', 'memory', 'plugins', 'tools'}
     assert config['hooks_auto_accept'] is True
     assert config['mcp_servers'] == {}
     assert config['memory'] == {'memory_enabled': False, 'user_profile_enabled': False}
-    assert config['plugins'] == {'enabled': [SEARCH_IDENTITY_PLUGIN_ID]}
+    assert config['plugins'] == {'enabled': ['climate-frozen-identity', SEARCH_IDENTITY_PLUGIN_ID]}
     assert config['tools'] == {'tool_search': {'enabled': 'off'}}
     assert set(config['hooks']) == {'pre_tool_call', 'post_tool_call'}
     assert config['hooks']['pre_tool_call'][0]['fail_closed'] is True
-    assert 'acquisition_budget_hook.py' in config['hooks']['pre_tool_call'][0]['command']
+    import shlex
+    hook = shlex.split(config['hooks']['pre_tool_call'][0]['command'])
+    assert hook[1:3] == ['-I', '-S']
+    assert Path(hook[3]) == home.parent / 'bootstrap/launcher.py'
+    assert hook[4] == '--budget-hook'
+    assert (home.parent / 'acquisition/scripts/acquisition_budget_hook.py').is_file()
     assert environment['OPENAI_API_KEY'] == 'raw-env-credential'
     assert json.loads((home / 'auth.json').read_text()) == {'credential': 'raw-auth-credential'}
