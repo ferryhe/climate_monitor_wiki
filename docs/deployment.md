@@ -234,26 +234,31 @@ until every gate below passes.
    `scripts/hermes_job.py`) lives on the host, outside this repository, and pins the
    revision and image it will accept; update those pins in the same change
    that starts the new image. What this repository can verify is the slot's own
-   preflight — it validates without dispatch or writes — run with the same flags and
-   environment the schedule gives that slot (see the slot table in
-   [biweekly-et-deployment.md](biweekly-et-deployment.md); the monitor slot uses the
-   managed path):
+   preflight, which returns before dispatch: run it with the flags, environment and run
+   date the schedule gives that slot (see the slot table in
+   [biweekly-et-deployment.md](biweekly-et-deployment.md); `REPORT_DATE` is the Monday
+   the run belongs to, and the monitor slot uses the managed path):
 
    ```bash
    # prints {"status": "preflight_passed", ...}
-   .venv/bin/python scripts/hermes_job.py monitor --managed --preflight
+   REPORT_DATE=<the Monday the run belongs to> \
+     .venv/bin/python scripts/hermes_job.py monitor --managed --preflight
    .venv/bin/python scripts/hermes_job.py <other slot> --preflight
 
-   # the candidate image itself: it has no virtualenv, code and scripts live at /app
-   docker run --rm <candidate image> /usr/local/bin/python \
-     scripts/hermes_job.py monitor --managed --preflight
+   # the candidate image itself. It has no project .venv (dependencies are global and
+   # the image carries a separate Playwright runtime), so call /usr/local/bin/python,
+   # and bypass the entrypoint: it seeds task config and creates run directories.
+   docker run --rm --entrypoint /usr/local/bin/python \
+     -e REPORT_DATE=<the Monday the run belongs to> \
+     <the environment and mounts that slot gets> \
+     <candidate image> scripts/hermes_job.py monitor --managed --preflight
    ```
 
-   The host run checks the deployment state with the slot's environment; the container
-   run checks the candidate image. Both need the environment and the mounts the
-   schedule provides for that slot, which live on the host and not in this repository.
-   Start the new image only after step 2 passes: a schema mismatch makes the write side
-   fail closed.
+   The host run checks the deployment state; the container run checks the candidate
+   image. Both need the environment and the mounts the schedule provides for that slot,
+   which live on the host and not in this repository; without them the preflight fails
+   closed with a JSON verdict. Start the new image only after step 2 passes: a schema
+   mismatch makes the write side fail closed.
 2. **Registry schema — both databases.** Compare the schema the new image requires
    (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
    `PRAGMA user_version` of **each** database in the table below. Both files must be
