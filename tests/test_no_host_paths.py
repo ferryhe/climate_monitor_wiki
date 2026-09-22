@@ -79,9 +79,17 @@ def test_flags_paths_that_start_a_token():
         "cmd;" + HOME_ALICE + "/bin/run",
         "KEY=" + HOME_ALICE + "/secret",
         "file://" + HOME_ALICE + "/app",
+        "FILE://" + HOME_ALICE + "/app",
         'open "file://' + ROOT_HOME + '/.env"',
+        "open FILE://" + ROOT_HOME + "/.env",
     ):
         assert labels_in(text), text
+
+
+def test_the_local_file_exception_does_not_match_a_scheme_suffix():
+    # `profile:` ends with the local-file scheme text but is not that scheme.
+    assert find_findings("profile:" + HOME_ALICE + "/config") == []
+    assert find_findings("curl PROFILE:" + HOME_ALICE + "/config") == []
 
 
 def test_token_logic_ignores_relative_references_and_word_suffixes():

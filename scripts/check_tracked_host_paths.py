@@ -87,11 +87,11 @@ PATH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 # Characters that continue a token: a path hit directly after one of these is part of
-# a longer token (an option operand, a relative path, a URL segment, a word suffix).
-_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-/")
-_QUOTE_CHARS = "\"'`"
+# a longer token (an option operand, a relative path, a URL segment, a word suffix, a
+# scheme-prefixed value). The local file scheme is handled explicitly below.
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-/:")
 _FILE_SCHEME = "file://"
-_SCHEME_MARKER = "://"
+_FILE_SCHEME_PREFIX = re.compile(r"(?<![A-Za-z0-9+.-])file:$", re.IGNORECASE)
 
 _PROMPT_ARTIFACT = (
     "monitoring/jobs/weekly-climate-monitor-08h/prompts/" + "weekly-monitor-v1.prompt.md"
@@ -120,8 +120,11 @@ def _is_absolute_match(line: str, start: int) -> bool:
     index = len(before)
     while index and before[index - 1] in _TOKEN_CHARS:
         index -= 1
+    prefix = before[:index]
     # A local file URL carries this host's path even though it is glued to a token.
-    return before[:index].endswith("file:") or before[index:].startswith(_FILE_SCHEME)
+    # The scheme is matched case-insensitively and must start a scheme, so that a word
+    # merely ending in it (for example `profile:`) is not mistaken for one.
+    return bool(_FILE_SCHEME_PREFIX.search(prefix)) or before[index:].lower().startswith(_FILE_SCHEME)
 
 
 def find_line_findings(line: str) -> list[tuple[str, str]]:
