@@ -146,9 +146,9 @@ access must still be verified under the exact scheduled publisher identity.
 Do not alter host permissions or security configuration.
 
 The acquisition writer requires the Registry schema pinned by
-`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION` (12 as of the
-2026-09-22 migration; see the upgrade checklist in
-[deployment.md](deployment.md#upgrade-checklist)); readers retain their
+`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION` (12 since the
+2026-09-22 migration of both databases, recorded in issue #150 — see the upgrade
+checklist in [deployment.md](deployment.md#upgrade-checklist)); readers retain their
 supported older-schema read-only compatibility. Before migrating the runtime
 and public Registry databases, the controller must quiesce all writers and
 capture a verified private full-database backup together with its sidecars,

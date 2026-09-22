@@ -224,36 +224,62 @@ diagnostics. Non-callback access-log records are unaffected.
 
 Run this list for every image or commit upgrade of this stack.
 `climate_monitor_update.sh` is a convenience wrapper, not a substitute for these
-gates: each item is a stop condition, not a warning.
+gates: each item is a stop condition, not a warning. Keep scheduled writers disabled
+until every gate below passes.
 
 1. **Pin the target.** Record the target commit and the running image
    (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
    image tagged for rollback. The host's scheduler configuration for the four slots
    pins `expected_revision` and `expected_image_id`; update both in the same change
-   that starts the new image so a stale pin cannot silently pass.
+   that starts the new image. Start the new image only after step 2 passes: a schema
+   mismatch makes the write side fail closed.
 2. **Registry schema — both databases.** Compare the schema the new image requires
    (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
-   `PRAGMA user_version` of **each** database in the table below. The acquisition
-   writer fails closed on a mismatch, so a deployment that migrates only one of the
-   two files still fails. To migrate: quiesce all writers (no producer container and
-   no slot mid-run), capture a verified private full-database backup with its
-   sidecars, exact path/role identity and hashes, run
-   `python -m climate_registry plan-update` (read-only) followed by
-   `update --backup-dir … --source-dir <repo>/sources`, then read back
-   `PRAGMA user_version` and `PRAGMA integrity_check` on both files before enabling
-   any slot. Do not downgrade afterwards and do not restore rows selectively: a
-   rollback means restoring the whole snapshot. See
-   [article-registry.md](article-registry.md).
-3. **Inference identity.** The effective provider, model and credential come from the
-   producer environment (`HERMES_INFERENCE_PROVIDER`, `HERMES_INFERENCE_MODEL` and the
-   matching provider credential). Task-definition `provider`/`model` values are
-   stripped before the execution binding is built and do not change what runs.
-4. **Canaries before declaring success.** Public `/api/health` and
-   `/api/registry/status` return 200, the in-container management preflight reports
-   `PREFLIGHT_OK`, the checkout is still clean on `main`, and no producer container
-   is left behind.
+   `PRAGMA user_version` of **each** database in the table below. Both files must be
+   at the required schema before the write side runs, and each needs its own
+   invocation — the commands in [article-registry.md](article-registry.md) take an
+   explicit database:
+
+   ```bash
+   # read-only: reports pending migrations, new reports and conflicts
+   python -m climate_registry plan-update \
+     --source-dir <repo>/sources --database <this database>
+
+   # the mutation, per database
+   python -m climate_registry update \
+     --source-dir <repo>/sources --database <this database> \
+     --backup-dir <backup directory outside the source tree>
+   ```
+
+   Gates around it:
+   - writers quiesced (no producer container, no slot mid-run): `update` takes an
+     exclusive lock and stops on active `-wal`, `-shm` or rollback-journal sidecars —
+     reconcile those first, never delete them to get past the check;
+   - a verified private full-database backup with its sidecars, exact path/role
+     identity and hashes, taken before the migration;
+   - read the plan before applying it: `update` imports reports as well as migrating
+     schema, `--source-dir` must be the report history of *that* database, and a
+     conflict aborts the update rather than resolving itself;
+   - after `update`, read back `PRAGMA user_version` and `PRAGMA integrity_check` for
+     the migrated file before enabling any slot.
+3. **Inference identity.** A new binding strips the task definition's
+   `provider`/`model`, so those fields are not what the run uses; an already-frozen
+   binding keeps the `provider`/`model` it recorded, and the acquisition path resolves
+   the ambient Hermes identity from its own configuration and credentials. To change
+   what a slot runs, change the environment and config the slot inherits, and verify
+   the identity recorded in the produced artifact rather than the task definition.
+4. **Preflight and canaries.** Before enabling the slots,
+   `python -m scripts.preflight_registry --host-dir "$CLIMATE_REGISTRY_HOST_DIR"`
+   exits 0 (it rejects relative, missing or in-repository host directories, invalid
+   or corrupt databases, failed SQLite checks, and any sidecar). Then confirm public
+   `/api/health` and `/api/registry/status` return 200, the checkout is still clean on
+   `main`, and no producer container is left behind.
 5. **Rollback pair.** Keep the previous image tag and the step-2 snapshots until a
    full cycle completes; the rollback pair is (image tag, whole-database snapshot).
+   Restoring a snapshot after newer writes exist discards them, so it needs the
+   explicit data-loss decision described in
+   [biweekly-et-deployment.md](biweekly-et-deployment.md); never downgrade the schema
+   or restore rows selectively to avoid that decision.
 
 The two Registry databases are separate files with different roles, and both must be
 at the required schema before the write side runs:
