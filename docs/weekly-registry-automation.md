@@ -102,7 +102,8 @@ for the entire critical section, interoperates with shell `flock` on POSIX, and
 is released by process exit without unlink races.
 
 ```bash
-export CLIMATE_WIKI_HOME=<production checkout>   # substitute this host's path
+export CLIMATE_WIKI_HOME=/path/to/checkout   # substitute this host's path
+export REPORT_DATE="${REPORT_DATE:-$(date +%F)}"   # the target week
 python -m climate_registry weekly-sync \
   --date "$REPORT_DATE" \
   --source-dir "$CLIMATE_WIKI_HOME/sources" \
@@ -226,7 +227,9 @@ After code deployment and separate owner authorization, the proposed Monday
 10:30 ET job command is:
 
 ```bash
-export CLIMATE_WIKI_HOME=<production checkout>   # substitute this host's path
+export CLIMATE_WIKI_HOME=/path/to/checkout   # substitute this host's path
+export REPORT_DATE="${REPORT_DATE:-$(date +%F)}"   # the target week
+set -a; . "$CLIMATE_WIKI_HOME/.env"; set +a   # provides SITE_HOST
 cd "$CLIMATE_WIKI_HOME"
 .venv/bin/python scripts/weekly_registry_refresh.py \
   --date "$REPORT_DATE" \

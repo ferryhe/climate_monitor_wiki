@@ -76,14 +76,16 @@ Initial installation only: the following creates `.env`. Do not run it during
 an existing-production update, where configuration and tokens must be preserved.
 
 ```bash
-cd "$CLIMATE_REPO"   # the verified production checkout
+cd /path/to/checkout   # the verified production checkout
 
 # SITE_HOST and PUBLIC_HOST have no defaults — compose refuses to start
 # without them. CLIMATE_PUBLIC_ORIGIN may be empty while the Dashboard is
 # disabled, but set it here so the public-host pair starts in sync. Replace
-# the example values with this host's real private IP and public DNS hostname.
+# the host's own values below: export HOST_PRIVATE_IP and PUBLIC_HOST first.
+: "${HOST_PRIVATE_IP:?export this host's private address first}"
+: "${PUBLIC_HOST:?export this host's public DNS name first}"
 printf 'SITE_HOST=%s\nPUBLIC_HOST=%s\nCLIMATE_PUBLIC_ORIGIN=https://%s\nRELOAD_TOKEN=%s\n' \
-  "<host-private-ip>" "<host-public-dns>" "<host-public-dns>" "$(openssl rand -hex 24)" > .env
+  "$HOST_PRIVATE_IP" "$PUBLIC_HOST" "$PUBLIC_HOST" "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 
 CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
@@ -100,6 +102,7 @@ before acquisition and reuse it for report provenance on resume.
 Verify:
 
 ```bash
+set -a; . ./.env; set +a   # the checks below need PUBLIC_HOST and SITE_HOST
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://$PUBLIC_HOST/  # 301 -> HTTPS
 curl -s -o /dev/null -w '%{http_code}\n' https://$PUBLIC_HOST/api/config  # 200
 curl -sk -o /dev/null -w '%{http_code}\n' https://$SITE_HOST/api/config   # 200
@@ -176,14 +179,16 @@ work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
    a restart for either service in this step.
 4. Verify all of the following before considering the switch complete:
    ```bash
+   # substitute this host's own names first:
+   #   NEW_HOST=<this host's public DNS name>   OLD_HOST=<the previous one>
    # Caddy is serving the new hostname
-   curl -s -o /dev/null -w '%{http_code}\n' https://<new-host>/api/config   # 200
+   curl -s -o /dev/null -w '%{http_code}\n' "https://$NEW_HOST/api/config"   # 200
 
    # wiki picked up the new CLIMATE_PUBLIC_ORIGIN (not the old one)
    docker exec climate-wiki-app printenv CLIMATE_PUBLIC_ORIGIN
 
    # the old hostname no longer serves this deployment
-   curl -sk -o /dev/null -w '%{http_code}\n' https://<old-host>/ || true
+   curl -sk -o /dev/null -w '%{http_code}\n' "https://$OLD_HOST/" || true
    ```
    `CLIMATE_PUBLIC_ORIGIN` is not exposed via any HTTP response (it only
    gates the Hermes dashboard's WebSocket same-origin check internally in
@@ -240,16 +245,22 @@ until every gate below passes.
    the run belongs to, and the monitor slot uses the managed path):
 
    ```bash
+   # substitute the Monday this run belongs to, then run one slot:
+   export REPORT_DATE="${REPORT_DATE:-$(date -d 'last monday' +%F)}"
    # prints {"status": "preflight_passed", ...}
-   REPORT_DATE=<the Monday the run belongs to> \
-     .venv/bin/python scripts/hermes_job.py monitor --managed --preflight
-   .venv/bin/python scripts/hermes_job.py <other slot> --preflight
+   .venv/bin/python scripts/hermes_job.py monitor --managed --preflight
+   .venv/bin/python scripts/hermes_job.py email --preflight
 
-   # the candidate image itself. It has no project .venv (dependencies are global and
-   # the image carries a separate Playwright runtime), so call /usr/local/bin/python,
-   # and bypass the entrypoint: it seeds task config and creates run directories.
+   ```
+   Then the candidate image itself: it has no project `.venv` (dependencies are global
+   and the image carries a separate Playwright runtime), so call
+   `/usr/local/bin/python` and bypass the entrypoint, which seeds task config and
+   creates run directories. This template is schematic -- add the environment and the
+   mounts that slot gets, plus the candidate image tag:
+
+   ```text
    docker run --rm --entrypoint /usr/local/bin/python \
-     -e REPORT_DATE=<the Monday the run belongs to> \
+     -e REPORT_DATE="$REPORT_DATE" \
      <the environment and mounts that slot gets> \
      <candidate image> scripts/hermes_job.py monitor --managed --preflight
    ```
@@ -267,14 +278,20 @@ until every gate below passes.
    explicit database:
 
    ```bash
+   # substitute this host's own paths first
+   : "${CLIMATE_REGISTRY_HOST_DIR:?export CLIMATE_REGISTRY_HOST_DIR first}"
+   CLIMATE_WIKI_HOME="${CLIMATE_WIKI_HOME:-$(pwd -P)}"
+   CLIMATE_REGISTRY_DB="$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
+   CLIMATE_BACKUP_DIR="/path/to/backup"   # outside the source tree
+
    # read-only: reports pending migrations, new reports and conflicts
    .venv/bin/python -m climate_registry plan-update \
-     --source-dir <repo>/sources --database <this database>
+     --source-dir "$CLIMATE_WIKI_HOME/sources" --database "$CLIMATE_REGISTRY_DB"
 
    # the mutation, per database
    .venv/bin/python -m climate_registry update \
-     --source-dir <repo>/sources --database <this database> \
-     --backup-dir <backup directory outside the source tree>
+     --source-dir "$CLIMATE_WIKI_HOME/sources" --database "$CLIMATE_REGISTRY_DB" \
+     --backup-dir "$CLIMATE_BACKUP_DIR"
    ```
 
    Gates around it:
@@ -335,6 +352,7 @@ To opt in, add both settings to `.env` in one operator-reviewed change before
 recreating the application service:
 
 ```text
+# Replace every <...> placeholder below with this host's own value.
 HERMES_DASHBOARD_ENABLED=1
 CLIMATE_PUBLIC_ORIGIN=https://<host-public-dns>
 ```
@@ -389,6 +407,7 @@ current full deployment, append the host override after the Registry, delivery,
 weekly-status, and scheduler-status overrides:
 
 ```text
+# Replace every <...> placeholder below with this host's own value.
 HERMES_DASHBOARD_RELAY_DIR=<host-relay-dir>
 CLIMATE_PUBLIC_ORIGIN=https://<host-public-dns>
 ```
@@ -547,7 +566,9 @@ but does not perform the wrapper's filesystem check. An unknown or
 unrecognizable subcommand fails closed without starting Docker.
 
 ```bash
-export CLIMATE_REGISTRY_HOST_DIR=<host-data-dir>/registry   # outside the checkout, on the host
+export CLIMATE_REGISTRY_HOST_DIR=/path/to/registry   # outside the checkout, on the host
+# Optional: CLIMATE_REGISTRY_USER_AGENT replaces the crawler's advertised
+# contact URL; leave it unset to keep the built-in value.
 
 docker compose -f docker-compose.yml config --quiet
 .venv/bin/python -m scripts.safe_compose \
@@ -598,6 +619,7 @@ docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
 docker compose restart caddy
 
+set -a; . ./.env; set +a   # PUBLIC_HOST comes from the untracked .env
 curl --fail-with-body -sS https://$PUBLIC_HOST/api/health
 
 curl --fail-with-body -sS https://$PUBLIC_HOST/api/registry/status \

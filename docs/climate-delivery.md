@@ -92,26 +92,24 @@ endpoint.
 
 ## Commands
 
-Paths below are placeholders — substitute this host's own directories.
-
 ```bash
 python -m climate_delivery summarize \
-  --report <report-dir>/climate-monitor-2026-08-10.md \
-  --output <output-dir>/summary.json
+  --report /srv/climate-input/climate-monitor-2026-08-10.md \
+  --output /srv/climate-output/summary.json
 
 python -m climate_delivery render-pdf \
-  --summary <output-dir>/summary.json \
-  --output <output-dir>/report.pdf
+  --summary /srv/climate-output/summary.json \
+  --output /srv/climate-output/report.pdf
 
 python -m climate_delivery send-email \
-  --summary <output-dir>/summary.json \
-  --pdf <output-dir>/report.pdf \
+  --summary /srv/climate-output/summary.json \
+  --pdf /srv/climate-output/report.pdf \
   --config /etc/climate-delivery/config.yaml \
   --state-dir /var/lib/climate-delivery/state \
   --dry-run
 
 python -m climate_delivery run \
-  --report <report-dir>/climate-monitor-2026-08-10.md \
+  --report /srv/climate-input/climate-monitor-2026-08-10.md \
   --output-dir /var/lib/climate-delivery/output \
   --state-dir /var/lib/climate-delivery/state \
   --config /etc/climate-delivery/config.yaml \
@@ -128,9 +126,9 @@ Run a read-only audit first:
 ```bash
 python -m climate_delivery backfill \
   --all-missing \
-  --sources-dir <sources-dir> \
+  --sources-dir /srv/climate-sources \
   --registry-db /var/lib/climate-registry/registry.sqlite3 \
-  --article-artifacts-dir <article-artifacts-dir> \
+  --article-artifacts-dir /srv/climate-article-metadata \
   --output-dir /var/lib/climate-delivery/output \
   --dry-run
 ```

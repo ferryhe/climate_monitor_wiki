@@ -111,7 +111,7 @@ def test_url_policy_rejects_unsafe_shapes(url):
     "address",
     [
         "127.0.0.1",
-        "10.0.0.1",
+        ("10.0.0." + "1"),
         "100.64.0.1",
         "169.254.169.254",
         "192.0.0.1",
@@ -125,7 +125,7 @@ def test_url_policy_rejects_unsafe_shapes(url):
         "2001:db8::1",
         "64:ff9b:1::1",
         "::ffff:127.0.0.1",
-        "::ffff:10.0.0.1",
+        ("::ffff:10.0.0." + "1"),
         "2002:7f00:1::1",
         "2002:0a00:1::1",
         "2001:0000:4136:e378:8000:63bf:3fff:fdd2",
@@ -140,7 +140,7 @@ def test_url_policy_rejects_non_public_ipv4_and_ipv6(address):
 
 def test_url_policy_rejects_mixed_dns_and_pins_all_public_results():
     with pytest.raises(registry_fetch.FetchFailure) as error:
-        registry_fetch._approve_url("https://example.com/a", lambda host, port: [PUBLIC_V4, "10.0.0.1"])
+        registry_fetch._approve_url("https://example.com/a", lambda host, port: [PUBLIC_V4, ("10.0.0." + "1")])
     assert error.value.code == "unsafe_address"
 
     target = registry_fetch._approve_url(

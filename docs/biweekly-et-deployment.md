@@ -174,11 +174,12 @@ and record its absolute external path rather than guessing one:
 
 ```bash
 export ISSUE124_JOB_MAP=/absolute/external/path/verified-hermes-job-map.json
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"   # the exporter reads the host Hermes home
 test -f "$ISSUE124_JOB_MAP"
 timeout 60s python scripts/export_scheduler_status.py \
   --executions-db "$HERMES_HOME/cron/executions.db" \
   --jobs-map "$ISSUE124_JOB_MAP" \
-  --status-dir "<host-data-dir>/job-status"
+  --status-dir /path/to/job-status
 ```
 
 Read back the four IDs and the generated snapshot before installing a
