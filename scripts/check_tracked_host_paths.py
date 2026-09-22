@@ -89,7 +89,7 @@ PATH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # Characters that continue a token: a path hit directly after one of these is part of
 # a longer token (an option operand, a relative path, a URL segment, a word suffix, a
 # scheme-prefixed value). The local file scheme is handled explicitly below.
-_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-/:")
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-/:+")
 _FILE_SCHEME = "file://"
 _FILE_SCHEME_PREFIX = re.compile(r"(?<![A-Za-z0-9+.-])file:$", re.IGNORECASE)
 

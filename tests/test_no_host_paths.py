@@ -87,9 +87,12 @@ def test_flags_paths_that_start_a_token():
 
 
 def test_the_local_file_exception_does_not_match_a_scheme_suffix():
-    # `profile:` ends with the local-file scheme text but is not that scheme.
+    # `profile:` ends with the local-file scheme text but is not that scheme, and a
+    # compound scheme such as `profile+file:` is one scheme, not the file scheme.
     assert find_findings("profile:" + HOME_ALICE + "/config") == []
     assert find_findings("curl PROFILE:" + HOME_ALICE + "/config") == []
+    assert find_findings("profile+file://" + HOME_ALICE + "/config") == []
+    assert find_findings("curl mailto+file://" + HOME_ALICE + "/config") == []
 
 
 def test_token_logic_ignores_relative_references_and_word_suffixes():
