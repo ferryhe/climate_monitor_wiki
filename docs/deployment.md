@@ -220,6 +220,110 @@ stdout/stderr reaches Docker. This prevents an outage-time callback from leaking
 credentials at the cost of omitting query parameters from Caddy process-log
 diagnostics. Non-callback access-log records are unaffected.
 
+## Upgrade checklist
+
+Run this list for every image or commit upgrade of this stack.
+`climate_monitor_update.sh` is a convenience wrapper, not a substitute for these
+gates: each item is a stop condition, not a warning. Keep scheduled writers disabled
+until every gate below passes.
+
+1. **Pin the target.** Record the target commit and the running image
+   (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
+   image tagged for rollback. The scheduler that owns the four slots
+   (`monitor`, `email`, `publisher`, `registry` — `SCHEDULE` in
+   `scripts/hermes_job.py`) lives on the host, outside this repository, and pins the
+   revision and image it will accept; update those pins in the same change
+   that starts the new image. What this repository can verify is the slot's own
+   preflight, which returns before dispatch: run it with the flags, environment and run
+   date the schedule gives that slot (see the slot table in
+   [biweekly-et-deployment.md](biweekly-et-deployment.md); `REPORT_DATE` is the Monday
+   the run belongs to, and the monitor slot uses the managed path):
+
+   ```bash
+   # prints {"status": "preflight_passed", ...}
+   REPORT_DATE=<the Monday the run belongs to> \
+     .venv/bin/python scripts/hermes_job.py monitor --managed --preflight
+   .venv/bin/python scripts/hermes_job.py <other slot> --preflight
+
+   # the candidate image itself. It has no project .venv (dependencies are global and
+   # the image carries a separate Playwright runtime), so call /usr/local/bin/python,
+   # and bypass the entrypoint: it seeds task config and creates run directories.
+   docker run --rm --entrypoint /usr/local/bin/python \
+     -e REPORT_DATE=<the Monday the run belongs to> \
+     <the environment and mounts that slot gets> \
+     <candidate image> scripts/hermes_job.py monitor --managed --preflight
+   ```
+
+   The host run checks the deployment state; the container run checks the candidate
+   image. Both need the environment and the mounts the schedule provides for that slot,
+   which live on the host and not in this repository; without them the preflight fails
+   closed with a JSON verdict. Start the new image only after step 2 passes: a schema
+   mismatch makes the write side fail closed.
+2. **Registry schema — both databases.** Compare the schema the new image requires
+   (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
+   `PRAGMA user_version` of **each** database in the table below. Both files must be
+   at the required schema before the write side runs, and each needs its own
+   invocation — the commands in [article-registry.md](article-registry.md) take an
+   explicit database:
+
+   ```bash
+   # read-only: reports pending migrations, new reports and conflicts
+   .venv/bin/python -m climate_registry plan-update \
+     --source-dir <repo>/sources --database <this database>
+
+   # the mutation, per database
+   .venv/bin/python -m climate_registry update \
+     --source-dir <repo>/sources --database <this database> \
+     --backup-dir <backup directory outside the source tree>
+   ```
+
+   Gates around it:
+   - writers quiesced (no producer container, no slot mid-run): `update` takes an
+     exclusive lock and stops on active `-wal`, `-shm` or rollback-journal sidecars —
+     reconcile those first, never delete them to get past the check;
+   - a verified private full-database backup with its sidecars, exact path/role
+     identity and hashes, taken before the migration;
+   - read the plan before applying it: `update` imports reports as well as migrating
+     schema, `--source-dir` must be the report history of *that* database, and a
+     conflict aborts the update rather than resolving itself;
+   - after `update`, read back `PRAGMA user_version` and `PRAGMA integrity_check` for
+     the migrated file, and re-run `plan-update`: it must report no pending migration
+     and no new reports. That no-op is the cheap proof the migration converged, and
+     it holds for a second database only when that database was migrated too.
+3. **Inference identity.** A new binding strips the task definition's
+   `provider`/`model`, so those fields are not what the run uses; an already-frozen
+   binding keeps the `provider`/`model` it recorded, and the acquisition path resolves
+   the ambient Hermes identity from its own configuration and credentials. To change
+   what a slot runs, change the environment and config the slot inherits, and verify
+   the identity recorded in the produced artifact rather than the task definition.
+4. **Preflight and canaries.** Before enabling the slots,
+   `python -m scripts.preflight_registry --host-dir "$CLIMATE_REGISTRY_HOST_DIR"`
+   exits 0 (it rejects relative, missing or in-repository host directories, invalid
+   or corrupt databases, failed SQLite checks, and any sidecar). Then confirm public
+   `/api/health` and `/api/registry/status` return 200, the checkout is still clean on
+   `main`, and no producer container is left behind.
+5. **Rollback pair.** Keep the previous image tag and the step-2 snapshots until a
+   full cycle completes; the rollback pair is (image tag, whole-database snapshot).
+   Restoring a snapshot after newer writes exist discards them, so it needs the
+   explicit data-loss decision described in
+   [biweekly-et-deployment.md](biweekly-et-deployment.md); never downgrade the schema
+   or restore rows selectively to avoid that decision.
+
+The two Registry databases are separate files with different roles, and both must be
+at the required schema before the write side runs:
+
+| Database | Host path | In-container path | Writer |
+| --- | --- | --- | --- |
+| Public/site Registry | the directory named by `CLIMATE_REGISTRY_HOST_DIR` (required, no default — see `docker-compose.registry.yml`) | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
+| Runtime Registry | the `climate_runtime` Compose volume (`docker volume inspect` for the host path) | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
+
+Deployment-specific values — host paths, hostnames and credentials — belong to the
+host and to the untracked `.env`, not to tracked documentation: new and edited content
+refers to them by the environment variable or Compose key that names them, never by
+value. Older sections of this document and of
+[biweekly-et-deployment.md](biweekly-et-deployment.md) still carry literal host values
+written before that rule; replacing them is tracked separately.
+
 ## Optional Hermes Dashboard
 
 The Dashboard is disabled by default. This fail-safe keeps an existing Wiki,

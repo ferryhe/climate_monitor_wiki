@@ -145,7 +145,10 @@ configuration, and the project virtual environment are present, but their
 access must still be verified under the exact scheduled publisher identity.
 Do not alter host permissions or security configuration.
 
-The acquisition writer now requires Registry schema 10; readers retain their
+The acquisition writer requires the Registry schema pinned by
+`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION` (12 since the
+2026-09-22 migration of both databases, recorded in issue #150 — see the upgrade
+checklist in [deployment.md](deployment.md#upgrade-checklist)); readers retain their
 supported older-schema read-only compatibility. Before migrating the runtime
 and public Registry databases, the controller must quiesce all writers and
 capture a verified private full-database backup together with its sidecars,
@@ -154,8 +157,8 @@ read back and validate the resulting schema and data before enabling any slot.
 Before any schema-10 recovery write, rollback may restore that complete backup
 and the old image. After a schema-10-only `no_search` to `attempted` recovery
 transition, do not downgrade the database or selectively restore rows: retain
-schema 10, or restore the entire pre-migration snapshot only under an explicit
-data-loss decision. No production Registry migration was performed here.
+the schema then in place, or restore the entire pre-migration snapshot only under an
+explicit data-loss decision. No production Registry migration was performed here.
 
 No production mount, task, job, or file was changed while preparing this
 runbook. A private host-only rollback baseline exists at
