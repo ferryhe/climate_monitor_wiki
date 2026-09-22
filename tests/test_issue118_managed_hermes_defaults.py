@@ -547,10 +547,11 @@ def test_frozen_route_is_preserved_with_optional_legacy_cli_override(ambient_rou
     assert 'HERMES_INFERENCE_MODEL' not in environment
     assert 'HERMES_INFERENCE_PROVIDER' not in environment
     # Read the actual isolated config in a fresh child with the returned HERMES_HOME.
-    result = subprocess.run([sys.executable, '-c',
-        'import json,os,pathlib,yaml; '
-        'config=yaml.safe_load((pathlib.Path(os.environ["HERMES_HOME"])/"config.yaml").read_text()); '
-        'print(json.dumps(config.get("model", {})))'],
+    from climate_monitor.hermes_identity import launch_command
+    result = subprocess.run(launch_command(home, '-c',
+        'import json,os,pathlib; '
+        'config=json.loads((pathlib.Path(os.environ["HERMES_HOME"])/"config.yaml").read_text()); '
+        'print(json.dumps(config.get("model", {})))'),
         env=environment, capture_output=True, text=True, check=True)
     if legacy:
         assert json.loads(result.stdout) == route

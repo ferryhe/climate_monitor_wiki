@@ -3291,7 +3291,7 @@ def test_receipt_is_hash_verified_and_shared_across_attempts(tmp_path):
         resumed.receipt("seed")
 
 
-def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch):
+def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch, safe_managed_interpreter):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     hooks = pytest.importorskip("agent.shell_hooks")
     import shlex
@@ -3304,7 +3304,7 @@ def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch):
     ledger = budget(tmp_path, fetch=1)
     # Use the actual installed Python runtime, with a CLI-shaped entrypoint.
     executable = tmp_path / "hermes"
-    executable.write_text(f"#!{sys.executable}\n")
+    executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
     env, home = install_hooks([str(executable)], path, b, {"PATH": __import__('os').environ['PATH']})
     config = json.loads((home / "config.yaml").read_text())
@@ -3320,7 +3320,7 @@ def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch):
     assert spec.fail_closed
 
 
-def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
+def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch, safe_managed_interpreter):
     import subprocess
     import sys
     from climate_monitor.hermes_acquisition_hooks import (
@@ -3334,7 +3334,7 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
     b["hermes_snapshot"] = create_snapshot(path.parent, source=f"climate-acquisition-{b['run_id']}")
     path.write_text(json.dumps(b))
     executable = tmp_path / "hermes"
-    executable.write_text(f"#!{sys.executable}\n")
+    executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
@@ -3375,6 +3375,7 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch):
 
 def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
     tmp_path, monkeypatch,
+    safe_managed_interpreter,
 ):
     import subprocess
     import sys
@@ -3388,7 +3389,7 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
     path = tmp_path / "attempt-1.json"
     path.write_text(json.dumps(task_binding))
     executable = tmp_path / "hermes"
-    executable.write_text(f"#!{sys.executable}\n")
+    executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
@@ -3513,6 +3514,7 @@ def test_search_identity_transform_rejects_incomplete_and_legacy_calls(tmp_path)
 
 def test_pinned_hermes_second_provider_request_contains_completed_search_id(
     tmp_path, monkeypatch,
+    safe_managed_interpreter,
 ):
     """Exercise Hermes' real tool dispatch/plugin/provider-input path when installed."""
     model_tools = pytest.importorskip("model_tools")
@@ -3531,7 +3533,7 @@ def test_pinned_hermes_second_provider_request_contains_completed_search_id(
     path = tmp_path / "attempt-1.json"
     path.write_text(json.dumps(b))
     executable = tmp_path / "hermes"
-    executable.write_text(f"#!{sys.executable}\n")
+    executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
@@ -3618,6 +3620,7 @@ def test_pinned_hermes_second_provider_request_contains_completed_search_id(
 
 def test_pinned_hermes_v3_tool_loop_exposes_handles_and_dispatches_receipts(
     tmp_path, monkeypatch,
+    safe_managed_interpreter,
 ):
     """Exercise pinned Hermes definitions, transform, dispatch, and next messages."""
     import re
@@ -3634,7 +3637,7 @@ def test_pinned_hermes_v3_tool_loop_exposes_handles_and_dispatches_receipts(
     path = tmp_path / "attempt-1.json"
     path.write_text(json.dumps(task_binding))
     executable = tmp_path / "hermes"
-    executable.write_text(f"#!{sys.executable}\n")
+    executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",

@@ -12,7 +12,7 @@ from test_issue94_management_console import _definition, _store
 
 
 @pytest.fixture
-def runtime(tmp_path, monkeypatch):
+def runtime(tmp_path, monkeypatch, safe_managed_interpreter):
     for key in ('SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'):
         monkeypatch.delenv(key, raising=False)
     root = tmp_path / 'hermes-package'
@@ -25,7 +25,7 @@ def runtime(tmp_path, monkeypatch):
     (root / 'hermes_cli/main.py').write_text('def main(): pass\n')
     (root / 'run_agent.py').write_text('# runtime\n')
     executable = root / 'venv/bin/hermes'
-    executable.write_text('#!' + str(Path(os.sys.executable).absolute()) + '\nfrom hermes_cli.main import main\nmain()\n')
+    executable.write_text('#!' + str(safe_managed_interpreter) + '\nfrom hermes_cli.main import main\nmain()\n')
     executable.chmod(0o700)
     home = tmp_path / 'ambient'
     home.mkdir(mode=0o700)
@@ -1783,7 +1783,7 @@ def test_review4_new_unbound_application_import_rejected_before_publish(tmp_path
 
 @pytest.mark.parametrize('purpose', ['acquisition', 'report', 'meetings'])
 @pytest.mark.parametrize('helper_name', ['startup_helper', '__editable___offline_finder'])
-def test_review5_pth_helper_never_executes(tmp_path, runtime, purpose, helper_name):
+def test_review5_pth_helper_never_executes(tmp_path, runtime, purpose, helper_name, safe_managed_interpreter):
     import subprocess, sys
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks
     from test_issue117_request_boundaries import new_protocol_binding
@@ -1793,6 +1793,9 @@ def test_review5_pth_helper_never_executes(tmp_path, runtime, purpose, helper_na
     venv = executable.parent.parent
     subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(venv)], check=True)
     executable.write_text('#!' + str(venv / 'bin/python') + '\nfrom hermes_cli.main import main\nmain()\n')
+    (venv / 'bin/python').unlink()
+    os.link(safe_managed_interpreter, venv / 'bin/python')
+    (venv / 'pyvenv.cfg').write_bytes((safe_managed_interpreter.parent.parent / 'pyvenv.cfg').read_bytes())
     site = next((venv / 'lib').glob('python*/site-packages'))
     sentinel = tmp_path / 'startup-executed'
     helper = site / (helper_name + '.py')
@@ -1981,13 +1984,13 @@ def test_review5_plugin_home_exact_membership(tmp_path, runtime, extra):
         h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
 
 
-def test_review5_interpreter_runtime_path_metadata_is_bound(tmp_path, runtime):
+def test_review5_interpreter_runtime_path_metadata_is_bound(tmp_path, runtime, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h
     import sys
     _, executable = runtime
     interpreter = tmp_path / 'other-venv/bin/python'
     interpreter.parent.mkdir(parents=True)
-    interpreter.symlink_to(Path(sys.executable).resolve())
+    interpreter.symlink_to(safe_managed_interpreter)
     metadata = tmp_path / 'other-venv/lib/python3.11/site-packages/offline-1.dist-info/METADATA'
     metadata.parent.mkdir(parents=True); metadata.write_text('Name: offline\nVersion: 1\n')
     executable.write_text('#!' + str(interpreter) + '\nfrom hermes_cli.main import main\nmain()\n')
@@ -2638,8 +2641,8 @@ def test_review9_deployed_reader_root_survives_install(tmp_path, runtime, monkey
         assert (child / browser.relative_to(deployed)).is_file()
 
 
-def _review9_browser(tmp_path):
-    import ast, hashlib, shutil, sys
+def _review9_browser(tmp_path, interpreter=None):
+    import ast, hashlib, os, shutil, sys
     fixture = Path(__file__).parent / 'fixtures/issue140-reader/browser'
     source = fixture / 'browser_acquisition.py'
     tree = ast.parse(source.read_bytes())
@@ -2649,11 +2652,18 @@ def _review9_browser(tmp_path):
     root = tmp_path / 'deployed'; root.mkdir()
     venv = root / 'browser-runtimes/playwright'
     (venv / 'bin').mkdir(parents=True)
-    (venv / 'bin/python').symlink_to(Path(sys.executable).resolve())
+    if interpreter is None:
+        (venv / 'bin/python').symlink_to(Path(sys.executable).resolve())
+    else:
+        # Share bytes without relocating Python through a second venv symlink.
+        os.link(interpreter, venv / 'bin/python')
     package = venv / 'lib/python3.12/site-packages/playwright'; package.mkdir(parents=True)
     (package / '__init__.py').write_text('# offline SDK fixture\n')
     (venv / 'lib64').symlink_to('lib')
-    (venv / 'pyvenv.cfg').write_text('include-system-site-packages = false\n')
+    if interpreter is not None:
+        (venv / 'pyvenv.cfg').write_bytes((interpreter.parent.parent / 'pyvenv.cfg').read_bytes())
+    else:
+        (venv / 'pyvenv.cfg').write_text('include-system-site-packages = false\n')
     browser = venv / 'browsers/chromium-1234/chrome-linux64/chrome'
     browser.parent.mkdir(parents=True); browser.write_bytes(b'offline browser binary\n'); browser.chmod(0o700)
     entry = json.loads((fixture / 'runtime-lock.json').read_bytes())['tools']['playwright']
@@ -2669,11 +2679,11 @@ def _review9_browser(tmp_path):
     return root, venv, installed, config
 
 
-def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, monkeypatch):
+def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, monkeypatch, safe_managed_interpreter):
     import subprocess
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks
     from test_issue117_request_boundaries import new_protocol_binding
-    root, venv, installed, config = _review9_browser(tmp_path)
+    root, venv, installed, config = _review9_browser(tmp_path, safe_managed_interpreter)
     sentinel = tmp_path / 'startup-ran'
     site = venv / 'lib/python3.12/site-packages'
     (site / 'unsafe.pth').write_text('import startup_helper\n')
@@ -2705,9 +2715,9 @@ def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, mon
 
 
 @pytest.mark.parametrize('damage', ['binary', 'sdk', 'pth_helper', 'member', 'mode', 'link', 'active', 'config'])
-def test_review9_reader_drift_rejected(tmp_path, runtime, monkeypatch, damage):
+def test_review9_reader_drift_rejected(tmp_path, runtime, monkeypatch, damage, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h
-    root, venv, installed, _ = _review9_browser(tmp_path)
+    root, venv, installed, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     helper = venv / 'lib/python3.12/site-packages/startup_helper.py'; helper.write_text('# frozen\n')
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
     run = tmp_path / 'run'; run.mkdir()
@@ -2724,9 +2734,9 @@ def test_review9_reader_drift_rejected(tmp_path, runtime, monkeypatch, damage):
         h.load_snapshot(run, ref)
 
 
-def test_review9_tool_file_symlink_rejected_before_publication(tmp_path, runtime, monkeypatch):
+def test_review9_tool_file_symlink_rejected_before_publication(tmp_path, runtime, monkeypatch, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h
-    root, _, installed, _ = _review9_browser(tmp_path)
+    root, _, installed, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     real = installed / 'implementation.py'; (installed / 'tool.py').rename(real)
     (installed / 'tool.py').symlink_to(real.name)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
@@ -2736,10 +2746,10 @@ def test_review9_tool_file_symlink_rejected_before_publication(tmp_path, runtime
     assert not (run / h.SNAPSHOT).exists()
 
 
-def test_review9_pinned_browser_discovery_qualification(tmp_path):
+def test_review9_pinned_browser_discovery_qualification(tmp_path, safe_managed_interpreter):
     import ast, hashlib, subprocess
     from types import SimpleNamespace
-    root, _, installed, config = _review9_browser(tmp_path)
+    root, _, installed, config = _review9_browser(tmp_path, safe_managed_interpreter)
     fixture = Path(__file__).parent / 'fixtures/issue140-reader/browser'
     tree = ast.parse((fixture / 'browser_acquisition.py').read_bytes())
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {'host_runtime','tree_digest','_runtime_identity_matches'}]
@@ -2778,11 +2788,11 @@ def test_review9_absent_root_is_private_empty_runtime(tmp_path, runtime, monkeyp
 
 
 @pytest.mark.parametrize('attempt', [1, 2])
-def test_review9_reader_child_refuses_changed_runtime(tmp_path, runtime, monkeypatch, attempt):
+def test_review9_reader_child_refuses_changed_runtime(tmp_path, runtime, monkeypatch, attempt, safe_managed_interpreter):
     import subprocess, secrets
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks
     from test_issue117_request_boundaries import new_protocol_binding
-    root, venv, installed, config = _review9_browser(tmp_path)
+    root, venv, installed, config = _review9_browser(tmp_path, safe_managed_interpreter)
     marker = secrets.token_hex(24)
     (installed / 'private-marker.txt').write_text(marker); (installed / 'private-marker.txt').chmod(0o600)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
@@ -2801,11 +2811,11 @@ def test_review9_reader_child_refuses_changed_runtime(tmp_path, runtime, monkeyp
     assert marker not in json.dumps(ref)
 
 
-def test_review9_adapter_checks_attempt_seal(tmp_path, runtime, monkeypatch):
+def test_review9_adapter_checks_attempt_seal(tmp_path, runtime, monkeypatch, safe_managed_interpreter):
     import subprocess
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks
     from test_issue117_request_boundaries import new_protocol_binding
-    root, _, installed, config = _review9_browser(tmp_path)
+    root, _, installed, config = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
     run = tmp_path / 'run'; run.mkdir()
     binding = new_protocol_binding(run)
@@ -2819,9 +2829,9 @@ def test_review9_adapter_checks_attempt_seal(tmp_path, runtime, monkeypatch):
     assert result.returncode == 65 and not result.stdout and not result.stderr
 
 
-def test_review9_reader_mutation_during_collection_never_publishes(tmp_path, runtime, monkeypatch):
+def test_review9_reader_mutation_during_collection_never_publishes(tmp_path, runtime, monkeypatch, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h, hermes_reader_runtime as reader
-    root, _, _, config = _review9_browser(tmp_path)
+    root, _, _, config = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
     original = reader.collect
     calls = 0
@@ -2838,11 +2848,11 @@ def test_review9_reader_mutation_during_collection_never_publishes(tmp_path, run
     assert not (run / h.SNAPSHOT).exists()
 
 
-def test_review9_worker_controlled_fetch_uses_frozen_reader(tmp_path, runtime, monkeypatch):
+def test_review9_worker_controlled_fetch_uses_frozen_reader(tmp_path, runtime, monkeypatch, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks, article_content_adapter as article
     import scripts.run_agent_acquisition as runner
     from test_issue117_request_boundaries import new_protocol_binding
-    root, _, _, _ = _review9_browser(tmp_path)
+    root, _, _, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
     run = tmp_path / 'run'; run.mkdir()
     binding = new_protocol_binding(run)
@@ -2862,11 +2872,11 @@ def test_review9_worker_controlled_fetch_uses_frozen_reader(tmp_path, runtime, m
     assert seen['reader_home'] == str(home)
 
 
-def test_review9_installed_tool_bound_sibling(tmp_path, runtime, monkeypatch):
+def test_review9_installed_tool_bound_sibling(tmp_path, runtime, monkeypatch, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks
     from test_issue117_request_boundaries import new_protocol_binding
     import subprocess
-    root, _, _, _ = _review9_browser(tmp_path)
+    root, _, _, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     tool = root / 'tools/transform/offline/1.0.0/tool.py'
     tool.parent.mkdir(parents=True)
     tool.write_text('import bound_reader_helper\nprint(bound_reader_helper.VALUE)\n')
@@ -2893,11 +2903,11 @@ def test_review9_installed_tool_bound_sibling(tmp_path, runtime, monkeypatch):
 
 
 @pytest.mark.parametrize('selection', ['project', 'empty_home', 'home'])
-def test_review9_reader_dotenv_precedence(tmp_path, runtime, monkeypatch, selection):
+def test_review9_reader_dotenv_precedence(tmp_path, runtime, monkeypatch, selection, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks
     from test_issue117_request_boundaries import new_protocol_binding
     ambient, executable = runtime
-    root, _, _, _ = _review9_browser(tmp_path)
+    root, _, _, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     home_env = ambient / '.env'
     project_env = executable.parents[2] / '.env'
     home_env.write_text('UNRELATED_SETTING=offline\n')

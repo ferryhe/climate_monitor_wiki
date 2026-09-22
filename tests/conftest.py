@@ -19,11 +19,30 @@ def governed_adapter_runtime(monkeypatch):
     monkeypatch.setattr(adapter, "_runtime_service_type", lambda: Runtime)
 
 
-@pytest.fixture(autouse=True)
-def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch):
-    """Managed starts must never snapshot a test runner's real credentials."""
-    import os
+@pytest.fixture(scope="session")
+def safe_managed_interpreter(tmp_path_factory):
+    """One private executable copy; hosted CI Python may itself be mode 0777."""
+    import shutil
+    import sys
     from pathlib import Path
+
+    root = tmp_path_factory.mktemp('managed-python')
+    root.chmod(0o700)
+    binary = root / 'bin/python'
+    binary.parent.mkdir(mode=0o700)
+    shutil.copyfile(Path(sys.executable).resolve(), binary)
+    binary.chmod(0o700)
+    # Preserve stdlib discovery for relocatable Python, including -I -S launches.
+    config = root / 'pyvenv.cfg'
+    config.write_text('home = ' + str(Path(sys._base_executable).resolve().parent)
+                      + '\ninclude-system-site-packages = false\n')
+    config.chmod(0o600)
+    return binary
+
+
+@pytest.fixture(autouse=True)
+def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch, safe_managed_interpreter):
+    """Managed starts must never snapshot a test runner's real credentials."""
     from climate_monitor.hermes_identity import BASE_ENV, CREDENTIAL_ENV
 
     for key in BASE_ENV | CREDENTIAL_ENV:
@@ -40,7 +59,7 @@ def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch):
     (root / 'hermes_cli/main.py').write_text('def main(): pass\n')
     (root / 'run_agent.py').write_text('# isolated fixture\n')
     executable = root / 'venv/bin/hermes'
-    executable.write_text('#!' + str(Path(os.sys.executable).absolute()) + '\n# fixture\n')
+    executable.write_text('#!' + str(safe_managed_interpreter) + '\n# fixture\n')
     executable.chmod(0o700)
     home = fixture_root / 'managed-hermes-home'
     home.mkdir(mode=0o700)
