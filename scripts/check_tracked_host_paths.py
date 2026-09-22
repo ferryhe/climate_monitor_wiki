@@ -22,9 +22,12 @@ A path is reported only when it starts a token -- it sits at the start of the li
 content, or right after a character that cannot continue a token. A hit glued to a
 longer token is not this host's path: an option operand (`-o` + path), a segment
 inside a relative path, a word suffix and a version string are all ignored for the
-same reason. A third-party http(s) URL is exempt as a whole, because such a URL may
-legitimately contain any punctuation; a local file URL is not exempt, because the
-path it carries is a real host path.
+same reason, and so is a hit that continues a http(s) URL token, because a URL path or
+query may legally contain any punctuation. A hit that is separated from the URL by
+whitespace or punctuation, or that follows one, is reported: the checker does not model
+URL path boundaries, which is a false positive the project accepts rather than a
+contradictory rule. A local file URL is not exempt, because the path it carries is a
+real host path.
 
 Address candidates are validated with `ipaddress`, so an impossible octet is not a
 finding, and every address pattern carries a right boundary, so a longer hostname or
@@ -112,21 +115,13 @@ def _is_absolute_match(line: str, start: int) -> bool:
     judged identically on purpose: quote and escape semantics are out of scope.
     """
     before = line[:start]
-    if not before:
+    if not before or before[-1] not in _TOKEN_CHARS:
         return True
-    if before[-1] in _TOKEN_CHARS:
-        index = len(before)
-        while index and before[index - 1] in _TOKEN_CHARS:
-            index -= 1
-        tail = before[index:].lstrip(_QUOTE_CHARS)
-        # `:` does not continue a token, so a local file URL is recognised by the
-        # scheme sitting immediately before the slashes we walked over.
-        return tail.startswith(_FILE_SCHEME) or before[:index].lstrip(_QUOTE_CHARS).endswith("file:")
-    segment = before.rsplit(None, 1)[-1].lstrip(_QUOTE_CHARS)
-    if _SCHEME_MARKER in segment:
-        # A third-party URL may contain anything; only a local file URL is a host path.
-        return segment.startswith(_FILE_SCHEME)
-    return True
+    index = len(before)
+    while index and before[index - 1] in _TOKEN_CHARS:
+        index -= 1
+    # A local file URL carries this host's path even though it is glued to a token.
+    return before[:index].endswith("file:") or before[index:].startswith(_FILE_SCHEME)
 
 
 def find_line_findings(line: str) -> list[tuple[str, str]]:

@@ -112,16 +112,29 @@ def test_ignores_placeholders_publisher_urls_and_non_addresses():
         assert find_findings(text) == [], text
 
 
-def test_declared_out_of_scope_a_third_party_url_is_exempt_as_a_whole():
-    """Declared: a URL may contain any punctuation, so its segment is not inspected."""
+def test_declared_out_of_scope_url_punctuation_is_reported():
+    """Declared (conservative): a hit glued to a URL token is exempt, but a hit
+    separated from it by whitespace or punctuation is reported. The checker does not
+    model URL path/query boundaries -- doing so produced contradictory requirements --
+    so publisher-style text that separates a path with `;` or `)` is a false positive
+    the project accepts, while a URL path that continues without a break is exempt."""
+    # Exempt: the hit continues a URL token (path, or a nested URL in a JSON string).
     for text in (
-        "curl 'https://example.org?q=" + HOME_ALICE + "'",
-        "open https://example.org#" + ROOT_HOME + "/.env",
-        "curl https://example.org;" + HOME_ALICE + "/bin/run",
-        "see `https://example.org)," + HOME_ALICE + "/secret` for details",
-        'curl "https://example.org/archive;' + HOME_ALICE + '/page"',
+        "See https://example.org/" + "root/index.html for details",
+        "Source: https://www.ifrs.org/content/ifrs/home/issued-standards/x.html",
     ):
         assert find_findings(text) == [], text
+    # Reported: the URL is a different token, or punctuation separates the hit.
+    for text in (
+        "curl https://example.org " + HOME_ALICE + "/config",
+        "curl " + '"https://example.org/archive;' + HOME_ALICE + '/page"',
+        "MARKER=://;DEST=" + HOME_ALICE + "/config",
+        "curl 'https://example.org?q=" + HOME_ALICE + "'",
+    ):
+        assert labels_in(text), text
+    # Indented and all-whitespace prefixes must not raise.
+    assert labels_in(HOME_ALICE + "/config")
+    assert labels_in("  " + HOME_ALICE + "/config")
 
 
 def test_declared_out_of_scope_quote_and_escape_semantics_are_not_modelled():
