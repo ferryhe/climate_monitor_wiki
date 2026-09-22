@@ -242,11 +242,11 @@ until every gate below passes.
 
    ```bash
    # read-only: reports pending migrations, new reports and conflicts
-   python -m climate_registry plan-update \
+   .venv/bin/python -m climate_registry plan-update \
      --source-dir <repo>/sources --database <this database>
 
    # the mutation, per database
-   python -m climate_registry update \
+   .venv/bin/python -m climate_registry update \
      --source-dir <repo>/sources --database <this database> \
      --backup-dir <backup directory outside the source tree>
    ```
@@ -261,7 +261,9 @@ until every gate below passes.
      schema, `--source-dir` must be the report history of *that* database, and a
      conflict aborts the update rather than resolving itself;
    - after `update`, read back `PRAGMA user_version` and `PRAGMA integrity_check` for
-     the migrated file before enabling any slot.
+     the migrated file, and re-run `plan-update`: it must report no pending migration
+     and no new reports. That no-op is the cheap proof the migration converged, and
+     it holds for a second database only when that database was migrated too.
 3. **Inference identity.** A new binding strips the task definition's
    `provider`/`model`, so those fields are not what the run uses; an already-frozen
    binding keeps the `provider`/`model` it recorded, and the acquisition path resolves
