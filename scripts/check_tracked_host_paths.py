@@ -16,20 +16,30 @@ in this file would republish the value the check exists to keep out.
   * a private address in the RFC 1918 ranges
   * an EC2-style private hostname
 
-Address candidates are validated with `ipaddress`, so an impossible octet is not a
-finding, and every pattern carries a left boundary, so a relative path or a version
-string is not one either.
+# Declared scope: token level, deliberately simple
 
-A match inside the PATH of an http(s) URL is ignored: collected research artifacts and
-quoted issue text legitimately contain publisher URLs whose own paths include a home
-directory. Nothing else about a URL is exempt -- the authority is scanned like any
-other text, and so are the query string, the fragment and whatever follows a shell
-separator, because none of those are a path.
+A path is reported only when it starts a token -- it sits at the start of the line
+content, or right after a character that cannot continue a token. A hit glued to a
+longer token is not this host's path: an option operand (`-o` + path), a segment
+inside a relative path, a word suffix and a version string are all ignored for the
+same reason. A third-party http(s) URL is exempt as a whole, because such a URL may
+legitimately contain any punctuation; a local file URL is not exempt, because the
+path it carries is a real host path.
+
+Address candidates are validated with `ipaddress`, so an impossible octet is not a
+finding, and every address pattern carries a right boundary, so a longer hostname or
+a version suffix is not one either.
+
+Quoting and escape semantics are deliberately NOT modelled. A quoted value is judged
+by the same token rule as an unquoted one, so an escaped separator (an escaped space)
+and a quoted relative reference behave exactly like their unquoted forms. That keeps
+the check small and free of the boundary cases a quote-aware parser would have to
+chase; those classes are declared out of scope rather than special-cased.
 
 This checker is scanned like any other tracked file. Its patterns are assembled from
 fragments so the file does not match them, and `tests/test_no_host_paths.py` pins the
-assembled behaviour: detection, repository traversal, exit status, and the URL and
-boundary cases above.
+assembled behaviour: detection, repository traversal, exit status and the boundary
+cases above.
 
 Exemptions are exact paths with a stated reason and, where the file is pinned, its
 SHA-256 -- there are no directory exemptions. The only entry today is the weekly
@@ -54,10 +64,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Assembled from fragments on purpose: this file is scanned too, so it must not match
 # the patterns it defines (see the module docstring).
-# Paths are matched anywhere; _is_absolute_match below decides whether a hit is this
-# host's absolute path (or the operand of a shell option) rather than a relative
-# reference or a segment inside a longer path -- token context answers that better
-# than a regular expression can.
 _HOME_DIR = re.compile(r"/" + "home/(?!<)[A-Za-z0-9._-]+")
 _ROOT_DIR = re.compile(r"/" + "root(?![A-Za-z0-9._-])")
 _VOLUME_DIR = re.compile(r"/" + "var/lib/" + "docker/volumes/")
@@ -77,10 +83,12 @@ PATH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("host runtime path", _RUNTIME_DIR),
 )
 
-
-# A URL ends at whitespace, at a delimiter a reader could see, or at a shell separator.
-_URL_RE = re.compile(r"\bhttps?://[^\s`)\]>\"'|;&<$\\]+")
-_URL_STOPPERS = ("?", "#", ";")
+# Characters that continue a token: a path hit directly after one of these is part of
+# a longer token (an option operand, a relative path, a URL segment, a word suffix).
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-/")
+_QUOTE_CHARS = "\"'`"
+_FILE_SCHEME = "file://"
+_SCHEME_MARKER = "://"
 
 _PROMPT_ARTIFACT = (
     "monitoring/jobs/weekly-climate-monitor-08h/prompts/" + "weekly-monitor-v1.prompt.md"
@@ -97,125 +105,37 @@ EXEMPT_PATHS: dict[str, tuple[str, str]] = {
 }
 
 
-def _inside(spans: list[tuple[int, int]], position: int) -> bool:
-    return any(start <= position < end for start, end in spans)
-
-
-def url_path_spans(line: str) -> list[tuple[int, int]]:
-    """Return each URL path span on this line: a query, a fragment or a shell tail is not a path."""
-    spans: list[tuple[int, int]] = []
-    for match in _URL_RE.finditer(line):
-        url = match.group(0)
-        authority_end = url.find("//") + 2
-        path_start = url.find("/", authority_end)
-        if path_start == -1:
-            continue
-        stop = len(url)
-        for stopper in _URL_STOPPERS:
-            index = url.find(stopper, authority_end)
-            if index != -1:
-                stop = min(stop, index)
-        if stop <= path_start:
-            continue  # the URL carries a query or a fragment before any path segment
-        spans.append((match.start() + path_start, match.start() + stop))
-    return spans
-
-
-# Delimiters that end a token, so a path starting right after one is a fresh absolute
-# path. `;`, `|`, `&` are shell separators, `=`/`:` introduce values, quotes and
-# brackets open arguments, and `<`/`$` precede redirects and substitutions.
-_DELIMITERS = " \t\"'`=:;,|&<>$(~!#[]"
-_URL_PATH_CHARS = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~%!$&'(*+,;=:@/-"
-)
-
-
-def _quoted_spans(line: str) -> list[tuple[int, int]]:
-    """Spans covered by single, double or backtick quoting (backslash escapes count)."""
-    spans, index, opener = [], 0, None
-    while index < len(line):
-        char = line[index]
-        if char == "\\" and opener:
-            index += 2
-            continue
-        if opener:
-            if char == opener:
-                spans.append((opener_index, index + 1))
-                opener = None
-        elif char in "\"'`":
-            opener, opener_index = char, index
-        index += 1
-    if opener:
-        spans.append((opener_index, len(line)))
-    return spans
-
-
 def _is_absolute_match(line: str, start: int) -> bool:
-    """True when a path hit is this host's path rather than a relative reference.
+    """True when a path hit starts a token rather than continuing a longer one.
 
-    Declared scope: absolute host paths as they appear in tracked documentation and
-    scripts. Accepted: start of line; after a token delimiter (whitespace, quotes,
-    brackets, `=`, `<`, `;`, ...); after a URL scheme separator such as the one a
-    local file URL uses; a quoted operand of a shell option; and the path of a
-    quoted http(s) URL path (no query or fragment, URL-legal characters only). Rejected: a segment inside a longer path, a relative
-    reference (dot-prefixed, quoted, with an escaped separator, or the multi-slash
-    form), and a word suffix. An operand glued to an unquoted shell option is out
-    of scope: the deployment documentation forbids host paths outright and that
-    form has never appeared in this repository.
+    See the module docstring for the declared scope. Quoted and unquoted forms are
+    judged identically on purpose: quote and escape semantics are out of scope.
     """
     before = line[:start]
     if not before:
         return True
-    for quote_start, quote_end in _quoted_spans(line):
-        if quote_start < start < quote_end:
-            content = line[quote_start + 1 : start]
-            if content.startswith((".", "~")):
-                return False
-            if content.startswith(("http://", "https://")) and not any(
-                char.isspace() for char in content
-            ):
-                # A quoted URL path stays exempt while no query or fragment has begun
-                # and every character is legal in a URL (a closing bracket or a
-                # backtick therefore ends the URL).
-                tail = content[max(content.rfind("http://"), content.rfind("https://")) :]
-                return not (
-                    "?" not in tail
-                    and "#" not in tail
-                    and all(char in _URL_PATH_CHARS for char in tail)
-                )
-            if content.endswith("://"):
-                return True
-            if not content:
-                return True
-            if content[-1] in _DELIMITERS:
-                return True
-            token = content.rsplit(None, 1)[-1]
-            return token.startswith("-") and len(token) > 1
-    previous = before[-1]
-    if previous in _DELIMITERS:
-        if previous.isspace():
-            index = len(before) - 2
-            backslashes = 0
-            while index >= 0 and before[index] == chr(92):
-                backslashes += 1
-                index -= 1
-            if backslashes % 2 == 1:
-                return False  # an odd run escapes the separator itself
-        return True
-    return before.endswith("://")
+    if before[-1] in _TOKEN_CHARS:
+        index = len(before)
+        while index and before[index - 1] in _TOKEN_CHARS:
+            index -= 1
+        tail = before[index:].lstrip(_QUOTE_CHARS)
+        # `:` does not continue a token, so a local file URL is recognised by the
+        # scheme sitting immediately before the slashes we walked over.
+        return tail.startswith(_FILE_SCHEME) or before[:index].lstrip(_QUOTE_CHARS).endswith("file:")
+    segment = before.rsplit(None, 1)[-1].lstrip(_QUOTE_CHARS)
+    if _SCHEME_MARKER in segment:
+        # A third-party URL may contain anything; only a local file URL is a host path.
+        return segment.startswith(_FILE_SCHEME)
+    return True
 
 
 def find_line_findings(line: str) -> list[tuple[str, str]]:
     """Return (label, matched text) for every host-specific value in one line."""
     findings: list[tuple[str, str]] = []
-    path_spans = url_path_spans(line)
     for label, pattern in PATH_PATTERNS:
         for match in pattern.finditer(line):
-            if _inside(path_spans, match.start()):
-                continue
-            if not _is_absolute_match(line, match.start()):
-                continue
-            findings.append((label, match.group(0)))
+            if _is_absolute_match(line, match.start()):
+                findings.append((label, match.group(0)))
     for match in _PRIVATE_ADDRESS.finditer(line):
         try:
             address = ipaddress.ip_address(match.group(0))

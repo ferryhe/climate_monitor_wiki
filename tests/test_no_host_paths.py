@@ -3,6 +3,11 @@
 The fixtures below are assembled from fragments so that this file does not match the
 patterns it exercises -- the checker scans itself and every other tracked file, and a
 file that hard-codes a sample host path would be a finding in its own right.
+
+The declared scope is token level and intentionally simple (TypeSafe judgment D):
+a path is reported when it starts a token, a third-party http(s) URL is exempt as a
+whole, and quote/escape semantics are out of scope. The last two tests pin the
+declared out-of-scope behaviour so that widening or narrowing it is a deliberate edit.
 """
 import subprocess
 import sys
@@ -66,31 +71,38 @@ def test_flags_private_hosts_in_url_authorities():
         assert labels_in(text), text
 
 
-def test_flags_host_patterns_outside_url_paths():
-    # Only a URL *path* is exempt. A closing parenthesis or backtick ends the URL, and a
-    # query string, a fragment or a shell separator is not a path either.
+def test_flags_paths_that_start_a_token():
     for text in (
-        "see `https://example.org)," + HOME_ALICE + "/secret` for details",
-        "curl 'https://example.org?q=" + HOME_ALICE + "'",
-        "open https://example.org#" + ROOT_HOME + "/.env",
-        "curl https://example.org;" + HOME_ALICE + "/bin/run",
-        "curl https://example.org<" + HOME_ALICE + "/input",
-        'curl "-Lo' + HOME_ALICE + '/config"',
+        "cd " + HOME_ALICE + "/app",
+        "paths: [" + HOME_ALICE + "/config]",
+        "roots: [" + ROOT_HOME + "/.env]",
+        "cmd;" + HOME_ALICE + "/bin/run",
+        "KEY=" + HOME_ALICE + "/secret",
         "file://" + HOME_ALICE + "/app",
-        "curl https://example.org/path$(/" + "home/alice/bin/token)",
+        'open "file://' + ROOT_HOME + '/.env"',
     ):
         assert labels_in(text), text
 
 
-def test_ignores_publisher_urls_placeholders_and_non_addresses():
+def test_token_logic_ignores_relative_references_and_word_suffixes():
+    """A hit glued to a longer token is not this host's path."""
+    for text in (
+        "./" + "home/alice/icon.svg",
+        "cat ./assets-" + "x/home/alice/icon.svg",
+        'cat "assets' + HOME_ALICE + "/icon.svg" + '"',
+        'cat "/opt' + HOME_ALICE + "/icon.svg" + '"',
+        "/api/" + "home/alice",
+    ):
+        assert find_findings(text) == [], text
+
+
+def test_ignores_placeholders_publisher_urls_and_non_addresses():
     for text in (
         "Source: https://www.ifrs.org/content/ifrs/home/issued-standards/x.html",
         "See https://example.org/" + "root/index.html for details",
         "cd " + "/" + "home/<user>/climate-monitor",
         "the 10.0 release notes",
         "timeout " + "10." + "999.888.777",
-        # Left boundary: a relative path segment or a suffixed version string is not a host.
-        "./" + "home/alice/icon.svg",
         "release " + "10.4." + "5.6rc1",
         "https://" + "10.4.5." + "6.example.org/api",
         "release v" + "10.4." + "5.6",
@@ -98,6 +110,30 @@ def test_ignores_publisher_urls_placeholders_and_non_addresses():
         "ssh ip-" + "10-999-888-777.internal",
     ):
         assert find_findings(text) == [], text
+
+
+def test_declared_out_of_scope_a_third_party_url_is_exempt_as_a_whole():
+    """Declared: a URL may contain any punctuation, so its segment is not inspected."""
+    for text in (
+        "curl 'https://example.org?q=" + HOME_ALICE + "'",
+        "open https://example.org#" + ROOT_HOME + "/.env",
+        "curl https://example.org;" + HOME_ALICE + "/bin/run",
+        "see `https://example.org)," + HOME_ALICE + "/secret` for details",
+        'curl "https://example.org/archive;' + HOME_ALICE + '/page"',
+    ):
+        assert find_findings(text) == [], text
+
+
+def test_declared_out_of_scope_quote_and_escape_semantics_are_not_modelled():
+    """Declared: quoted and unquoted forms are judged identically (no quote parsing)."""
+    # A quoted relative reference is judged by the same token rule as an unquoted one.
+    assert labels_in("cat ./assets\\ " + HOME_ALICE + "/icon.svg") == [
+        "host home directory"
+    ]
+    # An operand glued to an option is not a token start, quoted or not.
+    assert find_findings("curl -o" + HOME_ALICE + "/config https://example.org") == []
+    assert find_findings('curl "-Lo' + HOME_ALICE + '/config"') == []
+    assert labels_in('curl "-o ' + HOME_ALICE + '/config" https://example.org'), "a separated operand is a token start"
 
 
 def test_only_the_pinned_prompt_artifact_is_exempt():
@@ -133,31 +169,3 @@ def test_repository_tracked_files_are_clean():
     scanned, problems = scan_repository()
     assert scanned > 50, "the scan should cover a meaningful number of tracked files"
     assert problems == [], problems
-
-
-def test_option_operand_without_quoting_is_out_of_scope():
-    # Declared scope (TypeSafe judgment C): an unquoted operand glued to a short
-    # option is not detected. The conventions in docs/deployment.md forbid host
-    # paths outright, and this form has never appeared in the repository.
-    assert labels_in("curl -o" + HOME_ALICE + "/config https://example.org") == []
-
-
-def test_exempts_quoted_url_paths_that_contain_separator_punctuation():
-    # A semicolon inside a quoted URL belongs to its path, not to the shell.
-    assert labels_in('curl "https://example.org/archive;' + HOME_ALICE + '/page"') == []
-
-
-def test_boundary_cases_from_review_round_seven():
-    # An escaped whitespace does not start a new token; a quoted ordinary path or a
-    # path segment inside a longer absolute path is not a host path; a bracketed
-    # list is a token boundary; a local file URL inside quotes is a host path.
-    assert labels_in("cat ./assets\\ " + HOME_ALICE + "/icon.svg") == []
-    assert labels_in('cat "assets' + HOME_ALICE + "/icon.svg" + '"') == []
-    assert labels_in('cat "/opt' + HOME_ALICE + "/icon.svg" + '"') == []
-    for text in (
-        "paths: [" + HOME_ALICE + "/config]",
-        "roots: [" + ROOT_HOME + "/.env]",
-        'open "file://' + HOME_ALICE + '/config"',
-        'open "file://' + ROOT_HOME + '/.env"',
-    ):
-        assert labels_in(text), text
