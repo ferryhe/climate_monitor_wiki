@@ -1,7 +1,7 @@
 # Deployment: Docker + Caddy HTTPS
 
 The wiki runs as two containers behind Caddy. The public site is available at
-`https://aiclimate.aiforactuaries.org` with Caddy-managed public-CA TLS. The host's
+`https://$PUBLIC_HOST` with Caddy-managed public-CA TLS. The host's
 private IP remains available for internal health checks with Caddy's internal
 CA.
 
@@ -76,14 +76,14 @@ Initial installation only: the following creates `.env`. Do not run it during
 an existing-production update, where configuration and tokens must be preserved.
 
 ```bash
-cd /home/ubuntu/climate_monitor_wiki
+cd "$CLIMATE_REPO"   # the verified production checkout
 
 # SITE_HOST and PUBLIC_HOST have no defaults — compose refuses to start
 # without them. CLIMATE_PUBLIC_ORIGIN may be empty while the Dashboard is
 # disabled, but set it here so the public-host pair starts in sync. Replace
 # the example values with this host's real private IP and public DNS hostname.
 printf 'SITE_HOST=%s\nPUBLIC_HOST=%s\nCLIMATE_PUBLIC_ORIGIN=https://%s\nRELOAD_TOKEN=%s\n' \
-  "172.31.10.77" "example.org" "example.org" "$(openssl rand -hex 24)" > .env
+  "<host-private-ip>" "<host-public-dns>" "<host-public-dns>" "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 
 CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
@@ -100,16 +100,16 @@ before acquisition and reuse it for report provenance on resume.
 Verify:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://aiclimate.aiforactuaries.org/  # 301 -> HTTPS
-curl -s -o /dev/null -w '%{http_code}\n' https://aiclimate.aiforactuaries.org/api/config  # 200
-curl -sk -o /dev/null -w '%{http_code}\n' https://172.31.10.77/api/config   # 200
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://$PUBLIC_HOST/  # 301 -> HTTPS
+curl -s -o /dev/null -w '%{http_code}\n' https://$PUBLIC_HOST/api/config  # 200
+curl -sk -o /dev/null -w '%{http_code}\n' https://$SITE_HOST/api/config   # 200
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://$SITE_HOST/  # 301 -> https
 ```
 
 ## Certificate trust
 
 Caddy automatically obtains and renews a publicly trusted certificate for
-`aiclimate.aiforactuaries.org`; DNS must resolve to this host and ports 80/443 must
+`$PUBLIC_HOST`; DNS must resolve to this host and ports 80/443 must
 be reachable for issuance and renewal.
 
 The private-IP site uses Caddy's local CA, so clients connecting to the IP show
@@ -125,7 +125,7 @@ this only for private-IP scripted checks. Public checks should not use `-k`.
 ## Gotcha: bare-IP TLS needs `default_sni`
 
 RFC 6066 forbids IP literals in the TLS SNI extension, so a client connecting to
-`https://172.31.10.77` sends **no** SNI. Without a `default_sni` in the global
+`https://$SITE_HOST` sends **no** SNI. Without a `default_sni` in the global
 options block, Caddy cannot match a site block and aborts the handshake with:
 
 ```
@@ -336,7 +336,7 @@ recreating the application service:
 
 ```text
 HERMES_DASHBOARD_ENABLED=1
-CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
+CLIMATE_PUBLIC_ORIGIN=https://<host-public-dns>
 ```
 
 The origin must be the exact browser-facing HTTPS origin with no path,
@@ -362,7 +362,7 @@ made by a logged-in website operator affect the host Hermes instance, and the
 Gateway shown in the Dashboard is the host Gateway. Enable it only when those
 operators should have the same management capability as a host Hermes user.
 
-Keep the host Hermes home private. Do not mount `/home/ubuntu/.hermes` or its
+Keep the host Hermes home private. Do not mount the host Hermes home (`$HERMES_HOME`) or its
 configuration into the application container. The only shared directory is a
 private relay directory containing:
 
@@ -389,8 +389,8 @@ current full deployment, append the host override after the Registry, delivery,
 weekly-status, and scheduler-status overrides:
 
 ```text
-HERMES_DASHBOARD_RELAY_DIR=/run/user/1000/climate-hermes-relay
-CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
+HERMES_DASHBOARD_RELAY_DIR=<host-relay-dir>
+CLIMATE_PUBLIC_ORIGIN=https://<host-public-dns>
 ```
 
 ```bash
@@ -547,7 +547,7 @@ but does not perform the wrapper's filesystem check. An unknown or
 unrecognizable subcommand fails closed without starting Docker.
 
 ```bash
-export CLIMATE_REGISTRY_HOST_DIR=/home/ubuntu/climate_monitor_data/registry
+export CLIMATE_REGISTRY_HOST_DIR=<host-data-dir>/registry   # outside the checkout, on the host
 
 docker compose -f docker-compose.yml config --quiet
 .venv/bin/python -m scripts.safe_compose \
@@ -598,9 +598,9 @@ docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
 docker compose restart caddy
 
-curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/health
+curl --fail-with-body -sS https://$PUBLIC_HOST/api/health
 
-curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/registry/status \
+curl --fail-with-body -sS https://$PUBLIC_HOST/api/registry/status \
   | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("available") is True; print(data)'
 ```
 
@@ -764,7 +764,7 @@ actual server inventory and gates in [PIPELINE_REFERENCE.md](../PIPELINE_REFEREN
    create or enable the 10:30 job in this stage.
 5. From the verified production checkout, bind the runbook paths to that exact
    checkout and the configured Publisher lock; do not copy a path from an older
-   `/srv` or `/home/ubuntu` example:
+   host example:
 
    ```bash
    CLIMATE_REPO="$(pwd -P)"

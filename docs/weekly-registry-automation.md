@@ -102,15 +102,16 @@ for the entire critical section, interoperates with shell `flock` on POSIX, and
 is released by process exit without unlink races.
 
 ```bash
+export CLIMATE_WIKI_HOME=<production checkout>   # substitute this host's path
 python -m climate_registry weekly-sync \
   --date "$REPORT_DATE" \
-  --source-dir /srv/climate_monitor_wiki/sources \
+  --source-dir "$CLIMATE_WIKI_HOME/sources" \
   --database /var/lib/climate-registry/article-registry.sqlite3 \
   --artifact-root /var/lib/climate-delivery/output \
   --backup-dir /var/lib/climate-registry/backups \
   --lock-file /var/lib/climate-registry/article-registry.sqlite3.lock \
   --publisher-ledger-dir /var/lib/climate-monitor/weekly-run-ledger \
-  --metadata-dir /srv/climate_monitor_wiki/article_metadata \
+  --metadata-dir "$CLIMATE_WIKI_HOME/article_metadata" \
   --dry-run
 ```
 
@@ -225,16 +226,17 @@ After code deployment and separate owner authorization, the proposed Monday
 10:30 ET job command is:
 
 ```bash
-cd /srv/climate_monitor_wiki
+export CLIMATE_WIKI_HOME=<production checkout>   # substitute this host's path
+cd "$CLIMATE_WIKI_HOME"
 .venv/bin/python scripts/weekly_registry_refresh.py \
   --date "$REPORT_DATE" \
-  --source-dir /srv/climate_monitor_wiki/sources \
+  --source-dir "$CLIMATE_WIKI_HOME/sources" \
   --database /var/lib/climate-registry/article-registry.sqlite3 \
   --artifact-root /var/lib/climate-delivery/output \
   --backup-dir /var/lib/climate-registry/backups \
   --lock-file /var/lib/climate-registry/article-registry.sqlite3.lock \
   --publisher-ledger-dir /var/lib/climate-monitor/weekly-run-ledger \
-  --metadata-dir /srv/climate_monitor_wiki/article_metadata \
+  --metadata-dir "$CLIMATE_WIKI_HOME/article_metadata" \
   --base-url "https://$SITE_HOST" \
   --expected-api-host "$SITE_HOST"
 ```

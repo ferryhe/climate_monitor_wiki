@@ -32,7 +32,7 @@ them implicitly.
 - Source Markdown is read-only. The command never rewrites, renames, or deletes
   a report.
 - A server deployment should place the database outside the checkout,
-  for example `/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3`.
+  for example `$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3`.
   The repository does not create that path by default.
 
 ## Run an isolated audit

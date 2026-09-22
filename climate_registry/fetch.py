@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import os
 import socket
 import ssl
 import threading
@@ -10,7 +11,11 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol, Sequence
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-USER_AGENT = "ClimateMonitorRegistry/1.0 (+https://aiclimate.aiforactuaries.org/)"
+# Overridable so a deployment can advertise its own contact URL without a code change.
+USER_AGENT = os.environ.get(
+    "CLIMATE_REGISTRY_USER_AGENT",
+    "ClimateMonitorRegistry/1.0 (+https://aiclimate.aiforactuaries.org/)",
+)
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_MAX_REDIRECTS = 3
