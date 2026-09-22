@@ -220,6 +220,49 @@ stdout/stderr reaches Docker. This prevents an outage-time callback from leaking
 credentials at the cost of omitting query parameters from Caddy process-log
 diagnostics. Non-callback access-log records are unaffected.
 
+## Upgrade checklist
+
+Run this list for every image or commit upgrade of this stack.
+`climate_monitor_update.sh` is a convenience wrapper, not a substitute for these
+gates: each item is a stop condition, not a warning.
+
+1. **Pin the target.** Record the target commit and the running image
+   (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
+   image tagged for rollback. `~/.hermes/issue124-scheduler.json` pins
+   `expected_revision` and `expected_image_id`; update both in the same change that
+   starts the new image so a stale pin cannot silently pass.
+2. **Registry schema — both databases.** Compare the schema the new image requires
+   (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
+   `PRAGMA user_version` of **each** database in the table below. The acquisition
+   writer fails closed on a mismatch, so a deployment that migrates only one of the
+   two files still fails. To migrate: quiesce all writers (no producer container and
+   no slot mid-run), capture a verified private full-database backup with its
+   sidecars, exact path/role identity and hashes, run
+   `python -m climate_registry plan-update` (read-only) followed by
+   `update --backup-dir … --source-dir <repo>/sources`, then read back
+   `PRAGMA user_version` and `PRAGMA integrity_check` on both files before enabling
+   any slot. Do not downgrade afterwards and do not restore rows selectively: a
+   rollback means restoring the whole snapshot. See
+   [article-registry.md](article-registry.md).
+3. **Inference identity.** The effective provider, model and credential come from the
+   producer environment (`HERMES_INFERENCE_PROVIDER`, `HERMES_INFERENCE_MODEL` and the
+   matching provider credential). Task-definition `provider`/`model` values are
+   stripped before the execution binding is built and do not change what runs.
+4. **Canaries before declaring success.** Public `/api/health` and
+   `/api/registry/status` return 200, the in-container management preflight reports
+   `PREFLIGHT_OK`, the checkout is still clean on `main`, and no producer container
+   is left behind.
+5. **Rollback pair.** Keep the previous image tag and the step-2 snapshots until a
+   full cycle completes; the rollback pair is (image tag, whole-database snapshot).
+
+The two Registry databases are separate files with different roles, and both must be
+at the required schema before the write side runs:
+
+| Database | Host path | In-container path | Writer |
+| --- | --- | --- | --- |
+| Public/site Registry | `/home/ubuntu/climate_monitor_data/registry/article-registry.sqlite3` | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
+| Runtime Registry | `/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data/climate_registry.sqlite3` | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
+
 ## Optional Hermes Dashboard
 
 The Dashboard is disabled by default. This fail-safe keeps an existing Wiki,
