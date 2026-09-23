@@ -1563,6 +1563,8 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
     # Mutate only a disposable copy of the creation-time source, never the
     # shared checkout. Poison loaded worker helpers independently after binding.
     source = tmp_path / 'source'; checkout = Path(bundle.__file__).parents[1]
+    shutil.copytree(checkout / 'climate_monitor', source / 'climate_monitor',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     for name in [*bundle.MODULES, 'climate_monitor/hermes_search_policy.py', 'climate_monitor/hermes_acquisition_bootstrap.py']:
         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(checkout / name, target)
@@ -1589,6 +1591,7 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
 '''
         adapter.write_text(''.join(lines[:function.lineno-1]) + replacement + ''.join(lines[function.end_lineno:]))
     monkeypatch.setattr(bundle, '__file__', str(source / 'climate_monitor/hermes_acquisition_policy.py'))
+    monkeypatch.setattr(h, '__file__', str(source / 'climate_monitor/hermes_identity.py'))
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = _v3_binding(tmp_path, mode='unlimited' if protocol == 'v3_body' else 'recent')
     binding['checkpoint_dir'] = str(run / 'checkpoint')
@@ -1768,6 +1771,8 @@ def test_review4_new_unbound_application_import_rejected_before_publish(tmp_path
     from climate_monitor import hermes_identity as h, hermes_acquisition_policy as bundle
     import shutil
     source = tmp_path / 'source'; checkout = Path(bundle.__file__).parents[1]
+    shutil.copytree(checkout / 'climate_monitor', source / 'climate_monitor',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     for name in [*bundle.MODULES, 'climate_monitor/hermes_search_policy.py', 'climate_monitor/hermes_acquisition_bootstrap.py']:
         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(checkout / name, target)
@@ -1775,6 +1780,7 @@ def test_review4_new_unbound_application_import_rejected_before_publish(tmp_path
     raw = runner.read_text().replace('    binding = _attempt_binding(binding_path)', '    import future_dependency_unbound\n    binding = _attempt_binding(binding_path)')
     runner.write_text(raw)
     monkeypatch.setattr(bundle, '__file__', str(source / 'climate_monitor/hermes_acquisition_policy.py'))
+    monkeypatch.setattr(h, '__file__', str(source / 'climate_monitor/hermes_identity.py'))
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='unbound|unsupported'):
         h.create_snapshot(run)

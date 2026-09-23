@@ -150,12 +150,12 @@ def select_definitions(raw, names):
 
 
 def acquisition_policy():
-    from climate_monitor.hermes_identity import secure_read, MAX_TREE_BYTES, MAX_TREE_FILES, MAX_PRIVATE_BYTES
-    root = Path(__file__).resolve().parents[1]
+    from climate_monitor.hermes_identity import _read_application_source, MAX_TREE_BYTES, MAX_TREE_FILES, MAX_PRIVATE_BYTES
+    root = Path(__file__).absolute().parents[1]
     sources = {}
     source_bytes = 0
     for name in MODULES:
-        raw = secure_read(root / name)[0]
+        raw = _read_application_source(root / name)[0]
         source_bytes += len(raw)
         if len(raw) > MAX_PRIVATE_BYTES or source_bytes > MAX_TREE_BYTES:
             raise ValueError('acquisition source limit exceeded')
@@ -188,8 +188,8 @@ def acquisition_policy():
             break
     for package in ('climate_monitor', 'climate_registry', 'scripts'):
         result[f'acquisition/{package}/__init__.py'] = b'# Private acquisition namespace; no application entrypoint side effects.\n'
-    result['bootstrap/acquisition_imports.py'] = secure_read(root / 'climate_monitor/hermes_acquisition_bootstrap.py')[0]
-    result['policy/search-plugin.py'] = secure_read(root / 'climate_monitor/hermes_search_policy.py')[0]
+    result['bootstrap/acquisition_imports.py'] = _read_application_source(root / 'climate_monitor/hermes_acquisition_bootstrap.py')[0]
+    result['policy/search-plugin.py'] = _read_application_source(root / 'climate_monitor/hermes_search_policy.py')[0]
     import json
     constants = {}
     for node in ast.parse(sources['climate_monitor/request_budget.py']).body:

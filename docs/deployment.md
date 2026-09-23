@@ -270,6 +270,33 @@ until every gate below passes.
    which live on the host and not in this repository; without them the preflight fails
    closed with a JSON verdict. Start the new image only after step 2 passes: a schema
    mismatch makes the write side fail closed.
+   **Collaborative application source and private runtime inputs.** A group-writable
+   checkout is supported only when every group writer is already trusted to edit
+   and execute application code. Snapshot collection permits that source group's
+   writes only within the application's own source root; ancestors outside it,
+   external Hermes/interpreter/reader dependencies, credentials and private
+   snapshots retain strict checks. This is not an immutable release boundary. If
+   checkout writers must be excluded from execution, run the scheduler and build
+   the image from the same verified, privately owned release copy instead.
+
+   Use a trusted test temporary root with non-group-writable ancestors. A shared
+   pytest temp ancestor independently fails private socket/token and snapshot
+   checks; do not relax those checks to accommodate it. Some dry-run tests require
+   `/tmp`, and Caddy subprocess tests require a traversable temporary path. Check
+   available space before a full run and report environment failures separately.
+
+   Probe application file and directory modes inside the exact candidate image
+   built from the intended source context: Docker COPY can retain group-writable
+   file modes even when directories become 0755. Record the commit, image ID and
+   observed modes. In both the host execution context and that image, qualify
+   `create_snapshot()` and a managed start with private disposable configuration,
+   the installed Hermes/reader runtime, no production credentials and no outbound
+   inference. Verify the frozen snapshot and binding before a controlled launcher
+   accepts the run. This managed-start canary is separate from `--preflight`, which
+   does not collect snapshot inputs, and from the API health/import smoke tests.
+   Keep the old image and paired scheduler configuration until candidate checks
+   and separately authorized deployment pass.
+
 2. **Registry schema — both databases.** Compare the schema the new image requires
    (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
    `PRAGMA user_version` of **each** database in the table below. Both files must be
