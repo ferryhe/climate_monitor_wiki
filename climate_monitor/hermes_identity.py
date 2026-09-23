@@ -933,6 +933,12 @@ def _validate_identity(value):
 
 
 def load_identity(root):
+    from climate_monitor.hermes_frozen_policy import _identity_lock
+    with _identity_lock(root):
+        return _load_identity_locked(root)
+
+
+def _load_identity_locked(root):
     path = Path(root) / 'effective-identity.json'
     try:
         path.lstat()
@@ -958,22 +964,24 @@ def publish_identity(root, identity):
     identity = _validate_identity(identity)
     root = Path(root)
     _check(root.lstat(), True, directory=True)
-    fd, temporary = tempfile.mkstemp(prefix='.identity-', dir=root)
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(_bytes(identity))
-            stream.flush()
-            os.fsync(stream.fileno())
+    from climate_monitor.hermes_frozen_policy import _identity_lock
+    with _identity_lock(root, exclusive=True):
+        fd, temporary = tempfile.mkstemp(prefix='.identity-', dir=root)
         try:
-            os.link(temporary, root / 'effective-identity.json', follow_symlinks=False)
-        except FileExistsError:
-            if load_identity(root) != identity:
-                raise ValueError('Hermes effective identity changed; start a fresh run')
-        _sync_dir(root)
-    finally:
-        os.unlink(temporary)
-        _sync_dir(root)
-    return identity
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(_bytes(identity))
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, root / 'effective-identity.json', follow_symlinks=False)
+            except FileExistsError:
+                if _load_identity_locked(root) != identity:
+                    raise ValueError('Hermes effective identity changed; start a fresh run')
+            _sync_dir(root)
+        finally:
+            os.unlink(temporary)
+            _sync_dir(root)
+        return identity
 
 
 IDENTITY_PLUGIN = 'climate-frozen-identity'

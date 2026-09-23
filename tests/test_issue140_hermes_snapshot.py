@@ -2999,3 +2999,417 @@ def test_review9_docker_python312_web_helper_contract(tmp_path, monkeypatch, hel
         inputs = {}
         web.web_environment_names(tmp_path, {str(path): metadata}, inputs)
         assert inputs == {str(path): metadata}
+
+
+def _ci_identity_backend(root, backend):
+    if backend == 'host':
+        from climate_monitor.hermes_identity import publish_identity, load_identity
+        return lambda value: publish_identity(root, value), lambda: load_identity(root)
+    import runpy
+    from climate_monitor import hermes_frozen_policy
+    policy = runpy.run_path(hermes_frozen_policy.__file__, init_globals={'ROOT': root, 'SOURCE': 'run'})
+    return policy['_publish'], policy['_read']
+
+
+@pytest.mark.parametrize('backend', ['host', 'frozen'])
+@pytest.mark.parametrize('operation', ['identical_writer', 'reader'])
+def test_ci_identity_alias_cleanup_read_race(tmp_path, monkeypatch, backend, operation):
+    """Force alias unlink during an unlocked read, or observe it blocked by flock."""
+    import fcntl
+    publish, read = _ci_identity_backend(tmp_path, backend)
+    value = {'provider': 'provider', 'model': 'model', 'source': 'run'}
+    cleanup_ready, allow_cleanup, cleaned = (threading.Event() for _ in range(3))
+    contender_ready, allow_read = threading.Event(), threading.Event()
+    role = threading.local()
+    original_unlink, original_read, original_flock = os.unlink, os.read, fcntl.flock
+    path = tmp_path / 'effective-identity.json'
+    link_counts = []
+    identity_inode = None
+    cleanup_epoch = 0
+    original_fstat, original_lstat = os.fstat, Path.lstat
+
+    def metadata(st):
+        # Model the inode ctime event even on filesystems that coalesce clock ticks.
+        # The hard-link removal itself and nlink 2 -> 1 transition remain real.
+        if st.st_ino != identity_inode:
+            return st
+        from types import SimpleNamespace
+        fields = {name: getattr(st, name) for name in dir(st) if name.startswith('st_')}
+        fields['st_ctime_ns'] += cleanup_epoch
+        return SimpleNamespace(**fields)
+
+    def unlink(name, *args, **kwargs):
+        nonlocal identity_inode, cleanup_epoch
+        if getattr(role, 'name', '') == 'winner' and Path(name).name.startswith('.identity-'):
+            identity_inode = path.stat().st_ino
+            cleanup_ready.set()
+            assert allow_cleanup.wait(10)
+            link_counts.append(path.stat().st_nlink)
+            result = original_unlink(name, *args, **kwargs)
+            cleanup_epoch += 1
+            link_counts.append(path.stat().st_nlink)
+            cleaned.set()
+            return result
+        return original_unlink(name, *args, **kwargs)
+
+    def bounded_read(fd, size):
+        if (getattr(role, 'name', '') == 'contender' and
+                os.fstat(fd).st_ino == path.stat().st_ino):
+            contender_ready.set()
+            assert allow_read.wait(10)
+        return original_read(fd, size)
+
+    def flock(fd, flags):
+        if getattr(role, 'name', '') == 'contender' and flags & (fcntl.LOCK_SH | fcntl.LOCK_EX):
+            try:
+                return original_flock(fd, flags | fcntl.LOCK_NB)
+            except BlockingIOError:
+                contender_ready.set()
+        return original_flock(fd, flags)
+
+    def winner():
+        role.name = 'winner'
+        publish(value)
+
+    def contender():
+        role.name = 'contender'
+        if operation == 'identical_writer':
+            publish(value)
+        return read()
+
+    monkeypatch.setattr(os, 'fstat', lambda fd: metadata(original_fstat(fd)))
+    monkeypatch.setattr(Path, 'lstat', lambda path, *a, **kw: metadata(original_lstat(path, *a, **kw)))
+    monkeypatch.setattr(os, 'unlink', unlink)
+    monkeypatch.setattr(os, 'read', bounded_read)
+    monkeypatch.setattr(fcntl, 'flock', flock)
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        first = pool.submit(winner)
+        second = None
+        try:
+            assert cleanup_ready.wait(10)
+            second = pool.submit(contender)
+            assert contender_ready.wait(10)
+            allow_cleanup.set()
+            assert cleaned.wait(10)
+            allow_read.set()
+            first.result(timeout=10)
+            assert second.result(timeout=10) == value
+        finally:
+            allow_cleanup.set()
+            allow_read.set()
+    assert link_counts == [2, 1]
+    assert read() == value
+    assert not list(tmp_path.glob('.identity-*'))
+
+
+def _ci_identity_process(root, backend, value, barrier, results):
+    publish, read = _ci_identity_backend(root, backend)
+    barrier.wait(timeout=10)
+    try:
+        publish(value)
+        results.put(('accepted', read()))
+    except ValueError:
+        results.put(('conflict', None))
+
+
+@pytest.mark.parametrize('conflicting', [False, True])
+@pytest.mark.parametrize('round_number', range(3))
+def test_ci_identity_mixed_process_writers(tmp_path, conflicting, round_number):
+    import multiprocessing
+    from climate_monitor.hermes_identity import load_identity
+    ctx = multiprocessing.get_context('fork')
+    barrier, results = ctx.Barrier(6), ctx.Queue()
+    values = [{'provider': 'provider', 'model': 'other' if conflicting and i % 2 else 'model',
+               'source': 'run'} for i in range(6)]
+    children = [ctx.Process(target=_ci_identity_process,
+                           args=(tmp_path, 'host' if i % 2 else 'frozen', value, barrier, results))
+                for i, value in enumerate(values)]
+    try:
+        for child in children:
+            child.start()
+        outcomes = [results.get(timeout=15) for _ in children]
+        for child in children:
+            child.join(timeout=15)
+            assert child.exitcode == 0
+    finally:
+        for child in children:
+            if child.is_alive():
+                child.terminate()
+                child.join(timeout=5)
+        results.close()
+        results.join_thread()
+    accepted = [value for status, value in outcomes if status == 'accepted']
+    assert len(accepted) == (3 if conflicting else 6)
+    assert all(value == load_identity(tmp_path) for value in accepted)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['effective-identity.json']
+
+
+@pytest.mark.parametrize('backend', ['host', 'frozen'])
+@pytest.mark.parametrize('failure_call', [1, 2, 3])
+def test_ci_identity_fsync_failure_releases_lock(tmp_path, monkeypatch, backend, failure_call):
+    publish, read = _ci_identity_backend(tmp_path, backend)
+    value = {'provider': 'provider', 'model': 'model', 'source': 'run'}
+    original = os.fsync
+    calls = 0
+
+    def fail_once(fd):
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise OSError('synthetic fsync failure')
+        return original(fd)
+
+    monkeypatch.setattr(os, 'fsync', fail_once)
+    with pytest.raises(OSError, match='synthetic fsync failure'):
+        publish(value)
+    assert not list(tmp_path.glob('.identity-*'))
+    if failure_call == 1:
+        assert read() is None
+    monkeypatch.setattr(os, 'fsync', original)
+    # A separate open must acquire the directory lock after the failed publisher.
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        pool.submit(publish, value).result(timeout=10)
+    assert read() == value
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['effective-identity.json']
+
+
+@pytest.mark.parametrize('backend', ['host', 'frozen'])
+@pytest.mark.parametrize('damage', ['symlink', 'fifo', 'mode'])
+def test_ci_identity_unsafe_winner_still_rejected(tmp_path, backend, damage):
+    publish, read = _ci_identity_backend(tmp_path, backend)
+    value = {'provider': 'provider', 'model': 'model', 'source': 'run'}
+    path = tmp_path / 'effective-identity.json'
+    if damage == 'symlink':
+        path.symlink_to(tmp_path / 'missing')
+    elif damage == 'fifo':
+        os.mkfifo(path, 0o600)
+    else:
+        path.write_text(json.dumps(value))
+        path.chmod(0o644)
+    with pytest.raises(ValueError):
+        read()
+    with pytest.raises(ValueError):
+        publish(value)
+    assert not list(tmp_path.glob('.identity-*'))
+
+
+def _ci_identity_hold_directory(root, ready):
+    from climate_monitor.hermes_frozen_policy import _identity_lock
+    with _identity_lock(root, exclusive=True):
+        ready.send('locked')
+        ready.recv()
+
+
+def test_ci_identity_process_exit_releases_directory_lock(tmp_path):
+    import multiprocessing
+    from climate_monitor.hermes_identity import publish_identity, load_identity
+    ctx = multiprocessing.get_context('fork')
+    parent, child = ctx.Pipe()
+    holder = ctx.Process(target=_ci_identity_hold_directory, args=(tmp_path, child))
+    holder.start()
+    try:
+        assert parent.poll(10) and parent.recv() == 'locked'
+        holder.terminate()
+        holder.join(timeout=10)
+        assert holder.exitcode is not None
+        value = {'provider': 'provider', 'model': 'model', 'source': 'run'}
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            assert pool.submit(publish_identity, tmp_path, value).result(timeout=10) == value
+        assert load_identity(tmp_path) == value
+        assert sorted(p.name for p in tmp_path.iterdir()) == ['effective-identity.json']
+    finally:
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=5)
+        parent.close()
+        child.close()
+
+
+def _ci_identity_fork_check(child_action, parent_action):
+    import select
+    import signal
+    gate_read, gate_write = os.pipe()
+    result_read, result_write = os.pipe()
+    owned = {gate_read, gate_write, result_read, result_write}
+    pid = None
+    reaped = False
+    try:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(gate_write)
+                os.close(result_read)
+                assert os.read(gate_read, 1) == b'g'
+                child_action()
+                os.write(result_write, b'ok')
+                os._exit(0)
+            except BaseException:
+                os._exit(1)
+        for fd in (gate_read, result_write):
+            os.close(fd)
+            owned.remove(fd)
+        parent_action()
+        os.write(gate_write, b'g')
+        assert select.select([result_read], [], [], 3)[0], 'CHILD_BLOCKED_ON_INHERITED_FLOCK'
+        assert os.read(result_read, 2) == b'ok'
+        _, status = os.waitpid(pid, 0)
+        reaped = True
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        if pid and not reaped:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        for fd in owned:
+            os.close(fd)
+
+
+@pytest.mark.parametrize('holder_backend', ['host', 'frozen'])
+@pytest.mark.parametrize('child_backend', ['host', 'frozen'])
+@pytest.mark.parametrize('operation', ['read', 'publish'])
+def test_ci_identity_fork_from_other_thread(tmp_path, holder_backend, child_backend, operation):
+    """Release the parent's lock, then require the child not to retain its alias."""
+    import runpy
+    from climate_monitor import hermes_frozen_policy
+    holder_lock = hermes_frozen_policy._identity_lock
+    if holder_backend == 'frozen':
+        holder_lock = runpy.run_path(hermes_frozen_policy.__file__)['_identity_lock']
+    publish, read = _ci_identity_backend(tmp_path, child_backend)
+    value = {'provider': 'provider', 'model': 'model', 'source': 'run'}
+    publish(value)
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with holder_lock(tmp_path, exclusive=True):
+            held.set()
+            assert release.wait(10)
+
+    def parent():
+        release.set()
+        holder.join(timeout=10)
+        assert not holder.is_alive()
+
+    def child():
+        if operation == 'publish':
+            publish(value)
+        assert read() == value
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(10)
+        _ci_identity_fork_check(child, parent)
+    finally:
+        release.set()
+        holder.join(timeout=10)
+    assert read() == value
+
+
+def test_ci_identity_fork_open_registration_window(tmp_path, monkeypatch):
+    """Fork's before callback waits while a real fd is open but not yet tracked."""
+    import runpy
+    from climate_monitor import hermes_frozen_policy
+    opened, resume_open, fork_started, release = (threading.Event() for _ in range(4))
+    register, original_open, original_close = os.register_at_fork, os.open, os.close
+    callbacks = {}
+    captured_fd = []
+    close_guarded = []
+
+    def capture(**kwargs):
+        callbacks.update(kwargs)
+        def before():
+            fork_started.set()
+            kwargs['before']()
+        register(**dict(kwargs, before=before))
+
+    monkeypatch.setattr(os, 'register_at_fork', capture)
+    policy = runpy.run_path(hermes_frozen_policy.__file__, init_globals={'ROOT': tmp_path, 'SOURCE': 'run'})
+    guard = callbacks['before'].__self__
+
+    def opening(path, *args, **kwargs):
+        fd = original_open(path, *args, **kwargs)
+        if threading.current_thread() is holder and Path(path) == tmp_path:
+            assert guard.locked()
+            captured_fd.append(fd)
+            opened.set()
+            assert resume_open.wait(10)
+        return fd
+
+    def closing(fd):
+        if threading.current_thread() is holder and fd in captured_fd:
+            close_guarded.append(guard.locked())
+        return original_close(fd)
+
+    def hold():
+        with policy['_identity_lock'](tmp_path, exclusive=True):
+            assert release.wait(10)
+
+    def resume():
+        assert fork_started.wait(10)
+        assert guard.locked()
+        resume_open.set()
+
+    def parent():
+        release.set()
+        holder.join(timeout=10)
+        coordinator.join(timeout=10)
+        assert not holder.is_alive() and not coordinator.is_alive()
+
+    def child():
+        value = {'provider': 'provider', 'model': 'model', 'source': 'run'}
+        policy['_publish'](value)
+        assert policy['_read']() == value
+
+    holder = threading.Thread(target=hold)
+    coordinator = threading.Thread(target=resume)
+    monkeypatch.setattr(os, 'open', opening)
+    monkeypatch.setattr(os, 'close', closing)
+    holder.start()
+    try:
+        assert opened.wait(10)
+        coordinator.start()
+        _ci_identity_fork_check(child, parent)
+    finally:
+        resume_open.set()
+        release.set()
+        holder.join(timeout=10)
+        if coordinator.ident is not None:
+            coordinator.join(timeout=10)
+    assert close_guarded == [True]
+
+
+def test_ci_identity_fork_duplicate_imports_and_fd_reuse(tmp_path):
+    import fcntl
+    import runpy
+    from climate_monitor import hermes_frozen_policy as host
+    copies = [runpy.run_path(host.__file__) for _ in range(2)]
+    factories = [host._identity_directory, *(copy['_identity_directory'] for copy in copies)]
+    roots = [tmp_path / str(i) for i in range(3)]
+    for root in roots:
+        root.mkdir(mode=0o700)
+    contexts = [factory(root) for factory, root in zip(factories, roots)]
+    old_fds = [context.__enter__() for context in contexts]
+    for fd in old_fds:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def parent():
+        for context in reversed(contexts):
+            context.__exit__(None, None, None)
+
+    def child():
+        for fd in old_fds:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+        fresh = [factory(root) for factory, root in zip(factories, roots)]
+        new_fds = [context.__enter__() for context in fresh]
+        assert new_fds == old_fds  # Linux reuses the lowest free descriptor numbers.
+        for context in contexts:
+            context.__exit__(None, None, None)
+        for fd, root in zip(new_fds, roots):
+            assert os.fstat(fd).st_ino == root.stat().st_ino
+        for context in reversed(fresh):
+            context.__exit__(None, None, None)
+
+    try:
+        _ci_identity_fork_check(child, parent)
+    finally:
+        parent()
