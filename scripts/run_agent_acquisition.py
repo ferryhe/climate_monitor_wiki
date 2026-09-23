@@ -15,7 +15,6 @@ import json
 import math
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -68,7 +67,7 @@ from climate_monitor.request_budget import (
     provider_native_unbounded_search,
     search_identity_suffix,
 )
-from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks
+from climate_monitor.hermes_acquisition_hooks import attempt_home, install_hooks, _attempt_binding
 
 AcquisitionBudgetError = RequestBudgetError
 
@@ -474,7 +473,8 @@ BOUND ACQUISITION INSTRUCTIONS:
 
 
 def _session_source(binding: Mapping[str, Any]) -> str:
-    return f"climate-acquisition-{binding['run_id']}-{binding['attempt']}"
+    source = f"climate-acquisition-{binding['run_id']}"
+    return source if "hermes_snapshot" in binding else f"{source}-{binding['attempt']}"
 
 
 def _hermes_command(
@@ -2339,7 +2339,7 @@ def _stage_candidate_receipt(
     session_id: str,
 ) -> dict[str, Any]:
     """Resolve one trusted result, decide date eligibility, then read if allowed."""
-    binding = json.loads(Path(binding_path).read_text(encoding="utf-8"))
+    binding = _attempt_binding(binding_path)
     if not candidate_handle_protocol(binding):
         raise ValueError("candidate staging requires the frozen v3 protocol")
     source_key = _bound_source_key(binding, source_key, require_exact=True)
@@ -2477,7 +2477,7 @@ def _finalize_candidate_receipt(
     binding_path: Path, *, candidate_handle: str, selected: bool,
     title: str, summary: str, selection_reason: str, session_id: str,
 ) -> dict[str, Any]:
-    binding = json.loads(Path(binding_path).read_text(encoding="utf-8"))
+    binding = _attempt_binding(binding_path)
     if not candidate_handle_protocol(binding):
         raise ValueError("candidate finalization requires the frozen v3 protocol")
     if type(selected) is not bool:
@@ -2669,6 +2669,10 @@ def _controlled_fetch_payload(
     """Refetch current-attempt candidates through the controlled #112 reader."""
     from climate_monitor.article_content_adapter import fetch_article_content
 
+    reader_context = {}
+    if binding.get('hermes_snapshot'):
+        from climate_monitor.hermes_attempt_policy import reader_context as frozen_reader_context
+        reader_context = frozen_reader_context(binding_path, binding)
     checked: dict[str, Any] = copy.deepcopy(dict(payload))
     events: list[dict[str, Any]] = []
     capture_root = binding_path.parent / "managed" / "captures"
@@ -2698,7 +2702,7 @@ def _controlled_fetch_payload(
             else:
                 record = fetch_article_content(
                     f"managed-{ordinal}", item["url"], budget=ledger,
-                    site_key=site_key, site_scope=site_scope,
+                    site_key=site_key, site_scope=site_scope, **reader_context,
                 )
         attempted_at = _now()
         raw_attempts = record.get("attempts")
@@ -3059,6 +3063,8 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
             raise ValueError("provider and model must both be absent or non-empty strings")
         worker_binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
+            "hermes_snapshot": binding.get("hermes_snapshot"),
+            "acquisition_binding_path": str(binding_path.resolve()),
             "acquisition_run_id": binding["run_id"],
             "acquisition_batch_id": binding["acquisition_batch_id"],
             "registry_database": binding["registry_database"],
@@ -3242,26 +3248,29 @@ def _invoke_hermes(
     environment, home = install_hooks(command, binding_path, binding,
                                       _minimal_environment(str(binding.get("provider", ""))))
     budget.remaining_seconds()
-    with response_path.open("wb") as response:
-        process = subprocess.Popen(
-            command, cwd=home, stdin=subprocess.DEVNULL, stdout=response,
-            stderr=subprocess.STDOUT, env=environment,
-            close_fds=True,
-        )
-        _write_runtime(binding_path, binding, state="running", pid=process.pid)
-        while process.poll() is None:
-            if time.monotonic() >= deadline:
-                process.kill()
-                process.wait()
-                return 124
+    from climate_monitor.hermes_identity import auth_execution
+    with auth_execution(home, require_identity=True) as auth_result:
+        with response_path.open("wb") as response:
+            process = subprocess.Popen(
+                command, cwd=home, stdin=subprocess.DEVNULL, stdout=response,
+                stderr=subprocess.STDOUT, env=environment,
+                close_fds=True,
+            )
             _write_runtime(binding_path, binding, state="running", pid=process.pid)
-            try:
-                _write_progress(binding_path, binding, stage="acquiring",
-                                events=_trusted_tool_events(binding))
-            except (OSError, sqlite3.Error, ValueError):
-                pass
-            time.sleep(1)
-    return process.wait()
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    process.wait()
+                    return 124
+                _write_runtime(binding_path, binding, state="running", pid=process.pid)
+                try:
+                    _write_progress(binding_path, binding, stage="acquiring",
+                                    events=_trusted_tool_events(binding))
+                except (OSError, sqlite3.Error, ValueError):
+                    pass
+                time.sleep(1)
+        auth_result["returncode"] = process.wait()
+        return auth_result["returncode"]
 
 
 def _hermes_process_error(response_path: Path, exit_code: int, *, phase: str) -> str:
@@ -3423,10 +3432,8 @@ def _execute_attempt(
         return 65
     if resumed_report is not None:
         return resumed_report
-    hermes = os.environ.get("HERMES_EXECUTABLE") or shutil.which("hermes")
-    if not hermes:
-        _write_result(binding_path, exit_code=127, retryable=False, error="Hermes executable is not installed or configured")
-        return 127
+    from climate_monitor.hermes_identity import load_snapshot
+    hermes = load_snapshot(binding_path.parent, binding.get("hermes_snapshot"))["executable"]
     prior_usage = _empty_tool_usage()
     site_events: list[dict[str, Any]] = []
     trusted_events: list[dict[str, Any]] = []
@@ -3885,6 +3892,8 @@ def execute(binding_path: Path) -> int:
     binding = json.loads(resolved.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise ValueError(f"unsupported binding schema at {resolved}")
+    from climate_monitor.hermes_identity import load_snapshot
+    load_snapshot(resolved.parent, binding.get("hermes_snapshot"))
     with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
         return _execute_locked(resolved, state_lock_descriptor=descriptor)
 

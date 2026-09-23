@@ -1,0 +1,27 @@
+{
+  "source": {
+    "name": "acquisition.playwright",
+    "category": "acquisition",
+    "tool_id": "acquisition.playwright",
+    "version": "1.0.0"
+  },
+  "protocol_version": "web-listening-external-tool.v1",
+  "entrypoint": "tool.py",
+  "manifest": {
+    "tool_id": "acquisition.playwright",
+    "version": "1.0.0",
+    "category": "acquisition",
+    "distribution": "installed",
+    "capabilities": [
+      "browser_render",
+      "governed_network"
+    ],
+    "limits": {
+      "max_runtime_seconds": 60,
+      "max_input_bytes": 4096,
+      "max_output_bytes": 8388608
+    },
+    "health": "healthy",
+    "qualification": "unqualified"
+  }
+}

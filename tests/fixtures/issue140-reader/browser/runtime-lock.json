@@ -1,0 +1,40 @@
+{
+  "schema_version": "web-listening-browser-runtime-lock.v1",
+  "platform": "linux/amd64",
+  "python": "3.12",
+  "retry": 0,
+  "tools": {
+    "playwright": {
+      "tool_id": "acquisition.playwright",
+      "adapter_version": "1.0.0",
+      "sdk_version": "1.62.0",
+      "sdk_tree_sha256": "fb2463505cfdff44dac9ff06957076e5b1a51ff7f58d8b734a7081f748beec3f",
+      "browser_version": "151.0.7922.34",
+      "browser_revision": "1234",
+      "browser_channel": "chromium",
+      "browser_sha256": "0b20b130e7edd9dd51873be867761295fe0cfad490c2b9a64f95bd3cfc08fa71",
+      "provenance": "Installed Playwright 1.62.0 browsers.json and Linux AMD64 distribution at /opt/venvs/web-listening-old-compare; binary read and hashed, not executed.",
+      "adapter_files_sha256": {
+        "tool.py": "20b911a8918cfa0c0bd5a1bf0ad1938dddc7e3a60f2e24d09dfb47cd7bd610c2",
+        "tool.json": "8b7fcf7708555f40a7b7570d558ff7bcf8d9ba72d5b3fc50434de76573e7ec4c"
+      }
+    },
+    "cloakbrowser": {
+      "tool_id": "acquisition.cloakbrowser",
+      "adapter_version": "0.5.9",
+      "sdk_version": "0.5.9",
+      "browser_version": "146.0.7680.177",
+      "browser_build": "146.0.7680.177.5",
+      "browser_channel": "cloakbrowser-chromium",
+      "image": "cloakhq/cloakbrowser@sha256:6c17fac77e4cc7818159d9083c6868cfa220200ab7646036a7cc8861e51d17db",
+      "image_manifest_digest": "sha256:6c17fac77e4cc7818159d9083c6868cfa220200ab7646036a7cc8861e51d17db",
+      "image_index_digest": "sha256:e270e34573ca186b71dbcab9320672f2b671e048753921411148865c6530c721",
+      "provenance": "tests/live/phase_17_site_targets.json; existing Issue 18 / PR 44 pinned Linux AMD64 runtime. Manager independently measured the executable SHA-256 for build 146.0.7680.177.5 in this exact pinned image; supplied during Issue 102 review round 3. Installation and reopen compare no-network measurements with this frozen digest.",
+      "adapter_files_sha256": {
+        "tool.py": "eb83755a3cc2bbb606dd6e92fc586205c6061aeae0b22bcd408a33d143acda5e",
+        "tool.json": "ea8c4d8fb4536ce8783e79952b5ba3087a458663957654b10b96dc7affff409b"
+      },
+      "browser_sha256": "715722e8605ae3ce81523c1218aba1ec89425786ab33ceaf99f8a6cb5e70e6e8"
+    }
+  }
+}

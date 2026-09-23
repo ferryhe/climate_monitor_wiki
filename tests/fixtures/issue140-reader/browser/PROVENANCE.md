@@ -1,0 +1,7 @@
+runtime-lock.json: commit ac2343f89bc7939736d85f049ebe2beac571034a; upstream tools/browser/runtime-lock.json; SHA256 4acc58a027525eb901de3407e0a3a33ffb4e66b8413dc0fff2b2696cd0697657
+
+tool.py: commit ac2343f89bc7939736d85f049ebe2beac571034a; upstream tools/browser/playwright/1.0.0/tool.py; SHA256 20b911a8918cfa0c0bd5a1bf0ad1938dddc7e3a60f2e24d09dfb47cd7bd610c2
+
+tool.json: commit ac2343f89bc7939736d85f049ebe2beac571034a; upstream tools/browser/playwright/1.0.0/tool.json; SHA256 8b7fcf7708555f40a7b7570d558ff7bcf8d9ba72d5b3fc50434de76573e7ec4c
+
+browser_acquisition.py: commit ac2343f89bc7939736d85f049ebe2beac571034a; upstream src/web_listening/tool_registry/runners/browser_acquisition.py; SHA256 e52ed5c15e2176cfa218db80b9efe6c76cd071f94d8490e41046bf4e66c1c51f

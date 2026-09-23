@@ -959,8 +959,12 @@ class ManagementService:
             isinstance(value, str) and value.strip() for value in identity.values()
         )):
             raise ValueError("provider and model must both be absent or non-empty strings")
+        from climate_monitor.hermes_identity import load_snapshot
+        load_snapshot(self._run_dir(run_id), acquisition.get("hermes_snapshot"))
         binding = {
             "schema_version": "climate-meeting-worker-binding.v1",
+            "hermes_snapshot": acquisition.get("hermes_snapshot"),
+            "acquisition_binding_path": str(self._attempt_path(run_id, acquisition["attempt"]).resolve()),
             "acquisition_run_id": run_id,
             "acquisition_batch_id": acquisition["acquisition_batch_id"],
             "registry_database": acquisition["registry_database"],
@@ -1101,7 +1105,9 @@ class ManagementService:
             with _exclusive_lock_nowait(self._state_lock_path(binding)):
                 self._assert_no_startup_owner(binding)
                 run_dir = self._run_dir(run_id)
-                run_dir.mkdir(parents=False, exist_ok=False)
+                run_dir.mkdir(parents=False, exist_ok=False, mode=0o700)
+                from climate_monitor.hermes_identity import create_snapshot
+                binding["hermes_snapshot"] = create_snapshot(run_dir)
                 encoded = json.dumps(binding, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n"
                 _atomic_write(run_dir / "binding.json", encoded)
                 _atomic_write(self._attempt_path(run_id, 1), encoded)
@@ -1256,6 +1262,8 @@ class ManagementService:
             if not original_path.exists():
                 raise KeyError(f"run {run_id} not found")
             original = json.loads(original_path.read_text(encoding="utf-8"))
+            from climate_monitor.hermes_identity import load_snapshot
+            load_snapshot(self._run_dir(run_id), original.get("hermes_snapshot"))
             current = self.binding(run_id)
             result_path = self._run_dir(run_id) / f"attempt-{current['attempt']}-result.json"
             result = None

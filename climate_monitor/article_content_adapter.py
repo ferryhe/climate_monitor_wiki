@@ -371,9 +371,12 @@ def resolve_content_ref(content_ref, content_hash, *, output_dir=None) -> bytes:
 # Default public provider (AC-1)
 # ---------------------------------------------------------------------------
 
-def _runtime_service_type():
+def _runtime_service_type(reader_home=None):
     from web_listening.runtime.service import RuntimeService
 
+    if reader_home is not None or os.environ.get('CLIMATE_ACQUISITION_ATTEMPT'):
+        from climate_monitor.hermes_attempt_policy import reader_service
+        return reader_service(RuntimeService, reader_home)
     return RuntimeService
 
 
@@ -384,7 +387,7 @@ _BOUNDED_RETRIEVAL_LIMITATIONS = (
 )
 
 def _default_providers(
-    *, data_root: str | Path | None = None, site_key: str | None = None,
+    *, reader_home: str | None = None, data_root: str | Path | None = None, site_key: str | None = None,
     site_scope: Mapping[str, Any] | None = None, budget: Any | None = None,
 ) -> tuple[Callable[..., Any], ...]:
     """Resolve one URL through the pinned public persistent Runtime."""
@@ -435,7 +438,8 @@ def _default_providers(
                 Budgets(reserved_units, 8 * 1024 * 1024, seconds, attempt_limit),
             )
             caller_id = "climate-monitor"
-            runtime = _runtime_service_type().open(root)
+            runtime_type = _runtime_service_type(reader_home) if reader_home is not None else _runtime_service_type()
+            runtime = runtime_type.open(root)
             try:
                 try:
                     retrieval = runtime.retrieve(request, caller_id=caller_id)
@@ -691,6 +695,8 @@ def fetch_article_content(
     article_id: str,
     url: str,
     *,
+    data_root: str | Path | None = None,
+    reader_home: str | None = None,
     providers: Sequence[ProviderCallable] = (),
     snippet_input: str | None = None,
     budget: Any | None = None,
@@ -704,14 +710,17 @@ def fetch_article_content(
     A managed budgeted read resolves verified ref-only content before its exact
     provider output directory is no longer available to the caller.
     """
+    context = {}
+    if data_root is not None: context['data_root'] = data_root
+    if reader_home is not None: context['reader_home'] = reader_home
     if budget is not None:
         if providers:
             raise ValueError("managed article reads require the public Runtime URL fetch")
         providers = _default_providers(
-            site_key=site_key, site_scope=site_scope, budget=budget,
+            site_key=site_key, site_scope=site_scope, budget=budget, **context,
         )
     elif not providers:
-        providers = _default_providers()
+        providers = _default_providers(**context)
     if not url:
         return _unavailable_record(article_id=article_id, url=url, failure_reason="missing url").to_dict()
     if not providers:

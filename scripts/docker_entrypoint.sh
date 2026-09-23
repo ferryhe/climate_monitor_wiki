@@ -38,6 +38,44 @@ if [ -n "${CLIMATE_ACQUISITION_RUN_DIR:-}" ]; then
     mkdir -p "$CLIMATE_ACQUISITION_RUN_DIR"
 fi
 
+# Establish the private input home in both dashboard and headless deployments.
+# Walk directory descriptors; never chmod through a symlink or a foreign owner.
+if [ -n "${HERMES_HOME:-}" ] || { [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ] && [ -z "${HERMES_DASHBOARD_SOCKET:-}" ]; }; then
+    export HERMES_HOME="${HERMES_HOME:-/app/output/hermes}"
+    python -I -S - <<'PRIVATE_HOME'
+import os, stat, sys
+from pathlib import Path
+try:
+    path = Path(os.environ['HERMES_HOME'])
+    if not path.is_absolute() or '..' in path.parts or path == Path('/'):
+        raise ValueError()
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for index, name in enumerate(path.parts[1:]):
+            try:
+                os.mkdir(name, 0o700, dir_fd=fd)
+                os.fsync(fd)
+            except FileExistsError:
+                pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+            st = os.fstat(fd)
+            final = index == len(path.parts) - 2
+            if st.st_uid not in ({os.getuid()} if final else {0, os.getuid()}):
+                raise ValueError()
+            if final:
+                os.fchmod(fd, 0o700)
+                os.fsync(fd)
+            elif st.st_mode & 0o022 and not (st.st_uid == 0 and st.st_mode & stat.S_ISVTX):
+                raise ValueError()
+    finally:
+        os.close(fd)
+except Exception:
+    print('cannot establish private Hermes home', file=sys.stderr)
+    sys.exit(78)
+PRIVATE_HOME
+fi
+
 if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
     : "${CLIMATE_PUBLIC_ORIGIN:?trusted public HTTPS origin is required for Hermes OAuth callbacks}"
     python -c 'from climate_monitor.hermes_dashboard_server import trusted_public_origin; trusted_public_origin()'
@@ -58,7 +96,6 @@ if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
         HERMES_DASHBOARD_SESSION_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
     fi
     export HERMES_DASHBOARD_SESSION_TOKEN
-    mkdir -p "$HERMES_HOME"
     python -m climate_monitor.hermes_dashboard_server &
     hermes_pid=$!
     "$@" &

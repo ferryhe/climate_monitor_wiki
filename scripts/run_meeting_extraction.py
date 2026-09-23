@@ -21,21 +21,35 @@ from scripts.run_climate_monitor import (  # noqa: E402
 )
 
 
-def _extractor(provider: str, model: str):
+def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meeting_binding=None):
     help_text = None
 
     def invoke(request):
         nonlocal help_text
+        from climate_monitor.hermes_identity import inference_runtime
+        if not acquisition_binding_path:
+            raise ValueError("Hermes snapshot missing; start a fresh run")
+        if meeting_binding is not None:
+            path, acquisition = _linked_acquisition(meeting_binding)
+        else:
+            path = Path(acquisition_binding_path).resolve(strict=True)
+            acquisition = json.loads(path.read_text())
+        executable, environment, home = inference_runtime(
+            path.parent, acquisition.get("hermes_snapshot"), purpose="meetings",
+            source=f"climate-acquisition-{acquisition['run_id']}",
+        )
         if hashlib.sha256(request["article_body"].encode("utf-8")).hexdigest() != request["content_sha256"]:
             raise ValueError("meeting worker body hash mismatch")
         if help_text is None:
             try:
                 help_result = subprocess.run(
-                    ["hermes", "chat", "--help"], capture_output=True, text=True,
-                    encoding="utf-8", cwd=ROOT, timeout=30,
+                    [*(executable if isinstance(executable, list) else [executable]), "chat", "--help"], capture_output=True, text=True,
+                    encoding="utf-8", cwd=home, env=environment, timeout=30,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise RuntimeError("Hermes meeting extraction is unavailable") from exc
+            from climate_monitor.hermes_auth_state import verify_auth
+            verify_auth(home)
             if help_result.returncode:
                 raise RuntimeError("Hermes meeting extraction help probe failed")
             help_text = help_result.stdout
@@ -52,15 +66,40 @@ def _extractor(provider: str, model: str):
         command, stdin = _hermes_authoring_invocation(
             help_text, instruction, model=model, provider=provider,
         )
-        completed = subprocess.run(
-            command, input=stdin, capture_output=True, text=True, encoding="utf-8",
-            cwd=ROOT, timeout=300,
-        )
+        command[:1] = executable if isinstance(executable, list) else [executable]
+        from climate_monitor.hermes_identity import auth_execution
+        with auth_execution(home, require_identity=True) as auth_result:
+            completed = subprocess.run(
+                command, input=stdin, capture_output=True, text=True, encoding="utf-8",
+                cwd=home, env=environment, timeout=300,
+            )
+            auth_result["returncode"] = completed.returncode
         if completed.returncode or not completed.stdout.strip():
             raise ValueError("Hermes meeting response absent or failed")
         return _parse_hermes_quiet_response(completed.stdout, completed.stderr)
 
     return invoke
+
+
+def _linked_acquisition(binding):
+    # Execution needs a verifiable acquisition link; historical status readers
+    # do not use this worker contract.
+    try:
+        path = Path(binding['acquisition_binding_path']).resolve(strict=True)
+        acquisition = json.loads(path.read_text(encoding='utf-8'))
+        for meeting_key, acquisition_key in (
+                ('acquisition_run_id', 'run_id'), ('acquisition_batch_id', 'acquisition_batch_id'),
+                ('task_version', 'task_version'), ('registry_database', 'registry_database'),
+                ('hermes_snapshot', 'hermes_snapshot')):
+            if binding[meeting_key] != acquisition[acquisition_key]:
+                raise ValueError()
+        from climate_monitor.hermes_identity import load_snapshot
+        payload = load_snapshot(path.parent, binding['hermes_snapshot'])
+        if payload['source'] != f"climate-acquisition-{acquisition['run_id']}":
+            raise ValueError()
+        return path, acquisition
+    except (KeyError, TypeError, ValueError, OSError):
+        raise ValueError('meeting acquisition link missing or inconsistent; start a fresh run') from None
 
 
 def run(binding: dict) -> dict:
@@ -69,7 +108,7 @@ def run(binding: dict) -> dict:
         "meeting_attempt", "retry_failed", "task_version", "prompt_version", "prompt_sha256",
         "prompt_text", "retry_meeting_run_id",
     }
-    if (not required <= set(binding) <= required | {"provider", "model"}
+    if (not required <= set(binding) <= required | {"provider", "model", "acquisition_binding_path", "hermes_snapshot"}
             or binding.get("schema_version") != "climate-meeting-worker-binding.v1"):
         raise ValueError("invalid meeting worker binding")
     identity_fields = {"provider", "model"} & binding.keys()
@@ -80,11 +119,13 @@ def run(binding: dict) -> dict:
     prompt = str(binding["prompt_text"]).replace("\r\n", "\n").replace("\r", "\n")
     if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != binding["prompt_sha256"]:
         raise ValueError("meeting worker prompt hash mismatch")
+    _linked_acquisition(binding)
     return process_batch(
         binding["registry_database"], binding["acquisition_batch_id"],
         prompt_text=prompt, prompt_version=binding["prompt_version"],
         provider=binding.get("provider", ""), model=binding.get("model", ""),
-        extractor=_extractor(binding.get("provider", ""), binding.get("model", "")),
+        extractor=_extractor(binding.get("provider", ""), binding.get("model", ""),
+                             binding.get("acquisition_binding_path"), meeting_binding=binding),
         retry_failed=bool(binding["retry_failed"]),
         retry_meeting_run_id=binding["retry_meeting_run_id"],
         task_version=int(binding["task_version"]),
