@@ -9,6 +9,7 @@ import re
 import secrets
 import sqlite3
 import stat
+from climate_monitor.managed_runtime import retry_allowed
 import subprocess
 import sys
 import tempfile
@@ -833,6 +834,8 @@ class ManagementService:
                         raise RuntimeError(
                             f"managed acquisition state is already owned by run {path.name}"
                         ) from exc
+                from climate_monitor.managed_runtime import verify_acquisition_quiescent
+                verify_acquisition_quiescent(path)
                 result_path = path / f"attempt-{active['attempt']}-result.json"
                 if result_path.exists():
                     continue
@@ -1171,7 +1174,7 @@ class ManagementService:
                         "accepted": True, "run_id": run_id,
                         "attempt": binding["attempt"], "reconciled": True,
                     }
-                if not result.get("retryable"):
+                if not retry_allowed(result):
                     raise RuntimeError("acquisition attempt is terminal and non-retryable")
                 return None
 
@@ -1257,6 +1260,8 @@ class ManagementService:
                 raise
 
     def _resume_locked(self, run_id: str) -> dict[str, Any]:
+        from climate_monitor.managed_runtime import verify_acquisition_quiescent
+        verify_acquisition_quiescent(self._run_dir(run_id))
         with _exclusive_lock(self._run_dir(run_id) / ".run.lock"):
             original_path = self._run_dir(run_id) / "binding.json"
             if not original_path.exists():
@@ -1283,15 +1288,16 @@ class ManagementService:
                     age <= 300 or self._pid_is_alive(runtime.get("pid"))
                 ):
                     raise RuntimeError("acquisition attempt is already running")
+                raise RuntimeError("missing managed failure evidence; start a fresh run")
             else:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
-                if result.get("exit_code") != 0 and not result.get("retryable"):
+                if result.get("exit_code") != 0 and not retry_allowed(result):
                     raise RuntimeError("acquisition attempt is terminal and non-retryable")
             if Path(original["frozen_report_input"]).exists():
                 if result is not None:
                     if result.get("exit_code") == 0:
                         raise RuntimeError("report preparation is already complete")
-                    if not result.get("retryable") or result.get("resume_phase") != "report":
+                    if not retry_allowed(result) or result.get("resume_phase") != "report":
                         raise RuntimeError("frozen report run is terminal and non-retryable")
                 launched_at = _rfc3339(_utc_now())
                 if result is not None:
@@ -1423,7 +1429,7 @@ class ManagementService:
                 if result.get("resume_phase") == "report" and result.get("exit_code") != 0
                 else (
                     "terminal_partial"
-                    if result.get("retryable")
+                    if retry_allowed(result)
                     else ("completed" if result.get("exit_code") == 0 else "terminal_failure")
                 )
             )
@@ -1474,7 +1480,7 @@ class ManagementService:
             except (AcquisitionIncompleteError, FileNotFoundError, json.JSONDecodeError, ValueError):
                 pass
             if result and stage not in {"report_input_frozen", "report_completed", "report_failed"}:
-                stage = ("terminal_partial" if result.get("retryable")
+                stage = ("terminal_partial" if retry_allowed(result)
                          else ("completed" if result.get("exit_code") == 0 else "terminal_failure"))
         else:
             used_budget = None

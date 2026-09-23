@@ -1,4 +1,5 @@
 """Integration regressions against the installed public upstream contract."""
+from tests.managed_runtime_fixtures import verified_cleanup
 import json
 import subprocess
 from types import SimpleNamespace
@@ -239,7 +240,7 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
                 raise subprocess.TimeoutExpired(command, 30)
             if reply == 'help_unavailable':
                 raise FileNotFoundError('hermes')
-            return Namespace(returncode=2 if reply == 'help_failed' else 0,
+            return Namespace(cleanup={'verified': True}, returncode=2 if reply == 'help_failed' else 0,
                 stdout='--quiet' if reply == 'help_unknown' else (
                     '-q QUERY, --query QUERY\n--max-turns N\n--reasoning EFFORT\n--ignore-rules\n' + ('--query-file PATH\n' if capability == 'query-file' else '')), stderr='')
         assert (staging / 'v2_authoring_request.json').is_file()
@@ -282,15 +283,13 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
             assert payload['task'] == 'executive_summary'
             assert all(set(item) == {'url', 'title', 'summary', 'categories', 'keywords'} for item in payload['articles'])
             response = {'executive_summary': 'Climate supervision developments.'}
-        return Namespace(returncode=1 if reply == 'failed' else 0, stdout=('Warning: Unknown toolsets: none\n' + json.dumps(response) + '\n') if reply == 'valid' else
+        return Namespace(cleanup={'verified': True}, returncode=1 if reply == 'failed' else 0, stdout=('Warning: Unknown toolsets: none\n' + json.dumps(response) + '\n') if reply == 'valid' else
                          ('' if reply == 'absent' else '{}'), stderr='\nsession_id: 20260907_204029_4993a5\n')
     monkeypatch.setattr(monitor, '_run_prepare', tracked_prepare)
     monkeypatch.setattr(monitor, '_run_finalize', tracked_finalize)
     # Only the Hermes process is substituted. Prepare, request validation,
     # response validation and finalize execute the production implementation.
-    original_run = subprocess.run
-    monkeypatch.setattr(subprocess, 'run', lambda cmd, **kw:
-                        hermes(cmd, **kw) if cmd[0] == 'hermes' else original_run(cmd, **kw))
+    monkeypatch.setattr(monitor, 'run_managed', hermes)
     monkeypatch.setattr(sys, 'argv', ['run_climate_monitor.py', '--production-weekly',
         '--authoring-mode', 'run', '--model', 'gpt-6-astra', '--model-provider', 'openai-codex', '--report-date', '2026-09-07',
         '--repository-commit-sha', repository_commit_sha,
@@ -304,9 +303,10 @@ def test_production_cli_prepares_authors_serially_then_finalizes(tmp_path, monke
         assert events == ['prepare', 'help'] + ['author'] * 5 + ['finalize']
         assert list((tmp_path / 'sources').glob('climate-monitor-*.md'))
     else:
-        with pytest.raises(SystemExit):
+        from climate_monitor.managed_runtime import ManagedFailure
+        with pytest.raises((SystemExit, ManagedFailure)):
             monitor.main()
-        assert events == (['prepare', 'help'] if reply.startswith('help_') or capability == 'query' else ['prepare', 'help'] + ['author'] * 4)
+        assert events == (['prepare', 'help'] if reply.startswith('help_') or capability == 'query' else ['prepare', 'help', 'author'])
         assert not list((tmp_path / 'sources').glob('*.md'))
         assert not (staging / 'authoring_response.json').exists()
 
@@ -349,15 +349,14 @@ def serial_authoring_run(tmp_path, monkeypatch):
         '--state-dir', str(tmp_path / 'state'), '--wiki-dir', str(tmp_path / 'wiki'),
         '--no-sync', '--no-update-seen-state',
         '--article-evidence-loopback', 'scripts.hermes_job:dry_run_unavailable_provider'])
-    state = SimpleNamespace(calls=[], failed=set(), invalid=set(), crash=None,
-                            exclude=set(), executive_fail=False, executive_bullets=False,
+    state = SimpleNamespace(calls=[], failed=set(), timed_out=set(), invalid=set(), crash=None,
+                            exclude=set(), executive_fail=False, executive_bullets=False, executive_transient=False,
                             staging=staging, source=mp)
-    original_run = subprocess.run
+    from climate_monitor.managed_runtime import ManagedFailure
     def invoke(command, **kwargs):
-        if command[0] != 'hermes':
-            return original_run(command, **kwargs)
+        assert command[0] == 'hermes'
         if command[-1] == '--help':
-            return SimpleNamespace(returncode=0, stdout='--query-file --max-turns --reasoning --ignore-rules', stderr='')
+            return SimpleNamespace(cleanup={'verified': True}, returncode=0, stdout='--query-file --max-turns --reasoning --ignore-rules', stderr='')
         payload = json.loads(kwargs['input'].split('\nINPUT_JSON:\n', 1)[1])
         if payload['task'] == 'article':
             url = payload['article']['url']
@@ -365,6 +364,8 @@ def serial_authoring_run(tmp_path, monkeypatch):
             if url == state.crash:
                 raise KeyboardInterrupt()
             if url in state.failed:
+                raise ManagedFailure('transient_service', cleanup=verified_cleanup())
+            if url in state.timed_out:
                 raise subprocess.TimeoutExpired(command, kwargs['timeout'])
             # A URL invocation must not contain its neighbours' evidence.
             index = int(url.rsplit('-', 1)[1])
@@ -381,34 +382,44 @@ def serial_authoring_run(tmp_path, monkeypatch):
             state.calls.append('executive')
             assert 'evidence' not in payload
             assert all(article['url'] not in state.exclude for article in payload['articles'])
+            if state.executive_transient:
+                raise ManagedFailure('transient_service', cleanup=verified_cleanup())
             if state.executive_fail:
-                return SimpleNamespace(returncode=0, stdout='{}', stderr='\nsession_id: 20260908_100000_abcdef\n')
+                return SimpleNamespace(cleanup={'verified': True}, returncode=0, stdout='{}', stderr='\nsession_id: 20260908_100000_abcdef\n')
             raw = {'executive_summary': 'Insurance supervision findings address climate disclosure risk.'}
             if state.executive_bullets:
                 raw['executive_summary'] = '- Flood losses affect insurance pricing.\n- Climate scenarios affect reserves.'
-        return SimpleNamespace(returncode=0, stdout=json.dumps(raw), stderr='\nsession_id: 20260908_100000_abcdef\n')
-    monkeypatch.setattr(subprocess, 'run', invoke)
+        return SimpleNamespace(cleanup={'verified': True}, returncode=0, stdout=json.dumps(raw), stderr='\nsession_id: 20260908_100000_abcdef\n')
+    monkeypatch.setattr(monitor, 'run_managed', invoke)
     return state
 
 
-@pytest.mark.parametrize('failure_kind', ['timeout', 'invalid_response'])
+@pytest.mark.parametrize('failure_kind', ['transient', 'timeout', 'invalid_response'])
 def test_serial_url_failure_isolated_and_resume_skips_successes(serial_authoring_run, monkeypatch, failure_kind):
     run = serial_authoring_run
     url = 'https://www.wri.org/insights/climate-1'
-    (run.failed if failure_kind == 'timeout' else run.invalid).add(url)
-    with pytest.raises(SystemExit, match='URL authoring incomplete: 1 failed'):
+    from climate_monitor.managed_runtime import ManagedFailure
+    {'transient': run.failed, 'timeout': run.timed_out, 'invalid_response': run.invalid}[failure_kind].add(url)
+    with pytest.raises(ManagedFailure) as caught:
         monitor.main()
-    assert len(run.calls) == 3 and 'executive' not in run.calls
+    assert caught.value.evidence['retryable'] is (failure_kind == 'transient')
+    assert len(run.calls) == 2 and 'executive' not in run.calls
     assert not (run.staging / 'authoring_response.json').exists()
     assert not list((run.staging.parent / 'sources').glob('*.md'))
     bundle_before = (run.staging / 'bundle.json').read_bytes()
     saved = [json.loads(p.read_text()) for p in (run.staging / 'url_authoring').glob('*.json')
              if '.attempt-' not in p.name]
-    assert sorted(p['status'] for p in saved) == ['completed', 'completed', 'failed']
-    run.failed.clear(); run.invalid.clear(); run.calls.clear()
+    assert sorted(p['status'] for p in saved) == ['completed', 'failed']
+    run.failed.clear(); run.timed_out.clear(); run.invalid.clear(); run.calls.clear()
     monkeypatch.setattr(monitor, '_run_prepare', lambda *a: pytest.fail('resume must not reacquire evidence'))
+    if failure_kind != 'transient':
+        with pytest.raises(ManagedFailure):
+            monitor.main()
+        assert run.calls == []
+        assert (run.staging / 'bundle.json').read_bytes() == bundle_before
+        return
     monitor.main()
-    assert run.calls == [url, 'executive']
+    assert run.calls == [url, 'https://www.wri.org/insights/climate-2', 'executive']
     assert (run.staging / 'bundle.json').read_bytes() == bundle_before
     response = json.loads((run.staging / 'authoring_response.json').read_text())
     assert response['article_count'] == 3
@@ -418,29 +429,40 @@ def test_serial_url_failure_isolated_and_resume_skips_successes(serial_authoring
 def test_serial_process_interruption_retains_completed_urls(serial_authoring_run, monkeypatch):
     run = serial_authoring_run
     run.crash = 'https://www.wri.org/insights/climate-1'
-    with pytest.raises(KeyboardInterrupt):
+    from climate_monitor.managed_runtime import ManagedFailure
+    with pytest.raises(ManagedFailure) as caught:
         monitor.main()
+    assert caught.value.evidence['category'] == 'timeout_cancelled'
     assert len(run.calls) == 2
     first = run.calls[0]
     run.crash = None; run.calls.clear()
     monkeypatch.setattr(monitor, '_run_prepare', lambda *a: pytest.fail('prepare repeated'))
-    monitor.main()
-    assert first not in run.calls and len(run.calls) == 3
+    with pytest.raises(ManagedFailure):
+        monitor.main()
+    assert first not in run.calls and run.calls == []
 
 
-@pytest.mark.parametrize('failure_kind', ['missing_field', 'bullet_summary'])
+@pytest.mark.parametrize('failure_kind', ['transient', 'missing_field', 'bullet_summary'])
 def test_executive_failure_resumes_only_executive_and_excludes_irrelevant(serial_authoring_run, failure_kind):
     run = serial_authoring_run
     run.exclude.add('https://www.wri.org/insights/climate-0')
+    run.executive_transient = failure_kind == 'transient'
     run.executive_fail = failure_kind == 'missing_field'
     run.executive_bullets = failure_kind == 'bullet_summary'
-    with pytest.raises(SystemExit, match='executive authoring incomplete'):
+    from climate_monitor.managed_runtime import ManagedFailure
+    with pytest.raises(ManagedFailure) as caught:
         monitor.main()
+    assert caught.value.evidence['retryable'] is (failure_kind == 'transient')
     assert len(run.calls) == 4
     assert not (run.staging / 'authoring_response.json').exists()
     assert not list((run.staging.parent / 'sources').glob('*.md'))
-    run.executive_fail = run.executive_bullets = False
+    run.executive_fail = run.executive_bullets = run.executive_transient = False
     run.calls.clear()
+    if failure_kind != 'transient':
+        with pytest.raises(ManagedFailure):
+            monitor.main()
+        assert run.calls == []
+        return
     monitor.main()
     assert run.calls == ['executive']
     response = json.loads((run.staging / 'authoring_response.json').read_text())
@@ -454,7 +476,8 @@ def test_executive_failure_resumes_only_executive_and_excludes_irrelevant(serial
 def test_serial_resume_rejects_changed_source_before_model(serial_authoring_run):
     run = serial_authoring_run
     run.failed.add('https://www.wri.org/insights/climate-1')
-    with pytest.raises(SystemExit, match='URL authoring incomplete'):
+    from climate_monitor.managed_runtime import ManagedFailure
+    with pytest.raises(ManagedFailure):
         monitor.main()
     payload = json.loads(run.source.read_text());payload['discovered_items'][0]['summary'] = 'changed evidence'
     run.source.write_text(json.dumps(payload));run.calls.clear()
@@ -537,7 +560,8 @@ def test_serial_history_is_applied_before_authoring(serial_authoring_run, seen_c
 def test_serial_history_change_rejected_before_resuming_model(serial_authoring_run):
     run = serial_authoring_run
     run.failed.add('https://www.wri.org/insights/climate-1')
-    with pytest.raises(SystemExit, match='URL authoring incomplete'):
+    from climate_monitor.managed_runtime import ManagedFailure
+    with pytest.raises(ManagedFailure):
         monitor.main()
     state = run.staging.parent / 'state'
     state.mkdir(exist_ok=True)

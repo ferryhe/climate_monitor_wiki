@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import subprocess
+from climate_monitor.managed_runtime import run_managed
 
 from climate_monitor.hermes_identity import prepare_home, SNAPSHOT
 
@@ -154,8 +154,8 @@ def install_hooks(command, binding_path, binding, environment):
     env = environment
     interpreter = launch_command(home, '--budget-hook')
     from climate_monitor.hermes_runtime_inventory import VERIFY_TIMEOUT
-    verified = subprocess.run([*interpreter,
-        "--binding", str(binding_path), "--verify-runtime"], cwd=home, env=env,
+    verified = run_managed([*interpreter,
+        "--binding", str(binding_path), "--verify-runtime"], cwd=home, env=env, state_dir=home,
         capture_output=True, text=True, timeout=VERIFY_TIMEOUT)
     from climate_monitor.hermes_auth_state import verify_auth
     verify_auth(home)

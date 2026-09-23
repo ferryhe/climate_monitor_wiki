@@ -203,6 +203,11 @@ def execution(home, *, enabled=True, require_identity=False):
             try:
                 yield result
             finally:
+                import sys
+                from climate_monitor.managed_runtime import ManagedFailure
+                failure = sys.exc_info()[1]
+                if isinstance(failure, ManagedFailure) and not failure.evidence['recoverable']:
+                    raise failure  # Keep inflight ownership while descendants may retain credentials.
                 raw = _auth(secure_read(home / 'auth.json', private=True)[0])
                 if _digest(raw) != before:
                     if result['returncode'] != 0:

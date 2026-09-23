@@ -1,4 +1,5 @@
 """Request-boundary and durable-resume requirements, independent of live services."""
+from tests.managed_runtime_fixtures import verified_cleanup
 import hashlib
 import json
 from pathlib import Path
@@ -2770,7 +2771,7 @@ def test_report_process_receives_frozen_repository_commit(tmp_path, monkeypatch)
         kwargs["stdout"].write('{"report_sha256":"test-report-receipt"}')
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(runner, "run_managed", run)
     monkeypatch.setattr(runner, "_report_environment", lambda _provider: {})
     assert runner._run_report(tmp_path / "attempt-1.json", task_binding) == 0
     assert "--json" in observed["command"]
@@ -3046,7 +3047,7 @@ def test_frozen_report_resume_records_success_receipt_validation_failure(
     assert frozen_path.read_bytes() == frozen_bytes
 
 
-def test_frozen_report_resume_keeps_nonzero_report_exit_retryable(tmp_path, monkeypatch):
+def test_frozen_report_resume_makes_unknown_report_exit_terminal(tmp_path, monkeypatch):
     import scripts.run_agent_acquisition as runner
 
     _task_binding, path, frozen_path, _reportability = _frozen_report_resume(tmp_path)
@@ -3060,7 +3061,8 @@ def test_frozen_report_resume_keeps_nonzero_report_exit_retryable(tmp_path, monk
     assert runner._execute_attempt(path) == 1
     terminal = json.loads(path.with_name("attempt-1-result.json").read_text())
     assert terminal["exit_code"] == 1
-    assert terminal["retryable"] is True
+    assert terminal["retryable"] is False
+    assert terminal["failure"]["category"] == "internal"
     assert terminal["resume_phase"] == "report"
     assert terminal["outcome"] is None
     assert frozen_path.read_bytes() == frozen_bytes
@@ -3336,7 +3338,7 @@ def test_v2_attempt_installs_only_search_identity_plugin(tmp_path, monkeypatch, 
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr("climate_monitor.hermes_acquisition_hooks.run_managed", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
     ))
 
@@ -3391,7 +3393,7 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr("climate_monitor.hermes_acquisition_hooks.run_managed", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
     ))
     _environment, home = install_hooks(
@@ -3535,7 +3537,7 @@ def test_pinned_hermes_second_provider_request_contains_completed_search_id(
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr("climate_monitor.hermes_acquisition_hooks.run_managed", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
     ))
     environment, home = install_hooks(
@@ -3639,7 +3641,7 @@ def test_pinned_hermes_v3_tool_loop_exposes_handles_and_dispatches_receipts(
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr("climate_monitor.hermes_acquisition_hooks.run_managed", lambda *args, **kwargs: SimpleNamespace(
         returncode=0, stdout="climate acquisition hooks verified\n", stderr="",
     ))
     environment, _home = install_hooks(
@@ -4514,7 +4516,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
         return Process()
 
     monkeypatch.setattr(runner, "install_hooks", install)
-    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    monkeypatch.setattr(runner, "run_managed", lambda *a, **k: (popen(*a, **k), SimpleNamespace(returncode=0))[1])
     assert runner._invoke_hermes(
         ["hermes"], tmp_path / "response.txt", path, b,
         runner.time.monotonic() + 60,
@@ -4525,7 +4527,7 @@ def test_openai_api_credential_reaches_hermes_and_report_processes(tmp_path, mon
         assert command[command.index("--repository-commit-sha") + 1] == exact
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(runner.subprocess, "run", run)
+    monkeypatch.setattr(runner, "run_managed", run)
     assert runner._run_report(path, b) == 0
     for environment in environments.values():
         assert bool(environment["OPENAI_API_KEY"] == credential)
@@ -5026,11 +5028,10 @@ def test_irreducible_handle_inventory_stops_before_hermes_and_promotion(
     assert runner._execute_locked(binding_path) == 75
     terminal = json.loads(binding_path.with_name("attempt-1-result.json").read_text())
     progress = json.loads(binding_path.with_name("progress.json").read_text())
-    assert terminal["exit_code"] == 75 and terminal["retryable"] is True
-    assert "required_bytes=" in terminal["error"]
-    assert "allowed_bytes=128" in terminal["error"]
-    assert "handle_count=1" in terminal["error"]
-    assert progress["stage"] == "terminal_partial"
+    assert terminal["exit_code"] == 75 and terminal["retryable"] is False
+    assert terminal["failure"]["category"] == "frozen_input"
+    assert "start a fresh run" in terminal["error"]
+    assert progress["stage"] == "terminal_failure"
     assert "projection capacity" in progress["next_step"]
     assert discarded == [True]
     assert not binding_path.with_name("attempt-1-acquisition.json").exists()
@@ -5040,7 +5041,7 @@ def test_irreducible_handle_inventory_stops_before_hermes_and_promotion(
     assert json.loads(evidence_bytes) == context
     trusted = RequestBudget(ledger_path(task_binding), task_binding).result_handles()
     assert len(trusted) == 1 and trusted[0]["url"] == candidate["url"]
-    assert service.progress(task_binding["run_id"])["stage"] == "terminal_partial"
+    assert service.progress(task_binding["run_id"])["stage"] == "terminal_failure"
 
 
 def test_reportability_distinguishes_no_eligible_and_systemic_failure():
@@ -5113,8 +5114,9 @@ def test_primary_hermes_failure_retains_sanitized_process_error(tmp_path, monkey
     status = service.progress(b["run_id"])
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     for value in (status, result):
-        assert "No usable credentials found for provider 'openai-api'" in value["error"]
-        assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
+        assert "configuration or authentication failed" in value["error"]
+        assert "openai-api" not in value["error"]
+        assert "OPENAI_API_KEY" not in value["error"]
         assert "sk-test-secret" not in value["error"]
         assert "did not persist the bound acquisition session" not in value["error"]
     assert exit_code == 78
@@ -5149,14 +5151,14 @@ def test_failed_hermes_without_session_database_retains_process_error(
     status = service.progress(b["run_id"])
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     expected_root = (
-        "Hermes acquisition exceeded the bound runtime"
+        "Execution timed out or was cancelled"
         if exit_code == 124
-        else f"Hermes acquisition process exited with {exit_code}"
+        else "Hermes configuration or authentication failed"
     )
     for value in (status, result):
         assert expected_root in value["error"]
-        assert detail in value["error"]
-        assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
+        assert detail not in value["error"]
+        assert "OPENAI_API_KEY" not in value["error"]
         assert "sk-missing-db-secret" not in value["error"]
         assert "durable session database is unavailable" not in value["error"]
 
@@ -5202,8 +5204,9 @@ def test_structured_provider_credentials_are_redacted_from_result_and_progress(
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     status = service.progress(b["run_id"])
     for value in (result, status):
-        assert "No usable credentials found for provider 'openai-api'" in value["error"]
-        assert value["error"].count("[REDACTED]") >= len(fake_values)
+        assert "configuration or authentication failed" in value["error"]
+        assert "openai-api" not in value["error"]
+        assert "credential" not in value["error"].lower()
         assert not any(fake_value in value["error"] for fake_value in fake_values)
 
 
@@ -5264,15 +5267,17 @@ def test_feedback_hermes_failure_retains_sanitized_process_error(tmp_path, monke
     status = service.progress(b["run_id"])
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     for value in (status, result):
-        assert "Adaptive provider failed" in value["error"]
-        assert "OPENAI_API_KEY=[REDACTED]" in value["error"]
+        assert "Internal execution failure" in value["error"]
+        assert "Adaptive provider failed" not in value["error"]
+        assert "OPENAI_API_KEY" not in value["error"]
         assert "sk-feedback-secret" not in value["error"]
         assert "did not persist the bound acquisition session" not in value["error"]
     assert exit_code == 79
 
 
+@pytest.mark.parametrize("typed_failure", [False, True])
 def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, typed_failure,
 ):
     from test_issue94_management_console import _write_hermes_tool_events
     from climate_monitor.hermes_acquisition_hooks import attempt_home
@@ -5297,6 +5302,9 @@ def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
             "result": {"error": "provider stopped before post hook"},
         }])
         response_path.write_text("PRIMARY PROVIDER ROOT: upstream authentication failed")
+        if typed_failure:
+            from climate_monitor.managed_runtime import failure_for_exit
+            raise failure_for_exit(78, cleanup=verified_cleanup())
         return 78
 
     monkeypatch.setattr(runner, "_invoke_hermes", invoke)
@@ -5306,8 +5314,8 @@ def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     provenance = json.loads(path.with_name("attempt-1-tool-provenance.json").read_text())
     for value in (status, result):
-        assert "Hermes acquisition process exited with 78" in value["error"]
-        assert "PRIMARY PROVIDER ROOT: upstream authentication failed" in value["error"]
+        assert "configuration or authentication failed" in value["error"]
+        assert "PRIMARY PROVIDER ROOT" not in value["error"]
         assert "transcript lacks durable completion" not in value["error"]
     assert provenance["cumulative_actual"]["search_attempts"] == 1
     assert provenance["cumulative_actual"]["search_results"] == 0
@@ -5318,8 +5326,9 @@ def test_primary_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
     assert provenance["request_events"][0].get("completed") is not True
 
 
+@pytest.mark.parametrize("typed_failure", [False, True])
 def test_feedback_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, typed_failure,
 ):
     import sqlite3
 
@@ -5368,6 +5377,9 @@ def test_feedback_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
         finally:
             connection.close()
         response_path.write_text("ADAPTIVE PROVIDER ROOT: upstream authentication failed")
+        if typed_failure:
+            from climate_monitor.managed_runtime import failure_for_exit
+            raise failure_for_exit(79, cleanup=verified_cleanup())
         return 79
 
     monkeypatch.setattr(runner, "_invoke_hermes", invoke)
@@ -5383,8 +5395,8 @@ def test_feedback_nonzero_exit_keeps_root_and_charges_incomplete_transcript(
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     provenance = json.loads(path.with_name("attempt-1-tool-provenance.json").read_text())
     for value in (status, result):
-        assert "Hermes adaptive feedback process exited with 79" in value["error"]
-        assert "ADAPTIVE PROVIDER ROOT: upstream authentication failed" in value["error"]
+        assert "Internal execution failure" in value["error"]
+        assert "ADAPTIVE PROVIDER ROOT" not in value["error"]
         assert "transcript lacks durable completion" not in value["error"]
     assert provenance["cumulative_actual"]["fetch_attempts"] == 1
     assert provenance["cumulative_actual"]["runtime_seconds"] > 0
@@ -5432,8 +5444,8 @@ def test_primary_zero_exit_keeps_incomplete_transcript_validation_strict(
     status = service.progress(b["run_id"])
     result = json.loads(path.with_name("attempt-1-result.json").read_text())
     for value in (status, result):
-        assert "Trusted acquisition validation failed" in value["error"]
-        assert "Hermes tool transcript lacks durable completion" in value["error"]
+        assert "Frozen input contract failed; start a fresh run" == value["error"]
+        assert "Hermes tool transcript lacks durable completion" not in value["error"]
 
 
 def _exercise_blocked_search_precheck(
@@ -5756,10 +5768,12 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
     assert status["coverage"]["total_sources"] == 36
     assert status["coverage"]["incomplete_sources"] == 36
     for value in (status, result):
-        assert "OSError: network temporarily unavailable" in value["error"]
+        assert "OSError: network temporarily unavailable" not in value["error"]
+        assert "Internal execution failure" in value["error"]
     assert status["stage"] == "systemic_failure"
     assert result["outcome"] == "systemic_failure"
-    assert result["exit_code"] == 75 and result["retryable"] is True
+    assert result["exit_code"] == 75 and result["retryable"] is False
+    assert result["failure"]["category"] == "internal"
     assert result["execution_complete"] is False
     assert not Path(b["frozen_report_input"]).exists()
     with sqlite3.connect(b["registry_database"]) as connection:
@@ -5767,6 +5781,13 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
             "SELECT frozen_at FROM acquisition_batches WHERE batch_id = ?",
             (b["acquisition_batch_id"],),
         ).fetchone()[0] is None
+    with pytest.raises(RuntimeError, match='terminal'):
+        service.resume(b['run_id'])
+    # The remaining lineage assertions require explicit recoverable evidence,
+    # not an inference from arbitrary reader exception text.
+    from climate_monitor.managed_runtime import ManagedFailure
+    runner._write_result(path, exit_code=75, retryable=True, error=None,
+                         failure=ManagedFailure('transient_service', cleanup=verified_cleanup()))
     first_binding_bytes = path.read_bytes()
     first_acquisition_bytes = path.with_name("attempt-1-acquisition.json").read_bytes()
     first_result_bytes = path.with_name("attempt-1-result.json").read_bytes()

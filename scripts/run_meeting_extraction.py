@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from climate_monitor.managed_runtime import (ManagedFailure, run_managed, failure_for_exit,
+                                             failure_from_exception, verify_quiescent)
 from climate_monitor.meetings import process_batch  # noqa: E402
 from scripts.run_climate_monitor import (  # noqa: E402
     _hermes_authoring_invocation,
@@ -24,7 +26,7 @@ from scripts.run_climate_monitor import (  # noqa: E402
 def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meeting_binding=None):
     help_text = None
 
-    def invoke(request):
+    def execute(request):
         nonlocal help_text
         from climate_monitor.hermes_identity import inference_runtime
         if not acquisition_binding_path:
@@ -42,16 +44,16 @@ def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meet
             raise ValueError("meeting worker body hash mismatch")
         if help_text is None:
             try:
-                help_result = subprocess.run(
+                help_result = run_managed(
                     [*(executable if isinstance(executable, list) else [executable]), "chat", "--help"], capture_output=True, text=True,
-                    encoding="utf-8", cwd=home, env=environment, timeout=30,
+                    encoding="utf-8", cwd=home, env=environment, state_dir=home, timeout=30,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise RuntimeError("Hermes meeting extraction is unavailable") from exc
             from climate_monitor.hermes_auth_state import verify_auth
             verify_auth(home)
             if help_result.returncode:
-                raise RuntimeError("Hermes meeting extraction help probe failed")
+                raise failure_for_exit(help_result.returncode, cleanup=help_result.cleanup)
             help_text = help_result.stdout
         instruction = (
             request["prompt"]
@@ -69,14 +71,22 @@ def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meet
         command[:1] = executable if isinstance(executable, list) else [executable]
         from climate_monitor.hermes_identity import auth_execution
         with auth_execution(home, require_identity=True) as auth_result:
-            completed = subprocess.run(
+            completed = run_managed(
                 command, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                cwd=home, env=environment, timeout=300,
+                cwd=home, env=environment, state_dir=home, timeout=300,
             )
             auth_result["returncode"] = completed.returncode
-        if completed.returncode or not completed.stdout.strip():
-            raise ValueError("Hermes meeting response absent or failed")
+        if completed.returncode:
+            raise failure_for_exit(completed.returncode, cleanup=completed.cleanup)
+        if not completed.stdout.strip():
+            raise ManagedFailure('internal')
         return _parse_hermes_quiet_response(completed.stdout, completed.stderr)
+
+    def invoke(request):
+        try:
+            return execute(request)
+        except (Exception, KeyboardInterrupt, SystemExit) as exc:
+            raise failure_from_exception(exc, contract=isinstance(exc, ValueError)) from None
 
     return invoke
 
@@ -119,7 +129,9 @@ def run(binding: dict) -> dict:
     prompt = str(binding["prompt_text"]).replace("\r\n", "\n").replace("\r", "\n")
     if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != binding["prompt_sha256"]:
         raise ValueError("meeting worker prompt hash mismatch")
-    _linked_acquisition(binding)
+    acquisition_path, _ = _linked_acquisition(binding)
+    from climate_monitor.hermes_identity import SNAPSHOT
+    verify_quiescent(acquisition_path.parent / SNAPSHOT / 'meetings')
     return process_batch(
         binding["registry_database"], binding["acquisition_batch_id"],
         prompt_text=prompt, prompt_version=binding["prompt_version"],
@@ -136,11 +148,12 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binding", type=Path, required=True)
     args = parser.parse_args(argv)
-    binding = json.loads(args.binding.read_text(encoding="utf-8"))
     try:
+        binding = json.loads(args.binding.read_text(encoding="utf-8"))
         result = run(binding)
-    except Exception as exc:
-        result = {"status": "worker_failed", "error": f"{type(exc).__name__}: {str(exc)[:800]}"}
+    except (Exception, KeyboardInterrupt, SystemExit) as exc:
+        failure = failure_from_exception(exc, contract=isinstance(exc, ValueError))
+        result = {"status": "worker_failed", "error": str(failure), "failure": failure.evidence}
         code = 1
     else:
         code = 0 if result["status"] in {"succeeded", "no_content"} else 1

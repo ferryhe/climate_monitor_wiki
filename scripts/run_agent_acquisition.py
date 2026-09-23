@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from climate_monitor.managed_runtime import (ManagedFailure, run_managed, failure_for_exit,
+                                             failure_from_exception, read_failure, verify_acquisition_quiescent)
 from climate_monitor.management import (  # noqa: E402
     BINDING_SCHEMA,
     canonical_json_bytes,
@@ -2900,8 +2902,17 @@ def _write_result(
     execution_complete: bool | None = None, full_coverage: bool | None = None,
     outcome: str | None = None,
     reportability: Mapping[str, Any] | None = None,
+    failure: ManagedFailure | None = None,
 ) -> None:
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    if exit_code:
+        failure = failure or failure_for_exit(exit_code)
+        try:
+            verify_acquisition_quiescent(binding_path.parent)
+        except ManagedFailure as cleanup_failure:
+            failure = cleanup_failure
+        retryable = failure.evidence['retryable']
+        error = str(failure)
     result = {
         "schema_version": "climate-acquisition-attempt-result.v1", "run_id": binding["run_id"],
         "attempt": binding["attempt"], "finished_at": _now(), "exit_code": exit_code,
@@ -2909,10 +2920,11 @@ def _write_result(
         "execution_complete": execution_complete, "full_coverage": full_coverage,
         "outcome": outcome,
         "reportability": copy.deepcopy(reportability),
+        "failure": failure.evidence if failure else None,
     }
     path = binding_path.parent / f"attempt-{binding['attempt']}-result.json"
     _atomic_write(path, json.dumps(result, sort_keys=True, indent=2).encode("utf-8") + b"\n")
-    _write_runtime(binding_path, binding, state="finished", pid=None, error=error)
+    _write_runtime(binding_path, binding, state=("cleanup_failed" if failure and not failure.evidence["recoverable"] else "finished"), pid=None, error=error)
 
 
 def _store_readback_and_freeze(
@@ -3143,8 +3155,28 @@ def _run_report(
                 state_lock_descriptor, report_lock_descriptor,
             ) if descriptor is not None
         )
-        result = subprocess.run(command, **run_options)
+        try:
+            result = run_managed(command, state_dir=binding_path.parent, grace=5.0, **run_options)
+        except ManagedFailure as failure:
+            output.seek(0)
+            output.truncate()
+            output.write(json.dumps({'failure': failure.evidence}) + '\n')
+            return failure.evidence['returncode'] or 1
+    if result.returncode:
+        failure = _report_failure(binding_path, binding, result.returncode)
+        # Replace even malformed child stdout with bounded redacted evidence.
+        result_path.write_text(json.dumps({'failure': failure.evidence}) + '\n')
     return int(result.returncode)
+
+
+def _report_failure(binding_path, binding, code):
+    path = binding_path.parent / f"attempt-{binding['attempt']}-report-result.json"
+    try:
+        if path.stat().st_size > 4096:
+            raise ValueError()
+        return read_failure(json.loads(path.read_text()).get('failure'))
+    except (ValueError, OSError, AttributeError):
+        return failure_for_exit(code)
 
 
 def _validated_report_result(
@@ -3251,64 +3283,27 @@ def _invoke_hermes(
     from climate_monitor.hermes_identity import auth_execution
     with auth_execution(home, require_identity=True) as auth_result:
         with response_path.open("wb") as response:
-            process = subprocess.Popen(
-                command, cwd=home, stdin=subprocess.DEVNULL, stdout=response,
-                stderr=subprocess.STDOUT, env=environment,
-                close_fds=True,
-            )
-            _write_runtime(binding_path, binding, state="running", pid=process.pid)
-            while process.poll() is None:
-                if time.monotonic() >= deadline:
-                    process.kill()
-                    process.wait()
-                    return 124
-                _write_runtime(binding_path, binding, state="running", pid=process.pid)
+            def heartbeat(pid):
+                _write_runtime(binding_path, binding, state="running", pid=pid)
                 try:
                     _write_progress(binding_path, binding, stage="acquiring",
                                     events=_trusted_tool_events(binding))
                 except (OSError, sqlite3.Error, ValueError):
                     pass
-                time.sleep(1)
-        auth_result["returncode"] = process.wait()
-        return auth_result["returncode"]
+            completed = run_managed(
+                command, cwd=home, stdout=response, env=environment,
+                timeout=max(0, deadline - time.monotonic()), heartbeat=heartbeat,
+                state_dir=home,
+            )
+        auth_result["returncode"] = completed.returncode
+    if completed.returncode:
+        raise failure_for_exit(completed.returncode, cleanup=completed.cleanup)
+    return completed.returncode
 
 
 def _hermes_process_error(response_path: Path, exit_code: int, *, phase: str) -> str:
-    """Return one bounded operator-visible error without exposing credentials."""
-    base = (
-        f"Hermes {phase} exceeded the bound runtime"
-        if exit_code == 124
-        else f"Hermes {phase} process exited with {exit_code}"
-    )
-    try:
-        with response_path.open("rb") as response:
-            response.seek(0, os.SEEK_END)
-            response.seek(max(0, response.tell() - 2000))
-            detail = response.read().decode("utf-8", errors="replace")
-    except OSError:
-        return base
-    sensitive_names = {name for names in _PROVIDER_ENV.values() for name in names}
-    for name in sensitive_names:
-        value = os.environ.get(name)
-        if value:
-            detail = detail.replace(value, "[REDACTED]")
-    detail = re.sub(
-        r'''(?ix)
-        (?P<quote>["']?)
-        (?P<key>[a-z0-9_]*(?:api_key|token|secret|password))
-        (?P=quote)\s*[:=]\s*
-        (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)
-        ''',
-        lambda match: (
-            f"{match.group('quote')}{match.group('key')}"
-            f"{match.group('quote')}=[REDACTED]"
-        ),
-        detail,
-    )
-    detail = re.sub(r"(?i)\b(authorization\s*[:=]\s*)(?:bearer\s+)?\S+", r"\1[REDACTED]", detail)
-    detail = re.sub(r"\bsk-[A-Za-z0-9_-]{4,}\b", "[REDACTED]", detail)
-    detail = " ".join(detail.split())[-1000:]
-    return f"{base}: {detail}" if detail else base
+    """Never promote arbitrary child output into operator diagnostics."""
+    return str(failure_for_exit(exit_code))
 
 
 def _adaptive_feedback_prompt(
@@ -3367,11 +3362,12 @@ def _resume_frozen_report(
     )
     if report_exit:
         _discard_controlled_site_checkpoints(binding)
-        error = f"existing report path exited with {report_exit}"
-        _write_result(binding_path, exit_code=report_exit, retryable=True, error=error,
-                      resume_phase="report")
+        failure = _report_failure(binding_path, binding, report_exit)
+        error = str(failure)
+        _write_result(binding_path, exit_code=report_exit, retryable=False, error=error,
+                      resume_phase="report", failure=failure)
         _write_progress(binding_path, binding, stage="report_failed", error=error,
-                        next_step="resume report authoring from the exact frozen input")
+                        next_step=str(failure))
         return report_exit
     report_result = _validated_report_result(binding_path, binding)
     final_reportability = _final_reportability(reportability, report_result)
@@ -3423,8 +3419,10 @@ def _execute_attempt(
         )
     except Exception as exc:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Trusted acquisition validation failed: {type(exc).__name__}: {exc}"
-        _write_result(binding_path, exit_code=65, retryable=False, error=error)
+        failure = failure_from_exception(exc, contract=isinstance(exc, ValueError))
+        error = str(failure)
+        _write_result(binding_path, exit_code=65, retryable=False, error=error,
+                      failure=failure_from_exception(exc, contract=isinstance(exc, ValueError)))
         _write_progress(
             binding_path, binding, stage="terminal_failure", error=error,
             next_step="inspect evidence and start a corrected new run",
@@ -3480,10 +3478,11 @@ def _execute_attempt(
             prior_actual=prior_usage,
         )
         _enforce_cumulative_budgets(binding, site_provenance["cumulative_actual"])
-    except AcquisitionBudgetError as exc:
+    except AcquisitionBudgetError:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Immutable acquisition budget exhausted: {exc}"
-        _write_result(binding_path, exit_code=65, retryable=False, error=error)
+        failure = ManagedFailure('frozen_input')
+        error = str(failure)
+        _write_result(binding_path, exit_code=65, retryable=False, error=error, failure=failure)
         _write_progress(
             binding_path, binding, stage="terminal_failure", error=error,
             next_step="start a new run with a revised immutable configuration",
@@ -3491,15 +3490,18 @@ def _execute_attempt(
         return 65
     except AcquisitionIncompleteError as exc:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Acquisition remains incomplete: {exc}"
-        _write_result(binding_path, exit_code=75, retryable=True, error=error)
-        _write_progress(binding_path, binding, stage="terminal_partial", error=error,
-                        next_step="restore controlled acquisition and resume the frozen run")
+        error = str(ManagedFailure('frozen_input'))
+        _write_result(binding_path, exit_code=75, retryable=False, error=error,
+                      failure=ManagedFailure('frozen_input'))
+        _write_progress(binding_path, binding, stage="terminal_failure", error=error,
+                        next_step="inspect the bounded failure receipt")
         return 75
     except Exception as exc:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Trusted acquisition validation failed: {type(exc).__name__}: {exc}"
-        _write_result(binding_path, exit_code=65, retryable=False, error=error)
+        failure = failure_from_exception(exc, contract=isinstance(exc, ValueError))
+        error = str(failure)
+        _write_result(binding_path, exit_code=65, retryable=False, error=error,
+                      failure=failure_from_exception(exc, contract=isinstance(exc, ValueError)))
         _write_progress(binding_path, binding, stage="terminal_failure", error=error,
                         next_step="inspect evidence and start a corrected new run")
         return 65
@@ -3527,13 +3529,13 @@ def _execute_attempt(
         )
     except AcquisitionIncompleteError as exc:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Acquisition remains incomplete: {exc}"
-        _write_result(binding_path, exit_code=75, retryable=True, error=error)
+        error = str(ManagedFailure('frozen_input'))
+        _write_result(binding_path, exit_code=75, retryable=False, error=error,
+                      failure=ManagedFailure('frozen_input'))
         _write_progress(
-            binding_path, binding, stage="terminal_partial", error=error,
+            binding_path, binding, stage="terminal_failure", error=error,
             next_step=(
-                "correct the governed candidate projection capacity before "
-                "resuming the complete unchanged inventory"
+                "correct the governed candidate projection capacity; start a fresh run"
             ),
         )
         return 75
@@ -3564,9 +3566,12 @@ def _execute_attempt(
     command = _hermes_command(hermes, binding, prompt_path, runtime_seconds=remaining_runtime)
     _write_progress(binding_path, binding, stage="acquiring")
     try:
-        exit_code = _invoke_hermes(
-            command, response_path, binding_path, binding, deadline
-        )
+        invocation_failure = None
+        try:
+            exit_code = _invoke_hermes(command, response_path, binding_path, binding, deadline)
+        except ManagedFailure as exc:
+            invocation_failure = exc
+            exit_code = exc.evidence['returncode'] or (124 if exc.evidence['category'] == 'timeout_cancelled' else 1)
         if exit_code:
             trusted_events = _failed_invocation_tool_events(binding)
             invocation_provenance = _persist_tool_provenance(
@@ -3579,15 +3584,15 @@ def _execute_attempt(
             )
         if exit_code == 124:
             _discard_controlled_site_checkpoints(binding)
-            error = _hermes_process_error(response_path, exit_code, phase="acquisition")
-            _write_result(binding_path, exit_code=124, retryable=True, error=error)
-            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
+            error = str(invocation_failure) if invocation_failure else _hermes_process_error(response_path, exit_code, phase="acquisition")
+            _write_result(binding_path, exit_code=124, retryable=False, error=error, failure=invocation_failure)
+            _write_progress(binding_path, binding, stage="terminal_failure", error=error, next_step="inspect the bounded failure receipt")
             return 124
         if exit_code:
             _discard_controlled_site_checkpoints(binding)
-            error = _hermes_process_error(response_path, exit_code, phase="acquisition")
-            _write_result(binding_path, exit_code=exit_code, retryable=True, error=error)
-            _write_progress(binding_path, binding, stage="retryable_failure", error=error, next_step="resume the same frozen run")
+            error = str(invocation_failure) if invocation_failure else _hermes_process_error(response_path, exit_code, phase="acquisition")
+            _write_result(binding_path, exit_code=exit_code, retryable=False, error=error, failure=invocation_failure)
+            _write_progress(binding_path, binding, stage="terminal_failure", error=error, next_step="inspect the bounded failure receipt")
             return exit_code
         candidate_payload = None
         if not candidate_handle_protocol(binding):
@@ -3649,9 +3654,14 @@ def _execute_attempt(
                 hermes, binding, feedback_path,
                 runtime_seconds=max(1, int(deadline - time.monotonic())),
             )
-            feedback_exit = _invoke_hermes(
-                feedback_command, feedback_response, binding_path, binding, deadline
-            )
+            feedback_failure = None
+            try:
+                feedback_exit = _invoke_hermes(
+                    feedback_command, feedback_response, binding_path, binding, deadline,
+                )
+            except ManagedFailure as exc:
+                feedback_failure = exc
+                feedback_exit = exc.evidence['returncode'] or (124 if exc.evidence['category'] == 'timeout_cancelled' else 1)
             if feedback_exit:
                 second_events = _failed_invocation_tool_events(binding)
                 trusted_events = _merge_tool_event_snapshots(
@@ -3667,16 +3677,14 @@ def _execute_attempt(
                     binding, feedback_provenance["cumulative_actual"]
                 )
                 _discard_controlled_site_checkpoints(binding)
-                error = _hermes_process_error(
-                    feedback_response, feedback_exit, phase="adaptive feedback"
-                )
+                error = str(feedback_failure) if feedback_failure else _hermes_process_error(feedback_response, feedback_exit, phase="feedback")
                 _write_result(
-                    binding_path, exit_code=feedback_exit, retryable=True,
-                    error=error,
+                    binding_path, exit_code=feedback_exit, retryable=False,
+                    error=error, failure=feedback_failure,
                 )
                 _write_progress(
-                    binding_path, binding, stage="retryable_failure", error=error,
-                    next_step="resume the same frozen run", events=all_events,
+                    binding_path, binding, stage="terminal_failure", error=error,
+                    next_step="inspect the bounded failure receipt", events=all_events,
                 )
                 return feedback_exit
             if feedback_exit == 0:
@@ -3811,18 +3819,16 @@ def _execute_attempt(
                     next_step="retain the truthful no-report outcome", events=all_events,
                 )
                 return 0
-            error = "Acquisition stopped after a systemic reader failure"
-            if reportability["limitations"]:
-                error += ": " + reportability["limitations"][-1]
+            error = str(ManagedFailure('internal'))
             _discard_controlled_site_checkpoints(binding)
             _write_result(
-                binding_path, exit_code=75, retryable=True, error=error,
+                binding_path, exit_code=75, retryable=False, error=error,
                 execution_complete=False, full_coverage=False,
                 outcome=reportability["outcome"], reportability=reportability,
             )
             _write_progress(
                 binding_path, binding, stage="systemic_failure", error=error,
-                next_step="resume the same frozen run after reader service recovers",
+                next_step="inspect the bounded failure receipt",
                 events=all_events,
             )
             return 75
@@ -3835,11 +3841,12 @@ def _execute_attempt(
         )
         if report_exit:
             _discard_controlled_site_checkpoints(binding)
-            error = f"existing report path exited with {report_exit}"
-            _write_result(binding_path, exit_code=report_exit, retryable=True, error=error,
-                          resume_phase="report")
+            failure = _report_failure(binding_path, binding, report_exit)
+            error = str(failure)
+            _write_result(binding_path, exit_code=report_exit, retryable=False, error=error,
+                          resume_phase="report", failure=failure)
             _write_progress(binding_path, binding, stage="report_failed", error=error,
-                            next_step="resume report authoring from the exact frozen input",
+                            next_step=str(failure),
                             events=all_events)
             return report_exit
         report_result = _validated_report_result(binding_path, binding)
@@ -3863,10 +3870,11 @@ def _execute_attempt(
             events=all_events,
         )
         return 0
-    except AcquisitionBudgetError as exc:
+    except AcquisitionBudgetError:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Immutable acquisition budget exhausted: {exc}"
-        _write_result(binding_path, exit_code=65, retryable=False, error=error)
+        failure = ManagedFailure('frozen_input')
+        error = str(failure)
+        _write_result(binding_path, exit_code=65, retryable=False, error=error, failure=failure)
         _write_progress(
             binding_path, binding, stage="terminal_failure", error=error,
             next_step="start a new run with a revised immutable configuration",
@@ -3874,14 +3882,17 @@ def _execute_attempt(
         return 65
     except AcquisitionIncompleteError as exc:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Acquisition remains incomplete: {exc}"
-        _write_result(binding_path, exit_code=75, retryable=True, error=error)
-        _write_progress(binding_path, binding, stage="terminal_partial", error=error, next_step="resume incomplete or retryable evidence")
+        error = str(ManagedFailure('frozen_input'))
+        _write_result(binding_path, exit_code=75, retryable=False, error=error,
+                      failure=ManagedFailure('frozen_input'))
+        _write_progress(binding_path, binding, stage="terminal_failure", error=error, next_step="inspect the bounded failure receipt")
         return 75
     except Exception as exc:
         _discard_controlled_site_checkpoints(binding)
-        error = f"Trusted acquisition validation failed: {type(exc).__name__}: {exc}"
-        _write_result(binding_path, exit_code=65, retryable=False, error=error)
+        failure = failure_from_exception(exc, contract=isinstance(exc, ValueError))
+        error = str(failure)
+        _write_result(binding_path, exit_code=65, retryable=False, error=error,
+                      failure=failure_from_exception(exc, contract=isinstance(exc, ValueError)))
         _write_progress(binding_path, binding, stage="terminal_failure", error=error, next_step="inspect evidence and start a corrected new run")
         return 65
 
@@ -3895,6 +3906,7 @@ def execute(binding_path: Path) -> int:
     from climate_monitor.hermes_identity import load_snapshot
     load_snapshot(resolved.parent, binding.get("hermes_snapshot"))
     with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
+        verify_acquisition_quiescent(resolved.parent)
         return _execute_locked(resolved, state_lock_descriptor=descriptor)
 
 
@@ -3908,7 +3920,12 @@ def main() -> int:
         result = ManagementService.from_environment().start(trigger="scheduled")
         print(json.dumps(result, sort_keys=True))
         return 0
-    return execute(args.binding)
+    try:
+        return execute(args.binding)
+    except (Exception, KeyboardInterrupt) as exc:
+        failure = failure_from_exception(exc, contract=isinstance(exc, ValueError))
+        _write_result(args.binding, exit_code=1, retryable=False, error=str(failure), failure=failure)
+        return 1
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from climate_monitor.managed_runtime import (ManagedFailure, run_managed, failure_for_exit,
+                                             failure_from_exception, read_failure)
 from climate_monitor.orchestrator import run_monitor, read_candidate_history, resolve_seen_urls_path
 from climate_monitor.config import load_run_config
 from climate_monitor.report_writer import render_acquisition_report
@@ -1689,6 +1691,10 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
     prior = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     if prior and prior.get("input_sha256") != identity:
         raise SystemExit("authoring checkpoint input changed; use fresh staging")
+    if prior.get('status') == 'failed':
+        failure = read_failure(prior.get('failure'))
+        if not failure.evidence['retryable']:
+            raise failure
     if prior.get("status") == "completed":
         # Saved managed output still requires its bound runtime and identity.
         if getattr(args, 'task_binding', ''):
@@ -1723,24 +1729,31 @@ def _checkpointed_authoring(path, instruction, *, args, help_stdout, validate, r
         command[:1] = executable if isinstance(executable, list) else [executable]
         from climate_monitor.hermes_identity import auth_execution
         with auth_execution(home, enabled=bool(getattr(args, "task_binding", "")), require_identity=True) as auth_result:
-            completed = subprocess.run(command, input=stdin, text=True, encoding="utf-8",
-                capture_output=True, cwd=home, timeout=args.authoring_timeout, env=environment)
+            completed = run_managed(command, input=stdin, text=True, encoding="utf-8",
+                capture_output=True, cwd=home, timeout=args.authoring_timeout, env=environment,
+                state_dir=home if getattr(args, "task_binding", "") else None)
             auth_result["returncode"] = completed.returncode
-        diagnostic = {"returncode": completed.returncode, "stdout": completed.stdout,
-                      "stderr": completed.stderr, "request_sha256": record["request_sha256"],
+        diagnostic = {"returncode": completed.returncode, "cleanup": completed.cleanup,
+                      "request_sha256": record["request_sha256"],
                       "seconds": round(time.monotonic() - started, 3)}
+        if completed.returncode:
+            diagnostic["failure"] = failure_for_exit(completed.returncode, cleanup=completed.cleanup).evidence
         _write_atomic(path.with_suffix(f".attempt-{record['attempt']}.json"), _canonical_bytes(diagnostic))
-        if completed.returncode or not completed.stdout.strip():
-            raise ValueError("Hermes authoring response absent or failed")
+        if completed.returncode:
+            raise failure_for_exit(completed.returncode, cleanup=completed.cleanup)
+        if not completed.stdout.strip():
+            raise ManagedFailure('internal')
         phase = "parse"
         raw = _parse_hermes_quiet_response(completed.stdout, completed.stderr)
         phase = "validate"
         result = validate(raw)
-    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError, KeyError) as exc:
-        record.update(status="failed", error_stage=phase, error_type=type(exc).__name__, error=str(exc),
+    except (Exception, KeyboardInterrupt) as exc:
+        failure = failure_from_exception(exc)
+        record.update(status="failed", error_stage=phase, error_type="ManagedFailure",
+                      error=str(failure), failure=failure.evidence,
                       seconds=round(time.monotonic() - started, 3))
         _write_atomic(path, _canonical_bytes(record))
-        raise ValueError(f"authoring item failed: {type(exc).__name__}") from exc
+        raise failure from None
     record.update(status="completed", response=raw, seconds=round(time.monotonic() - started, 3))
     _write_atomic(path, _canonical_bytes(record))
     return result
@@ -1830,15 +1843,16 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
     constraints["disallowed_keywords"] = sorted(constraints["disallowed_keywords"])
     try:
         executable, environment, home = _managed_inference_runtime(args)
-        help_result = subprocess.run([*(executable if isinstance(executable, list) else [executable]), "chat", "--help"], text=True,
-                                     capture_output=True, cwd=home, env=environment, timeout=30)
+        help_result = run_managed([*(executable if isinstance(executable, list) else [executable]), "chat", "--help"], text=True,
+                                     capture_output=True, cwd=home, env=environment, timeout=30,
+                                     state_dir=home if getattr(args, "task_binding", "") else None)
         if getattr(args, "task_binding", ""):
             from climate_monitor.hermes_auth_state import verify_auth
             verify_auth(home)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SystemExit("Hermes authoring capabilities unavailable") from exc
     if help_result.returncode:
-        raise SystemExit("Hermes authoring capabilities unavailable")
+        raise failure_for_exit(help_result.returncode, cleanup=help_result.cleanup)
     _hermes_authoring_invocation(help_result.stdout, "", model=args.model, provider=args.model_provider)
     frozen_prompts = bundle.get("authoring_prompts") or {}
     article_component = _loaded_authoring_component(
@@ -2206,4 +2220,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if '--task-binding' in sys.argv:
+        try:
+            main()
+        except (Exception, SystemExit, KeyboardInterrupt) as exc:
+            if isinstance(exc, SystemExit) and exc.code in (None, 0):
+                raise
+            failure = failure_from_exception(exc, contract=isinstance(exc, (ValueError, SystemExit)))
+            print(json.dumps({'failure': failure.evidence}, sort_keys=True))
+            raise SystemExit(1) from None
+    else:
+        main()

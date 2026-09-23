@@ -1,4 +1,5 @@
 """Issue #139: defaults apply at new-run boundaries, never at resume."""
+from tests.managed_runtime_fixtures import verified_cleanup
 import copy
 import hashlib
 import json
@@ -100,7 +101,7 @@ def test_legacy_resume_preserves_override_and_original_bytes(tmp_path):
     original = json.dumps(binding).encode()
     (run_dir / 'binding.json').write_bytes(original)
     (run_dir / 'attempt-1.json').write_bytes(original)
-    (run_dir / 'attempt-1-result.json').write_text(json.dumps({'exit_code': 75, 'retryable': True}))
+    (run_dir / 'attempt-1-result.json').write_text(json.dumps({'exit_code': 75, 'retryable': True, 'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()}}))
     changed = store.load()['definition']
     changed['parameters'].update(provider='openai-api', model='changed')
     store.save(changed, expected_version=1, actor='operator')
@@ -155,7 +156,7 @@ def test_defaults_reach_hermes_and_report_commands(tmp_path, monkeypatch):
     command = runner._hermes_command('hermes', binding, tmp_path / 'prompt')
     assert '--provider' not in command and '--model' not in command
     calls = []
-    monkeypatch.setattr(runner.subprocess, 'run', lambda command, **k: calls.append(command) or type('Result', (), {'returncode': 0})())
+    monkeypatch.setattr(runner, 'run_managed', lambda command, **k: calls.append(command) or type('Result', (), {'returncode': 0})())
     assert runner._run_report(path, binding) == 0
     assert '--model-provider' not in calls[0] and '--model' not in calls[0]
     monkeypatch.setenv('HERMES_INFERENCE_PROVIDER', 'openai-api')
@@ -194,7 +195,8 @@ def test_manual_retry_reuses_persisted_failed_identity_after_active_disable(tmp_
 
     def failing_extractor(*args, **kwargs):
         def fail(request):
-            raise ValueError('temporary extraction failure')
+            from climate_monitor.managed_runtime import ManagedFailure
+            raise ManagedFailure('transient_service', cleanup=verified_cleanup())
         return fail
 
     monkeypatch.setattr(worker, '_extractor', failing_extractor)
@@ -264,11 +266,11 @@ def test_managed_report_authoring_omits_flags_despite_cli_and_ambient_identity(t
         commands.append(command)
         auth = Path(kwargs['cwd']) / 'auth.json'
         auth.write_text(json.dumps({'providers': {'test': {'refresh_token': __import__('secrets').token_hex(24)}}}))
-        return SimpleNamespace(returncode=0, stderr='session_id: 20260908_120234_3b2f4b\n', stdout=json.dumps({
+        return SimpleNamespace(returncode=0, cleanup={'verified': True}, stderr='session_id: 20260908_120234_3b2f4b\n', stdout=json.dumps({
             'climate_related': True, 'actuarial_related': False, 'summary': '',
             'summary_basis': 'none', 'evidence_hash': None, 'categories': [], 'keywords': []}))
 
-    monkeypatch.setattr(subprocess, 'run', hermes)
+    monkeypatch.setattr(monitor, 'run_managed', hermes)
     monkeypatch.setenv('HERMES_INFERENCE_PROVIDER', 'ambient-provider')
     monkeypatch.setenv('HERMES_INFERENCE_MODEL', 'ambient-model')
     args = SimpleNamespace(staging_dir=str(tmp_path), task_binding=str(binding_path),
@@ -439,7 +441,8 @@ def test_identity_pair_process_rejects_partial_persisted_retry_or_recovery(tmp_p
     database = _database(tmp_path, ['Meeting evidence'])
 
     def fail(request):
-        raise ValueError('temporary extraction failure')
+        from climate_monitor.managed_runtime import ManagedFailure
+        raise ManagedFailure('transient_service', cleanup=verified_cleanup())
 
     failed = process_batch(database, 'batch', prompt_text='prompt', prompt_version='v1',
                            provider='legacy-provider', model='legacy-model', extractor=fail)
@@ -447,7 +450,8 @@ def test_identity_pair_process_rejects_partial_persisted_retry_or_recovery(tmp_p
     with sqlite3.connect(database) as connection:
         connection.execute(f"UPDATE meeting_runs SET {missing}='', status=?",
                            ('failed' if retry else 'running',))
-    with pytest.raises(ValueError, match='provider and model'):
+    message = 'provider and model' if retry else 'interrupted meeting execution.*fresh run'
+    with pytest.raises(ValueError, match=message):
         process_batch(database, 'batch', prompt_text='prompt', prompt_version='v1',
                       provider='', model='', retry_failed=retry,
                       retry_meeting_run_id=failed['meeting_run_id'] if retry else None,
@@ -531,7 +535,7 @@ def ambient_route_installation(tmp_path, monkeypatch):
         # Only the external Hermes hook-runtime verifier is stubbed.
         # The installer, generated files, argv and child environment are real.
         with monkeypatch.context() as verifier:
-            verifier.setattr(hooks.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+            verifier.setattr(hooks, 'run_managed', lambda *a, **k: SimpleNamespace(
                 returncode=0, stdout='climate acquisition hooks verified\n', stderr=''))
             child_env, home = hooks.install_hooks(command, binding_path, binding, environment)
         return command, child_env, home, expected_route

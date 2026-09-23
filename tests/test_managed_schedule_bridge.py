@@ -1,3 +1,4 @@
+from tests.managed_runtime_fixtures import verified_cleanup
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -207,7 +208,7 @@ def test_explicit_recovery_resumes_same_run_and_carries_exact_terminal(
     }
     (run_dir / 'attempt-1-result.json').write_text(json.dumps({
         'run_id': 'scheduled-run', 'attempt': 1, 'exit_code': 75,
-        'retryable': True, 'outcome': 'systemic_failure',
+        'retryable': True, 'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()}, 'outcome': 'systemic_failure',
     }))
     current = dict(immutable)
     resume_calls = []

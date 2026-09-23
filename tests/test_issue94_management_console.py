@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.managed_runtime_fixtures import verified_cleanup
 
 import hashlib
 import json
@@ -598,7 +599,7 @@ def test_new_run_freezes_binding_and_resume_reuses_it(tmp_path):
     store.save(changed, expected_version=1, actor="operator")
     (service._run_dir(started["run_id"]) / "attempt-1-result.json").write_text(json.dumps({
         "schema_version": "climate-acquisition-attempt-result.v1", "run_id": started["run_id"],
-        "attempt": 1, "exit_code": 75, "retryable": True,
+        "attempt": 1, "exit_code": 75, "retryable": True, "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()},
         "finished_at": "2026-09-07T00:01:00Z", "error": "temporary",
     }))
     resumed = service.attach_or_resume(started["run_id"])
@@ -624,14 +625,14 @@ def test_running_attempt_is_not_resumed_and_attempts_sort_numerically(tmp_path):
         (run_dir / f"attempt-{attempt}-result.json").write_text(json.dumps({
             "schema_version": "climate-acquisition-attempt-result.v1",
             "run_id": started["run_id"], "attempt": attempt, "exit_code": 75,
-            "retryable": True, "finished_at": "2026-09-10T08:00:00Z", "error": "temporary",
+            "retryable": True, "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()}, "finished_at": "2026-09-10T08:00:00Z", "error": "temporary",
         }))
         if attempt < 11:
             assert service.resume(started["run_id"])["attempt"] == attempt + 1
     assert service.binding(started["run_id"])["attempt"] == 11
 
 
-def test_attach_or_resume_stale_dead_attempt_advances_once(tmp_path, monkeypatch):
+def test_attach_or_resume_stale_dead_attempt_requires_failure_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
     store = _store(tmp_path)
     store.save(_definition(tmp_path), actor="operator")
@@ -647,12 +648,10 @@ def test_attach_or_resume_stale_dead_attempt_advances_once(tmp_path, monkeypatch
         "heartbeat_at": "2026-09-10T07:00:00Z",
     }))
 
-    recovered = service.attach_or_resume(started["run_id"])
-
-    assert recovered["run_id"] == started["run_id"]
-    assert recovered["attempt"] == 2
-    assert launches == [1, 2]
-    assert service.binding(started["run_id"])["attempt"] == 2
+    with pytest.raises(RuntimeError, match='missing managed failure evidence; start a fresh run'):
+        service.attach_or_resume(started['run_id'])
+    assert launches == [1]
+    assert service.binding(started['run_id'])['attempt'] == 1
 
 
 @pytest.mark.parametrize("outcome", ["completed_with_gaps", "no_eligible_information"])
@@ -715,6 +714,10 @@ def test_bridge_waits_for_real_service_recovered_attempt_receipts(
         "state": "running", "attempt": 1, "pid": 99999999,
         "heartbeat_at": "2026-09-10T11:00:00Z",
     }))
+    (run_dir / 'attempt-1-result.json').write_text(json.dumps({
+        'exit_code': 75, 'retryable': True,
+        'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()},
+    }))
     records = []
     monkeypatch.setattr(job, "managed_monitor_preflight", lambda *_a, **_k: service)
     monkeypatch.setattr(
@@ -770,6 +773,10 @@ def test_concurrent_attach_or_resume_creates_only_one_new_attempt(tmp_path, monk
     (run_dir / "runtime.json").write_text(json.dumps({
         "state": "running", "attempt": 1, "pid": 99999999,
         "heartbeat_at": "2026-09-10T07:00:00Z",
+    }))
+    (run_dir / 'attempt-1-result.json').write_text(json.dumps({
+        'exit_code': 75, 'retryable': True,
+        'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()},
     }))
     barrier = threading.Barrier(2)
     results = []
@@ -1029,7 +1036,8 @@ def test_adversarial_agent_output_cannot_execute_or_escape_binding(monkeypatch, 
     assert not Path(binding["frozen_report_input"]).exists()
     result = json.loads((binding_path.parent / "attempt-1-result.json").read_text())
     assert result["retryable"] is False
-    assert "changed the bound acquisition batch id" in result["error"]
+    assert result["failure"]["category"] == "frozen_input"
+    assert "start a fresh run" in result["error"]
 
 
 def test_existing_monitor_consumes_exact_frozen_binding_not_active_config(tmp_path):
@@ -1272,7 +1280,7 @@ def test_authenticated_preview_save_start_resume_and_tool_detail(monkeypatch, tm
     assert resume.status_code == 409
     (service._run_dir(run_id) / "attempt-1-result.json").write_text(json.dumps({
         "schema_version": "climate-acquisition-attempt-result.v1", "run_id": run_id, "attempt": 1,
-        "exit_code": 75, "retryable": True, "finished_at": "2026-09-10T08:00:00Z", "error": "temporary",
+        "exit_code": 75, "retryable": True, "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()}, "finished_at": "2026-09-10T08:00:00Z", "error": "temporary",
     }))
     resume = client.post(f"/api/manage/runs/{run_id}/resume")
     assert resume.status_code == 200
@@ -1337,7 +1345,7 @@ def test_progress_preserves_active_report_stage_while_report_command_runs(
 
         return Completed()
 
-    monkeypatch.setattr(runner.subprocess, "run", while_report_is_running)
+    monkeypatch.setattr(runner, "run_managed", while_report_is_running)
     assert runner._run_report(binding_path, binding) == 0
     assert observed["stage"] == "report_preparing"
     assert observed["report_phase"] == "active"
@@ -1463,7 +1471,7 @@ def test_duplicate_scheduled_start_reuses_recovery_boundary(tmp_path):
     (first_dir / "attempt-1-result.json").write_text(json.dumps({
         "schema_version": "climate-acquisition-attempt-result.v1",
         "run_id": first["run_id"], "attempt": 1, "exit_code": 75,
-        "retryable": True, "finished_at": "2026-09-14T12:30:00Z",
+        "retryable": True, "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()}, "finished_at": "2026-09-14T12:30:00Z",
         "error": "temporary upstream outage",
     }))
     with pytest.raises(RuntimeError, match=first["run_id"]):
@@ -1948,6 +1956,13 @@ def test_interrupted_attempt_reconciles_durable_calls_before_resume_store(
         "heartbeat_at": "2026-09-10T07:00:00Z",
     }), encoding="utf-8")
 
+    with pytest.raises(RuntimeError, match="missing managed failure evidence"):
+        service.resume(started["run_id"])
+    # A typed recoverable service failure is required to exercise resume accounting.
+    (run_dir / "attempt-1-result.json").write_text(json.dumps({
+        "exit_code": 75, "retryable": True,
+        "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()},
+    }))
     resumed = service.resume(started["run_id"])
     assert resumed["attempt"] == 2
     second = service.binding(started["run_id"])
@@ -2014,7 +2029,8 @@ def test_exhausted_immutable_budget_is_terminal_not_retryable(
     result = json.loads((run_dir / "attempt-2-result.json").read_text())
     progress = json.loads((run_dir / "progress.json").read_text())
     assert result["retryable"] is False
-    assert "Immutable acquisition budget exhausted" in result["error"]
+    assert result["failure"]["category"] == "frozen_input"
+    assert "start a fresh run" in result["error"]
     assert progress["stage"] == "terminal_failure"
     assert "new run" in progress["next_step"]
 
@@ -2294,7 +2310,7 @@ def test_compose_state_override_reaches_existing_report_entry_point(tmp_path, mo
         assert loaded["report_inputs"]["state_dir"] == str(managed_state)
         return type("Result", (), {"returncode": 0})()
 
-    monkeypatch.setattr(runner.subprocess, "run", enter_report)
+    monkeypatch.setattr(runner, "run_managed", enter_report)
     assert runner._run_report(binding_path, binding) == 0
 
 
@@ -2314,7 +2330,7 @@ def test_report_process_inherits_shared_state_lock(tmp_path, monkeypatch):
         observed["pass_fds"] = kwargs.get("pass_fds")
         return type("Result", (), {"returncode": 0})()
 
-    monkeypatch.setattr(runner.subprocess, "run", enter_report)
+    monkeypatch.setattr(runner, "run_managed", enter_report)
     with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
         assert runner._run_report(
             binding_path, binding, state_lock_descriptor=descriptor,
@@ -2338,7 +2354,7 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
     (run_dir / "attempt-1-result.json").write_text(json.dumps({
         "schema_version": "climate-acquisition-attempt-result.v1",
         "run_id": started["run_id"], "attempt": 1, "exit_code": 75,
-        "retryable": True, "finished_at": first["created_at"], "error": "temporary",
+        "retryable": True, "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()}, "finished_at": first["created_at"], "error": "temporary",
     }), encoding="utf-8")
     assert service.resume(started["run_id"])["attempt"] == 2
     resumed = service.binding(started["run_id"])
@@ -2355,7 +2371,7 @@ def test_attempt_two_resume_enters_report_loader_with_stable_batch(tmp_path, mon
         assert loaded["acquisition_batch_id"] == first["acquisition_batch_id"]
         return type("Result", (), {"returncode": 0})()
 
-    monkeypatch.setattr(runner.subprocess, "run", enter_report)
+    monkeypatch.setattr(runner, "run_managed", enter_report)
     assert runner._run_report(binding_path, resumed) == 0
 
     tampered = dict(resumed)
@@ -2406,7 +2422,7 @@ def test_runner_projects_and_invokes_existing_bound_report_path(tmp_path, monkey
     def fake_run(command, **kwargs):
         seen["command"] = command
         return type("Result", (), {"returncode": 0})()
-    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner, "run_managed", fake_run)
     binding_path = tmp_path / "binding.json"; binding_path.write_text(json.dumps(binding))
     assert runner._run_report(binding_path, binding) == 0
     command = seen["command"]
@@ -2475,7 +2491,7 @@ def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_pa
     (run_dir / "attempt-1-result.json").write_text(json.dumps({
         "schema_version": "climate-acquisition-attempt-result.v1",
         "run_id": started["run_id"], "attempt": 1, "exit_code": 70,
-        "retryable": True, "resume_phase": "report",
+        "retryable": True, "failure": {"schema_version": "climate-managed-failure.v1", "category": "transient_service", "cleanup": verified_cleanup()}, "resume_phase": "report",
         "finished_at": binding["created_at"], "error": "report command failed",
     }), encoding="utf-8")
 
@@ -2491,7 +2507,7 @@ def test_report_failure_resumes_same_frozen_attempt_without_reacquisition(tmp_pa
     assert (run_dir / "attempt-1-report-failure.json").is_file()
 
 
-def test_crashed_frozen_report_without_result_relaunches_same_attempt_once(tmp_path, monkeypatch):
+def test_crashed_frozen_report_without_result_blocks_concurrent_recovery(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "state"))
     store = _store(tmp_path)
     store.save(_definition(tmp_path), actor="operator")
@@ -2516,7 +2532,10 @@ def test_crashed_frozen_report_without_result_relaunches_same_attempt_once(tmp_p
 
     def recover():
         barrier.wait()
-        recovered.append(service.attach_or_resume(started["run_id"]))
+        try:
+            service.attach_or_resume(started['run_id'])
+        except RuntimeError as exc:
+            recovered.append(str(exc))
 
     callers = [threading.Thread(target=recover) for _ in range(2)]
     for caller in callers:
@@ -2525,9 +2544,8 @@ def test_crashed_frozen_report_without_result_relaunches_same_attempt_once(tmp_p
         caller.join(timeout=5)
 
     assert not any(caller.is_alive() for caller in callers)
-    assert len(launches) == 2
-    assert {result["attempt"] for result in recovered} == {1}
-    assert sorted(bool(result.get("attached")) for result in recovered) == [False, True]
+    assert len(launches) == 1
+    assert recovered == ['missing managed failure evidence; start a fresh run'] * 2
     relaunched = launches[-1]
     assert relaunched["effective_sha256"] == binding["effective_sha256"]
     assert relaunched["repository_commit_sha"] == binding["repository_commit_sha"]

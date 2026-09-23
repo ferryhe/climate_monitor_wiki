@@ -14,7 +14,7 @@ import re
 import shlex
 import shutil
 import stat
-import subprocess
+from climate_monitor.managed_runtime import run_managed
 import tempfile
 
 import yaml
@@ -1002,7 +1002,7 @@ def observe_hook(root, source, *, successful, provider=None, model=None, **_igno
                 raise ValueError('Hermes effective identity changed')
     except Exception:
         # Never print the hook payload (contains credentials, URLs and content).
-        os._exit(65)
+        os._exit(76)
 
 
 FROZEN_STARTUP = """import os
@@ -1096,7 +1096,7 @@ def verify_identity_runtime(interpreter, environment, home):
     from climate_monitor.hermes_auth_state import verify_auth
     verify_auth(home)
     from climate_monitor.hermes_runtime_inventory import VERIFY_TIMEOUT
-    result = subprocess.run(launch_command(home, '-c', probe), cwd=home, env=environment,
+    result = run_managed(launch_command(home, '-c', probe), cwd=home, env=environment, state_dir=home,
                             capture_output=True, timeout=VERIFY_TIMEOUT)
     verify_auth(home)
     if result.returncode:

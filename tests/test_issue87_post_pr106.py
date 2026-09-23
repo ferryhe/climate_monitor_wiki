@@ -308,8 +308,8 @@ def test_checkpoint_reuse_never_calls_model_or_accepts_changed_input(tmp_path, m
     calls = []
     def model(command, **kwargs):
         calls.append(kwargs['input'])
-        return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr='\nsession_id: 20260908_120234_3b2f4b\n')
-    monkeypatch.setattr(subprocess, 'run', model)
+        return SimpleNamespace(returncode=0, cleanup={'verified': True}, stdout='{"ok":true}', stderr='\nsession_id: 20260908_120234_3b2f4b\n')
+    monkeypatch.setattr(monitor, 'run_managed', model)
     args = SimpleNamespace(model='test-model', model_provider='test-provider', authoring_timeout=1)
     path = tmp_path / 'checkpoint.json'
     options = dict(args=args, help_stdout=_help_with_query_file(), validate=lambda raw: raw['ok'])
@@ -322,37 +322,33 @@ def test_checkpoint_reuse_never_calls_model_or_accepts_changed_input(tmp_path, m
     assert path.read_bytes() == original
 
 
-def test_resume_supplies_only_this_items_validation_error_in_a_fresh_request(tmp_path, monkeypatch):
+def test_validation_failure_is_terminal_and_diagnostic_is_redacted(tmp_path, monkeypatch):
     from types import SimpleNamespace
     import subprocess
     calls = []
     def model(command, **kwargs):
         calls.append(kwargs['input'])
         corrected = 'Prior validation error' in kwargs['input']
-        return SimpleNamespace(returncode=0, stdout=json.dumps({'summary': '' if corrected else 'No content available.'}),
+        return SimpleNamespace(returncode=0, cleanup={'verified': True}, stdout=json.dumps({'summary': '' if corrected else 'No content available.'}),
                                stderr='\nsession_id: 20260908_120234_3b2f4b\n')
     def validate(raw):
         if raw['summary']:
             raise ValueError('summary_basis none cannot carry summary evidence')
         return raw
-    monkeypatch.setattr(subprocess, 'run', model)
+    monkeypatch.setattr(monitor, 'run_managed', model)
     args = SimpleNamespace(model='test-model', model_provider='test-provider', authoring_timeout=1)
     path = tmp_path / 'checkpoint.json'
     guidance = 'This URL has no body or snippet; summary must be empty.'
     options = dict(args=args, help_stdout=_help_with_query_file(), validate=validate,
                    retry_guidance=guidance)
     instruction = 'Analyze only https://example.test/one; evidence is unavailable.'
-    with pytest.raises(ValueError, match='authoring item failed'):
+    with pytest.raises(monitor.ManagedFailure, match='Internal execution failure'):
         monitor._checkpointed_authoring(path, instruction, **options)
     failed = json.loads(path.read_text())
-    assert monitor._checkpointed_authoring(path, instruction, **options) == {'summary': ''}
-    assert len(calls) == 2
-    assert calls[0] == instruction
-    assert calls[1].endswith(instruction)
-    assert guidance in calls[1] and guidance not in calls[0]
-    assert 'summary_basis none cannot carry summary evidence' in calls[1]
-    saved = json.loads(path.read_text())
-    assert saved['input_sha256'] == failed['input_sha256']
-    assert saved['request_sha256'] == hashlib.sha256(calls[1].encode()).hexdigest()
-    assert monitor._checkpointed_authoring(path, instruction, **options) == {'summary': ''}
-    assert len(calls) == 2
+    assert failed['failure']['category'] == 'internal'
+    assert failed['failure']['retryable'] is False
+    with pytest.raises(monitor.ManagedFailure):
+        monitor._checkpointed_authoring(path, instruction, **options)
+    assert calls == [instruction]
+    assert 'summary_basis none cannot carry summary evidence' not in path.read_text()
+    assert json.loads(path.read_text()) == failed

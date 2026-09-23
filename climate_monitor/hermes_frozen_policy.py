@@ -159,7 +159,7 @@ def _observe(successful, provider=None, model=None, **ignored):
                 raise ValueError('identity mismatch')
     except BaseException:
         # Hermes catches plugin exceptions; terminate without printing payloads.
-        os._exit(65)
+        os._exit(76)
 
 
 def register(ctx):

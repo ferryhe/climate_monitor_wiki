@@ -134,7 +134,7 @@ def test_equal_duplicate_aliases_are_stripped():
     assert runner._validate_agent_payload(b, {**canonical, **alias}) == canonical
 
 
-def test_malformed_alias_is_retryable_without_resetting_seed_accounting(tmp_path, monkeypatch):
+def test_malformed_alias_is_terminal_without_resetting_seed_accounting(tmp_path, monkeypatch):
     from test_issue94_management_console import _store, _definition
     from test_issue117_request_boundaries import seed_runtime
     from climate_monitor.management import ManagementService
@@ -165,8 +165,9 @@ def test_malformed_alias_is_retryable_without_resetting_seed_accounting(tmp_path
     monkeypatch.setattr(runner, "_invoke_hermes", invoke)
     assert runner._execute_locked(path) == 75
     result = json.loads((root / "attempt-1-result.json").read_text())
-    assert result['retryable'] is True
-    assert 'Response contract correction required' in result['error']
+    assert result['retryable'] is False
+    assert result['failure']['category'] == 'frozen_input'
+    assert 'start a fresh run' in result['error']
     assert sends
     assert not (root / "attempt-1-acquisition.json").exists()
     b['attempt'] = 2
@@ -175,7 +176,7 @@ def test_malformed_alias_is_retryable_without_resetting_seed_accounting(tmp_path
     prior_sends = list(sends)
     assert runner._execute_locked(path) == 75
     assert sends == prior_sends
-    assert 'Response contract correction required' in (root / 'attempt-2.prompt.md').read_text()
+    assert 'Response contract correction required' not in (root / 'attempt-2.prompt.md').read_text()
     assert Path(ledger_path(b)).exists()
 
 

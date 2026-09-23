@@ -1,4 +1,5 @@
 """Frozen execution inputs and exclusive effective identity publication."""
+from tests.managed_runtime_fixtures import verified_cleanup
 import concurrent.futures
 import json
 import os
@@ -139,7 +140,7 @@ def test_snapshotless_binding_is_readable_but_cannot_resume(tmp_path, runtime):
         value.pop('hermes_snapshot')
         (run / name).write_text(json.dumps(value))
     assert service.binding(started['run_id'])['run_id'] == started['run_id']
-    (run / 'attempt-1-result.json').write_text('{"exit_code":75,"retryable":true}')
+    (run / 'attempt-1-result.json').write_text(json.dumps({'exit_code':75,'retryable':True, 'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()}}))
     with pytest.raises(ValueError, match='start a fresh run'):
         service.resume(started['run_id'])
 
@@ -198,7 +199,7 @@ def test_installer_ignores_ambient_after_start(tmp_path, monkeypatch, runtime):
     binding = service.binding(started['run_id'])
     (home / 'config.yaml').unlink()
     os.mkfifo(home / 'config.yaml', 0o600)
-    monkeypatch.setattr(hooks.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified', stderr=''))
+    monkeypatch.setattr(hooks, 'run_managed', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified', stderr=''))
     command = ['ambient-must-not-resolve']
     env, child = hooks.install_hooks(command, tmp_path / 'runs' / started['run_id'] / 'attempt-1.json', binding, {})
     from climate_monitor import hermes_identity as h
@@ -247,7 +248,7 @@ def test_resume_uses_snapshot_after_ambient_inputs_disappear(tmp_path, runtime):
         path.unlink()
     home.rmdir()
     run = tmp_path / 'runs' / started['run_id']
-    (run / 'attempt-1-result.json').write_text('{"exit_code":75,"retryable":true}')
+    (run / 'attempt-1-result.json').write_text(json.dumps({'exit_code':75,'retryable':True, 'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()}}))
     service.resume(started['run_id'])
     assert launched[-1]['hermes_snapshot'] == original
     assert launched[-1]['attempt'] == 2
@@ -262,7 +263,7 @@ def test_success_hook_publishes_only_identity_and_checks_source(tmp_path, monkey
     class Stopped(Exception):
         pass
     def stop(code):
-        assert code == 65
+        assert code == 76
         raise Stopped()
     monkeypatch.setattr(os, '_exit', stop)
     with pytest.raises(Stopped):
@@ -504,11 +505,11 @@ def test_review1_generated_plugin_lifecycle(tmp_path, monkeypatch):
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = identity.create_snapshot(run, source='run')
     calls = []
-    real_run = subprocess.run
+    real_run = identity.run_managed
     def record(*args, **kwargs):
         calls.append(True)
         return real_run(*args, **kwargs)
-    monkeypatch.setattr(identity.subprocess, 'run', record)
+    monkeypatch.setattr(identity, 'run_managed', record)
     _, env, child = identity.inference_runtime(run, ref, purpose='test', source='run')
     assert calls, 'real identity runtime verification must execute'
     interpreter = identity.load_snapshot(run, ref)['interpreter']
@@ -525,15 +526,15 @@ assert (root / 'effective-identity.json').exists()
 m.emit('pre_api_request', provider='test', model='model')
 m.emit('post_api_request', provider='test', model='model')
 '''
-    result = real_run(identity.launch_command(child, '-c', script), env=env, cwd=child, capture_output=True)
+    result = subprocess.run(identity.launch_command(child, '-c', script), env=env, cwd=child, capture_output=True)
     assert result.returncode == 0
     for change in ('model', 'source'):
         divergent = dict(env)
         if change == 'source':
             divergent['HERMES_SESSION_SOURCE'] = 'other'
         code = "from hermes_cli.plugins import discover_plugins,get_plugin_manager; discover_plugins(force=True); get_plugin_manager().emit('pre_api_request',provider='test',model=" + repr('other' if change == 'model' else 'model') + ")"
-        result = real_run(identity.launch_command(child, '-c', code), env=divergent, cwd=child, capture_output=True)
-        assert result.returncode == 65
+        result = subprocess.run(identity.launch_command(child, '-c', code), env=divergent, cwd=child, capture_output=True)
+        assert result.returncode == 76
         assert not result.stdout and not result.stderr
 
 
@@ -812,7 +813,7 @@ def test_review2_standalone_identity_concurrent_processes(tmp_path, runtime):
     for child in children:
         out, err = child.communicate(timeout=10)
         assert not out and not err
-    assert sorted(child.returncode for child in children) == [0, 65]
+    assert sorted(child.returncode for child in children) == [0, 76]
 
 
 @pytest.mark.parametrize('value', ['${env:MISSING_ROUTE_INPUT}', '${vault:UNSUPPORTED}'])
@@ -891,7 +892,7 @@ def test_review2_acquisition_first_and_feedback_seal_auth(tmp_path, runtime, mon
     service = management.ManagementService(store=store, runtime_root=tmp_path / 'runs', launcher=lambda b: 123)
     started = service.start(); binding = service.binding(started['run_id'])
     run = tmp_path / 'runs' / started['run_id']
-    monkeypatch.setattr(hooks.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
+    monkeypatch.setattr(hooks, 'run_managed', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
     monkeypatch.setattr(runner, 'RequestBudget', lambda *a: SimpleNamespace(remaining_seconds=lambda: 60))
     monkeypatch.setattr(runner, '_write_runtime', lambda *a, **k: None)
     observed = []
@@ -905,7 +906,7 @@ def test_review2_acquisition_first_and_feedback_seal_auth(tmp_path, runtime, mon
             auth.write_text(json.dumps({'providers': {'test': {'refresh_token': secrets.token_hex(24)}}}))
         def poll(self): return 0
         def wait(self): return 0
-    monkeypatch.setattr(runner.subprocess, 'Popen', Process)
+    monkeypatch.setattr(runner, 'run_managed', lambda *a, **k: (Process(*a, **k), SimpleNamespace(returncode=0))[1])
     for turn in ('first', 'feedback'):
         assert runner._invoke_hermes(['hermes'], run / (turn + '.log'), run / 'attempt-1.json', binding, float('inf')) == 0
     assert observed[0] != observed[1]
@@ -935,8 +936,8 @@ def test_review2_repeated_meeting_and_report_resume_share_refresh(tmp_path, runt
         successful_api_lifecycle(Path(kwargs['cwd']), kwargs['env'])
         prior.append(h._digest(path.read_bytes()))
         path.write_text(json.dumps({'providers': {'test': {'refresh_token': secrets.token_hex(24)}}}))
-        return SimpleNamespace(returncode=0, stdout='{}', stderr='session_id: 20260908_120234_3b2f4b')
-    monkeypatch.setattr(subprocess, 'run', process)
+        return SimpleNamespace(returncode=0, stdout='{}', stderr='session_id: 20260908_120234_3b2f4b', cleanup={'verified': True})
+    monkeypatch.setattr(meetings, 'run_managed', process)
     invoke = meetings._extractor('', '', binding)
     request = {'article_body': 'offline body', 'content_sha256': hashlib.sha256(b'offline body').hexdigest(),
                'content_version_id': 'test', 'source_url': 'https://offline.invalid', 'prompt': 'test'}
@@ -1230,8 +1231,9 @@ def test_review3_wrapper_requires_plugin_success(tmp_path, runtime, monkeypatch,
         if '--help' in command:
             return SimpleNamespace(returncode=0, stdout=_help_with_query_file())
         infer()
-        return SimpleNamespace(returncode=0, stdout='{}', stderr='session_id: 20260908_120234_3b2f4b')
-    monkeypatch.setattr(subprocess, 'run', process)
+        return SimpleNamespace(returncode=0, stdout='{}', stderr='session_id: 20260908_120234_3b2f4b', cleanup={'verified': True})
+    monkeypatch.setattr(report, 'run_managed', process)
+    monkeypatch.setattr(meetings, 'run_managed', process)
     if kind in ('acquisition', 'feedback'):
         monkeypatch.setattr(acquisition, 'install_hooks', lambda *a: (env, home))
         monkeypatch.setattr(acquisition, 'RequestBudget', lambda *a: SimpleNamespace(remaining_seconds=lambda: 60))
@@ -1241,14 +1243,14 @@ def test_review3_wrapper_requires_plugin_success(tmp_path, runtime, monkeypatch,
             def __init__(self, *a, **kw): infer()
             def poll(self): return 0
             def wait(self): return 0
-        monkeypatch.setattr(subprocess, 'Popen', Process)
+        monkeypatch.setattr(acquisition, 'run_managed', lambda *a, **k: (Process(*a, **k), SimpleNamespace(returncode=0))[1])
         invoke = lambda: acquisition._invoke_hermes(['hermes'], run / 'response.log', path, binding, float('inf'))
     elif kind.startswith('report'):
         monkeypatch.setattr(report, '_managed_inference_runtime', lambda args: (str(runtime[1]), env, home))
         args = SimpleNamespace(task_binding=str(path), model='', model_provider='', authoring_timeout=5)
         checkpoint = run / 'checkpoint.json'
         if kind == 'report-resume':
-            checkpoint.write_text(json.dumps({'input_sha256': report._canonical_digest({'instruction': 'offline', 'model': '', 'provider': ''}), 'status': 'failed', 'attempt': 1}))
+            checkpoint.write_text(json.dumps({'input_sha256': report._canonical_digest({'instruction': 'offline', 'model': '', 'provider': ''}), 'status': 'failed', 'attempt': 1, 'failure': {'schema_version': 'climate-managed-failure.v1', 'category': 'transient_service', 'cleanup': verified_cleanup()}}))
         invoke = lambda: report._checkpointed_authoring(checkpoint, 'offline', args=args, help_stdout=_help_with_query_file(), validate=lambda value: value)
     else:
         monkeypatch.setattr(h, 'inference_runtime', lambda *a, **k: (str(runtime[1]), env, home))
@@ -1260,7 +1262,8 @@ def test_review3_wrapper_requires_plugin_success(tmp_path, runtime, monkeypatch,
         invoke(); invoke()  # equal later successes reuse the create-once identity
         assert h.require_effective_identity(home.parent, 'climate-acquisition-run')
     else:
-        with pytest.raises((ValueError, SystemExit), match='identity|fresh|authoring'):
+        from climate_monitor.managed_runtime import ManagedFailure
+        with pytest.raises((ValueError, SystemExit, ManagedFailure), match='identity|fresh|authoring'):
             invoke()
     assert calls
     from climate_monitor.hermes_auth_state import verify_auth
@@ -1440,8 +1443,10 @@ def test_review3_meeting_link_rechecked_before_each_inference(tmp_path, runtime,
         path.write_text(json.dumps(acquisition))
         return extractor({})
     monkeypatch.setattr(worker, 'process_batch', process)
-    with pytest.raises(ValueError, match='fresh'):
+    from climate_monitor.managed_runtime import ManagedFailure
+    with pytest.raises(ManagedFailure, match='fresh') as caught:
         worker.run(binding)
+    assert caught.value.evidence['category'] == 'frozen_input'
 
 
 @pytest.mark.parametrize('kind', ['root', 'simple'])
@@ -1495,7 +1500,7 @@ def test_review4_hook_uses_bound_interpreter_and_static_plugin(tmp_path, runtime
     binding['hermes_snapshot'] = ref
     frozen = h.load_snapshot(run, ref)
     monkeypatch.setattr(os.sys, 'executable', '/must-not-be-executed')
-    monkeypatch.setattr(hooks.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
+    monkeypatch.setattr(hooks, 'run_managed', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
     sources = []
     for attempt in (1, 2):
         binding['attempt'] = attempt
@@ -1522,7 +1527,7 @@ def test_review4_frozen_candidate_modules_execute_without_checkout(tmp_path, run
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
     original = subprocess.run
-    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
+    monkeypatch.setattr(hooks, 'run_managed', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
     env, home = hooks.install_hooks(['hermes'], path, binding, {})
     monkeypatch.setattr(subprocess, 'run', original)
     payload = h.load_snapshot(run, binding['hermes_snapshot'])
@@ -1661,7 +1666,7 @@ def test_review4_all_policy_members_reject_corruption_before_launch(tmp_path, ru
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
     payload = h.load_snapshot(run, binding['hermes_snapshot'])
-    monkeypatch.setattr(hooks.subprocess, 'run', lambda *a, **k: pytest.fail('process launched with corrupt policy'))
+    monkeypatch.setattr(hooks, 'run_managed', lambda *a, **k: pytest.fail('process launched with corrupt policy'))
     for member in payload['policy']:
         target = run / h.SNAPSHOT / member
         original = target.read_bytes(); target.write_bytes(original + b'\n')

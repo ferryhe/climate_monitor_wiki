@@ -36,7 +36,6 @@ def test_executive_rejects_blocks_before_checkpointing(text):
 
 def test_url_driver_embeds_rules_in_one_request_and_skips_excluded_summary(tmp_path, monkeypatch):
     from tests.test_issue87_post_pr106 import _view_evidence, _help_with_query_file
-    import subprocess
 
     evidence = _view_evidence("A generic environmental article with no insurance connection.")
     item = CandidateItem(title="Environmental news", url=evidence["records"][0]["requested_url"],
@@ -62,14 +61,14 @@ def test_url_driver_embeds_rules_in_one_request_and_skips_excluded_summary(tmp_p
 
     def hermes(command, **kwargs):
         if "--help" in command:
-            return SimpleNamespace(returncode=0, stdout=_help_with_query_file())
+            return SimpleNamespace(cleanup={'verified': True}, returncode=0, stdout=_help_with_query_file())
         calls.append(kwargs["input"])
-        return SimpleNamespace(returncode=0, stderr="\nsession_id: 20260908_120234_3b2f4b\n",
+        return SimpleNamespace(cleanup={'verified': True}, returncode=0, stderr="\nsession_id: 20260908_120234_3b2f4b\n",
                                stdout=json.dumps({"climate_related": True, "actuarial_related": False,
                                    "summary": "", "summary_basis": "none", "evidence_hash": None,
                                    "categories": [], "keywords": []}))
 
-    monkeypatch.setattr(subprocess, "run", hermes)
+    monkeypatch.setattr(monitor, "run_managed", hermes)
     args = SimpleNamespace(staging_dir=str(tmp_path), model="fixture-model",
                            model_provider="fixture-provider", authoring_timeout=5)
     assert monitor._run_authoring_sequence(args, None) == 0

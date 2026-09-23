@@ -1,4 +1,7 @@
 from __future__ import annotations
+from tests.managed_runtime_fixtures import verified_cleanup
+
+from climate_monitor.managed_runtime import ManagedFailure
 
 import hashlib
 import json
@@ -1224,7 +1227,7 @@ def test_cancelled_event_keeps_prior_version_and_failed_items_retry_only(tmp_pat
     def first(request):
         calls.append(request["content_version_id"])
         if request["content_version_id"] == "content-2":
-            raise RuntimeError("temporary model failure")
+            raise ManagedFailure("transient_service", cleanup=verified_cleanup())
         return {"events": [_candidate(
             location="New York", online_url=None, deadline_type=None, deadline_date=None,
             deadline_evidence=None,
@@ -1239,7 +1242,7 @@ def test_cancelled_event_keeps_prior_version_and_failed_items_retry_only(tmp_pat
         "acquisition_item_id": "item-2", "article_id": "article-2",
         "content_version_id": "content-2", "source_url": "https://example.com/2",
         "status": "failed", "candidate_count": 0,
-        "error": "RuntimeError: temporary model failure", "processed_at": failed_item["processed_at"],
+        "error": str(ManagedFailure("transient_service", cleanup=verified_cleanup())), "processed_at": failed_item["processed_at"],
     }
     assert progress["runs"][0]["retry_of_meeting_run_id"] is None
     assert "prompt_text" not in progress["runs"][0]
@@ -1280,7 +1283,7 @@ def test_retry_uses_failed_run_frozen_prompt_and_only_failed_item(tmp_path):
     def first(request):
         first_calls.append((request["content_version_id"], request["prompt"]))
         if request["content_version_id"] == "content-2":
-            raise RuntimeError("temporary")
+            raise ManagedFailure("transient_service", cleanup=verified_cleanup())
         return {"events": []}
 
     original = process_batch(
@@ -1314,7 +1317,7 @@ def test_retry_uses_failed_run_frozen_prompt_and_only_failed_item(tmp_path):
     connection.close()
 
 
-def test_dead_worker_resumes_frozen_running_run_without_repeating_success(tmp_path):
+def test_dead_worker_without_failure_evidence_cannot_resume(tmp_path):
     database = _database(tmp_path, ["ordinary one", "ordinary two"])
     code = r'''
 import os, sys
@@ -1341,20 +1344,13 @@ process_batch(sys.argv[1], "batch", prompt_text="frozen v1", prompt_version="v1"
     ).fetchall() == [("succeeded",), ("pending",)]
     connection.close()
 
-    calls = []
-    resumed = process_batch(
-        database, "batch", prompt_text="current v2", prompt_version="v2",
-        provider="provider-v2", model="model-v2", task_version=4,
-        extractor=lambda request: calls.append(
-            (request["content_version_id"], request["prompt"])
-        ) or {"events": []},
-    )
-    assert calls == [("content-2", "frozen v1")]
-    assert resumed["meeting_run_id"] == run_id
-    assert resumed["attempt"] == 1
-    assert resumed["status"] == "succeeded"
+    with pytest.raises(ValueError, match='no retry evidence; start a fresh run'):
+        process_batch(database, "batch", prompt_text="current v2", prompt_version="v2",
+                      provider="provider-v2", model="model-v2", task_version=4,
+                      extractor=lambda request: pytest.fail('unknown crash must not retry'))
     connection = sqlite3.connect(database)
     assert connection.execute("SELECT count(*) FROM meeting_runs").fetchone() == (1,)
+    assert connection.execute("SELECT status FROM meeting_run_items ORDER BY acquisition_item_id").fetchall() == [("succeeded",), ("pending",)]
     connection.close()
 
 
@@ -1470,7 +1466,7 @@ def test_retry_confirmation_summary_includes_reused_success_lineage(tmp_path):
 
     def first(request):
         if "ordinary" in request["article_body"]:
-            raise RuntimeError("temporary")
+            raise ManagedFailure("transient_service", cleanup=verified_cleanup())
         return {"events": [candidate]}
 
     original = process_batch(

@@ -20,6 +20,8 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from climate_monitor.managed_runtime import ManagedFailure, failure_from_exception, read_failure
+
 from climate_registry.contract import SCHEMA_VERSION, validate_registry_contract
 
 
@@ -1279,7 +1281,6 @@ def _process_batch(
         if batch is None:
             raise KeyError(f"unknown acquisition batch: {batch_id}")
         prior = None
-        recovering = False
         if retry_failed:
             if retry_meeting_run_id:
                 prior = connection.execute(
@@ -1301,6 +1302,8 @@ def _process_batch(
             if latest["status"] in {"succeeded", "no_content", "running"}:
                 return _run_result(connection, latest["meeting_run_id"], reused=True)
             prior = latest
+            if not _stored_failure(prior['error_message']).evidence['retryable']:
+                raise ValueError('meeting execution is terminal; start a fresh run')
             prompt_text = prior["prompt_text"]
             prompt_version = prior["prompt_version"]
             provider = prior["provider"]
@@ -1328,25 +1331,7 @@ def _process_batch(
             ).fetchone()
             recovering = prior is not None
             if recovering:
-                prompt_text = prior["prompt_text"]
-                prompt_version = prior["prompt_version"]
-                provider = prior["provider"]
-                model = prior["model"]
-                task_version = int(prior["task_version"])
-                if hashlib.sha256(prompt_text.encode("utf-8")).hexdigest() != prior["prompt_sha256"]:
-                    raise ValueError("stored meeting prompt hash mismatch")
-                items = [dict(row) for row in connection.execute(
-                    """SELECT ri.acquisition_item_id, ri.article_id, ri.content_version_id,
-                              ri.source_url, ri.content_sha256, ri.status AS prior_status,
-                              cv.markdown_content
-                       FROM meeting_run_items ri
-                       LEFT JOIN article_content_versions cv
-                         ON cv.content_version_id=ri.content_version_id AND cv.article_id=ri.article_id
-                       LEFT JOIN acquisition_items ai ON ai.acquisition_item_id=ri.acquisition_item_id
-                       WHERE ri.meeting_run_id=?
-                       ORDER BY ai.ordinal""",
-                    (prior["meeting_run_id"],),
-                )]
+                raise ValueError('interrupted meeting execution has no retry evidence; start a fresh run')
             else:
                 items = [dict(row) for row in connection.execute(
                     """SELECT ai.acquisition_item_id, ai.article_id, ai.content_version_id,
@@ -1379,10 +1364,6 @@ def _process_batch(
             processing_key = prior["processing_key"]
             input_sha = prior["input_sha256"]
             prompt_sha = prior["prompt_sha256"]
-        elif recovering:
-            processing_key = prior["processing_key"]
-            input_sha = prior["input_sha256"]
-            prompt_sha = prior["prompt_sha256"]
         else:
             prior = connection.execute(
                 "SELECT * FROM meeting_runs WHERE processing_key=? ORDER BY attempt DESC LIMIT 1",
@@ -1390,40 +1371,38 @@ def _process_batch(
             ).fetchone()
             if prior is not None:
                 return _run_result(connection, prior["meeting_run_id"], reused=True)
-        attempt = int(prior["attempt"]) if recovering else 1 if prior is None else int(prior["attempt"]) + 1
-        run_id = prior["meeting_run_id"] if recovering else f"meeting-{processing_key[:20]}-{attempt}"
-        if not recovering:
-            connection.execute(
-                """INSERT INTO meeting_runs(
-                   meeting_run_id, processing_key, batch_id, attempt, status, prompt_version,
-                   prompt_sha256, prompt_text, provider, model, task_version,
-                   retry_of_meeting_run_id, input_sha256, started_at, completed_at, item_count,
-                   succeeded_count, failed_count, unavailable_count, candidate_count, error_message)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (run_id, processing_key, batch_id, attempt, "running", prompt_version, prompt_sha,
-                 prompt_text, provider, model, task_version,
-                 prior["meeting_run_id"] if retry_failed else None,
-                 input_sha, stamp, None, len(items), 0, 0, 0, 0, None),
-            )
+        attempt = 1 if prior is None else int(prior["attempt"]) + 1
+        run_id = f"meeting-{processing_key[:20]}-{attempt}"
+        connection.execute(
+            """INSERT INTO meeting_runs(
+               meeting_run_id, processing_key, batch_id, attempt, status, prompt_version,
+               prompt_sha256, prompt_text, provider, model, task_version,
+               retry_of_meeting_run_id, input_sha256, started_at, completed_at, item_count,
+               succeeded_count, failed_count, unavailable_count, candidate_count, error_message)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (run_id, processing_key, batch_id, attempt, "running", prompt_version, prompt_sha,
+             prompt_text, provider, model, task_version,
+             prior["meeting_run_id"] if retry_failed else None,
+             input_sha, stamp, None, len(items), 0, 0, 0, 0, None),
+        )
         prior_success: dict[str, sqlite3.Row] = {}
         if prior is not None:
             prior_success = {row["acquisition_item_id"]: row for row in connection.execute(
                 "SELECT * FROM meeting_run_items WHERE meeting_run_id=? AND status='succeeded'",
                 (prior["meeting_run_id"],),
             )}
-        if not recovering:
-            for item in items:
-                previous = prior_success.get(item["acquisition_item_id"])
-                usable = item["content_version_id"] and (item["markdown_content"] or "").strip()
-                status = "succeeded" if previous else "pending" if usable else "unavailable"
-                count = int(previous["candidate_count"]) if previous else 0
-                connection.execute(
-                    "INSERT INTO meeting_run_items VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (run_id, item["acquisition_item_id"], item["content_version_id"],
-                     item["article_id"], item["source_url"], item["content_sha256"], status, count,
-                     None if usable else "no persisted article body", stamp if previous or not usable else None),
-                )
-            connection.commit()
+        for item in items:
+            previous = prior_success.get(item["acquisition_item_id"])
+            usable = item["content_version_id"] and (item["markdown_content"] or "").strip()
+            status = "succeeded" if previous else "pending" if usable else "unavailable"
+            count = int(previous["candidate_count"]) if previous else 0
+            connection.execute(
+                "INSERT INTO meeting_run_items VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (run_id, item["acquisition_item_id"], item["content_version_id"],
+                 item["article_id"], item["source_url"], item["content_sha256"], status, count,
+                 None if usable else "no persisted article body", stamp if previous or not usable else None),
+            )
+        connection.commit()
         if prior is None and not available:
             connection.execute(
                 """UPDATE meeting_runs SET status='no_content', completed_at=?, unavailable_count=?
@@ -1432,6 +1411,7 @@ def _process_batch(
             )
             connection.commit()
             return _run_result(connection, run_id)
+        batch_failure = None
         for item in items:
             if item["acquisition_item_id"] in prior_success or item not in available:
                 continue
@@ -1461,13 +1441,18 @@ def _process_batch(
                            error_message=NULL, processed_at=? WHERE meeting_run_id=? AND acquisition_item_id=?""",
                         (len(candidates), _now(), run_id, item["acquisition_item_id"]),
                     )
-            except Exception as exc:
+            except (Exception, KeyboardInterrupt) as exc:
+                failure = failure_from_exception(exc)
+                if batch_failure is None or not failure.evidence["retryable"]:
+                    batch_failure = failure
                 with connection:
                     connection.execute(
                         """UPDATE meeting_run_items SET status='failed', error_message=?, processed_at=?
                            WHERE meeting_run_id=? AND acquisition_item_id=?""",
-                        (f"{type(exc).__name__}: {str(exc)[:800]}", _now(), run_id, item["acquisition_item_id"]),
+                        (json.dumps(failure.evidence), _now(), run_id, item["acquisition_item_id"]),
                     )
+                if failure.evidence['category'] != 'internal' or isinstance(exc, ManagedFailure):
+                    break  # Execution failure: do not repeat against every article.
         counts = connection.execute(
             """SELECT count(*) AS total,
                sum(status='succeeded') AS succeeded, sum(status='failed') AS failed,
@@ -1478,9 +1463,7 @@ def _process_batch(
         succeeded, failed = int(counts["succeeded"] or 0), int(counts["failed"] or 0)
         unavailable = int(counts["unavailable"] or 0)
         status = "succeeded" if not failed and not unavailable else "partial" if succeeded else "failed"
-        error = None if not failed and not unavailable else (
-            f"{failed} failed and {unavailable} unavailable of {counts['total']} acquisition items"
-        )
+        error = json.dumps((batch_failure or ManagedFailure()).evidence) if failed or unavailable else None
         with connection:
             connection.execute(
                 """UPDATE meeting_runs SET status=?, completed_at=?, succeeded_count=?, failed_count=?,
@@ -1526,8 +1509,18 @@ def _run_confirmation_events(connection: sqlite3.Connection, run: sqlite3.Row) -
     )]
 
 
+def _stored_failure(message):
+    try:
+        return read_failure(json.loads(message or '{}'))
+    except (ValueError, TypeError):
+        return ManagedFailure()
+
+
 def _public_run(connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, Any]:
     value = {key: run[key] for key in run.keys() if key != "prompt_text"}
+    if run['error_message']:
+        value['failure'] = _stored_failure(run['error_message']).evidence
+        value['error_message'] = value['failure']['message']
     value["items"] = [{
         "acquisition_item_id": row["acquisition_item_id"],
         "article_id": row["article_id"],
@@ -1535,7 +1528,7 @@ def _public_run(connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, A
         "source_url": row["source_url"],
         "status": row["status"],
         "candidate_count": row["candidate_count"],
-        "error": row["error_message"],
+        "error": str(_stored_failure(row["error_message"])) if row["status"] == "failed" else row["error_message"],
         "processed_at": row["processed_at"],
     } for row in connection.execute(
         "SELECT * FROM meeting_run_items WHERE meeting_run_id=? ORDER BY acquisition_item_id",
@@ -1577,7 +1570,7 @@ def meeting_retry_run(database: str | Path, *, batch_id: str) -> dict[str, Any] 
                ORDER BY started_at DESC, attempt DESC LIMIT 1""",
             (batch_id,),
         ).fetchone()
-        return dict(row) if row is not None else None
+        return dict(row) if row is not None and _stored_failure(row['error_message']).evidence['retryable'] else None
     finally:
         connection.close()
 
