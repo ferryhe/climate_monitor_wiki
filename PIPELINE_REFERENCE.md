@@ -179,7 +179,7 @@ Their env-var defaults (`CLIMATE_WIKI_HOME`, `CLIMATE_WL_REPO`,
 `CLIMATE_WL_STATE`) resolve relative to this script's own repo checkout
 (`Path(__file__).resolve().parents[1]`) and its conventional sibling
 directories (`web_listening/` next to this repo) instead of a hardcoded
-`/home/ubuntu/...` path, so a manual rollback run works on any host that
+host path, so a manual rollback run works on any host that
 follows the same sibling-directory layout without editing tracked files.
 Set the env var explicitly when a host's layout differs.
 

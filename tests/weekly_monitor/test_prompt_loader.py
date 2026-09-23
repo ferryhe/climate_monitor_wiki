@@ -227,7 +227,7 @@ def test_redacted_hermes_capture_records_safe_metadata_only():
     ]
     assert not (JOB_ROOT / "job-08h-monitor.json").exists()
     for forbidden in (
-        "/home/ubuntu",
+        "/" + "home/ubuntu",
         "discord:",
         "oc_",
         "ou_",

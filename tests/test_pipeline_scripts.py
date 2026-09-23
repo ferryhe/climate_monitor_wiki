@@ -2,7 +2,7 @@
 
 These tests exercise the scripts as subprocesses against a temp data
 directory (CLIMATE_REPORTS_DIR), so they stay independent of the production
-/home/ubuntu paths.
+host-specific paths.
 """
 import hashlib
 import json

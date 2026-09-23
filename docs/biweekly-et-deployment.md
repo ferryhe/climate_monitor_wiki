@@ -66,15 +66,15 @@ existing configured sending path and its four-recipient validation.
 
 ### Observed paths and required cutover wiring
 
-The 2026-09-13 read-only inspection found these concrete paths; it did not
-install or change them:
+The 2026-09-13 read-only inspection recorded these host-side mappings (concrete values live only on
+the host and in its untracked `.env`); it did not install or change them:
 
-- Hermes execution data is `/home/ubuntu/.hermes/cron/executions.db`; the job
+- Hermes execution data is `$HERMES_HOME/cron/executions.db`; the job
   configuration used to obtain and verify the four real IDs is
-  `/home/ubuntu/.hermes/cron/jobs.json`.
+  `$HERMES_HOME/cron/jobs.json`.
 - The `climate-wiki-app` named volume
   `climate_monitor_wiki_climate_runtime` maps host
-  `/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data` to
+  `<docker-root>/volumes/climate_monitor_wiki_climate_runtime/_data` to
   `/app/output` read-write. No `/pipeline` mount is currently installed.
 - The current v3 task is `/app/output/task/task-definition.json`, with versions
   under `/app/output/task/versions`, Registry at
@@ -85,16 +85,16 @@ install or change them:
   `CLIMATE_MANAGED_SOURCE_DIR` and `CLIMATE_MANAGED_WIKI_DIR` are absent, so the
   application defaults still resolve to checkout-backed source/wiki paths.
 - The public app currently sees host
-  `/home/ubuntu/climate_monitor_data/job-status` as `/job-status` read-only.
+  `<host-data-dir>/job-status` as `/job-status` read-only.
   The host-side exporter must write that host directory; the public app must
   keep the mount read-only. The wrapper/producer needs the same directory
   read-write in its own execution namespace so `update_slot` and Registry
   pending results share `.scheduler-status.lock`. The currently observed
   read-only public-app mount is not sufficient for running the wrapper there.
 - Other observed public read-only binds are
-  `/home/ubuntu/climate_monitor_data/registry` at `/registry`,
-  `/home/ubuntu/climate_delivery_artifacts` at `/delivery-output`, and
-  `/home/ubuntu/climate_monitor_data/update-status` at `/update-status`.
+  `<host-data-dir>/registry` at `/registry`,
+  `<host-delivery-artifacts-dir>` at `/delivery-output`, and
+  `<host-data-dir>/update-status` at `/update-status`.
   Delivery generation needs its own read-write producer mount of the delivery
   artifact directory; this does not make the public app mount writable.
 
@@ -145,7 +145,10 @@ configuration, and the project virtual environment are present, but their
 access must still be verified under the exact scheduled publisher identity.
 Do not alter host permissions or security configuration.
 
-The acquisition writer now requires Registry schema 10; readers retain their
+The acquisition writer requires the Registry schema pinned by
+`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION` (12 since the
+2026-09-22 migration of both databases, recorded in issue #150 — see the upgrade
+checklist in [deployment.md](deployment.md#upgrade-checklist)); readers retain their
 supported older-schema read-only compatibility. Before migrating the runtime
 and public Registry databases, the controller must quiesce all writers and
 capture a verified private full-database backup together with its sidecars,
@@ -154,12 +157,12 @@ read back and validate the resulting schema and data before enabling any slot.
 Before any schema-10 recovery write, rollback may restore that complete backup
 and the old image. After a schema-10-only `no_search` to `attempted` recovery
 transition, do not downgrade the database or selectively restore rows: retain
-schema 10, or restore the entire pre-migration snapshot only under an explicit
-data-loss decision. No production Registry migration was performed here.
+the schema then in place, or restore the entire pre-migration snapshot only under an
+explicit data-loss decision. No production Registry migration was performed here.
 
 No production mount, task, job, or file was changed while preparing this
 runbook. A private host-only rollback baseline exists at
-`/home/ubuntu/climate-issue124-rollout-20260913`; do not copy it into this
+`<host-only-rollback-baseline-dir>`; do not copy it into this
 repository or publish it.
 
 Run the exporter on the host against the actual database. `--jobs-map` is a
@@ -171,11 +174,12 @@ and record its absolute external path rather than guessing one:
 
 ```bash
 export ISSUE124_JOB_MAP=/absolute/external/path/verified-hermes-job-map.json
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"   # the exporter reads the host Hermes home
 test -f "$ISSUE124_JOB_MAP"
 timeout 60s python scripts/export_scheduler_status.py \
-  --executions-db /home/ubuntu/.hermes/cron/executions.db \
+  --executions-db "$HERMES_HOME/cron/executions.db" \
   --jobs-map "$ISSUE124_JOB_MAP" \
-  --status-dir /home/ubuntu/climate_monitor_data/job-status
+  --status-dir /path/to/job-status
 ```
 
 Read back the four IDs and the generated snapshot before installing a

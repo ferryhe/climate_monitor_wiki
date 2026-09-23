@@ -32,7 +32,7 @@ REPORTS = Path(os.environ.get("CLIMATE_REPORTS_DIR", str(HOME / "data" / "report
 PYTHON = Path(os.environ.get("CLIMATE_WIKI_PYTHON", str(HOME / ".venv" / "bin" / "python")))
 if not PYTHON.exists():
     # Fall back to the interpreter running this script (e.g. Render, where the
-    # /home/ubuntu venv path does not exist).
+    # production venv path does not exist).
     PYTHON = Path(sys.executable)
 
 

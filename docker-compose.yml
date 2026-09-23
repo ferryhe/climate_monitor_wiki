@@ -27,6 +27,8 @@ services:
       CLIMATE_MANAGED_SOURCE_DIR: /pipeline/generated/sources
       CLIMATE_MANAGED_WIKI_DIR: /pipeline/generated/wiki
       CLIMATE_REGISTRY_DB: /app/output/climate_registry.sqlite3
+      # Optional: advertise this deployment's own contact URL to publishers.
+      CLIMATE_REGISTRY_USER_AGENT: ${CLIMATE_REGISTRY_USER_AGENT:-}
       CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING: ${CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING:-1}
       CLIMATE_WEB_LISTENING_DATA_DIR: /opt/web-listening-data
       CLIMATE_REQUIRE_CONSOLE_AUTH: "1"

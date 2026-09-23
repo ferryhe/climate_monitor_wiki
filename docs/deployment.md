@@ -1,7 +1,7 @@
 # Deployment: Docker + Caddy HTTPS
 
 The wiki runs as two containers behind Caddy. The public site is available at
-`https://aiclimate.aiforactuaries.org` with Caddy-managed public-CA TLS. The host's
+`https://$PUBLIC_HOST` with Caddy-managed public-CA TLS. The host's
 private IP remains available for internal health checks with Caddy's internal
 CA.
 
@@ -76,14 +76,16 @@ Initial installation only: the following creates `.env`. Do not run it during
 an existing-production update, where configuration and tokens must be preserved.
 
 ```bash
-cd /home/ubuntu/climate_monitor_wiki
+cd /path/to/checkout   # the verified production checkout
 
 # SITE_HOST and PUBLIC_HOST have no defaults — compose refuses to start
 # without them. CLIMATE_PUBLIC_ORIGIN may be empty while the Dashboard is
 # disabled, but set it here so the public-host pair starts in sync. Replace
-# the example values with this host's real private IP and public DNS hostname.
+# the host's own values below: export HOST_PRIVATE_IP and PUBLIC_HOST first.
+: "${HOST_PRIVATE_IP:?export this host's private address first}"
+: "${PUBLIC_HOST:?export this host's public DNS name first}"
 printf 'SITE_HOST=%s\nPUBLIC_HOST=%s\nCLIMATE_PUBLIC_ORIGIN=https://%s\nRELOAD_TOKEN=%s\n' \
-  "172.31.10.77" "example.org" "example.org" "$(openssl rand -hex 24)" > .env
+  "$HOST_PRIVATE_IP" "$PUBLIC_HOST" "$PUBLIC_HOST" "$(openssl rand -hex 24)" > .env
 chmod 600 .env
 
 CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
@@ -100,16 +102,17 @@ before acquisition and reuse it for report provenance on resume.
 Verify:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://aiclimate.aiforactuaries.org/  # 301 -> HTTPS
-curl -s -o /dev/null -w '%{http_code}\n' https://aiclimate.aiforactuaries.org/api/config  # 200
-curl -sk -o /dev/null -w '%{http_code}\n' https://172.31.10.77/api/config   # 200
-curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://172.31.10.77/  # 301 -> https
+set -a; . ./.env; set +a   # the checks below need PUBLIC_HOST and SITE_HOST
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://$PUBLIC_HOST/  # 301 -> HTTPS
+curl -s -o /dev/null -w '%{http_code}\n' https://$PUBLIC_HOST/api/config  # 200
+curl -sk -o /dev/null -w '%{http_code}\n' https://$SITE_HOST/api/config   # 200
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://$SITE_HOST/  # 301 -> https
 ```
 
 ## Certificate trust
 
 Caddy automatically obtains and renews a publicly trusted certificate for
-`aiclimate.aiforactuaries.org`; DNS must resolve to this host and ports 80/443 must
+`$PUBLIC_HOST`; DNS must resolve to this host and ports 80/443 must
 be reachable for issuance and renewal.
 
 The private-IP site uses Caddy's local CA, so clients connecting to the IP show
@@ -125,7 +128,7 @@ this only for private-IP scripted checks. Public checks should not use `-k`.
 ## Gotcha: bare-IP TLS needs `default_sni`
 
 RFC 6066 forbids IP literals in the TLS SNI extension, so a client connecting to
-`https://172.31.10.77` sends **no** SNI. Without a `default_sni` in the global
+`https://$SITE_HOST` sends **no** SNI. Without a `default_sni` in the global
 options block, Caddy cannot match a site block and aborts the handshake with:
 
 ```
@@ -176,14 +179,16 @@ work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
    a restart for either service in this step.
 4. Verify all of the following before considering the switch complete:
    ```bash
+   # substitute this host's own names first:
+   #   NEW_HOST=<this host's public DNS name>   OLD_HOST=<the previous one>
    # Caddy is serving the new hostname
-   curl -s -o /dev/null -w '%{http_code}\n' https://<new-host>/api/config   # 200
+   curl -s -o /dev/null -w '%{http_code}\n' "https://$NEW_HOST/api/config"   # 200
 
    # wiki picked up the new CLIMATE_PUBLIC_ORIGIN (not the old one)
    docker exec climate-wiki-app printenv CLIMATE_PUBLIC_ORIGIN
 
    # the old hostname no longer serves this deployment
-   curl -sk -o /dev/null -w '%{http_code}\n' https://<old-host>/ || true
+   curl -sk -o /dev/null -w '%{http_code}\n' "https://$OLD_HOST/" || true
    ```
    `CLIMATE_PUBLIC_ORIGIN` is not exposed via any HTTP response (it only
    gates the Hermes dashboard's WebSocket same-origin check internally in
@@ -220,6 +225,122 @@ stdout/stderr reaches Docker. This prevents an outage-time callback from leaking
 credentials at the cost of omitting query parameters from Caddy process-log
 diagnostics. Non-callback access-log records are unaffected.
 
+## Upgrade checklist
+
+Run this list for every image or commit upgrade of this stack.
+`climate_monitor_update.sh` is a convenience wrapper, not a substitute for these
+gates: each item is a stop condition, not a warning. Keep scheduled writers disabled
+until every gate below passes.
+
+1. **Pin the target.** Record the target commit and the running image
+   (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
+   image tagged for rollback. The scheduler that owns the four slots
+   (`monitor`, `email`, `publisher`, `registry` — `SCHEDULE` in
+   `scripts/hermes_job.py`) lives on the host, outside this repository, and pins the
+   revision and image it will accept; update those pins in the same change
+   that starts the new image. What this repository can verify is the slot's own
+   preflight, which returns before dispatch: run it with the flags, environment and run
+   date the schedule gives that slot (see the slot table in
+   [biweekly-et-deployment.md](biweekly-et-deployment.md); `REPORT_DATE` is the Monday
+   the run belongs to, and the monitor slot uses the managed path):
+
+   ```bash
+   # substitute the Monday this run belongs to, then run one slot:
+   export REPORT_DATE="${REPORT_DATE:-$(date -d 'last monday' +%F)}"
+   # prints {"status": "preflight_passed", ...}
+   .venv/bin/python scripts/hermes_job.py monitor --managed --preflight
+   .venv/bin/python scripts/hermes_job.py email --preflight
+
+   ```
+   Then the candidate image itself: it has no project `.venv` (dependencies are global
+   and the image carries a separate Playwright runtime), so call
+   `/usr/local/bin/python` and bypass the entrypoint, which seeds task config and
+   creates run directories. This template is schematic -- add the environment and the
+   mounts that slot gets, plus the candidate image tag:
+
+   ```text
+   docker run --rm --entrypoint /usr/local/bin/python \
+     -e REPORT_DATE="$REPORT_DATE" \
+     <the environment and mounts that slot gets> \
+     <candidate image> scripts/hermes_job.py monitor --managed --preflight
+   ```
+
+   The host run checks the deployment state; the container run checks the candidate
+   image. Both need the environment and the mounts the schedule provides for that slot,
+   which live on the host and not in this repository; without them the preflight fails
+   closed with a JSON verdict. Start the new image only after step 2 passes: a schema
+   mismatch makes the write side fail closed.
+2. **Registry schema — both databases.** Compare the schema the new image requires
+   (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
+   `PRAGMA user_version` of **each** database in the table below. Both files must be
+   at the required schema before the write side runs, and each needs its own
+   invocation — the commands in [article-registry.md](article-registry.md) take an
+   explicit database:
+
+   ```bash
+   # substitute this host's own paths first
+   : "${CLIMATE_REGISTRY_HOST_DIR:?export CLIMATE_REGISTRY_HOST_DIR first}"
+   CLIMATE_WIKI_HOME="${CLIMATE_WIKI_HOME:-$(pwd -P)}"
+   CLIMATE_REGISTRY_DB="$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
+   CLIMATE_BACKUP_DIR="/path/to/backup"   # outside the source tree
+
+   # read-only: reports pending migrations, new reports and conflicts
+   .venv/bin/python -m climate_registry plan-update \
+     --source-dir "$CLIMATE_WIKI_HOME/sources" --database "$CLIMATE_REGISTRY_DB"
+
+   # the mutation, per database
+   .venv/bin/python -m climate_registry update \
+     --source-dir "$CLIMATE_WIKI_HOME/sources" --database "$CLIMATE_REGISTRY_DB" \
+     --backup-dir "$CLIMATE_BACKUP_DIR"
+   ```
+
+   Gates around it:
+   - writers quiesced (no producer container, no slot mid-run): `update` takes an
+     exclusive lock and stops on active `-wal`, `-shm` or rollback-journal sidecars —
+     reconcile those first, never delete them to get past the check;
+   - a verified private full-database backup with its sidecars, exact path/role
+     identity and hashes, taken before the migration;
+   - read the plan before applying it: `update` imports reports as well as migrating
+     schema, `--source-dir` must be the report history of *that* database, and a
+     conflict aborts the update rather than resolving itself;
+   - after `update`, read back `PRAGMA user_version` and `PRAGMA integrity_check` for
+     the migrated file, and re-run `plan-update`: it must report no pending migration
+     and no new reports. That no-op is the cheap proof the migration converged, and
+     it holds for a second database only when that database was migrated too.
+3. **Inference identity.** A new binding strips the task definition's
+   `provider`/`model`, so those fields are not what the run uses; an already-frozen
+   binding keeps the `provider`/`model` it recorded, and the acquisition path resolves
+   the ambient Hermes identity from its own configuration and credentials. To change
+   what a slot runs, change the environment and config the slot inherits, and verify
+   the identity recorded in the produced artifact rather than the task definition.
+4. **Preflight and canaries.** Before enabling the slots,
+   `python -m scripts.preflight_registry --host-dir "$CLIMATE_REGISTRY_HOST_DIR"`
+   exits 0 (it rejects relative, missing or in-repository host directories, invalid
+   or corrupt databases, failed SQLite checks, and any sidecar). Then confirm public
+   `/api/health` and `/api/registry/status` return 200, the checkout is still clean on
+   `main`, and no producer container is left behind.
+5. **Rollback pair.** Keep the previous image tag and the step-2 snapshots until a
+   full cycle completes; the rollback pair is (image tag, whole-database snapshot).
+   Restoring a snapshot after newer writes exist discards them, so it needs the
+   explicit data-loss decision described in
+   [biweekly-et-deployment.md](biweekly-et-deployment.md); never downgrade the schema
+   or restore rows selectively to avoid that decision.
+
+The two Registry databases are separate files with different roles, and both must be
+at the required schema before the write side runs:
+
+| Database | Host path | In-container path | Writer |
+| --- | --- | --- | --- |
+| Public/site Registry | the directory named by `CLIMATE_REGISTRY_HOST_DIR` (required, no default — see `docker-compose.registry.yml`) | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
+| Runtime Registry | the `climate_runtime` Compose volume (`docker volume inspect` for the host path) | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
+
+Deployment-specific values — host paths, hostnames and credentials — belong to the
+host and to the untracked `.env`, not to tracked documentation: new and edited content
+refers to them by the environment variable or Compose key that names them, never by
+value. Older sections of this document and of
+[biweekly-et-deployment.md](biweekly-et-deployment.md) still carry literal host values
+written before that rule; replacing them is tracked separately.
+
 ## Optional Hermes Dashboard
 
 The Dashboard is disabled by default. This fail-safe keeps an existing Wiki,
@@ -231,8 +352,9 @@ To opt in, add both settings to `.env` in one operator-reviewed change before
 recreating the application service:
 
 ```text
+# Replace every <...> placeholder below with this host's own value.
 HERMES_DASHBOARD_ENABLED=1
-CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
+CLIMATE_PUBLIC_ORIGIN=https://<host-public-dns>
 ```
 
 The origin must be the exact browser-facing HTTPS origin with no path,
@@ -258,7 +380,7 @@ made by a logged-in website operator affect the host Hermes instance, and the
 Gateway shown in the Dashboard is the host Gateway. Enable it only when those
 operators should have the same management capability as a host Hermes user.
 
-Keep the host Hermes home private. Do not mount `/home/ubuntu/.hermes` or its
+Keep the host Hermes home private. Do not mount the host Hermes home (`$HERMES_HOME`) or its
 configuration into the application container. The only shared directory is a
 private relay directory containing:
 
@@ -285,8 +407,9 @@ current full deployment, append the host override after the Registry, delivery,
 weekly-status, and scheduler-status overrides:
 
 ```text
-HERMES_DASHBOARD_RELAY_DIR=/run/user/1000/climate-hermes-relay
-CLIMATE_PUBLIC_ORIGIN=https://aiclimate.aiforactuaries.org
+# Replace every <...> placeholder below with this host's own value.
+HERMES_DASHBOARD_RELAY_DIR=<host-relay-dir>
+CLIMATE_PUBLIC_ORIGIN=https://<host-public-dns>
 ```
 
 ```bash
@@ -443,7 +566,9 @@ but does not perform the wrapper's filesystem check. An unknown or
 unrecognizable subcommand fails closed without starting Docker.
 
 ```bash
-export CLIMATE_REGISTRY_HOST_DIR=/home/ubuntu/climate_monitor_data/registry
+export CLIMATE_REGISTRY_HOST_DIR=/path/to/registry   # outside the checkout, on the host
+# Optional: CLIMATE_REGISTRY_USER_AGENT replaces the crawler's advertised
+# contact URL; leave it unset to keep the built-in value.
 
 docker compose -f docker-compose.yml config --quiet
 .venv/bin/python -m scripts.safe_compose \
@@ -494,9 +619,10 @@ docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
 
 docker compose restart caddy
 
-curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/health
+set -a; . ./.env; set +a   # PUBLIC_HOST comes from the untracked .env
+curl --fail-with-body -sS https://$PUBLIC_HOST/api/health
 
-curl --fail-with-body -sS https://aiclimate.aiforactuaries.org/api/registry/status \
+curl --fail-with-body -sS https://$PUBLIC_HOST/api/registry/status \
   | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("available") is True; print(data)'
 ```
 
@@ -660,7 +786,7 @@ actual server inventory and gates in [PIPELINE_REFERENCE.md](../PIPELINE_REFEREN
    create or enable the 10:30 job in this stage.
 5. From the verified production checkout, bind the runbook paths to that exact
    checkout and the configured Publisher lock; do not copy a path from an older
-   `/srv` or `/home/ubuntu` example:
+   host example:
 
    ```bash
    CLIMATE_REPO="$(pwd -P)"
