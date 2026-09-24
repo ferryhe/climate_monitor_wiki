@@ -6,6 +6,11 @@ name: CI
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact reviewed commit SHA for the valid-target VM canary
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +20,503 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  clone3-valid-target:
+    # Disposable VM only; regular CI jobs run on separate runners, never in this root VM.
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-clone3-placement' && github.sha == inputs.reviewed_sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      # No checkout, third-party actions, secrets or OIDC. One fixed bootstrap.
+      - name: Fixed C atomic placement canary and retirement observer
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME:-}" != workflow_dispatch ||
+                "${GITHUB_REPOSITORY:-}" != ferryhe/climate_monitor_wiki ||
+                "${GITHUB_REF:-}" != refs/heads/agent/issue-158-clone3-placement ||
+                ! "${REVIEWED_SHA:-}" =~ ^[0-9a-f]{40}$ ||
+                "${GITHUB_SHA:-}" != "$REVIEWED_SHA" ||
+                "${RUNNER_ENVIRONMENT:-}" != github-hosted ||
+                "${GITHUB_ACTIONS:-}" != true || "$UID" == 0 || "$EUID" == 0 ]]; then
+            printf '%s\n' 'FAIL: requires exact dispatch and non-root GitHub-hosted runner' >&2
+            exit 1
+          fi
+          sudo -n /usr/bin/python3 -I -S - <<'PY'
+          # Fixed stdlib-only privileged bootstrap. No repo imports or dispatcher arguments.
+          # Runtime compilation is TEST ONLY; production must use separately built artifacts.
+          import hashlib
+          import json
+          import os
+          import pwd
+          import secrets
+          import stat
+          import subprocess
+          import time
+
+          SOURCE = r'''#define _GNU_SOURCE
+          #include <dirent.h>
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <grp.h>
+          #include <linux/capability.h>
+          #include <linux/magic.h>
+          #include <linux/sched.h>
+          #include <poll.h>
+          #include <pwd.h>
+          #include <signal.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/prctl.h>
+          #include <sys/stat.h>
+          #include <sys/statfs.h>
+          #include <sys/syscall.h>
+          #include <sys/wait.h>
+          #include <sys/xattr.h>
+          #include <time.h>
+          #include <unistd.h>
+
+          /* Disposable fixed-child experiment, NOT a production executor. No exec/fork,
+           * cgroup.procs writes, admission fallback, cgroup.kill or hostile workload. */
+          static int child = -1, pidfd = -1;
+          static double now(void) {
+              struct timespec t;
+              if (clock_gettime(CLOCK_MONOTONIC, &t)) _exit(110);
+              return t.tv_sec + t.tv_nsec / 1e9;
+          }
+          static void fail(const char *s) {
+              int e = errno;
+              fprintf(stderr, "FAIL %s errno=%d (%s)\n", s, e,
+                      strerrorname_np(e) ? strerrorname_np(e) : "UNKNOWN");
+              /* Only the clone-returned pidfd and our unreaped direct child are used.
+               * If either operation fails, leave recovery to this disposable VM. */
+              if (child > 0 && pidfd >= 0) {
+                  if (syscall(SYS_pidfd_send_signal, pidfd, SIGKILL, NULL, 0) == 0) {
+                      double end = now() + 2;
+                      int status;
+                      while (now() < end) {
+                          pid_t p = waitpid(child, &status, WNOHANG);
+                          if (p == child || (p < 0 && errno != EINTR)) break;
+                          struct timespec t = {0, 10000000}; nanosleep(&t, NULL);
+                      }
+                  }
+              }
+              exit(1);
+          }
+          #define CHECK(x) do { if (!(x)) fail(#x); } while (0)
+          static struct stat identity(int fd) {
+              struct stat s;
+              CHECK(fstat(fd, &s) == 0);
+              CHECK(s.st_uid == 0 && s.st_gid == 0 && !(s.st_mode & 0022));
+              return s;
+          }
+          static int directory(int parent, const char *name) {
+              int fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+              CHECK(fd >= 0); identity(fd); return fd;
+          }
+          static void same(int parent, const char *name, int fd, struct stat saved) {
+              struct stat a = identity(fd), b;
+              CHECK(fstatat(parent, name, &b, AT_SYMLINK_NOFOLLOW) == 0);
+              CHECK(S_ISDIR(b.st_mode) && b.st_uid == 0 && b.st_gid == 0 && !(b.st_mode & 0022));
+              CHECK(a.st_dev == saved.st_dev && a.st_ino == saved.st_ino);
+              CHECK(b.st_dev == a.st_dev && b.st_ino == a.st_ino);
+          }
+          static void readat(int parent, const char *name, char *buf, size_t size) {
+              /* All cgroup.procs accesses go through this READ ONLY helper. */
+              int fd = openat(parent, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+              CHECK(fd >= 0);
+              ssize_t n = read(fd, buf, size - 1);
+              CHECK(n >= 0 && (size_t)n < size - 1); buf[n] = 0;
+              char extra; CHECK(read(fd, &extra, 1) == 0); CHECK(close(fd) == 0);
+          }
+          static void exact(int parent, const char *name, const char *expected) {
+              char b[8192]; readat(parent, name, b, sizeof b); CHECK(strcmp(b, expected) == 0);
+          }
+          static void populated(int payload, char value) {
+              char b[1024]; readat(payload, "cgroup.events", b, sizeof b);
+              char *p = strncmp(b, "populated ", 10) == 0 ? b : strstr(b, "\npopulated ");
+              CHECK(p != NULL); if (*p == '\n') ++p;
+              CHECK(p[10] == value && p[11] == '\n');
+          }
+          static void record(int dir, const char *name, const char *data) {
+              char tmp[64]; CHECK(snprintf(tmp, sizeof tmp, "%s.tmp", name) > 0);
+              int fd = openat(dir, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0400);
+              CHECK(fd >= 0); CHECK(write(fd, data, strlen(data)) == (ssize_t)strlen(data));
+              CHECK(fsync(fd) == 0); CHECK(close(fd) == 0);
+              CHECK(renameat(dir, tmp, dir, name) == 0);
+          }
+          static void byte(int fd, char expected) {
+              struct pollfd p = {fd, POLLIN, 0};
+              CHECK(poll(&p, 1, 3000) == 1 && (p.revents & POLLIN));
+              char b; CHECK(read(fd, &b, 1) == 1 && b == expected);
+          }
+          static void privileges(pid_t pid) {
+              char path[128], b[8192];
+              snprintf(path, sizeof path, "/proc/%d/status", pid); readat(AT_FDCWD, path, b, sizeof b);
+              const char *fields[] = {"\nUid:\t65534\t65534\t65534\t65534\n",
+                  "\nGid:\t65534\t65534\t65534\t65534\n", "\nGroups:\t\n", "\nNoNewPrivs:\t1\n",
+                  "\nCapInh:\t0000000000000000\n", "\nCapPrm:\t0000000000000000\n",
+                  "\nCapEff:\t0000000000000000\n", "\nCapBnd:\t0000000000000000\n",
+                  "\nCapAmb:\t0000000000000000\n"};
+              for (size_t i = 0; i < sizeof fields / sizeof *fields; ++i) CHECK(strstr(b, fields[i]));
+              snprintf(path, sizeof path, "/proc/%d/fd", pid);
+              DIR *d = opendir(path); CHECK(d); struct dirent *entry; int count = 0;
+              while ((entry = readdir(d))) {
+                  if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+                  CHECK(!strcmp(entry->d_name, "3") || !strcmp(entry->d_name, "4"));
+                  char link[256], target[256];
+                  snprintf(link, sizeof link, "/proc/%d/fd/%s", pid, !strcmp(entry->d_name, "3") ? "3" : "4");
+                  ssize_t n = readlink(link, target, sizeof target - 1); CHECK(n > 0); target[n] = 0;
+                  CHECK(!strncmp(target, "pipe:[", 6)); ++count;
+              }
+              CHECK(count == 2); CHECK(closedir(d) == 0);
+          }
+          int main(int argc, char **argv) {
+              CHECK(argc == 4 && getuid() == 0 && geteuid() == 0 && getgid() == 0);
+              const char *nonce = argv[1], *source_hash = argv[2], *elf_hash = argv[3];
+              CHECK(strlen(nonce) == 32 && strspn(nonce, "0123456789abcdef") == 32);
+              CHECK(strlen(source_hash) == 64 && strspn(source_hash, "0123456789abcdef") == 64);
+              CHECK(strlen(elf_hash) == 64 && strspn(elf_hash, "0123456789abcdef") == 64);
+              const char *inv = getenv("INVOCATION_ID");
+              CHECK(inv && strlen(inv) == 32 && strspn(inv, "0123456789abcdef") == 32);
+              char unit[96], group[160], supervisor_path[192], payload_path[192], work[96];
+              snprintf(unit, sizeof unit, "issue158-%s.service", nonce);
+              snprintf(group, sizeof group, "/system.slice/%s", unit);
+              snprintf(supervisor_path, sizeof supervisor_path, "0::%s/supervisor\n", group);
+              snprintf(payload_path, sizeof payload_path, "0::%s/payload\n", group);
+              snprintf(work, sizeof work, "issue158-%s", nonce);
+              int run = directory(AT_FDCWD, "/run"), out = directory(run, work);
+              int sys = directory(AT_FDCWD, "/sys"), fs = directory(sys, "fs");
+              int cg = directory(fs, "cgroup"), slice = directory(cg, "system.slice");
+              struct statfs magic; CHECK(fstatfs(cg, &magic) == 0 && magic.f_type == CGROUP2_SUPER_MAGIC);
+              int root = directory(slice, unit), supervisor = directory(root, "supervisor");
+              struct stat ri = identity(root), si = identity(supervisor);
+              char marker[8]; CHECK(fgetxattr(root, "user.delegate", marker, sizeof marker) == 1 && marker[0] == '1');
+              exact(AT_FDCWD, "/proc/self/cgroup", supervisor_path); exact(root, "cgroup.procs", "");
+              char broker_pid[32]; snprintf(broker_pid, sizeof broker_pid, "%d\n", getpid());
+              exact(supervisor, "cgroup.procs", broker_pid);
+              CHECK(mkdirat(root, "payload", 0755) == 0);
+              int payloadfd = directory(root, "payload"); struct stat pi = identity(payloadfd);
+              CHECK(ri.st_dev == si.st_dev && ri.st_dev == pi.st_dev);
+              exact(payloadfd, "cgroup.procs", ""); populated(payloadfd, '0');
+              struct passwd *account = getpwnam("nobody");
+              CHECK(account && account->pw_uid == 65534 && account->pw_gid == 65534);
+              char cap_text[32]; readat(AT_FDCWD, "/proc/sys/kernel/cap_last_cap", cap_text, sizeof cap_text);
+              CHECK(atoi(cap_text) == CAP_LAST_CAP); /* Fail closed if build/runtime UAPI differ. */
+              int ready[2], go[2]; CHECK(pipe2(ready, O_CLOEXEC) == 0 && pipe2(go, O_CLOEXEC) == 0);
+              CHECK(ready[1] > 4 && go[0] > 4);
+              struct clone_args args = {0};
+              args.flags = CLONE_INTO_CGROUP | CLONE_PIDFD;
+              args.pidfd = (uint64_t)(uintptr_t)&pidfd;
+              args.cgroup = payloadfd;
+              args.exit_signal = SIGCHLD;
+              long created = syscall(SYS_clone3, &args, sizeof args);
+              if (created == 0) {
+                  /* Single-threaded, no libc allocation/stdio/NSS/locks in child. Only
+                   * open/read/close/dup2/write/_exit and Linux syscall wrappers below.
+                   * First observation is its own cgroup, before READY or any GO work. */
+                  char observed[192];
+                  int fd = open("/proc/self/cgroup", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+                  if (fd < 0) _exit(101);
+                  ssize_t n = read(fd, observed, sizeof observed); close(fd);
+                  size_t i = 0;
+                  while (i < sizeof payload_path && payload_path[i]) ++i;
+                  if (n != (ssize_t)i) _exit(102);
+                  for (size_t j = 0; j < i; ++j) if (observed[j] != payload_path[j]) _exit(103);
+                  if (dup2(ready[1], 3) != 3 || dup2(go[0], 4) != 4) _exit(104);
+                  close(0); close(1); close(2);
+                  if (syscall(SYS_close_range, 5U, ~0U, 0U)) _exit(105);
+                  for (int c = 0; c <= CAP_LAST_CAP; ++c)
+                      if (prctl(PR_CAPBSET_DROP, c, 0L, 0L, 0L)) _exit(106);
+                  if (setgroups(0, NULL) || setresgid(65534, 65534, 65534) ||
+                      setresuid(65534, 65534, 65534) || prctl(PR_SET_NO_NEW_PRIVS, 1, 0L, 0L, 0L)) _exit(107);
+                  if (write(3, "R", 1) != 1) _exit(108);
+                  /* Parent monotonic deadline + service RuntimeMaxSec bound this read. */
+                  char b; if (read(4, &b, 1) != 1 || b != 'G') _exit(109);
+                  close(3); close(4); _exit(0);
+              }
+              CHECK(created > 0); child = (pid_t)created; CHECK(pidfd >= 0);
+              close(ready[1]); close(go[0]); byte(ready[0], 'R'); close(ready[0]);
+              char child_path[96], child_pid[32];
+              snprintf(child_path, sizeof child_path, "/proc/%d/cgroup", child);
+              snprintf(child_pid, sizeof child_pid, "%d\n", child);
+              char binding[2048];
+              int length = snprintf(binding, sizeof binding, "%s\n%s\n%s\n%s\n%d\n%d\n%s\n%s\n",
+                                    nonce, unit, inv, group, getpid(), child, source_hash, elf_hash);
+              CHECK(length > 0 && length < (int)sizeof binding);
+              /* Check both before announcing READY and immediately before GO. */
+              for (int phase = 0; phase < 2; ++phase) {
+                  CHECK(getuid() == 0 && geteuid() == 0 && getgid() == 0 && getegid() == 0);
+                  same(slice, unit, root, ri); same(root, "supervisor", supervisor, si); same(root, "payload", payloadfd, pi);
+                  CHECK(fgetxattr(root, "user.delegate", marker, sizeof marker) == 1 && marker[0] == '1');
+                  exact(AT_FDCWD, "/proc/self/cgroup", supervisor_path);
+                  exact(root, "cgroup.procs", ""); exact(supervisor, "cgroup.procs", broker_pid);
+                  exact(AT_FDCWD, child_path, payload_path); exact(payloadfd, "cgroup.procs", child_pid);
+                  populated(payloadfd, '1'); privileges(child);
+                  struct pollfd live = {pidfd, POLLIN, 0}; CHECK(poll(&live, 1, 0) == 0);
+                  if (phase == 0) {
+                      record(out, "ready", binding);
+                      double deadline = now() + 10;
+                      struct stat a;
+                      while (fstatat(out, "ack", &a, AT_SYMLINK_NOFOLLOW) != 0) {
+                          CHECK(errno == ENOENT && now() < deadline);
+                          struct timespec t = {0, 10000000}; nanosleep(&t, NULL);
+                      }
+                      CHECK(S_ISREG(a.st_mode) && a.st_uid == 0 && a.st_gid == 0 &&
+                            (a.st_mode & 0777) == 0400 && a.st_nlink == 1);
+                      exact(out, "ack", binding);
+                  }
+              }
+              CHECK(write(go[1], "G", 1) == 1); close(go[1]);
+              struct pollfd exited = {pidfd, POLLIN, 0};
+              CHECK(poll(&exited, 1, 3000) == 1 && (exited.revents & POLLIN));
+              int status; CHECK(waitpid(child, &status, WNOHANG) == child);
+              child = -1; CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0); close(pidfd); pidfd = -1;
+              populated(payloadfd, '0'); exact(payloadfd, "cgroup.procs", "");
+              same(slice, unit, root, ri); same(root, "supervisor", supervisor, si); same(root, "payload", payloadfd, pi);
+              exact(root, "cgroup.procs", ""); exact(supervisor, "cgroup.procs", broker_pid);
+              exact(AT_FDCWD, "/proc/self/cgroup", supervisor_path);
+              close(payloadfd); CHECK(unlinkat(root, "payload", AT_REMOVEDIR) == 0);
+              record(out, "result", binding); return 0;
+          }
+          '''
+          SOURCE_SHA256 = '318949bb431cdfaeee9155a1c4a21caffecbea5c2c53f749f749e63c87719deb'
+          SOURCE_BYTES = 11917
+          ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
+
+
+          def require(ok, label):
+              if not ok:
+                  raise RuntimeError(label)
+
+
+          def command(args, timeout=3):
+              return subprocess.run(args, check=True, capture_output=True, text=True,
+                                    env=ENV, cwd='/', timeout=timeout).stdout.strip()
+
+
+          def trusted(fd, mode, regular=True):
+              s = os.fstat(fd)
+              require(s.st_uid == s.st_gid == 0 and stat.S_IMODE(s.st_mode) == mode,
+                      'owner/mode')
+              require(stat.S_ISREG(s.st_mode) if regular else stat.S_ISDIR(s.st_mode), 'file type')
+              if regular:
+                  require(s.st_nlink == 1, 'link count')
+              return s
+
+
+          def stamp(s):
+              return s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns
+
+
+          def read_record(name):
+              fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=workfd)
+              try:
+                  s = trusted(fd, 0o400)
+                  require(0 < s.st_size < 4096, 'record size')
+                  data = os.read(fd, 4096)
+                  require(len(data) == s.st_size and os.read(fd, 1) == b'', 'record read')
+                  require(stamp(s) == stamp(os.stat(name, dir_fd=workfd, follow_symlinks=False)),
+                          'record replaced')
+                  return data
+              finally:
+                  os.close(fd)
+
+
+          def absent(path):
+              try:
+                  os.lstat(path)
+                  return False
+              except FileNotFoundError:
+                  return True
+
+
+          def properties():
+              return dict(line.split('=', 1) for line in command([
+                  '/usr/bin/systemctl', 'show', unit, '--all',
+                  '--property=Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,FragmentPath,'
+                  'MainPID,Delegate,DelegateSubgroup,User,Group,Type,Restart,PrivateNetwork'
+              ]).splitlines())
+
+
+          def live(p, inspect_process=True):
+              require(all(p.get(k) == v for k, v in {
+                  'Id': unit, 'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'running',
+                  'ControlGroup': group, 'FragmentPath': fragment, 'Delegate': 'yes',
+                  'DelegateSubgroup': 'supervisor', 'User': 'root', 'Group': 'root',
+                  'Type': 'exec', 'Restart': 'no', 'PrivateNetwork': 'yes',
+              }.items()), 'live service properties')
+              require(len(p['InvocationID']) == 32 and
+                      all(c in '0123456789abcdef' for c in p['InvocationID']), 'invocation format')
+              require(p['MainPID'].isascii() and p['MainPID'].isdecimal() and int(p['MainPID']) > 1,
+                      'broker PID')
+              if not inspect_process:
+                  return  # After ACK the broker may exit between show and /proc reads.
+              fd = os.open('/proc/' + p['MainPID'] + '/exe', os.O_RDONLY | os.O_CLOEXEC)
+              # /proc/PID/exe is deliberately followed; validate the actual pinned ELF inode.
+              try:
+                  require(stamp(trusted(fd, 0o500)) == elf_identity, 'live ELF identity')
+              finally:
+                  os.close(fd)
+              with open('/proc/' + p['MainPID'] + '/cgroup', encoding='ascii') as inp:
+                  require(inp.read() == '0::' + group + '/supervisor\n', 'live broker placement')
+
+
+          diagnostics = {'phase': 'preflight'}
+          try:
+              require(os.getuid() == os.geteuid() == 0, 'root bootstrap')
+              os.umask(0o077)
+              with open('/etc/os-release', encoding='ascii') as inp:
+                  release = dict(line.split('=', 1) for line in inp.read().splitlines() if '=' in line)
+              require(release['ID'].strip('"') == 'ubuntu' and release['VERSION_ID'].strip('"') == '24.04',
+                      'Ubuntu 24.04 required')
+              with open('/proc/1/comm', encoding='ascii') as inp:
+                  require(inp.read().strip() == 'systemd', 'PID1')
+              require(command(['/usr/bin/systemd-detect-virt', '--vm']) not in ('none', ''), 'VM required')
+              require(command(['/usr/bin/systemctl', '--version']).splitlines()[0].startswith('systemd 255 '),
+                      'reviewed systemd 255 contract')
+              account = pwd.getpwnam('nobody')
+              require(account.pw_uid == account.pw_gid == 65534, 'fixed nobody numeric identity')
+              source = SOURCE.encode('ascii')
+              require(len(source) == SOURCE_BYTES and hashlib.sha256(source).hexdigest() == SOURCE_SHA256,
+                      'fixed inline source digest/byte count')
+              require(os.path.isfile('/usr/bin/cc') and os.access('/usr/bin/cc', os.X_OK), 'cc unavailable')
+              runfd = os.open('/run', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+              s = os.fstat(runfd)
+              require(stat.S_ISDIR(s.st_mode) and s.st_uid == s.st_gid == 0 and not s.st_mode & 0o022,
+                      '/run ownership')
+              nonce = secrets.token_hex(16)
+              name = 'issue158-' + nonce
+              directory = '/run/' + name
+              require(absent(directory), 'existing install path')
+              os.mkdir(name, mode=0o700, dir_fd=runfd)  # Exclusive: EEXIST fails; never reuse.
+              workfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=runfd)
+              work_identity = stamp(trusted(workfd, 0o700, regular=False))[:2]
+              unit = name + '.service'
+              group = '/system.slice/' + unit
+              fragment = '/run/systemd/transient/' + unit
+              require(absent(fragment) and absent('/sys/fs/cgroup' + group), 'existing service path')
+              require(properties()['LoadState'] == 'not-found', 'existing service unit')
+              diagnostics.update(nonce=nonce, unit=unit, phase='compile')
+              fd = os.open('broker.c', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=workfd)
+              try:
+                  require(os.write(fd, source) == len(source), 'source write')
+                  os.fsync(fd)
+                  source_identity = stamp(trusted(fd, 0o400))
+              finally:
+                  os.close(fd)
+              # Reserve ELF pathname exclusively before compiler opens it in root-only directory.
+              fd = os.open('broker', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o500, dir_fd=workfd)
+              trusted(fd, 0o500)
+              os.close(fd)
+              command(['/usr/bin/cc', '-x', 'c', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                       '-o', directory + '/broker', directory + '/broker.c'], timeout=20)
+              # A linker may replace the reserved inode. Pin the completed ELF now, then
+              # require precisely that inode and digest immediately before service submission.
+              fd = os.open('broker', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=workfd)
+              try:
+                  os.fchmod(fd, 0o500)
+                  os.fsync(fd)
+                  s = trusted(fd, 0o500)
+                  require(0 < s.st_size < 1048576, 'ELF size')
+                  elf = os.read(fd, 1048576)
+                  require(len(elf) == s.st_size and elf[:4] == b'\x7fELF', 'ELF bytes')
+                  elf_hash = hashlib.sha256(elf).hexdigest()
+                  elf_identity = stamp(s)
+              finally:
+                  os.close(fd)
+              for filename, expected_stamp, expected_digest, mode in (
+                  ('broker.c', source_identity, SOURCE_SHA256, 0o400),
+                  ('broker', elf_identity, elf_hash, 0o500),
+              ):
+                  fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=workfd)
+                  try:
+                      require(stamp(trusted(fd, mode)) == expected_stamp, 'installed inode changed')
+                      require(hashlib.sha256(os.read(fd, 1048576)).hexdigest() == expected_digest,
+                              'installed hash changed')
+                      require(stamp(os.stat(filename, dir_fd=workfd, follow_symlinks=False)) == expected_stamp,
+                              'installed path changed')
+                  finally:
+                      os.close(fd)
+              os.fsync(workfd)
+              require(stamp(os.stat(directory, follow_symlinks=False))[:2] == work_identity, 'install directory changed')
+              diagnostics['phase'] = 'observe'
+              deadline = time.monotonic() + 65
+              command(['/usr/bin/systemd-run', '--system', '--collect', '--no-block', '--unit=' + unit,
+                       '--property=Type=exec', '--property=User=root', '--property=Group=root',
+                       '--property=Delegate=yes', '--property=DelegateSubgroup=supervisor',
+                       '--property=PrivateNetwork=yes', '--property=Restart=no',
+                       '--property=RuntimeMaxSec=40s', '--property=TimeoutStopSec=3s',
+                       '--property=JobRunningTimeoutSec=5s', '--property=TimeoutStartSec=5s',
+                       '--property=UMask=0077', '--property=WorkingDirectory=/',
+                       '--property=StandardOutput=null', '--property=StandardError=journal',
+                       directory + '/broker', nonce, SOURCE_SHA256, elf_hash])
+              binding = None
+              observed = None
+              while time.monotonic() < deadline:
+                  p = properties()
+                  diagnostics['last_unit'] = p
+                  require(p['ActiveState'] != 'failed', 'service failed; VM teardown required')
+                  if observed is not None and p['InvocationID']:
+                      require(p['InvocationID'] == observed[0], 'invocation changed during retirement')
+                  if p['ActiveState'] == 'active':
+                      live(p, inspect_process=binding is None)
+                      current = (p['InvocationID'], p['MainPID'])
+                      require(observed is None or observed == current, 'service identity changed')
+                      observed = current
+                      if binding is None and not absent(directory + '/ready'):
+                          ready = read_record('ready')
+                          fields = ready.decode('ascii').splitlines()
+                          require(len(fields) == 8, 'READY field count')
+                          child_pid = fields[5]
+                          require(child_pid.isascii() and child_pid.isdecimal() and int(child_pid) > 1
+                                  and child_pid != p['MainPID'], 'child PID format')
+                          expected = '\n'.join([nonce, unit, p['InvocationID'], group, p['MainPID'],
+                                                child_pid, SOURCE_SHA256, elf_hash]) + '\n'
+                          require(ready == expected.encode('ascii'), 'READY binding')
+                          # READY pins the live broker: it cannot finish before this ACK.
+                          again = properties()
+                          live(again)
+                          require((again['InvocationID'], again['MainPID']) == observed, 'pre-ACK identity lost')
+                          fd = os.open('ack.tmp', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                       0o400, dir_fd=workfd)
+                          try:
+                              trusted(fd, 0o400)
+                              require(os.write(fd, ready) == len(ready), 'ACK write')
+                              os.fsync(fd)
+                          finally:
+                              os.close(fd)
+                          os.rename('ack.tmp', 'ack', src_dir_fd=workfd, dst_dir_fd=workfd)
+                          binding = ready
+                  if p['LoadState'] == 'not-found' and binding is not None:
+                      require(all(p.get(k) == v for k, v in {
+                          'ActiveState': 'inactive', 'SubState': 'dead', 'InvocationID': '',
+                          'ControlGroup': '', 'FragmentPath': '', 'MainPID': '0',
+                      }.items()), 'unit retirement')
+                      require(read_record('result') == binding, 'exact result binding')
+                      require(absent(fragment) and absent('/sys/fs/cgroup' + group), 'fragment/cgroup retirement')
+                      print(json.dumps({'synthetic_atomic_placement_proven': True,
+                                        'production_atomic_containment': False, 'real_cleanup_proven': False,
+                                        'scope': 'fixed single-child C bootstrap; no adversarial fork',
+                                        'source_sha256': SOURCE_SHA256, 'source_bytes': SOURCE_BYTES,
+                                        'elf_sha256': elf_hash, 'nonce': nonce, 'unit': unit,
+                                        'invocation': observed[0], 'broker_pid': int(observed[1]),
+                                        'child_pid': int(child_pid)}, sort_keys=True))
+                      break
+                  time.sleep(0.05)
+              else:
+                  raise RuntimeError('monotonic observer deadline; VM teardown required')
+          except BaseException as exc:
+              # Never emit a success boolean on any failure path. No guessed PID/unit kill.
+              print(json.dumps({'status': 'FAIL/unverified', 'reason': str(exc)[:300],
+                                'diagnostics': diagnostics, 'vm_teardown_required': True}, sort_keys=True))
+              raise
+          PY
+
   clone3-recognition:
     # Negative target-fd probe only; no valid placement or cleanup evidence.
     if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-clone3-canary' }}
