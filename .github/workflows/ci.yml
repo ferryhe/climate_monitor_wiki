@@ -162,7 +162,24 @@ jobs:
                   "\nCapInh:\t0000000000000000\n", "\nCapPrm:\t0000000000000000\n",
                   "\nCapEff:\t0000000000000000\n", "\nCapBnd:\t0000000000000000\n",
                   "\nCapAmb:\t0000000000000000\n"};
-              for (size_t i = 0; i < sizeof fields / sizeof *fields; ++i) CHECK(strstr(b, fields[i]));
+              const char *labels[] = {"\nUid:", "\nGid:", "\nGroups:", "\nNoNewPrivs:",
+                  "\nCapInh:", "\nCapPrm:", "\nCapEff:", "\nCapBnd:", "\nCapAmb:"};
+              for (size_t i = 0; i < sizeof fields / sizeof *fields; ++i) {
+                  if (strstr(b, fields[i])) continue;
+                  fprintf(stderr, "PRIVILEGE_MISMATCH field_index=%zu\n", i);
+                  for (size_t j = 0; j < sizeof labels / sizeof *labels; ++j) {
+                      const char *p = strstr(b, labels[j]);
+                      if (!p) {
+                          fprintf(stderr, "PRIVILEGE_STATUS field_index=%zu <missing>\n", j);
+                          continue;
+                      }
+                      ++p;
+                      size_t width = strcspn(p, "\n");
+                      if (width > 128) width = 128;
+                      fprintf(stderr, "PRIVILEGE_STATUS field_index=%zu %.*s\n", j, (int)width, p);
+                  }
+                  fail("privilege field mismatch");
+              }
               snprintf(path, sizeof path, "/proc/%d/fd", pid);
               DIR *d = opendir(path); CHECK(d); struct dirent *entry; int count = 0;
               while ((entry = readdir(d))) {
@@ -284,8 +301,8 @@ jobs:
               record(out, "result", binding); return 0;
           }
           '''
-          SOURCE_SHA256 = '318949bb431cdfaeee9155a1c4a21caffecbea5c2c53f749f749e63c87719deb'
-          SOURCE_BYTES = 11917
+          SOURCE_SHA256 = '78706bfe6f6d5bd6c102ef5cbddad7b4b606ece80e3acd8c2af7e8331471c93a'
+          SOURCE_BYTES = 12672
           ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
 
 
