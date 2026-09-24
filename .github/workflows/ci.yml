@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   python-tests:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-cleanup-canary') }}
     name: python-tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -54,6 +55,7 @@ jobs:
           python -m pytest -q
 
   fixtures-umask0002:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-cleanup-canary') }}
     name: fixtures-umask0002 (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -92,6 +94,7 @@ jobs:
             tests/test_issue161_source_permissions.py
 
   repository-checks:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-cleanup-canary') }}
     name: repository-checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -159,6 +162,7 @@ jobs:
           git diff-tree --check --root -r "$HEAD_SHA"
 
   docker-build-smoke:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-cleanup-canary') }}
     name: docker-build-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -251,4 +255,564 @@ jobs:
                   sort_keys=True,
               )
           )
+          PY
+
+  issue158-cleanup-canary:
+    name: Issue 158 synthetic delegated cleanup (disposable VM only)
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-cleanup-canary' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      # No checkout, actions, secrets, OIDC, providers or project dependencies.
+      # Live synthetic VM canary; does not prove production atomic launch containment.
+      - name: Fixed synthetic broker and independent retirement observer
+        shell: bash
+        run: |
+          /usr/bin/python3 -I -S - <<'PY'
+          # Workflow-owned fixed source only. Never import or execute checkout content.
+          import ast
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import secrets
+          import stat
+          import subprocess
+          import time
+
+          BROKER = r'''
+          import ctypes
+          import json
+          import os
+          from pathlib import Path
+          import pwd
+          import select
+          import signal
+          import stat
+          import subprocess
+          import time
+
+
+          def require(ok, label):
+              if not ok:
+                  raise RuntimeError(label)
+
+
+          def read_at(fd, name):
+              f = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+              try:
+                  return os.read(f, 8192).decode().strip()
+              finally:
+                  os.close(f)
+
+
+          def identity(fd):
+              s = os.fstat(fd)
+              require(s.st_uid == 0 and s.st_gid == 0 and not s.st_mode & 0o022,
+                      'untrusted cgroup owner/mode')
+              return s.st_dev, s.st_ino
+
+
+          def cgroup(pid):
+              lines = Path(f'/proc/{pid}/cgroup').read_text().splitlines()
+              require(len(lines) == 1 and lines[0].startswith('0::/'), 'not unified cgroup')
+              return lines[0][3:]
+
+
+          def properties():
+              p = subprocess.run(
+                  ['/usr/bin/systemctl', 'show', unit, '--all', '--property=InvocationID,ControlGroup,'
+                   'Delegate,DelegateSubgroup,MainPID,ActiveState,SubState'],
+                  check=True, capture_output=True, text=True, timeout=2,
+                  env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+              return dict(line.split('=', 1) for line in p.stdout.splitlines())
+
+
+          def verify_root():
+              p = properties()
+              require(p == {'InvocationID': invocation, 'ControlGroup': group,
+                           'Delegate': 'yes', 'DelegateSubgroup': 'supervisor',
+                           'MainPID': str(os.getpid()), 'ActiveState': 'active',
+                           'SubState': 'running'}, 'unit identity/state changed')
+              require(cgroup(os.getpid()) == group + '/supervisor', 'broker moved')
+              require(read_at(supervisor, 'cgroup.procs').split() == [str(os.getpid())],
+                      'supervisor membership')
+              require(read_at(root, 'cgroup.procs') == '', 'unit root not empty')
+              require(identity(root) == root_identity, 'root fd identity')
+              s = os.stat('/sys/fs/cgroup' + group, follow_symlinks=False)
+              require((s.st_dev, s.st_ino) == root_identity, 'root path replaced')
+              require(os.getxattr(root, 'user.delegate') == b'1', 'delegation marker')
+
+
+          def verify():
+              verify_root()
+              require(identity(payload) == payload_identity, 'payload fd identity')
+              s = os.stat('payload', dir_fd=root, follow_symlinks=False)
+              require((s.st_dev, s.st_ino) == payload_identity, 'payload path replaced')
+              require(set(os.listdir(root)) >= {'supervisor', 'payload'}, 'missing siblings')
+
+
+          def populated():
+              os.lseek(events, 0, os.SEEK_SET)
+              values = dict(line.split() for line in os.read(events, 8192).decode().splitlines())
+              require(values.get('populated') in ('0', '1'), 'invalid events')
+              return values['populated']
+
+
+          def recv(fd):
+              require(select.select([fd], [], [], 3)[0], 'handshake timeout')
+              data = os.read(fd, 128)
+              require(data and len(data) < 128, 'invalid handshake')
+              return data
+
+
+          def synthetic(ready, go, report):
+              # No cgroup FD survives this branch, including O_CLOEXEC FDs after fork.
+              for name in os.listdir('/proc/self/fd'):
+                  fd = int(name)
+                  if fd > 2 and fd not in (ready, go, report):
+                      try:
+                          os.close(fd)
+                      except OSError:
+                          pass
+              os.write(ready, b'READY')
+              os.close(ready)
+              require(recv(go) == b'GO', 'GO missing')
+              os.close(go)
+              account = pwd.getpwnam('nobody')
+              require(account.pw_uid != 0 and account.pw_gid != 0, 'nobody identity')
+              os.setgroups([])
+              os.setresgid(account.pw_gid, account.pw_gid, account.pw_gid)
+              os.setresuid(account.pw_uid, account.pw_uid, account.pw_uid)
+              require(libc.prctl(38, 1, 0, 0, 0) == 0, 'no_new_privs')
+              signal.signal(signal.SIGTERM, signal.SIG_IGN)
+              if os.fork() == 0:
+                  os.setsid()
+                  intermediate = os.getpid()
+                  if os.fork() != 0:
+                      os._exit(0)
+                  os.write(report, f'{intermediate} {os.getpid()}'.encode())
+              os.close(report)
+              while True:
+                  signal.pause()
+
+
+          def status(pid):
+              return dict(line.split(':', 1) for line in
+                          Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
+
+
+          nonce = Path(__file__).stem.removeprefix('issue158-')
+          require(len(nonce) == 32 and all(c in '0123456789abcdef' for c in nonce), 'nonce')
+          unit = 'issue158-' + nonce + '.service'
+          group = '/system.slice/' + unit
+          invocation = os.environ.get('INVOCATION_ID', '')
+          require(len(invocation) == 32 and all(c in '0123456789abcdef' for c in invocation),
+                  'invocation missing')
+          require(os.getuid() == 0 and cgroup(os.getpid()) == group + '/supervisor',
+                  'not service supervisor')
+          libc = ctypes.CDLL(None, use_errno=True)
+          require(libc.prctl(36, 1, 0, 0, 0) == 0, 'subreaper')
+          flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+          # Traverse pinned FDs; never write any non-delegated ancestor or unit root.
+          cgfs = os.open('/sys/fs/cgroup', flags)
+          slice_fd = os.open('system.slice', flags, dir_fd=cgfs)
+          root = os.open(unit, flags, dir_fd=slice_fd)
+          root_identity = identity(root)
+          supervisor = os.open('supervisor', flags, dir_fd=root)
+          require(os.getxattr(root, 'user.delegate') == b'1', 'not delegated')
+          verify_root()
+          # Publish identity before any payload fork/admission; only the observer can ACK.
+          binding = {'nonce': nonce, 'unit': unit, 'invocation': invocation,
+                     'broker_pid': os.getpid(), 'control_group': group}
+          run_fd = os.open('/run', flags)
+          identity(run_fd)
+          ready_name = 'issue158-' + nonce + '.ready'
+          ack_name = 'issue158-' + nonce + '.ack'
+          ready_fd = os.open(ready_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o444, dir_fd=run_fd)
+          with os.fdopen(ready_fd, 'w') as out:
+              json.dump(binding, out, sort_keys=True)
+              out.flush()
+              os.fchmod(out.fileno(), 0o444)
+              os.fsync(out.fileno())
+          os.fsync(run_fd)
+          deadline = time.monotonic() + 15
+          while time.monotonic() < deadline:
+              try:
+                  ack_fd = os.open(ack_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                   dir_fd=run_fd)
+              except FileNotFoundError:
+                  time.sleep(0.05)
+                  continue
+              with os.fdopen(ack_fd, 'rb') as inp:
+                  s = os.fstat(inp.fileno())
+                  require(stat.S_ISREG(s.st_mode) and s.st_uid == s.st_gid == 0
+                          and stat.S_IMODE(s.st_mode) == 0o400 and s.st_nlink == 1
+                          and s.st_size <= 4096, 'ACK identity')
+                  data = inp.read(4097)
+                  os.fsync(inp.fileno())
+                  v = os.stat(ack_name, dir_fd=run_fd, follow_symlinks=False)
+                  require((s.st_dev, s.st_ino) == (v.st_dev, v.st_ino)
+                          and v.st_nlink == 1, 'ACK replaced')
+              # O_EXCL files are visible before the fixed writer finishes its single write.
+              try:
+                  ack = json.loads(data)
+              except json.JSONDecodeError:
+                  time.sleep(0.05)
+                  continue
+              require(len(data) <= 4096 and ack == binding, 'ACK binding mismatch')
+              verify_root()
+              break
+          else:
+              raise RuntimeError('observer ACK timeout; no payload admitted; VM teardown required')
+          os.close(run_fd)
+          os.mkdir('payload', mode=0o755, dir_fd=root)
+          payload = os.open('payload', flags, dir_fd=root)
+          payload_identity = identity(payload)
+          require(read_at(payload, 'cgroup.procs') == '', 'payload not empty')
+          events = os.open('cgroup.events', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=payload)
+          identity(events)
+          require(populated() == '0', 'initial population')
+          verify()
+          ready_r, ready_w = os.pipe()
+          go_r, go_w = os.pipe()
+          report_r, report_w = os.pipe()
+          state = 'ADMITTING'
+          child = os.fork()
+          if child == 0:
+              try:
+                  synthetic(ready_w, go_r, report_w)
+              except BaseException:
+                  os._exit(100)
+          os.close(ready_w)
+          os.close(go_r)
+          os.close(report_w)
+          require(recv(ready_r) == b'READY', 'READY missing')
+          os.close(ready_r)
+          require(cgroup(child) == group + '/supervisor', 'unexpected initial child group')
+          procs = os.open('cgroup.procs', os.O_WRONLY | os.O_NOFOLLOW, dir_fd=payload)
+          identity(procs)
+          require(os.write(procs, str(child).encode('ascii')) == len(str(child)), 'admission write')
+          os.close(procs)
+          require(cgroup(child) == group + '/payload', 'admission group mismatch')
+          require(read_at(payload, 'cgroup.procs').split() == [str(child)], 'admission membership')
+          # Open the destructive FD only in the parent, after fork; it is never inherited.
+          kill = os.open('cgroup.kill', os.O_WRONLY | os.O_NOFOLLOW, dir_fd=payload)
+          identity(kill)
+          verify()
+          os.write(go_w, b'GO')
+          os.close(go_w)
+          descendant_bytes = recv(report_r)
+          os.close(report_r)
+          parts = descendant_bytes.split()
+          require(len(parts) == 2 and all(p.isdigit() for p in parts), 'descendant PIDs')
+          intermediate, descendant = map(int, parts)
+          require(len({child, intermediate, descendant}) == 3
+                  and min(intermediate, descendant) > 1, 'descendant identities')
+          # Wait for the double-fork intermediate to exit and orphan to reach the subreaper.
+          deadline = time.monotonic() + 2
+          while time.monotonic() < deadline:
+              if (status(descendant)['PPid'].strip() == str(os.getpid())
+                      and set(read_at(payload, 'cgroup.procs').split()) == {str(child), str(descendant)}):
+                  break
+              time.sleep(0.02)
+          else:
+              raise RuntimeError('double-fork adoption/membership timeout')
+          # Capture pidfds while the known trusted processes are live: no PID-reuse signals.
+          pidfds = {pid: os.pidfd_open(pid) for pid in (child, descendant)}
+          account = pwd.getpwnam('nobody')
+          for pid in pidfds:
+              require(cgroup(pid) == group + '/payload', 'descendant escaped')
+              s = status(pid)
+              require(s['Uid'].split() == [str(account.pw_uid)] * 4, 'payload UID')
+              require(s['Gid'].split() == [str(account.pw_gid)] * 4, 'payload GID')
+              require(s['Groups'].strip() == '' and s['NoNewPrivs'].strip() == '1', 'privileges')
+              require(int(s['SigIgn'].strip(), 16) & (1 << (signal.SIGTERM - 1)), 'TERM handler')
+          state = 'CLEANING'  # No payload launch/admission exists past this point.
+          verify()
+          require(populated() == '1', 'no live payload')
+          for fd in pidfds.values():
+              signal.pidfd_send_signal(fd, signal.SIGTERM)
+          time.sleep(0.3)
+          for pid, fd in pidfds.items():
+              require(not select.select([fd], [], [], 0)[0], 'payload did not resist TERM')
+              require(cgroup(pid) == group + '/payload', 'post-TERM group changed')
+          verify()
+          require(populated() == '1' and state == 'CLEANING', 'cleanup precondition')
+          require(os.write(kill, b'1') == 1, 'kill write')
+          # Same open events FD; three consecutive empty observations while broker lives.
+          deadline = time.monotonic() + 3
+          stable = 0
+          while time.monotonic() < deadline and stable < 3:
+              stable = stable + 1 if populated() == '0' else 0
+              time.sleep(0.05)
+          require(stable == 3, 'payload did not become stably empty')
+          verify()
+          reaped = {}
+          deadline = time.monotonic() + 3
+          while time.monotonic() < deadline:
+              try:
+                  pid, code = os.waitpid(-1, os.WNOHANG)
+              except ChildProcessError:
+                  break
+              if pid:
+                  reaped[pid] = code
+                  if len(reaped) == 3:
+                      break
+              else:
+                  time.sleep(0.05)
+          else:
+              raise RuntimeError('reap timeout')
+          require(set(reaped) == {child, intermediate, descendant}, 'descendant reap set')
+          require(os.WIFEXITED(reaped[intermediate]) and os.WEXITSTATUS(reaped[intermediate]) == 0,
+                  'intermediate exit status')
+          for pid in (child, descendant):
+              require(pid in reaped and os.WIFSIGNALED(reaped[pid])
+                      and os.WTERMSIG(reaped[pid]) == signal.SIGKILL, 'missing SIGKILL evidence')
+          require(populated() == '0', 'payload repopulated')
+          verify()
+          os.close(kill)
+          os.close(events)
+          os.close(payload)
+          os.rmdir('payload', dir_fd=root)
+          require('payload' not in os.listdir(root), 'payload removal')
+          require(cgroup(os.getpid()) == group + '/supervisor', 'broker died/moved')
+          state = 'COMPLETE'
+          record = {'schema': 1, 'nonce': nonce, 'unit': unit, 'invocation': invocation,
+                    'control_group': group, 'broker_pid': os.getpid(),
+                    'payload_identity': list(payload_identity), 'state': state,
+                    'stable_empty_observations': stable, 'reaped': len(reaped),
+                    'term_resistant': True, 'payload_removed': True,
+                    'synthetic_cleanup_observed': True, 'production_atomic_containment': False}
+          # One fixed record; partial writes or exceptions cannot authenticate success.
+          fd = os.open('/run/issue158-' + nonce + '.json',
+                       os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+          with os.fdopen(fd, 'w') as out:
+              json.dump(record, out, sort_keys=True)
+              out.flush()
+              os.fsync(out.fileno())
+          '''
+
+          INSTALLER = r'''
+          import hashlib, json, os, stat, sys
+          nonce = sys.argv[1]
+          assert len(nonce) == 32 and all(c in '0123456789abcdef' for c in nonce)
+          assert os.getuid() == 0
+          source = sys.stdin.buffer.read(65537)
+          assert 0 < len(source) <= 65536
+          compile(source, '<fixed-broker>', 'exec')
+          root = os.open('/run', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          s = os.fstat(root)
+          assert s.st_uid == 0 and not s.st_mode & 0o022
+          name = 'issue158-' + nonce + '.py'
+          fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                       0o500, dir_fd=root)
+          with os.fdopen(fd, 'wb') as out:
+              out.write(source)
+              out.flush()
+              os.fchmod(out.fileno(), 0o500)
+              os.fsync(out.fileno())
+              s = os.fstat(out.fileno())
+          os.fsync(root)
+          f = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+          v = os.fstat(f)
+          assert (v.st_dev, v.st_ino) == (s.st_dev, s.st_ino)
+          assert stat.S_ISREG(v.st_mode) and stat.S_IMODE(v.st_mode) == 0o500
+          assert v.st_uid == v.st_gid == 0 and v.st_nlink == 1
+          assert hashlib.sha256(os.read(f, 65537)).digest() == hashlib.sha256(source).digest()
+          print(json.dumps({'dev': v.st_dev, 'ino': v.st_ino, 'sha256': hashlib.sha256(source).hexdigest()}))
+          '''
+
+
+          ACK_WRITER = r'''
+          # Fixed stdlib-only writer: one nonce-derived /run file, no cgroup access.
+          import json, os, sys
+          nonce, invocation, pid = sys.argv[1:]
+          assert all(len(v) == 32 and all(c in '0123456789abcdef' for c in v)
+                     for v in (nonce, invocation))
+          assert pid.isascii() and pid.isdecimal() and int(pid) > 1
+          assert os.getuid() == 0
+          unit = 'issue158-' + nonce + '.service'
+          binding = {'nonce': nonce, 'unit': unit, 'invocation': invocation,
+                     'broker_pid': int(pid), 'control_group': '/system.slice/' + unit}
+          root = os.open('/run', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          s = os.fstat(root)
+          assert s.st_uid == s.st_gid == 0 and not s.st_mode & 0o022
+          fd = os.open('issue158-' + nonce + '.ack',
+                       os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=root)
+          data = json.dumps(binding, sort_keys=True).encode()
+          assert os.write(fd, data) == len(data)
+          os.fchmod(fd, 0o400)
+          os.fsync(fd)
+          os.close(fd)
+          os.fsync(root)
+          os.close(root)
+          '''
+
+
+          def require(ok, label):
+              if not ok:
+                  raise RuntimeError(label)
+
+
+          def run(args, **kw):
+              return subprocess.run(args, check=True, capture_output=True, text=True,
+                                    timeout=3, **kw).stdout.strip()
+
+
+          def absent(path):
+              try:
+                  os.stat(path, follow_symlinks=False)
+              except FileNotFoundError:
+                  return True
+              return False
+
+
+          diagnostics = {}  # Fixed identity/state fields only; no environment or journal dump.
+
+
+          def main():
+              require(os.geteuid() != 0, 'dispatcher must be unprivileged')
+              for key, value in {
+                  'GITHUB_REPOSITORY': 'ferryhe/climate_monitor_wiki',
+                  'GITHUB_REF': 'refs/heads/agent/issue-158-cleanup-canary',
+                  'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                  'RUNNER_ENVIRONMENT': 'github-hosted',
+              }.items():
+                  require(os.environ.get(key) == value, 'environment gate: ' + key)
+              release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines()
+                             if '=' in line)
+              require(release.get('ID', '').strip('"') == 'ubuntu'
+                      and release.get('VERSION_ID', '').strip('"') == '24.04', 'Ubuntu 24.04 required')
+              require(Path('/proc/1/comm').read_text().strip() == 'systemd', 'PID1')
+              require(run(['/usr/bin/systemd-detect-virt', '--vm']) not in ('none', ''), 'VM required')
+              require(run(['/usr/bin/stat', '-fc', '%T', '/sys/fs/cgroup']) == 'cgroup2fs', 'cgroupv2')
+              require(run(['/usr/bin/sudo', '-n', '/usr/bin/id', '-u']) == '0', 'passwordless sudo')
+              require(run(['/usr/bin/systemctl', '--version']).splitlines()[0].startswith('systemd 255 '),
+                      'systemd 255 required')
+              nonce = secrets.token_hex(16)
+              unit = 'issue158-' + nonce + '.service'
+              path = '/run/issue158-' + nonce + '.py'
+              result = '/run/issue158-' + nonce + '.json'
+              ready_path = '/run/issue158-' + nonce + '.ready'
+              group = '/system.slice/' + unit
+              diagnostics.update(nonce=nonce, unit=unit, phase='install')
+              ast.parse(BROKER)
+              installed = json.loads(run(['/usr/bin/sudo', '-n', '/usr/bin/python3', '-I', '-S',
+                                          '-c', INSTALLER, nonce], input=BROKER))
+              s = os.stat(path, follow_symlinks=False)
+              require(stat.S_ISREG(s.st_mode) and stat.S_IMODE(s.st_mode) == 0o500
+                      and s.st_uid == s.st_gid == 0 and s.st_nlink == 1
+                      and (s.st_dev, s.st_ino) == (installed['dev'], installed['ino'])
+                      and installed['sha256'] == hashlib.sha256(BROKER.encode()).hexdigest(),
+                      'installed source identity')
+              # External queue watchdog: bounded no-block submission + polling. No stop/kill
+              # fallback. A queued or failed unit is unverified; disposable VM teardown owns it.
+              # Covers the broker's bounded ACK/handshake/reap stages plus
+              # the 60s service runtime cap and its 5s stop grace.
+              deadline = time.monotonic() + 75
+              run(['/usr/bin/sudo', '-n', '/usr/bin/systemd-run', '--system', '--no-block',
+                   '--collect', '--unit=' + unit,
+                   '--property=Type=exec', '--property=User=root', '--property=Group=root',
+                   '--property=Delegate=yes', '--property=DelegateSubgroup=supervisor',
+                   '--property=JobRunningTimeoutSec=5s', '--property=TimeoutStartSec=5s',
+                   '--property=RuntimeMaxSec=60s', '--property=TimeoutStopSec=5s',
+                   '--property=PrivateNetwork=yes', '--property=UMask=0022',
+                   '--property=WorkingDirectory=/', '--property=StandardOutput=null',
+                   '--property=StandardError=journal',
+                   '/usr/bin/python3', '-I', '-S', path])
+              diagnostics['phase'] = 'await_READY_ACK_and_retirement'
+              observed_invocation = None
+              observed_pid = None
+              record = None
+              acknowledged = False
+              while time.monotonic() < deadline:
+                  p = dict(line.split('=', 1) for line in run([
+                      '/usr/bin/systemctl', 'show', unit, '--all',
+                      '--property=Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,FragmentPath,MainPID'
+                  ]).splitlines())
+                  diagnostics['last_unit'] = {k: v[:160] for k, v in p.items()}
+                  require(p['ActiveState'] != 'failed', 'unit failed; VM teardown required')
+                  if p['ActiveState'] == 'active':
+                      require(p['Id'] == unit and p['ControlGroup'] == group
+                              and p['FragmentPath'] == '/run/systemd/transient/' + unit,
+                              'observer unit identity')
+                      require(len(p['InvocationID']) == 32
+                              and all(c in '0123456789abcdef' for c in p['InvocationID'])
+                              and int(p['MainPID']) > 1, 'observer invocation/PID')
+                      if observed_invocation is not None:
+                          require(observed_invocation == p['InvocationID']
+                                  and observed_pid == int(p['MainPID']), 'unit restarted')
+                      observed_invocation = p['InvocationID']
+                      observed_pid = int(p['MainPID'])
+                      if not acknowledged and not absent(ready_path):
+                          fd = os.open(ready_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                          with os.fdopen(fd, 'rb') as inp:
+                              s = os.fstat(inp.fileno())
+                              require(stat.S_ISREG(s.st_mode) and s.st_uid == s.st_gid == 0
+                                      and stat.S_IMODE(s.st_mode) == 0o444 and s.st_nlink == 1
+                                      and s.st_size <= 4096, 'READY identity')
+                              data = inp.read(4097)
+                              v = os.stat(ready_path, follow_symlinks=False)
+                              require((s.st_dev, s.st_ino) == (v.st_dev, v.st_ino)
+                                      and v.st_nlink == 1, 'READY replaced')
+                          try:
+                              ready = json.loads(data)
+                          except json.JSONDecodeError:
+                              time.sleep(0.05)
+                              continue
+                          require(len(data) <= 4096 and ready == {
+                              'nonce': nonce, 'unit': p['Id'], 'invocation': observed_invocation,
+                              'broker_pid': observed_pid, 'control_group': p['ControlGroup']},
+                              'READY binding mismatch')
+                          # Identity is saved BEFORE ACK. This helper writes only its /run ACK.
+                          run(['/usr/bin/sudo', '-n', '/usr/bin/python3', '-I', '-S', '-c',
+                               ACK_WRITER, nonce, observed_invocation, str(observed_pid)])
+                          acknowledged = True
+                          diagnostics['phase'] = 'ACK_sent_await_retirement'
+                  if record is None and p['LoadState'] == 'not-found' and not absent(result):
+                      fd = os.open(result, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                      with os.fdopen(fd) as inp:
+                          s = os.fstat(inp.fileno())
+                          require(stat.S_ISREG(s.st_mode) and s.st_uid == s.st_gid == 0
+                                  and stat.S_IMODE(s.st_mode) == 0o444 and s.st_nlink == 1
+                                  and 0 < s.st_size < 4096, 'result identity')
+                          # A partly written result fails closed; never infer success from exit status.
+                          record = json.loads(inp.read(4096))
+                      require(record['nonce'] == nonce and record['unit'] == unit
+                              and record['control_group'] == group
+                              and acknowledged and observed_invocation is not None
+                              and record['invocation'] == observed_invocation and record['broker_pid'] == observed_pid
+                              and record['schema'] == 1 and record['state'] == 'COMPLETE'
+                              and record['stable_empty_observations'] == 3 and record['reaped'] == 3
+                              and record['term_resistant'] is True and record['payload_removed'] is True
+                              and record['synthetic_cleanup_observed'] is True
+                              and record['production_atomic_containment'] is False, 'result binding/evidence')
+                  if record is not None and p['LoadState'] == 'not-found':
+                      require(p['ActiveState'] == 'inactive' and p['SubState'] == 'dead'
+                              and not p['InvocationID'] and not p['ControlGroup'] and not p['FragmentPath']
+                              and p['MainPID'] == '0',
+                              'unit not retired')
+                      require(absent('/run/systemd/transient/' + unit)
+                              and absent('/sys/fs/cgroup' + group), 'fragment/cgroup remains')
+                      print(json.dumps({'synthetic_delegated_cleanup_proven': True,
+                                        'real_cleanup_proven': False, 'nonce': nonce, 'unit': unit,
+                                        'invocation': observed_invocation,
+                                        'scope': 'synthetic cooperative admission only',
+                                        'production_atomic_containment': False}, sort_keys=True))
+                      return
+                  time.sleep(0.05)
+              raise RuntimeError('external queued/runtime watchdog expired; VM teardown required')
+
+
+          try:
+              main()
+          except BaseException as exc:
+              print(json.dumps({'synthetic_delegated_cleanup_proven': False,
+                                'real_cleanup_proven': False, 'status': 'FAIL/unverified',
+                                'reason': str(exc)[:300], 'diagnostics': diagnostics,
+                                'vm_teardown_required': True}, sort_keys=True))
+              raise
           PY
