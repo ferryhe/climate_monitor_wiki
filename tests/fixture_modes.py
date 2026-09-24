@@ -11,3 +11,11 @@ def remove_shared_write(path):
     if not stat.S_ISDIR(metadata.st_mode) and metadata.st_nlink > 1:
         return
     path.chmod(stat.S_IMODE(metadata.st_mode) & ~0o022)
+
+
+def normalize_positive_fixture_tree(root):
+    """Secure a test-owned baseline before reads or deliberate damage, without following links."""
+    remove_shared_write(root)
+    if stat.S_ISDIR(root.lstat().st_mode):
+        for child in root.iterdir():
+            normalize_positive_fixture_tree(child)
