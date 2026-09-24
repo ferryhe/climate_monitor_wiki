@@ -214,3 +214,50 @@ jobs:
               )
           )
           PY
+
+  candidate-managed-start-canary:
+    name: candidate-managed-start-canary
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/issue-162-canary-validation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CANDIDATE_SHA: 82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f
+    steps:
+      - name: Check out validation script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Move validation script outside the build checkout
+        run: |
+          set -euo pipefail
+          cp .github/scripts/issue162_managed_start_canary.py "$RUNNER_TEMP/issue162-canary.py"
+      - name: Check out exact PR candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: 82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f
+      - name: Assert exact checkout and build candidate image
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --exit-code
+          docker build --pull \
+            --build-arg CLIMATE_REPOSITORY_COMMIT_SHA="$CANDIDATE_SHA" \
+            --tag climate-monitor-wiki:issue162-exact .
+      - name: Record exact candidate image identity
+        run: |
+          set -euo pipefail
+          docker image inspect climate-monitor-wiki:issue162-exact | python3 -c '
+          import json, os, sys
+          image = json.load(sys.stdin)[0]
+          environment = dict(item.split("=", 1) for item in image["Config"]["Env"] if "=" in item)
+          candidate = os.environ["CANDIDATE_SHA"]
+          assert environment.get("CLIMATE_REPOSITORY_COMMIT_SHA") == candidate
+          print(json.dumps({"image_id": image["Id"], "candidate_commit": candidate}, sort_keys=True))
+          '
+      - name: Run installed-Hermes and reader managed-start canary offline
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --memory=1024m --cpus=1 --pids-limit=256 \
+            --entrypoint python -i climate-monitor-wiki:issue162-exact - \
+            < "$RUNNER_TEMP/issue162-canary.py"
