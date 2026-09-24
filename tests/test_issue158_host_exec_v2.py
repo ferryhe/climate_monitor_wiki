@@ -14,8 +14,8 @@ def _execution_ast_violations(tree):
     """Defense-in-depth guard, not a proof about arbitrary Python programs."""
     allowed_imports = {'copy', 'base64', 'fcntl', 'hashlib', 'hmac', 'os', 're',
                        'secrets', 'threading', 'time'}
-    allowed_from = {'__future__': {'annotations'}, 'pathlib': {'Path'},
-                    'climate_monitor': {'host_exec'}}
+    allowed_from = {'__future__': {'annotations': None}, 'pathlib': {'Path': None},
+                    'climate_monitor': {'host_exec': 'v1'}}
     allowed_attrs = {
         'v1': {'AUDIENCE', 'INVOCATION_FIELDS', 'MAX_FRAME', 'MAX_STATE', 'PURPOSE',
                'ProtocolError', '_canonical', '_decode', '_directory', '_file',
@@ -30,10 +30,13 @@ def _execution_ast_violations(tree):
     violations = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            violations.extend(node for alias in node.names if alias.name not in allowed_imports)
+            violations.extend(node for alias in node.names
+                              if alias.name not in allowed_imports or alias.asname is not None)
         elif isinstance(node, ast.ImportFrom):
             if (node.level != 0 or node.module not in allowed_from or
-                    any(alias.name not in allowed_from[node.module] for alias in node.names)):
+                    any(alias.name not in allowed_from[node.module] or
+                        alias.asname != allowed_from[node.module][alias.name]
+                        for alias in node.names)):
                 violations.append(node)
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             if node.value.id in allowed_attrs and node.attr not in allowed_attrs[node.value.id]:
@@ -387,6 +390,9 @@ def test_execution_ast_guard_catches_import_alias_and_direct_calls():
                    "import os\nlaunch = os.execve\nlaunch('id', [], {})",
                    "from climate_monitor import host_exec as v1\nv1.Server(None, None, owner_uid=0)",
                    "from climate_monitor import host_exec as v1\nv1.socket.socket()",
+                   "from climate_monitor import host_exec as h\nh.Server(None, None, owner_uid=0)",
+                   "from climate_monitor import host_exec as h\nh.socket.socket()",
+                   "import os as filesystem\nfilesystem.execve('id', [], {})",
                    "from asyncio import create_subprocess_exec as launch\nlaunch('id')",
                    "from concurrent.futures import ProcessPoolExecutor as launch\nlaunch()",
                    "import asyncio\nasyncio.create_subprocess_shell('id')",
