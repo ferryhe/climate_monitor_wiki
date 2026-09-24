@@ -2,10 +2,13 @@
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
 import pytest
+
+from fixture_modes import remove_shared_write
 
 
 @pytest.fixture
@@ -17,7 +20,52 @@ def source_copy(tmp_path):
                  'scripts', 'monitoring', 'tests'):
         shutil.copytree(checkout / name, root / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    # Positive fixture baseline only; preserve private/execute/special bits.
+    for path in (root, *root.rglob('*')):
+        remove_shared_write(path)
     return root
+
+
+def test_source_copy_preserves_executable_scripts(source_copy):
+    for name in ('hermes_job_email.sh', 'hermes_job_monitor.sh',
+                 'hermes_job_publisher.sh', 'hermes_job_registry.sh',
+                 'weekly_wiki_refresh.sh'):
+        assert stat.S_IMODE((source_copy / 'scripts' / name).stat().st_mode) & 0o111 == 0o111
+
+
+@pytest.mark.parametrize('mode,is_directory', [
+    (0o600, False), (0o700, True), (0o777, False),
+    (0o2775, True), (0o1777, True), (0o4644, False),
+])
+def test_fixture_baseline_preserves_other_mode_bits(tmp_path, mode, is_directory):
+    path = tmp_path / 'entry'
+    if is_directory:
+        path.mkdir()
+        (path / 'child').mkdir()  # Directory link count must not bypass normalization.
+    else:
+        path.write_bytes(b'fixture')
+    path.chmod(mode)
+    remove_shared_write(path)
+    assert stat.S_IMODE(path.lstat().st_mode) == mode & ~0o022
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'directory_symlink', 'hardlink'])
+def test_fixture_baseline_skips_links(tmp_path, kind):
+    target = tmp_path / 'external'
+    if kind == 'directory_symlink':
+        target.mkdir()
+    else:
+        target.write_bytes(b'fixture')
+    target.chmod(0o777)
+    link = tmp_path / 'link'
+    if kind == 'hardlink':
+        os.link(target, link)
+    else:
+        link.symlink_to(target, target_is_directory=kind == 'directory_symlink')
+    original = stat.S_IMODE(link.lstat().st_mode)
+    remove_shared_write(link)
+    assert stat.S_IMODE(link.lstat().st_mode) == original
+    assert stat.S_IMODE(target.stat().st_mode) == 0o777
 
 
 @pytest.mark.parametrize('directories,files', [(0o755, 0o644), (0o755, 0o664),
@@ -222,13 +270,16 @@ def test_snapshot_still_refuses_unsafe_external_inputs(source_copy, copied_ident
 
 def test_source_replace_between_stat_and_open(source_copy, copied_identity, monkeypatch):
     path = source_copy / 'climate_monitor/hermes_frozen_policy.py'
+    original_mode = stat.S_IMODE(path.stat().st_mode)
     real = os.open
     changed = False
     def open_file(name, flags, *args, **kwargs):
         nonlocal changed
         if name == path.name and not changed:
             changed = True
-            other = path.with_suffix('.new'); other.write_bytes(path.read_bytes()); other.replace(path)
+            other = path.with_suffix('.new'); other.write_bytes(path.read_bytes())
+            other.chmod(original_mode)  # isolate content drift from host-umask mode drift
+            other.replace(path)
         return real(name, flags, *args, **kwargs)
     monkeypatch.setattr(os, 'open', open_file)
     with pytest.raises(ValueError, match='changed'):

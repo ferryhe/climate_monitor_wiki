@@ -7,6 +7,8 @@ import threading
 
 import pytest
 
+from fixture_modes import remove_shared_write
+
 from climate_monitor import management
 from test_issue94_management_console import _definition, _store
 
@@ -27,6 +29,9 @@ def runtime(tmp_path, monkeypatch, safe_managed_interpreter):
     executable = root / 'venv/bin/hermes'
     executable.write_text('#!' + str(safe_managed_interpreter) + '\nfrom hermes_cli.main import main\nmain()\n')
     executable.chmod(0o700)
+    # Positive fixture baseline only; preserve private/execute/special bits.
+    for path in (root, *root.rglob('*')):
+        remove_shared_write(path)
     home = tmp_path / 'ambient'
     home.mkdir(mode=0o700)
     for name, value in [('config.yaml', '{"model":{"default":"route-A","provider":"provider-A"}}'), ('auth.json', '{}')]:
@@ -2038,7 +2043,7 @@ def test_review6_web_channel_first_resume(tmp_path, monkeypatch, runtime, capsys
     else:
         h._write((home if dotenv == 'home' else package) / '.env',
                  ''.join(f'{k}={v}\n' for k, v in values.items()).encode())
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     reference = h.create_snapshot(run, source='climate-acquisition-web')
     payload = h.load_snapshot(run, reference)
     matches = payload.get('web_environment') == values
@@ -2081,7 +2086,7 @@ def test_review6_dynamic_web_name_rejected(tmp_path, runtime):
 @pytest.mark.parametrize('tamper', ['metadata', 'value', 'config'])
 def test_review6_web_manifest_integrity(tmp_path, runtime, tamper):
     from climate_monitor import hermes_identity as h
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     manifest = run / h.SNAPSHOT / 'manifest.json'
     payload = json.loads(manifest.read_bytes())
@@ -2182,7 +2187,7 @@ def _review7_editable(runtime, tmp_path, monkeypatch):
 def test_review7_docker_editable_nonancestor(tmp_path, runtime, monkeypatch):
     from climate_monitor import hermes_identity as h
     package, dist, sentinel = _review7_editable(runtime, tmp_path, monkeypatch)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     payload = h.load_snapshot(run, ref)
     assert payload['package_root'] == str(package)
@@ -2199,7 +2204,7 @@ def test_review7_docker_editable_nonancestor(tmp_path, runtime, monkeypatch):
 def test_review7_clean_sibling_auth_serializes(tmp_path, runtime):
     from climate_monitor import hermes_identity as h
     from hermes_offline_runtime import successful_api_lifecycle
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, meeting = h.inference_runtime(run, ref, purpose='meetings', source='climate-acquisition-run')
     started, release = threading.Event(), threading.Event()
@@ -2236,7 +2241,7 @@ def test_review7_web_deny_first_resume(tmp_path, runtime, deny):
     manifest.parent.mkdir(parents=True)
     manifest.write_text('name: web-tavily\nkind: backend\nprovides_web_providers: [tavily]\n')
     (home / 'config.yaml').write_text(json.dumps({'web': {'backend':'tavily'}, 'plugins': {'disabled':[deny, 'unrelated-plugin']}}))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     (home / 'config.yaml').unlink()
     for attempt in (1, 2):
@@ -2286,7 +2291,7 @@ def test_review7_editable_unsafe_rejected(tmp_path, runtime, monkeypatch, kind):
 def test_review7_process_siblings_and_abandonment(tmp_path, runtime, crash):
     import multiprocessing
     from climate_monitor import hermes_identity as h
-    run = tmp_path/'run';run.mkdir()
+    run = tmp_path/'run';run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _,_,meeting = h.inference_runtime(run,ref,purpose='meetings',source='climate-acquisition-run')
     context = multiprocessing.get_context('fork')
@@ -2319,7 +2324,7 @@ def test_review7_process_siblings_and_abandonment(tmp_path, runtime, crash):
 
 def test_review7_auth_wait_is_bounded(tmp_path, runtime, monkeypatch):
     from climate_monitor import hermes_identity as h, hermes_auth_state as auth
-    run=tmp_path/'run';run.mkdir();ref=h.create_snapshot(run)
+    run=tmp_path/'run';run.mkdir(mode=0o700);ref=h.create_snapshot(run)
     _,_,home=h.inference_runtime(run,ref,purpose='meetings',source='climate-acquisition-run')
     monkeypatch.setattr(auth,'AUTH_LOCK_TIMEOUT',0.1)
     with h.auth_execution(home) as state:
@@ -2373,7 +2378,7 @@ def test_review8_runtime_bytes_bound(tmp_path, runtime, attempt, change):
     dist = site / 'driftdep-1.dist-info'; dist.mkdir()
     (dist / 'METADATA').write_text('Name: driftdep\nVersion: 1\n')
     (dist / 'RECORD').write_text('driftdep/__init__.py,,\n')
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     if attempt == 2:
         h.load_snapshot(run, ref)
@@ -2399,7 +2404,7 @@ def test_review8_entrypoint_private_home(tmp_path, runtime, existing):
     result = subprocess.run(['sh', 'scripts/docker_entrypoint.sh', 'true'], env=env, capture_output=True)
     assert result.returncode == 0
     assert home.is_dir() and home.stat().st_mode & 0o777 == 0o700
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     reference = h.create_snapshot(run, environ=env)
     payload = h.load_snapshot(run, reference)
     assert not (home / 'config.yaml').exists() and not (home / 'auth.json').exists()
@@ -2417,7 +2422,7 @@ def test_review8_child_rechecks_runtime_before_import(tmp_path, runtime, purpose
     site.mkdir(parents=True)
     module = site / 'driftdep.py'; module.write_text('value = 1\n')
     sentinel = tmp_path / 'unbound-executed'
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     for turn in range(1, attempt + 1):
@@ -2505,7 +2510,7 @@ def test_review8_unmanifested_package_origin_rejected(tmp_path, runtime):
     source.write_text('from pathlib import Path\nPath(' + repr(str(sentinel)) + ').touch()\n')
     # Sourceless import is outside the package-source inventory, unlike site-packages.
     py_compile.compile(str(source), cfile=str(executable.parents[2] / 'unbound.pyc'), doraise=True)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, home = h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
     result = subprocess.run(h.launch_command(home, '-c', 'import unbound'), env=env, cwd=home, capture_output=True)
@@ -2542,7 +2547,7 @@ def test_review8_private_cache_cannot_supply_unbound_code(tmp_path, runtime, mon
     poison = 'from pathlib import Path; Path(' + repr(str(sentinel)) + ').touch(); value = 2\n'
     source = executable.parents[2] / 'cacheprobe.py'
     source.write_text('value = 1\n#' + ' ' * (len(poison) - len('value = 1\n#\n')) + '\n')
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, home = h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
     forged = tmp_path / 'forged.py'; forged.write_text(poison)
@@ -2599,7 +2604,7 @@ def test_review8_runtime_commitments_reject_drift(tmp_path, mutation):
 def test_review8_runtime_commitment_corruption_fails_before_child(tmp_path, runtime):
     import subprocess
     from climate_monitor import hermes_identity as h
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, home = h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
     command = h.launch_command(home, '-c', 'raise AssertionError("must not run")')
@@ -2617,7 +2622,7 @@ def test_review8_hook_verifier_rejects_timeout_block(tmp_path, runtime):
     _, executable = runtime
     shell = executable.parents[2] / 'agent/shell_hooks.py'
     shell.write_text(shell.read_text() + '\ndef run_once(spec, payload):\n return {"parsed": {"action": "block", "message": "timed out"}, "returncode": None, "timed_out": True}\n')
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
@@ -2633,14 +2638,16 @@ def test_review9_deployed_reader_root_survives_install(tmp_path, runtime, monkey
     browser = deployed / 'browser-runtimes/playwright/browsers/chromium-test/chrome-linux64/chrome'
     browser.parent.mkdir(parents=True)
     browser.write_bytes(b'offline browser fixture\n')
+    for path in (tmp_path / 'opt', deployed, *deployed.rglob('*')):
+        remove_shared_write(path)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(deployed))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     monkeypatch.delenv('CLIMATE_WEB_LISTENING_DATA_DIR')
     for number in range(1, attempt + 1):
         binding['attempt'] = number
-        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         child = Path(env['CLIMATE_WEB_LISTENING_DATA_DIR'])
         assert child == deployed
@@ -2682,6 +2689,18 @@ def _review9_browser(tmp_path, interpreter=None):
     (installed / 'runtime.json').write_text(json.dumps(config))
     (installed / 'state.json').write_text(json.dumps({'schema_version':'web-listening-tool-state.v1','qualified':True,'disabled':False,'broken':False,'failure_code':None}))
     (installed.parent / 'active.json').write_text(json.dumps({'schema_version':'web-listening-tool-active.v1','version':'1.0.0'}))
+    # Normalize the fixture's own freshly-created entries to a known-safe
+    # baseline (strip only group/other write bits — preserve execute bits and
+    # any other mode bits) so a permissive host umask (e.g. 0002 on
+    # collaborative deployments) doesn't leave them group-writable and
+    # rejected as unsafe by the new strict Hermes runtime reader. Skip the
+    # interpreter path: it may be `os.link`-ed to `interpreter` (shared
+    # inode), so chmod-ing it would also change the caller's interpreter mode.
+    interpreter_path = venv / 'bin/python'
+    for path in (root, *root.rglob('*')):
+        if path.is_symlink() or path == interpreter_path:
+            continue
+        remove_shared_write(path)
     return root, venv, installed, config
 
 
@@ -2693,19 +2712,23 @@ def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, mon
     sentinel = tmp_path / 'startup-ran'
     site = venv / 'lib/python3.12/site-packages'
     (site / 'unsafe.pth').write_text('import startup_helper\n')
+    (site / 'unsafe.pth').chmod(0o644)
     (site / 'startup_helper.py').write_text('from pathlib import Path; Path(' + repr(str(sentinel)) + ').touch()\n')
+    (site / 'startup_helper.py').chmod(0o644)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id']); binding['hermes_snapshot'] = ref
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'different'))
     for attempt in (1, 2):
-        (root / 'artifacts').mkdir(exist_ok=True)
+        (root / 'artifacts').mkdir(exist_ok=True, mode=0o755)
         (root / 'artifacts' / str(attempt)).write_text('mutable output')
+        (root / 'artifacts' / str(attempt)).chmod(0o644)
         (root / 'jobs.sqlite3').write_bytes(bytes([attempt]))
-        (root / 'history').mkdir(exist_ok=True)
+        (root / 'jobs.sqlite3').chmod(0o644)
+        (root / 'history').mkdir(exist_ok=True, mode=0o755)
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         assert env['CLIMATE_WEB_LISTENING_DATA_DIR'] == str(root)
         command = [config['python'], '-I', '-S', str(home.parent / 'bootstrap/launcher.py'), '--reader-tool', str(home), str(installed / 'tool.py')]
@@ -2724,9 +2747,9 @@ def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, mon
 def test_review9_reader_drift_rejected(tmp_path, runtime, monkeypatch, damage, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h
     root, venv, installed, _ = _review9_browser(tmp_path, safe_managed_interpreter)
-    helper = venv / 'lib/python3.12/site-packages/startup_helper.py'; helper.write_text('# frozen\n')
+    helper = venv / 'lib/python3.12/site-packages/startup_helper.py'; helper.write_text('# frozen\n'); helper.chmod(0o644)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     target = {'binary':venv/'browsers/chromium-1234/chrome-linux64/chrome',
               'sdk':venv/'lib/python3.12/site-packages/playwright/__init__.py',
@@ -2746,7 +2769,7 @@ def test_review9_tool_file_symlink_rejected_before_publication(tmp_path, runtime
     real = installed / 'implementation.py'; (installed / 'tool.py').rename(real)
     (installed / 'tool.py').symlink_to(real.name)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError):
         h.create_snapshot(run)
     assert not (run / h.SNAPSHOT).exists()
@@ -2779,7 +2802,7 @@ def test_review9_absent_root_is_private_empty_runtime(tmp_path, runtime, monkeyp
     from climate_monitor import hermes_identity as h
     if value is None: monkeypatch.delenv('CLIMATE_WEB_LISTENING_DATA_DIR', raising=False)
     else: monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', value)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     payload = h.load_snapshot(run, ref)
     root = Path(payload['reader_runtime']['root'])
@@ -2802,12 +2825,12 @@ def test_review9_reader_child_refuses_changed_runtime(tmp_path, runtime, monkeyp
     marker = secrets.token_hex(24)
     (installed / 'private-marker.txt').write_text(marker); (installed / 'private-marker.txt').chmod(0o600)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id']); binding['hermes_snapshot'] = ref
     for number in range(1, attempt + 1):
         binding['attempt'] = number
-        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
     command = [config['python'], '-I', '-S', str(home.parent / 'bootstrap/launcher.py'), '--reader-tool', str(home), str(installed / 'tool.py')]
     Path(config['browser']).write_bytes(b'mutated runtime')
@@ -2823,10 +2846,10 @@ def test_review9_adapter_checks_attempt_seal(tmp_path, runtime, monkeypatch, saf
     from test_issue117_request_boundaries import new_protocol_binding
     root, _, installed, config = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     env, home = hooks.install_hooks(['hermes'], path, binding, {})
     seal = home / 'attempt-policy.json'; value = json.loads(seal.read_bytes()); value['binding_sha256'] = '0'*64; seal.write_text(json.dumps(value))
     command = [config['python'],'-I','-S',str(home.parent/'bootstrap/launcher.py'),'--reader-tool',str(home),str(installed/'tool.py')]
@@ -2848,7 +2871,7 @@ def test_review9_reader_mutation_during_collection_never_publishes(tmp_path, run
         if calls == 1: Path(config['browser']).write_bytes(b'collection-window change')
         return result
     monkeypatch.setattr(reader, 'collect', changing)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='changed during collection'):
         h.create_snapshot(run)
     assert not (run / h.SNAPSHOT).exists()
@@ -2860,10 +2883,10 @@ def test_review9_worker_controlled_fetch_uses_frozen_reader(tmp_path, runtime, m
     from test_issue117_request_boundaries import new_protocol_binding
     root, _, _, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     _, home = hooks.install_hooks(['hermes'], path, binding, {})
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'ambient-change'))
     monkeypatch.delenv('CLIMATE_ACQUISITION_ATTEMPT', raising=False)
@@ -2888,14 +2911,16 @@ def test_review9_installed_tool_bound_sibling(tmp_path, runtime, monkeypatch, sa
     tool.write_text('import bound_reader_helper\nprint(bound_reader_helper.VALUE)\n')
     helper = tool.with_name('bound_reader_helper.py')
     helper.write_text('VALUE = "bound helper"\n')
+    for path in (root / 'tools/transform', *(root / 'tools/transform').rglob('*')):
+        remove_shared_write(path)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     binding['hermes_snapshot'] = ref
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         command = h.launch_command(home, '--reader-tool', str(home), str(tool))
         child = subprocess.run(command, env=env, cwd=home, capture_output=True, text=True)
@@ -2926,7 +2951,7 @@ def test_review9_reader_dotenv_precedence(tmp_path, runtime, monkeypatch, select
     elif selection == 'home':
         monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'unselected'))
         home_env.write_text('CLIMATE_WEB_LISTENING_DATA_DIR=' + str(root) + '\n')
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     binding['hermes_snapshot'] = ref
@@ -2935,7 +2960,7 @@ def test_review9_reader_dotenv_precedence(tmp_path, runtime, monkeypatch, select
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'changed'))
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, _ = hooks.install_hooks(['hermes'], path, binding, {})
         assert env['CLIMATE_WEB_LISTENING_DATA_DIR'] == str(expected)
         assert h.load_snapshot(run, ref)['reader_runtime']['root'] == str(expected)

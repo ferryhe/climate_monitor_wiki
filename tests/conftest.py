@@ -2,6 +2,8 @@
 
 import pytest
 
+from fixture_modes import remove_shared_write
+
 
 @pytest.fixture
 def governed_adapter_runtime(monkeypatch):
@@ -61,6 +63,9 @@ def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch, safe_managed_i
     executable = root / 'venv/bin/hermes'
     executable.write_text('#!' + str(safe_managed_interpreter) + '\n# fixture\n')
     executable.chmod(0o700)
+    # Positive fixture baseline only; preserve private/execute/special bits.
+    for path in (root, *root.rglob('*')):
+        remove_shared_write(path)
     home = fixture_root / 'managed-hermes-home'
     home.mkdir(mode=0o700)
     for name in ('config.yaml', 'auth.json'):

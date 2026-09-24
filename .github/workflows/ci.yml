@@ -53,6 +53,44 @@ jobs:
           set -euo pipefail
           python -m pytest -q
 
+  fixtures-umask0002:
+    name: fixtures-umask0002 (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install declared dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --requirement requirements.txt
+      - name: Run permission-sensitive fixtures under collaborative umask
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/issue163-fixture-temp"
+          chmod 0700 "$HOME/issue163-fixture-temp"
+          umask 0002
+          TMPDIR="$HOME/issue163-fixture-temp" python -m pytest -q -p no:cacheprovider \
+            --basetemp="$HOME/issue163-fixture-temp/pytest" \
+            tests/test_issue140_hermes_snapshot.py \
+            tests/test_issue94_management_console.py \
+            tests/test_issue157_host_exec.py \
+            tests/test_issue161_source_permissions.py
+
   repository-checks:
     name: repository-checks
     runs-on: ubuntu-latest

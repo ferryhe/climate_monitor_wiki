@@ -49,7 +49,7 @@ def _definition(tmp_path: Path) -> dict:
     )
     from climate_registry.persistent import initialize_registry
     initialize_registry(tmp_path / "registry.sqlite3")
-    (tmp_path / "runs").mkdir(exist_ok=True)
+    (tmp_path / "runs").mkdir(exist_ok=True, mode=0o700)
     return value
 
 
@@ -382,7 +382,7 @@ def test_manual_meeting_retry_uses_failed_run_frozen_configuration(tmp_path, mon
         created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
     )
     run_dir = tmp_path / "runs" / run_id
-    run_dir.mkdir()
+    run_dir.mkdir(mode=0o700)
     from climate_monitor.hermes_identity import create_snapshot
     binding["hermes_snapshot"] = create_snapshot(run_dir)
     (run_dir / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
@@ -991,7 +991,7 @@ def test_adversarial_agent_output_cannot_execute_or_escape_binding(monkeypatch, 
         "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
     }
     binding_path = tmp_path / "runs" / "adversarial-run" / "attempt-1.json"
-    binding_path.parent.mkdir()
+    binding_path.parent.mkdir(mode=0o700)
     binding_path.write_text(json.dumps(binding), encoding="utf-8")
     import os, sys
     fake = Path(os.environ["HERMES_EXECUTABLE"])
@@ -1990,6 +1990,7 @@ def test_exhausted_immutable_budget_is_terminal_not_retryable(
     definition["parameters"]["budgets"]["runtime_seconds"] = 10
     run_dir = tmp_path / "runs" / "terminal-budget"
     run_dir.mkdir(parents=True)
+    run_dir.chmod(0o700)
     first = build_task_binding(
         definition, task_version=1, run_id="terminal-budget", attempt=1
     )
