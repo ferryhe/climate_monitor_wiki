@@ -335,6 +335,17 @@ jobs:
           "$canary_root/reader/browser-runtimes/playwright/bin/python" -m pip install playwright==1.62.0 >>"$canary_root/install.log" 2>&1
           "$canary_root/reader/browser-runtimes/playwright/bin/python" -m pip check >>"$canary_root/install.log" 2>&1
           "$canary_root/reader/browser-runtimes/playwright/bin/python" -c 'import importlib.metadata as m; assert m.version("playwright") == "1.62.0"' >>"$canary_root/install.log" 2>&1
+          # Hosted setup-python's venv template can ship a 0777 PowerShell
+          # activation file. Harden only test-owned, single-link activation
+          # copies; never relax the external-runtime reader or change packages.
+          phase=venv_activation_modes
+          for activation in "$canary_root/venv/bin/Activate.ps1" \
+                            "$canary_root/reader/browser-runtimes/playwright/bin/Activate.ps1"; do
+            test -f "$activation" && test ! -L "$activation"
+            test "$(stat -c %u "$activation")" = "$(id -u)"
+            test "$(stat -c %h "$activation")" = 1
+            chmod go-w "$activation"
+          done
           chmod 0700 "$canary_root/venv" "$canary_root/hermes-agent" "$canary_root/reader"
           mkdir "$canary_root/home"
           cp "$RUNNER_TEMP/issue162-host-canary.py" "$canary_root/canary.py"
