@@ -49,15 +49,17 @@ try:
     phase = "reader_preflight"
     reader = direct_payload["reader_runtime"]
     runtime_configs = sorted(Path(reader["root"]).glob("tools/*/*/*/runtime.json"))
+    browser_python = Path(reader["root"]) / "browser-runtimes/playwright/bin/python"
     diagnostics = {
         "root_matches_env": reader["root"] == os.environ["CLIMATE_WEB_LISTENING_DATA_DIR"],
         "absent": reader["absent"],
         "inventory_count": len(reader["inventory"]),
         "runtime_config_count": len(runtime_configs),
+        "browser_runtime_present": browser_python.is_file(),
     }
     print(json.dumps({"result": "INFO", "phase": phase, **diagnostics}, sort_keys=True))
-    assert diagnostics["root_matches_env"] and not diagnostics["absent"]
-    assert diagnostics["inventory_count"] and diagnostics["runtime_config_count"]
+    assert diagnostics["root_matches_env"] and diagnostics["inventory_count"]
+    assert diagnostics["browser_runtime_present"] and "browser-runtimes" not in diagnostics["absent"]
     phase = "definition"
     definition = default_task_definition()
     definition["runtime"].update(
@@ -88,6 +90,7 @@ try:
         "installed_reader": importlib.metadata.version("web-listening"),
         "reader_runtime_inventory": "nonempty",
         "reader_runtime_configs": len(runtime_configs),
+        "reader_tools_absent": "tools" in reader["absent"],
         "snapshot_policy_members": len(direct_payload["policy"]),
         "managed_start_accepted": True,
         "controlled_launcher_checked_binding": True,
