@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 
 from climate_monitor.hermes_identity import SNAPSHOT, create_snapshot, load_snapshot
@@ -23,8 +24,26 @@ try:
     assert os.environ.get("CLIMATE_REPOSITORY_COMMIT_SHA") == EXPECTED_COMMIT
     assert importlib.metadata.version("hermes-agent") == "0.20.5"
     assert importlib.metadata.version("web-listening") == "0.1.0"
+    shared_source = os.environ.get("ISSUE161_TEST_SHARED_SOURCE") == "1"
+    if shared_source:
+        # Disposable container copy-on-write only: reproduce collaborative
+        # application source modes without touching runtime/private inputs.
+        app = Path("/app")
+        app_stat = app.lstat()
+        assert stat.S_ISDIR(app_stat.st_mode)
+        app.chmod(stat.S_IMODE(app_stat.st_mode) | 0o020)
+        for root in map(Path, ("/app/climate_monitor", "/app/climate_registry", "/app/scripts")):
+            assert stat.S_ISDIR(root.lstat().st_mode)
+            for path in (root, *root.rglob("*")):
+                metadata = path.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    continue
+                if stat.S_ISREG(metadata.st_mode):
+                    assert metadata.st_nlink == 1
+                if stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode):
+                    path.chmod(stat.S_IMODE(metadata.st_mode) | 0o020)
     source = Path("/app/climate_monitor/hermes_identity.py")
-    assert source.is_file() and source.stat().st_mode & 0o022 == 0
+    assert source.is_file() and source.stat().st_mode & 0o022 == (0o020 if shared_source else 0)
     executable = shutil.which("hermes")
     if not executable:
         raise RuntimeError("missing installed Hermes executable")
@@ -86,6 +105,7 @@ try:
     assert result["accepted"] and launcher_called
     print(json.dumps({
         "result": "PASS", "candidate_commit": EXPECTED_COMMIT,
+        "collaborative_source_modes": shared_source,
         "installed_hermes": importlib.metadata.version("hermes-agent"),
         "installed_reader": importlib.metadata.version("web-listening"),
         "reader_runtime_inventory": "nonempty",

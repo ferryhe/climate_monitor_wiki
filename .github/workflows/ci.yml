@@ -258,9 +258,18 @@ jobs:
           assert environment.get("CLIMATE_REPOSITORY_COMMIT_SHA") == candidate
           print(json.dumps({"image_id": image["Id"], "candidate_commit": candidate}, sort_keys=True))
           '
+          printf 'CANDIDATE_IMAGE_ID=%s\n' \
+            "$(docker image inspect --format '{{.Id}}' climate-monitor-wiki:issue162-exact)" >> "$GITHUB_ENV"
       - name: Run installed-Hermes and reader managed-start canary offline
         run: |
           set -euo pipefail
           docker run --rm --network none --memory=1024m --cpus=1 --pids-limit=256 \
-            --entrypoint python -i climate-monitor-wiki:issue162-exact - \
+            --entrypoint python -i "${CANDIDATE_IMAGE_ID:?}" - \
+            < "$RUNNER_TEMP/issue162-canary.py"
+      - name: Repeat canary with collaborative application source modes
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --memory=1024m --cpus=1 --pids-limit=256 \
+            --env ISSUE161_TEST_SHARED_SOURCE=1 \
+            --entrypoint python -i "${CANDIDATE_IMAGE_ID:?}" - \
             < "$RUNNER_TEMP/issue162-canary.py"
