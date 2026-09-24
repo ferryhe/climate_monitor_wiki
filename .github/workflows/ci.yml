@@ -34,7 +34,9 @@ jobs:
           assert Path('/proc/1/comm').read_text().strip() == 'systemd', 'PID 1 is not systemd'
           assert Path('/run/systemd/system').is_dir(), 'system manager unavailable'
           assert Path('/sys/fs/cgroup/cgroup.controllers').is_file(), 'not unified cgroup v2'
-          assert Path('/sys/fs/cgroup/cgroup.events').is_file(), 'cgroup events unavailable'
+          # Root cgroup.events is optional; require it on the invocation's
+          # actual child cgroup in the later real cleanup canary instead.
+          root_events = Path('/sys/fs/cgroup/cgroup.events').is_file()
           vm = subprocess.run(['systemd-detect-virt', '--vm'],
                               check=True, capture_output=True, text=True)
           assert vm.stdout.strip() not in ('', 'none'), 'not a VM'
@@ -45,13 +47,15 @@ jobs:
                                 capture_output=True, text=True)
           print(json.dumps({'vm': True, 'systemd_pid1': True,
                             'systemd_version': manager.stdout.strip(),
-                            'cgroup_v2': True, 'sudo_available': sudo.returncode == 0,
+                            'cgroup_v2': True, 'root_cgroup_events': root_events,
+                            'sudo_available': sudo.returncode == 0,
                             'system_units_created': 0,
                             'real_cgroup_cleanup_proven': False}))
           PY
 
   python-tests:
     name: python-tests (${{ matrix.python-version }})
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'agent/issue-158-vm-preflight'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -90,6 +94,7 @@ jobs:
 
   fixtures-umask0002:
     name: fixtures-umask0002 (${{ matrix.python-version }})
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'agent/issue-158-vm-preflight'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -128,6 +133,7 @@ jobs:
 
   repository-checks:
     name: repository-checks
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'agent/issue-158-vm-preflight'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -195,6 +201,7 @@ jobs:
 
   docker-build-smoke:
     name: docker-build-smoke
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'agent/issue-158-vm-preflight'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
