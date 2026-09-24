@@ -159,15 +159,24 @@ jobs:
           cleanup = None
           finished = False
           try:
-              run('/usr/bin/systemd-run', '--system', '--collect', '--quiet', '--unit=' + unit,
-                  '--description=' + description, '--property=Type=exec', '--property=User=root',
-                  '--property=Group=root', '--property=Slice=system.slice', '--property=Delegate=yes',
-                  '--property=DelegateSubgroup=supervisor', '--property=PrivateNetwork=yes',
-                  '--property=NoNewPrivileges=yes', '--property=KillMode=control-group',
-                  '--property=Restart=no', '--property=JobTimeoutSec=5s',
-                  '--property=TimeoutStartSec=5s', '--property=RuntimeMaxSec=30s',
-                  '--property=TasksMax=4', '--property=TimeoutStopSec=5s', '--property=StandardOutput=null',
-                  '--property=StandardError=null', '/usr/bin/sleep', '30')
+              try:
+                  run('/usr/bin/systemd-run', '--system', '--collect', '--quiet', '--unit=' + unit,
+                      '--description=' + description, '--property=Type=exec', '--property=User=root',
+                      '--property=Group=root', '--property=Slice=system.slice', '--property=Delegate=yes',
+                      '--property=DelegateSubgroup=supervisor', '--property=PrivateNetwork=yes',
+                      '--property=NoNewPrivileges=yes', '--property=KillMode=control-group',
+                      '--property=Restart=no', '--property=JobTimeoutSec=5s',
+                      '--property=TimeoutStartSec=5s', '--property=RuntimeMaxSec=30s',
+                      '--property=TasksMax=4', '--property=TimeoutStopSec=5s',
+                      '--property=StandardOutput=null', '--property=StandardError=null',
+                      '/usr/bin/sleep', '30')
+              except subprocess.CalledProcessError as exc:
+                  # No credentials enter this fixed-argv probe. Bound/normalize
+                  # the systemd rejection so a failed VM run can be diagnosed.
+                  reason = re.sub(r'[^A-Za-z0-9 .:_=/()\-]', ' ', exc.stderr or '')[:240]
+                  print(json.dumps({'phase': 'start_transient', 'result': 'FAIL',
+                                    'systemd_reason': reason}), flush=True)
+                  raise RuntimeError('transient start refused') from None
               created = show()
               invocation = created.get('InvocationID', '')
               assert re.fullmatch('[0-9a-f]{32}', invocation) and int(invocation, 16)
