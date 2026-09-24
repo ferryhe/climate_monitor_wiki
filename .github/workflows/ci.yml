@@ -277,7 +277,7 @@ jobs:
   host-installed-checkout-canary:
     name: host-installed-checkout-canary (NATIVE HOST)
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/issue-162-canary-validation'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
       CANDIDATE_SHA: 82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f
@@ -296,10 +296,6 @@ jobs:
         with:
           persist-credentials: false
           ref: 82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f
-      - name: Set up native Python 3.12
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
       - name: Install private host runtime and validate collaborative checkout
         shell: bash
         run: |
@@ -314,9 +310,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test -z "$(git status --porcelain --untracked-files=no)"
           source_root=$PWD
+          # Ubuntu 24.04's distro interpreter is root-owned rather than the
+          # hosted toolcache's writable interpreter symlink target.
+          phase=system_python_preflight
+          /usr/bin/python3.12 -c 'import os,stat,sys; from pathlib import Path; p=Path("/usr/bin/python3.12"); s=p.stat(); assert sys.version_info[:2]==(3,12) and s.st_uid==0 and s.st_mode&0o022==0'
           # Install diagnostics stay private: failures expose phase/class only.
           phase=host_venv
-          python -m venv "$canary_root/venv" >"$canary_root/install.log" 2>&1
+          /usr/bin/python3.12 -m venv "$canary_root/venv" >"$canary_root/install.log" 2>&1
           phase=requirements_install
           "$canary_root/venv/bin/python" -m pip install -r requirements.txt >>"$canary_root/install.log" 2>&1
           phase=hermes_fetch
@@ -331,12 +331,12 @@ jobs:
           "$canary_root/venv/bin/python" -m pip check >>"$canary_root/install.log" 2>&1
           phase=browser_sdk_install
           mkdir -p "$canary_root/reader/browser-runtimes"
-          python -m venv "$canary_root/reader/browser-runtimes/playwright" >>"$canary_root/install.log" 2>&1
+          /usr/bin/python3.12 -m venv "$canary_root/reader/browser-runtimes/playwright" >>"$canary_root/install.log" 2>&1
           "$canary_root/reader/browser-runtimes/playwright/bin/python" -m pip install playwright==1.62.0 >>"$canary_root/install.log" 2>&1
           "$canary_root/reader/browser-runtimes/playwright/bin/python" -m pip check >>"$canary_root/install.log" 2>&1
           "$canary_root/reader/browser-runtimes/playwright/bin/python" -c 'import importlib.metadata as m; assert m.version("playwright") == "1.62.0"' >>"$canary_root/install.log" 2>&1
-          # Hosted setup-python's venv template can ship 0777 activation
-          # scripts. Harden only test-owned, single-link activation copies;
+          # Venv templates can ship shared-writable activation scripts.
+          # Harden only test-owned, single-link activation copies;
           # never relax the external-runtime reader or change packages.
           phase=venv_activation_modes
           for venv_dir in "$canary_root/venv" "$canary_root/reader/browser-runtimes/playwright"; do
