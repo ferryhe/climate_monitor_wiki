@@ -15,6 +15,84 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  clone3-recognition:
+    # Negative target-fd probe only; no valid placement or cleanup evidence.
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'ferryhe/climate_monitor_wiki' && github.ref == 'refs/heads/agent/issue-158-clone3-canary' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Probe clone3 flag recognition with an invalid cgroup fd
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME:-}" != workflow_dispatch ||
+                "${GITHUB_REPOSITORY:-}" != ferryhe/climate_monitor_wiki ||
+                "${GITHUB_REF:-}" != refs/heads/agent/issue-158-clone3-canary ||
+                "${RUNNER_ENVIRONMENT:-}" != github-hosted ||
+                "${GITHUB_ACTIONS:-}" != true || "$UID" == 0 || "$EUID" == 0 ]]; then
+            printf '%s\n' 'FAIL: requires exact dispatch and non-root GitHub-hosted runner' >&2
+            exit 1
+          fi
+          /usr/bin/cc -x c -std=c11 -Wall -Wextra -Werror -O2 -o "${RUNNER_TEMP:?}/issue158-clone3-recognition" - <<'C'
+          #define _GNU_SOURCE
+          #include <errno.h>
+          #include <limits.h>
+          #include <linux/sched.h>
+          #include <signal.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <string.h>
+          #include <sys/syscall.h>
+          #include <sys/wait.h>
+          #include <unistd.h>
+
+          static void report_errno(const char *reason, int error)
+          {
+              const char *name = strerrorname_np(error);
+              fprintf(stderr, "FAIL: %s; errno=%d (%s): %s\n",
+                      reason, error, name ? name : "UNKNOWN", strerror(error));
+          }
+
+          int main(void)
+          {
+              if (getuid() == 0 || geteuid() == 0) {
+                  fputs("FAIL: refusing root execution\n", stderr);
+                  return 1;
+              }
+              int pidfd = -1;
+              struct clone_args args = {0};
+              args.flags = CLONE_INTO_CGROUP | CLONE_PIDFD;
+              /* In-range but impossible FD: UINT64_MAX is rejected as EINVAL
+               * before the cgroup FD lookup on Linux 6.8. */
+              args.cgroup = INT_MAX;
+              args.pidfd = (uint64_t)(uintptr_t)&pidfd;
+              args.exit_signal = SIGCHLD;
+              long result = syscall(SYS_clone3, &args, sizeof args);
+              int error = errno;
+              if (result == 0)
+                  _exit(120);
+              if (result > 0) {
+                  int status;
+                  pid_t waited;
+                  do {
+                      waited = waitpid((pid_t)result, &status, 0);
+                  } while (waited == -1 && errno == EINTR);
+                  if (waited == -1)
+                      report_errno("waitpid for unexpected child", errno);
+                  fputs("FAIL: clone3 unexpectedly created a child with invalid cgroup fd\n", stderr);
+                  return 1;
+              }
+              if (result != -1 || error != EBADF) {
+                  report_errno("clone3 expected -1/EBADF", error);
+                  return 1;
+              }
+              puts("{ \"clone3_into_cgroup_invalid_fd_rejected_with_ebadf\": true, \"valid_target_placement_proven\": false, \"synthetic_atomic_containment_proven\": false, \"real_cleanup_proven\": false }");
+              return 0;
+          }
+          C
+          "${RUNNER_TEMP:?}/issue158-clone3-recognition"
+
   python-tests:
     name: python-tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
