@@ -72,14 +72,32 @@ try:
 
         def runtime_modes():
             result = {}
-            for root in (private / "venv", hermes, reader_root):
-                assert not root.is_relative_to(app) and root.stat().st_mode & 0o777 == 0o700
+            for category, root in (("venv", private / "venv"),
+                                   ("hermes", hermes), ("reader", reader_root)):
+                root_mode = stat.S_IMODE(root.stat().st_mode)
+                if root.is_relative_to(app) or root_mode != 0o700:
+                    print(json.dumps({"result": "INFO", "phase": phase,
+                                      "runtime_category": category, "reason": "root_mode",
+                                      "mode": oct(root_mode)}, sort_keys=True))
+                    raise AssertionError()
                 for path in (root, *root.rglob("*")):
                     info = path.lstat()
                     if stat.S_ISLNK(info.st_mode):
-                        assert path.resolve().stat().st_mode & 0o022 == 0
+                        target_mode = stat.S_IMODE(path.resolve().stat().st_mode)
+                        if target_mode & 0o022:
+                            print(json.dumps({"result": "INFO", "phase": phase,
+                                              "runtime_category": category,
+                                              "reason": "symlink_target_write",
+                                              "mode": oct(target_mode)}, sort_keys=True))
+                            raise AssertionError()
                         continue
-                    assert info.st_uid == os.getuid() and info.st_mode & 0o022 == 0
+                    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                        print(json.dumps({"result": "INFO", "phase": phase,
+                                          "runtime_category": category,
+                                          "reason": "runtime_owner_or_write",
+                                          "uid_matches": info.st_uid == os.getuid(),
+                                          "mode": oct(stat.S_IMODE(info.st_mode))}, sort_keys=True))
+                        raise AssertionError()
                     result[path] = stat.S_IMODE(info.st_mode)
             return result
 
