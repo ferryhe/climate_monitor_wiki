@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,24 +57,204 @@ def serving(root, token, **kwargs):
         server.close()
 
 
-def exchange(server, token, request=None, raw=None):
-    thread = threading.Thread(target=server.serve_once)
-    thread.start()
-    try:
-        if raw is not None:
-            with socket.socket(socket.AF_UNIX) as sock:
-                sock.connect(f'/proc/self/fd/{server.fd}/executor.sock')
-                sock.sendall(raw)
-                sock.shutdown(socket.SHUT_WR)
-                return sock.recv(8192)
-        return protocol.call(server.directory, token, request, owner_uid=os.getuid())
-    finally:
-        thread.join(3)
-        assert not thread.is_alive()
+@contextmanager
+def exchange_diagnostics(server, *, positive=False):
+    """Test-local interception; never patch the shared stdlib socket module."""
+    phases = []
+    @contextmanager
+    def phase(label):
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            duration = time.monotonic() - start
+            phases.append((label, duration))
+            print(f'{label} {duration:.6f}')
+
+    class TimedSocket(socket.socket):
+        def connect(self, address):
+            with phase('connect'):
+                return super().connect(address)
+
+        def sendall(self, data, *args):
+            with phase('send'):
+                return super().sendall(data, *args)
+
+        def recv(self, size, *args):
+            with phase('receive'):
+                return super().recv(size, *args)
+
+    receive = protocol._receive
+    def timed_receive(sock):
+        start = time.monotonic()
+        try:
+            frame = receive(sock)
+        except Exception:
+            if isinstance(sock, TimedSocket):
+                duration = time.monotonic() - start
+                phases.append(('receive-frame-failed', duration))
+                print(f'receive-frame-failed {duration:.6f}')
+            raise
+        if isinstance(sock, TimedSocket):
+            duration = time.monotonic() - start
+            phases.append(('receive-frame-complete', duration))
+            print(f'receive-frame-complete {duration:.6f}')
+        return frame
+
+    persist = server._persist
+    def timed_persist(state):
+        start = time.monotonic()
+        label = 'durable-ledger-failed'
+        try:
+            persist(state)
+            label = 'durable-ledger-complete'
+        finally:
+            # No request, credential, path or exception text enters diagnostics.
+            print(f'{label} {time.monotonic() - start:.6f}')
+
+    accept_timeout = server.sock.gettimeout()
+    with pytest.MonkeyPatch.context() as scoped:
+        scoped.setattr(protocol, 'socket', SimpleNamespace(**{
+            **vars(socket), 'socket': TimedSocket}))
+        scoped.setattr(protocol, '_receive', timed_receive)
+        scoped.setattr(server, '_persist', timed_persist)
+        try:
+            if positive:
+                # Only ordinary positive exchanges opt in; production stays at 1s.
+                scoped.setattr(protocol, 'IO_TIMEOUT', 5.0)
+                server.sock.settimeout(5.0)
+            yield phases
+        finally:
+            server.sock.settimeout(accept_timeout)
+
+
+def exchange(server, token, request=None, raw=None, *, positive=False):
+    with exchange_diagnostics(server, positive=positive):
+        thread = threading.Thread(target=server.serve_once)
+        thread.start()
+        try:
+            if raw is not None:
+                with socket.socket(socket.AF_UNIX) as sock:
+                    sock.connect(f'/proc/self/fd/{server.fd}/executor.sock')
+                    sock.sendall(raw)
+                    sock.shutdown(socket.SHUT_WR)
+                    return sock.recv(8192)
+            return protocol.call(server.directory, token, request, owner_uid=os.getuid())
+        finally:
+            thread.join(6 if positive else 3)
+            assert not thread.is_alive()
 
 
 def request(token, value=None, operation='submit'):
     return protocol.make_request(token, value or invocation(), operation, owner_uid=os.getuid())
+
+
+@pytest.mark.parametrize('fail_persistence', [False, True])
+def test_positive_exchange_deadline_is_scoped(setup, monkeypatch, capsys, fail_persistence):
+    root, token = setup
+    assert protocol.IO_TIMEOUT == 1.0
+    with serving(root, token) as server:
+        persist = server._persist
+        def checked_persist(state):
+            assert protocol.IO_TIMEOUT == 5.0
+            if fail_persistence:
+                raise OSError('test persistence failure')
+            persist(state)
+        monkeypatch.setattr(server, '_persist', checked_persist)
+        if fail_persistence:
+            with pytest.raises(protocol.ProtocolError) as caught:
+                exchange(server, token, request(token), positive=True)
+            assert caught.value.retryable is False
+        else:
+            assert exchange(server, token, request(token), positive=True)['status'] == 'not_ready'
+        assert server.sock.gettimeout() == 1.0
+    assert protocol.IO_TIMEOUT == 1.0
+    assert protocol.socket is socket
+    phases = [line.split() for line in capsys.readouterr().out.splitlines()]
+    assert {phase for phase, duration in phases} == {
+        'connect', 'send', 'receive', 'receive-frame-complete',
+        'durable-ledger-failed' if fail_persistence else 'durable-ledger-complete'}
+    assert all(float(duration) >= 0 for phase, duration in phases)
+
+
+def test_default_receive_deadline_is_nonretryable_after_late_persistence(setup, monkeypatch):
+    root, token = setup
+    entered = threading.Event()
+    receive_ready = threading.Event()
+    allow_receive = threading.Event()
+    client_done = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    outcomes, receive_started_at, client_done_at = [], [], []
+    req = request(token)
+    assert protocol.IO_TIMEOUT == 1.0
+    with serving(root, token) as server:
+        persist = server._persist
+        def delayed_persist(state):
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError('test release deadline')
+            persist(state)
+            completed.set()
+        monkeypatch.setattr(server, '_persist', delayed_persist)
+        with exchange_diagnostics(server) as phases:
+            # Accept may wait longer on a loaded runner; both protocol endpoints
+            # still use the unchanged production IO_TIMEOUT=1.0.
+            assert server.sock is not None
+            server.sock.settimeout(5.0)
+            original_receive = protocol._receive
+            client_thread = None
+            def gated_receive(sock):
+                if threading.current_thread() is client_thread:
+                    assert entered.wait(5)
+                    receive_ready.set()
+                    assert allow_receive.wait(5)
+                    receive_started_at.append(time.monotonic())
+                return original_receive(sock)
+            def call_once():
+                try:
+                    outcomes.append(protocol.call(root, token, req, owner_uid=os.getuid()))
+                except BaseException as error:
+                    outcomes.append(error)
+                finally:
+                    client_done_at.append(time.monotonic())
+                    client_done.set()
+            with pytest.MonkeyPatch.context() as scoped:
+                scoped.setattr(protocol, '_receive', gated_receive)
+                server_thread = threading.Thread(target=server.serve_once)
+                client_thread = threading.Thread(target=call_once)
+                server_thread.start()
+                client_thread.start()
+                try:
+                    assert entered.wait(5)
+                    assert receive_ready.wait(5)
+                    assert not client_done.is_set()
+                    assert not completed.is_set()
+                    allow_receive.set()
+                    client_thread.join(4)
+                    assert not client_thread.is_alive()
+                    assert len(outcomes) == 1 and isinstance(outcomes[0], protocol.ProtocolError)
+                    assert str(outcomes[0]) == 'executor rejected; non-retryable'
+                    assert outcomes[0].retryable is False
+                    assert client_done_at[0] - receive_started_at[0] >= protocol.IO_TIMEOUT
+                    assert not completed.is_set() and not release.is_set()
+                    # No reconnect, resend or additional frame after the timeout.
+                    assert [phase for phase, _ in phases] == [
+                        'connect', 'send', 'receive', 'receive-frame-failed']
+                finally:
+                    allow_receive.set()
+                    release.set()
+                    client_thread.join(5)
+                    server_thread.join(5)
+                    assert not client_thread.is_alive() and not server_thread.is_alive()
+            assert completed.is_set()
+            assert protocol.IO_TIMEOUT == 1.0
+    # The late durable commit survives, but never changes the caller's failure.
+    with serving(root, token) as server:
+        assert server.state['invocations'] == {
+            req['invocation']['invocation_id']: req['invocation_sha256']}
+        assert server.state['nonces'] == [hashlib.sha256(
+            protocol._canonical([req['key_id'], req['nonce']])).hexdigest()]
 
 
 @pytest.mark.parametrize('operation', ['submit', 'readback', 'cancel'])
@@ -85,11 +266,11 @@ def test_still_valid_near_expiry_key_over_real_uds(setup, monkeypatch, operation
     with serving(root, token) as server:
         initial = request(token)
         assert initial['expires_at'] == now + 60
-        assert exchange(server, token, initial)['status'] == 'not_ready'
+        assert exchange(server, token, initial, positive=True)['status'] == 'not_ready'
 
         credential(token, expires_at=now + 30)
         req = request(token, operation=operation)
-        result = exchange(server, token, req)
+        result = exchange(server, token, req, positive=True)
         assert req['expires_at'] == now + 30
         assert result['status'] == 'not_ready'
         assert result['ready'] is result['retryable'] is False
@@ -111,26 +292,26 @@ def test_not_ready_duplicate_conflict_readback_cancel_and_restart(setup):
     root, token = setup
     with serving(root, token) as server:
         for operation in ('submit', 'submit', 'readback', 'cancel'):
-            result = exchange(server, token, request(token, operation=operation))
+            result = exchange(server, token, request(token, operation=operation), positive=True)
             assert result['status'] == 'not_ready'
             assert result['ready'] is result['retryable'] is False
             assert result['cleanup'] == {'status': 'unverified'}
-        result = exchange(server, token, request(token, invocation(attempt=2)))
+        result = exchange(server, token, request(token, invocation(attempt=2)), positive=True)
         assert result['status'] == 'conflict'
     with serving(root, token) as server:
-        assert exchange(server, token, request(token))['status'] == 'not_ready'
-        assert exchange(server, token, request(token, invocation(attempt=3)))['status'] == 'conflict'
-        assert exchange(server, token, request(token, invocation(invocation_id='f' * 32), 'readback'))['status'] == 'unknown'
+        assert exchange(server, token, request(token), positive=True)['status'] == 'not_ready'
+        assert exchange(server, token, request(token, invocation(attempt=3)), positive=True)['status'] == 'conflict'
+        assert exchange(server, token, request(token, invocation(invocation_id='f' * 32), 'readback'), positive=True)['status'] == 'unknown'
 
 
 def test_nonce_replay_survives_restart(setup):
     root, token = setup
     req = request(token)
     with serving(root, token) as server:
-        assert exchange(server, token, req)['status'] == 'not_ready'
-        assert exchange(server, token, req)['status'] == 'replay'
+        assert exchange(server, token, req, positive=True)['status'] == 'not_ready'
+        assert exchange(server, token, req, positive=True)['status'] == 'replay'
     with serving(root, token) as server:
-        assert exchange(server, token, req)['status'] == 'replay'
+        assert exchange(server, token, req, positive=True)['status'] == 'replay'
 
 
 @pytest.mark.parametrize('changes', [dict(purpose='dashboard'), dict(audience='dashboard'),
@@ -148,11 +329,11 @@ def test_rotation_revokes_old_signature_without_resetting_invocation(setup):
     root, token = setup
     old = request(token)
     with serving(root, token) as server:
-        exchange(server, token, request(token))
+        exchange(server, token, request(token), positive=True)
         credential(token, key_id='replacement', secret='cd' * 32)
         with pytest.raises(protocol.ProtocolError):
             exchange(server, token, old)
-        assert exchange(server, token, request(token, invocation(attempt=2)))['status'] == 'conflict'
+        assert exchange(server, token, request(token, invocation(attempt=2)), positive=True)['status'] == 'conflict'
         token.unlink()
         with pytest.raises(protocol.ProtocolError):
             exchange(server, token, old)
@@ -236,9 +417,9 @@ def test_capacity_does_not_evict_replay_records(setup):
     root, token = setup
     with serving(root, token, max_records=1) as server:
         first = request(token)
-        exchange(server, token, first)
-        assert exchange(server, token, request(token, invocation(invocation_id='f'*32)))['status'] == 'capacity'
-        assert exchange(server, token, first)['status'] == 'replay'
+        exchange(server, token, first, positive=True)
+        assert exchange(server, token, request(token, invocation(invocation_id='f'*32)), positive=True)['status'] == 'capacity'
+        assert exchange(server, token, first, positive=True)['status'] == 'replay'
 
 
 @pytest.mark.parametrize('change', [dict(version=True), dict(audience='dashboard'),
