@@ -80,9 +80,9 @@ jobs:
           import time
           import uuid
 
-          def run(*args):
+          def run(*args, timeout=10):
               return subprocess.run(args, check=True, capture_output=True, text=True,
-                                    timeout=10, env={'PATH': '/usr/bin:/usr/sbin', 'LC_ALL': 'C'}).stdout.strip()
+                                    timeout=timeout, env={'PATH': '/usr/bin:/usr/sbin', 'LC_ALL': 'C'}).stdout.strip()
 
           assert os.geteuid() == 0
           assert Path('/proc/1/comm').read_text().strip() == 'systemd'
@@ -97,12 +97,15 @@ jobs:
           path = '/sys/fs/cgroup' + group
           fragment = '/run/systemd/transient/' + unit
           flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-          properties = ('Id,LoadState,Transient,Delegate,DelegateSubgroup,Description,InvocationID,'
+          properties = ('Id,Names,LoadState,Transient,Delegate,DelegateSubgroup,Description,InvocationID,'
                         'ControlGroup,FragmentPath,MainPID,User,ActiveState')
 
-          def show():
+          minimal = {'Id': unit, 'Names': unit, 'LoadState': 'loaded', 'Transient': 'yes',
+                     'Description': description, 'FragmentPath': fragment}
+
+          def show(timeout=10):
               return dict(line.split('=', 1) for line in run(
-                  '/usr/bin/systemctl', '--system', 'show', unit, '--property=' + properties).splitlines())
+                  '/usr/bin/systemctl', '--system', 'show', unit, '--property=' + properties, timeout=timeout).splitlines())
 
           def walk(absolute):
               fd = os.open('/', flags)
@@ -137,8 +140,8 @@ jobs:
                   os.close(fd)
               return current
 
-          def retired():
-              current = show()
+          def retired(timeout=10):
+              current = show(timeout=timeout)
               return (current.get('LoadState') == 'not-found'
                       and not current.get('FragmentPath') and not current.get('ControlGroup')
                       and not os.path.lexists(fragment) and not os.path.lexists(path))
@@ -146,10 +149,38 @@ jobs:
           def wait_retired(seconds):
               deadline = time.monotonic() + seconds
               while time.monotonic() < deadline:
-                  if retired():
+                  if retired(timeout=max(0.001, deadline - time.monotonic())):
+                      assert time.monotonic() < deadline, 'retirement deadline exceeded'
                       return
-                  time.sleep(0.1)
+                  time.sleep(min(0.1, max(0, deadline - time.monotonic())))
               raise AssertionError('unit/fragment/cgroup not retired')
+
+          def stop_and_retire():
+              if retired():
+                  return
+              # Activity/cgroup paths can disappear during stop. Match only the
+              # queued identity and, once observed active, its invocation.
+              assert cleanup is not None, 'unproven unit; leave to disposable VM teardown'
+              current = show()
+              assert all(current.get(k) == v for k, v in cleanup.items()), 'cleanup identity changed'
+              run('/usr/bin/systemctl', '--system', '--no-block', 'stop', unit)
+              wait_retired(40)
+
+          def adopt_pending():
+              # A timed-out D-Bus client may have queued the transient unit.
+              # Never infer that one not-found read cancelled that request.
+              global cleanup
+              deadline = time.monotonic() + 10
+              while time.monotonic() < deadline:
+                  current = show(timeout=min(2, max(0.001, deadline - time.monotonic())))
+                  if current.get('LoadState') == 'loaded':
+                      assert all(current.get(k) == v for k, v in minimal.items()), 'queued identity changed'
+                      cleanup = minimal.copy()
+                      return
+                  assert current.get('LoadState') == 'not-found'
+                  assert not os.path.lexists(fragment) and not os.path.lexists(path)
+                  time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+              raise RuntimeError('start request unresolved; disposable VM teardown required')
 
           before = show()
           assert before['LoadState'] == 'not-found' and not before.get('FragmentPath')
@@ -158,37 +189,50 @@ jobs:
           expected = None
           cleanup = None
           finished = False
+          pending = False
           try:
               try:
-                  run('/usr/bin/systemd-run', '--system', '--collect', '--quiet', '--unit=' + unit,
+                  pending = True
+                  run('/usr/bin/systemd-run', '--system', '--no-block', '--collect', '--quiet', '--unit=' + unit,
                       '--description=' + description, '--property=Type=exec', '--property=User=root',
                       '--property=Group=root', '--property=Slice=system.slice', '--property=Delegate=yes',
                       '--property=DelegateSubgroup=supervisor', '--property=PrivateNetwork=yes',
                       '--property=NoNewPrivileges=yes', '--property=KillMode=control-group',
-                      '--property=Restart=no', '--property=JobTimeoutSec=5s',
+                      '--property=Restart=no', '--property=JobRunningTimeoutSec=5s',
                       '--property=TimeoutStartSec=5s', '--property=RuntimeMaxSec=30s',
                       '--property=TasksMax=4', '--property=TimeoutStopSec=5s',
                       '--property=StandardOutput=null', '--property=StandardError=null',
                       '/usr/bin/sleep', '30')
-              except subprocess.CalledProcessError as exc:
+              except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                   # No credentials enter this fixed-argv probe. Bound/normalize
-                  # the systemd rejection so a failed VM run can be diagnosed.
-                  reason = re.sub(r'[^A-Za-z0-9 .:_=/()\-]', ' ', exc.stderr or '')[:240]
+                  # the systemd rejection or client timeout for VM diagnostics.
+                  stderr = exc.stderr or ''
+                  if isinstance(stderr, bytes):
+                      stderr = stderr.decode('utf-8', errors='replace')
+                  reason = re.sub(r'[^A-Za-z0-9 .:_=/()\-]', ' ', stderr)[:240]
                   print(json.dumps({'phase': 'start_transient', 'result': 'FAIL',
-                                    'systemd_reason': reason}), flush=True)
-                  raise RuntimeError('transient start refused') from None
-              created = show()
-              invocation = created.get('InvocationID', '')
-              assert re.fullmatch('[0-9a-f]{32}', invocation) and int(invocation, 16)
-              cleanup = {'Id': unit, 'Description': description, 'InvocationID': invocation,
-                         'Transient': 'yes', 'ControlGroup': created.get('ControlGroup'),
-                         'FragmentPath': created.get('FragmentPath')}
-              assert cleanup['ControlGroup'] and cleanup['FragmentPath']
-              assert all(created.get(k) == v for k, v in cleanup.items())
-              required = {'Id': unit, 'Transient': 'yes', 'Delegate': 'yes', 'User': 'root',
-                          'LoadState': 'loaded', 'ActiveState': 'active',
-                          'DelegateSubgroup': 'supervisor', 'Description': description,
-                          'InvocationID': invocation, 'ControlGroup': group, 'FragmentPath': fragment}
+                                    'error': type(exc).__name__, 'systemd_reason': reason}), flush=True)
+                  raise RuntimeError('transient queue failed; activation unproven') from None
+              deadline = time.monotonic() + 5
+              created = show(timeout=max(0.001, deadline - time.monotonic()))
+              assert all(created.get(k) == v for k, v in minimal.items()), 'queued identity mismatch'
+              cleanup = minimal.copy()
+              while True:
+                  assert time.monotonic() < deadline, 'activation deadline exceeded'
+                  assert all(created.get(k) == v for k, v in minimal.items()), 'queued identity changed'
+                  if created.get('ActiveState') == 'active':
+                      invocation = created.get('InvocationID', '')
+                      assert re.fullmatch('[0-9a-f]{32}', invocation) and int(invocation, 16)
+                      cleanup['InvocationID'] = invocation
+                      break
+                  assert created.get('ActiveState') not in ('failed', 'inactive'), 'activation failed'
+                  time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                  remaining = deadline - time.monotonic()
+                  assert remaining > 0, 'activation deadline exceeded'
+                  created = show(timeout=remaining)
+              required = {**minimal, 'Delegate': 'yes', 'User': 'root', 'ActiveState': 'active',
+                          'DelegateSubgroup': 'supervisor',
+                          'InvocationID': invocation, 'ControlGroup': group}
               assert all(created.get(k) == v for k, v in required.items())
               root_fd = walk(path)
               inode = owned(root_fd)
@@ -225,22 +269,17 @@ jobs:
               finally:
                   os.close(payload)
               identity()
-              run('/usr/bin/systemctl', '--system', 'stop', unit)
-              wait_retired(5)
+              stop_and_retire()
               finished = True
               print(json.dumps({'delegated_probe_pass': True, 'real_cleanup_proven': False}))
           finally:
               try:
-                  if not finished:
-                      if not retired() and cleanup is not None:
-                          current = show()
-                          # Mutable activity is not a cleanup identity. Never stop a
-                          # same-name replacement or an unproven invocation.
-                          assert all(current.get(k) == v for k, v in cleanup.items())
-                          run('/usr/bin/systemctl', '--system', 'stop', unit)
-                      # If identity was never established, --collect and the 30s
-                      # RuntimeMaxSec retire this disposable VM's failed probe.
-                      wait_retired(40)
+                  if pending and not finished:
+                      if cleanup is None:
+                          adopt_pending()
+                      # Only a proven queued identity permits name-based stop.
+                      # Client timeout remains a failure even after retirement.
+                      stop_and_retire()
               finally:
                   if root_fd is not None:
                       os.close(root_fd)
