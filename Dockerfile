@@ -68,6 +68,8 @@ COPY monitoring/supranational_sources.yaml ./monitoring/supranational_sources.ya
 COPY monitoring/site_scopes.yaml ./monitoring/site_scopes.yaml
 COPY scripts ./scripts
 RUN chmod 0755 /app/scripts/docker_entrypoint.sh /app/scripts/qualify_web_listening_playwright.py
+# Normalize only application policy code copied from collaborative checkouts.
+RUN chmod -R go-w /app/climate_monitor /app/climate_registry /app/scripts
 COPY showcase ./showcase
 COPY wiki ./wiki
 COPY sources ./sources

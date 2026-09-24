@@ -130,6 +130,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Exercise collaborative application source modes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import stat
+
+          # This job's disposable checkout only; no private/external runtime inputs.
+          for root in map(Path, ("climate_monitor", "climate_registry", "scripts")):
+              for path in (root, *root.rglob("*")):
+                  assert not path.is_symlink(), path
+                  if path.is_dir() or path.suffix == ".py":
+                      path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWGRP)
+                      assert path.stat().st_mode & stat.S_IWGRP, path
+          PY
+
       - name: Build application image
         run: |
           set -euo pipefail
@@ -143,6 +159,18 @@ jobs:
           docker run --rm --network none --entrypoint python -i climate-monitor-wiki:ci - <<'PY'
           import importlib.metadata as metadata
           import json
+          from pathlib import Path
+
+          # Inspect the actual image, without a source bind mount. Imports and
+          # mode checks do not replace the installed-Hermes managed-start canary.
+          for root in map(Path, ("/app/climate_monitor", "/app/climate_registry", "/app/scripts")):
+              assert root.is_dir(), root
+              for path in (root, *root.rglob("*")):
+                  assert not path.is_symlink(), path
+                  assert path.stat().st_mode & 0o022 == 0, path
+          for name in ("docker_entrypoint.sh", "qualify_web_listening_playwright.py"):
+              path = Path("/app/scripts") / name
+              assert path.stat().st_mode & 0o111 == 0o111, path
 
           import agentic_wiki.wiki_agent
           import api_server
@@ -177,6 +205,7 @@ jobs:
                   {
                       "categories": len(taxonomy.categories),
                       "core_imports": "ok",
+                      "policy_source_modes": "not_group_or_world_writable",
                       "jsonschema": jsonschema_version,
                       "taxonomy_id": taxonomy.taxonomy_id,
                       "taxonomy_sha256": taxonomy.sha256,

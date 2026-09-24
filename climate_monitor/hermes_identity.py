@@ -1120,14 +1120,125 @@ def inference_runtime(run_dir, reference, *, purpose, source):
     return launch_command(home), environment, home
 
 
+def _read_application_source(path):
+    """Collect this application's source, never external Hermes/private inputs.
+
+    Deployment must trust checkout group writers as application-code writers.
+    The only writable group accepted is the source root's group, and it must
+    already be able to replace this imported module (or its parent directory).
+    Keep this helper outside the frozen secure_read dependency closure.
+    """
+    root = Path(os.path.abspath(__file__)).parents[1]
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts or not path.is_relative_to(root):
+        raise ValueError('unsafe application source path')
+    descriptors = []
+    try:
+        def remember(fd, name, directory):
+            try:
+                st = os.fstat(fd)
+            except BaseException:
+                os.close(fd)
+                raise
+            descriptors.append((fd, name, st, directory))
+            return st
+
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        remember(fd, Path('/'), True)
+        current = Path('/')
+        for component in root.parts[1:]:
+            current /= component
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            st = remember(fd, current, True)
+            if (st.st_uid not in {0, os.getuid()} or
+                    (current != root and st.st_mode & 0o022
+                     and not (st.st_uid == 0 and st.st_mode & stat.S_ISVTX))):
+                raise ValueError('unsafe application source parent')
+        root_fd, root_stat = fd, st
+        group = root_stat.st_gid
+        if group not in {os.getegid(), *os.getgroups()}:
+            raise ValueError('unsafe application source group')
+
+        def check(st, directory=False):
+            if (not (stat.S_ISDIR(st.st_mode) if directory else stat.S_ISREG(st.st_mode))
+                    or st.st_uid not in {0, os.getuid()} or st.st_gid != group
+                    or st.st_mode & 0o002):
+                raise ValueError('unsafe application source type, ownership or permissions')
+            if not directory and st.st_size > MAX_FILE_BYTES:
+                raise ValueError('application source size limit exceeded')
+
+        check(root_stat, True)
+        package = os.open('climate_monitor', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        package_stat = remember(package, root / 'climate_monitor', True)
+        check(package_stat, True)
+        module = os.open(Path(__file__).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=package)
+        module_stat = remember(module, Path(__file__), False)
+        check(module_stat)
+        # Group write is authority only when the group can reach imported code.
+        group_can_replace_module = all(
+            st.st_mode & 0o010 for st in (root_stat, package_stat)
+        ) and (bool(module_stat.st_mode & 0o020) or any(
+            st.st_mode & 0o030 == 0o030 and not st.st_mode & stat.S_ISVTX
+            for st in (root_stat, package_stat)))
+        current = root
+        fd = root_fd
+        for component in path.relative_to(root).parts[:-1]:
+            current /= component
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            st = remember(fd, current, True)
+            check(st, True)
+            if st.st_mode & 0o020 and not group_can_replace_module:
+                raise ValueError('untrusted application source writers')
+        before = path.lstat()
+        check(before)
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        opened = remember(fd, path, False)
+        check(opened)
+        if opened.st_mode & 0o020 and not group_can_replace_module:
+            raise ValueError('untrusted application source writers')
+        if _signature(before) != _signature(opened):
+            raise ValueError('application source changed during collection')
+
+        def bounded_read():
+            chunks, remaining = [], MAX_FILE_BYTES + 1
+            while remaining:
+                part = os.read(fd, min(remaining, 65536))
+                if not part:
+                    break
+                chunks.append(part)
+                remaining -= len(part)
+            raw = b''.join(chunks)
+            if len(raw) > MAX_FILE_BYTES:
+                raise ValueError('application source size limit exceeded')
+            return raw
+
+        raw = bounded_read()
+        os.lseek(fd, 0, os.SEEK_SET)
+        if bounded_read() != raw or len(raw) != opened.st_size:
+            raise ValueError('application source changed during collection')
+        for descriptor, name, initial, directory in descriptors:
+            # Unrelated sibling writes outside the source root are not drift.
+            size = 5 if directory and not name.is_relative_to(root) else 8
+            expected = _signature(initial)[:size]
+            if (expected != _signature(os.fstat(descriptor))[:size]
+                    or expected != _signature(name.lstat())[:size]):
+                raise ValueError('application source changed during collection')
+        return raw, {'identity': _signature(opened), 'sha256': _digest(raw)}
+    except OSError:
+        raise ValueError('unsafe or unavailable application source') from None
+    finally:
+        for fd, *_ in reversed(descriptors):
+            os.close(fd)
+
+
 def _policy_bytes(root, source):
-    template, _ = secure_read(Path(__file__).with_name('hermes_frozen_policy.py'))
+    template, _ = _read_application_source(Path(__file__).with_name('hermes_frozen_policy.py'))
     prefix = f'from pathlib import Path\nROOT = Path({str(root.absolute())!r})\nSOURCE = {source!r}\n'.encode()
     from climate_monitor.hermes_acquisition_policy import acquisition_policy
     return {**acquisition_policy(), 'bootstrap/sitecustomize.py': FROZEN_STARTUP.encode(),
-            'bootstrap/reader_runtime.py': secure_read(Path(__file__).with_name('hermes_reader_runtime.py'))[0],
-            'bootstrap/runtime_inventory.py': secure_read(Path(__file__).with_name('hermes_runtime_inventory.py'))[0],
-            'bootstrap/launcher.py': secure_read(Path(__file__).with_name('hermes_launcher.py'))[0],
+            'bootstrap/reader_runtime.py': _read_application_source(Path(__file__).with_name('hermes_reader_runtime.py'))[0],
+            'bootstrap/runtime_inventory.py': _read_application_source(Path(__file__).with_name('hermes_runtime_inventory.py'))[0],
+            'bootstrap/launcher.py': _read_application_source(Path(__file__).with_name('hermes_launcher.py'))[0],
             'policy/identity.py': prefix + template,
             'policy/plugin.json': _bytes({'name': IDENTITY_PLUGIN, 'version': '1.0.0',
                                          'hooks': ['pre_api_request', 'post_api_request']})}
