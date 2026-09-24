@@ -88,6 +88,7 @@ try:
                             print(json.dumps({"result": "INFO", "phase": phase,
                                               "runtime_category": category,
                                               "reason": "symlink_target_write",
+                                              "entry_tail": "/".join(path.relative_to(root).parts[-4:]),
                                               "mode": oct(target_mode)}, sort_keys=True))
                             raise AssertionError()
                         continue
@@ -95,6 +96,10 @@ try:
                         print(json.dumps({"result": "INFO", "phase": phase,
                                           "runtime_category": category,
                                           "reason": "runtime_owner_or_write",
+                                          "entry_tail": "/".join(path.relative_to(root).parts[-4:]),
+                                          "entry_type": ("directory" if stat.S_ISDIR(info.st_mode)
+                                                         else "regular" if stat.S_ISREG(info.st_mode)
+                                                         else "other"),
                                           "uid_matches": info.st_uid == os.getuid(),
                                           "mode": oct(stat.S_IMODE(info.st_mode))}, sort_keys=True))
                         raise AssertionError()
