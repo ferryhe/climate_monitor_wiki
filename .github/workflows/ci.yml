@@ -17,6 +17,8 @@ concurrency:
 jobs:
   python-tests:
     name: python-tests (${{ matrix.python-version }})
+    # This temporary branch exists only to exercise the exact #162 image.
+    if: github.ref != 'refs/heads/agent/issue-162-canary-validation'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -122,6 +124,7 @@ jobs:
 
   docker-build-smoke:
     name: docker-build-smoke
+    if: github.ref != 'refs/heads/agent/issue-162-canary-validation'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

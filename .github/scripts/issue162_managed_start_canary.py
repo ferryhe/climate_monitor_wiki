@@ -43,14 +43,21 @@ try:
     direct.mkdir(mode=0o700)
     phase = "create_snapshot"
     reference = create_snapshot(direct, source="issue161-canary")
+    phase = "load_snapshot"
     direct_payload = load_snapshot(direct, reference)
     assert (direct / SNAPSHOT).is_dir()
+    phase = "reader_preflight"
     reader = direct_payload["reader_runtime"]
-    assert reader["root"] == os.environ["CLIMATE_WEB_LISTENING_DATA_DIR"]
-    assert reader["absent"] == []
-    assert reader["inventory"]
     runtime_configs = sorted(Path(reader["root"]).glob("tools/*/*/*/runtime.json"))
-    assert runtime_configs
+    diagnostics = {
+        "root_matches_env": reader["root"] == os.environ["CLIMATE_WEB_LISTENING_DATA_DIR"],
+        "absent": reader["absent"],
+        "inventory_count": len(reader["inventory"]),
+        "runtime_config_count": len(runtime_configs),
+    }
+    print(json.dumps({"result": "INFO", "phase": phase, **diagnostics}, sort_keys=True))
+    assert diagnostics["root_matches_env"] and not diagnostics["absent"]
+    assert diagnostics["inventory_count"] and diagnostics["runtime_config_count"]
     phase = "definition"
     definition = default_task_definition()
     definition["runtime"].update(
