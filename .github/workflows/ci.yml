@@ -273,3 +273,80 @@ jobs:
             --env ISSUE161_TEST_SHARED_SOURCE=1 \
             --entrypoint python -i "${CANDIDATE_IMAGE_ID:?}" - \
             < "$RUNNER_TEMP/issue162-canary.py"
+
+  host-installed-checkout-canary:
+    name: host-installed-checkout-canary (NATIVE HOST)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/issue-162-canary-validation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CANDIDATE_SHA: 82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f
+      HERMES_REVISION: 5538bd1f933be2e94aca9755deca5cc59cccc553
+    steps:
+      - name: Check out validation script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Copy native validation script before candidate checkout
+        run: |
+          set -euo pipefail
+          cp .github/scripts/issue162_managed_start_canary.py "$RUNNER_TEMP/issue162-host-canary.py"
+      - name: Check out exact PR candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: 82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f
+      - name: Set up native Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install private host runtime and validate collaborative checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          phase=private_setup
+          canary_root=''
+          trap 'rc=$?; if (( rc != 0 )); then printf "NATIVE_HOST FAIL phase=%s class=CommandFailure\n" "$phase"; fi; if [[ -n "$canary_root" ]]; then rm -rf -- "$canary_root"; fi' EXIT
+          canary_root=$(mktemp -d /tmp/issue161-native.XXXXXXXX)
+          chmod 0700 "$canary_root"
+          phase=checkout_identity
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          source_root=$PWD
+          # Install diagnostics stay private: failures expose phase/class only.
+          phase=host_venv
+          python -m venv "$canary_root/venv" >"$canary_root/install.log" 2>&1
+          phase=requirements_install
+          "$canary_root/venv/bin/python" -m pip install -r requirements.txt >>"$canary_root/install.log" 2>&1
+          phase=hermes_fetch
+          git init -q "$canary_root/hermes-agent" >>"$canary_root/install.log" 2>&1
+          git -C "$canary_root/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C "$canary_root/hermes-agent" fetch --depth 1 origin "$HERMES_REVISION" >>"$canary_root/install.log" 2>&1
+          git -C "$canary_root/hermes-agent" checkout --detach FETCH_HEAD >>"$canary_root/install.log" 2>&1
+          test "$(git -C "$canary_root/hermes-agent" rev-parse HEAD)" = "$HERMES_REVISION"
+          phase=hermes_install
+          "$canary_root/venv/bin/python" -m pip install --editable "$canary_root/hermes-agent[web,pty]" >>"$canary_root/install.log" 2>&1
+          phase=pip_check
+          "$canary_root/venv/bin/python" -m pip check >>"$canary_root/install.log" 2>&1
+          phase=browser_sdk_install
+          mkdir -p "$canary_root/reader/browser-runtimes"
+          python -m venv "$canary_root/reader/browser-runtimes/playwright" >>"$canary_root/install.log" 2>&1
+          "$canary_root/reader/browser-runtimes/playwright/bin/python" -m pip install playwright==1.62.0 >>"$canary_root/install.log" 2>&1
+          "$canary_root/reader/browser-runtimes/playwright/bin/python" -m pip check >>"$canary_root/install.log" 2>&1
+          "$canary_root/reader/browser-runtimes/playwright/bin/python" -c 'import importlib.metadata as m; assert m.version("playwright") == "1.62.0"' >>"$canary_root/install.log" 2>&1
+          chmod 0700 "$canary_root/venv" "$canary_root/hermes-agent" "$canary_root/reader"
+          mkdir "$canary_root/home"
+          cp "$RUNNER_TEMP/issue162-host-canary.py" "$canary_root/canary.py"
+          phase=native_managed_start
+          cd "$canary_root"
+          # Egress is NOT OS-disabled. No inference or real Hermes child is
+          # launched; env -i and an empty private HOME exclude real credentials.
+          # SDK inventory only: no Chromium launch or external tool registration.
+          env -i PATH="$canary_root/venv/bin:/usr/bin:/bin" \
+            HOME="$canary_root/home" TMPDIR="$canary_root" \
+            LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
+            ISSUE161_NATIVE_HOST=1 ISSUE161_SOURCE_ROOT="$source_root" \
+            CLIMATE_REPOSITORY_COMMIT_SHA="$CANDIDATE_SHA" \
+            CLIMATE_WEB_LISTENING_DATA_DIR="$canary_root/reader" \
+            "$canary_root/venv/bin/python" "$canary_root/canary.py"

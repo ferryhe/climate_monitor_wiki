@@ -1,7 +1,8 @@
-"""Offline canary for the exact PR #162 image on a disposable CI runner.
+"""Validation-only canary for the exact PR #162 image or native CI checkout.
 
-This script lives only in the validation branch; the image is built from the
-unmodified PR #162 commit. It performs no monitoring, browser launch or inference.
+This script lives only in the validation branch, outside the unmodified candidate.
+It performs no monitoring, browser launch or inference. Native host mode uses
+a private installed runtime; unlike the image modes, OS egress is not disabled.
 """
 from __future__ import annotations
 
@@ -12,20 +13,116 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
-
-from climate_monitor.hermes_identity import SNAPSHOT, create_snapshot, load_snapshot
-from climate_monitor.management import ManagementService, TaskDefinitionStore, default_task_definition
-from climate_registry.persistent import initialize_registry
+import subprocess
+import sys
+from urllib.parse import unquote, urlparse
 
 EXPECTED_COMMIT = "82f930cf01b8b90cc2ebc0b702bf4a0db6f55d5f"
+native_host = os.environ.get("ISSUE161_NATIVE_HOST") == "1"
 base = Path(tempfile.mkdtemp(prefix="issue161-installed-managed-"))
 phase = "setup"
 try:
+    if native_host:
+        phase = "native_host_preflight"
+        assert sys.version_info[:2] == (3, 12)
+        app = Path(os.environ["ISSUE161_SOURCE_ROOT"])
+        private = Path(os.environ["TMPDIR"])
+        assert app.is_absolute() and app.resolve() == app
+        assert private.parent == Path("/tmp") and private.stat().st_mode & 0o777 == 0o700
+        assert private.stat().st_uid == os.getuid()
+        assert base.is_relative_to(private)
+        assert not Path(__file__).resolve().is_relative_to(app)
+        assert not Path.cwd().is_relative_to(app)
+
+        def git_output(root, *args):
+            return subprocess.check_output(
+                ["git", "-C", str(root), *args], stderr=subprocess.DEVNULL, text=True
+            ).strip()
+
+        assert git_output(app, "rev-parse", "HEAD") == EXPECTED_COMMIT
+        assert not git_output(app, "status", "--porcelain", "--untracked-files=no")
+        for parent in app.parents:
+            assert parent.stat().st_mode & 0o022 == 0
+            assert parent.stat().st_uid in {0, os.getuid()}
+        group = app.stat().st_gid
+        assert group in {os.getegid(), *os.getgroups()}
+
+        hermes = private / "hermes-agent"
+        assert git_output(hermes, "rev-parse", "HEAD") == "5538bd1f933be2e94aca9755deca5cc59cccc553"
+        assert git_output(hermes, "remote", "get-url", "origin") == "https://github.com/NousResearch/hermes-agent.git"
+        assert not git_output(hermes, "status", "--porcelain", "--untracked-files=no")
+        origin = json.loads(importlib.metadata.distribution("hermes-agent").read_text("direct_url.json"))
+        assert origin["dir_info"] == {"editable": True}
+        assert urlparse(origin["url"]).scheme == "file"
+        assert Path(unquote(urlparse(origin["url"]).path)).resolve() == hermes
+        origin = json.loads(importlib.metadata.distribution("web-listening").read_text("direct_url.json"))
+        assert origin["url"] == "https://github.com/ferryhe/web_listening_new.git"
+        assert origin["vcs_info"]["vcs"] == "git"
+        assert origin["vcs_info"]["commit_id"] == "ac2343f89bc7939736d85f049ebe2beac571034a"
+        assert origin["vcs_info"]["requested_revision"] == origin["vcs_info"]["commit_id"]
+        assert Path(sys.prefix) == private / "venv"
+        assert Path(shutil.which("hermes")) == private / "venv/bin/hermes"
+        reader_root = Path(os.environ["CLIMATE_WEB_LISTENING_DATA_DIR"])
+        assert reader_root == private / "reader"
+
+        def runtime_modes():
+            result = {}
+            for root in (private / "venv", hermes, reader_root):
+                assert not root.is_relative_to(app) and root.stat().st_mode & 0o777 == 0o700
+                for path in (root, *root.rglob("*")):
+                    info = path.lstat()
+                    if stat.S_ISLNK(info.st_mode):
+                        assert path.resolve().stat().st_mode & 0o022 == 0
+                        continue
+                    assert info.st_uid == os.getuid() and info.st_mode & 0o022 == 0
+                    result[path] = stat.S_IMODE(info.st_mode)
+            return result
+
+        strict_modes = runtime_modes()
+        # Only this disposable checkout's application sources gain group write.
+        for root in (app, app / "climate_monitor", app / "climate_registry", app / "scripts"):
+            paths = (root,) if root == app else (root, *root.rglob("*"))
+            for path in paths:
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
+                    continue
+                assert info.st_uid == os.getuid() and info.st_gid == group
+                assert info.st_mode & 0o002 == 0
+                if stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):
+                    path.chmod(stat.S_IMODE(info.st_mode) | 0o020)
+                    assert path.stat().st_mode & 0o020
+            assert root.stat().st_mode & 0o777 == 0o775
+        assert runtime_modes() == strict_modes
+        sys.path.insert(0, str(app))
+
+    phase = "imports"
+    from climate_monitor.hermes_identity import SNAPSHOT, create_snapshot, load_snapshot
+    from climate_monitor.management import ManagementService, TaskDefinitionStore, default_task_definition
+    from climate_registry.persistent import initialize_registry
+    if native_host:
+        import climate_monitor.hermes_identity as identity
+        assert Path(identity.__file__) == app / "climate_monitor/hermes_identity.py"
+        assert Path(identity.__file__).stat().st_mode & 0o777 == 0o664
+        phase = "private_input_negative"
+        negative = base / "synthetic-private-input"
+        negative.write_text("synthetic marker")
+        negative.chmod(0o600)
+        identity.secure_read(negative, private=True)
+        negative.chmod(0o620)
+        try:
+            identity.secure_read(negative, private=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("private group write accepted")
+        negative.unlink()
+
+    phase = "setup"
     assert os.environ.get("CLIMATE_REPOSITORY_COMMIT_SHA") == EXPECTED_COMMIT
     assert importlib.metadata.version("hermes-agent") == "0.20.5"
     assert importlib.metadata.version("web-listening") == "0.1.0"
-    shared_source = os.environ.get("ISSUE161_TEST_SHARED_SOURCE") == "1"
-    if shared_source:
+    shared_source = native_host or os.environ.get("ISSUE161_TEST_SHARED_SOURCE") == "1"
+    if shared_source and not native_host:
         # Disposable container copy-on-write only: reproduce collaborative
         # application source modes without touching runtime/private inputs.
         app = Path("/app")
@@ -42,7 +139,7 @@ try:
                     assert metadata.st_nlink == 1
                 if stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode):
                     path.chmod(stat.S_IMODE(metadata.st_mode) | 0o020)
-    source = Path("/app/climate_monitor/hermes_identity.py")
+    source = (app if native_host else Path("/app")) / "climate_monitor/hermes_identity.py"
     assert source.is_file() and source.stat().st_mode & 0o022 == (0o020 if shared_source else 0)
     executable = shutil.which("hermes")
     if not executable:
@@ -56,7 +153,8 @@ try:
     os.environ["HERMES_HOME"] = str(home)
     os.environ["HERMES_EXECUTABLE"] = executable
     os.environ["CLIMATE_MANAGED_STATE_DIR"] = str(state)
-    # Synthetic sentinel only. The container has --network none and no secrets.
+    # Synthetic sentinel only. Image modes have --network none; the native
+    # job supplies an empty environment/private HOME without real credentials.
     os.environ["OPENAI_API_KEY"] = "test-only-not-a-real-key"
     direct = base / "direct"
     direct.mkdir(mode=0o700)
@@ -103,7 +201,30 @@ try:
         store=store, runtime_root=runs, launcher=controlled_launcher
     ).start(trigger="scheduled")
     assert result["accepted"] and launcher_called
+    if native_host:
+        phase = "native_host_postflight"
+        snapshots = (direct / SNAPSHOT, *(runs / result_id / SNAPSHOT for result_id in os.listdir(runs)
+                                         if (runs / result_id / SNAPSHOT).is_dir()))
+        assert len(snapshots) == 2
+        for snapshot in snapshots:
+            for path in (snapshot, *snapshot.rglob("*")):
+                info = path.lstat()
+                assert info.st_uid == os.getuid()
+                assert stat.S_IMODE(info.st_mode) == (0o700 if stat.S_ISDIR(info.st_mode) else 0o600)
+        assert runtime_modes() == strict_modes
+        print(json.dumps({
+            "native_host": True, "os_egress_disabled": False,
+            "python_version": ".".join(map(str, sys.version_info[:3])),
+            "playwright_version": "1.62.0",
+            "hermes_commit": "5538bd1f933be2e94aca9755deca5cc59cccc553",
+            "reader_commit": "ac2343f89bc7939736d85f049ebe2beac571034a",
+            "private_group_write_rejected": True, "private_snapshot_modes": True,
+            "runtime_modes_unchanged": True, "checkout_owner_matches_uid": True,
+            "checkout_gid_is_member": True, "source_root_mode": "0775",
+            "source_file_mode": "0664", "snapshot_count": len(snapshots),
+        }, sort_keys=True))
     print(json.dumps({
+        **({"native_host": True} if native_host else {}),
         "result": "PASS", "candidate_commit": EXPECTED_COMMIT,
         "collaborative_source_modes": shared_source,
         "installed_hermes": importlib.metadata.version("hermes-agent"),
@@ -119,7 +240,8 @@ try:
 except Exception as exc:
     print(json.dumps({
         "result": "FAIL", "phase": phase,
-        "error_type": type(exc).__name__, "error": str(exc)[:240],
+        "error_type": type(exc).__name__,
+        **({"native_host": True} if native_host else {"error": str(exc)[:240]}),
     }, sort_keys=True))
     raise SystemExit(1)
 finally:
