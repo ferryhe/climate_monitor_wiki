@@ -339,8 +339,35 @@ jobs:
               return dict(line.split('=', 1) for line in command([
                   '/usr/bin/systemctl', 'show', unit, '--all',
                   '--property=Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,FragmentPath,'
-                  'MainPID,Delegate,DelegateSubgroup,User,Group,Type,Restart,PrivateNetwork'
+                  'MainPID,Delegate,DelegateSubgroup,User,Group,Type,Restart,PrivateNetwork,'
+                  'Result,ExecMainCode,ExecMainStatus,ExecMainPID'
               ]).splitlines())
+
+
+          def failure_evidence():
+              # Observe only this random unit. Never stop/kill a unit on weak identity.
+              if 'unit' not in diagnostics:
+                  return
+              diagnostics['artifacts'] = {
+                  key: not absent(directory + '/' + key)
+                  for key in ('ready', 'ack', 'result')
+              }
+              diagnostics['retirement_paths'] = {
+                  'fragment_present': not absent(fragment),
+                  'cgroup_present': not absent('/sys/fs/cgroup' + group),
+              }
+              probe = subprocess.run([
+                  '/usr/bin/journalctl', '--system', '--boot', '--quiet', '--no-pager',
+                  '--unit=' + unit, '--lines=32', '--output=cat',
+              ], check=False, capture_output=True, text=True, env=ENV, cwd='/', timeout=3)
+              def printable(value, limit):
+                  return ''.join(c if c in '\n\t' or ' ' <= c <= '~' else '?'
+                                 for c in value[:limit])
+              diagnostics['unit_journal'] = {
+                  'returncode': probe.returncode,
+                  'stdout': printable(probe.stdout, 8192),
+                  'stderr': printable(probe.stderr, 1024),
+              }
 
 
           def live(p, inspect_process=True):
@@ -394,6 +421,7 @@ jobs:
               directory = '/run/' + name
               require(absent(directory), 'existing install path')
               os.mkdir(name, mode=0o700, dir_fd=runfd)  # Exclusive: EEXIST fails; never reuse.
+              diagnostics['install_mount_noexec'] = bool(os.statvfs(directory).f_flag & os.ST_NOEXEC)
               workfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=runfd)
               work_identity = stamp(trusted(workfd, 0o700, regular=False))[:2]
               unit = name + '.service'
@@ -457,9 +485,16 @@ jobs:
                        directory + '/broker', nonce, SOURCE_SHA256, elf_hash])
               binding = None
               observed = None
+              transitions = []
               while time.monotonic() < deadline:
                   p = properties()
                   diagnostics['last_unit'] = p
+                  state = {key: p.get(key, '') for key in (
+                      'LoadState', 'ActiveState', 'SubState', 'InvocationID', 'MainPID',
+                      'Result', 'ExecMainCode', 'ExecMainStatus', 'ExecMainPID')}
+                  if not transitions or transitions[-1] != state:
+                      transitions.append(state)
+                      diagnostics['unit_transitions'] = transitions[-16:]
                   require(p['ActiveState'] != 'failed', 'service failed; VM teardown required')
                   if observed is not None and p['InvocationID']:
                       require(p['InvocationID'] == observed[0], 'invocation changed during retirement')
@@ -512,6 +547,11 @@ jobs:
                   raise RuntimeError('monotonic observer deadline; VM teardown required')
           except BaseException as exc:
               # Never emit a success boolean on any failure path. No guessed PID/unit kill.
+              try:
+                  failure_evidence()
+              except BaseException as evidence_exc:
+                  diagnostics['evidence_error'] = (type(evidence_exc).__name__ + ':' +
+                                                   str(evidence_exc)[:200])
               print(json.dumps({'status': 'FAIL/unverified', 'reason': str(exc)[:300],
                                 'diagnostics': diagnostics, 'vm_teardown_required': True}, sort_keys=True))
               raise
