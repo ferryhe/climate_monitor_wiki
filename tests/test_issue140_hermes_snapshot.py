@@ -7,6 +7,8 @@ import threading
 
 import pytest
 
+from fixture_modes import normalize_positive_fixture_tree, remove_shared_write
+
 from climate_monitor import management
 from test_issue94_management_console import _definition, _store
 
@@ -27,6 +29,9 @@ def runtime(tmp_path, monkeypatch, safe_managed_interpreter):
     executable = root / 'venv/bin/hermes'
     executable.write_text('#!' + str(safe_managed_interpreter) + '\nfrom hermes_cli.main import main\nmain()\n')
     executable.chmod(0o700)
+    # Positive fixture baseline only; preserve private/execute/special bits.
+    for path in (root, *root.rglob('*')):
+        remove_shared_write(path)
     home = tmp_path / 'ambient'
     home.mkdir(mode=0o700)
     for name, value in [('config.yaml', '{"model":{"default":"route-A","provider":"provider-A"}}'), ('auth.json', '{}')]:
@@ -151,8 +156,10 @@ def test_environment_ca_and_custom_route_frozen(tmp_path, monkeypatch, runtime):
     ca.write_text('test certificate')
     ca.chmod(0o644)
     ca_dir = tmp_path / 'certs'
-    ca_dir.mkdir()
-    (ca_dir / 'root.pem').write_text('test root')
+    ca_dir.mkdir(mode=0o755)
+    root_cert = ca_dir / 'root.pem'
+    root_cert.write_text('test root')
+    remove_shared_write(root_cert)
     config = {'model': {'default': 'route-A', 'provider': 'custom'},
               'providers': {'custom': {'base_url': 'https://example.invalid/v1', 'key_env': 'CUSTOM_TEST_KEY', 'ssl_ca_cert': str(ca)}},
               'mcp_servers': {'unrelated': {}}, 'plugins': {'enabled': ['unrelated']}}
@@ -224,8 +231,10 @@ def test_identical_identity_writers_and_fsync(tmp_path, monkeypatch):
 def test_unsafe_parent_and_tree_limits(tmp_path, monkeypatch):
     from climate_monitor import hermes_identity as identity
     actual = tmp_path / 'actual'
-    actual.mkdir()
-    (actual / 'file').write_text('x')
+    actual.mkdir(mode=0o755)
+    actual_file = actual / 'file'
+    actual_file.write_text('x')
+    remove_shared_write(actual_file)
     link = tmp_path / 'link'
     link.symlink_to(actual, target_is_directory=True)
     with pytest.raises(ValueError, match='unsafe'):
@@ -413,7 +422,10 @@ def test_review1_plugin_provider_environment(tmp_path, runtime, monkeypatch):
     home, executable = runtime
     plugin = executable.parents[2] / 'plugins/model-providers/commandcode'
     plugin.mkdir(parents=True)
-    plugin.joinpath('__init__.py').write_text('_ENV = ("COMMANDCODE_API_KEY", "COMMANDCODE_BASE_URL", "COMMANDCODE_ANTHROPIC_BASE_URL")\n')
+    module = plugin / '__init__.py'
+    module.write_text('_ENV = ("COMMANDCODE_API_KEY", "COMMANDCODE_BASE_URL", "COMMANDCODE_ANTHROPIC_BASE_URL")\n')
+    for path in (plugin.parent.parent, plugin.parent, plugin, module):
+        remove_shared_write(path)
     import secrets
     marker = secrets.token_hex(24)
     names = ('COMMANDCODE_API_KEY', 'COMMANDCODE_BASE_URL', 'COMMANDCODE_ANTHROPIC_BASE_URL')
@@ -448,12 +460,17 @@ def test_review1_final_environment_metadata(tmp_path, runtime, monkeypatch):
     from climate_monitor import hermes_identity as identity
     import hashlib
     ca = tmp_path / 'ca.pem'; ca.write_text('test roots')
+    remove_shared_write(ca)
     monkeypatch.setenv('SSL_CERT_FILE', str(ca))
     credential = tmp_path / 'credential.json'; credential.write_text('{}'); credential.chmod(0o600)
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', str(credential))
     _, executable = runtime
     certifi = executable.parents[1] / 'lib/python3.11/site-packages/certifi'
-    certifi.mkdir(parents=True); (certifi / 'cacert.pem').write_text('test roots')
+    certifi.mkdir(parents=True)
+    certifi_ca = certifi / 'cacert.pem'
+    certifi_ca.write_text('test roots')
+    for path in (certifi.parents[2], certifi.parents[1], certifi.parent, certifi, certifi_ca):
+        remove_shared_write(path)
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = identity.create_snapshot(run, source='run')
     payload = identity.load_snapshot(run, ref)
@@ -484,6 +501,9 @@ def test_review1_skills_opt_out(tmp_path, runtime, marker_honored):
         '    bundled = pathlib.Path(__file__).parents[1] / "skills"\n'
         '    shutil.copytree(bundled, home / "skills", dirs_exist_ok=True)\n'
         '    return {}\n')
+    for path in (package / 'skills', bundled, bundled / 'SKILL.md',
+                 package / 'tools/skills_sync.py'):
+        remove_shared_write(path)
     bare = tmp_path / 'unmanaged'; bare.mkdir(mode=0o700)
     subprocess.run([str(executable)], env={'HERMES_HOME': str(bare), 'PYTHONPATH': str(package), 'PYTHONDONTWRITEBYTECODE': '1'}, check=True, capture_output=True)
     assert (bare / 'skills/example/SKILL.md').is_file()
@@ -622,7 +642,10 @@ def test_review1_dynamic_provider_declaration_rejected(tmp_path, runtime, declar
     _, executable = runtime
     plugin = executable.parents[2] / 'plugins/model-providers/custom'
     plugin.mkdir(parents=True)
-    (plugin / '__init__.py').write_text('profile = ProviderProfile(' + declaration + ')\n')
+    module = plugin / '__init__.py'
+    module.write_text('profile = ProviderProfile(' + declaration + ')\n')
+    for path in (plugin.parent.parent, plugin.parent, plugin, module):
+        remove_shared_write(path)
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='unsupported'):
         identity.create_snapshot(run, source='run')
@@ -634,7 +657,10 @@ def test_review1_provider_literal_factory(tmp_path, runtime, monkeypatch):
     _, executable = runtime
     plugin = executable.parents[2] / 'plugins/model-providers/factory'
     plugin.mkdir(parents=True)
-    (plugin / '__init__.py').write_text('def profile(name, env_vars):\n    return ProviderProfile(name=name, env_vars=env_vars)\na = profile("a", ("TEST_FACTORY_KEY",))\n')
+    module = plugin / '__init__.py'
+    module.write_text('def profile(name, env_vars):\n    return ProviderProfile(name=name, env_vars=env_vars)\na = profile("a", ("TEST_FACTORY_KEY",))\n')
+    for path in (plugin.parent.parent, plugin.parent, plugin, module):
+        remove_shared_write(path)
     monkeypatch.setenv('TEST_FACTORY_KEY', 'offline')
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = identity.create_snapshot(run, source='run')
@@ -665,7 +691,10 @@ def test_review1_ambiguous_provider_rebinding_rejected(tmp_path, runtime, source
     _, executable = runtime
     plugin = executable.parents[2] / 'plugins/model-providers/ambiguous'
     plugin.mkdir(parents=True)
-    (plugin / '__init__.py').write_text(source)
+    module = plugin / '__init__.py'
+    module.write_text(source)
+    for path in (plugin.parent.parent, plugin.parent, plugin, module):
+        remove_shared_write(path)
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='unsupported'):
         identity.create_snapshot(run, source='run')
@@ -691,6 +720,7 @@ def test_review2_env_references_and_adapter_credentials(tmp_path, runtime, monke
     home, executable = runtime
     adapter = executable.parents[2] / 'agent'; adapter.mkdir(exist_ok=True)
     (adapter / 'bedrock_adapter.py').write_text('import os\nvalue = os.getenv("AWS_BEARER_TOKEN_BEDROCK")\nother = os.environ["CUSTOM_ADAPTER_CREDENTIAL"]\n')
+    remove_shared_write(adapter / 'bedrock_adapter.py')
     value = secrets.token_hex(24)
     for key in ('CUSTOM_ROUTE_BASE', 'CUSTOM_ROUTE_KEY', 'AWS_BEARER_TOKEN_BEDROCK', 'CUSTOM_ADAPTER_CREDENTIAL'):
         monkeypatch.setenv(key, value)
@@ -833,6 +863,7 @@ def test_review2_explicit_credentials_and_fallbacks_freeze(tmp_path, runtime, mo
     home, executable = runtime
     adapter = executable.parents[2] / 'agent'; adapter.mkdir(exist_ok=True)
     (adapter / 'bedrock_adapter.py').write_text('import os\nvalue=os.environ.get("AWS_BEARER_TOKEN_BEDROCK")\n')
+    remove_shared_write(adapter / 'bedrock_adapter.py')
     value = secrets.token_hex(24)
     monkeypatch.setenv(credential, value)
     (home / 'config.yaml').write_text(json.dumps({'model': {'provider': 'custom', 'base_url': '${env:ROUTE_POINTER}'}, 'fallback_providers': [{'provider': provider, 'model': 'backup'}]}))
@@ -854,6 +885,7 @@ def test_review2_auto_does_not_probe_unrelated_cli(tmp_path, runtime, monkeypatc
     home, executable = runtime
     adapter = executable.parents[2] / 'agent'; adapter.mkdir(exist_ok=True)
     (adapter / 'bedrock_adapter.py').write_text('# SDK chain available\n')
+    remove_shared_write(adapter / 'bedrock_adapter.py')
     (home / 'config.yaml').write_text('{"model":{"provider":"auto"}}')
     monkeypatch.setenv('OPENAI_API_KEY', __import__('secrets').token_hex(24))
     monkeypatch.setenv('GITHUB_TOKEN', 'unrelated')
@@ -1014,6 +1046,7 @@ def test_review2_provider_aliases_cannot_bypass_credential_contract(tmp_path, ru
     from climate_monitor import hermes_identity as h
     ambient, executable = runtime
     (executable.parents[2] / 'hermes_cli/auth.py').write_text('# model auth registry\n')
+    remove_shared_write(executable.parents[2] / 'hermes_cli/auth.py')
     (ambient / 'config.yaml').write_text(json.dumps({'model': {'provider': provider, 'default': 'offline'}}))
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='unsupported|fresh'):
@@ -1027,6 +1060,7 @@ def test_review2_frozen_oauth_state_remains_supported(tmp_path, runtime, provide
     import secrets
     ambient, executable = runtime
     (executable.parents[2] / 'hermes_cli/auth.py').write_text('# model auth registry\n')
+    remove_shared_write(executable.parents[2] / 'hermes_cli/auth.py')
     (ambient / 'config.yaml').write_text(json.dumps({'model': {'provider': provider, 'default': 'offline'}}))
     initial = {'active_provider': provider, 'providers': {provider: {'access_token': secrets.token_hex(24), 'refresh_token': secrets.token_hex(24)}}}
     (ambient / 'auth.json').write_text(json.dumps(initial))
@@ -1056,8 +1090,10 @@ def test_review2_auto_does_not_treat_oauth_profile_names_as_api_keys(tmp_path, r
     package = executable.parents[2]
     plugin = package / 'plugins/model-providers/qwen'; plugin.mkdir(parents=True)
     (plugin / '__init__.py').write_text('profile = ProviderProfile(name="qwen-oauth", env_vars=("QWEN_API_KEY",), auth_type="oauth_external")\n')
+    normalize_positive_fixture_tree(package / 'plugins')
     (package / 'agent').mkdir(exist_ok=True)
     (package / 'agent/bedrock_adapter.py').write_text('# SDK fallback available\n')
+    remove_shared_write(package / 'agent/bedrock_adapter.py')
     (ambient / 'config.yaml').write_text('{"model":{"provider":"auto"}}')
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='unsupported|fresh'):
@@ -1072,6 +1108,7 @@ def test_review2_auto_auth_state_cannot_bypass_sdk_gate(tmp_path, runtime, kind)
     package = executable.parents[2]
     (package / 'agent').mkdir(exist_ok=True)
     (package / 'agent/bedrock_adapter.py').write_text('# SDK fallback available\n')
+    remove_shared_write(package / 'agent/bedrock_adapter.py')
     (ambient / 'config.yaml').write_text('{"model":{"provider":"auto"}}')
     provider = 'missing-provider' if kind == 'unknown-active' else 'openai-codex'
     (ambient / 'auth.json').write_text(json.dumps({'active_provider': provider, 'providers': {provider: {'refresh_token': secrets.token_hex(24)}}}))
@@ -1499,7 +1536,7 @@ def test_review4_hook_uses_bound_interpreter_and_static_plugin(tmp_path, runtime
     sources = []
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         config = json.loads((home / 'config.yaml').read_bytes())
         command = shlex.split(config['hooks']['pre_tool_call'][0]['command'])
@@ -1520,7 +1557,7 @@ def test_review4_frozen_candidate_modules_execute_without_checkout(tmp_path, run
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run); binding['agent_protocol'] = V3_AGENT_PROTOCOL
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     original = subprocess.run
     monkeypatch.setattr(subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='climate acquisition hooks verified'))
     env, home = hooks.install_hooks(['hermes'], path, binding, {})
@@ -1613,7 +1650,7 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
     plugin_bytes = []
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         ledger = RequestBudget(ledger_path(binding), binding)
         ledger.claim('web_search', 'q', call_id=f'{attempt}:session:call', results=5, session_id='session', tool_call_id='call')
         env, home = hooks.install_hooks(['hermes'], path, binding, {})  # real frozen verifier
@@ -1662,7 +1699,7 @@ def test_review4_all_policy_members_reject_corruption_before_launch(tmp_path, ru
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     payload = h.load_snapshot(run, binding['hermes_snapshot'])
     monkeypatch.setattr(hooks.subprocess, 'run', lambda *a, **k: pytest.fail('process launched with corrupt policy'))
     for member in payload['policy']:
@@ -1695,6 +1732,7 @@ def test_review4_reader_dependency_source_closure(tmp_path):
     (reader / '__init__.py').write_text('from helper_dependency import value\n')
     (reader / 'template.txt').write_text('template')
     helper = site / 'helper_dependency.py'; helper.write_text('value = 42\n')
+    normalize_positive_fixture_tree(venv)
     policy = provider_dependency_policy(venv / 'bin/python')
     assert policy['acquisition/helper_dependency.py'] == b'value = 42\n'
     assert policy['acquisition/web_listening/template.txt'] == b'template'
@@ -1708,6 +1746,7 @@ def test_review4_dependency_mutation_during_collection_fails(tmp_path, runtime, 
     venv = tmp_path / 'reader-venv'
     package = venv / 'lib/python3.11/site-packages/web_listening'; package.mkdir(parents=True)
     module = package / '__init__.py'; module.write_text('version = 1\n')
+    normalize_positive_fixture_tree(venv)
     collect = bundle.provider_dependency_policy
     calls = []
     def changing(interpreter, package_root=None):
@@ -1732,7 +1771,7 @@ def test_review4_child_verifies_materialized_policy(tmp_path, runtime, change):
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     env, home = hooks.install_hooks(['hermes'], path, binding, {})
     if change == 'config-recipe':
         config = json.loads((home / 'config.yaml').read_text())
@@ -1762,6 +1801,7 @@ def test_review4_reader_tree_counts_empty_directories(tmp_path, monkeypatch):
     directory = package
     for _ in range(25):
         directory = directory / 'nested'; directory.mkdir()
+    normalize_positive_fixture_tree(venv)
     monkeypatch.setattr(h, 'MAX_TREE_FILES', 20)
     with pytest.raises(ValueError, match='limit'):
         provider_dependency_policy(venv / 'bin/python')
@@ -1808,6 +1848,7 @@ def test_review5_pth_helper_never_executes(tmp_path, runtime, purpose, helper_na
     helper.write_text('# original\n')
     (site / 'startup.pth').write_text('import ' + helper_name + '\n')
     source = site / 'editable_source.py'; source.write_text('# original\n')
+    normalize_positive_fixture_tree(venv)
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
@@ -1816,7 +1857,7 @@ def test_review5_pth_helper_never_executes(tmp_path, runtime, purpose, helper_na
     for attempt in (1, 2):
         if purpose == 'acquisition':
             binding['attempt'] = attempt
-            path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+            path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
             command = ['hermes']
             env, home = hooks.install_hooks(command, path, binding, {})
         else:
@@ -1881,6 +1922,7 @@ def test_review5_unsupported_dependency_rejected(tmp_path, kind):
     (package / '__init__.py').write_text(bodies[kind])
     if kind == 'native':
         (package / 'extension.so').write_bytes(b'not executed')
+    normalize_positive_fixture_tree(tmp_path / 'venv')
     with pytest.raises(ValueError, match='unsupported'):
         provider_dependency_policy(tmp_path / 'venv/bin/python')
 
@@ -1905,6 +1947,8 @@ def test_review5_editable_dependency_is_private(tmp_path):
     (source / '__init__.py').write_text('VALUE="original"\n')
     (metadata / 'direct_url.json').write_text(json.dumps({'url': (tmp_path / 'editable').as_uri(), 'dir_info': {'editable': True}}))
     (metadata / 'top_level.txt').write_text('web_listening\n')
+    normalize_positive_fixture_tree(tmp_path / 'venv')
+    normalize_positive_fixture_tree(tmp_path / 'editable')
     policy = provider_dependency_policy(tmp_path / 'venv/bin/python')
     (source / '__init__.py').write_text('raise RuntimeError("ambient")\n')
     assert policy['acquisition/web_listening/__init__.py'] == b'VALUE="original"\n'
@@ -1940,6 +1984,7 @@ def test_review5_aliased_namespace_escape_rejected(tmp_path, source):
     package = tmp_path / 'venv/lib/python3.11/site-packages/web_listening'
     package.mkdir(parents=True)
     (package / '__init__.py').write_text(source)
+    normalize_positive_fixture_tree(tmp_path / 'venv')
     with pytest.raises(ValueError, match='unsupported'):
         provider_dependency_policy(tmp_path / 'venv/bin/python')
 
@@ -1999,6 +2044,7 @@ def test_review5_interpreter_runtime_path_metadata_is_bound(tmp_path, runtime, s
     interpreter.symlink_to(safe_managed_interpreter)
     metadata = tmp_path / 'other-venv/lib/python3.11/site-packages/offline-1.dist-info/METADATA'
     metadata.parent.mkdir(parents=True); metadata.write_text('Name: offline\nVersion: 1\n')
+    normalize_positive_fixture_tree(tmp_path / 'other-venv')
     executable.write_text('#!' + str(interpreter) + '\nfrom hermes_cli.main import main\nmain()\n')
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
@@ -2013,6 +2059,7 @@ def test_review5_low_level_loader_modules_rejected(tmp_path, module):
     package = tmp_path / 'venv/lib/python3.11/site-packages/web_listening'
     package.mkdir(parents=True)
     (package / '__init__.py').write_text('import ' + module + '\n')
+    normalize_positive_fixture_tree(tmp_path / 'venv')
     with pytest.raises(ValueError, match='unsupported'):
         provider_dependency_policy(tmp_path / 'venv/bin/python')
 
@@ -2029,6 +2076,7 @@ def test_review6_web_channel_first_resume(tmp_path, monkeypatch, runtime, capsys
              'PARALLEL_SEARCH_MODE', 'SEARXNG_URL', 'NEW_WEB_SETTING']
     (package / 'tools/web_tools.py').write_text('import os\n' + '\n'.join(
         f'os.getenv({name!r})' for name in names))
+    remove_shared_write(package / 'tools/web_tools.py')
     values = {name: secrets.token_hex(24) for name in names}
     web = {'backend': 'tavily', 'search_backend': 'tavily', 'extract_backend': 'firecrawl',
            'providers': {'tavily': {'tier': 'paid', 'base_url': '${env:TAVILY_BASE_URL}'}}}
@@ -2038,7 +2086,7 @@ def test_review6_web_channel_first_resume(tmp_path, monkeypatch, runtime, capsys
     else:
         h._write((home if dotenv == 'home' else package) / '.env',
                  ''.join(f'{k}={v}\n' for k, v in values.items()).encode())
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     reference = h.create_snapshot(run, source='climate-acquisition-web')
     payload = h.load_snapshot(run, reference)
     matches = payload.get('web_environment') == values
@@ -2053,7 +2101,7 @@ def test_review6_web_channel_first_resume(tmp_path, monkeypatch, runtime, capsys
                'agent_protocol': {'version': 'trusted-candidate-handles.v3', 'search_policy': 'provider-native-unbounded.v1', 'candidate_policy': 'trusted-tool-receipts.v1'}}
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, child = hooks.install_hooks(['hermes'], path, binding, {})
         assert all(env.get(k) == v for k, v in values.items())
         config = json.loads((child / 'config.yaml').read_text())
@@ -2075,13 +2123,14 @@ def test_review6_dynamic_web_name_rejected(tmp_path, runtime):
     _, executable = runtime
     tools = executable.parents[2] / 'tools'; tools.mkdir(exist_ok=True)
     (tools / 'web_tools.py').write_text('import os\nos.getenv("KEY_" + input())\n')
+    remove_shared_write(tools / 'web_tools.py')
     with pytest.raises(ValueError, match='unsupported.*web'):
         h.create_snapshot(tmp_path / 'run')
 
 @pytest.mark.parametrize('tamper', ['metadata', 'value', 'config'])
 def test_review6_web_manifest_integrity(tmp_path, runtime, tamper):
     from climate_monitor import hermes_identity as h
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     manifest = run / h.SNAPSHOT / 'manifest.json'
     payload = json.loads(manifest.read_bytes())
@@ -2110,6 +2159,7 @@ def test_review6_dynamic_web_alias_rejected(tmp_path, runtime, source):
     _, exe = runtime
     provider = exe.parents[2] / 'plugins/web/new/provider.py'
     provider.parent.mkdir(parents=True); provider.write_text(source)
+    normalize_positive_fixture_tree(exe.parents[2] / 'plugins')
     with pytest.raises(ValueError, match='unsupported.*web'):
         h.create_snapshot(tmp_path / 'run')
 
@@ -2122,6 +2172,7 @@ def test_review6_web_marker_public_artifacts(tmp_path, runtime, capsys, caplog):
     home, exe = runtime
     tools = exe.parents[2] / 'tools'; tools.mkdir(exist_ok=True)
     (tools / 'web_tools.py').write_text('import os\nos.getenv("TAVILY_API_KEY")\n')
+    remove_shared_write(tools / 'web_tools.py')
     marker = secrets.token_hex(32)
     h._write(home / '.env', ('TAVILY_API_KEY=' + marker).encode())
     (home / 'config.yaml').write_text(json.dumps({'web': {'backend': 'tavily', 'api_key': marker}}))
@@ -2158,6 +2209,7 @@ def test_review6_dynamic_web_profile_rejected(tmp_path, runtime, source):
     _, exe = runtime
     provider = exe.parents[2] / 'plugins/web/new/provider.py'
     provider.parent.mkdir(parents=True); provider.write_text(source)
+    normalize_positive_fixture_tree(exe.parents[2] / 'plugins')
     with pytest.raises(ValueError, match='unsupported.*web'):
         h.create_snapshot(tmp_path / 'run')
 
@@ -2175,6 +2227,7 @@ def _review7_editable(runtime, tmp_path, monkeypatch):
     (dist / 'direct_url.json').write_text(json.dumps({'url': package.as_uri(), 'dir_info': {'editable': True}}))
     sentinel = tmp_path / 'startup-executed'
     (dist.parent / '__editable__.hermes.pth').write_text(f'import pathlib; pathlib.Path({str(sentinel)!r}).touch()\n')
+    normalize_positive_fixture_tree(tmp_path / 'usr')
     monkeypatch.setenv('HERMES_EXECUTABLE', str(executable))
     return package, dist, sentinel
 
@@ -2182,7 +2235,7 @@ def _review7_editable(runtime, tmp_path, monkeypatch):
 def test_review7_docker_editable_nonancestor(tmp_path, runtime, monkeypatch):
     from climate_monitor import hermes_identity as h
     package, dist, sentinel = _review7_editable(runtime, tmp_path, monkeypatch)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     payload = h.load_snapshot(run, ref)
     assert payload['package_root'] == str(package)
@@ -2199,7 +2252,7 @@ def test_review7_docker_editable_nonancestor(tmp_path, runtime, monkeypatch):
 def test_review7_clean_sibling_auth_serializes(tmp_path, runtime):
     from climate_monitor import hermes_identity as h
     from hermes_offline_runtime import successful_api_lifecycle
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, meeting = h.inference_runtime(run, ref, purpose='meetings', source='climate-acquisition-run')
     started, release = threading.Event(), threading.Event()
@@ -2235,13 +2288,14 @@ def test_review7_web_deny_first_resume(tmp_path, runtime, deny):
     manifest = exe.parents[2] / 'plugins/web/tavily/plugin.yaml'
     manifest.parent.mkdir(parents=True)
     manifest.write_text('name: web-tavily\nkind: backend\nprovides_web_providers: [tavily]\n')
+    normalize_positive_fixture_tree(exe.parents[2] / 'plugins')
     (home / 'config.yaml').write_text(json.dumps({'web': {'backend':'tavily'}, 'plugins': {'disabled':[deny, 'unrelated-plugin']}}))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     (home / 'config.yaml').unlink()
     for attempt in (1, 2):
         binding = {'run_id':'run','attempt':attempt,'hermes_snapshot':ref,'checkpoint_dir':str(run/'checkpoint')}
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         _, child = hooks.install_hooks(['hermes'], path, binding, {})
         plugins = json.loads((child/'config.yaml').read_bytes())['plugins']
         assert plugins.get('disabled') == ['web/tavily']
@@ -2286,7 +2340,7 @@ def test_review7_editable_unsafe_rejected(tmp_path, runtime, monkeypatch, kind):
 def test_review7_process_siblings_and_abandonment(tmp_path, runtime, crash):
     import multiprocessing
     from climate_monitor import hermes_identity as h
-    run = tmp_path/'run';run.mkdir()
+    run = tmp_path/'run';run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _,_,meeting = h.inference_runtime(run,ref,purpose='meetings',source='climate-acquisition-run')
     context = multiprocessing.get_context('fork')
@@ -2319,7 +2373,7 @@ def test_review7_process_siblings_and_abandonment(tmp_path, runtime, crash):
 
 def test_review7_auth_wait_is_bounded(tmp_path, runtime, monkeypatch):
     from climate_monitor import hermes_identity as h, hermes_auth_state as auth
-    run=tmp_path/'run';run.mkdir();ref=h.create_snapshot(run)
+    run=tmp_path/'run';run.mkdir(mode=0o700);ref=h.create_snapshot(run)
     _,_,home=h.inference_runtime(run,ref,purpose='meetings',source='climate-acquisition-run')
     monkeypatch.setattr(auth,'AUTH_LOCK_TIMEOUT',0.1)
     with h.auth_execution(home) as state:
@@ -2342,6 +2396,7 @@ def test_review7_invalid_web_denials(tmp_path,runtime,plugins):
     home,exe=runtime
     manifest=exe.parents[2]/'plugins/web/tavily/plugin.yaml';manifest.parent.mkdir(parents=True)
     manifest.write_text('name: web-tavily\nkind: backend\nprovides_web_providers: [tavily]\n')
+    normalize_positive_fixture_tree(exe.parents[2] / 'plugins')
     (home/'config.yaml').write_text(json.dumps({'plugins':plugins}))
     with pytest.raises(ValueError,match='fresh'):h.create_snapshot(tmp_path/'run')
     assert not (tmp_path/'run'/h.SNAPSHOT).exists()
@@ -2357,6 +2412,7 @@ def test_review8_exact_pinned_reader(tmp_path):
     site.mkdir(parents=True)
     (site / 'budgets.py').write_bytes(raw)
     (site / 'model.py').write_text('class Budgets: pass\nclass RequestValidationError(ValueError): pass\n')
+    normalize_positive_fixture_tree(tmp_path / 'usr')
     policy = provider_dependency_policy(tmp_path / 'usr/local/bin/python')
     assert policy['acquisition/web_listening/request/budgets.py'] == raw
 
@@ -2373,7 +2429,8 @@ def test_review8_runtime_bytes_bound(tmp_path, runtime, attempt, change):
     dist = site / 'driftdep-1.dist-info'; dist.mkdir()
     (dist / 'METADATA').write_text('Name: driftdep\nVersion: 1\n')
     (dist / 'RECORD').write_text('driftdep/__init__.py,,\n')
-    run = tmp_path / 'run'; run.mkdir()
+    normalize_positive_fixture_tree(executable.parent.parent / 'lib')
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     if attempt == 2:
         h.load_snapshot(run, ref)
@@ -2392,6 +2449,7 @@ def test_review8_entrypoint_private_home(tmp_path, runtime, existing):
     home = tmp_path / 'volume/hermes'
     if existing:
         home.mkdir(parents=True, mode=0o755)
+        remove_shared_write(home.parent)
     env = dict(os.environ, HERMES_HOME=str(home), HERMES_DASHBOARD_ENABLED='0')
     for name in list(env):
         if name.startswith('CLIMATE_'):
@@ -2399,7 +2457,7 @@ def test_review8_entrypoint_private_home(tmp_path, runtime, existing):
     result = subprocess.run(['sh', 'scripts/docker_entrypoint.sh', 'true'], env=env, capture_output=True)
     assert result.returncode == 0
     assert home.is_dir() and home.stat().st_mode & 0o777 == 0o700
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     reference = h.create_snapshot(run, environ=env)
     payload = h.load_snapshot(run, reference)
     assert not (home / 'config.yaml').exists() and not (home / 'auth.json').exists()
@@ -2416,14 +2474,15 @@ def test_review8_child_rechecks_runtime_before_import(tmp_path, runtime, purpose
     site = executable.parent.parent / 'lib/python3.12/site-packages'
     site.mkdir(parents=True)
     module = site / 'driftdep.py'; module.write_text('value = 1\n')
+    normalize_positive_fixture_tree(executable.parent.parent / 'lib')
     sentinel = tmp_path / 'unbound-executed'
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     for turn in range(1, attempt + 1):
         if purpose == 'acquisition':
             binding['attempt'] = turn
-            path = run / f'attempt-{turn}.json'; path.write_text(json.dumps(binding))
+            path = run / f'attempt-{turn}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
             command = ['hermes']
             env, home = hooks.install_hooks(command, path, binding, {})
         else:
@@ -2447,6 +2506,7 @@ def test_review8_record_and_runtime_security(tmp_path, kind):
     module = site / ('module.so' if kind == 'native' else 'data.bin' if kind == 'data' else 'module.py')
     module.write_bytes(b'original')
     record = dist / 'RECORD'; record.write_text(module.name + ',,\n')
+    normalize_positive_fixture_tree(tmp_path / 'prefix')
     if kind in {'native', 'data'}:
         first = inventory.inventory([str(site)])
         module.write_bytes(b'changed')
@@ -2505,7 +2565,7 @@ def test_review8_unmanifested_package_origin_rejected(tmp_path, runtime):
     source.write_text('from pathlib import Path\nPath(' + repr(str(sentinel)) + ').touch()\n')
     # Sourceless import is outside the package-source inventory, unlike site-packages.
     py_compile.compile(str(source), cfile=str(executable.parents[2] / 'unbound.pyc'), doraise=True)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, home = h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
     result = subprocess.run(h.launch_command(home, '-c', 'import unbound'), env=env, cwd=home, capture_output=True)
@@ -2518,6 +2578,7 @@ def test_review8_vendored_record_is_bound_data(tmp_path):
     site = tmp_path / 'lib/python3.12/site-packages'; site.mkdir(parents=True)
     vendor = site / 'package/_vendor/copied-1.dist-info'; vendor.mkdir(parents=True)
     record = vendor / 'RECORD'; record.write_text('../../../bin/not-installed,,\n')
+    normalize_positive_fixture_tree(tmp_path / 'lib')
     first = inventory([str(site)])
     record.write_text('../../../bin/changed,,\n')
     assert inventory([str(site)]) != first
@@ -2542,7 +2603,8 @@ def test_review8_private_cache_cannot_supply_unbound_code(tmp_path, runtime, mon
     poison = 'from pathlib import Path; Path(' + repr(str(sentinel)) + ').touch(); value = 2\n'
     source = executable.parents[2] / 'cacheprobe.py'
     source.write_text('value = 1\n#' + ' ' * (len(poison) - len('value = 1\n#\n')) + '\n')
-    run = tmp_path / 'run'; run.mkdir()
+    remove_shared_write(source)
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, home = h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
     forged = tmp_path / 'forged.py'; forged.write_text(poison)
@@ -2562,6 +2624,7 @@ def test_review8_runtime_commitments_skip_content_reads(tmp_path, monkeypatch):
     from climate_monitor import hermes_runtime_inventory as r
     site = tmp_path / 'lib/python3.12/site-packages'; site.mkdir(parents=True)
     (site / 'module.py').write_text('value = 1\n')
+    normalize_positive_fixture_tree(tmp_path / 'lib')
     import time
     time.sleep(1.1)  # Move past the filesystem's coalesced timestamp tick.
     commitments = {}
@@ -2583,6 +2646,7 @@ def test_review8_runtime_commitments_reject_drift(tmp_path, mutation):
     from climate_monitor import hermes_runtime_inventory as r
     site = tmp_path / 'site-packages'; site.mkdir()
     module = site / 'module.py'; module.write_text('value = 1\n')
+    normalize_positive_fixture_tree(site)
     commitments = {}; r.inventory([str(site)], capture=commitments)
     before = module.stat()
     if mutation in {'content', 'restored_mtime'}:
@@ -2599,7 +2663,7 @@ def test_review8_runtime_commitments_reject_drift(tmp_path, mutation):
 def test_review8_runtime_commitment_corruption_fails_before_child(tmp_path, runtime):
     import subprocess
     from climate_monitor import hermes_identity as h
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     _, env, home = h.inference_runtime(run, ref, purpose='report', source='climate-acquisition-run')
     command = h.launch_command(home, '-c', 'raise AssertionError("must not run")')
@@ -2617,10 +2681,10 @@ def test_review8_hook_verifier_rejects_timeout_block(tmp_path, runtime):
     _, executable = runtime
     shell = executable.parents[2] / 'agent/shell_hooks.py'
     shell.write_text(shell.read_text() + '\ndef run_once(spec, payload):\n return {"parsed": {"action": "block", "message": "timed out"}, "returncode": None, "timed_out": True}\n')
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     with pytest.raises(ValueError, match='runtime verification failed'):
         hooks.install_hooks(['hermes'], path, binding, {})
 
@@ -2633,14 +2697,16 @@ def test_review9_deployed_reader_root_survives_install(tmp_path, runtime, monkey
     browser = deployed / 'browser-runtimes/playwright/browsers/chromium-test/chrome-linux64/chrome'
     browser.parent.mkdir(parents=True)
     browser.write_bytes(b'offline browser fixture\n')
+    for path in (tmp_path / 'opt', deployed, *deployed.rglob('*')):
+        remove_shared_write(path)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(deployed))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     monkeypatch.delenv('CLIMATE_WEB_LISTENING_DATA_DIR')
     for number in range(1, attempt + 1):
         binding['attempt'] = number
-        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         child = Path(env['CLIMATE_WEB_LISTENING_DATA_DIR'])
         assert child == deployed
@@ -2682,6 +2748,18 @@ def _review9_browser(tmp_path, interpreter=None):
     (installed / 'runtime.json').write_text(json.dumps(config))
     (installed / 'state.json').write_text(json.dumps({'schema_version':'web-listening-tool-state.v1','qualified':True,'disabled':False,'broken':False,'failure_code':None}))
     (installed.parent / 'active.json').write_text(json.dumps({'schema_version':'web-listening-tool-active.v1','version':'1.0.0'}))
+    # Normalize the fixture's own freshly-created entries to a known-safe
+    # baseline (strip only group/other write bits — preserve execute bits and
+    # any other mode bits) so a permissive host umask (e.g. 0002 on
+    # collaborative deployments) doesn't leave them group-writable and
+    # rejected as unsafe by the new strict Hermes runtime reader. Skip the
+    # interpreter path: it may be `os.link`-ed to `interpreter` (shared
+    # inode), so chmod-ing it would also change the caller's interpreter mode.
+    interpreter_path = venv / 'bin/python'
+    for path in (root, *root.rglob('*')):
+        if path.is_symlink() or path == interpreter_path:
+            continue
+        remove_shared_write(path)
     return root, venv, installed, config
 
 
@@ -2693,19 +2771,23 @@ def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, mon
     sentinel = tmp_path / 'startup-ran'
     site = venv / 'lib/python3.12/site-packages'
     (site / 'unsafe.pth').write_text('import startup_helper\n')
+    (site / 'unsafe.pth').chmod(0o644)
     (site / 'startup_helper.py').write_text('from pathlib import Path; Path(' + repr(str(sentinel)) + ').touch()\n')
+    (site / 'startup_helper.py').chmod(0o644)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id']); binding['hermes_snapshot'] = ref
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'different'))
     for attempt in (1, 2):
-        (root / 'artifacts').mkdir(exist_ok=True)
+        (root / 'artifacts').mkdir(exist_ok=True, mode=0o755)
         (root / 'artifacts' / str(attempt)).write_text('mutable output')
+        (root / 'artifacts' / str(attempt)).chmod(0o644)
         (root / 'jobs.sqlite3').write_bytes(bytes([attempt]))
-        (root / 'history').mkdir(exist_ok=True)
+        (root / 'jobs.sqlite3').chmod(0o644)
+        (root / 'history').mkdir(exist_ok=True, mode=0o755)
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         assert env['CLIMATE_WEB_LISTENING_DATA_DIR'] == str(root)
         command = [config['python'], '-I', '-S', str(home.parent / 'bootstrap/launcher.py'), '--reader-tool', str(home), str(installed / 'tool.py')]
@@ -2724,9 +2806,9 @@ def test_review9_actual_adapter_no_site_and_mutable_state(tmp_path, runtime, mon
 def test_review9_reader_drift_rejected(tmp_path, runtime, monkeypatch, damage, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h
     root, venv, installed, _ = _review9_browser(tmp_path, safe_managed_interpreter)
-    helper = venv / 'lib/python3.12/site-packages/startup_helper.py'; helper.write_text('# frozen\n')
+    helper = venv / 'lib/python3.12/site-packages/startup_helper.py'; helper.write_text('# frozen\n'); helper.chmod(0o644)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     target = {'binary':venv/'browsers/chromium-1234/chrome-linux64/chrome',
               'sdk':venv/'lib/python3.12/site-packages/playwright/__init__.py',
@@ -2746,7 +2828,7 @@ def test_review9_tool_file_symlink_rejected_before_publication(tmp_path, runtime
     real = installed / 'implementation.py'; (installed / 'tool.py').rename(real)
     (installed / 'tool.py').symlink_to(real.name)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError):
         h.create_snapshot(run)
     assert not (run / h.SNAPSHOT).exists()
@@ -2779,7 +2861,7 @@ def test_review9_absent_root_is_private_empty_runtime(tmp_path, runtime, monkeyp
     from climate_monitor import hermes_identity as h
     if value is None: monkeypatch.delenv('CLIMATE_WEB_LISTENING_DATA_DIR', raising=False)
     else: monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', value)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     ref = h.create_snapshot(run)
     payload = h.load_snapshot(run, ref)
     root = Path(payload['reader_runtime']['root'])
@@ -2802,12 +2884,12 @@ def test_review9_reader_child_refuses_changed_runtime(tmp_path, runtime, monkeyp
     marker = secrets.token_hex(24)
     (installed / 'private-marker.txt').write_text(marker); (installed / 'private-marker.txt').chmod(0o600)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id']); binding['hermes_snapshot'] = ref
     for number in range(1, attempt + 1):
         binding['attempt'] = number
-        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{number}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
     command = [config['python'], '-I', '-S', str(home.parent / 'bootstrap/launcher.py'), '--reader-tool', str(home), str(installed / 'tool.py')]
     Path(config['browser']).write_bytes(b'mutated runtime')
@@ -2823,10 +2905,10 @@ def test_review9_adapter_checks_attempt_seal(tmp_path, runtime, monkeypatch, saf
     from test_issue117_request_boundaries import new_protocol_binding
     root, _, installed, config = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     env, home = hooks.install_hooks(['hermes'], path, binding, {})
     seal = home / 'attempt-policy.json'; value = json.loads(seal.read_bytes()); value['binding_sha256'] = '0'*64; seal.write_text(json.dumps(value))
     command = [config['python'],'-I','-S',str(home.parent/'bootstrap/launcher.py'),'--reader-tool',str(home),str(installed/'tool.py')]
@@ -2848,7 +2930,7 @@ def test_review9_reader_mutation_during_collection_never_publishes(tmp_path, run
         if calls == 1: Path(config['browser']).write_bytes(b'collection-window change')
         return result
     monkeypatch.setattr(reader, 'collect', changing)
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     with pytest.raises(ValueError, match='changed during collection'):
         h.create_snapshot(run)
     assert not (run / h.SNAPSHOT).exists()
@@ -2860,10 +2942,10 @@ def test_review9_worker_controlled_fetch_uses_frozen_reader(tmp_path, runtime, m
     from test_issue117_request_boundaries import new_protocol_binding
     root, _, _, _ = _review9_browser(tmp_path, safe_managed_interpreter)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     binding['hermes_snapshot'] = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
-    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding))
+    path = run / 'attempt-1.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
     _, home = hooks.install_hooks(['hermes'], path, binding, {})
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'ambient-change'))
     monkeypatch.delenv('CLIMATE_ACQUISITION_ATTEMPT', raising=False)
@@ -2888,14 +2970,16 @@ def test_review9_installed_tool_bound_sibling(tmp_path, runtime, monkeypatch, sa
     tool.write_text('import bound_reader_helper\nprint(bound_reader_helper.VALUE)\n')
     helper = tool.with_name('bound_reader_helper.py')
     helper.write_text('VALUE = "bound helper"\n')
+    for path in (root / 'tools/transform', *(root / 'tools/transform').rglob('*')):
+        remove_shared_write(path)
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(root))
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     binding['hermes_snapshot'] = ref
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, home = hooks.install_hooks(['hermes'], path, binding, {})
         command = h.launch_command(home, '--reader-tool', str(home), str(tool))
         child = subprocess.run(command, env=env, cwd=home, capture_output=True, text=True)
@@ -2926,7 +3010,7 @@ def test_review9_reader_dotenv_precedence(tmp_path, runtime, monkeypatch, select
     elif selection == 'home':
         monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'unselected'))
         home_env.write_text('CLIMATE_WEB_LISTENING_DATA_DIR=' + str(root) + '\n')
-    run = tmp_path / 'run'; run.mkdir()
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
     binding = new_protocol_binding(run)
     ref = h.create_snapshot(run, source='climate-acquisition-' + binding['run_id'])
     binding['hermes_snapshot'] = ref
@@ -2935,7 +3019,7 @@ def test_review9_reader_dotenv_precedence(tmp_path, runtime, monkeypatch, select
     monkeypatch.setenv('CLIMATE_WEB_LISTENING_DATA_DIR', str(tmp_path / 'changed'))
     for attempt in (1, 2):
         binding['attempt'] = attempt
-        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding))
+        path = run / f'attempt-{attempt}.json'; path.write_text(json.dumps(binding)); path.chmod(0o600)
         env, _ = hooks.install_hooks(['hermes'], path, binding, {})
         assert env['CLIMATE_WEB_LISTENING_DATA_DIR'] == str(expected)
         assert h.load_snapshot(run, ref)['reader_runtime']['root'] == str(expected)
@@ -2997,6 +3081,8 @@ def test_review9_docker_python312_web_helper_contract(tmp_path, monkeypatch, hel
     path = tmp_path / helper['key'].split(':')[0]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source)
+    remove_shared_write(path.parent)
+    remove_shared_write(path)
     _, metadata = h.secure_read(path)
     if drift:
         with pytest.raises(ValueError, match='unsupported Hermes web input'):
