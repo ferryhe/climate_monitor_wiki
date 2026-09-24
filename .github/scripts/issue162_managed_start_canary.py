@@ -23,7 +23,7 @@ base = Path(tempfile.mkdtemp(prefix="issue161-installed-managed-"))
 phase = "setup"
 try:
     if native_host:
-        phase = "native_host_preflight"
+        phase = "native_host_location"
         assert sys.version_info[:2] == (3, 12)
         app = Path(os.environ["ISSUE161_SOURCE_ROOT"])
         private = Path(os.environ["TMPDIR"])
@@ -39,14 +39,17 @@ try:
                 ["git", "-C", str(root), *args], stderr=subprocess.DEVNULL, text=True
             ).strip()
 
+        phase = "native_host_checkout_identity"
         assert git_output(app, "rev-parse", "HEAD") == EXPECTED_COMMIT
         assert not git_output(app, "status", "--porcelain", "--untracked-files=no")
+        phase = "native_host_checkout_parent_modes"
         for parent in app.parents:
             assert parent.stat().st_mode & 0o022 == 0
             assert parent.stat().st_uid in {0, os.getuid()}
         group = app.stat().st_gid
         assert group in {os.getegid(), *os.getgroups()}
 
+        phase = "native_host_hermes_binding"
         hermes = private / "hermes-agent"
         assert git_output(hermes, "rev-parse", "HEAD") == "5538bd1f933be2e94aca9755deca5cc59cccc553"
         assert git_output(hermes, "remote", "get-url", "origin") == "https://github.com/NousResearch/hermes-agent.git"
@@ -55,11 +58,13 @@ try:
         assert origin["dir_info"] == {"editable": True}
         assert urlparse(origin["url"]).scheme == "file"
         assert Path(unquote(urlparse(origin["url"]).path)).resolve() == hermes
+        phase = "native_host_reader_binding"
         origin = json.loads(importlib.metadata.distribution("web-listening").read_text("direct_url.json"))
         assert origin["url"] == "https://github.com/ferryhe/web_listening_new.git"
         assert origin["vcs_info"]["vcs"] == "git"
         assert origin["vcs_info"]["commit_id"] == "ac2343f89bc7939736d85f049ebe2beac571034a"
         assert origin["vcs_info"]["requested_revision"] == origin["vcs_info"]["commit_id"]
+        phase = "native_host_runtime_identity"
         assert Path(sys.prefix) == private / "venv"
         assert Path(shutil.which("hermes")) == private / "venv/bin/hermes"
         reader_root = Path(os.environ["CLIMATE_WEB_LISTENING_DATA_DIR"])
@@ -78,8 +83,10 @@ try:
                     result[path] = stat.S_IMODE(info.st_mode)
             return result
 
+        phase = "native_host_runtime_modes_baseline"
         strict_modes = runtime_modes()
         # Only this disposable checkout's application sources gain group write.
+        phase = "native_host_collaborative_source_modes"
         for root in (app, app / "climate_monitor", app / "climate_registry", app / "scripts"):
             paths = (root,) if root == app else (root, *root.rglob("*"))
             for path in paths:
@@ -92,6 +99,7 @@ try:
                     path.chmod(stat.S_IMODE(info.st_mode) | 0o020)
                     assert path.stat().st_mode & 0o020
             assert root.stat().st_mode & 0o777 == 0o775
+        phase = "native_host_runtime_modes_preserved"
         assert runtime_modes() == strict_modes
         sys.path.insert(0, str(app))
 
