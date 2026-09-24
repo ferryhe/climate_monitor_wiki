@@ -16,7 +16,8 @@ concurrency:
 
 jobs:
   issue158-vm-capability:
-    if: github.event_name == 'workflow_dispatch' && github.ref_name == 'agent/issue-158-vm-preflight'
+    if: github.repository == 'ferryhe/climate_monitor_wiki' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/issue-158-vm-preflight'
+    permissions: {}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -30,10 +31,18 @@ jobs:
           from pathlib import Path
           import subprocess
 
+          assert os.environ.get('GITHUB_ACTIONS') == 'true'
+          assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+          assert os.environ.get('GITHUB_REPOSITORY') == 'ferryhe/climate_monitor_wiki'
+          assert os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+          assert os.environ.get('GITHUB_REF') == 'refs/heads/agent/issue-158-vm-preflight'
           assert os.geteuid() != 0, 'runner must begin unprivileged'
           assert Path('/proc/1/comm').read_text().strip() == 'systemd', 'PID 1 is not systemd'
           assert Path('/run/systemd/system').is_dir(), 'system manager unavailable'
           assert Path('/sys/fs/cgroup/cgroup.controllers').is_file(), 'not unified cgroup v2'
+          assert any(line.split()[4] == '/sys/fs/cgroup' and
+                     line.split(' - ')[1].split()[0] == 'cgroup2'
+                     for line in Path('/proc/self/mountinfo').read_text().splitlines())
           # Root cgroup.events is optional; require it on the invocation's
           # actual child cgroup in the later real cleanup canary instead.
           root_events = Path('/sys/fs/cgroup/cgroup.events').is_file()
@@ -51,6 +60,181 @@ jobs:
                             'sudo_available': sudo.returncode == 0,
                             'system_units_created': 0,
                             'real_cgroup_cleanup_proven': False}))
+          PY
+
+      - name: Probe root-broker delegation with an empty payload cgroup
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted ]]
+          [[ "$GITHUB_REPOSITORY" == ferryhe/climate_monitor_wiki && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REF" == refs/heads/agent/issue-158-vm-preflight ]]
+          cd /; unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT
+          /usr/bin/sudo -n /usr/bin/python3 -I -S - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import time
+          import uuid
+
+          def run(*args):
+              return subprocess.run(args, check=True, capture_output=True, text=True,
+                                    timeout=10, env={'PATH': '/usr/bin:/usr/sbin', 'LC_ALL': 'C'}).stdout.strip()
+
+          assert os.geteuid() == 0
+          assert Path('/proc/1/comm').read_text().strip() == 'systemd'
+          assert run('/usr/bin/systemd-detect-virt', '--vm') not in ('', 'none')
+          assert any(line.split()[4] == '/sys/fs/cgroup' and
+                     line.split(' - ')[1].split()[0] == 'cgroup2'
+                     for line in Path('/proc/self/mountinfo').read_text().splitlines())
+          nonce = uuid.uuid4().hex
+          unit = 'issue158-probe-' + nonce + '.service'
+          description = 'issue158 delegated capability ' + nonce
+          group = '/system.slice/' + unit
+          path = '/sys/fs/cgroup' + group
+          fragment = '/run/systemd/transient/' + unit
+          flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+          properties = ('Id,LoadState,Transient,Delegate,DelegateSubgroup,Description,InvocationID,'
+                        'ControlGroup,FragmentPath,MainPID,User,ActiveState')
+
+          def show():
+              return dict(line.split('=', 1) for line in run(
+                  '/usr/bin/systemctl', '--system', 'show', unit, '--property=' + properties).splitlines())
+
+          def walk(absolute):
+              fd = os.open('/', flags)
+              try:
+                  for part in absolute.strip('/').split('/'):
+                      assert part not in ('', '.', '..')
+                      child = os.open(part, flags, dir_fd=fd)
+                      os.close(fd)
+                      fd = child
+                  return fd
+              except BaseException:
+                  os.close(fd)
+                  raise
+
+          def owned(fd):
+              s = os.fstat(fd)
+              assert s.st_uid == s.st_gid == 0 and not s.st_mode & 0o022
+              return s.st_dev, s.st_ino
+
+          def read(fd, name):
+              with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)) as stream:
+                  return stream.read().strip()
+
+          def identity():
+              current = show()
+              for key, value in expected.items():
+                  assert current.get(key) == value, ('identity mismatch', key)
+              fd = walk(path)
+              try:
+                  assert owned(fd) == inode
+              finally:
+                  os.close(fd)
+              return current
+
+          def retired():
+              current = show()
+              return (current.get('LoadState') == 'not-found'
+                      and not current.get('FragmentPath') and not current.get('ControlGroup')
+                      and not os.path.lexists(fragment) and not os.path.lexists(path))
+
+          def wait_retired(seconds):
+              deadline = time.monotonic() + seconds
+              while time.monotonic() < deadline:
+                  if retired():
+                      return
+                  time.sleep(0.1)
+              raise AssertionError('unit/fragment/cgroup not retired')
+
+          before = show()
+          assert before['LoadState'] == 'not-found' and not before.get('FragmentPath')
+          assert not before.get('ControlGroup') and not os.path.lexists(fragment) and not os.path.lexists(path)
+          root_fd = None
+          expected = None
+          cleanup = None
+          finished = False
+          try:
+              run('/usr/bin/systemd-run', '--system', '--collect', '--quiet', '--unit=' + unit,
+                  '--description=' + description, '--property=Type=exec', '--property=User=root',
+                  '--property=Group=root', '--property=Slice=system.slice', '--property=Delegate=yes',
+                  '--property=DelegateSubgroup=supervisor', '--property=PrivateNetwork=yes',
+                  '--property=NoNewPrivileges=yes', '--property=KillMode=control-group',
+                  '--property=Restart=no', '--property=JobTimeoutSec=5s',
+                  '--property=TimeoutStartSec=5s', '--property=RuntimeMaxSec=30s',
+                  '--property=TasksMax=4', '--property=TimeoutStopSec=5s', '--property=StandardOutput=null',
+                  '--property=StandardError=null', '/usr/bin/sleep', '30')
+              created = show()
+              invocation = created.get('InvocationID', '')
+              assert re.fullmatch('[0-9a-f]{32}', invocation) and int(invocation, 16)
+              cleanup = {'Id': unit, 'Description': description, 'InvocationID': invocation,
+                         'Transient': 'yes', 'ControlGroup': created.get('ControlGroup'),
+                         'FragmentPath': created.get('FragmentPath')}
+              assert cleanup['ControlGroup'] and cleanup['FragmentPath']
+              assert all(created.get(k) == v for k, v in cleanup.items())
+              required = {'Id': unit, 'Transient': 'yes', 'Delegate': 'yes', 'User': 'root',
+                          'LoadState': 'loaded', 'ActiveState': 'active',
+                          'DelegateSubgroup': 'supervisor', 'Description': description,
+                          'InvocationID': invocation, 'ControlGroup': group, 'FragmentPath': fragment}
+              assert all(created.get(k) == v for k, v in required.items())
+              root_fd = walk(path)
+              inode = owned(root_fd)
+              assert inode[0] == os.stat('/sys/fs/cgroup').st_dev
+              expected = required
+              assert os.getxattr(root_fd, 'user.delegate') == b'1'
+              assert read(root_fd, 'cgroup.type') == 'domain' and not read(root_fd, 'cgroup.procs')
+              pid = int(identity()['MainPID'])
+              assert pid > 1
+              assert re.search(r'^Uid:\s+0\s+0\s+0\s+0$', Path('/proc/' + str(pid) + '/status').read_text(), re.M)
+              assert os.readlink('/proc/' + str(pid) + '/exe') == '/usr/bin/sleep'
+              assert '0::' + group + '/supervisor' in Path('/proc/' + str(pid) + '/cgroup').read_text().splitlines()
+              supervisor = os.open('supervisor', flags, dir_fd=root_fd)
+              try:
+                  owned(supervisor)
+                  assert read(supervisor, 'cgroup.procs').splitlines() == [str(pid)]
+              finally:
+                  os.close(supervisor)
+              identity()
+              os.mkdir('payload', mode=0o755, dir_fd=root_fd)
+              payload = os.open('payload', flags, dir_fd=root_fd)
+              try:
+                  child_inode = owned(payload)
+                  assert child_inode[0] == inode[0]
+                  assert dict(line.split() for line in read(payload, 'cgroup.events').splitlines())['populated'] == '0'
+                  assert not read(payload, 'cgroup.procs') and not read(payload, 'cgroup.threads')
+                  kill = os.stat('cgroup.kill', dir_fd=payload, follow_symlinks=False)
+                  assert stat.S_ISREG(kill.st_mode) and kill.st_uid == kill.st_gid == 0
+                  identity()
+                  linked = os.stat('payload', dir_fd=root_fd, follow_symlinks=False)
+                  assert (linked.st_dev, linked.st_ino) == child_inode
+                  os.rmdir('payload', dir_fd=root_fd)
+                  assert 'payload' not in os.listdir(root_fd)
+              finally:
+                  os.close(payload)
+              identity()
+              run('/usr/bin/systemctl', '--system', 'stop', unit)
+              wait_retired(5)
+              finished = True
+              print(json.dumps({'delegated_probe_pass': True, 'real_cleanup_proven': False}))
+          finally:
+              try:
+                  if not finished:
+                      if not retired() and cleanup is not None:
+                          current = show()
+                          # Mutable activity is not a cleanup identity. Never stop a
+                          # same-name replacement or an unproven invocation.
+                          assert all(current.get(k) == v for k, v in cleanup.items())
+                          run('/usr/bin/systemctl', '--system', 'stop', unit)
+                      # If identity was never established, --collect and the 30s
+                      # RuntimeMaxSec retire this disposable VM's failed probe.
+                      wait_retired(40)
+              finally:
+                  if root_fd is not None:
+                      os.close(root_fd)
           PY
 
   python-tests:
