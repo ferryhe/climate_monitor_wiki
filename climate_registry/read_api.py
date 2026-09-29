@@ -587,9 +587,36 @@ class RegistryReader:
         return {"items": [dict(row) for row in rows], "pagination": _pagination(page, page_size, total)}
 
     @staticmethod
-    def _pdf_occurrences(connection: sqlite3.Connection, canonical_url: str) -> list[dict[str, Any]]:
+    def _has_pdf_intake(connection: sqlite3.Connection) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'"
+        ).fetchone() is not None
+
+    @staticmethod
+    def _pdf_document_sources(connection: sqlite3.Connection, document_sha256: str) -> list[dict[str, str]]:
+        has_source_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_document_sources'"
+        ).fetchone() is not None
         rows = connection.execute(
-            """SELECT o.occurrence_json FROM pdf_intake_article_occurrences o
+            """SELECT source_path, filename, observed_at FROM pdf_intake_document_sources
+               WHERE document_sha256=? ORDER BY source_path""", (document_sha256,),
+        ).fetchall() if has_source_table else []
+        if rows:
+            return [{"path": row["source_path"], "filename": row["filename"],
+                     "observed_at": row["observed_at"]} for row in rows]
+        row = connection.execute(
+            """SELECT source_path, filename, imported_at FROM pdf_intake_documents
+               WHERE document_sha256=?""", (document_sha256,),
+        ).fetchone()
+        return ([{"path": row["source_path"], "filename": row["filename"],
+                  "observed_at": row["imported_at"]}] if row else [])
+
+    @staticmethod
+    def _pdf_occurrences(connection: sqlite3.Connection, canonical_url: str) -> list[dict[str, Any]]:
+        if not RegistryReader._has_pdf_intake(connection):
+            return []
+        rows = connection.execute(
+            """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
                JOIN pdf_intake_articles a ON a.article_id=o.article_id
                WHERE a.canonical_url=?
                ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -601,6 +628,13 @@ class RegistryReader:
             raise RegistryContractError("invalid PDF article occurrence data") from exc
         if any(not isinstance(value, dict) for value in values):
             raise RegistryContractError("invalid PDF article occurrence data")
+        sources: dict[str, list[dict[str, str]]] = {}
+        for row in rows:
+            sha = row["source_document_sha256"]
+            if sha not in sources:
+                sources[sha] = RegistryReader._pdf_document_sources(connection, sha)
+        for row, value in zip(rows, values):
+            value["source_observations"] = sources[row["source_document_sha256"]]
         return values
 
     @classmethod
@@ -638,6 +672,8 @@ class RegistryReader:
         if report_date:
             validate_report_date(report_date)
         with self.connect() as connection:
+            if not self._has_pdf_intake(connection):
+                return {"items": [], "pagination": _pagination(page, page_size, 0)}
             rows = connection.execute(
                 """SELECT * FROM pdf_intake_articles
                    WHERE NOT EXISTS (
@@ -674,6 +710,8 @@ class RegistryReader:
         ):
             raise RegistryQueryError("invalid article id")
         with self.connect() as connection:
+            if not self._has_pdf_intake(connection):
+                raise RegistryNotFoundError("article not found")
             row = connection.execute(
                 "SELECT * FROM pdf_intake_articles WHERE article_id=?", (article_id,),
             ).fetchone()
@@ -688,11 +726,18 @@ class RegistryReader:
         if len(query) > 200 or len(kind) > 80:
             raise RegistryQueryError("filter is too long")
         with self.connect() as connection:
+            if not self._has_pdf_intake(connection):
+                return {"items": [], "pagination": _pagination(page, page_size, 0)}
             rows = connection.execute(
-                """SELECT c.item_json, d.filename AS source_filename
+                """SELECT c.item_json, c.source_document_sha256,
+                          c.type_safe_classification_json, d.filename AS source_filename
                    FROM pdf_intake_calendar_items c
                    JOIN pdf_intake_documents d ON d.document_sha256=c.source_document_sha256"""
             ).fetchall()
+            sources = {
+                sha: self._pdf_document_sources(connection, sha)
+                for sha in {row["source_document_sha256"] for row in rows}
+            }
         items = []
         for row in rows:
             try:
@@ -703,8 +748,16 @@ class RegistryReader:
                 raise RegistryContractError("invalid PDF calendar item data")
             if kind and kind.casefold() not in str(item.get("kind", "")).casefold():
                 continue
+            try:
+                item["type_safe_classification"] = (
+                    json.loads(row["type_safe_classification_json"])
+                    if row["type_safe_classification_json"] else None
+                )
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise RegistryContractError("invalid PDF calendar classification data") from exc
             item["source_kind"] = "pdf"
             item["source_filename"] = row["source_filename"]
+            item["source_observations"] = sources[row["source_document_sha256"]]
             searchable = " ".join((
                 item.get("name") or "", item.get("kind") or "", item.get("raw_date") or "",
                 item.get("summary") or "", " ".join(item.get("source_urls") or []),

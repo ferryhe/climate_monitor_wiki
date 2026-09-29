@@ -145,10 +145,10 @@ def test_v9_contract_rejects_unversioned_v10_trigger():
 def test_migrations_are_idempotent_and_enable_foreign_keys():
     connection = sqlite3.connect(":memory:")
 
-    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     assert apply_migrations(connection) == []
     assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
-    assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (15,)
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -167,6 +167,46 @@ def test_migrations_are_idempotent_and_enable_foreign_keys():
         "discoveries",
         "report_appearances",
     } <= tables
+
+
+def test_schema_v13_migrates_pdf_sources_without_rewriting_evidence():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection, target_version=13)
+    assert validate_registry_contract(connection) == 13
+    document_sha = "a" * 64
+    connection.execute(
+        """INSERT INTO pdf_intake_documents (
+            document_sha256, source_path, filename, media_type, size_bytes,
+            date_of_run, period_start, period_end, extracted_text_sha256, document_json, imported_at
+        ) VALUES (?, ?, ?, 'application/pdf', 5, NULL, NULL, NULL, ?, '{}', ?)""",
+        (document_sha, "C:/input/report.pdf", "report.pdf", "b" * 64,
+         "2026-09-01T00:00:00Z"),
+    )
+    connection.execute(
+        """INSERT INTO pdf_intake_calendar_items (
+            occurrence_id, event_id, source_document_sha256, page, name, kind, raw_date,
+            date_precision, start_date, end_date, summary, content_sha256,
+            type_safe_classification_json, item_json
+        ) VALUES ('occ', 'event', ?, 1, 'Conference', 'event', '4 Sep 2026',
+                  'day', '2026-09-04', NULL, 'Summary', ?, NULL, '{}')""",
+        (document_sha, "c" * 64),
+    )
+    connection.commit()
+
+    assert apply_migrations(connection) == [14, 15]
+    assert validate_registry_contract(connection) == 15
+    assert connection.execute(
+        "SELECT source_path, filename, observed_at FROM pdf_intake_document_sources"
+    ).fetchone() == ("C:/input/report.pdf", "report.pdf", "2026-09-01T00:00:00Z")
+    assert connection.execute(
+        "SELECT original_pdf, pdf_metadata_json FROM pdf_intake_documents"
+    ).fetchone() == (None, None)
+    connection.execute(
+        "UPDATE pdf_intake_calendar_items SET type_safe_classification_json=?",
+        ('{"label":"event"}',),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        connection.execute("UPDATE pdf_intake_calendar_items SET name='rewritten'")
 
 
 def test_migration_enforces_report_article_uniqueness():
@@ -295,9 +335,9 @@ def test_v2_to_v3_preserves_existing_rows_and_defaults_to_summary_excerpt():
         for table in ("sources", "articles", "article_versions", "reports", "discoveries")
     }
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
-    assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (15,)
     assert connection.execute(
         "SELECT current_content_version_id, display_policy FROM articles WHERE article_id = 'a'"
     ).fetchone() == (None, "summary_excerpt")
@@ -383,7 +423,7 @@ def test_v2_to_v3_preserves_the_historical_audit_baseline_counts():
         for table in counts_before
     } == counts_before
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
     assert {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

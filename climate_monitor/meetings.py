@@ -26,6 +26,7 @@ from climate_registry.contract import SCHEMA_VERSION, validate_registry_contract
 EVENT_TYPES = {"meeting", "conference", "summit", "webinar", "deadline", "retrospective"}
 EVENT_STATUSES = {"scheduled", "tentative", "postponed", "cancelled", "retrospective"}
 DATE_PRECISIONS = {"day", "month", "quarter", "year", "unknown"}
+MEETING_SCHEMA_VERSION = 12
 DEADLINE_TYPES = {"registration", "consultation", "expert_review"}
 EXTRACTION_FIELDS = {
     "name", "event_type", "organizer", "status", "date_precision", "start_date",
@@ -100,9 +101,12 @@ def _open(database: str | Path, *, write: bool = False) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     version = validate_registry_contract(connection)
-    if version != SCHEMA_VERSION:
+    if version < MEETING_SCHEMA_VERSION or (write and version != SCHEMA_VERSION):
         connection.close()
-        raise ValueError(f"meeting processing requires Registry schema {SCHEMA_VERSION}; found {version}")
+        raise ValueError(
+            f"meeting processing requires Registry schema {MEETING_SCHEMA_VERSION} or later for reads "
+            f"and schema {SCHEMA_VERSION} for writes; found {version}"
+        )
     return connection
 
 

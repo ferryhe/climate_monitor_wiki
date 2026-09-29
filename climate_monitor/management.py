@@ -303,9 +303,10 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
             connection.close()
     except (sqlite3.Error, RegistryInputError) as exc:
         raise ValueError(f"registry database contract is invalid: {exc}") from exc
-    if schema_version != ACQUISITION_WRITER_SCHEMA_VERSION:
+    if schema_version < ACQUISITION_WRITER_SCHEMA_VERSION:
         raise ValueError(
-            f"registry database must use schema {ACQUISITION_WRITER_SCHEMA_VERSION}; found {schema_version}"
+            f"registry database must use schema {ACQUISITION_WRITER_SCHEMA_VERSION} or later; "
+            f"found {schema_version}"
         )
     run_root = _canonical_directory(runtime["run_root"], "run root")
     taxonomy = value.get("taxonomy")

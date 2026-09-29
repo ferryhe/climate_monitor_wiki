@@ -126,7 +126,8 @@ The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/sou
 
 ## Importing PDF reports
 
-The PDF intake adapter keeps the extracted report text and source metadata,
+The PDF intake adapter retains the original PDF bytes, extracted report text,
+source metadata and embedded creation/modification times,
 normalizes linked articles and calendar entries, and can add them to the
 Registry without fabricating web-fetch or meeting-run records. Without
 `--apply`, the CLI prints a dry-run summary and does not write files or change

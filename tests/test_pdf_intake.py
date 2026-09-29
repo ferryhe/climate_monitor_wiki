@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sys
@@ -15,16 +16,22 @@ from climate_monitor.pdf_intake import (
     _extract_calendar_items,
     _is_calendar_date_line,
     _parse_calendar_date,
+    _reported_publication_date,
     _typesafe_classify,
+    _input_pdfs,
     import_pdf_reports,
     main,
 )
 from climate_registry.persistent import initialize_registry
+from climate_registry.schema import apply_migrations
 
 
 def _report_pdf(path, calendar_date="4–5 Sep 2026"):
     output = BytesIO()
     canvas = Canvas(output, pagesize=letter)
+    canvas.setTitle("Climate intake source metadata")
+    canvas.setAuthor("Test report author")
+    canvas.setSubject("Original PDF metadata retention")
     canvas.setFont("Helvetica", 11)
     for y, line in zip(
         (760, 744, 728, 712),
@@ -57,6 +64,53 @@ def _report_pdf(path, calendar_date="4–5 Sep 2026"):
     path.write_bytes(output.getvalue())
 
 
+def _report_pdf_with_two_articles(path):
+    output = BytesIO()
+    canvas = Canvas(output, pagesize=letter)
+    canvas.drawString(50, 760, "Climate Risk Intelligence Report")
+    canvas.showPage()
+    canvas.setFont("Helvetica", 11)
+    for y, line in (
+        (760, "UPDATES"),
+        (740, "First climate risk study"),
+        (720, "IN WINDOW 14 SEP 2026 REPORT"),
+        (700, "First article summary stays inside its own record."),
+        (680, "Source: First publisher"),
+        (660, "47"),
+        (640, "Second climate risk study"),
+        (620, "IN WINDOW 16 SEP 2026 REPORT"),
+        (600, "Second article summary stays inside its own record."),
+        (580, "Source: Second publisher"),
+        (560, "48"),
+        (540, "Unrelated following note."),
+    ):
+        canvas.drawString(50, y, line)
+    canvas.linkURL("https://example.org/first-study", (48, 738, 220, 754), relative=0)
+    canvas.linkURL("https://example.org/second-study", (48, 638, 230, 654), relative=0)
+    canvas.save()
+    path.write_bytes(output.getvalue())
+
+
+def _report_pdf_with_window_publication_date(path):
+    output = BytesIO()
+    canvas = Canvas(output, pagesize=letter)
+    canvas.drawString(50, 760, "Climate Risk Intelligence Report")
+    canvas.showPage()
+    for y, line in (
+        (760, "UPDATES"),
+        (740, "AlliedOffsets Corporate Buyers Spotlight: July"),
+        (720, "1–10 AUG 4 AUG 2026 MARKET DATA"),
+        (700, "Voluntary market activity increased across the reporting period."),
+    ):
+        canvas.drawString(50, y, line)
+    canvas.linkURL(
+        "https://blog.alliedoffsets.com/corporate-buyers-spotlight",
+        (48, 738, 310, 754), relative=0,
+    )
+    canvas.save()
+    path.write_bytes(output.getvalue())
+
+
 def _report_pdf_with_empty_anchor_links(path, first_date="4 September 2026"):
     output = BytesIO()
     canvas = Canvas(output, pagesize=letter)
@@ -81,8 +135,12 @@ def _report_pdf_with_empty_anchor_links(path, first_date="4 September 2026"):
     # Each annotation covers the title text, but not the text fragment's origin at x=50.
     canvas.linkURL("https://example.org/alpha", (90, 676, 135, 692), relative=0)
     canvas.linkURL("https://example.org/beta", (90, 586, 135, 602), relative=0)
-    canvas.drawString(50, 500, "Publisher contact")
+    canvas.setFont("Helvetica-Bold", 17)
+    canvas.drawString(50, 540, "Following organization section")
+    canvas.setFont("Helvetica", 11)
+    canvas.drawString(50, 515, "Publisher contact")
     canvas.linkURL("https://example.org/publisher", (90, 496, 135, 512), relative=0)
+    canvas.drawString(50, 16, "IAA CSC Climate Risk Intelligence Report Page 3 of 3")
     canvas.save()
     path.write_bytes(output.getvalue())
 
@@ -99,6 +157,14 @@ def test_pdf_adapter_preserves_provenance_links_text_and_calendar_dates(tmp_path
     assert len(bundle["documents"]) == 1
     document = bundle["documents"][0]
     assert document["source"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert base64.b64decode(document["source"]["original_pdf_base64"]) == path.read_bytes()
+    assert document["source"]["pdf_metadata"]["/Title"] == "Climate intake source metadata"
+    assert document["source"]["pdf_metadata"]["/Author"] == "Test report author"
+    assert document["source"]["pdf_metadata"]["/Subject"] == "Original PDF metadata retention"
+    assert document["source"]["pdf_metadata"]["/CreationDate"].startswith("D:")
+    assert document["source"]["pdf_metadata"]["/ModDate"].startswith("D:")
+    assert document["source"]["pdf_created_at"]
+    assert document["source"]["pdf_modified_at"]
     assert document["date_of_run"] == "2026-09-03"
     assert (document["period_start"], document["period_end"]) == ("2026-09-01", "2026-09-02")
     assert "Climate summary preserved exactly" in document["executive_summary"]
@@ -122,6 +188,47 @@ def test_pdf_adapter_preserves_provenance_links_text_and_calendar_dates(tmp_path
     assert article["title"] == "Climate risk conference"
     assert article["occurrences"][0]["source_document_sha256"] == document["source"]["sha256"]
     assert article["occurrences"][0]["content_sha256"]
+    assert article["occurrences"][0]["summary_basis"] == "verbatim_pdf_calendar_row"
+    assert "A conference relevant to insurers" in article["occurrences"][0]["summary"]
+
+
+def test_article_context_is_bounded_to_its_record_and_keeps_publication_date(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    path = tmp_path / "two-articles.pdf"
+    _report_pdf_with_two_articles(path)
+
+    bundle = import_pdf_reports([path])
+    occurrences = {
+        article["canonical_url"]: article["occurrences"][0]
+        for article in bundle["articles"]
+    }
+    first = occurrences["https://example.org/first-study"]
+    second = occurrences["https://example.org/second-study"]
+
+    assert "First article summary" in first["summary"]
+    assert "Second article summary" not in first["summary"]
+    assert "Second article summary" in second["summary"]
+    assert "Unrelated following note" not in second["summary"]
+    assert first["publication_date_evidence"] == "14 SEP 2026"
+    assert first["publication_date"] == "2026-09-14"
+    assert second["publication_date"] == "2026-09-16"
+
+
+def test_article_publication_date_from_window_date_kind_record(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    path = tmp_path / "window-date-kind.pdf"
+    _report_pdf_with_window_publication_date(path)
+
+    bundle = import_pdf_reports([path])
+    article = next(
+        item for item in bundle["articles"]
+        if item["canonical_url"] == "https://blog.alliedoffsets.com/corporate-buyers-spotlight"
+    )
+    occurrence = article["occurrences"][0]
+
+    assert "1–10 AUG 4 AUG 2026 MARKET DATA" in occurrence["summary"]
+    assert occurrence["publication_date_evidence"] == "4 AUG 2026"
+    assert occurrence["publication_date"] == "2026-08-04"
 
 
 def test_empty_anchor_links_match_only_their_calendar_title_geometry(tmp_path, monkeypatch):
@@ -140,6 +247,9 @@ def test_empty_anchor_links_match_only_their_calendar_title_geometry(tmp_path, m
         ["https://example.org/alpha"], ["https://example.org/beta"],
     ]
     assert [event["name"] for event in events] == ["Conference Alpha", "Conference Beta"]
+    assert all("Following organization section" not in event["raw_text"] for event in events)
+    assert all("Publisher contact" not in event["raw_text"] for event in events)
+    assert all("Page 3 of 3" not in event["raw_text"] for event in events)
     source_links = original["documents"][0]["pages"][1]["links"]
     publisher_link = next(link for link in source_links if link["url"] == "https://example.org/publisher")
     assert publisher_link["rect"] == [90.0, 496.0, 135.0, 512.0]
@@ -276,6 +386,27 @@ def test_pdf_date_parser_keeps_partial_and_unfamiliar_dates():
     assert _is_calendar_date_line("Date to be announced")
     assert not _is_calendar_date_line("Climate Week NYC 2026 UNEP FI /")
     assert not _is_calendar_date_line("Training Week 2026")
+    assert _reported_publication_date("IN WINDOW September 2026 WORKING PAPER") == (
+        "September 2026", "2026-09",
+    )
+
+
+@pytest.mark.parametrize(("text", "evidence", "normalized"), [
+    ("UPDATED 4 AUG PUBLISHED 31 JUL 2026 COMMENTARY", "31 JUL 2026", "2026-07-31"),
+    ("Emissions disclosures, published on 29 July 2026.", "29 July 2026", "2026-07-29"),
+    ("Publication date: September 2026", "September 2026", "2026-09"),
+])
+def test_publication_date_uses_labeled_bounded_record_text(text, evidence, normalized):
+    assert _reported_publication_date(text, "Article title") == (evidence, normalized)
+
+
+def test_publication_date_does_not_use_unlabeled_dates_in_record_text():
+    assert _reported_publication_date(
+        "Published no new material; the consultation opened 29 July 2026.", "Article title",
+    ) == (None, None)
+    assert _reported_publication_date(
+        "1–10 AUG 4 AUG 2026 INTERNAL NOTE", "Article title",
+    ) == (None, None)
 
 
 def test_typesafe_classification_is_a_non_blocking_routing_hint(monkeypatch):
@@ -421,13 +552,19 @@ def test_cli_writes_and_persists_bundle_idempotently(tmp_path, monkeypatch):
     assert bundle["documents"][0]["source"]["filename"] == "source.pdf"
     import sqlite3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (15,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_calendar_items").fetchone() == (1,)
-        document_json = connection.execute("SELECT document_json FROM pdf_intake_documents").fetchone()[0]
+        original_pdf, created_at, modified_at, document_json = connection.execute(
+            "SELECT original_pdf, pdf_created_at, pdf_modified_at, document_json FROM pdf_intake_documents"
+        ).fetchone()
+        assert original_pdf == source.read_bytes()
+        assert created_at and modified_at
         assert "Climate summary preserved exactly" in document_json
+        assert "original_pdf_base64" not in document_json
+        assert json.loads(document_json)["source"]["pdf_metadata"]["/Title"] == "Climate intake source metadata"
     assert len(list(backup_dir.glob("*.bak"))) == 2
 
 
@@ -448,7 +585,7 @@ def test_cli_rejects_output_aliases_before_overwriting_pdf_or_registry(tmp_path,
         assert source.read_bytes() == original_pdf
         import sqlite3
         with sqlite3.connect(database) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+            assert connection.execute("PRAGMA user_version").fetchone() == (15,)
     assert not backup_dir.exists()
 
 
@@ -479,3 +616,183 @@ def test_registry_tracks_rescheduled_calendar_occurrence(tmp_path, monkeypatch):
     assert len({row[0] for row in rows}) == 1
     assert len({row[1] for row in rows}) == 2
     assert [row[2] for row in rows] == ["2026-09-04", "2026-09-05"]
+
+
+def test_registry_backfills_classification_and_tracks_duplicate_pdf_sources(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    first_pdf, second_pdf, third_pdf = (tmp_path / name for name in ("first.pdf", "second.pdf", "third.pdf"))
+    _report_pdf(first_pdf)
+    second_pdf.write_bytes(first_pdf.read_bytes())
+    third_pdf.write_bytes(first_pdf.read_bytes())
+
+    combined = import_pdf_reports([first_pdf, second_pdf])
+    assert len(combined["documents"]) == 1
+    assert {item["filename"] for item in combined["documents"][0]["source"]["source_observations"]} == {
+        "first.pdf", "second.pdf",
+    }
+    retry = import_pdf_reports([third_pdf])
+    retry["articles"][0]["type_safe_classification"] = {
+        "provider": "typesafe", "label": "event",
+    }
+    retry["calendar_items"][0]["type_safe_classification"] = {
+        "provider": "typesafe", "label": "event",
+    }
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+
+    from climate_registry.pdf_intake import persist_pdf_intake
+
+    persist_pdf_intake(database, tmp_path / "backups", combined)
+    persist_pdf_intake(database, tmp_path / "backups", retry)
+
+    import sqlite3
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
+        source_rows = connection.execute(
+            "SELECT filename FROM pdf_intake_document_sources ORDER BY filename"
+        ).fetchall()
+        classification = connection.execute(
+            "SELECT type_safe_classification_json FROM pdf_intake_calendar_items"
+        ).fetchone()[0]
+        article_classification = connection.execute(
+            "SELECT type_safe_classification_json FROM pdf_intake_articles"
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("UPDATE pdf_intake_calendar_items SET name='rewritten'")
+    assert [row[0] for row in source_rows] == ["first.pdf", "second.pdf", "third.pdf"]
+    assert json.loads(classification) == {"provider": "typesafe", "label": "event"}
+    assert json.loads(article_classification) == {"provider": "typesafe", "label": "event"}
+    from climate_registry.read_api import RegistryReader
+
+    calendar = RegistryReader(
+        database, repository_root=tmp_path / "app-root",
+    ).pdf_calendar_items()["items"][0]
+    assert {item["filename"] for item in calendar["source_observations"]} == {
+        "first.pdf", "second.pdf", "third.pdf",
+    }
+    assert calendar["type_safe_classification"] == {"provider": "typesafe", "label": "event"}
+
+
+def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "report.pdf"
+    _report_pdf(source)
+    bundle = import_pdf_reports([source])
+    document = bundle["documents"][0]
+    database = tmp_path / "registry.sqlite3"
+    import sqlite3
+
+    with sqlite3.connect(database) as connection:
+        apply_migrations(connection, target_version=13)
+        connection.execute(
+            """INSERT INTO pdf_intake_documents (
+                document_sha256, source_path, filename, media_type, size_bytes,
+                date_of_run, period_start, period_end, extracted_text_sha256,
+                document_json, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)""",
+            (document["source"]["sha256"], document["source"]["path"],
+             document["source"]["filename"], "application/pdf", document["source"]["size_bytes"],
+             document["date_of_run"], document["period_start"], document["period_end"],
+             document["extracted_text_sha256"], "2026-09-01T00:00:00Z"),
+        )
+        article = bundle["articles"][0]
+        occurrence = article["occurrences"][0]
+        legacy_article_id = "legacy-v13-article-occurrence"
+        connection.execute(
+            """INSERT INTO pdf_intake_articles (
+                article_id, canonical_url, title, type_safe_classification_json, imported_at
+            ) VALUES (?, ?, ?, NULL, ?)""",
+            (article["article_id"], article["canonical_url"], article["title"],
+             "2026-09-01T00:00:00Z"),
+        )
+        legacy_occurrence = dict(occurrence, occurrence_id=legacy_article_id)
+        connection.execute(
+            """INSERT INTO pdf_intake_article_occurrences (
+                occurrence_id, article_id, source_document_sha256, page, raw_url,
+                report_date, publication_date, content_sha256, page_sha256, occurrence_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (legacy_article_id, article["article_id"], occurrence["source_document_sha256"],
+             occurrence["page"], occurrence["raw_url"], occurrence["report_date"],
+             occurrence["publication_date"], occurrence["content_sha256"],
+             occurrence["page_sha256"], json.dumps(legacy_occurrence)),
+        )
+        item = bundle["calendar_items"][0]
+        legacy_calendar_id = "legacy-v13-calendar-occurrence"
+        legacy_item = dict(item, occurrence_id=legacy_calendar_id)
+        connection.execute(
+            """INSERT INTO pdf_intake_calendar_items (
+                occurrence_id, event_id, source_document_sha256, page, name, kind, raw_date,
+                date_precision, start_date, end_date, summary, content_sha256,
+                type_safe_classification_json, item_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+            (legacy_calendar_id, item["event_id"], item["source_document_sha256"],
+             item["page"], item["name"], item["kind"], item["raw_date"],
+             item["date_precision"], item["start_date"], item["end_date"], item["summary"],
+             item["content_sha256"], json.dumps(legacy_item)),
+        )
+        connection.commit()
+
+    connection.close()
+
+    from climate_registry.pdf_intake import persist_pdf_intake
+
+    persist_pdf_intake(database, tmp_path / "backups", bundle)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (15,)
+        original_pdf, created_at, modified_at, raw_metadata = connection.execute(
+            """SELECT original_pdf, pdf_created_at, pdf_modified_at, pdf_metadata_json
+               FROM pdf_intake_documents"""
+        ).fetchone()
+        article_rows = connection.execute(
+            "SELECT occurrence_id, occurrence_json FROM pdf_intake_article_occurrences"
+        ).fetchall()
+        calendar_rows = connection.execute(
+            "SELECT occurrence_id, item_json FROM pdf_intake_calendar_items"
+        ).fetchall()
+    assert original_pdf == source.read_bytes()
+    assert created_at == document["source"]["pdf_created_at"]
+    assert modified_at == document["source"]["pdf_modified_at"]
+    assert json.loads(raw_metadata) == document["source"]["pdf_metadata"]
+    assert len(article_rows) == len(calendar_rows) == 1
+    assert article_rows[0][0] == json.loads(article_rows[0][1])["occurrence_id"] == legacy_article_id
+    assert calendar_rows[0][0] == json.loads(calendar_rows[0][1])["occurrence_id"] == legacy_calendar_id
+
+
+def test_article_classification_retry_does_not_replace_existing_label(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "report.pdf"
+    _report_pdf(source)
+    first = import_pdf_reports([source])
+    first["articles"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "event"}
+    first["calendar_items"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "event"}
+    retry = import_pdf_reports([source])
+    retry["articles"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "article"}
+    retry["calendar_items"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "article"}
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+
+    from climate_registry.pdf_intake import persist_pdf_intake
+
+    persist_pdf_intake(database, tmp_path / "backups", first)
+    persist_pdf_intake(database, tmp_path / "backups", retry)
+
+    import sqlite3
+    with sqlite3.connect(database) as connection:
+        article_classification = connection.execute(
+            "SELECT type_safe_classification_json FROM pdf_intake_articles"
+        ).fetchone()[0]
+        calendar_classification = connection.execute(
+            "SELECT type_safe_classification_json FROM pdf_intake_calendar_items"
+        ).fetchone()[0]
+    assert json.loads(article_classification) == {"provider": "typesafe", "label": "event"}
+    assert json.loads(calendar_classification) == {"provider": "typesafe", "label": "event"}
+
+
+def test_input_directory_finds_uppercase_pdf_suffix(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "Report.PDF"
+    _report_pdf(source)
+
+    assert _input_pdfs([tmp_path]) == [source.resolve()]
+    assert import_pdf_reports([tmp_path])["documents"][0]["source"]["filename"] == "Report.PDF"

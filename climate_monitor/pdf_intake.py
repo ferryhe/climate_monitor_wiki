@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import logging
@@ -130,12 +131,47 @@ def _parse_report_period(text: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _reported_publication_date(text: str) -> tuple[str | None, str | None]:
-    match = re.search(rf"\bIN WINDOW\s+(\d{{1,2}}\s+{_MONTH}\s+20\d{{2}})", _compact(text), re.I)
-    if not match:
+def _reported_publication_date(text: str, anchor: str = "") -> tuple[str | None, str | None]:
+    value = _compact(text)
+    match = re.search(rf"\bIN WINDOW\s+(\d{{1,2}}\s+{_MONTH}\s+20\d{{2}})", value, re.I)
+    if match:
+        parsed = _parse_calendar_date(match.group(1))
+        return match.group(1), parsed["start_date"]
+    match = re.search(rf"\bIN WINDOW\s+({_MONTH}\s+20\d{{2}})\b", value, re.I)
+    if match:
+        parsed = _parse_calendar_date(match.group(1))
+        return match.group(1), parsed["start_date"]
+    date_pattern = rf"(?:\d{{1,2}}\s+{_MONTH}\s+20\d{{2}}|{_MONTH}\s+20\d{{2}})"
+    label_pattern = r"(?:published|publication(?:\s+date)?|released|release\s+date|documents\s*&\s*reports)"
+    match = re.search(
+        rf"\b{label_pattern}\b\s*(?:on\s+|date\s*[:–—-]?\s*)?[:–—-]?\s*({date_pattern})",
+        value,
+        re.I,
+    )
+    if match:
+        parsed = _parse_calendar_date(match.group(1))
+        return match.group(1), parsed["start_date"]
+    match = re.search(
+        rf"\b\d{{1,2}}\s*[–-]\s*\d{{1,2}}\s+{_MONTH}\s+"
+        rf"(\d{{1,2}}\s+{_MONTH}\s+20\d{{2}})\s+"
+        r"(?:WORKSHOP REPORT|PRESS RELEASE|DATA ANALYSIS|POLICY BRIEF|MARKET DATA|"
+        r"ANALYSIS|COMMENTARY|HANDBOOK|INITIATIVE|OP-ED|REPORT)\b",
+        value,
+        re.I,
+    )
+    if match:
+        parsed = _parse_calendar_date(match.group(1))
+        return match.group(1), parsed["start_date"]
+    if not re.search(rf"\b{label_pattern}\b", anchor, re.I):
         return None, None
-    parsed = _parse_calendar_date(match.group(1))
-    return match.group(1), parsed["start_date"]
+    anchor = _compact(anchor)
+    match = re.search(rf"\b({date_pattern})\b", anchor, re.I)
+    if not match:
+        match = re.search(rf"\b({_MONTH}\s+20\d{{2}})\b", anchor, re.I)
+    if match:
+        parsed = _parse_calendar_date(match.group(1))
+        return match.group(1), parsed["start_date"]
+    return None, None
 
 
 def _report_metadata(first_page: str) -> dict[str, Any]:
@@ -156,6 +192,14 @@ def _report_metadata(first_page: str) -> dict[str, Any]:
     }
 
 
+def _pdf_timestamp(value: Any) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
 def _extract_text_fragments(page: Any) -> list[dict[str, Any]]:
     fragments: list[dict[str, Any]] = []
 
@@ -171,7 +215,11 @@ def _extract_text_fragments(page: Any) -> list[dict[str, Any]]:
             size = 0
         # ponytail: estimate common report-font widths; use font metrics if this causes misassociation.
         width = size * sum(1 if ord(char) > 0x2E80 else 0.55 for char in text)
-        fragments.append({"x": x, "y": y, "right": x + width, "text": text})
+        font_name = str(_font.get("/BaseFont", "")) if _font else ""
+        fragments.append({
+            "x": x, "y": y, "right": x + width, "text": text,
+            "font_size": size, "font_name": font_name,
+        })
 
     try:
         page.extract_text(visitor_text=collect)
@@ -245,13 +293,82 @@ def _group_page_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return grouped
 
 
-def _page_context(page_text: str, anchor: str) -> str:
-    compact = _compact(page_text)
-    normalized_anchor = _compact(anchor)
-    start = compact.casefold().find(normalized_anchor.casefold()) if normalized_anchor else -1
-    if start < 0:
-        return compact[:1200]
-    return compact[max(0, start - 180):start + 1500]
+def _find_anchor_line(lines: list[str], anchor: str, occurrence: int = 0) -> int | None:
+    target = [word.casefold() for word in re.findall(r"\w+", anchor, re.UNICODE)]
+    if not target:
+        return None
+    words = [
+        (word.casefold(), line_index)
+        for line_index, line in enumerate(lines)
+        for word in re.findall(r"\w+", line, re.UNICODE)
+    ]
+    matches = []
+    best = (0, None)
+    for start, (word, line_index) in enumerate(words):
+        if word != target[0]:
+            continue
+        matched = 0
+        while (matched < len(target) and start + matched < len(words)
+               and words[start + matched][0] == target[matched]):
+            matched += 1
+        if matched == len(target):
+            matches.append(line_index)
+        elif matched > best[0]:
+            best = (matched, line_index)
+    if matches:
+        return matches[min(occurrence, len(matches) - 1)]
+    return best[1] if best[0] >= min(3, len(target)) else None
+
+
+_RECORD_MARKERS = {"updates", "news", "publications", "upcoming events", "watch item", "key dates"}
+
+
+def _large_bold_lines(page: dict[str, Any]) -> list[int]:
+    lines = page["text"].splitlines()
+    result = set()
+    for fragment in page.get("_text_fragments", []):
+        if fragment.get("font_size", 0) < 14 or "bold" not in fragment.get("font_name", "").casefold():
+            continue
+        text = _compact(fragment.get("text", "")).casefold()
+        if text:
+            result.update(
+                index for index, line in enumerate(lines)
+                if text in _compact(line).casefold()
+            )
+    return sorted(result)
+
+
+def _record_context(page: dict[str, Any], anchor: str, occurrence: int = 0) -> tuple[str, str]:
+    lines = page["text"].splitlines()
+    anchor_line = _find_anchor_line(lines, anchor, occurrence)
+    if anchor_line is None:
+        return "\n".join(lines).strip(), "verbatim_pdf_page_context"
+
+    numbered = [
+        index for index, line in enumerate(lines)
+        if line.strip().isdigit() and len(line.strip()) <= 3 and int(line.strip()) < 1000
+    ]
+    markers = [
+        index for index, line in enumerate(lines)
+        if (value := _compact(line).casefold()) in _RECORD_MARKERS
+        or any(value.startswith(marker + " ") for marker in _RECORD_MARKERS)
+    ]
+    bold = _large_bold_lines(page)
+    starts = [index + 1 for index in numbered if index < anchor_line]
+    starts.extend(index + 1 for index in markers if index < anchor_line)
+    starts.extend(index for index in bold if index <= anchor_line)
+    start = min(anchor_line, max(starts, default=0))
+
+    ends = [index for index in numbered if index > anchor_line]
+    ends.extend(index for index in markers if index > anchor_line)
+    ends.extend(index for index in bold if index > anchor_line)
+    ends.extend(
+        index for index, line in enumerate(lines)
+        if index > anchor_line and re.search(r"\bPage\s+\d+\s+of\s+\d+\b", line, re.I)
+    )
+    end = min(ends, default=len(lines))
+    basis = "verbatim_pdf_record" if ends else "verbatim_pdf_page_context"
+    return "\n".join(lines[start:end]).strip(), basis
 
 
 def _calendar_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -313,6 +430,27 @@ def _calendar_row_starts(lines: list[str]) -> list[int]:
     return starts
 
 
+def _calendar_section_start(page: dict[str, Any], starts: list[int]) -> int | None:
+    if not starts:
+        return None
+    lines = page["text"].splitlines()
+    candidates = [
+        index for index, line in enumerate(lines)
+        if index > starts[0] and re.search(r"\bPage\s+\d+\s+of\s+\d+\b", line, re.I)
+    ]
+    for fragment in page.get("_text_fragments", []):
+        if fragment.get("font_size", 0) < 14 or "bold" not in fragment.get("font_name", "").casefold():
+            continue
+        text = _compact(fragment.get("text", "")).casefold()
+        if not text:
+            continue
+        candidates.extend(
+            index for index, line in enumerate(lines)
+            if index > starts[0] and text in _compact(line).casefold()
+        )
+    return min(candidates) if candidates else None
+
+
 def _link_overlaps_title(link: dict[str, Any], title: str, fragments: list[dict[str, Any]]) -> bool:
     rect = link.get("rect", [])
     normalized_title = _compact(title).casefold()
@@ -336,9 +474,12 @@ def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
     for page in _calendar_pages(document["pages"]):
         lines = page["text"].splitlines()
         starts = _calendar_row_starts(lines)
+        section_start = _calendar_section_start(page, starts)
+        if section_start is not None:
+            starts = [start for start in starts if start < section_start]
         rows = []
         for ordinal, start in enumerate(starts, 1):
-            end = starts[ordinal] if ordinal < len(starts) else len(lines)
+            end = starts[ordinal] if ordinal < len(starts) else section_start or len(lines)
             row = [line.strip() for line in lines[start:end] if line.strip()]
             if len(row) >= 3 and _is_calendar_kind_line(row[1]):
                 rows.append({"ordinal": ordinal, "row": row, "links": []})
@@ -431,15 +572,22 @@ def _read_pdf(path: Path) -> dict[str, Any]:
     if not any(page["text"].strip() for page in pages):
         raise ValueError(f"PDF contains no extractable text: {path.name}")
     metadata = _report_metadata(pages[0]["text"])
+    pdf_metadata = reader.metadata
+    source_path = str(path.resolve())
     full_text = "\n\f\n".join(page["text"] for page in pages)
     executive_summary = _executive_summary(pages)
     document = {
         "source": {
-            "path": str(path.resolve()),
+            "path": source_path,
             "filename": path.name,
+            "source_observations": [{"path": source_path, "filename": path.name}],
             "media_type": "application/pdf",
             "size_bytes": len(raw),
             "sha256": _sha256(raw),
+            "pdf_metadata": {str(key): str(value) for key, value in (pdf_metadata or {}).items()},
+            "pdf_created_at": _pdf_timestamp(getattr(pdf_metadata, "creation_date", None)),
+            "pdf_modified_at": _pdf_timestamp(getattr(pdf_metadata, "modification_date", None)),
+            "original_pdf_base64": base64.b64encode(raw).decode("ascii"),
         },
         **metadata,
         "page_count": len(pages),
@@ -449,8 +597,6 @@ def _read_pdf(path: Path) -> dict[str, Any]:
         "pages": pages,
     }
     document["calendar_items"] = _extract_calendar_items(document)
-    for page in pages:
-        page.pop("_text_fragments", None)
     return document
 
 
@@ -463,6 +609,12 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for event in document["calendar_items"] for url in event["source_urls"]
             if event.get("name") and canonical_url(url)
         }
+        event_contexts = {
+            (event["page"], canonical_url(url)): event
+            for event in document["calendar_items"] for url in event["source_urls"]
+            if canonical_url(url)
+        }
+        anchor_ordinals: dict[tuple[int, str], int] = {}
         for page in document["pages"]:
             for link in page["links"]:
                 parsed = urlsplit(link["url"])
@@ -479,7 +631,18 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "occurrences": [],
                 })
                 event_title = event_titles.get((page["page"], canonical))
-                context = _page_context(page["text"], link["anchor_text"] or event_title or "")
+                anchor_key = (page["page"], _compact(link["anchor_text"]).casefold())
+                anchor_ordinals[anchor_key] = anchor_ordinals.get(anchor_key, 0) + 1
+                event = event_contexts.get((page["page"], canonical))
+                if event:
+                    context, summary_basis = event["raw_text"], "verbatim_pdf_calendar_row"
+                else:
+                    context, summary_basis = _record_context(
+                        page, link["anchor_text"] or event_title or "", anchor_ordinals[anchor_key] - 1
+                    )
+                publication_date_evidence, publication_date = _reported_publication_date(
+                    context, link["anchor_text"]
+                )
                 occurrence_key = (canonical, page["page"])
                 occurrence_ordinals[occurrence_key] = occurrence_ordinals.get(occurrence_key, 0) + 1
                 occurrence_id = "pdf-article-occurrence-" + _sha256(
@@ -493,12 +656,12 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "page": page["page"],
                     "report_date": document.get("date_of_run"),
                     "reporting_period": document.get("reporting_period"),
-                    "publication_date_evidence": _reported_publication_date(context)[0],
-                    "publication_date": _reported_publication_date(context)[1],
+                    "publication_date_evidence": publication_date_evidence,
+                    "publication_date": publication_date,
                     "source_document_sha256": document["source"]["sha256"],
                     "source_document": document["source"]["filename"],
                     "summary": context,
-                    "summary_basis": "verbatim_pdf_context",
+                    "summary_basis": summary_basis,
                     "content_sha256": _sha256(context),
                     "page_sha256": page["content_sha256"],
                 })
@@ -578,7 +741,10 @@ def _input_pdfs(inputs: Iterable[str | Path]) -> list[Path]:
     found: dict[str, Path] = {}
     for value in inputs:
         path = Path(value).expanduser()
-        paths = sorted(path.glob("*.pdf")) if path.is_dir() else [path]
+        paths = sorted(
+            (item for item in path.iterdir() if item.suffix.casefold() == ".pdf"),
+            key=lambda item: str(item).casefold(),
+        ) if path.is_dir() else [path]
         for item in paths:
             resolved = item.resolve()
             if not resolved.is_file() or resolved.suffix.casefold() != ".pdf":
@@ -594,9 +760,18 @@ def import_pdf_reports(inputs: Iterable[str | Path]) -> dict[str, Any]:
     documents = [_read_pdf(path) for path in _input_pdfs(inputs)]
     documents_by_sha: dict[str, dict[str, Any]] = {}
     for document in documents:
-        documents_by_sha.setdefault(document["source"]["sha256"], document)
+        source = document["source"]
+        existing = documents_by_sha.setdefault(source["sha256"], document)
+        if existing is not document:
+            known_paths = {item["path"] for item in existing["source"]["source_observations"]}
+            existing["source"]["source_observations"].extend(
+                item for item in source["source_observations"] if item["path"] not in known_paths
+            )
     documents = list(documents_by_sha.values())
     articles = _article_records(documents)
+    for document in documents:
+        for page in document["pages"]:
+            page.pop("_text_fragments", None)
     typesafe = _typesafe_classify(articles)
     classifications = {
         article["canonical_url"]: article["type_safe_classification"]

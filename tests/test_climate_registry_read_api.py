@@ -62,10 +62,13 @@ def _write_retained_artifacts(output: Path) -> dict[str, tuple[dict, bytes]]:
     return expected
 
 
-def _registry(tmp_path: Path) -> Path:
+def _registry(tmp_path: Path, *, target_version: int | None = None) -> Path:
     database = tmp_path / "article-registry.sqlite3"
     connection = sqlite3.connect(database)
-    apply_migrations(connection)
+    if target_version is None:
+        apply_migrations(connection)
+    else:
+        apply_migrations(connection, target_version=target_version)
     with connection:
         connection.executemany(
             "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
@@ -264,7 +267,8 @@ def _insert_pdf_intake_records(database: Path) -> None:
             period_start, period_end, extracted_text_sha256, document_json, imported_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (document_sha256, "C:/input/report.pdf", "report.pdf", "application/pdf", 100,
-         "2026-09-03", "2026-09-01", "2026-09-02", "b" * 64, "{}", "2026-09-03T00:00:00Z"),
+         "2026-09-03", "2026-09-01", "2026-09-02", "b" * 64, "{}",
+         "2026-09-03T00:00:00Z"),
     )
     connection.executemany(
         """INSERT INTO pdf_intake_articles (
@@ -341,7 +345,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 13,
+        "schema_version": 15,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -935,6 +939,7 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert detail.status_code == 200
     assert detail.json()["type_safe_classification"] == {"provider": "typesafe", "label": "article"}
     assert detail.json()["occurrences"][0]["raw_url"].endswith("utm_source=pdf")
+    assert detail.json()["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
     assert client.get("/api/registry/articles/article-full").json()["pdf_occurrences"][0]["occurrence_id"] == "pdf-occurrence-core"
 
     calendar = client.get(
@@ -944,6 +949,41 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert calendar.json()["items"][0]["kind"] == "publication"
     assert calendar.json()["items"][0]["source_kind"] == "pdf"
     assert calendar.json()["items"][0]["source_filename"] == "report.pdf"
+    assert calendar.json()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+
+
+def test_pdf_read_paths_remain_available_for_supported_v12_registry(tmp_path, monkeypatch):
+    database = _registry(tmp_path, target_version=12)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    client = TestClient(app)
+
+    articles = client.get("/api/registry/pdf-intake/articles")
+    calendar = client.get("/api/registry/pdf-intake/calendar")
+    detail = client.get("/api/registry/articles/article-full")
+    missing_pdf_article = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
+
+    assert articles.status_code == 200
+    assert articles.json()["items"] == []
+    assert calendar.status_code == 200
+    assert calendar.json()["items"] == []
+    assert detail.status_code == 200
+    assert "pdf_occurrences" not in detail.json()
+    assert missing_pdf_article.status_code == 404
+
+
+def test_pdf_read_api_uses_legacy_source_columns_on_v13_registry(tmp_path, monkeypatch):
+    database = _registry(tmp_path, target_version=13)
+    _insert_pdf_intake_records(database)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    client = TestClient(app)
+
+    detail = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
+    calendar = client.get("/api/registry/pdf-intake/calendar")
+
+    assert detail.status_code == 200
+    assert detail.json()["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert calendar.status_code == 200
+    assert calendar.json()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
 def test_pillar_and_report_date_must_match_the_same_appearance(registry_client):

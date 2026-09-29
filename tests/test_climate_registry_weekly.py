@@ -754,6 +754,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
         connection.execute("DROP TABLE climate_events")
         connection.execute("DROP TABLE meeting_run_items")
         connection.execute("DROP TABLE meeting_runs")
+        connection.execute("DROP TABLE pdf_intake_document_sources")
         connection.execute("DROP TABLE pdf_intake_calendar_items")
         connection.execute("DROP TABLE pdf_intake_article_occurrences")
         connection.execute("DROP TABLE pdf_intake_articles")
@@ -781,7 +782,7 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 13
+    ).status()["schema_version"] == 15
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository

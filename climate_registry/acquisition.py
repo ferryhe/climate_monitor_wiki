@@ -27,6 +27,7 @@ from .contract import validate_registry_contract
 from .errors import RegistryInputError
 
 BATCH_SCHEMA_VERSION = "pre-report-acquisition-batch.v1"
+# Minimum Registry schema for acquisition writes; later additive migrations remain compatible.
 ACQUISITION_WRITER_SCHEMA_VERSION = 12
 _SHA256_LENGTH = 64
 
@@ -193,10 +194,10 @@ def _open_database(
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     version = validate_registry_contract(connection)
-    if acquisition_writer and version != ACQUISITION_WRITER_SCHEMA_VERSION:
+    if acquisition_writer and version < ACQUISITION_WRITER_SCHEMA_VERSION:
         connection.close()
         raise RegistryInputError(
-            f"acquisition writes require registry schema {ACQUISITION_WRITER_SCHEMA_VERSION}; "
+            f"acquisition writes require registry schema {ACQUISITION_WRITER_SCHEMA_VERSION} or later; "
             f"found schema {version}; migrate the registry"
         )
     return connection
