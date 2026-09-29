@@ -90,6 +90,7 @@ def acquisition_configuration(root, payload, binding, binding_path):
         config['plugins']['enabled'].append(search)
     if binding.get('agent_protocol') == contract['candidate_protocol']:
         config['tools'] = {'tool_search': {'enabled': 'off'}}
+        config['agent'] = {'disabled_toolsets': ['web', 'browser']}
     return config
 
 

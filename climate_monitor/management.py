@@ -67,6 +67,9 @@ _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SOURCE_INVENTORY_PATH = Path(__file__).resolve().parents[1] / "monitoring" / "supranational_sources.yaml"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_COMMIT_ENV = "CLIMATE_REPOSITORY_COMMIT_SHA"
+SITE_SKILL_GUIDANCE_VERSION = "hermes-production-guidance.v1"
+SITE_SKILL_GUIDANCE_MAX_BYTES = 1200
+_SITE_SKILL_GUIDANCE_HEADING = "## Hermes production guidance"
 
 
 def _utc_now() -> datetime:
@@ -154,6 +157,77 @@ def _source_inventory(source_keys: list[str]) -> dict[str, Any]:
         "records": records,
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
+
+
+def _site_skill_inventory(source_keys: list[str]) -> dict[str, Any]:
+    records = []
+    for source_key in source_keys:
+        relative_path = Path(".agents") / "skills" / f"climate-site-{source_key}" / "SKILL.md"
+        path = REPOSITORY_ROOT / relative_path
+        if not path.is_file():
+            raise ValueError(f"missing site skill for source_key {source_key!r}: {relative_path}")
+        text = _normalize_text(path.read_text(encoding="utf-8"))
+        match = re.search(
+            rf"(?ms)^{re.escape(_SITE_SKILL_GUIDANCE_HEADING)}\s*\n(.*?)(?=^#{{1,6}}\s|\Z)",
+            text,
+        )
+        guidance = match.group(1).strip() if match else ""
+        if not guidance:
+            raise ValueError(
+                f"site skill for source_key {source_key!r} is missing "
+                f"{_SITE_SKILL_GUIDANCE_HEADING}"
+            )
+        if len(guidance.encode("utf-8")) > SITE_SKILL_GUIDANCE_MAX_BYTES:
+            raise ValueError(
+                f"site skill guidance for source_key {source_key!r} exceeds "
+                f"{SITE_SKILL_GUIDANCE_MAX_BYTES} bytes"
+            )
+        records.append({
+            "source_key": source_key,
+            "path": relative_path.as_posix(),
+            "version": SITE_SKILL_GUIDANCE_VERSION,
+            "skill_sha256": _text_sha(text),
+            "guidance": guidance,
+            "guidance_sha256": _text_sha(guidance),
+        })
+    return {
+        "schema_version": "climate-site-skill-inventory.v1",
+        "records": records,
+        "sha256": hashlib.sha256(canonical_json_bytes(records)).hexdigest(),
+    }
+
+
+def frozen_site_skill_hints(binding: Mapping[str, Any]) -> dict[str, str]:
+    """Validate and return the immutable short guidance for each bound source."""
+    inventory = binding.get("site_skill_inventory")
+    if inventory is None:  # Historical bindings predate repo-backed Hermes hints.
+        return {}
+    if not isinstance(inventory, Mapping) or inventory.get("schema_version") != "climate-site-skill-inventory.v1":
+        raise ValueError("unsupported frozen site skill inventory")
+    records = inventory.get("records")
+    if not isinstance(records, list) or hashlib.sha256(canonical_json_bytes(records)).hexdigest() != inventory.get("sha256"):
+        raise ValueError("frozen site skill inventory hash differs")
+    source_keys = binding.get("source_keys")
+    if not isinstance(source_keys, list) or [row.get("source_key") for row in records if isinstance(row, Mapping)] != source_keys:
+        raise ValueError("frozen site skill inventory does not match bound sources")
+    hints = {}
+    for row in records:
+        if not isinstance(row, Mapping):
+            raise ValueError("frozen site skill inventory contains an invalid record")
+        source_key = row.get("source_key")
+        guidance = row.get("guidance")
+        if (
+            row.get("version") != SITE_SKILL_GUIDANCE_VERSION
+            or not isinstance(source_key, str)
+            or not isinstance(guidance, str)
+            or not guidance.strip()
+            or len(guidance.encode("utf-8")) > SITE_SKILL_GUIDANCE_MAX_BYTES
+            or _text_sha(guidance) != row.get("guidance_sha256")
+            or source_key in hints
+        ):
+            raise ValueError("frozen site skill guidance is invalid")
+        hints[source_key] = guidance
+    return hints
 
 
 def default_task_definition() -> dict[str, Any]:
@@ -744,6 +818,7 @@ def build_task_binding(
         "source_keys": copy.deepcopy(parameters["source_keys"]),
         "source_inventory": source_inventory,
         "site_scope_inventory": scope_inventory,
+        "site_skill_inventory": _site_skill_inventory(parameters["source_keys"]),
         "governed_gateway": gateway,
         "meeting": {
             "enabled": normalized["meeting"]["enabled"],

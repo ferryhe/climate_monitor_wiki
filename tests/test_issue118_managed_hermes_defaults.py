@@ -575,12 +575,13 @@ def test_frozen_route_retains_private_credentials_but_excludes_unrelated_setting
     assert 'ambient-hook' not in raw
     assert 'ambient-mcp' not in raw
     assert 'ambient-plugin' not in raw
-    assert set(config) <= {'model', 'providers', 'custom_providers', 'hooks_auto_accept', 'hooks', 'mcp_servers', 'memory', 'plugins', 'tools'}
+    assert set(config) <= {'model', 'providers', 'custom_providers', 'hooks_auto_accept', 'hooks', 'mcp_servers', 'memory', 'plugins', 'tools', 'agent'}
     assert config['hooks_auto_accept'] is True
     assert config['mcp_servers'] == {}
     assert config['memory'] == {'memory_enabled': False, 'user_profile_enabled': False}
     assert config['plugins'] == {'enabled': ['climate-frozen-identity', SEARCH_IDENTITY_PLUGIN_ID]}
     assert config['tools'] == {'tool_search': {'enabled': 'off'}}
+    assert config['agent'] == {'disabled_toolsets': ['web', 'browser']}
     assert set(config['hooks']) == {'pre_tool_call', 'post_tool_call'}
     assert config['hooks']['pre_tool_call'][0]['fail_closed'] is True
     import shlex

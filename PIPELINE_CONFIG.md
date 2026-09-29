@@ -44,6 +44,7 @@ delegates to the existing public entrypoints.
 |---|---|
 | Acquisition task parameters and five business prompts | The authenticated `/manage` API and one `climate-acquisition-task-state.v1` at `CLIMATE_TASK_CONFIG` |
 | Source inventory and reviewed site scopes | Existing `monitoring/supranational_sources.yaml` and `monitoring/site_scopes.yaml`, referenced by configured source keys |
+| Per-source site guidance | `.agents/skills/climate-site-*/SKILL.md`, using the shared `monitoring/site-skill-workflow.md`; new run bindings freeze selected Hermes guidance and hashes, while the YAML scope remains authoritative |
 | Categories and semantic limits | Structured/versioned `monitoring/taxonomies/article_categories_v1.yaml`, whose normalized hash is bound to each effective task |
 | Model/provider | Effective task parameters; GPT-5.6 Luna default with credentials outside the repository |
 | Runtime Registry and run paths | Effective task parameters, placed on external persistent storage by the operator |
@@ -51,6 +52,13 @@ delegates to the existing public entrypoints.
 
 Do not duplicate these definitions in new workflow scripts or cron prompt text.
 The old numeric Step callers remain until the verified scheduler cutover.
+
+The per-source skills contain reviewed operator notes and short Hermes search
+hints; new bindings copy the selected hints and hashes so resumes use the same
+text. They are not prevalidated `web_listening` SiteSkills. Those are created
+from successful governed exploration and stored with changing SiteState on
+persistent runtime storage outside the production checkout. Check the effective
+`CLIMATE_MANAGED_STATE_DIR` before a live run; the code default is inside the repo.
 
 ## Prompt Templates
 
