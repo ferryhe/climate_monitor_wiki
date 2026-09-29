@@ -24,7 +24,7 @@ Each successful seed produced a versioned `web_listening` SiteSkill and SiteStat
 
 ## Dated follow-up: 2026-09-28
 
-The VM image was `2aea05d`; all acquisition and conversion evidence was kept in the isolated `climate_site_browser_pilot_20260928` Runtime volume and `/home/ubuntu/climate-site-pilot-20260928/psi`, outside production state and `sources/`.
+The VM image was `2aea05d`; all acquisition and conversion evidence was kept in the isolated `climate_site_browser_pilot_20260928` Runtime volume and `$HOME/climate-site-pilot-20260928/psi`, outside production state and `sources/`.
 
 - The exact official queryless news feed `https://www.unepfi.org/category/news/feed/` returned HTTP 200 (`acquisition.web_http`), `application/rss+xml`, and a verified 10,032-byte source artifact, SHA-256 `2f03db257ac7ae1603bbe93108c3c211bf3dd0cff074941d4592e3e4c2d2d6b4`. A one-off standard-library XML parse found 10 dated items, including the 17 September 2026 COP31 sustainable-insurance-summit announcement. The article adapter has no XML-to-Markdown artifact; the normal source collector still emits generic changed-page candidates and does not promote RSS items as report candidates.
 - The announcement URL `https://www.unepfi.org/industries/insurance/cop31-global-sustainable-insurance-summit-to-catalyze-climate-resilience-across-the-economy/` returned HTTP 200, robots allowed, and 6,482 Markdown characters via `acquisition.web_http` plus `transform.simple_html_markdown`. Content SHA-256: `1336bb8a80b9ef67c55b2c0a03923f50626d377469e4a0e2f5cf9f907cdffd48`. It states that UNEP and the Insurance Association of Türkiye will convene the summit on 13–14 November 2026 at Insurance House in Antalya during COP31.

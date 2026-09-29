@@ -35,7 +35,7 @@ Both exact reads returned HTTP 200, robots.allowed, and a successful transform.s
 
 TypeSafe jev-1.13.0 chose the exact 2026-09-28 story as the next freshness check (confidence 0.95) and, after both body checks, chose no_site_script (confidence 1.0). Keep using shared discovery, fetch_article_content and the common Markdown transform. No scope change or site-specific script is justified.
 
-The original Markdown and receipt files are in ignored .tmp/site-content-undp/; the external run evidence is under /home/ubuntu/climate-site-pilot-20260928/undp/. No content was written to sources/, and Registry was not run.
+The original Markdown and receipt files are in ignored .tmp/site-content-undp/; the external run evidence is under $HOME/climate-site-pilot-20260928/undp/. No content was written to sources/, and Registry was not run.
 
 ## Next source-specific check
 

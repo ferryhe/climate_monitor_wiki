@@ -28,7 +28,7 @@ Fetched the discovered `https://www.ipcc.ch/assessment-report/ar7/` page through
 
 The page says the seventh assessment cycle began in July 2023, the three Working Group report outlines were agreed at IPCC-62 in February 2025, and the AR7 Synthesis Report is expected in late 2029. It also lists several special/methodology reports planned for 2027. The page does not state its own publication date; do not use its event dates or the Runtime observation time as that date.
 
-The verified Markdown and evidence summary are outside the repository at `/home/ubuntu/.local/share/climate-monitor/site-browser-pilot/site-content/ipcc/ar7.*` on the VM; local review copies are under `.tmp/site-content-ipcc/`. This validates one page body only, not the linked PDFs, a weekly run or Registry ingestion. No IPCC-specific script is needed for this ordinary HTML-to-Markdown path.
+The verified Markdown and evidence summary are outside the repository at `$HOME/.local/share/climate-monitor/site-browser-pilot/site-content/ipcc/ar7.*` on the VM; local review copies are under `.tmp/site-content-ipcc/`. This validates one page body only, not the linked PDFs, a weekly run or Registry ingestion. No IPCC-specific script is needed for this ordinary HTML-to-Markdown path.
 
 ## Next source-specific check
 

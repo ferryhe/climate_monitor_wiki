@@ -27,7 +27,7 @@ No versioned `web_listening` SiteSkill was generated in this run. This pass did 
 
 An isolated fresh Runtime volume (`climate_site_wb_cop31_probe_20260928`) fetched the official page `https://www.worldbank.org/en/who-we-are/news/campaigns/2026/the-world-bank-group-at-cop31` with HTTP 200 and `robots.allowed`, using `acquisition.web_http` and `transform.simple_html_markdown`. Runtime job: `job-0105ed603c0a473f802f5698c676c0c4`; Markdown: 5,099 characters, SHA-256 `695ad483c62f10eaec1c0c1c3b70eaf676b9d8810f52422d6524bd1825aafb78`.
 
-The H1 and the COP31 date range (9–20 November 2026) are present. The events section says “coming soon”; no session agenda or individual event times are listed. TypeSafe chose to record this exact-page success while leaving configured discovery unresolved (confidence 0.47; probability of that choice 0.61). Do not broaden `site_scopes.yaml` from this single read. Evidence summary: `/home/ubuntu/climate-site-pilot-20260928/world-bank-fresh/`; no article was ingested and no Registry operation was run.
+The H1 and the COP31 date range (9–20 November 2026) are present. The events section says “coming soon”; no session agenda or individual event times are listed. TypeSafe chose to record this exact-page success while leaving configured discovery unresolved (confidence 0.47; probability of that choice 0.61). Do not broaden `site_scopes.yaml` from this single read. Evidence summary: `$HOME/climate-site-pilot-20260928/world-bank-fresh/`; no article was ingested and no Registry operation was run.
 
 The original configured-seed Runtime still returned 0/4 successes. Browser visibility of the page is useful for manual review, but does not establish automated discovery coverage.
 

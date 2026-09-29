@@ -64,7 +64,7 @@ changed. The event exclusions remain in effect; this probe did not verify WEF
 meeting capture.
 
 The Runtime receipt, exact body and Markdown are in
-/home/ubuntu/climate-site-pilot-20260928/wef/ and ignored .tmp/site-content-wef/.
+$HOME/climate-site-pilot-20260928/wef/ and ignored .tmp/site-content-wef/.
 Nothing was written to sources/ and Registry was not run.
 
 ## Next source-specific check

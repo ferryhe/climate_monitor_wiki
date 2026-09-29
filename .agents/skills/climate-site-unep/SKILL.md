@@ -66,7 +66,7 @@ view was used to identify the current exact story; Runtime receipts and
 Markdown are the acquisition evidence.
 
 Evidence is stored outside Git in
-/home/ubuntu/climate-site-pilot-20260928/unep/ and ignored .tmp/site-content-unep/.
+$HOME/climate-site-pilot-20260928/unep/ and ignored .tmp/site-content-unep/.
 No meetings were imported, no source was written under sources/, and Registry
 was not run.
 

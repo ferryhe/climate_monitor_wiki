@@ -25,7 +25,7 @@ Each successful seed produced a versioned `web_listening` SiteSkill and SiteStat
 
 ## Dated follow-up: 2026-09-28
 
-VM application image `2aea05d`; isolated Runtime and external evidence directory `/home/ubuntu/climate-site-pilot-20260928/tnfd`. No production files, `sources/`, or Registry were changed.
+VM application image `2aea05d`; isolated Runtime and external evidence directory `$HOME/climate-site-pilot-20260928/tnfd`. No production files, `sources/`, or Registry were changed.
 
 - One-source run `20260928T190422Z-9cf00010` (summary SHA-256 `783e3406dbf9235c7015d86d4a90afcdd2ae7126e1f9c2f9226a990cc719d618`) was partial: 2/4 seeds succeeded. Home and publication seeds each yielded the same generic Knowledge Bank candidate. `/news/` returned `acquisition.interaction_required`; `/knowledge-bank/` returned `gateway.redirect_invalid`.
 - The ordinary in-app browser rendered `/news/` and showed 90 results. Its newest item was “TNFD releases final sector guidance for technology and communications,” dated 22 September 2026. The exact article page was visible in the browser, but an isolated governed exact-URL read returned `acquisition.interaction_required` with no body artifact. Treat browser content as discovery evidence only.

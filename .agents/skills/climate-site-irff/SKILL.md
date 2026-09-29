@@ -20,7 +20,7 @@ Fetched the discovered article [Designing Risk-Sharing Platforms for Agricultura
 
 The article summarizes agricultural insurance risk-sharing discussions at the AIO 2026 conference in Cairo. It describes platform experiences in Ethiopia, Tanzania, Uganda and Senegal; recurring points include public-private/government anchoring, pooled underwriting and reinsurance capacity, shared services, governance and pricing discipline to support bankability. The event date is not given in the article body, so do not infer one from the posting date.
 
-The isolated Markdown and receipt are retained at `/home/ubuntu/.local/share/climate-monitor/site-browser-pilot/site-content/irff/aio-2026.*` on the VM; local review copies are under `.tmp/site-content-irff/`. This verifies one news body only, not weekly report or Registry ingestion. No IRFF-specific script is needed for this ordinary HTML page.
+The isolated Markdown and receipt are retained at `$HOME/.local/share/climate-monitor/site-browser-pilot/site-content/irff/aio-2026.*` on the VM; local review copies are under `.tmp/site-content-irff/`. This verifies one news body only, not weekly report or Registry ingestion. No IRFF-specific script is needed for this ordinary HTML page.
 
 For a single-source run, record the run ID, date, each configured seed's outcome, actual tool and policy attempts, article Markdown/content hashes, meeting evidence when present, and Registry disposition. Add only verified site-specific lessons here. Keep generated `web_listening` SiteSkill and SiteState in persistent runtime storage outside Git.
 

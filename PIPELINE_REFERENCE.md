@@ -213,7 +213,7 @@ all 36 sources then had 8 sources with all seeds successful, 9 partial,
 77 candidate rows were returned. Playwright actually ran four times, all on
 OECD seeds, but Cloudflare blocked those reads. IEA stopped at
 `acquisition.auth_required` before browser dispatch. External aggregate:
-`/home/ubuntu/.local/share/climate-monitor/site-browser-pilot/site-health-20260928T163303Z-a1a170/aggregate.json`,
+`$HOME/.local/share/climate-monitor/site-browser-pilot/site-health-20260928T163303Z-a1a170/aggregate.json`,
 SHA-256 `29d74dba010fcf5bad57afa118bdb52e0010589ab4532ca46df69a8e305a9e26`.
 This is seed exploration, not article/Registry verification or scheduler proof.
 

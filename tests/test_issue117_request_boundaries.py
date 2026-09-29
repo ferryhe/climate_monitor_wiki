@@ -5754,8 +5754,8 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
         row["event_kind"] == "network" for row in seed_outcomes
     )
     assert len(source_outcomes) == 36
-    assert len(seed_outcomes) == 115
-    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 115 - len(sends)
+    assert len(seed_outcomes) == 117
+    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 117 - len(sends)
     assert all(row["status"] == "failed" for row in source_outcomes)
     assert status["coverage"]["total_sources"] == 36
     assert status["coverage"]["incomplete_sources"] == 36
