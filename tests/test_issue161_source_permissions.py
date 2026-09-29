@@ -16,8 +16,8 @@ def source_copy(tmp_path):
     checkout = Path(__file__).resolve().parents[1]
     root = tmp_path / 'source'
     # Full application source, including default configuration used by managed start.
-    for name in ('climate_monitor', 'climate_registry', 'climate_delivery', 'agentic_wiki',
-                 'scripts', 'monitoring', 'tests'):
+    for name in ('.agents', 'climate_monitor', 'climate_registry', 'climate_delivery',
+                 'agentic_wiki', 'scripts', 'monitoring', 'tests'):
         shutil.copytree(checkout / name, root / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     # Positive fixture baseline only; preserve private/execute/special bits.

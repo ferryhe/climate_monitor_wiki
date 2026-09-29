@@ -166,15 +166,17 @@ def test_v3_is_default_and_exposes_only_governed_candidate_tools(tmp_path):
     task_binding = _v3_binding(tmp_path)
     assert candidate_handle_protocol(task_binding)
     command = runner._hermes_command("hermes", task_binding, tmp_path / "prompt")
-    assert command[command.index("--toolsets") + 1] == "web,browser,climate_acquisition"
+    assert command[command.index("--toolsets") + 1] == "climate_acquisition"
     assert "--max-turns" not in command
     prompt = " ".join(
         runner._prompt(tmp_path / "attempt-1.json", task_binding, {}).split()
     )
     assert "climate_stage_candidate" in prompt
     assert "climate_finalize_candidate" in prompt
-    assert "web, browser, and climate_acquisition" in prompt
-    assert "public query, URL, title, and snippet" in prompt
+    assert "only enabled toolset is climate_acquisition" in prompt
+    assert "web_listening has already completed the governed source acquisition" in prompt
+    assert "do not substitute a native search or manual browser read" in prompt
+    assert "public query, URL, title, and snippet" not in prompt
     assert "concise natural-language summary" in prompt
     assert "tool_call_id" not in prompt
     assert "searches or search_decision" not in prompt
@@ -4331,12 +4333,14 @@ def test_candidate_protocol_omits_application_turn_cap_and_cannot_mix_on_resume(
     current.update(provider="openai-api", model="gpt-5.6-terra")
     command = runner._hermes_command("hermes", current, tmp_path / "prompt.md")
     assert "--max-turns" not in command
+    assert command[command.index("--toolsets") + 1] == "web,browser"
     runner._assert_same_agent_protocol(current, dict(current))
 
     legacy = dict(current)
     legacy.pop("agent_protocol")
     legacy_command = runner._hermes_command("hermes", legacy, tmp_path / "prompt.md")
     assert "--max-turns" in legacy_command
+    assert legacy_command[legacy_command.index("--toolsets") + 1] == "web,browser"
     runner._assert_same_agent_protocol(legacy, dict(legacy))
     with pytest.raises(ValueError, match="resume agent protocol differs"):
         runner._assert_same_agent_protocol(current, legacy)
@@ -5750,8 +5754,8 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
         row["event_kind"] == "network" for row in seed_outcomes
     )
     assert len(source_outcomes) == 36
-    assert len(seed_outcomes) == 115
-    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 115 - len(sends)
+    assert len(seed_outcomes) == 117
+    assert sum(row["event_kind"] == "precheck" for row in seed_outcomes) == 117 - len(sends)
     assert all(row["status"] == "failed" for row in source_outcomes)
     assert status["coverage"]["total_sources"] == 36
     assert status["coverage"]["incomplete_sources"] == 36
@@ -5783,7 +5787,8 @@ def test_identical_failures_across_three_sources_stop_and_preserve_full_inventor
         "definition_sha256", "effective_sha256", "repository_commit_sha",
         "taxonomy_sha256", "prompt_hashes", "prompt_versions", "report_date",
         "timezone", "resolved_date_range", "date_policy", "budgets", "source_keys",
-        "source_inventory", "site_scope_inventory", "governed_gateway", "provider",
+        "source_inventory", "site_scope_inventory", "site_skill_inventory",
+        "governed_gateway", "provider",
         "model", "agent_protocol", "checkpoint_dir", "registry_database",
         "frozen_report_input", "report_inputs", "definition",
     ):

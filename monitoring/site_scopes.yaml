@@ -9,21 +9,24 @@ site_scopes:
       - /news/
       - /activities-topics/climate-risk/
       - /publications/
+      - /uploads/2025/04/Application-Paper-on-the-supervision-of-climate-related-risks-in-the-insurance-sector.pdf
     exclude_patterns:
       - /events/
       - /calendar/
-    notes: Reviewed IAIS public publications and climate risk topic pages.
+    notes: Reviewed IAIS public publications and climate risk topic pages. 2026-09-28 pilot linked this exact climate-risk paper from the approved topic page; only its exact PDF path is included, not the general uploads directory.
   - source_key: iea
     include_source_url: false
     seed_urls:
       - https://www.iea.org/news
       - https://www.iea.org/topics/climate-change
       - https://www.iea.org/sitemap.xml
+      - https://iea.blob.core.windows.net/assets/db5f570c-e35a-4535-8358-ca8f79b1400f/BreakthroughAgendaReport2026.pdf
     include_patterns:
       - /news
       - /reports
       - /topics/climate-change
       - /sitemap.xml
+      - /assets/db5f570c-e35a-4535-8358-ca8f79b1400f/BreakthroughAgendaReport2026.pdf
     exclude_patterns:
       - /events
       - /jobs
@@ -33,7 +36,7 @@ site_scopes:
       wait_until: domcontentloaded
       extra_wait_ms: 2500
       timeout_ms: 25000
-    notes: Reviewed IEA public news, climate topic, and sitemap inventory after /reports returned 404; GitHub runner requires browser_rendered.
+    notes: Reviewed IEA public news, climate topic, and sitemap inventory after /reports returned 404; GitHub runner requires browser_rendered. On 2026-09-28, the official Breakthrough Agenda Report 2026 page linked this exact PDF on iea.blob.core.windows.net; TypeSafe recommended allowlisting only this exact second-origin file URL (confidence 0.94), not the host or /assets/ prefix.
   - source_key: ipcc
     seed_urls:
       - https://www.ipcc.ch/reports/
@@ -79,14 +82,16 @@ site_scopes:
       - https://www.ifrs.org/groups/international-sustainability-standards-board/
       - https://www.ifrs.org/news-and-events/news/
       - https://www.ifrs.org/issued-standards/ifrs-sustainability-standards-navigator/
+      - https://www.ifrs.org/news-and-events/updates/issb/
     include_patterns:
       - /groups/international-sustainability-standards-board/
       - /news-and-events/news/
+      - /news-and-events/updates/issb/
       - /ifrs-sustainability-standards
     exclude_patterns:
       - /meetings/
       - /calendar/
-    notes: Reviewed IFRS ISSB group, sustainability standards, and news paths.
+    notes: Reviewed IFRS ISSB group, sustainability standards, and news paths. On 2026-09-28, TypeSafe Choice recommended adding only the ISSB-specific monthly updates subtree (confidence 0.81); it contains recurring public board decision summaries and does not open other IFRS update paths.
   - source_key: oecd
     seed_urls:
       - https://www.oecd.org/en/topics/climate-change.html
@@ -114,9 +119,11 @@ site_scopes:
       - /resources
       - /standard
       - /publications
+      - /files/standard-launch-2025/PCAF-PartA-2025-V3-15012026.pdf
+      - /files/standard-launch-2025/PCAF-PartC-2025-V2-15012026.pdf
     exclude_patterns:
       - /events
-    notes: Reviewed PCAF resources, standard, and publications paths after /news returned 404.
+    notes: Reviewed PCAF resources and standards. On 2026-09-28, TypeSafe Choice recommended only the exact current Part A third-edition and Part C second-edition PDF paths (confidence 0.88); no broad /files/ path is included.
   - source_key: psi
     seed_urls:
       - https://www.unepfi.org/insurance/insurance/
@@ -127,9 +134,11 @@ site_scopes:
       - /category/news/
       - /publications/
       - /climate
+      - /industries/insurance/cop31-global-sustainable-insurance-summit-to-catalyze-climate-resilience-across-the-economy/
+      - /industries/insurance/cop31/
     exclude_patterns:
       - /events/
-    notes: Reviewed UNEP FI PSI insurance, news, publications, and climate paths.
+    notes: Reviewed UNEP FI PSI insurance, news, publications, and climate paths. On 2026-09-28, TypeSafe Choice (confidence 1.0) recommended adding only these two exact COP31 paths after governed reads succeeded; details are in climate-site-psi.
   - source_key: tnfd
     seed_urls:
       - https://tnfd.global/news/
@@ -181,7 +190,7 @@ site_scopes:
       wait_until: domcontentloaded
       extra_wait_ms: 2500
       timeout_ms: 25000
-    notes: Reviewed UNEP with browser_rendered because the climate action topic returns 403 to HTTP.
+    notes: 2026-09-28 isolated Runtime returned HTTP 200 for all four seeds; the browser fetch_mode hint did not result in Playwright attempts.
   - source_key: wef
     seed_urls:
       - https://www.weforum.org/stories/climate-action/
@@ -199,7 +208,7 @@ site_scopes:
       wait_until: domcontentloaded
       extra_wait_ms: 2500
       timeout_ms: 25000
-    notes: Reviewed WEF with browser_rendered; HTTP returns 403 and the climate agenda path redirects to /stories/climate-action/.
+    notes: Historical browser review reported HTTP 403; on 2026-09-28 the isolated Runtime returned HTTP 200 for all three seeds and the exact article, using web_http despite the browser hint.
   - source_key: world-bank
     seed_urls:
       - https://www.worldbank.org/en/topic/climatechange
@@ -357,7 +366,7 @@ site_scopes:
     notes: Reviewed IFAC knowledge gateway, news, sustainability, and RSS paths after /news-events returned 404.
   - source_key: ilo
     seed_urls:
-      - https://www.ilo.org/global/topics/green-jobs/lang--en/index.htm
+      - https://www.ilo.org/topics-and-sectors/just-transition-towards-environmentally-sustainable-economies-and-societies
       - https://www.ilo.org/publications
       - https://www.ilo.org/rss.xml
     include_patterns:
@@ -370,7 +379,7 @@ site_scopes:
     exclude_patterns:
       - /events
       - /jobs
-    notes: Reviewed ILO just transition/publications plus current legacy redirects; RSS remains an explicit seed.
+    notes: Replaced rejected legacy green-jobs seed with the verified canonical just-transition page; /resource/article was not added after a bounded probe produced no extra candidates; RSS remains unresolved.
   - source_key: imf
     seed_urls:
       - https://www.imf.org/en/topics/climate-change
@@ -454,7 +463,7 @@ site_scopes:
     seed_urls:
       - https://www.carbonpool.earth/knowledge
       - https://www.carbonpool.earth/carbon-credit-delivery-offtake-agreements
-      - https://www.carbonpool.earth/webinar-and-qa-the-quest-for-permanence-are-registry-buffer-pools-the-right-solution
+      - https://www.carbonpool.earth/post/webinar-and-q-a-the-quest-for-permanence-are-registry-buffer-pools-the-right-solution
     include_patterns:
       - /knowledge
       - /post/
@@ -463,7 +472,7 @@ site_scopes:
     exclude_patterns:
       - /contact
       - /careers
-    notes: Knowledge/news and webinar entrypoints are tracked independently rather than treating homepage success as full coverage.
+    notes: 2026-09-28 browser check found /knowledge redirects to /blog and /carbon-credit-delivery-offtake-agreements redirects to /carbon-insurance. Temporary /blog discovery yielded category pages but no posts. The old webinar URL redirects to the exact /post/ path above; keep /post/ included and leave general blog discovery unresolved until the collector promotes its linked posts.
   - source_key: who
     seed_urls:
       - https://www.who.int/health-topics/climate-change
