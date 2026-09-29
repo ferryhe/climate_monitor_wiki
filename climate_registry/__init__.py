@@ -12,6 +12,7 @@ from .acquisition import (
 from .audit import build_audit_registry
 from .capture import capture_enrich_registry
 from .persistent import plan_registry_update, update_registry
+from .pdf_intake import persist_pdf_intake
 from .weekly import restore_registry_backup, weekly_sync
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "freeze_acquisition_for_report",
     "load_acquisition_batch",
     "plan_registry_update",
+    "persist_pdf_intake",
     "restore_registry_backup",
     "store_acquisition_batch",
     "verify_reportable_freeze",

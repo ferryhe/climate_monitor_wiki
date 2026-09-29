@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Iterator
+from urllib.parse import urlsplit
 
 from climate_delivery.errors import ClimateDeliveryError
 from climate_monitor.dedupe import canonical_url
@@ -585,6 +586,139 @@ class RegistryReader:
             ).fetchall()
         return {"items": [dict(row) for row in rows], "pagination": _pagination(page, page_size, total)}
 
+    @staticmethod
+    def _pdf_occurrences(connection: sqlite3.Connection, canonical_url: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """SELECT o.occurrence_json FROM pdf_intake_article_occurrences o
+               JOIN pdf_intake_articles a ON a.article_id=o.article_id
+               WHERE a.canonical_url=?
+               ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
+            (canonical_url,),
+        ).fetchall()
+        try:
+            values = [json.loads(row["occurrence_json"]) for row in rows]
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RegistryContractError("invalid PDF article occurrence data") from exc
+        if any(not isinstance(value, dict) for value in values):
+            raise RegistryContractError("invalid PDF article occurrence data")
+        return values
+
+    @classmethod
+    def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        canonical_url = row["canonical_url"]
+        occurrences = cls._pdf_occurrences(connection, canonical_url)
+        latest = occurrences[0] if occurrences else {}
+        try:
+            classification = json.loads(row["type_safe_classification_json"]) if row["type_safe_classification_json"] else None
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RegistryContractError("invalid PDF article classification data") from exc
+        host = (urlsplit(canonical_url).hostname or "unknown").removeprefix("www.").lower()
+        dates = [item.get("report_date") for item in occurrences if item.get("report_date")]
+        return {
+            "article_id": row["article_id"],
+            "canonical_url": canonical_url,
+            "title": row["title"] or latest.get("anchor_text") or latest.get("title"),
+            "summary": latest.get("summary"),
+            "source": host,
+            "publisher": host,
+            "first_seen": min(dates) if dates else None,
+            "last_seen": max(dates) if dates else None,
+            "source_kind": "pdf",
+            "type_safe_classification": classification,
+            "occurrences": occurrences,
+        }
+
+    def pdf_articles(
+        self, *, page: int = 1, page_size: int = 20, query: str = "",
+        source: str = "", report_date: str = "",
+    ) -> dict[str, Any]:
+        page, page_size = validate_page(page, page_size)
+        if len(query) > 200 or len(source) > 253:
+            raise RegistryQueryError("filter is too long")
+        if report_date:
+            validate_report_date(report_date)
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pdf_intake_articles
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM articles core WHERE core.canonical_url=pdf_intake_articles.canonical_url
+                   )"""
+            ).fetchall()
+            items = []
+            for row in rows:
+                item = self._pdf_article_payload(connection, row)
+                if source and item["source"] != source.strip().lower().removeprefix("www."):
+                    continue
+                if report_date and not any(value.get("report_date") == report_date for value in item["occurrences"]):
+                    continue
+                searchable = " ".join((
+                    item["title"] or "", item["summary"] or "", item["canonical_url"],
+                )).casefold()
+                if query and query.casefold() not in searchable:
+                    continue
+                latest = item["occurrences"][0] if item["occurrences"] else {}
+                items.append({
+                    key: value for key, value in item.items() if key != "occurrences"
+                } | {
+                    "occurrence_count": len(item["occurrences"]),
+                    "latest_occurrence": latest,
+                })
+        items.sort(key=lambda item: (item["last_seen"] or "", item["article_id"]), reverse=True)
+        total = len(items)
+        offset = (page - 1) * page_size
+        return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
+
+    def pdf_article(self, article_id: str) -> dict[str, Any]:
+        if not article_id or len(article_id) > 128 or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id
+        ):
+            raise RegistryQueryError("invalid article id")
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM pdf_intake_articles WHERE article_id=?", (article_id,),
+            ).fetchone()
+            if row is None:
+                raise RegistryNotFoundError("article not found")
+            return self._pdf_article_payload(connection, row)
+
+    def pdf_calendar_items(
+        self, *, page: int = 1, page_size: int = 20, query: str = "", kind: str = "",
+    ) -> dict[str, Any]:
+        page, page_size = validate_page(page, page_size)
+        if len(query) > 200 or len(kind) > 80:
+            raise RegistryQueryError("filter is too long")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT c.item_json, d.filename AS source_filename
+                   FROM pdf_intake_calendar_items c
+                   JOIN pdf_intake_documents d ON d.document_sha256=c.source_document_sha256"""
+            ).fetchall()
+        items = []
+        for row in rows:
+            try:
+                item = json.loads(row["item_json"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise RegistryContractError("invalid PDF calendar item data") from exc
+            if not isinstance(item, dict):
+                raise RegistryContractError("invalid PDF calendar item data")
+            if kind and kind.casefold() not in str(item.get("kind", "")).casefold():
+                continue
+            item["source_kind"] = "pdf"
+            item["source_filename"] = row["source_filename"]
+            searchable = " ".join((
+                item.get("name") or "", item.get("kind") or "", item.get("raw_date") or "",
+                item.get("summary") or "", " ".join(item.get("source_urls") or []),
+            )).casefold()
+            if query and query.casefold() not in searchable:
+                continue
+            items.append(item)
+        items.sort(key=lambda item: (
+            item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
+        ))
+        total = len(items)
+        offset = (page - 1) * page_size
+        return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
+
     def article(self, article_id: str) -> dict[str, Any]:
         if not article_id or len(article_id) > 128 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id):
             raise RegistryQueryError("invalid article id")
@@ -807,7 +941,7 @@ class RegistryReader:
             "keywords": "content_enrichment" if has_db_enrichment else fallback_provenance,
         }
         original_url = appearance_payload[0]["original_url"] if appearance_payload else article["canonical_url"]
-        return {
+        payload = {
             "article_id": article["article_id"],
             "title": source_annotation.title if source_annotation else article["title"],
             "summary": summary,
@@ -844,3 +978,8 @@ class RegistryReader:
                 else None
             ),
         }
+        with self.connect() as connection:
+            pdf_occurrences = self._pdf_occurrences(connection, article["canonical_url"])
+        if pdf_occurrences:
+            payload["pdf_occurrences"] = pdf_occurrences
+        return payload

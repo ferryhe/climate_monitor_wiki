@@ -124,6 +124,35 @@ python scripts/reload_and_smoke_test.py --date "$REPORT_DATE"
 
 The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
 
+## Importing PDF reports
+
+The PDF intake adapter keeps the extracted report text and source metadata,
+normalizes linked articles and calendar entries, and can add them to the
+Registry without fabricating web-fetch or meeting-run records. Without
+`--apply`, the CLI prints a dry-run summary and does not write files or change
+the Registry. The Python API `climate_monitor.pdf_intake.import_pdf_reports()`
+returns the full in-memory bundle. To persist the Registry records and JSON
+bundle, create a pre-import backup and pass `--apply`:
+
+```bash
+python -m climate_monitor.pdf_intake \
+  --input docs/input \
+  --output output/pdf-intake.json \
+  --registry-db /path/to/existing/climate_registry.sqlite3 \
+  --backup-dir output/registry-backups \
+  --apply
+```
+
+Replace the example Registry path with the existing database file. `--apply` is
+required for any CLI file or database write. The adapter records the PDF hash,
+extracted page text, links, dates, summaries and TypeSafe classification
+suggestions in PDF-specific Registry tables. Re-imports deduplicate the same
+PDF and article/calendar occurrences. `TYPESAFE_API_KEY` is optional; without
+it, records are still imported with verbatim extracted content and no AI suggestion.
+Linked event identities use event type, title and canonical source URLs, so date
+changes become new occurrences under the same identity. A renamed event without
+a stable source event ID remains separate instead of being guessed as the same event.
+
 ## Modular weekly monitor
 
 The canonical URL is the article identity. Pillar A and Pillar B describe how a

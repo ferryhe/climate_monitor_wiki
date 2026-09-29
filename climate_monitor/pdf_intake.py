@@ -1,0 +1,680 @@
+"""Read report PDFs into a provenance-preserving, TypeSafe-assisted bundle."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+from datetime import date, datetime, timezone
+from io import BytesIO
+from pathlib import Path
+from typing import Any, Iterable
+from urllib.parse import urlsplit
+
+from dotenv import load_dotenv
+from pypdf import PdfReader
+
+from climate_monitor.dedupe import canonical_url
+from climate_registry.audit import _stable_id
+
+
+MAX_PDF_BYTES = 50_000_000
+MAX_PDF_PAGES = 500
+TYPE_SAFE_BATCH_SIZE = 20
+_MONTH = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+_MONTHS = {name.casefold(): number for number, name in enumerate((
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+), 1)}
+_MONTHS.update({name[:3].casefold(): number for name, number in _MONTHS.items() if len(name) > 3})
+_CHOICES = {
+    "article": None,
+    "event": None,
+    "landing_page": None,
+    "other": None,
+}
+
+
+def _sha256(value: bytes | str) -> str:
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
+def _compact(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _month_number(value: str) -> int | None:
+    return _MONTHS.get(value.casefold())
+
+
+def _iso_day(day: str, month: str, year: str) -> str | None:
+    month_number = _month_number(month)
+    if month_number is None:
+        return None
+    try:
+        return date(int(year), month_number, int(day)).isoformat()
+    except ValueError:
+        return None
+
+
+def _parse_calendar_date(raw: str) -> dict[str, Any]:
+    value = _compact(raw).replace("—", "–").rstrip(" .·")
+    quarter = re.fullmatch(r"Q([1-4])\s+(20\d{2})", value, re.I)
+    if quarter:
+        return {"start_date": f"{quarter[2]}-Q{quarter[1]}", "end_date": None, "date_precision": "quarter"}
+    vague_year = re.fullmatch(r"(?:(?:Early|Mid|Late)\s+)?(20\d{2})", value, re.I)
+    if vague_year:
+        return {"start_date": vague_year[1], "end_date": None, "date_precision": "year"}
+    month_year_range = re.fullmatch(rf"({_MONTH})\s+(20\d{{2}})\s*[–-]\s*({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if month_year_range:
+        start_month = _month_number(month_year_range[1])
+        end_month = _month_number(month_year_range[3])
+        if start_month and end_month:
+            return {
+                "start_date": f"{month_year_range[2]}-{start_month:02d}",
+                "end_date": f"{month_year_range[4]}-{end_month:02d}",
+                "date_precision": "month",
+            }
+    month_range = re.fullmatch(rf"({_MONTH})\s*[–-]\s*({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if month_range:
+        start_month = _month_number(month_range[1])
+        end_month = _month_number(month_range[2])
+        if start_month and end_month:
+            return {
+                "start_date": f"{month_range[3]}-{start_month:02d}",
+                "end_date": f"{month_range[3]}-{end_month:02d}",
+                "date_precision": "month",
+            }
+    one_month = re.fullmatch(rf"({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if one_month:
+        month_number = _month_number(one_month[1])
+        return {
+            "start_date": f"{one_month[2]}-{month_number:02d}" if month_number else None,
+            "end_date": None,
+            "date_precision": "month" if month_number else "unknown",
+        }
+
+    day_month_range = re.fullmatch(rf"(\d{{1,2}})(?:\s*[–-]\s*(\d{{1,2}}))?\s+({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if day_month_range:
+        start = _iso_day(day_month_range[1], day_month_range[3], day_month_range[4])
+        end = _iso_day(day_month_range[2], day_month_range[3], day_month_range[4]) if day_month_range[2] else None
+        if start:
+            return {"start_date": start, "end_date": end, "date_precision": "day"}
+    cross_month_range = re.fullmatch(rf"(\d{{1,2}})\s+({_MONTH})\s*[–-]\s*(\d{{1,2}})\s+({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if cross_month_range:
+        start = _iso_day(cross_month_range[1], cross_month_range[2], cross_month_range[5])
+        end = _iso_day(cross_month_range[3], cross_month_range[4], cross_month_range[5])
+        if start and end:
+            return {"start_date": start, "end_date": end, "date_precision": "day"}
+    single_day = re.fullmatch(rf"(\d{{1,2}})\s+({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if single_day:
+        start = _iso_day(single_day[1], single_day[2], single_day[3])
+        if start:
+            return {"start_date": start, "end_date": None, "date_precision": "day"}
+    return {"start_date": None, "end_date": None, "date_precision": "unknown"}
+
+
+def _parse_report_period(text: str) -> tuple[str | None, str | None]:
+    value = _compact(text).replace("—", "–")
+    match = re.search(rf"(\d{{1,2}})\s*[–-]\s*(\d{{1,2}})\s+({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if match:
+        return _iso_day(match[1], match[3], match[4]), _iso_day(match[2], match[3], match[4])
+    match = re.search(rf"(\d{{1,2}})\s+({_MONTH})\s*[–-]\s*(\d{{1,2}})\s+({_MONTH})\s+(20\d{{2}})", value, re.I)
+    if match:
+        return _iso_day(match[1], match[2], match[5]), _iso_day(match[3], match[4], match[5])
+    return None, None
+
+
+def _reported_publication_date(text: str) -> tuple[str | None, str | None]:
+    match = re.search(rf"\bIN WINDOW\s+(\d{{1,2}}\s+{_MONTH}\s+20\d{{2}})", _compact(text), re.I)
+    if not match:
+        return None, None
+    parsed = _parse_calendar_date(match.group(1))
+    return match.group(1), parsed["start_date"]
+
+
+def _report_metadata(first_page: str) -> dict[str, Any]:
+    compact = _compact(first_page)
+    period = re.search(r"REPORTING PERIOD\s+(.+?)\s+DATE OF RUN", compact, re.I)
+    run_date = re.search(rf"DATE OF RUN\s+(\d{{1,2}}\s+{_MONTH}\s+20\d{{2}})", compact, re.I)
+    edition = re.search(r"\bEdition\s+(\d+)\b", compact, re.I)
+    raw_period = period.group(1).strip(" .·") if period else None
+    period_start, period_end = _parse_report_period(raw_period or "")
+    parsed_run_date = _parse_calendar_date(run_date.group(1)) if run_date else {}
+    return {
+        "title": "Climate Risk Intelligence Report" if "climate risk intelligence report" in compact.casefold() else None,
+        "edition": int(edition.group(1)) if edition else None,
+        "reporting_period": raw_period,
+        "period_start": period_start,
+        "period_end": period_end,
+        "date_of_run": parsed_run_date.get("start_date"),
+    }
+
+
+def _extract_text_fragments(page: Any) -> list[dict[str, Any]]:
+    fragments: list[dict[str, Any]] = []
+
+    def collect(text: str, cm: list[float], tm: list[float], _font: Any, font_size: Any, *_: Any) -> None:
+        text = _compact(text)
+        if not text:
+            return
+        x = cm[0] * tm[4] + cm[2] * tm[5] + cm[4]
+        y = cm[1] * tm[4] + cm[3] * tm[5] + cm[5]
+        try:
+            size = max(float(font_size or 0), 0)
+        except (TypeError, ValueError):
+            size = 0
+        # ponytail: estimate common report-font widths; use font metrics if this causes misassociation.
+        width = size * sum(1 if ord(char) > 0x2E80 else 0.55 for char in text)
+        fragments.append({"x": x, "y": y, "right": x + width, "text": text})
+
+    try:
+        page.extract_text(visitor_text=collect)
+    except Exception:
+        return []
+    return fragments
+
+
+def _extract_links(
+    page: Any, page_number: int, fragments: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    fragments = _extract_text_fragments(page) if fragments is None else fragments
+    links = []
+    for ref in page.get("/Annots") or []:
+        try:
+            annotation = ref.get_object()
+            action = annotation.get("/A")
+            if action is not None:
+                action = action.get_object()
+            url = str(action.get("/URI") or "").strip() if action else ""
+            if not url:
+                continue
+            rect = [round(float(value), 2) for value in annotation.get("/Rect", [])]
+            anchors = []
+            if len(rect) == 4:
+                x0, y0, x1, y1 = rect
+                anchors = [
+                    fragment["text"] for fragment in fragments
+                    if x0 - 2 <= fragment["x"] <= x1 + 2 and y0 - 3 <= fragment["y"] <= y1 + 3
+                ]
+            links.append({
+                "url": url,
+                "anchor_text": _compact(" ".join(dict.fromkeys(anchors))),
+                "page": page_number,
+                "rect": rect,
+            })
+        except (TypeError, ValueError, KeyError):
+            continue
+    return links
+
+
+def _group_page_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped = []
+    for url in dict.fromkeys(link["url"] for link in links):
+        same_url = [link for link in links if link["url"] == url]
+        same_url.sort(key=lambda link: link["rect"][1] if len(link["rect"]) == 4 else 0, reverse=True)
+        clusters: list[list[dict[str, Any]]] = []
+        for link in same_url:
+            rect = link["rect"]
+            center = (rect[1] + rect[3]) / 2 if len(rect) == 4 else None
+            prior_rect = clusters[-1][-1]["rect"] if clusters else []
+            prior_center = (prior_rect[1] + prior_rect[3]) / 2 if len(prior_rect) == 4 else None
+            if center is not None and prior_center is not None and abs(center - prior_center) <= 16:
+                clusters[-1].append(link)
+            else:
+                clusters.append([link])
+        for cluster in clusters:
+            rects = [link["rect"] for link in cluster if len(link["rect"]) == 4]
+            grouped.append({
+                "url": url,
+                "anchor_text": _compact(" ".join(link["anchor_text"] for link in cluster if link["anchor_text"])),
+                "page": cluster[0]["page"],
+                "rect": [
+                    round(min(rect[0] for rect in rects), 2),
+                    round(min(rect[1] for rect in rects), 2),
+                    round(max(rect[2] for rect in rects), 2),
+                    round(max(rect[3] for rect in rects), 2),
+                ] if rects else [],
+                "rects": rects,
+            })
+    return grouped
+
+
+def _page_context(page_text: str, anchor: str) -> str:
+    compact = _compact(page_text)
+    normalized_anchor = _compact(anchor)
+    start = compact.casefold().find(normalized_anchor.casefold()) if normalized_anchor else -1
+    if start < 0:
+        return compact[:1200]
+    return compact[max(0, start - 180):start + 1500]
+
+
+def _calendar_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    found = []
+    for page in pages:
+        lines = page["text"].splitlines()
+        if "table of contents" in page["text"].casefold():
+            continue
+        if any(re.fullmatch(r"\s*DATE\(S\)\s+EVENT\s+HOST\s+RELEVANCE\s*", line, re.I) for line in lines):
+            found.append(page)
+        elif re.search(r"(?mi)^\s*Key Dates\s*$", page["text"]):
+            found.append(page)
+    return found
+
+
+def _executive_summary(pages: list[dict[str, Any]]) -> str | None:
+    section: list[str] = []
+    active = False
+    for page in pages:
+        lines = page["text"].splitlines()
+        if not active:
+            if not lines or _compact(lines[0]).casefold() != "executive summary":
+                continue
+            active = True
+            lines = lines[1:]
+        if re.search(r"(?mi)^\s*(?:Key Dates|DATE\(S\)\s+EVENT\s+HOST\s+RELEVANCE)\s*$", "\n".join(lines)):
+            break
+        section.extend(line for line in lines if not re.search(r"AI-assisted|AI-generated.*see disclaimer|Page \d+ of \d+", line, re.I))
+    text = "\n".join(section).strip()
+    return text or None
+
+
+def _is_calendar_date_line(value: str) -> bool:
+    value = _compact(value).rstrip(" .·")
+    if _parse_calendar_date(value)["date_precision"] != "unknown":
+        return True
+    return bool(re.fullmatch(
+        r"(?:TBA|TBD|TBC|ongoing|various dates|date\s+(?:TBA|TBD|TBC|to be (?:announced|confirmed))|"
+        r"to be (?:announced|confirmed)|H[1-2]\s+20\d{2})",
+        value,
+        re.I,
+    ))
+
+
+def _is_calendar_kind_line(value: str) -> bool:
+    return "".join(_compact(value).split()).casefold() in {
+        "event", "deadline", "launch", "publication", "watch", "webinar",
+    }
+
+
+def _calendar_row_starts(lines: list[str]) -> list[int]:
+    starts = []
+    for index, line in enumerate(lines):
+        if not _is_calendar_date_line(line):
+            continue
+        next_line = next((candidate for candidate in lines[index + 1:] if candidate.strip()), "")
+        if _is_calendar_kind_line(next_line):
+            starts.append(index)
+    return starts
+
+
+def _link_overlaps_title(link: dict[str, Any], title: str, fragments: list[dict[str, Any]]) -> bool:
+    rect = link.get("rect", [])
+    normalized_title = _compact(title).casefold()
+    if len(rect) != 4 or not normalized_title:
+        return False
+    x0, y0, x1, y1 = rect
+    for fragment in fragments:
+        text = _compact(fragment["text"]).casefold()
+        if not text or not (
+            text == normalized_title or text in normalized_title or normalized_title in text
+        ):
+            continue
+        if (x0 - 2 <= fragment["right"] and fragment["x"] <= x1 + 2
+                and y0 - 3 <= fragment["y"] <= y1 + 3):
+            return True
+    return False
+
+
+def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for page in _calendar_pages(document["pages"]):
+        lines = page["text"].splitlines()
+        starts = _calendar_row_starts(lines)
+        rows = []
+        for ordinal, start in enumerate(starts, 1):
+            end = starts[ordinal] if ordinal < len(starts) else len(lines)
+            row = [line.strip() for line in lines[start:end] if line.strip()]
+            if len(row) >= 3 and _is_calendar_kind_line(row[1]):
+                rows.append({"ordinal": ordinal, "row": row, "links": []})
+
+        fragments = page.get("_text_fragments", [])
+        for link in page["links"]:
+            anchor = _compact(link["anchor_text"]).casefold()
+            matches = [
+                entry for entry in rows
+                if anchor and anchor in _compact("\n".join(entry["row"])).casefold()
+            ]
+            if matches:
+                for entry in matches:
+                    entry["links"].append(link)
+                continue
+            matches = [entry for entry in rows if _link_overlaps_title(link, entry["row"][2], fragments)]
+            if len(matches) == 1:
+                matches[0]["links"].append(link)
+
+        for entry in rows:
+            ordinal, row = entry["ordinal"], entry["row"]
+            raw_date = row[0]
+            raw_kind = row[1]
+            kind = "".join(_compact(raw_kind).split()).casefold()
+            row_text = "\n".join(row)
+            page_links = entry["links"]
+            linked_title = max((link["anchor_text"] for link in page_links), key=len, default=None)
+            title = linked_title or row[2]
+            date_fields = _parse_calendar_date(raw_date)
+            source_urls = list(dict.fromkeys(link["url"] for link in page_links))
+            identity_urls = sorted({canonical_url(url) or url for url in source_urls})
+            item_hash = _sha256(f"{document['source']['sha256']}\n{page['page']}\n{ordinal}\n{row_text}")
+            summary = "\n".join(row[2:]).strip()
+            identity_title = _compact(linked_title or " ".join(row[2:5])).casefold()
+            if identity_urls:
+                # ponytail: title disambiguates reused links; use source event IDs if PDFs expose them.
+                event_identity = "\n".join((kind, identity_title, *identity_urls))
+            else:
+                event_identity = "\n".join((
+                    kind, date_fields["start_date"] or raw_date.casefold(),
+                    date_fields["end_date"] or "", identity_title,
+                ))
+            items.append({
+                "event_id": f"event-{_sha256(event_identity)[:24]}",
+                "occurrence_id": f"pdf-event-occurrence-{item_hash[:24]}",
+                "name": title,
+                "kind": kind,
+                "raw_kind": raw_kind,
+                "raw_date": raw_date,
+                **date_fields,
+                "date_evidence": raw_date,
+                "summary": summary,
+                "summary_basis": "verbatim_pdf_row",
+                "summary_sha256": _sha256(summary),
+                "raw_text": row_text,
+                "page": page["page"],
+                "source_urls": source_urls,
+                "source_document_sha256": document["source"]["sha256"],
+                "content_sha256": _sha256(row_text),
+            })
+    return items
+
+
+def _read_pdf(path: Path) -> dict[str, Any]:
+    if path.suffix.casefold() != ".pdf" or not path.is_file():
+        raise ValueError(f"input is not a PDF file: {path}")
+    raw = path.read_bytes()
+    if len(raw) > MAX_PDF_BYTES:
+        raise ValueError(f"PDF exceeds the {MAX_PDF_BYTES}-byte limit: {path.name}")
+    if not raw.startswith(b"%PDF-"):
+        raise ValueError(f"PDF signature is invalid: {path.name}")
+    reader = PdfReader(BytesIO(raw))
+    if reader.is_encrypted:
+        raise ValueError(f"encrypted PDF is unsupported: {path.name}")
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise ValueError(f"PDF exceeds the {MAX_PDF_PAGES}-page limit: {path.name}")
+    pages = []
+    for page_number, page in enumerate(reader.pages, 1):
+        text = page.extract_text() or ""
+        if len(text) > 1_000_000:
+            raise ValueError(f"extracted page exceeds the text limit: {path.name} page {page_number}")
+        fragments = _extract_text_fragments(page)
+        pages.append({
+            "page": page_number,
+            "text": text,
+            "content_sha256": _sha256(text),
+            "links": _group_page_links(_extract_links(page, page_number, fragments)),
+            "_text_fragments": fragments,
+        })
+    if not any(page["text"].strip() for page in pages):
+        raise ValueError(f"PDF contains no extractable text: {path.name}")
+    metadata = _report_metadata(pages[0]["text"])
+    full_text = "\n\f\n".join(page["text"] for page in pages)
+    executive_summary = _executive_summary(pages)
+    document = {
+        "source": {
+            "path": str(path.resolve()),
+            "filename": path.name,
+            "media_type": "application/pdf",
+            "size_bytes": len(raw),
+            "sha256": _sha256(raw),
+        },
+        **metadata,
+        "page_count": len(pages),
+        "extracted_text_sha256": _sha256(full_text),
+        "executive_summary": executive_summary,
+        "executive_summary_sha256": _sha256(executive_summary) if executive_summary else None,
+        "pages": pages,
+    }
+    document["calendar_items"] = _extract_calendar_items(document)
+    for page in pages:
+        page.pop("_text_fragments", None)
+    return document
+
+
+def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        occurrence_ordinals: dict[tuple[str, int], int] = {}
+        event_titles = {
+            (event["page"], canonical_url(url)): event["name"]
+            for event in document["calendar_items"] for url in event["source_urls"]
+            if event.get("name") and canonical_url(url)
+        }
+        for page in document["pages"]:
+            for link in page["links"]:
+                parsed = urlsplit(link["url"])
+                if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+                    continue
+                canonical = canonical_url(link["url"])
+                if not canonical:
+                    continue
+                record = grouped.setdefault(canonical, {
+                    "article_id": _stable_id("article", canonical),
+                    "canonical_url": canonical,
+                    "title": None,
+                    "type_safe_classification": None,
+                    "occurrences": [],
+                })
+                event_title = event_titles.get((page["page"], canonical))
+                context = _page_context(page["text"], link["anchor_text"] or event_title or "")
+                occurrence_key = (canonical, page["page"])
+                occurrence_ordinals[occurrence_key] = occurrence_ordinals.get(occurrence_key, 0) + 1
+                occurrence_id = "pdf-article-occurrence-" + _sha256(
+                    f"{document['source']['sha256']}\n{canonical}\n{page['page']}\n"
+                    f"{occurrence_ordinals[occurrence_key]}\n{_sha256(context)}"
+                )[:24]
+                record["occurrences"].append({
+                    "occurrence_id": occurrence_id,
+                    "raw_url": link["url"],
+                    "anchor_text": link["anchor_text"],
+                    "page": page["page"],
+                    "report_date": document.get("date_of_run"),
+                    "reporting_period": document.get("reporting_period"),
+                    "publication_date_evidence": _reported_publication_date(context)[0],
+                    "publication_date": _reported_publication_date(context)[1],
+                    "source_document_sha256": document["source"]["sha256"],
+                    "source_document": document["source"]["filename"],
+                    "summary": context,
+                    "summary_basis": "verbatim_pdf_context",
+                    "content_sha256": _sha256(context),
+                    "page_sha256": page["content_sha256"],
+                })
+                title = link["anchor_text"] or event_title
+                if title and (not record["title"] or len(title) > len(record["title"])):
+                    record["title"] = title
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def _typesafe_classify(records: list[dict[str, Any]]) -> dict[str, Any]:
+    api_key = os.getenv("TYPESAFE_API_KEY", "").strip()
+    if not api_key:
+        return {"status": "not_configured", "classified": 0, "failed_batches": 0}
+    if not records:
+        return {"status": "complete", "classified": 0, "failed_batches": 0}
+    try:
+        from typesafe_sdk import Choice, TypeSafeClient
+    except ImportError:
+        return {"status": "unavailable", "classified": 0, "failed_batches": 1, "error": "sdk_missing"}
+
+    classified = failed = 0
+    try:
+        with TypeSafeClient(api_key=api_key, timeout=20.0) as client:
+            for start in range(0, len(records), TYPE_SAFE_BATCH_SIZE):
+                batch = records[start:start + TYPE_SAFE_BATCH_SIZE]
+                state = {"items": [
+                    {
+                        "index": index,
+                        "url": item["canonical_url"],
+                        "anchor_text": item["title"] or "",
+                        "context": item["occurrences"][0]["summary"][:1200],
+                    }
+                    for index, item in enumerate(batch)
+                ]}
+                questions = {
+                    f"item_{index}": Choice(
+                        instructions=(
+                            f"Classify items[{index}] using only its link title and nearby report text. "
+                            "Use article for a specific publication, news story, paper, dataset, or research report; "
+                            "event for a dated event, meeting, webinar, launch, deadline, or open call; "
+                            "landing_page for a publisher homepage, archive, organization site, or portal; "
+                            "other for any other link. This is a routing suggestion, not a factual claim."
+                        ),
+                        criteria=_CHOICES,
+                    )
+                    for index in range(len(batch))
+                }
+                try:
+                    response = client.system_one(state, questions)
+                    for index, item in enumerate(batch):
+                        label = response.choices[f"item_{index}"].choice
+                        item["type_safe_classification"] = {
+                            "provider": "typesafe",
+                            "label": label if label in _CHOICES else "other",
+                        }
+                        classified += 1
+                except Exception as exc:
+                    failed += 1
+                    logging.getLogger(__name__).warning(
+                        "TypeSafe PDF classification failed (%s); preserving unclassified records",
+                        type(exc).__name__,
+                    )
+    except Exception as exc:
+        failed += 1
+        logging.getLogger(__name__).warning(
+            "TypeSafe PDF classification unavailable (%s); preserving unclassified records",
+            type(exc).__name__,
+        )
+    return {
+        "status": "complete" if not failed else "partial",
+        "classified": classified,
+        "failed_batches": failed,
+    }
+
+
+def _input_pdfs(inputs: Iterable[str | Path]) -> list[Path]:
+    found: dict[str, Path] = {}
+    for value in inputs:
+        path = Path(value).expanduser()
+        paths = sorted(path.glob("*.pdf")) if path.is_dir() else [path]
+        for item in paths:
+            resolved = item.resolve()
+            if not resolved.is_file() or resolved.suffix.casefold() != ".pdf":
+                raise ValueError(f"input is not a PDF file or directory: {item}")
+            found.setdefault(str(resolved).casefold(), resolved)
+    if not found:
+        raise ValueError("no PDF files found")
+    return list(found.values())
+
+
+def import_pdf_reports(inputs: Iterable[str | Path]) -> dict[str, Any]:
+    """Build a normalized bundle while preserving each PDF's text and provenance."""
+    documents = [_read_pdf(path) for path in _input_pdfs(inputs)]
+    documents_by_sha: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        documents_by_sha.setdefault(document["source"]["sha256"], document)
+    documents = list(documents_by_sha.values())
+    articles = _article_records(documents)
+    typesafe = _typesafe_classify(articles)
+    classifications = {
+        article["canonical_url"]: article["type_safe_classification"]
+        for article in articles if article["type_safe_classification"]
+    }
+    for document in documents:
+        for event in document["calendar_items"]:
+            event["type_safe_classification"] = next(
+                (classifications[url] for raw_url in event["source_urls"]
+                 if (url := canonical_url(raw_url)) in classifications),
+                None,
+            )
+    return {
+        "schema_version": "climate-pdf-intake.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "typesafe": typesafe,
+        "documents": documents,
+        "articles": articles,
+        "calendar_items": [item for document in documents for item in document["calendar_items"]],
+    }
+
+
+def _paths_alias(left: Path, right: Path) -> bool:
+    left, right = left.expanduser(), right.expanduser()
+    try:
+        if left.exists() and right.exists() and left.samefile(right):
+            return True
+    except OSError:
+        pass
+    return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+
+
+def _validate_output_path(output: Path | None, inputs: list[Path], registry: Path | None) -> None:
+    if output is None:
+        return
+    protected = [*inputs, *([registry] if registry is not None else [])]
+    if any(_paths_alias(output, path) for path in protected):
+        raise ValueError("--output must not overwrite an input PDF or the Registry database")
+
+
+def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
+    parser = argparse.ArgumentParser(description="Extract searchable report PDFs into a provenance-preserving JSON bundle.")
+    parser.add_argument("--input", action="append", required=True, help="PDF file or directory of PDFs; may be repeated")
+    parser.add_argument("--output", type=Path, help="Optional JSON output path (requires --apply)")
+    parser.add_argument("--registry-db", type=Path, help="Existing Registry SQLite database")
+    parser.add_argument("--backup-dir", type=Path, help="Directory for the pre-import Registry backup")
+    parser.add_argument("--apply", action="store_true", help="Persist the bundle to the Registry after creating a backup")
+    args = parser.parse_args(argv)
+    if args.apply and not (args.registry_db and args.backup_dir):
+        parser.error("--apply requires both --registry-db and --backup-dir")
+    if not args.apply and (args.output or args.registry_db or args.backup_dir):
+        parser.error("--output, --registry-db, and --backup-dir require --apply")
+    try:
+        input_paths = _input_pdfs(args.input)
+        _validate_output_path(args.output, input_paths, args.registry_db)
+        bundle = import_pdf_reports(input_paths)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        registry_result = None
+        if args.apply:
+            from climate_registry.pdf_intake import persist_pdf_intake
+
+            registry_result = persist_pdf_intake(args.registry_db, args.backup_dir, bundle)
+    except Exception as exc:
+        parser.exit(2, f"pdf intake failed ({type(exc).__name__}): {str(exc)[:300]}\n")
+    print(json.dumps({
+        "status": "complete" if args.apply else "dry_run",
+        "output": str(args.output) if args.output else None,
+        "documents": len(bundle["documents"]),
+        "articles": len(bundle["articles"]),
+        "calendar_items": len(bundle["calendar_items"]),
+        "typesafe": bundle["typesafe"],
+        "registry": registry_result,
+    }, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
