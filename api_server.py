@@ -405,6 +405,37 @@ def registry_articles(
     )
 
 
+@app.get("/api/registry/pdf-intake/articles")
+def registry_pdf_articles(
+    page: str = "1", page_size: str = "20", query: str = "",
+    source: str = "", report_date: str = "",
+) -> dict:
+    parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
+    return _registry_query(
+        lambda: _registry_reader().pdf_articles(
+            page=parsed_page, page_size=parsed_size, query=query, source=source,
+            report_date=report_date,
+        )
+    )
+
+
+@app.get("/api/registry/pdf-intake/articles/{article_id}")
+def registry_pdf_article(article_id: str) -> dict:
+    return _registry_query(lambda: _registry_reader().pdf_article(article_id))
+
+
+@app.get("/api/registry/pdf-intake/calendar")
+def registry_pdf_calendar(
+    page: str = "1", page_size: str = "20", query: str = "", kind: str = "",
+) -> dict:
+    parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
+    return _registry_query(
+        lambda: _registry_reader().pdf_calendar_items(
+            page=parsed_page, page_size=parsed_size, query=query, kind=kind,
+        )
+    )
+
+
 @app.get("/api/registry/articles/{article_id}")
 def registry_article(article_id: str) -> dict:
     return _registry_query(lambda: _registry_reader().article(article_id))

@@ -241,6 +241,17 @@
                     <button class="ghost-button" type="submit">Apply</button>
                   </form>
                 </div>
+                <div class="registry-switch registry-article-sources" role="group" aria-label="Article database source">
+                  <button class="registry-switch__button is-active" type="button" data-article-source="registry" aria-pressed="true">
+                    Registry articles
+                  </button>
+                  <button class="registry-switch__button" type="button" data-article-source="pdf" aria-pressed="false">
+                    PDF imports
+                  </button>
+                </div>
+                <p id="registryArticleSourceHint" class="muted registry-article-source-hint">
+                  PDF links that match a Registry article are shown in that article’s detail.
+                </p>
                 <div id="registryArticles" class="registry-list" aria-live="polite"></div>
                 <div class="registry-pagination">
                   <button id="articlesPrevious" class="ghost-button" type="button">Previous</button>
@@ -254,7 +265,7 @@
                 <a id="registryOriginalLink" class="registry-source-link" target="_blank" rel="noopener noreferrer" hidden>Open original source</a>
                 <dl id="registryArticleMeta" class="detail-meta"></dl>
                 <section id="registryEnrichment" class="registry-detail-section"></section>
-                <section class="registry-detail-section">
+                <section id="registryAppearancesSection" class="registry-detail-section">
                   <h4>Report appearances</h4>
                   <ol id="registryAppearances" class="registry-appearance-list"></ol>
                 </section>

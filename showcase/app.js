@@ -107,12 +107,15 @@ const state = {
     loaded: false,
     available: false,
     mode: "reports",
+    articleSource: "registry",
     reportPage: 1,
     articlePage: 1,
     reportPagination: null,
     articlePagination: null,
     selectedReportDate: null,
     reportRequestSequence: 0,
+    articleRequestSequence: 0,
+    articleDetailRequestSequence: 0,
     loadPromise: null,
   },
 };
@@ -173,6 +176,7 @@ const els = {
   reportsPage: document.getElementById("reportsPage"),
   registryArticles: document.getElementById("registryArticles"),
   registryArticleDetail: document.getElementById("registryArticleDetail"),
+  registryAppearancesSection: document.getElementById("registryAppearancesSection"),
   registrySearchForm: document.getElementById("registrySearchForm"),
   registrySearch: document.getElementById("registrySearch"),
   registryPublisherFilter: document.getElementById("registryPublisherFilter"),
@@ -189,6 +193,8 @@ const els = {
   registryContentTitle: document.getElementById("registryContentTitle"),
   registryMarkdown: document.getElementById("registryMarkdown"),
   registryModeButtons: Array.from(document.querySelectorAll("[data-registry-mode]")),
+  registryArticleSourceButtons: Array.from(document.querySelectorAll("[data-article-source]")),
+  registryArticleSourceHint: document.getElementById("registryArticleSourceHint"),
   answerModeButtons: Array.from(document.querySelectorAll("[data-answer-mode]")),
   graphModeButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   workspaceTabs: Array.from(document.querySelectorAll(".tabbar__tab")),
@@ -1864,6 +1870,7 @@ async function loadRegistryReport(reportDate) {
 
 async function loadRegistryArticles() {
   renderRegistryNotice(els.registryArticles, "Loading articles…");
+  const requestSequence = ++state.registry.articleRequestSequence;
   const params = new URLSearchParams({
     page: String(state.registry.articlePage),
     page_size: "20",
@@ -1872,23 +1879,36 @@ async function loadRegistryArticles() {
   const publisher = els.registryPublisherCustom?.value.trim() || els.registryPublisherFilter.value;
   if (publisher) params.set("source", publisher);
   try {
-    const payload = await registryFetch(`/api/registry/articles?${params.toString()}`);
+    const pdfSource = state.registry.articleSource === "pdf";
+    const endpoint = pdfSource
+      ? "/api/registry/pdf-intake/articles"
+      : "/api/registry/articles";
+    const payload = await registryFetch(`${endpoint}?${params.toString()}`);
+    if (requestSequence !== state.registry.articleRequestSequence) {
+      return;
+    }
     state.registry.articlePagination = payload.pagination;
     els.registryArticles.replaceChildren();
     if (!payload.items.length) {
-      renderRegistryNotice(els.registryArticles, "No articles match these filters.");
+      renderRegistryNotice(
+        els.registryArticles,
+        pdfSource ? "No PDF imports match these filters." : "No articles match these filters.",
+      );
     }
     payload.items.forEach((article) => {
       const button = registryElement("button", "registry-card");
       button.type = "button";
       button.dataset.articleId = article.article_id;
+      button.dataset.articleSource = pdfSource ? "pdf" : "registry";
       const summaryPresentation = registrySummaryPresentation(article);
       button.append(
-        registryElement("strong", "registry-card__title", article.title),
+        registryElement("strong", "registry-card__title", article.title || article.canonical_url),
         registryElement(
           "span",
           "registry-card__meta",
-          `${article.publisher} · last seen ${article.last_seen}`,
+          pdfSource
+            ? `${article.publisher} · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · last seen ${article.last_seen || "—"}`
+            : `${article.publisher} · last seen ${article.last_seen}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
         ),
       );
       if (summaryPresentation.text) {
@@ -1900,9 +1920,79 @@ async function loadRegistryArticles() {
     });
     updateRegistryPagination("articles", payload.pagination);
   } catch (error) {
+    if (requestSequence !== state.registry.articleRequestSequence) {
+      return;
+    }
     renderRegistryNotice(els.registryArticles, registryErrorMessage(error));
     updateRegistryPagination("articles", null);
   }
+}
+
+function setRegistryArticleSource(source) {
+  const nextSource = source === "pdf" ? "pdf" : "registry";
+  if (state.registry.articleSource !== nextSource) {
+    state.registry.articleDetailRequestSequence += 1;
+    els.registryArticleDetail.setAttribute("aria-busy", "false");
+    els.registryArticleTitle.textContent = "Select an article";
+    els.registryArticleMeta.replaceChildren();
+    els.registryEnrichment.replaceChildren();
+    els.registryEnrichment.hidden = true;
+    els.registryAppearances.replaceChildren();
+    els.registryAppearancesSection.hidden = true;
+    els.registryContentSection.hidden = true;
+    els.registryMarkdown.textContent = "";
+    els.registryOriginalLink.hidden = true;
+    els.registryOriginalLink.removeAttribute("href");
+  }
+  state.registry.articleSource = nextSource;
+  state.registry.articlePage = 1;
+  state.registry.articlePagination = null;
+  els.registryArticleSourceButtons.forEach((button) => {
+    const active = button.dataset.articleSource === state.registry.articleSource;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  els.registryArticleSourceHint.textContent = state.registry.articleSource === "pdf"
+    ? "One entry per canonical URL. URLs already in Registry articles appear with their PDF history in the article detail."
+    : "PDF links that match a Registry article are shown in that article’s detail.";
+  updateRegistryPagination("articles", null);
+  if (state.registry.available) {
+    void loadRegistryArticles();
+  }
+}
+
+function appendRegistryPdfOccurrences(container, occurrences) {
+  if (!Array.isArray(occurrences) || !occurrences.length) {
+    return;
+  }
+  const block = registryElement("div", "registry-pdf-history");
+  block.append(registryElement("h4", "", "PDF report history"));
+  const list = registryElement("ol", "registry-pdf-history__list");
+  occurrences.forEach((occurrence) => {
+    const item = registryElement("li", "registry-pdf-history__item");
+    const sourceName = occurrence.source_document || occurrence.source_observations?.[0]?.filename || "Imported PDF";
+    const date = occurrence.report_date
+      ? `Report date ${occurrence.report_date}`
+      : occurrence.publication_date
+        ? `Publication date ${occurrence.publication_date}`
+        : "Date unavailable";
+    const page = occurrence.page ? ` · page ${occurrence.page}` : "";
+    item.append(
+      registryElement("strong", "", `${sourceName} · ${date}${page}`),
+      registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."),
+    );
+    const sourceUrl = safeSourceUrl(occurrence.raw_url);
+    if (sourceUrl) {
+      const link = registryElement("a", "registry-source-link", "Open source link");
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      item.append(link);
+    }
+    list.append(item);
+  });
+  block.append(list);
+  container.append(block);
 }
 
 function appendRegistryTags(container, label, values) {
@@ -1917,18 +2007,28 @@ function appendRegistryTags(container, label, values) {
   container.append(block);
 }
 
-async function loadRegistryArticle(articleId) {
+async function loadRegistryArticle(articleId, articleSource = "registry") {
+  const requestSequence = ++state.registry.articleDetailRequestSequence;
+  const isCurrentRequest = () => requestSequence === state.registry.articleDetailRequestSequence;
   els.registryArticleDetail.setAttribute("aria-busy", "true");
   els.registryArticleTitle.textContent = "Loading article…";
   els.registryArticleMeta.replaceChildren();
   els.registryEnrichment.replaceChildren();
   els.registryEnrichment.hidden = true;
   els.registryAppearances.replaceChildren();
+  els.registryAppearancesSection.hidden = articleSource === "pdf";
   els.registryContentSection.hidden = true;
   els.registryOriginalLink.hidden = true;
   try {
-    const article = await registryFetch(`/api/registry/articles/${encodeURIComponent(articleId)}`);
-    els.registryArticleTitle.textContent = article.title;
+    const pdfSource = articleSource === "pdf";
+    const endpoint = pdfSource
+      ? "/api/registry/pdf-intake/articles"
+      : "/api/registry/articles";
+    const article = await registryFetch(`${endpoint}/${encodeURIComponent(articleId)}`);
+    if (!isCurrentRequest()) {
+      return;
+    }
+    els.registryArticleTitle.textContent = article.title || article.canonical_url;
     const annotationBasis = article.source_annotation?.source_basis;
     const usesAlternatePublisherPage =
       annotationBasis === "official_replacement" || annotationBasis === "publisher_excerpt";
@@ -1939,7 +2039,9 @@ async function loadRegistryArticle(articleId) {
     );
     if (sourceUrl) {
       els.registryOriginalLink.href = sourceUrl;
-      els.registryOriginalLink.textContent =
+      els.registryOriginalLink.textContent = pdfSource
+        ? "Open linked source"
+        :
         annotationBasis === "official_replacement"
           ? "Open official replacement"
           : annotationBasis === "publisher_excerpt"
@@ -1952,6 +2054,11 @@ async function loadRegistryArticle(articleId) {
       registryMetric("First seen", article.first_seen),
       registryMetric("Last seen", article.last_seen),
     ];
+    if (pdfSource) {
+      metrics.push(registryMetric("PDF mentions", article.occurrences.length));
+    } else if (article.pdf_occurrences?.length) {
+      metrics.push(registryMetric("PDF mentions", article.pdf_occurrences.length));
+    }
     if (article.latest_fetch?.fetch_status) {
       metrics.push(registryMetric("Latest fetch", article.latest_fetch.fetch_status));
     }
@@ -1960,7 +2067,10 @@ async function loadRegistryArticle(articleId) {
     }
     els.registryArticleMeta.append(...metrics);
     const summaryPresentation = registrySummaryPresentation(article);
-    if (summaryPresentation.text) {
+    if (pdfSource && article.type_safe_classification?.label) {
+      appendRegistryTags(els.registryEnrichment, "TypeSafe classification", [article.type_safe_classification.label]);
+    }
+    if (!pdfSource && summaryPresentation.text) {
       const summaryBlock = registryElement("div", "registry-summary");
       summaryBlock.append(
         registryElement("h4", "", "Summary"),
@@ -1968,17 +2078,19 @@ async function loadRegistryArticle(articleId) {
       );
       els.registryEnrichment.append(summaryBlock);
     }
-    appendRegistryTags(
-      els.registryEnrichment,
-      "Categories",
-      article.categories?.length ? article.categories : article.enrichment?.categories || [],
-    );
-    appendRegistryTags(
-      els.registryEnrichment,
-      "Keywords",
-      article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
-    );
-    if (summaryPresentation.provenanceCopy) {
+    if (!pdfSource) {
+      appendRegistryTags(
+        els.registryEnrichment,
+        "Categories",
+        article.categories?.length ? article.categories : article.enrichment?.categories || [],
+      );
+      appendRegistryTags(
+        els.registryEnrichment,
+        "Keywords",
+        article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
+      );
+    }
+    if (!pdfSource && summaryPresentation.provenanceCopy) {
       const reviewed =
         summaryPresentation.provenance?.endsWith("_annotation") &&
         article.source_annotation?.generated_on
@@ -1992,8 +2104,13 @@ async function loadRegistryArticle(articleId) {
         ),
       );
     }
+    appendRegistryPdfOccurrences(
+      els.registryEnrichment,
+      pdfSource ? article.occurrences : article.pdf_occurrences,
+    );
     els.registryEnrichment.hidden = els.registryEnrichment.childElementCount === 0;
-    article.appearances.forEach((appearance) => {
+    const appearances = article.appearances || [];
+    appearances.forEach((appearance) => {
       const item = registryElement("li", "registry-appearance");
       item.append(
         registryElement("strong", "", appearance.report_title),
@@ -2005,7 +2122,7 @@ async function loadRegistryArticle(articleId) {
       );
       els.registryAppearances.append(item);
     });
-    if (!article.appearances.length) {
+    if (!appearances.length) {
       els.registryAppearances.append(
         registryElement("li", "registry-notice", "No report appearances are recorded for this article."),
       );
@@ -2017,11 +2134,16 @@ async function loadRegistryArticle(articleId) {
       els.registryMarkdown.textContent = displayText;
     }
   } catch (error) {
+    if (!isCurrentRequest()) {
+      return;
+    }
     els.registryArticleTitle.textContent = "Article unavailable";
     els.registryEnrichment.append(registryElement("p", "registry-notice", registryErrorMessage(error)));
     els.registryEnrichment.hidden = false;
   } finally {
-    els.registryArticleDetail.setAttribute("aria-busy", "false");
+    if (isCurrentRequest()) {
+      els.registryArticleDetail.setAttribute("aria-busy", "false");
+    }
   }
 }
 
@@ -2040,6 +2162,10 @@ function attachEvents() {
 
   els.registryModeButtons.forEach((button) => {
     button.addEventListener("click", () => setRegistryMode(button.dataset.registryMode));
+  });
+
+  els.registryArticleSourceButtons.forEach((button) => {
+    button.addEventListener("click", () => setRegistryArticleSource(button.dataset.articleSource));
   });
 
   if (els.registrySearchForm) {
@@ -2177,7 +2303,11 @@ function attachEvents() {
     const articleCard = target.closest("[data-article-id]");
     if (articleCard) {
       setRegistryMode("articles");
-      void loadRegistryArticle(articleCard.dataset.articleId);
+      const articleSource = articleCard.dataset.articleSource || "registry";
+      if (state.registry.articleSource !== articleSource) {
+        setRegistryArticleSource(articleSource);
+      }
+      void loadRegistryArticle(articleCard.dataset.articleId, articleSource);
       return;
     }
 

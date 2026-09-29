@@ -115,6 +115,26 @@ REQUIRED_TABLE_COLUMNS = {
         "snapshot_id", "created_at", "query_json", "base_date", "timezone",
         "records_json", "coverage_json", "snapshot_sha256",
     },
+    "pdf_intake_documents": {
+        "document_sha256", "source_path", "filename", "media_type", "size_bytes",
+        "date_of_run", "period_start", "period_end", "pdf_created_at", "pdf_modified_at",
+        "original_pdf", "pdf_metadata_json", "extracted_text_sha256", "document_json", "imported_at",
+    },
+    "pdf_intake_document_sources": {
+        "document_sha256", "source_path", "filename", "observed_at",
+    },
+    "pdf_intake_articles": {
+        "article_id", "canonical_url", "title", "type_safe_classification_json", "imported_at",
+    },
+    "pdf_intake_article_occurrences": {
+        "occurrence_id", "article_id", "source_document_sha256", "page", "raw_url",
+        "report_date", "publication_date", "content_sha256", "page_sha256", "occurrence_json",
+    },
+    "pdf_intake_calendar_items": {
+        "occurrence_id", "event_id", "source_document_sha256", "page", "name", "kind",
+        "raw_date", "date_precision", "start_date", "end_date", "summary", "content_sha256",
+        "type_safe_classification_json", "item_json",
+    },
 }
 
 # Tables introduced per migration. The contract is validated per deployed
@@ -127,15 +147,22 @@ _V11_TABLES = frozenset({
     "meeting_runs", "meeting_run_items", "climate_events", "climate_event_versions",
     "climate_event_sources", "meeting_snapshots",
 })
+_V13_TABLES = frozenset({
+    "pdf_intake_documents", "pdf_intake_articles", "pdf_intake_article_occurrences",
+    "pdf_intake_calendar_items",
+})
+_V14_TABLES = frozenset({"pdf_intake_document_sources"})
 
-V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES - _V11_TABLES
-V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES - _V11_TABLES
-V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES - _V11_TABLES
+V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
+V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
+V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
 V6_TABLES = V5_TABLES
-V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V11_TABLES
-V11_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V11_TABLES - _V13_TABLES - _V14_TABLES
+V11_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V13_TABLES - _V14_TABLES
+V13_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V14_TABLES
+V14_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -147,11 +174,19 @@ def _required_tables(version: int) -> frozenset[str]:
         return V5_TABLES
     if version == 6:
         return V6_TABLES
+    if version >= 14:
+        return V14_TABLES
+    if version == 13:
+        return V13_TABLES
     return V11_TABLES if version >= 11 else V7_TABLES
 
 
 def _required_columns(table: str, version: int) -> set[str]:
     columns = set(REQUIRED_TABLE_COLUMNS[table])
+    if table == "pdf_intake_documents" and version < 14:
+        columns -= {"pdf_created_at", "pdf_modified_at", "original_pdf", "pdf_metadata_json"}
+    elif table == "pdf_intake_documents" and version < 15:
+        columns.remove("pdf_metadata_json")
     if table == "article_semantics" and version == 5:
         columns.remove("report_id")
     if table == "acquisition_items" and version < 8:
@@ -243,6 +278,16 @@ REQUIRED_FOREIGN_KEYS = {
         ("article_content_versions", ("article_id", "content_version_id"),
          ("article_id", "content_version_id")),
     },
+    "pdf_intake_article_occurrences": {
+        ("pdf_intake_articles", ("article_id",), ("article_id",)),
+        ("pdf_intake_documents", ("source_document_sha256",), ("document_sha256",)),
+    },
+    "pdf_intake_document_sources": {
+        ("pdf_intake_documents", ("document_sha256",), ("document_sha256",)),
+    },
+    "pdf_intake_calendar_items": {
+        ("pdf_intake_documents", ("source_document_sha256",), ("document_sha256",)),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -273,6 +318,14 @@ REQUIRED_TRIGGERS = frozenset(
         "climate_event_versions_are_append_only_delete",
         "meeting_snapshots_are_immutable_update",
         "meeting_snapshots_are_immutable_delete",
+        "pdf_intake_documents_are_append_only_update",
+        "pdf_intake_documents_are_append_only_delete",
+        "pdf_intake_document_sources_are_append_only_update",
+        "pdf_intake_document_sources_are_append_only_delete",
+        "pdf_intake_article_occurrences_are_append_only_update",
+        "pdf_intake_article_occurrences_are_append_only_delete",
+        "pdf_intake_calendar_items_are_append_only_update",
+        "pdf_intake_calendar_items_are_append_only_delete",
     }
 )
 
@@ -299,6 +352,10 @@ REQUIRED_INDEXES = frozenset(
         "idx_climate_events_organizer",
         "idx_climate_event_sources_event",
         "idx_climate_event_sources_content",
+        "idx_pdf_article_occurrences_article",
+        "idx_pdf_article_occurrences_document",
+        "idx_pdf_calendar_event",
+        "idx_pdf_calendar_document",
     }
 )
 
@@ -400,6 +457,13 @@ def _required_triggers(version: int) -> frozenset[str]:
             "meeting_snapshots_are_immutable_update",
             "meeting_snapshots_are_immutable_delete",
         }
+    if version < 13:
+        names = frozenset(name for name in names if not name.startswith("pdf_intake_"))
+    elif version < 14:
+        names = names - {
+            "pdf_intake_document_sources_are_append_only_update",
+            "pdf_intake_document_sources_are_append_only_delete",
+        }
     old_reconciliation_triggers = {
         "acquisition_batches_are_append_only_update",
         "acquisition_searches_are_append_only_update",
@@ -431,6 +495,8 @@ def _required_indexes(version: int) -> frozenset[str]:
     if version < 11:
         names = frozenset(name for name in names if not name.startswith("idx_meeting_")
                           and not name.startswith("idx_climate_event"))
+    if version < 13:
+        names = frozenset(name for name in names if not name.startswith("idx_pdf_"))
     if version < 8:
         names = names - {"idx_acquisition_items_resolution"}
     if version < 7:

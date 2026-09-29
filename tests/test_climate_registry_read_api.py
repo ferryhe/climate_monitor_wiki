@@ -62,10 +62,13 @@ def _write_retained_artifacts(output: Path) -> dict[str, tuple[dict, bytes]]:
     return expected
 
 
-def _registry(tmp_path: Path) -> Path:
+def _registry(tmp_path: Path, *, target_version: int | None = None) -> Path:
     database = tmp_path / "article-registry.sqlite3"
     connection = sqlite3.connect(database)
-    apply_migrations(connection)
+    if target_version is None:
+        apply_migrations(connection)
+    else:
+        apply_migrations(connection, target_version=target_version)
     with connection:
         connection.executemany(
             "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
@@ -224,6 +227,91 @@ def registry_client(tmp_path, monkeypatch):
     return TestClient(app), database
 
 
+def _insert_pdf_intake_records(database: Path) -> None:
+    document_sha256 = "f" * 64
+    occurrence = {
+        "occurrence_id": "pdf-occurrence-unique",
+        "source_document_sha256": document_sha256,
+        "page": 3,
+        "raw_url": "https://example.com/wildfire-report?utm_source=pdf",
+        "report_date": "2026-09-03",
+        "publication_date": "2026-09-01",
+        "title": "Wildfire risk report",
+        "summary": "Wildfire risk findings preserved from the PDF.",
+        "content_sha256": "a" * 64,
+    }
+    duplicate_occurrence = {
+        **occurrence,
+        "occurrence_id": "pdf-occurrence-core",
+        "raw_url": "https://example.com/full",
+        "title": "Climate: 100% transition",
+    }
+    calendar_item = {
+        "event_id": "pdf-event-publication",
+        "occurrence_id": "pdf-calendar-occurrence",
+        "source_document_sha256": document_sha256,
+        "page": 4,
+        "name": "Climate report publication",
+        "kind": "publication",
+        "raw_date": "4 September 2026",
+        "start_date": "2026-09-04",
+        "end_date": "2026-09-04",
+        "date_precision": "day",
+        "summary": "Publication date listed in the source PDF.",
+        "source_urls": ["https://example.com/report"],
+    }
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """INSERT INTO pdf_intake_documents (
+            document_sha256, source_path, filename, media_type, size_bytes, date_of_run,
+            period_start, period_end, extracted_text_sha256, document_json, imported_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (document_sha256, "C:/input/report.pdf", "report.pdf", "application/pdf", 100,
+         "2026-09-03", "2026-09-01", "2026-09-02", "b" * 64, "{}",
+         "2026-09-03T00:00:00Z"),
+    )
+    connection.executemany(
+        """INSERT INTO pdf_intake_articles (
+            article_id, canonical_url, title, type_safe_classification_json, imported_at
+        ) VALUES (?, ?, ?, ?, ?)""",
+        (
+            ("pdf-article-unique", "https://example.com/wildfire-report", "Wildfire risk report",
+             '{"provider":"typesafe","label":"article"}', "2026-09-03T00:00:00Z"),
+            ("pdf-article-core", "https://example.com/full", "Core article duplicate", None,
+             "2026-09-03T00:00:00Z"),
+        ),
+    )
+    connection.executemany(
+        """INSERT INTO pdf_intake_article_occurrences (
+            occurrence_id, article_id, source_document_sha256, page, raw_url, report_date,
+            publication_date, content_sha256, page_sha256, occurrence_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            ("pdf-occurrence-unique", "pdf-article-unique", document_sha256, 3,
+             occurrence["raw_url"], occurrence["report_date"], occurrence["publication_date"],
+             occurrence["content_sha256"], "c" * 64, json.dumps(occurrence)),
+            ("pdf-occurrence-core", "pdf-article-core", document_sha256, 3,
+             duplicate_occurrence["raw_url"], duplicate_occurrence["report_date"],
+             duplicate_occurrence["publication_date"], duplicate_occurrence["content_sha256"],
+             "c" * 64, json.dumps(duplicate_occurrence)),
+        ),
+    )
+    connection.execute(
+        """INSERT INTO pdf_intake_calendar_items (
+            occurrence_id, event_id, source_document_sha256, page, name, kind, raw_date,
+            date_precision, start_date, end_date, summary, content_sha256,
+            type_safe_classification_json, item_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (calendar_item["occurrence_id"], calendar_item["event_id"], document_sha256,
+         calendar_item["page"], calendar_item["name"], calendar_item["kind"],
+         calendar_item["raw_date"], calendar_item["date_precision"], calendar_item["start_date"],
+         calendar_item["end_date"], calendar_item["summary"], "d" * 64, None,
+         json.dumps(calendar_item)),
+    )
+    connection.commit()
+    connection.close()
+
+
 def test_status_is_safe_when_registry_is_missing_invalid_or_inside_repo(tmp_path, monkeypatch):
     client = TestClient(app)
     monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
@@ -257,7 +345,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 12,
+        "schema_version": 15,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -829,6 +917,75 @@ def test_article_filters_and_deterministic_pagination(registry_client):
     second = client.get("/api/registry/articles?page=2&page_size=2").json()
     assert [item["article_id"] for item in first["items"]] == ["article-meta", "article-excerpt"]
     assert [item["article_id"] for item in second["items"]] == ["article-full"]
+
+
+def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core_lineage(registry_client):
+    client, database = registry_client
+    _insert_pdf_intake_records(database)
+
+    listing = client.get(
+        "/api/registry/pdf-intake/articles",
+        params={"query": "wildfire", "source": "www.example.com", "report_date": "2026-09-03"},
+    )
+    assert listing.status_code == 200
+    assert [item["article_id"] for item in listing.json()["items"]] == ["pdf-article-unique"]
+    assert listing.json()["items"][0]["source_kind"] == "pdf"
+    assert listing.json()["items"][0]["occurrence_count"] == 1
+    assert "pdf-article-core" not in {
+        item["article_id"] for item in client.get("/api/registry/pdf-intake/articles").json()["items"]
+    }
+    core_listing = client.get("/api/registry/articles").json()["items"]
+    assert next(item for item in core_listing if item["article_id"] == "article-full")["pdf_occurrence_count"] == 1
+
+    detail = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
+    assert detail.status_code == 200
+    assert detail.json()["type_safe_classification"] == {"provider": "typesafe", "label": "article"}
+    assert detail.json()["occurrences"][0]["raw_url"].endswith("utm_source=pdf")
+    assert detail.json()["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert client.get("/api/registry/articles/article-full").json()["pdf_occurrences"][0]["occurrence_id"] == "pdf-occurrence-core"
+
+    calendar = client.get(
+        "/api/registry/pdf-intake/calendar", params={"query": "report publication", "kind": "publication"}
+    )
+    assert calendar.status_code == 200
+    assert calendar.json()["items"][0]["kind"] == "publication"
+    assert calendar.json()["items"][0]["source_kind"] == "pdf"
+    assert calendar.json()["items"][0]["source_filename"] == "report.pdf"
+    assert calendar.json()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+
+
+def test_pdf_read_paths_remain_available_for_supported_v12_registry(tmp_path, monkeypatch):
+    database = _registry(tmp_path, target_version=12)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    client = TestClient(app)
+
+    articles = client.get("/api/registry/pdf-intake/articles")
+    calendar = client.get("/api/registry/pdf-intake/calendar")
+    detail = client.get("/api/registry/articles/article-full")
+    missing_pdf_article = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
+
+    assert articles.status_code == 200
+    assert articles.json()["items"] == []
+    assert calendar.status_code == 200
+    assert calendar.json()["items"] == []
+    assert detail.status_code == 200
+    assert "pdf_occurrences" not in detail.json()
+    assert missing_pdf_article.status_code == 404
+
+
+def test_pdf_read_api_uses_legacy_source_columns_on_v13_registry(tmp_path, monkeypatch):
+    database = _registry(tmp_path, target_version=13)
+    _insert_pdf_intake_records(database)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    client = TestClient(app)
+
+    detail = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
+    calendar = client.get("/api/registry/pdf-intake/calendar")
+
+    assert detail.status_code == 200
+    assert detail.json()["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert calendar.status_code == 200
+    assert calendar.json()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
 def test_pillar_and_report_date_must_match_the_same_appearance(registry_client):

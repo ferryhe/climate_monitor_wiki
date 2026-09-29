@@ -979,6 +979,214 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             ON climate_event_sources(content_version_id);
         """,
     ),
+    (
+        13,
+        "pdf_intake_sources",
+        """
+        CREATE TABLE pdf_intake_documents (
+            document_sha256 TEXT PRIMARY KEY CHECK (
+                length(document_sha256) = 64 AND document_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            source_path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            media_type TEXT NOT NULL CHECK (media_type = 'application/pdf'),
+            size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+            date_of_run TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            extracted_text_sha256 TEXT NOT NULL CHECK (
+                length(extracted_text_sha256) = 64 AND extracted_text_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            document_json TEXT NOT NULL,
+            imported_at TEXT NOT NULL
+        );
+
+        CREATE TABLE pdf_intake_articles (
+            article_id TEXT PRIMARY KEY,
+            canonical_url TEXT NOT NULL UNIQUE,
+            title TEXT,
+            type_safe_classification_json TEXT,
+            imported_at TEXT NOT NULL
+        );
+
+        CREATE TABLE pdf_intake_article_occurrences (
+            occurrence_id TEXT PRIMARY KEY,
+            article_id TEXT NOT NULL REFERENCES pdf_intake_articles(article_id),
+            source_document_sha256 TEXT NOT NULL REFERENCES pdf_intake_documents(document_sha256),
+            page INTEGER NOT NULL CHECK (page > 0),
+            raw_url TEXT NOT NULL,
+            report_date TEXT,
+            publication_date TEXT,
+            content_sha256 TEXT NOT NULL CHECK (
+                length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            page_sha256 TEXT NOT NULL CHECK (
+                length(page_sha256) = 64 AND page_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            occurrence_json TEXT NOT NULL
+        );
+
+        CREATE TABLE pdf_intake_calendar_items (
+            occurrence_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            source_document_sha256 TEXT NOT NULL REFERENCES pdf_intake_documents(document_sha256),
+            page INTEGER NOT NULL CHECK (page > 0),
+            name TEXT,
+            kind TEXT NOT NULL,
+            raw_date TEXT NOT NULL,
+            date_precision TEXT NOT NULL CHECK (
+                date_precision IN ('day', 'month', 'quarter', 'year', 'unknown')
+            ),
+            start_date TEXT,
+            end_date TEXT,
+            summary TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL CHECK (
+                length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            type_safe_classification_json TEXT,
+            item_json TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_pdf_article_occurrences_article
+            ON pdf_intake_article_occurrences(article_id, report_date);
+        CREATE INDEX idx_pdf_article_occurrences_document
+            ON pdf_intake_article_occurrences(source_document_sha256, page);
+        CREATE INDEX idx_pdf_calendar_event
+            ON pdf_intake_calendar_items(event_id, start_date);
+        CREATE INDEX idx_pdf_calendar_document
+            ON pdf_intake_calendar_items(source_document_sha256, page);
+
+        CREATE TRIGGER pdf_intake_documents_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_documents BEGIN
+            SELECT RAISE(ABORT, 'PDF intake documents are append-only');
+        END;
+        CREATE TRIGGER pdf_intake_documents_are_append_only_delete
+        BEFORE DELETE ON pdf_intake_documents BEGIN
+            SELECT RAISE(ABORT, 'PDF intake documents are append-only');
+        END;
+        CREATE TRIGGER pdf_intake_article_occurrences_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_article_occurrences BEGIN
+            SELECT RAISE(ABORT, 'PDF intake article occurrences are append-only');
+        END;
+        CREATE TRIGGER pdf_intake_article_occurrences_are_append_only_delete
+        BEFORE DELETE ON pdf_intake_article_occurrences BEGIN
+            SELECT RAISE(ABORT, 'PDF intake article occurrences are append-only');
+        END;
+        CREATE TRIGGER pdf_intake_calendar_items_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_calendar_items BEGIN
+            SELECT RAISE(ABORT, 'PDF intake calendar items are append-only');
+        END;
+        CREATE TRIGGER pdf_intake_calendar_items_are_append_only_delete
+        BEFORE DELETE ON pdf_intake_calendar_items BEGIN
+            SELECT RAISE(ABORT, 'PDF intake calendar items are append-only');
+        END;
+        """,
+    ),
+    (
+        14,
+        "pdf_source_provenance_and_enrichment",
+        """
+        ALTER TABLE pdf_intake_documents ADD COLUMN pdf_created_at TEXT;
+        ALTER TABLE pdf_intake_documents ADD COLUMN pdf_modified_at TEXT;
+        ALTER TABLE pdf_intake_documents ADD COLUMN original_pdf BLOB CHECK (
+            original_pdf IS NULL OR length(original_pdf) = size_bytes
+        );
+
+        CREATE TABLE pdf_intake_document_sources (
+            document_sha256 TEXT NOT NULL REFERENCES pdf_intake_documents(document_sha256),
+            source_path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (document_sha256, source_path)
+        );
+
+        INSERT INTO pdf_intake_document_sources (
+            document_sha256, source_path, filename, observed_at
+        )
+        SELECT document_sha256, source_path, filename, imported_at
+        FROM pdf_intake_documents;
+
+        CREATE TRIGGER pdf_intake_document_sources_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_document_sources BEGIN
+            SELECT RAISE(ABORT, 'PDF intake document sources are append-only');
+        END;
+        CREATE TRIGGER pdf_intake_document_sources_are_append_only_delete
+        BEFORE DELETE ON pdf_intake_document_sources BEGIN
+            SELECT RAISE(ABORT, 'PDF intake document sources are append-only');
+        END;
+
+        DROP TRIGGER pdf_intake_documents_are_append_only_update;
+        CREATE TRIGGER pdf_intake_documents_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_documents
+        WHEN OLD.document_sha256 IS NOT NEW.document_sha256
+          OR OLD.source_path IS NOT NEW.source_path
+          OR OLD.filename IS NOT NEW.filename
+          OR OLD.media_type IS NOT NEW.media_type
+          OR OLD.size_bytes IS NOT NEW.size_bytes
+          OR OLD.date_of_run IS NOT NEW.date_of_run
+          OR OLD.period_start IS NOT NEW.period_start
+          OR OLD.period_end IS NOT NEW.period_end
+          OR OLD.extracted_text_sha256 IS NOT NEW.extracted_text_sha256
+          OR OLD.document_json IS NOT NEW.document_json
+          OR OLD.imported_at IS NOT NEW.imported_at
+          OR (OLD.pdf_created_at IS NOT NULL AND NEW.pdf_created_at IS NOT OLD.pdf_created_at)
+          OR (OLD.pdf_modified_at IS NOT NULL AND NEW.pdf_modified_at IS NOT OLD.pdf_modified_at)
+          OR (OLD.original_pdf IS NOT NULL AND NEW.original_pdf IS NOT OLD.original_pdf)
+          OR NEW.original_pdf IS NULL BEGIN
+            SELECT RAISE(ABORT, 'PDF intake documents are append-only');
+        END;
+
+        DROP TRIGGER pdf_intake_calendar_items_are_append_only_update;
+        CREATE TRIGGER pdf_intake_calendar_items_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_calendar_items
+        WHEN OLD.type_safe_classification_json IS NOT NULL
+          OR NEW.type_safe_classification_json IS NULL
+          OR OLD.occurrence_id IS NOT NEW.occurrence_id
+          OR OLD.event_id IS NOT NEW.event_id
+          OR OLD.source_document_sha256 IS NOT NEW.source_document_sha256
+          OR OLD.page IS NOT NEW.page
+          OR OLD.name IS NOT NEW.name
+          OR OLD.kind IS NOT NEW.kind
+          OR OLD.raw_date IS NOT NEW.raw_date
+          OR OLD.date_precision IS NOT NEW.date_precision
+          OR OLD.start_date IS NOT NEW.start_date
+          OR OLD.end_date IS NOT NEW.end_date
+          OR OLD.summary IS NOT NEW.summary
+          OR OLD.content_sha256 IS NOT NEW.content_sha256
+          OR OLD.item_json IS NOT NEW.item_json BEGIN
+            SELECT RAISE(ABORT, 'PDF intake calendar items are append-only');
+        END;
+        """,
+    ),
+    (
+        15,
+        "pdf_raw_metadata",
+        """
+        ALTER TABLE pdf_intake_documents ADD COLUMN pdf_metadata_json TEXT;
+
+        DROP TRIGGER pdf_intake_documents_are_append_only_update;
+        CREATE TRIGGER pdf_intake_documents_are_append_only_update
+        BEFORE UPDATE ON pdf_intake_documents
+        WHEN OLD.document_sha256 IS NOT NEW.document_sha256
+          OR OLD.source_path IS NOT NEW.source_path
+          OR OLD.filename IS NOT NEW.filename
+          OR OLD.media_type IS NOT NEW.media_type
+          OR OLD.size_bytes IS NOT NEW.size_bytes
+          OR OLD.date_of_run IS NOT NEW.date_of_run
+          OR OLD.period_start IS NOT NEW.period_start
+          OR OLD.period_end IS NOT NEW.period_end
+          OR OLD.extracted_text_sha256 IS NOT NEW.extracted_text_sha256
+          OR OLD.document_json IS NOT NEW.document_json
+          OR OLD.imported_at IS NOT NEW.imported_at
+          OR (OLD.pdf_created_at IS NOT NULL AND NEW.pdf_created_at IS NOT OLD.pdf_created_at)
+          OR (OLD.pdf_modified_at IS NOT NULL AND NEW.pdf_modified_at IS NOT OLD.pdf_modified_at)
+          OR (OLD.original_pdf IS NOT NULL AND NEW.original_pdf IS NOT OLD.original_pdf)
+          OR (OLD.pdf_metadata_json IS NOT NULL AND NEW.pdf_metadata_json IS NOT OLD.pdf_metadata_json)
+          OR NEW.original_pdf IS NULL BEGIN
+            SELECT RAISE(ABORT, 'PDF intake documents are append-only');
+        END;
+        """,
+    ),
 )
 
 

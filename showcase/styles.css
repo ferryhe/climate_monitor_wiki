@@ -972,6 +972,15 @@ a {
   color: var(--ink);
 }
 
+.registry-article-sources {
+  margin: 14px 0 0;
+}
+
+.registry-article-source-hint {
+  margin: 8px 0 14px;
+  font-size: 0.82rem;
+}
+
 .registry-grid {
   display: grid;
   grid-template-columns: minmax(340px, 0.8fr) minmax(0, 1.35fr);
@@ -1232,6 +1241,23 @@ a {
 
 .registry-provenance {
   margin-top: 16px;
+}
+
+.registry-pdf-history__list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.registry-pdf-history__item {
+  padding-left: 4px;
+}
+
+.registry-pdf-history__summary {
+  margin: 6px 0 0;
+  color: #cfd7db;
+  line-height: 1.65;
 }
 
 .search-input::placeholder {
