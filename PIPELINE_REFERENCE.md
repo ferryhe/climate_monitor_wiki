@@ -31,6 +31,7 @@ path, not competing report generators.
 | Stage | Owner / public entry | Input → output |
 |---|---|---|
 | Pillar A acquisition | Public `RuntimeService.explore_site` / `refresh_site` | Configured sites → stored upstream results/continuations plus matching climate `acquisition-batch-result.v2` and `web-listening-manifest.v1` bridge artifacts |
+| Hermes site hints | `build_task_binding` → `.agents/skills/climate-site-*/SKILL.md` | Selected short guidance and hashes → immutable `site_skill_inventory`; Hermes receives navigation/search hints, while `web_listening` remains the only governed reader |
 | Pillar B discovery | Hermes `web_search` / `web_extract`; `prompt_loader`, `pillar_b_discovery` | Explicit report date + editable template → validated `pillar-b-discovery.v1` envelope |
 | Prepare | `scripts/run_climate_monitor.py --production-weekly --authoring-mode prepare` | Outcome + manifest + Pillar B → `bundle.json`, `combined.json`, `candidate_item_snapshot.json`, `article_evidence.json`, `stats.json`, `v2_authoring_request.json` in staging |
 | Identity/merge | `article_candidate_contract.py`, `candidate_aggregation.py`, `dedupe.py` | URL-bearing records → one canonical identity, all origins, source metadata |
@@ -203,6 +204,243 @@ available in Git history. Keep current instructions in these module/runbook
 documents rather than retaining another active-looking copy.
 
 ## Verification and cutover
+
+On 2026-09-28, the VM application image at `2aea05d` had a qualified, active
+Playwright 1.0.0 in its existing Runtime volume. A fresh isolated volume was
+also qualified against the controlled fixture. A fresh-state exploration of
+all 36 sources then had 8 sources with all seeds successful, 9 partial,
+16 blocked and 3 incomplete: 42/115 distinct attempted seeds succeeded and
+77 candidate rows were returned. Playwright actually ran four times, all on
+OECD seeds, but Cloudflare blocked those reads. IEA stopped at
+`acquisition.auth_required` before browser dispatch. External aggregate:
+`/home/ubuntu/.local/share/climate-monitor/site-browser-pilot/site-health-20260928T163303Z-a1a170/aggregate.json`,
+SHA-256 `29d74dba010fcf5bad57afa118bdb52e0010589ab4532ca46df69a8e305a9e26`.
+This is seed exploration, not article/Registry verification or scheduler proof.
+
+A later IEA-only probe on 2026-09-28 found a bounded alternative: explicit
+Playwright on an exact news article exhausted its 60-second request budget, but
+an exact official PDF linked from the IEA report page on
+`iea.blob.core.windows.net` fetched successfully after its URL was added as a
+single-path scope exception. The article adapter had no PDF-to-Markdown
+derivative; the existing `pypdf` dependency extracted the 62-page file for
+inspection. No IEA report has been ingested or synced to Registry. The dated
+details and hashes are in the `climate-site-iea` skill and the isolated VM
+artifact directory.
+
+A separate IPCC-only probe fetched the discovered `/assessment-report/ar7/`
+page as 13,153 Markdown characters through `acquisition.web_http`; the page
+contains AR7 planning milestones but no page publication date. Its body hash and
+date caveat are recorded in the `climate-site-ipcc` skill. Registry remains
+unverified for both sources.
+
+An IRFF-only probe also fetched a discovered agricultural insurance risk-sharing
+article as 7,485 Markdown characters through `acquisition.web_http`. Its body
+states `POSTED 10 June, 2026`; see the `climate-site-irff` skill for the receipt,
+content hash and summary. Registry remains unverified.
+
+ISSA remains blocked: the root, the exact climate analysis page and the official
+publications index each returned `robots.forbidden` in the governed Runtime.
+Search-index listings are recorded only as unverified candidate leads in the
+`climate-site-issa` skill; no content was ingested.
+
+ISSB seed discovery remains incomplete, but the exact climate-taxonomy news
+article and an ISSB monthly updates index/article were fetched through the
+governed reader. The May 2026 update contains tentative nature-related decisions;
+do not represent them as final requirements. The dated receipts and hashes are
+in `climate-site-issb`; no ISSB content has been ingested or synced to Registry.
+
+OECD's seed pages remain Cloudflare-blocked. The official newsroom search UI
+offers an RSS route, but its query-bearing feed returned `web_http.url_redacted`
+through the Runtime with no body or status; the browser tool was not dispatched.
+Keep the source blocked and the API host out of persistent scope until the
+governed reader can preserve that exact URL. Details and the pilot receipt are
+in `climate-site-oecd`.
+
+PCAF's resources and standard hubs are readable. Two current standard PDFs were
+acquired as Runtime source artifacts and extracted with the shared `pypdf`
+dependency; the article adapter has no PDF-to-Markdown derivative, and a single
+collector batch hit its byte budget before producing candidates. Exact paths,
+version dates and hashes are in `climate-site-pcaf`. No PCAF report was ingested
+or synced to Registry.
+
+PSI's queryless official news RSS was fetched through the governed reader (HTTP
+200, 10 dated items). Its COP31 summit announcement and linked event page both
+became Markdown through `acquisition.web_http` and
+`transform.simple_html_markdown`. The general transform flattened the event
+tables; a one-off standard-library parser over the verified Runtime HTML source
+recovered both dated agendas. TypeSafe recommended only those two exact event
+paths, now present in PSI scope. The collector still does not promote RSS items
+as candidates, and nothing was ingested or synced to Registry. See
+`climate-site-psi` for receipts and hashes.
+
+TNFD's news index and exact news article remained `acquisition.interaction_required`
+in the isolated reader even though the ordinary browser showed dated listings.
+The scoped `/publication/` detail page returned 5,763 Markdown characters, and a
+query-free exact linked PDF path returned HTTP 200. Shared `pypdf` extracted the
+135-page September 2026 guidance. The ordinary collector did not promote the PDF
+as a candidate, so no persistent PDF scope exception was added. See
+`climate-site-tnfd`; no TNFD content was ingested or synced to Registry.
+
+UNDP Climate Promise's three configured seeds succeeded in a fresh isolated run.
+Two exact articles, including a 2026-09-28 story, were fetched as Markdown through
+the governed Runtime with HTTP 200 and allowed robots decisions. Filtered
+?ctype=blog listing URLs were redacted, but exact story paths worked. TypeSafe
+recommended the shared reader and transform without a UNDP-specific script. The
+dated evidence and hashes are in the climate-site-undp skill; meetings, report
+generation and Registry handoff remain unverified.
+
+
+UNEP's four configured entry points all succeeded in the isolated Runtime.
+A fresh news-listing run selected only an Interactives page and a September 17
+press release, while the browser showed a September 28 climate story. Its exact
+URL returned HTTP 200 and 22,716 Markdown characters, but the common transform
+also retained substantial navigation and footer text. TypeSafe recommended
+recording the discovery gap and noise without adding scope or a site-specific
+cleaner. Although the UNEP scope contains a browser hint, actual acquisition
+receipts showed web_http; the common workflow documents that this hint does not
+select Playwright. See the climate-site-unep skill for hashes; meetings, report
+generation and Registry remain unverified.
+
+
+WEF's three configured seeds returned HTTP 200 through web_http; a current
+September 28 carbon-market article also fetched as 14,439 Markdown characters.
+Its complete body is present, but the governed Markdown omits the target H1/date,
+and the standard seed candidates did not include this browser-visible latest
+story. The configured browser hint did not dispatch Playwright. TypeSafe
+classified the title/date omission as a shared reader/artifact follow-up rather
+than a WEF-specific script. See climate-site-wef for receipts and hashes;
+meetings, report generation and Registry remain unverified.
+
+WRI's four configured seeds succeeded, and one exact September 10 article
+returned 30,741 Markdown characters with title, author, date and body. It has
+roughly 2 KB of leading site navigation; TypeSafe recommended recording that
+noise without a WRI-only cleaner. Meeting capture remains untested. See
+`climate-site-wri` for the article hash.
+
+WTO's configured seed run remained blocked, but the ordinary browser rendered
+the climate overview, news list and exact September 25 CBAM dispute article. The
+governed reader received HTTP 200 with `robots.allowed` for both the overview and
+article, then failed `transform.simple_html_markdown` with `transform.html_invalid`
+on each. TypeSafe recommended an upstream transform follow-up rather than a
+WTO-specific parser; the regular meeting date in the article is visible in the
+browser but no Markdown was produced. See `climate-site-wto` for receipts.
+
+UN-Water's three configured entrypoints remain blocked by `robots.forbidden`,
+and the normal browser showed a Cloudflare security verification page. TypeSafe
+recommended stopping until the site offers a distinct documented public route
+or changes its policy. Search indexing exposed an RSS query on the same blocked
+`/news` path; it was not requested because the query does not change the robots
+path decision. No bypass, scope change or content fetch was attempted.
+See `climate-site-unwater` for the isolated-run digest.
+
+CarbonPool's exact `/post/` article and archived webinar pages fetched as
+Markdown, but the shared transform omitted their H1/date metadata. The browser
+shows the webinar's article date separately from its July 22 event date. Two
+temporary `/blog` discovery probes returned category pages but missed visible
+post links. TypeSafe chose to canonicalize the exact webinar seed to `/post/`
+and leave general discovery for an upstream collector follow-up; no
+CarbonPool-only parser was added. See `climate-site-carbonpool` for hashes.
+
+World Bank configured discovery remains blocked (0/4 seeds). A separate fresh
+Runtime did fetch one exact official COP31 campaign page with HTTP 200 and
+`robots.allowed`: 5,099 Markdown characters with the page title and 9–20 November
+2026 date range; its event agenda still says “coming soon”. TypeSafe favored
+recording that single-page success while leaving seed discovery unresolved
+(confidence 0.47; choice probability 0.61). No scope was expanded; details and
+hash are in climate-site-world-bank. Meetings, reporting and Registry remain
+unverified.
+
+ADB's configured three seeds and a bounded exact read of its official RSS page
+were all rejected by `robots.forbidden`. Normal browser pages remain readable:
+the climate topic links current stories and publications, and a representative
+publication page exposes its September 2026 date, summary, DOI and PDF link.
+TypeSafe selected a browser-only/manual disposition (confidence 1.0); no ADB
+scope expansion or scraper is justified. The PDF text was not verified. See
+climate-site-adb for exact observations; automated acquisition, reporting and
+Registry remain blocked or unverified.
+
+AfDB's configured four seeds and a fresh exact article read were rejected by
+`robots.forbidden`. The normal browser can render the climate topic and current
+news list, and a September 28 story exposes a readable article body. TypeSafe
+selected browser-only/manual reading after the exact governed read was denied
+(confidence 1.0); no scope expansion or scraper is justified. See
+climate-site-afdb for the exact URL and evidence hash. Automated acquisition is
+blocked; reporting and Registry remain unverified.
+
+ISSB seed discovery remains incomplete, but the exact climate-taxonomy news
+article and an ISSB monthly updates index/article were fetched through the
+governed reader. The May 2026 update contains tentative nature-related decisions;
+do not represent them as final requirements. The dated receipts and hashes are
+in `climate-site-issb`; no ISSB content has been ingested or synced to Registry.
+
+BCBS configured seed discovery remains blocked (0/2). The exact current climate
+guideline HTML page fetched through the governed reader (2,956 Markdown
+characters); its official PDF did not yield project Runtime text. TypeSafe chose
+manual exact-page HTML plus a shared PDF-transform follow-up (confidence 1.0),
+with no BCBS-only script or scope expansion. See `climate-site-bcbs` for hashes
+and the distinction between browser PDF reading and Runtime acquisition.
+
+BIS configured seed discovery remains blocked (0/4), but its global browser
+search led to an exact Green Swan 2026 event page that the governed reader
+fetched as Markdown (2,482 characters, dated October 19, 2026). Some agenda row
+boundaries are flattened; TypeSafe classified this as partial success and a
+shared transform quality issue (confidence 1.0). No BIS parser or scope change
+was made; recurring discovery, structured meeting extraction, reporting and
+Registry remain unverified. See `climate-site-bis` for the exact evidence.
+
+CAF's configured four seeds and one exact September 23 resilience-housing
+article all failed in the isolated Runtime with `gateway.tls_certificate_invalid`.
+The normal browser displayed the dated article and full body. TypeSafe chose a
+manual-browser status pending TLS diagnosis (confidence 1.0); TLS validation was
+not weakened and no content was ingested. See `climate-site-caf` for the failed
+Runtime receipt and hash. Automated acquisition and Registry remain blocked.
+
+FIT has partial automated coverage: its news seed returned two candidates,
+while the landing page required interaction and the publications seed attempted
+an HTTPS downgrade. A verified June 22 implementation-guide article fetched as
+7,760 Markdown characters. The public detail page links its PDF through a
+third-party form requiring personal details; no form data was submitted and the
+PDF remains unverified. TypeSafe recorded this as viable article access with a
+gated report (confidence 1.0). See `climate-site-fit`; no custom script, scope
+expansion or Registry sync was performed.
+
+FSB has partial automated coverage: two of four seeds returned four candidate
+rows, and an exact July 14, 2025 climate-roadmap report page yielded 2,284
+Markdown characters with its title, date and summary. The page does not prove
+full PDF acquisition; root scope and query-bearing press discovery remain
+blocked. TypeSafe kept this as partial HTML success (confidence 1.0), with no
+scope expansion or site script. See `climate-site-fsb`; Registry remains
+unverified.
+
+G20's configured homepage and feed, plus one exact official events-calendar
+read, were all denied by `robots.forbidden` in the Runtime. Normal browser access
+shows the 2026 calendar and media links, but no agendas; linked agency pages are
+not first-party G20 content. TypeSafe kept G20 as browser-manual only (confidence
+1.0); there was no bypass, scope change or ingestion. See `climate-site-g20`.
+
+GCA has partial coverage: three of four seeds returned six candidates, and an
+exact June 19, 2026 local-adaptation article fetched as 6,244 Markdown characters
+with title, date and body. Its RSS seed remains rejected by scope; the article
+has minor drop-cap/share-footer noise. TypeSafe kept this as partial HTML success
+(confidence 0.99), with no script or scope change. See `climate-site-gca`; meetings
+and Registry remain unverified.
+
+IFAC has partial coverage: two of three seeds returned four candidates, and an
+exact June 1, 2026 first-party climate-disclosure article fetched as 13,638
+Markdown characters with title, date, authors and six implementation steps.
+The `rss.xml` seed remains rejected by scope. TypeSafe found the article path
+viable and the output clean (confidence 1.0); no script or scope change was made.
+See `climate-site-ifac`; meetings and Registry remain unverified.
+
+SIF has partial automated access: its two configured seeds succeeded, and a known exact resource HTML page and linked PDF were robots-allowed. Adding only the exact report path during an in-memory discovery probe still did not surface that report. Shared `pypdf` extraction is partial for the one-page infographic; TypeSafe recommends no custom parser and no scope change. See `climate-site-sif`; meeting extraction and Registry remain unverified.
+UNCTAD is browser/manual only. Both configured seeds and an exact current climate article were denied by robots policy (robots endpoint HTTP 403), while the current climate topic, article and meeting detail page rendered in the browser. Its canonical climate topic path differs from the repo include path, and meeting paths are explicitly excluded; TypeSafe recommends keeping scope unchanged while Runtime access is blocked. See `climate-site-unctad`; no content was ingested and Registry was not run.
+
+UNFCCC is browser/manual only. Current homepage and exact news pages render in a normal browser, but the Runtime news-index and exact-article probes both failed the shared HTML quality transform and returned no candidates. The exact September 21 speech is browser-readable, while its HTTP reader got 200/robots-allowed but produced no Markdown. TypeSafe recommends no scraper or scope change. The current scope also excludes `/calendar` and `/events`; no meeting extraction or Registry run occurred. See `climate-site-unfccc` for evidence hashes.
+WHO has partial access: an exact August 5 climate-health news item is robots-allowed and produced 5,783 Markdown characters. A one-seed topic-page probe with a temporary `/news/item` path still returned no candidates due origin/path policy errors. TypeSafe recommends no persistent path/origin expansion; meetings and Registry remain unverified. See `climate-site-who` for evidence hashes.
+WMO has partial automated coverage: two of three current seeds succeed, and the exact State of the Global Climate 2025 detail page returned 6,471 Markdown characters. The publication-series index is a 404; its current series page yielded only a News candidate, while the filtered “View all editions” URL was redacted before Runtime made a request. TypeSafe recommends using exact known report URLs without changing scope or adding a scraper. The Full Report PDF, meetings and Registry remain unverified. See `climate-site-wmo` for hashes.
+NGFS is browser/manual only: all four configured seeds and one exact current prudential-supervision guide detail page were denied with `robots.forbidden` after its robots endpoint returned HTTP 403. The official publications directory still exposes the September 2026 guide and its PDF/slide download buttons in a normal browser. TypeSafe selected manual handling (confidence 1.0); no scope exception, scraper or file download was made. See `climate-site-ngfs`; meeting extraction, reporting and Registry remain unverified.
+IMF is currently browser/manual only. Its four configured seeds returned `robots.forbidden`; a one-off exact July 10, 2026 Tanzania RSF article read was also denied after the IMF robots endpoint returned HTTP 403, with zero article bytes. The browser-visible article states that the RSF supports climate resilience and climate-finance reforms. TypeSafe recommended the bounded exact check (confidence 0.76), then selected manual-only handling (confidence 1.0). No scope expansion, custom scraper or ingestion is justified. See `climate-site-imf`; reporting and Registry remain unverified.
+ILO now has verified partial access: a governed read of the canonical just-transition page succeeded and returned two publication candidates, and a separate exact read captured a current September 18, 2026 green-business article as 9,880 Markdown characters. Replacing the stale legacy seed with that canonical page is supported by an in-memory 200-success probe; a temporary `/resource/article` path addition returned no extra candidates, so it was not persisted. The RSS failure, full current seed coverage, meeting extraction and Registry remain unverified. TypeSafe kept ILO partial (confidence 1.0) and recommended the seed replacement (confidence 0.95). See `climate-site-ilo`; no source-specific script or ingestion was added.
 
 Evidence through 2026-09-12:
 

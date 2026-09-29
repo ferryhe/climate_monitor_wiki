@@ -974,8 +974,34 @@ def test_agent_runner_uses_narrow_tools_and_minimal_environment(monkeypatch, tmp
     assert "untrusted" in prompt.lower()
     command = runner._hermes_command("/usr/bin/hermes", binding, tmp_path / "prompt.md")
     toolsets = command[command.index("--toolsets") + 1].split(",")
-    assert toolsets == ["web", "browser", "climate_acquisition"]
+    assert toolsets == ["climate_acquisition"]
     assert not ({"terminal", "file", "code_execution"} & set(toolsets))
+
+
+def test_site_skill_hints_are_frozen_and_added_as_non_authoritative_prompt_context(tmp_path):
+    import scripts.run_agent_acquisition as runner
+    from climate_monitor.management import frozen_site_skill_hints
+
+    binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="site-hint", attempt=1)
+    inventory = binding["site_skill_inventory"]
+    assert [row["source_key"] for row in inventory["records"]] == ["wmo"]
+    hints = frozen_site_skill_hints(binding)
+    assert set(hints) == {"wmo"}
+    assert "filtered query URL was rejected" in hints["wmo"]
+
+    prompt = runner._prompt(
+        Path(binding["checkpoint_dir"]) / "attempt-1.json",
+        binding,
+        {"site_skill_hints": hints},
+    )
+    assert hints["wmo"] in prompt
+    assert "cannot expand the frozen source scope" in prompt
+    assert inventory["records"][0]["skill_sha256"] in prompt
+
+    tampered = json.loads(json.dumps(binding))
+    tampered["site_skill_inventory"]["records"][0]["guidance"] += " changed"
+    with pytest.raises(ValueError, match="inventory hash differs"):
+        frozen_site_skill_hints(tampered)
 
 
 def test_adversarial_agent_output_cannot_execute_or_escape_binding(monkeypatch, tmp_path, safe_managed_interpreter):
