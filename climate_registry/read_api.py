@@ -573,6 +573,13 @@ class RegistryReader:
         )
         with self.connect() as connection:
             total = connection.execute("SELECT COUNT(*)" + base, params).fetchone()[0]
+            pdf_occurrence_column = (
+                ", (SELECT COUNT(*) FROM pdf_intake_article_occurrences po "
+                "JOIN pdf_intake_articles pa ON pa.article_id = po.article_id "
+                "WHERE pa.canonical_url = a.canonical_url) AS pdf_occurrence_count"
+                if self._has_pdf_intake(connection)
+                else ", 0 AS pdf_occurrence_count"
+            )
             rows = connection.execute(
                 """
                 SELECT a.article_id, a.canonical_url, a.first_seen, a.last_seen,
@@ -580,6 +587,7 @@ class RegistryReader:
                        s.hostname AS source, s.display_name AS publisher,
                        av.observed_title AS title, av.observed_summary AS report_summary
                 """
+                + pdf_occurrence_column
                 + base
                 + " ORDER BY a.last_seen DESC, a.first_seen DESC, a.article_id DESC LIMIT ? OFFSET ?",
                 (*params, page_size, (page - 1) * page_size),

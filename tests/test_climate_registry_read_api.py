@@ -934,6 +934,8 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert "pdf-article-core" not in {
         item["article_id"] for item in client.get("/api/registry/pdf-intake/articles").json()["items"]
     }
+    core_listing = client.get("/api/registry/articles").json()["items"]
+    assert next(item for item in core_listing if item["article_id"] == "article-full")["pdf_occurrence_count"] == 1
 
     detail = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
     assert detail.status_code == 200
