@@ -230,7 +230,7 @@ function inlineFmt(raw) {
         `<a class="obs-wikilink" data-page="${encodeURIComponent(page.trim())}">${escapeHtml((alias || page).trim())}</a>`,
     )
     .replace(
-      /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+      /\[([^\]]+)\]\(((?:https?:\/\/|\/)[^)]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
     )
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")

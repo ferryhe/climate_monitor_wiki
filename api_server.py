@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from agentic_wiki import AgenticWikiResponder
 from climate_delivery.artifacts import load_report_artifact
+from climate_delivery.errors import GenerationError, LockStateError
 from climate_monitor.job_status import (
     JobStatusInvalidSnapshotError,
     JobStatusLocationError,
@@ -58,6 +59,17 @@ from climate_registry.read_api import (
 from climate_registry.errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from climate_registry.pdf_intake import persist_pdf_intake
 from climate_registry.persistent import _read_only_connection, _validate_database
+from climate_registry.range_reports import (
+    RENDERER_VERSION,
+    RangeReportError,
+    ensure_range_report_pdf,
+    freeze_range_report,
+    is_report_clarification,
+    load_range_report,
+    render_range_report_html,
+    resolve_report_followup,
+    resolve_report_route,
+)
 from climate_monitor.pdf_intake import MAX_PDF_BYTES, import_pdf_reports
 
 
@@ -68,6 +80,9 @@ MANAGE_DIR = ROOT / "management_ui"
 WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
 SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
 ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadata")
+RANGE_REPORT_DIR = Path(
+    os.getenv("CLIMATE_RANGE_REPORT_DIR", str(ROOT / "output" / "range-reports"))
+)
 
 # In production, disable Swagger/OpenAPI documentation to reduce attack surface.
 # These are development conveniences, not required for the public site.
@@ -496,6 +511,87 @@ def chat(request: ChatRequest) -> dict:
     if history and history[-1].get("role") == "user" and history[-1].get("content") == question:
         history = history[:-1]
 
+    pending_question = None
+    if (
+        len(history) >= 2
+        and history[-2].get("role") == "user"
+        and history[-1].get("role") == "assistant"
+        and is_report_clarification(history[-1].get("content", ""))
+    ):
+        pending_index = len(history) - 2
+        pending_question = history[pending_index].get("content", "").strip()
+        while (
+            pending_index >= 2
+            and history[pending_index - 2].get("role") == "user"
+            and history[pending_index - 1].get("role") == "assistant"
+            and is_report_clarification(history[pending_index - 1].get("content", ""))
+        ):
+            pending_index -= 2
+            pending_question = history[pending_index].get("content", "").strip()
+    report_route = (
+        resolve_report_followup(question, pending_question)
+        if pending_question
+        else resolve_report_route(question)
+    )
+    if report_route.action == "clarify":
+        return {
+            "text": report_route.clarification,
+            "sources": [],
+            "needs_clarification": True,
+            "model": "registry-snapshot",
+            "agent_mode": "offline",
+            "language": request.language,
+            "answer_mode": request.answer_mode,
+        }
+    if report_route.action == "generate":
+        try:
+            snapshot = freeze_range_report(
+                _registry_reader(),
+                RANGE_REPORT_DIR,
+                start_date=report_route.start_date,
+                end_date=report_route.end_date,
+                meeting_snapshot_id=report_route.meeting_snapshot_id,
+            )
+        except (RegistryUnavailableError, RegistryContractError) as exc:
+            raise HTTPException(status_code=503, detail="Article registry is unavailable.") from exc
+        except LockStateError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="The report is being created. Please retry shortly.",
+            ) from exc
+        except (GenerationError, OSError, RangeReportError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="The report could not be saved. Please retry.",
+            ) from exc
+        snapshot_id = snapshot["snapshot_id"]
+        web_url = f"/api/registry/range-reports/{snapshot_id}/{RENDERER_VERSION}"
+        pdf_url = web_url + "/pdf"
+        text = (
+            f"Your report for {report_route.start_date} through {report_route.end_date} "
+            f"is ready: [open the web report]({web_url}) or "
+            f"[download the PDF]({pdf_url})."
+        )
+        return {
+            "text": text,
+            "sources": [],
+            "model": "registry-snapshot",
+            "agent_mode": "offline",
+            "language": request.language,
+            "answer_mode": request.answer_mode,
+            "range_report": {
+                "snapshot_id": snapshot_id,
+                "snapshot_sha256": snapshot["snapshot_sha256"],
+                "renderer_version": RENDERER_VERSION,
+                "date_range": snapshot["date_range"],
+                "article_count": len(snapshot["articles"]),
+                "unknown_publication_date_count": snapshot["unknown_publication_date_count"],
+                "meeting_status": snapshot["meeting"]["status"],
+                "web_url": web_url,
+                "pdf_url": pdf_url,
+            },
+        }
+
     try:
         return responder.answer(
             question,
@@ -506,6 +602,49 @@ def chat(request: ChatRequest) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[str, Any]:
+    if renderer_version != RENDERER_VERSION:
+        raise HTTPException(status_code=404, detail="Report renderer not found.")
+    try:
+        return load_range_report(RANGE_REPORT_DIR, snapshot_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Range report not found.") from exc
+    except RangeReportError as exc:
+        raise HTTPException(status_code=503, detail="Stored range report is invalid.") from exc
+
+
+@app.get(
+    "/api/registry/range-reports/{snapshot_id}/{renderer_version}",
+    response_class=HTMLResponse,
+)
+def registry_range_report(snapshot_id: str, renderer_version: str) -> HTMLResponse:
+    snapshot = _load_range_report_or_http(snapshot_id, renderer_version)
+    return HTMLResponse(render_range_report_html(snapshot))
+
+
+@app.get(
+    "/api/registry/range-reports/{snapshot_id}/{renderer_version}/pdf",
+    response_class=Response,
+)
+def registry_range_report_pdf(snapshot_id: str, renderer_version: str) -> Response:
+    snapshot = _load_range_report_or_http(snapshot_id, renderer_version)
+    try:
+        path = ensure_range_report_pdf(snapshot, RANGE_REPORT_DIR)
+        pdf_bytes = path.read_bytes()
+    except (GenerationError, OSError) as exc:
+        raise HTTPException(status_code=503, detail="Range report PDF is unavailable.") from exc
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise HTTPException(status_code=503, detail="Range report PDF is invalid.")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{path.name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def _manage_call(callback):
