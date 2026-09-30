@@ -943,7 +943,11 @@ class RegistryReader:
         ).fetchone()
         if content is None:
             return observations, {}
-        available = {key: content[key] for key in content.keys() if key != "markdown_content"}
+        available = {
+            key: content[key]
+            for key in content.keys()
+            if key not in {"markdown_content", "content_sha256"}
+        }
         available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
         if display_policy == "full_markdown":
