@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 from datetime import date
@@ -496,6 +498,159 @@ def test_pending_report_gate_uses_registry_history_but_not_historical_titles(tmp
     publisher.validate_pending_reports(
         [distinct], source_dir=sources, registry_database=database
     )
+
+
+def test_publisher_accepts_acquisition_only_registry_article_and_syncs_with_registry(
+    local_remote, tmp_path
+):
+    from climate_registry.acquisition import PublicationDatePolicy, store_acquisition_batch
+    from climate_registry.audit import build_audit_registry
+
+    _remote, production = local_remote
+    sources = tmp_path / "sources"
+    _report(sources / "climate-monitor-2026-08-03.md", "2026-08-03")
+    database = tmp_path / "registry.sqlite3"
+    build_audit_registry(sources, database, tmp_path / "audit")
+    body = "# Acquisition-only article\n\nConfirmed acquisition evidence."
+    timestamp = "2026-08-03T08:00:00Z"
+    policy = PublicationDatePolicy.resolve(
+        None, anchor_date=date(2026, 8, 3), frozen_at=timestamp
+    )
+    store_acquisition_batch(database, {
+        "schema_version": "pre-report-acquisition-batch.v1",
+        "batch_id": "acquisition-only", "report_date": "2026-08-03",
+        "started_at": timestamp, "completed_at": timestamp,
+        "date_policy": policy.to_dict(),
+        "search_decision": {"status": "no_search", "reason": "site observation only"},
+        "searches": [],
+        "items": [{
+            "url": "https://example.com/acquisition-only",
+            "title": "Acquisition-only article", "summary": "Confirmed acquisition evidence.",
+            "source": "Example", "discovered_at": timestamp,
+            "discovery_kind": "site", "discovery_ref": "site:example",
+            "discovery_search_ref": None, "published_date": "2026-08-03",
+            "publication_date_evidence": {"kind": "publisher", "url": "https://example.com/acquisition-only", "text": "Published"},
+            "selected": True, "selection_reason": "relevant", "processing_status": "complete",
+            "processing_error": None,
+            "evidence": {
+                "status": "ok", "fetched_at": timestamp,
+                "final_url": "https://example.com/acquisition-only",
+                "attempts": [{"engine": "web_http", "status": "success", "http_status": 200, "attempted_at": timestamp}],
+                "selected_method": "web_http", "content_type": "text/markdown", "content": body,
+                "content_hash": hashlib.sha256(body.encode()).hexdigest(),
+                "content_ref": "managed/content.md", "raw_snapshot_ref": "managed/raw.html",
+                "raw_snapshot_sha256": "a" * 64, "classification": "full_content",
+                "failure_reason": None, "http_status": 200,
+            },
+        }],
+    })
+    reports = tmp_path / "reports"
+    pending = _report(reports / "climate-monitor-2026-08-10.md", "2026-08-10")
+
+    assert publisher.validate_pending_reports(
+        [pending], source_dir=sources, registry_database=database
+    )[pending] == hashlib.sha256(pending.read_bytes()).hexdigest()
+
+    class RegistrySyncRunner(FakeGhRunner):
+        def __init__(self):
+            super().__init__()
+            self.sync_commands = []
+
+        def __call__(self, args, *, cwd: Path, check: bool = True, env=None):
+            if args[:2] == [sys.executable, "scripts/sync_source_wiki.py"]:
+                self.sync_commands.append(args)
+                sync_source_wiki(
+                    source_dir=Path(args[args.index("--source-dir") + 1]),
+                    wiki_dir=Path(args[args.index("--wiki-dir") + 1]),
+                    cadence="weekly",
+                )
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return super().__call__(args, cwd=cwd, check=check, env=env)
+
+    runner = RegistrySyncRunner()
+    result = publisher.publish(
+        production_repo=production, report_dir=reports, today=date(2026, 8, 10),
+        runner=runner, verifier=lambda _checkout, _runner: None,
+        registry_database=database,
+    )
+    assert result.status == "published"
+    assert len(runner.sync_commands) == 1
+    assert runner.sync_commands[0][-2:] == ["--registry-database", str(database)]
+
+
+def test_publisher_accepts_confirmed_pdf_only_registry_article_and_syncs_with_registry(
+    local_remote, tmp_path
+):
+    from climate_registry.audit import build_audit_registry
+    from climate_registry.schema import reconcile_pdf_article_links
+
+    _remote, production = local_remote
+    sources = tmp_path / "sources"
+    _report(sources / "climate-monitor-2026-08-03.md", "2026-08-03")
+    database = tmp_path / "registry.sqlite3"
+    build_audit_registry(sources, database, tmp_path / "audit")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO sources VALUES ('pdf-only', 'pdf.example', 'PDF example', '2026-08-03', '2026-08-03')"
+        )
+        connection.execute(
+            "INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen, current_version_id, document_kind, publication_eligible, current_content_version_id, display_policy) VALUES ('article-pdf-only', 'https://pdf.example/study', 'pdf-only', '2026-08-03', '2026-08-03', 'pdf-version', 'article', 1, NULL, 'metadata_only')"
+        )
+        connection.execute(
+            "INSERT INTO article_versions VALUES ('pdf-version', 'article-pdf-only', 'PDF-only article', 'pdf only article', 'PDF-only source summary.', ?, 'report-title-summary', '2026-08-03', '2026-08-03')",
+            ("c" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO pdf_intake_documents(document_sha256, source_path, filename, media_type, size_bytes, extracted_text_sha256, document_json, imported_at) VALUES (?, 'C:/reports/pdf-only.pdf', 'pdf-only.pdf', 'application/pdf', 1, ?, '{}', '2026-08-03T08:00:00Z')",
+            ("a" * 64, "b" * 64),
+        )
+        connection.execute(
+            "INSERT INTO pdf_intake_articles(article_id, canonical_url, title, type_safe_classification_json, imported_at) VALUES ('pdf-only', 'https://pdf.example/study', 'PDF-only article', '{\"label\":\"article\"}', '2026-08-03T08:00:00Z')"
+        )
+        occurrence = {
+            "occurrence_id": "pdf-only-occurrence", "raw_url": "https://pdf.example/study?pdf=1",
+            "page": 2, "summary": "PDF-only confirmed summary.", "source_document_sha256": "a" * 64,
+        }
+        connection.execute(
+            "INSERT INTO pdf_intake_article_occurrences VALUES (?, 'pdf-only', ?, 2, ?, NULL, NULL, ?, ?, ?)",
+            ("pdf-only-occurrence", "a" * 64, occurrence["raw_url"], "c" * 64, "d" * 64, json.dumps(occurrence)),
+        )
+        reconcile_pdf_article_links(connection, observed_at="2026-08-03T08:00:00Z")
+        assert connection.execute(
+            "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-only'"
+        ).fetchone() == ("article-pdf-only", "exact_url_eligible_detail")
+    reports = tmp_path / "reports"
+    pending = _report(reports / "climate-monitor-2026-08-10.md", "2026-08-10")
+
+    assert publisher.validate_pending_reports(
+        [pending], source_dir=sources, registry_database=database
+    )[pending] == hashlib.sha256(pending.read_bytes()).hexdigest()
+
+    class RegistrySyncRunner(FakeGhRunner):
+        def __init__(self):
+            super().__init__()
+            self.sync_commands = []
+
+        def __call__(self, args, *, cwd: Path, check: bool = True, env=None):
+            if args[:2] == [sys.executable, "scripts/sync_source_wiki.py"]:
+                self.sync_commands.append(args)
+                sync_source_wiki(
+                    source_dir=Path(args[args.index("--source-dir") + 1]),
+                    wiki_dir=Path(args[args.index("--wiki-dir") + 1]),
+                    cadence="weekly",
+                )
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return super().__call__(args, cwd=cwd, check=check, env=env)
+
+    runner = RegistrySyncRunner()
+    result = publisher.publish(
+        production_repo=production, report_dir=reports, today=date(2026, 8, 10),
+        runner=runner, verifier=lambda _checkout, _runner: None,
+        registry_database=database,
+    )
+    assert result.status == "published"
+    assert len(runner.sync_commands) == 1
+    assert runner.sync_commands[0][-2:] == ["--registry-database", str(database)]
 
 
 def test_multiple_pending_reports_use_an_in_memory_history_overlay(tmp_path):
@@ -1965,6 +2120,20 @@ def test_allowlist_rejects_source_overwrite_and_unrelated_wiki():
         publisher.validate_allowlist(
             [("M", "wiki/climate-monitor-2026-08-03.md")], {"2026-08-10"}
         )
+
+
+def test_allowlist_permits_only_generated_registry_wiki_paths():
+    publisher.validate_allowlist([
+        ("A", "wiki/article-article-confirmed.md"),
+        ("M", "wiki/article-article-confirmed.md"),
+        ("A", "wiki/registry-source-observations.md"),
+        ("M", "wiki/registry-source-observations.md"),
+        ("D", "wiki/registry-source-observations.md"),
+    ], {"2026-08-10"})
+    with pytest.raises(publisher.PublishError, match="deletion/rename"):
+        publisher.validate_allowlist([("D", "wiki/article-article-confirmed.md")])
+    with pytest.raises(publisher.PublishError, match="outside weekly-report allowlist"):
+        publisher.validate_allowlist([("A", "wiki/article-.md")])
 
 
 @pytest.mark.parametrize("status", ["T", "U", "X", "C100"])
