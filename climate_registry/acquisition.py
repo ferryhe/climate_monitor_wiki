@@ -22,6 +22,7 @@ from climate_monitor.article_content_adapter import _artifact_digest, _record_di
 from climate_monitor.dedupe import canonical_url
 
 from .audit import _stable_id
+from .schema import reconcile_pdf_article_links
 from .classification import classify_document
 from .contract import validate_registry_contract
 from .errors import RegistryInputError
@@ -842,6 +843,7 @@ def _insert_item(connection: sqlite3.Connection, batch_id: str, ordinal: int,
          _canonical_json(evidence["attempts"]), item["processing_status"],
          item["processing_error"], item["resolved_by_fetch_id"]),
     )
+    reconcile_pdf_article_links(connection, observed_at=observed, canonical_url=canonical)
 
 
 def _batch_summary(connection: sqlite3.Connection, batch_id: str) -> dict[str, Any]:

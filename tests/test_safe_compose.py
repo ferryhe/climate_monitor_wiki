@@ -517,6 +517,22 @@ def test_later_compose_file_cannot_change_protected_mount_safety(
     assert actual_calls == []
 
 
+def test_writable_registry_requires_the_explicit_import_marker(tmp_path):
+    source = tmp_path / "registry"
+    source.mkdir()
+    model = {"services": {"wiki": {"environment": {}, "volumes": [{
+        "type": "bind", "source": str(source), "target": "/registry", "read_only": False,
+    }]}}}
+
+    with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
+        safe_compose._validate_final_model(model)
+
+    model["services"]["wiki"]["environment"] = {
+        "CLIMATE_REGISTRY_MANAGEMENT_IMPORT": "1",
+    }
+    safe_compose._validate_final_model(model)
+
+
 def test_project_directory_sets_the_relative_source_base(tmp_path, monkeypatch):
     source = tmp_path / "relative source"
     source.mkdir()

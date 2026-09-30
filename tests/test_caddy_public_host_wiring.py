@@ -15,8 +15,12 @@ import json
 import os
 import shutil
 import subprocess
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
+import httpx
 import pytest
 
 
@@ -173,3 +177,86 @@ def test_empty_var_fails_closed_at_the_raw_caddyfile_level(guarded_var):
 def test_required_host_is_documented_in_env_example(guarded_var):
     lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     assert f"{guarded_var}=" in lines
+
+
+def test_pdf_intake_request_body_cap_allows_uploads_only():
+    """The upload path gets FastAPI's aggregate cap; other paths stay at 200KB."""
+    docker = shutil.which("docker")
+    if not docker:
+        pytest.skip("Docker CLI is not installed")
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, _format, *_args):
+            pass
+
+    upstream = ThreadingHTTPServer(("0.0.0.0", 8501), UpstreamHandler)
+    upstream_thread = Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    name = f"issue170-caddy-body-{os.getpid()}-{time.time_ns()}"
+    try:
+        started = subprocess.run(
+            [
+                docker,
+                "run",
+                "--detach",
+                "--rm",
+                "--name",
+                name,
+                "--add-host",
+                "wiki:host-gateway",
+                "-e",
+                "PUBLIC_HOST=public.example",
+                "-e",
+                "SITE_HOST=127.0.0.1",
+                "-p",
+                "127.0.0.1::443",
+                "-v",
+                f"{ROOT / 'Caddyfile'}:/etc/caddy/Caddyfile:ro",
+                "caddy:2-alpine",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert started.returncode == 0, started.stderr
+        port = subprocess.run(
+            [docker, "port", name, "443/tcp"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout.rsplit(":", 1)[1].strip()
+        with httpx.Client(
+            base_url=f"https://127.0.0.1:{port}", verify=False, trust_env=False
+        ) as client:
+            for _ in range(30):
+                try:
+                    if client.get("/runtime-ready").status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.1)
+            else:
+                pytest.fail("Caddy did not start")
+
+            payload = b"x" * (200 * 1024 + 1)
+            upload = client.post("/api/manage/pdf-intake/preview", content=payload)
+            assert upload.status_code == 200
+            ordinary = client.post("/api/chat", content=payload)
+            assert ordinary.status_code == 413
+    finally:
+        subprocess.run(
+            [docker, "rm", "--force", name], capture_output=True, text=True, timeout=30
+        )
+        upstream.shutdown()
+        upstream.server_close()
+        upstream_thread.join()

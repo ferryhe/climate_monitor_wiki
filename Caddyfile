@@ -46,7 +46,12 @@
 
 	# Edge enforcement of the body cap. The application also checks a declared
 	# Content-Length, but that cannot see chunked bodies; Caddy can.
-	request_body {
+	@pdf_intake_upload path /api/manage/pdf-intake/*
+	request_body @pdf_intake_upload {
+		max_size 250MB
+	}
+	@non_pdf_intake_request not path /api/manage/pdf-intake/*
+	request_body @non_pdf_intake_request {
 		max_size 200KB
 	}
 

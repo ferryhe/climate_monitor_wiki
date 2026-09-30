@@ -267,7 +267,7 @@ class RegistryReader:
             SELECT 1
             FROM articles a
             LEFT JOIN article_versions av ON av.version_id = a.current_version_id
-            WHERE a.current_version_id IS NULL OR av.article_id IS NOT a.article_id
+            WHERE a.current_version_id IS NOT NULL AND av.article_id IS NOT a.article_id
             LIMIT 1
             """
         ).fetchone()
@@ -569,17 +569,22 @@ class RegistryReader:
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         base = (
             " FROM articles a JOIN sources s ON s.source_id = a.source_id "
-            "JOIN article_versions av ON av.version_id = a.current_version_id " + where
+            "LEFT JOIN article_versions av ON av.version_id = a.current_version_id " + where
         )
         with self.connect() as connection:
             total = connection.execute("SELECT COUNT(*)" + base, params).fetchone()[0]
-            pdf_occurrence_column = (
-                ", (SELECT COUNT(*) FROM pdf_intake_article_occurrences po "
-                "JOIN pdf_intake_articles pa ON pa.article_id = po.article_id "
-                "WHERE pa.canonical_url = a.canonical_url) AS pdf_occurrence_count"
-                if self._has_pdf_intake(connection)
-                else ", 0 AS pdf_occurrence_count"
-            )
+            if self._has_pdf_intake(connection):
+                pdf_occurrence_column = (
+                    ", (SELECT COUNT(*) FROM pdf_intake_article_occurrences po "
+                    "JOIN pdf_intake_articles pa ON pa.article_id = po.article_id "
+                    "WHERE pa.core_article_id = a.article_id) AS pdf_occurrence_count"
+                    if self._has_pdf_article_links(connection)
+                    else ", (SELECT COUNT(*) FROM pdf_intake_article_occurrences po "
+                    "JOIN pdf_intake_articles pa ON pa.article_id = po.article_id "
+                    "WHERE pa.canonical_url = a.canonical_url) AS pdf_occurrence_count"
+                )
+            else:
+                pdf_occurrence_column = ", 0 AS pdf_occurrence_count"
             rows = connection.execute(
                 """
                 SELECT a.article_id, a.canonical_url, a.first_seen, a.last_seen,
@@ -601,6 +606,12 @@ class RegistryReader:
         ).fetchone() is not None
 
     @staticmethod
+    def _has_pdf_article_links(connection: sqlite3.Connection) -> bool:
+        return any(row[1] == "core_article_id" for row in connection.execute(
+            "PRAGMA table_info(pdf_intake_articles)"
+        ))
+
+    @staticmethod
     def _pdf_document_sources(connection: sqlite3.Connection, document_sha256: str) -> list[dict[str, str]]:
         has_source_table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_document_sources'"
@@ -620,16 +631,35 @@ class RegistryReader:
                   "observed_at": row["imported_at"]}] if row else [])
 
     @staticmethod
-    def _pdf_occurrences(connection: sqlite3.Connection, canonical_url: str) -> list[dict[str, Any]]:
+    def _pdf_occurrences(
+        connection: sqlite3.Connection, article_id: str, canonical_url: str,
+        *, pdf_article_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if not RegistryReader._has_pdf_intake(connection):
             return []
-        rows = connection.execute(
-            """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
-               JOIN pdf_intake_articles a ON a.article_id=o.article_id
-               WHERE a.canonical_url=?
-               ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
-            (canonical_url,),
-        ).fetchall()
+        if pdf_article_id is not None:
+            rows = connection.execute(
+                """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                   WHERE o.article_id=?
+                   ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
+                (pdf_article_id,),
+            ).fetchall()
+        elif RegistryReader._has_pdf_article_links(connection):
+            rows = connection.execute(
+                """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                   JOIN pdf_intake_articles a ON a.article_id=o.article_id
+                   WHERE a.core_article_id=?
+                   ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
+                (article_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                   JOIN pdf_intake_articles a ON a.article_id=o.article_id
+                   WHERE a.canonical_url=?
+                   ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
+                (canonical_url,),
+            ).fetchall()
         try:
             values = [json.loads(row["occurrence_json"]) for row in rows]
         except (json.JSONDecodeError, TypeError) as exc:
@@ -648,7 +678,13 @@ class RegistryReader:
     @classmethod
     def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         canonical_url = row["canonical_url"]
-        occurrences = cls._pdf_occurrences(connection, canonical_url)
+        core_article_id = (
+            row["core_article_id"] if cls._has_pdf_article_links(connection) else row["article_id"]
+        )
+        occurrences = cls._pdf_occurrences(
+            connection, core_article_id or row["article_id"], canonical_url,
+            pdf_article_id=row["article_id"],
+        )
         latest = occurrences[0] if occurrences else {}
         try:
             classification = json.loads(row["type_safe_classification_json"]) if row["type_safe_classification_json"] else None
@@ -683,6 +719,8 @@ class RegistryReader:
             if not self._has_pdf_intake(connection):
                 return {"items": [], "pagination": _pagination(page, page_size, 0)}
             rows = connection.execute(
+                "SELECT * FROM pdf_intake_articles WHERE core_article_id IS NULL"
+                if self._has_pdf_article_links(connection) else
                 """SELECT * FROM pdf_intake_articles
                    WHERE NOT EXISTS (
                        SELECT 1 FROM articles core WHERE core.canonical_url=pdf_intake_articles.canonical_url
@@ -793,7 +831,7 @@ class RegistryReader:
                        av.observed_summary AS report_summary
                 FROM articles a
                 JOIN sources s ON s.source_id = a.source_id
-                JOIN article_versions av ON av.version_id = a.current_version_id
+                LEFT JOIN article_versions av ON av.version_id = a.current_version_id
                 WHERE a.article_id = ?
                 """,
                 (article_id,),
@@ -1040,7 +1078,9 @@ class RegistryReader:
             ),
         }
         with self.connect() as connection:
-            pdf_occurrences = self._pdf_occurrences(connection, article["canonical_url"])
+            pdf_occurrences = self._pdf_occurrences(
+                connection, article["article_id"], article["canonical_url"],
+            )
         if pdf_occurrences:
             payload["pdf_occurrences"] = pdf_occurrences
         return payload

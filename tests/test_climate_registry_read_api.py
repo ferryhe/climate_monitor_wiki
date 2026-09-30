@@ -281,6 +281,12 @@ def _insert_pdf_intake_records(database: Path) -> None:
              "2026-09-03T00:00:00Z"),
         ),
     )
+    if connection.execute("PRAGMA user_version").fetchone()[0] >= 16:
+        connection.execute(
+            """UPDATE pdf_intake_articles
+               SET core_article_id='article-full', confirmation_basis='exact_url_eligible_detail'
+               WHERE article_id='pdf-article-core'"""
+        )
     connection.executemany(
         """INSERT INTO pdf_intake_article_occurrences (
             occurrence_id, article_id, source_document_sha256, page, raw_url, report_date,
@@ -345,7 +351,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 15,
+        "schema_version": 16,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,

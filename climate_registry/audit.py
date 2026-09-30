@@ -231,6 +231,9 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
         )
         selected_in_report[article_id] = discovery_id
 
+    from .schema import reconcile_pdf_article_links
+    reconcile_pdf_article_links(connection, observed_at=report.report_date)
+
 
 def _appearance_rows(connection: sqlite3.Connection, where: str = "", params: tuple = ()) -> list[dict]:
     query = f"""

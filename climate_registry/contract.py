@@ -125,6 +125,7 @@ REQUIRED_TABLE_COLUMNS = {
     },
     "pdf_intake_articles": {
         "article_id", "canonical_url", "title", "type_safe_classification_json", "imported_at",
+        "core_article_id", "confirmation_basis",
     },
     "pdf_intake_article_occurrences": {
         "occurrence_id", "article_id", "source_document_sha256", "page", "raw_url",
@@ -152,7 +153,6 @@ _V13_TABLES = frozenset({
     "pdf_intake_calendar_items",
 })
 _V14_TABLES = frozenset({"pdf_intake_document_sources"})
-
 V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
 V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
 V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
@@ -162,7 +162,7 @@ V11_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V13_TABLES - _V14_TABLES
 V13_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V14_TABLES
 V14_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
 
 
 def _required_tables(version: int) -> frozenset[str]:
@@ -183,7 +183,9 @@ def _required_tables(version: int) -> frozenset[str]:
 
 def _required_columns(table: str, version: int) -> set[str]:
     columns = set(REQUIRED_TABLE_COLUMNS[table])
-    if table == "pdf_intake_documents" and version < 14:
+    if table == "pdf_intake_articles" and version < 16:
+        columns -= {"core_article_id", "confirmation_basis"}
+    elif table == "pdf_intake_documents" and version < 14:
         columns -= {"pdf_created_at", "pdf_modified_at", "original_pdf", "pdf_metadata_json"}
     elif table == "pdf_intake_documents" and version < 15:
         columns.remove("pdf_metadata_json")
@@ -288,6 +290,9 @@ REQUIRED_FOREIGN_KEYS = {
     "pdf_intake_calendar_items": {
         ("pdf_intake_documents", ("source_document_sha256",), ("document_sha256",)),
     },
+    "pdf_intake_articles": {
+        ("articles", ("core_article_id",), ("article_id",)),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -326,6 +331,7 @@ REQUIRED_TRIGGERS = frozenset(
         "pdf_intake_article_occurrences_are_append_only_delete",
         "pdf_intake_calendar_items_are_append_only_update",
         "pdf_intake_calendar_items_are_append_only_delete",
+        "pdf_intake_articles_confirmed_link_is_immutable",
     }
 )
 
@@ -356,6 +362,7 @@ REQUIRED_INDEXES = frozenset(
         "idx_pdf_article_occurrences_document",
         "idx_pdf_calendar_event",
         "idx_pdf_calendar_document",
+        "idx_pdf_articles_core",
     }
 )
 
@@ -464,6 +471,8 @@ def _required_triggers(version: int) -> frozenset[str]:
             "pdf_intake_document_sources_are_append_only_update",
             "pdf_intake_document_sources_are_append_only_delete",
         }
+    if version < 16:
+        names = names - {"pdf_intake_articles_confirmed_link_is_immutable"}
     old_reconciliation_triggers = {
         "acquisition_batches_are_append_only_update",
         "acquisition_searches_are_append_only_update",
@@ -497,6 +506,8 @@ def _required_indexes(version: int) -> frozenset[str]:
                           and not name.startswith("idx_climate_event"))
     if version < 13:
         names = frozenset(name for name in names if not name.startswith("idx_pdf_"))
+    elif version < 16:
+        names = names - {"idx_pdf_articles_core"}
     if version < 8:
         names = names - {"idx_acquisition_items_resolution"}
     if version < 7:
@@ -518,6 +529,8 @@ def _required_foreign_keys(
         keys.clear()
     if table == "acquisition_items" and version < 8:
         keys.discard(("article_fetches", ("resolved_by_fetch_id",), ("fetch_id",)))
+    if table == "pdf_intake_articles" and version < 16:
+        keys.clear()
     return keys
 
 
