@@ -302,6 +302,11 @@ def validate_allowlist(
         else None
     )
     for status, path in changes:
+        registry_article = re.fullmatch(r"wiki/article-[A-Za-z0-9_-]+\.md", path)
+        if registry_article and status in {"A", "M"}:
+            continue
+        if path == "wiki/registry-source-observations.md" and status in {"A", "M", "D"}:
+            continue
         if status.startswith("D") or status.startswith("R"):
             raise PublishError(f"deletion/rename is not allowed: {status} {path}")
         if status not in {"A", "M"}:
@@ -887,19 +892,19 @@ def _publish_attempt(
                 )
             imported.append(validate_report(destination, allow_offcycle=allow_offcycle))
 
-        runner(
-            [
-                sys.executable,
-                "scripts/sync_source_wiki.py",
-                "--source-dir",
-                str(checkout / "sources"),
-                "--wiki-dir",
-                str(checkout / "wiki"),
-                "--cadence",
-                "weekly",
-            ],
-            cwd=checkout,
-        )
+        sync_command = [
+            sys.executable,
+            "scripts/sync_source_wiki.py",
+            "--source-dir",
+            str(checkout / "sources"),
+            "--wiki-dir",
+            str(checkout / "wiki"),
+            "--cadence",
+            "weekly",
+        ]
+        if registry_database is not None:
+            sync_command.extend(("--registry-database", str(registry_database)))
+        runner(sync_command, cwd=checkout)
         verifier(checkout, runner)
         changes = _stage_and_validate(
             runner,

@@ -6,7 +6,7 @@ import math
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 from urllib.parse import urlsplit
@@ -639,14 +639,14 @@ class RegistryReader:
             return []
         if pdf_article_id is not None:
             rows = connection.execute(
-                """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
                    WHERE o.article_id=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
                 (pdf_article_id,),
             ).fetchall()
         elif RegistryReader._has_pdf_article_links(connection):
             rows = connection.execute(
-                """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
                    WHERE a.core_article_id=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -654,7 +654,7 @@ class RegistryReader:
             ).fetchall()
         else:
             rows = connection.execute(
-                """SELECT o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
                    WHERE a.canonical_url=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -672,6 +672,7 @@ class RegistryReader:
             if sha not in sources:
                 sources[sha] = RegistryReader._pdf_document_sources(connection, sha)
         for row, value in zip(rows, values):
+            value["occurrence_id"] = row["occurrence_id"]
             value["source_observations"] = sources[row["source_document_sha256"]]
         return values
 
@@ -818,6 +819,143 @@ class RegistryReader:
         offset = (page - 1) * page_size
         return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
 
+    @staticmethod
+    def _has_acquisition_projection(connection: sqlite3.Connection) -> bool:
+        return all(
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone() is not None
+            for name in ("acquisition_batches", "acquisition_items", "acquisition_searches")
+        )
+
+    @staticmethod
+    def _timestamp_key(value: str | None) -> datetime:
+        if not value:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    @classmethod
+    def _acquisition_projection(
+        cls, connection: sqlite3.Connection, article_id: str, current_version_id: str | None,
+        display_policy: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if not cls._has_acquisition_projection(connection):
+            return [], {}
+        has_resolution = any(
+            row[1] == "resolved_by_fetch_id"
+            for row in connection.execute("PRAGMA table_info(acquisition_items)")
+        )
+        resolution = "i.resolved_by_fetch_id" if has_resolution else "NULL"
+        rows = connection.execute(
+            f"""
+            SELECT i.acquisition_item_id, i.batch_id, i.ordinal, i.raw_url, i.source_name,
+                   i.title, i.summary, i.discovered_at, i.discovery_kind, i.discovery_ref,
+                   i.origins_json, i.publication_date, i.publication_date_evidence_json,
+                   i.date_status, i.selection_status, i.selection_reason, i.update_status,
+                   i.material_status, i.fetch_id, i.content_version_id, i.processing_status,
+                   i.processing_error, {resolution} AS resolved_by_fetch_id,
+                   f.fetch_status, f.fetched_at, f.content_version_id AS fetch_content_version_id,
+                   r.fetch_status AS resolved_fetch_status, r.fetched_at AS resolved_fetched_at,
+                   r.content_version_id AS resolved_content_version_id
+            FROM acquisition_items i
+            LEFT JOIN article_fetches f ON f.fetch_id = i.fetch_id
+            LEFT JOIN article_fetches r ON r.fetch_id = {resolution}
+            WHERE i.article_id = ?
+            ORDER BY i.discovered_at, i.acquisition_item_id
+            """,
+            (article_id,),
+        ).fetchall()
+        batch_ids = sorted({row["batch_id"] for row in rows})
+        search_rows = connection.execute(
+            "SELECT batch_id, search_ref, search_id, query, engine, status, attempted_at "
+            "FROM acquisition_searches WHERE batch_id IN (" + ",".join("?" for _ in batch_ids) + ")",
+            batch_ids,
+        ).fetchall() if batch_ids else []
+        searches = {(row["batch_id"], row["search_ref"]): dict(row) for row in search_rows}
+        observations: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                origins = json.loads(row["origins_json"])
+                date_evidence = json.loads(row["publication_date_evidence_json"]) if row["publication_date_evidence_json"] else None
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise RegistryContractError("invalid acquisition observation data") from exc
+            if not isinstance(origins, list) or any(not isinstance(origin, dict) for origin in origins):
+                raise RegistryContractError("invalid acquisition observation data")
+            for origin in origins:
+                search = searches.get((row["batch_id"], origin.get("search_ref")))
+                if search:
+                    origin["search"] = search
+            item = {
+                key: row[key] for key in (
+                    "acquisition_item_id", "batch_id", "ordinal", "raw_url", "source_name", "title",
+                    "summary", "discovered_at", "discovery_kind", "discovery_ref", "publication_date",
+                    "date_status", "selection_status", "selection_reason", "update_status", "material_status",
+                    "fetch_id", "content_version_id", "processing_status", "processing_error", "resolved_by_fetch_id",
+                )
+            }
+            item["publication_date_evidence"] = date_evidence
+            item["origins"] = origins
+            item["fetch"] = {
+                "status": row["fetch_status"], "fetched_at": row["fetched_at"],
+                "content_version_id": row["fetch_content_version_id"],
+            }
+            if row["resolved_by_fetch_id"]:
+                item["resolved_fetch"] = {
+                    "status": row["resolved_fetch_status"], "fetched_at": row["resolved_fetched_at"],
+                    "content_version_id": row["resolved_content_version_id"],
+                }
+            observations.append(item)
+            version_id = row["fetch_content_version_id"] if row["fetch_status"] == "success" else None
+            fetched_at = row["fetched_at"] if version_id else None
+            if version_id is None and row["resolved_fetch_status"] == "success":
+                version_id, fetched_at = row["resolved_content_version_id"], row["resolved_fetched_at"]
+            if version_id and row["material_status"] == "full_content" and row["processing_status"] == "complete":
+                candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
+                                   "fetch_id": row["fetch_id"], "acquisition_item_id": row["acquisition_item_id"]})
+        if current_version_id:
+            current = connection.execute(
+                """SELECT fetch_id, fetched_at FROM article_fetches
+                   WHERE article_id=? AND content_version_id=? AND fetch_status='success'
+                   ORDER BY fetched_at DESC, fetch_id DESC LIMIT 1""",
+                (article_id, current_version_id),
+            ).fetchone()
+            candidates.append({"content_version_id": current_version_id,
+                               "fetched_at": current["fetched_at"] if current else None,
+                               "fetch_id": current["fetch_id"] if current else None,
+                               "acquisition_item_id": None})
+        if not candidates:
+            return observations, {}
+        selected = max(candidates, key=lambda item: (
+            cls._timestamp_key(item["fetched_at"]),
+            item["content_version_id"] == current_version_id,
+            item["content_version_id"], item.get("fetch_id") or "",
+        ))
+        content = connection.execute(
+            """SELECT content_version_id, content_sha256, markdown_content, content_type, source_bytes,
+                      extraction_method, extraction_version, first_fetched_at
+               FROM article_content_versions WHERE article_id=? AND content_version_id=?""",
+            (article_id, selected["content_version_id"]),
+        ).fetchone()
+        if content is None:
+            return observations, {}
+        available = {
+            key: content[key]
+            for key in content.keys()
+            if key not in {"markdown_content", "content_sha256"}
+        }
+        available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
+        available["selection_basis"] = "latest_successful_acquisition_or_current_content"
+        if display_policy == "full_markdown":
+            available["markdown"] = content["markdown_content"]
+        elif display_policy == "summary_excerpt":
+            available["supporting_excerpt"] = " ".join(content["markdown_content"].split())[:500]
+        return observations, available
+
     def article(self, article_id: str) -> dict[str, Any]:
         if not article_id or len(article_id) > 128 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id):
             raise RegistryQueryError("invalid article id")
@@ -826,7 +964,7 @@ class RegistryReader:
                 """
                 SELECT a.article_id, a.canonical_url, a.first_seen, a.last_seen,
                        a.document_kind, a.publication_eligible, a.display_policy,
-                       a.current_content_version_id, s.hostname AS source,
+                       a.current_version_id, a.current_content_version_id, s.hostname AS source,
                        s.display_name AS publisher, av.observed_title AS title,
                        av.observed_summary AS report_summary
                 FROM articles a
@@ -842,7 +980,7 @@ class RegistryReader:
                 """
                 SELECT r.report_date, r.filename AS source_filename,
                        r.report_sha256 AS source_sha256, r.report_title,
-                       ra.section, ra.pillar, ra.ordinal,
+                       ra.version_id, ra.section, ra.pillar, ra.ordinal,
                        ra.observation_status, av.observed_title AS title,
                        av.observed_summary AS summary, d.raw_url AS original_url
                 FROM report_appearances ra
@@ -884,6 +1022,9 @@ class RegistryReader:
                     """,
                     (article["current_content_version_id"],),
                 ).fetchone()
+            acquisition_observations, available_content = self._acquisition_projection(
+                connection, article_id, article["current_content_version_id"], article["display_policy"],
+            )
         appearance_payload = []
         report_categories: list[str] = []
         report_keywords: list[str] = []
@@ -978,6 +1119,7 @@ class RegistryReader:
         if content:
             content_payload.update(
                 {
+                    "content_version_id": article["current_content_version_id"],
                     "content_type": content["content_type"],
                     "source_bytes": content["source_bytes"],
                     "extraction_method": content["extraction_method"],
@@ -995,6 +1137,7 @@ class RegistryReader:
             "categories": _json_string_list(enrichment["categories_json"]) if enrichment else [],
             "keywords": _json_string_list(enrichment["keywords_json"]) if enrichment else [],
             "language": enrichment["language"] if enrichment else None,
+            "content_version_id": article["current_content_version_id"] if enrichment else None,
             "generator": (
                 {
                     "kind": enrichment["generator_kind"],
@@ -1050,6 +1193,7 @@ class RegistryReader:
                 else fallback_provenance
             ),
             "report_summary": article["report_summary"],
+            "current_version_id": article["current_version_id"],
             "canonical_url": article["canonical_url"],
             "original_url": original_url,
             "source": article["source"],
@@ -1062,6 +1206,8 @@ class RegistryReader:
             "appearances": appearance_payload,
             "latest_fetch": dict(fetch) if fetch else None,
             "content": content_payload,
+            "available_content": available_content,
+            "acquisition_observations": acquisition_observations,
             "enrichment": enrichment_payload,
             "report_metadata": report_metadata,
             "categories": categories,

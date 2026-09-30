@@ -434,7 +434,7 @@ def load_registry_selection_snapshot(database: Path, source_dir: Path) -> Regist
     connection = _read_only_connection(database)
     try:
         try:
-            validate_registry_contract(connection)
+            schema_version = validate_registry_contract(connection)
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RegistryBuildError("registry database failed integrity validation")
             if connection.execute("PRAGMA foreign_key_check").fetchall():
@@ -453,6 +453,32 @@ def load_registry_selection_snapshot(database: Path, source_dir: Path) -> Regist
                 row[0]
                 for row in connection.execute("SELECT canonical_url FROM articles")
             )
+            report_backed_urls = frozenset(
+                row[0]
+                for row in connection.execute(
+                    """SELECT DISTINCT a.canonical_url FROM articles a
+                       JOIN report_appearances ra ON ra.article_id = a.article_id"""
+                )
+            )
+            acquisition_backing = (
+                "EXISTS (SELECT 1 FROM acquisition_items ai WHERE ai.article_id = a.article_id)"
+                if schema_version >= 7 else "0"
+            )
+            pdf_backing = (
+                """EXISTS (
+                    SELECT 1 FROM pdf_intake_articles pdf
+                    JOIN pdf_intake_article_occurrences occurrence ON occurrence.article_id = pdf.article_id
+                    WHERE pdf.core_article_id = a.article_id
+                      AND pdf.confirmation_basis = 'exact_url_eligible_detail'
+                )"""
+                if schema_version >= 16 else "0"
+            )
+            unbacked_article = connection.execute(
+                f"""SELECT 1 FROM articles a
+                   WHERE NOT EXISTS (SELECT 1 FROM report_appearances ra WHERE ra.article_id = a.article_id)
+                     AND NOT ({acquisition_backing} OR {pdf_backing})
+                   LIMIT 1"""
+            ).fetchone()
             try:
                 expected_urls = set()
                 for report in reports:
@@ -464,7 +490,7 @@ def load_registry_selection_snapshot(database: Path, source_dir: Path) -> Regist
                 raise RegistryBuildError(
                     "registry source report history is invalid"
                 ) from exc
-            if urls != expected_urls:
+            if unbacked_article or report_backed_urls != expected_urls:
                 raise RegistryInputError(
                     "registry article graph and source history are not synchronized"
                 )
