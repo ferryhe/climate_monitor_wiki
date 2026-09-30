@@ -14,7 +14,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from .persistent import (
     LATEST_SCHEMA_VERSION,
@@ -27,7 +26,7 @@ from .persistent import (
     _sqlite_sidecars,
     _validate_database,
 )
-from .schema import apply_migrations
+from .schema import apply_migrations, reconcile_pdf_article_links
 
 
 def _existing_occurrence_ids(
@@ -167,6 +166,13 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                 added = {"documents": 0, "article_occurrences": 0, "calendar_items": 0}
                 connection.execute("BEGIN IMMEDIATE")
                 try:
+                    existing_documents = sum(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM pdf_intake_documents WHERE document_sha256=?",
+                            (document["source"]["sha256"],),
+                        ).fetchone()[0]
+                        for document in documents
+                    )
                     existing_article_ids, existing_calendar_ids = _existing_occurrence_ids(
                         connection, documents, articles, calendar_items
                     )
@@ -260,6 +266,8 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                             )
                             added["article_occurrences"] += cursor.rowcount
 
+                    reconcile_pdf_article_links(connection, observed_at=now)
+
                     for item in calendar_items:
                         if item["source_document_sha256"] not in known_hashes:
                             raise RegistryInputError("calendar item references an unknown PDF")
@@ -303,7 +311,8 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
             os.replace(candidate, database)
             _fsync_parent(database)
             return {"status": "updated", "schema_version": LATEST_SCHEMA_VERSION,
-                    "added": added, "backup": str(backup)}
+                    "added": added, "new_documents": added["documents"],
+                    "existing_documents": existing_documents, "backup": str(backup)}
         except (RegistryInputError, RegistryBuildError, RegistryLockError):
             raise
         except Exception as exc:

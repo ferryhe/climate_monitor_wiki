@@ -1187,6 +1187,31 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         END;
         """,
     ),
+    (
+        16,
+        "pdf_exact_article_identity_links",
+        """
+        ALTER TABLE pdf_intake_articles ADD COLUMN core_article_id TEXT
+            REFERENCES articles(article_id);
+        ALTER TABLE pdf_intake_articles ADD COLUMN confirmation_basis TEXT CHECK (
+            confirmation_basis IS NULL
+            OR confirmation_basis = 'exact_url_eligible_detail'
+        );
+
+        CREATE INDEX idx_pdf_articles_core
+            ON pdf_intake_articles(core_article_id);
+
+        CREATE TRIGGER pdf_intake_articles_confirmed_link_is_immutable
+        BEFORE UPDATE OF core_article_id, confirmation_basis ON pdf_intake_articles
+        WHEN OLD.core_article_id IS NOT NULL
+          OR (NEW.core_article_id IS NULL AND NEW.confirmation_basis IS NOT NULL)
+          OR (NEW.core_article_id IS NOT NULL
+              AND NEW.confirmation_basis IS NOT 'exact_url_eligible_detail')
+        BEGIN
+            SELECT RAISE(ABORT, 'PDF intake article confirmation is immutable');
+        END;
+        """,
+    ),
 )
 
 
@@ -1207,6 +1232,40 @@ def _preflight_migration(connection: sqlite3.Connection, version: int) -> None:
         raise sqlite3.IntegrityError(
             "cannot migrate article_semantics: ambiguous or missing report_sha256 mapping"
         )
+
+
+def reconcile_pdf_article_links(
+    connection: sqlite3.Connection, *, observed_at: str | None = None, canonical_url: str | None = None,
+) -> None:
+    """Link only PDF records with an exact, already evidenced core article."""
+    where = "AND pdf.canonical_url=?" if canonical_url else ""
+    rows = connection.execute(
+        """SELECT pdf.article_id, core.article_id, core.canonical_url, pdf.imported_at
+           FROM pdf_intake_articles pdf JOIN articles core ON core.canonical_url=pdf.canonical_url
+           WHERE pdf.core_article_id IS NULL AND core.document_kind='article'
+             AND core.publication_eligible=1
+             AND json_valid(pdf.type_safe_classification_json)=1
+             AND json_extract(pdf.type_safe_classification_json, '$.label')='article'
+             AND (core.current_version_id IS NOT NULL
+                  OR EXISTS (SELECT 1 FROM article_content_versions content WHERE content.article_id=core.article_id)) """ + where,
+        (canonical_url,) if canonical_url else (),
+    ).fetchall()
+    for pdf_article_id, core_article_id, canonical, imported_at in rows:
+        if not connection.execute(
+            """UPDATE pdf_intake_articles SET core_article_id=?, confirmation_basis='exact_url_eligible_detail'
+               WHERE article_id=? AND core_article_id IS NULL""", (core_article_id, pdf_article_id),
+        ).rowcount:
+            continue
+        for (raw_url,) in connection.execute(
+            "SELECT raw_url FROM pdf_intake_article_occurrences WHERE article_id=?", (pdf_article_id,),
+        ):
+            connection.execute(
+                """INSERT INTO url_aliases(raw_url, canonical_url, article_id, first_seen, last_seen, times_seen)
+                   VALUES (?, ?, ?, ?, ?, 1)
+                   ON CONFLICT(raw_url) DO UPDATE SET first_seen=MIN(first_seen, excluded.first_seen),
+                     last_seen=MAX(last_seen, excluded.last_seen), times_seen=times_seen+1""",
+                (raw_url, canonical, core_article_id, observed_at or imported_at, observed_at or imported_at),
+            )
 
 
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
@@ -1257,4 +1316,7 @@ def apply_migrations(connection: sqlite3.Connection, *, target_version: int | No
                 connection.rollback()
             raise
         installed.append(version)
+    if 16 in installed:
+        reconcile_pdf_article_links(connection)
+        connection.commit()
     return installed

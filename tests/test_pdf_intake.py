@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sqlite3
 import sys
 from copy import deepcopy
 from io import BytesIO
@@ -552,7 +553,7 @@ def test_cli_writes_and_persists_bundle_idempotently(tmp_path, monkeypatch):
     assert bundle["documents"][0]["source"]["filename"] == "source.pdf"
     import sqlite3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (15,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (1,)
@@ -585,7 +586,7 @@ def test_cli_rejects_output_aliases_before_overwriting_pdf_or_registry(tmp_path,
         assert source.read_bytes() == original_pdf
         import sqlite3
         with sqlite3.connect(database) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone() == (15,)
+            assert connection.execute("PRAGMA user_version").fetchone() == (16,)
     assert not backup_dir.exists()
 
 
@@ -616,6 +617,196 @@ def test_registry_tracks_rescheduled_calendar_occurrence(tmp_path, monkeypatch):
     assert len({row[0] for row in rows}) == 1
     assert len({row[1] for row in rows}) == 2
     assert [row[2] for row in rows] == ["2026-09-04", "2026-09-05"]
+
+
+def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_stable(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "report.pdf"
+    _report_pdf_with_two_articles(source)
+    bundle = import_pdf_reports([source])
+    bundle["articles"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "article"}
+    bundle["articles"].append({
+        "article_id": "pdf-homepage", "canonical_url": "https://example.org/news",
+        "title": "News", "type_safe_classification": {"provider": "typesafe", "label": "landing_page"},
+        "occurrences": [{
+            "occurrence_id": "pdf-homepage-occurrence", "raw_url": "https://example.org/news?from=pdf",
+            "page": 2, "report_date": "2026-09-03", "publication_date": None,
+            "source_document_sha256": bundle["documents"][0]["source"]["sha256"],
+            "content_sha256": "a" * 64, "page_sha256": "b" * 64,
+            "summary": "PDF-only homepage observation", "summary_basis": "verbatim_pdf_page_context",
+        }],
+    })
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    from climate_registry.pdf_intake import persist_pdf_intake
+    from climate_registry.read_api import RegistryReader
+
+    first = bundle["articles"][0]
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO sources VALUES ('source-example', 'example.org', 'Example', '2026-09-01', '2026-09-01')")
+        connection.execute(
+            """INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen,
+               current_version_id, document_kind, publication_eligible, exclusion_reason)
+               VALUES ('core-first', ?, 'source-example', '2026-09-01', '2026-09-01',
+               'version-first', 'article', 1, NULL)""", (first["canonical_url"],),
+        )
+        connection.execute(
+            """INSERT INTO article_versions VALUES ('version-first', 'core-first', 'Core title',
+               'core title', 'Core report summary.', ?, 'report-title-summary', '2026-09-01', '2026-09-01')""",
+            ("c" * 64,),
+        )
+        connection.execute(
+            """INSERT INTO articles VALUES ('core-news', 'https://example.org/news', 'source-example',
+               '2026-09-01', '2026-09-01', 'version-news', 'article', 1, NULL, NULL, 'summary_excerpt')"""
+        )
+        connection.execute(
+            """INSERT INTO article_versions VALUES ('version-news', 'core-news', 'News', 'news', 'News summary.',
+               ?, 'report-title-summary', '2026-09-01', '2026-09-01')""", ("e" * 64,)
+        )
+        connection.commit()
+    connection.close()
+
+    persist_pdf_intake(database, tmp_path / "backups", bundle)
+    reader = RegistryReader(database, repository_root=tmp_path / "app")
+    core = reader.articles(page_size=10)["items"]
+    assert {item["article_id"] for item in core} == {"core-first", "core-news"}
+    assert {item["article_id"]: item["pdf_occurrence_count"] for item in core} == {
+        "core-first": 1, "core-news": 0,
+    }
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM article_versions").fetchone() == (2,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pdf_intake_articles WHERE core_article_id IS NOT NULL"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-homepage'"
+        ).fetchone() == (None, None)
+        alias_before = connection.execute(
+            "SELECT first_seen, last_seen, times_seen FROM url_aliases WHERE raw_url=?",
+            (first["occurrences"][0]["raw_url"],),
+        ).fetchone()
+    connection.close()
+    detail = reader.article("core-first")
+    assert detail["summary"] is None and detail["report_summary"] == "Core report summary."
+    assert "summary" in detail["pdf_occurrences"][0]
+    assert {item["article_id"] for item in reader.pdf_articles()["items"]} == {
+        "pdf-homepage", bundle["articles"][1]["article_id"],
+    }
+    persist_pdf_intake(database, tmp_path / "second-backups", bundle)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT first_seen, last_seen, times_seen FROM url_aliases WHERE raw_url=?",
+            (first["occurrences"][0]["raw_url"],),
+        ).fetchone() == alias_before
+    connection.close()
+
+
+def test_existing_pdf_observation_reconciles_after_an_exact_core_article_arrives(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "report.pdf"
+    _report_pdf_with_two_articles(source)
+    bundle = import_pdf_reports([source])
+    bundle["articles"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "article"}
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    from climate_registry.pdf_intake import persist_pdf_intake
+    from climate_registry.schema import reconcile_pdf_article_links
+
+    persist_pdf_intake(database, tmp_path / "backups", bundle)
+    article = bundle["articles"][0]
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO sources VALUES ('s', 'example.org', 'Example', '2026-09-01', '2026-09-01')")
+        connection.execute(
+            """INSERT INTO articles VALUES ('core', ?, 's', '2026-09-01', '2026-09-01',
+               'version', 'article', 1, NULL, NULL, 'summary_excerpt')""", (article["canonical_url"],),
+        )
+        connection.execute(
+            "INSERT INTO article_versions VALUES ('version', 'core', 'Title', 'title', 'Summary', ?, 'report-title-summary', '2026-09-01', '2026-09-01')",
+            ("d" * 64,),
+        )
+        reconcile_pdf_article_links(connection, observed_at="2026-09-02")
+        assert connection.execute(
+            "SELECT core_article_id FROM pdf_intake_articles WHERE article_id=?", (article["article_id"],)
+        ).fetchone() == ("core",)
+        assert connection.execute(
+            "SELECT article_id FROM url_aliases WHERE raw_url=?", (article["occurrences"][0]["raw_url"],)
+        ).fetchone() == ("core",)
+        connection.commit()
+    connection.close()
+
+
+def test_pdf_reimport_with_landing_page_label_does_not_confirm_an_unclassified_observation(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "report.pdf"
+    _report_pdf_with_two_articles(source)
+    bundle = import_pdf_reports([source])
+    article = bundle["articles"][0]
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    from climate_registry.pdf_intake import persist_pdf_intake
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO sources VALUES ('s', 'example.org', 'Example', '2026-09-01', '2026-09-01')")
+        connection.execute("INSERT INTO articles VALUES ('core', ?, 's', '2026-09-01', '2026-09-01', 'v', 'article', 1, NULL, NULL, 'summary_excerpt')", (article["canonical_url"],))
+        connection.execute("INSERT INTO article_versions VALUES ('v', 'core', 'Title', 'title', 'Summary', ?, 'report-title-summary', '2026-09-01', '2026-09-01')", ("a" * 64,))
+        connection.commit()
+    connection.close()
+    persist_pdf_intake(database, tmp_path / "backups", bundle)
+    article["type_safe_classification"] = {"provider": "typesafe", "label": "landing_page"}
+    persist_pdf_intake(database, tmp_path / "retry-backups", bundle)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT core_article_id FROM pdf_intake_articles WHERE article_id=?", (article["article_id"],)).fetchone() == (None,)
+    connection.close()
+    from climate_registry.read_api import RegistryReader
+    reader = RegistryReader(database, repository_root=tmp_path / "app")
+    assert "pdf_occurrences" not in reader.article("core")
+    assert article["article_id"] in {item["article_id"] for item in reader.pdf_articles()["items"]}
+
+
+def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
+    database = tmp_path / "registry.sqlite3"
+    connection = sqlite3.connect(database)
+    apply_migrations(connection, target_version=15)
+    connection.execute("INSERT INTO sources VALUES ('s', 'example.org', 'Example', '2026-09-01', '2026-09-01')")
+    connection.execute(
+        "INSERT INTO articles VALUES ('core', 'https://example.org/study', 's', '2026-09-01', '2026-09-01', 'version', 'article', 1, NULL, NULL, 'summary_excerpt')"
+    )
+    connection.execute("INSERT INTO articles VALUES ('core-news', 'https://example.org/news', 's', '2026-09-01', '2026-09-01', 'version-news', 'article', 1, NULL, NULL, 'summary_excerpt')")
+    connection.execute("INSERT INTO article_versions VALUES ('version-news', 'core-news', 'News', 'news', 'News.', ?, 'report-title-summary', '2026-09-01', '2026-09-01')", ("d" * 64,))
+    connection.execute(
+        "INSERT INTO article_versions VALUES ('version', 'core', 'Core', 'core', 'Core summary.', ?, 'report-title-summary', '2026-09-01', '2026-09-01')",
+        ("c" * 64,),
+    )
+    connection.execute(
+        """INSERT INTO pdf_intake_documents(
+           document_sha256, source_path, filename, media_type, size_bytes, extracted_text_sha256,
+           document_json, imported_at
+        ) VALUES (?, 'C:/report.pdf', 'report.pdf', 'application/pdf', 1, ?, '{}', '2026-09-02T00:00:00Z')""",
+        ("a" * 64, "b" * 64),
+    )
+    connection.execute("INSERT INTO pdf_intake_articles VALUES ('pdf-exact', 'https://example.org/study', 'PDF title', '{\"provider\":\"typesafe\",\"label\":\"article\"}', '2026-09-02T00:00:00Z')")
+    connection.execute("INSERT INTO pdf_intake_articles VALUES ('pdf-home', 'https://example.org/news', 'PDF title', NULL, '2026-09-02T00:00:00Z')")
+    connection.executemany(
+        """INSERT INTO pdf_intake_article_occurrences VALUES (?, ?, ?, 2, ?, NULL, NULL, ?, ?, ?)""",
+        (("occ-exact", "pdf-exact", "a" * 64, "https://example.org/study?from=pdf", "d" * 64, "e" * 64,
+          json.dumps({"occurrence_id": "occ-exact"})),
+         ("occ-home", "pdf-home", "a" * 64, "https://example.org/news", "f" * 64, "e" * 64,
+          json.dumps({"occurrence_id": "occ-home"}))),
+    )
+    connection.commit()
+    assert apply_migrations(connection) == [16]
+    assert connection.execute(
+        "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-exact'"
+    ).fetchone() == ("core", "exact_url_eligible_detail")
+    assert connection.execute(
+        "SELECT core_article_id FROM pdf_intake_articles WHERE article_id='pdf-home'"
+    ).fetchone() == (None,)
+    connection.close()
+    from climate_registry.read_api import RegistryReader
+    detail = RegistryReader(database, repository_root=tmp_path / "app").article("core")
+    assert detail["pdf_occurrences"][0]["occurrence_id"] == "occ-exact"
+    assert {item["article_id"] for item in RegistryReader(
+        database, repository_root=tmp_path / "app"
+    ).pdf_articles()["items"]} == {"pdf-home"}
 
 
 def test_registry_backfills_classification_and_tracks_duplicate_pdf_sources(tmp_path, monkeypatch):
@@ -739,7 +930,7 @@ def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_pat
     persist_pdf_intake(database, tmp_path / "backups", bundle)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (15,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
         original_pdf, created_at, modified_at, raw_metadata = connection.execute(
             """SELECT original_pdf, pdf_created_at, pdf_modified_at, pdf_metadata_json
                FROM pdf_intake_documents"""

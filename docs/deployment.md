@@ -575,7 +575,9 @@ selected profile-hidden `wiki` service from bypassing validation. It validates
 every final `/registry`,
 `/delivery-output`, `/update-status`, and `/job-status` mount that appears in
 that resolved model. Each must be one unique, read-only bind from an absolute,
-existing ordinary directory. The source and every existing parent are checked
+existing ordinary directory. `/registry` may be writable only when the resolved
+service explicitly carries the management-import marker from the dedicated
+import overlay. The source and every existing parent are checked
 with no-follow metadata; symlinks and Windows reparse points or junctions are
 rejected. Errors do not print the source path or environment value.
 
@@ -600,6 +602,39 @@ export CLIMATE_REGISTRY_HOST_DIR=/path/to/registry   # outside the checkout, on 
 docker compose -f docker-compose.yml config --quiet
 .venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml -f docker-compose.registry.yml config --quiet
+```
+
+### Explicit management PDF imports
+
+`docker-compose.registry.yml` remains read-only. To enable the authenticated
+`/manage/pdf-import` writer for a controlled import, add the explicit
+`docker-compose.registry-import.yml` overlay. It replaces the same `/registry`
+bind with a writable bind, sets the required import marker, and uses
+`/registry/pdf-intake-backups` for atomic backups. The wrapper permits that
+writable Registry bind only when the resolved marker is present; other
+protected mounts remain read-only.
+
+```bash
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml \
+  -f docker-compose.registry.yml \
+  -f docker-compose.registry-import.yml \
+  up -d --build --no-deps wiki
+docker compose restart caddy
+```
+
+The backup directory may be absent before preview; preview does not create it.
+The confirmed import creates it only after the Registry and backup parent pass
+their writable checks. After the authorized import, recreate `wiki` using only
+the base and read-only Registry overlays, then restart Caddy to restore the
+public Registry mount to read-only:
+
+```bash
+.venv/bin/python -m scripts.safe_compose \
+  -f docker-compose.yml \
+  -f docker-compose.registry.yml \
+  up -d --no-build --no-deps --force-recreate wiki
+docker compose restart caddy
 ```
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.

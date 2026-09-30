@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import secrets
+import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from limits import parse as parse_rate_limit
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -50,6 +55,10 @@ from climate_registry.read_api import (
     RegistryReader,
     RegistryUnavailableError,
 )
+from climate_registry.errors import RegistryBuildError, RegistryInputError, RegistryLockError
+from climate_registry.pdf_intake import persist_pdf_intake
+from climate_registry.persistent import _read_only_connection, _validate_database
+from climate_monitor.pdf_intake import MAX_PDF_BYTES, import_pdf_reports
 
 
 ROOT = Path(__file__).resolve().parent
@@ -106,6 +115,7 @@ def _management_service() -> ManagementService:
 MAX_MESSAGE_LENGTH = 8000          # Maximum characters per user message
 MAX_MESSAGES = 50                  # Maximum messages in history
 MAX_REQUEST_BYTES = 200 * 1024     # Maximum request body size (200 KB)
+MAX_PDF_UPLOAD_BYTES = MAX_PDF_BYTES * 5
 
 
 class ChatMessage(BaseModel):
@@ -133,15 +143,19 @@ async def limit_request_body(request: Request, call_next):
     checked here; chunked/streaming uploads are not used by this API.
     """
     content_length = request.headers.get("content-length")
+    max_bytes = (
+        MAX_PDF_UPLOAD_BYTES if request.url.path.startswith("/api/manage/pdf-intake/")
+        else MAX_REQUEST_BYTES
+    )
     if content_length is not None:
         try:
             declared = int(content_length)
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
-        if declared > MAX_REQUEST_BYTES:
+        if declared > max_bytes:
             return JSONResponse(
                 status_code=413,
-                content={"detail": f"Request body too large. Maximum is {MAX_REQUEST_BYTES} bytes."},
+                content={"detail": f"Request body too large. Maximum is {max_bytes} bytes."},
             )
     return await call_next(request)
 
@@ -507,6 +521,113 @@ def _manage_call(callback):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _pdf_intake_targets() -> tuple[Path, Path] | tuple[None, str]:
+    database_value = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+    backup_value = os.getenv("CLIMATE_REGISTRY_BACKUP_DIR", "").strip()
+    if not database_value or not backup_value:
+        return None, "PDF imports require CLIMATE_REGISTRY_DB and CLIMATE_REGISTRY_BACKUP_DIR."
+    database, backup_dir = Path(database_value), Path(backup_value)
+    if not database.is_file() or not os.access(database.parent, os.W_OK):
+        return None, "The configured Registry database is unavailable for writing."
+    try:
+        connection = _read_only_connection(database)
+        try:
+            _validate_database(connection)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.DatabaseError, RegistryInputError, RegistryBuildError):
+        return None, "The configured Registry database is unavailable for writing."
+    backup_parent = backup_dir
+    while not backup_parent.exists():
+        backup_parent = backup_parent.parent
+    if not backup_parent.is_dir() or not os.access(backup_parent, os.W_OK | os.X_OK):
+        return None, "The configured Registry backup directory is unavailable for writing."
+    return database, backup_dir
+
+
+def _pdf_intake_preview(bundle: dict[str, Any], writable: bool, error: str | None = None) -> dict[str, Any]:
+    filenames = {
+        item["source"]["sha256"]: item["source"]["filename"]
+        for item in bundle["documents"]
+    }
+    return {
+        "writable": writable,
+        "error": error,
+        "preview_digest": _pdf_intake_bundle_digest(bundle),
+        "documents": [
+            {"sha256": item["source"]["sha256"], "filename": item["source"]["filename"],
+             "page_count": item["page_count"], "summary": item.get("executive_summary"),
+             "source_observations": item["source"]["source_observations"]}
+            for item in bundle["documents"]
+        ],
+        "article_occurrences": sum(len(item["occurrences"]) for item in bundle["articles"]),
+        "calendar_items": len(bundle["calendar_items"]),
+        "articles": [
+            {"url": occurrence["raw_url"], "title": article.get("title") or occurrence.get("anchor_text"),
+             "page": occurrence["page"], "report_summary": occurrence["summary"],
+             "source_document": occurrence["source_document"]}
+            for article in bundle["articles"] for occurrence in article["occurrences"]
+        ],
+        "calendar": [
+            {"name": item.get("name"), "date": item.get("start_date") or item.get("raw_date"),
+             "page": item["page"], "summary": item["summary"],
+             "source_document": filenames[item["source_document_sha256"]]}
+            for item in bundle["calendar_items"]
+        ],
+        "typesafe": bundle["typesafe"],
+    }
+
+
+def _pdf_intake_bundle_digest(bundle: dict[str, Any]) -> str:
+    """Fingerprint the parsed values that an import can persist."""
+    normalized = dict(bundle)
+    normalized.pop("generated_at", None)
+    normalized["documents"] = [
+        document | {"source": {
+            key: value for key, value in document["source"].items()
+            if key != "original_pdf_base64"
+        }}
+        for document in bundle.get("documents", [])
+    ]
+    encoded = json.dumps(
+        normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def _uploaded_pdf_bundle(files: list[UploadFile]) -> dict[str, Any]:
+    if not files:
+        raise HTTPException(status_code=422, detail="Choose one or more PDF files.")
+    with tempfile.TemporaryDirectory(prefix="climate-pdf-intake-") as directory:
+        temporary = Path(directory)
+        uploads: dict[str, str] = {}
+        for index, upload in enumerate(files):
+            filename = Path((upload.filename or "").replace("\\", "/")).name or "upload.pdf"
+            path = temporary / f"{index}.pdf"
+            path.write_bytes(await upload.read())
+            uploads[str(path.resolve())] = filename
+        try:
+            bundle = import_pdf_reports(temporary / f"{index}.pdf" for index in range(len(files)))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"PDF batch was not imported: {exc}") from exc
+
+    for document in bundle["documents"]:
+        source = document["source"]
+        observations = [
+            {"path": f"manage-upload://{source['sha256']}/{quote(uploads[item['path']], safe='')}",
+             "filename": uploads[item["path"]]}
+            for item in source["source_observations"]
+        ]
+        source["path"] = observations[0]["path"]
+        source["filename"] = observations[0]["filename"]
+        source["source_observations"] = observations
+    filenames = {document["source"]["sha256"]: document["source"]["filename"] for document in bundle["documents"]}
+    for article in bundle["articles"]:
+        for occurrence in article["occurrences"]:
+            occurrence["source_document"] = filenames[occurrence["source_document_sha256"]]
+    return bundle
+
+
 @app.get("/manage/login", response_class=HTMLResponse, include_in_schema=False)
 def console_login_page() -> FileResponse:
     return FileResponse(MANAGE_DIR / "login.html", headers={"Cache-Control": "no-store"})
@@ -517,6 +638,13 @@ def console_page(user: OptionalConsolePrincipal):
     if user is None:
         return RedirectResponse("/manage/login", status_code=303)
     return FileResponse(MANAGE_DIR / "index.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/manage/pdf-import", response_class=HTMLResponse, include_in_schema=False)
+def console_pdf_import_page(user: OptionalConsolePrincipal):
+    if user is None:
+        return RedirectResponse("/manage/login?next=/manage/pdf-import", status_code=303)
+    return FileResponse(MANAGE_DIR / "pdf_import.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/manage/session", include_in_schema=False)
@@ -570,9 +698,40 @@ async def hermes_websocket(websocket: WebSocket, path: str) -> None:
 
 @app.get("/manage/assets/{filename}", include_in_schema=False)
 def console_asset(filename: str, user: ConsolePrincipal) -> FileResponse:
-    if filename not in {"manage.css", "manage.js"}:
+    if filename not in {"manage.css", "manage.js", "pdf_import.js"}:
         raise HTTPException(status_code=404, detail="Not found.")
     return FileResponse(MANAGE_DIR / filename, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/manage/pdf-intake/preview", include_in_schema=False)
+async def console_pdf_intake_preview(user: ConsolePrincipal, files: list[UploadFile] = File()) -> dict[str, Any]:
+    bundle = await _uploaded_pdf_bundle(files)
+    targets = _pdf_intake_targets()
+    if targets[0] is None:
+        return _pdf_intake_preview(bundle, False, targets[1])
+    return _pdf_intake_preview(bundle, True)
+
+
+@app.post("/api/manage/pdf-intake/import", include_in_schema=False)
+async def console_pdf_intake_import(
+    user: ConsolePrincipal, files: list[UploadFile] = File(), confirmed: bool = False,
+    preview_sha: list[str] = Query(default=[]), preview_digest: str = "",
+) -> dict[str, Any]:
+    if not confirmed:
+        raise HTTPException(status_code=422, detail="Confirm the PDF import before writing.")
+    targets = _pdf_intake_targets()
+    if targets[0] is None:
+        raise HTTPException(status_code=503, detail=targets[1])
+    bundle = await _uploaded_pdf_bundle(files)
+    if preview_sha != [document["source"]["sha256"] for document in bundle["documents"]]:
+        raise HTTPException(status_code=422, detail="Uploaded PDFs do not match the preview.")
+    if preview_digest != _pdf_intake_bundle_digest(bundle):
+        raise HTTPException(status_code=422, detail="Parsed PDF details do not match the preview.")
+    try:
+        result = persist_pdf_intake(targets[0], targets[1], bundle)
+    except (RegistryInputError, RegistryBuildError, RegistryLockError) as exc:
+        raise HTTPException(status_code=503, detail=f"PDF batch was not imported: {exc}") from exc
+    return result | _pdf_intake_preview(bundle, True)
 
 
 @app.get("/api/manage/config", include_in_schema=False)

@@ -60,6 +60,7 @@ _PROTECTED_TARGETS = {
     "/registry",
     "/update-status",
 }
+_REGISTRY_IMPORT_MARKER = "CLIMATE_REGISTRY_MANAGEMENT_IMPORT"
 _USAGE_ERROR = "docker compose wrapper usage error: unknown or missing subcommand"
 
 
@@ -237,6 +238,11 @@ def _validate_final_model(model: Mapping[str, Any]) -> None:
             "docker compose preflight failed: Compose config returned an invalid model"
         )
 
+    environment = wiki.get("environment", {})
+    registry_import_enabled = (
+        isinstance(environment, Mapping)
+        and environment.get(_REGISTRY_IMPORT_MARKER) == "1"
+    )
     for target in sorted(_PROTECTED_TARGETS):
         matches = [mount for mount in volumes if mount.get("target") == target]
         if len(matches) > 1:
@@ -246,7 +252,10 @@ def _validate_final_model(model: Mapping[str, Any]) -> None:
         if not matches:
             continue
         mount = matches[0]
-        if mount.get("type") != "bind" or mount.get("read_only") is not True:
+        writable_registry_import = target == "/registry" and registry_import_enabled
+        if mount.get("type") != "bind" or (
+            mount.get("read_only") is not True and not writable_registry_import
+        ):
             raise ComposeBindSourceError(
                 f"docker compose preflight failed: protected mount {target} "
                 "must be a read-only bind"

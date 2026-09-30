@@ -112,6 +112,20 @@ def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only
         RegistryReader(ROOT / "data" / "registry" / "article-registry.sqlite3", repository_root=ROOT)
 
 
+def test_registry_import_overlay_is_an_explicit_writable_opt_in():
+    override = yaml.safe_load((ROOT / "docker-compose.registry-import.yml").read_text(encoding="utf-8"))
+    service = override["services"]["wiki"]
+    assert service["environment"] == {
+        "CLIMATE_REGISTRY_MANAGEMENT_IMPORT": "1",
+        "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3",
+        "CLIMATE_REGISTRY_BACKUP_DIR": "/registry/pdf-intake-backups",
+    }
+    mount = service["volumes"][0]
+    assert mount["target"] == "/registry"
+    assert mount["read_only"] is False
+    assert mount["bind"] == {"create_host_path": False}
+
+
 def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
     declared = yaml.safe_load(
         (ROOT / "docker-compose.registry.yml").read_text(encoding="utf-8")
