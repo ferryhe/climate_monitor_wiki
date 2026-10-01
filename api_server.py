@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import tempfile
+import threading
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -22,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
 from climate_delivery.artifacts import load_report_artifact
+from climate_delivery.io import atomic_write_json
 from climate_delivery.errors import GenerationError, LockStateError
 from climate_monitor.job_status import (
     JobStatusInvalidSnapshotError,
@@ -118,12 +120,20 @@ app.include_router(auth_router, prefix="/api/manage/auth", include_in_schema=Fal
 _LOGIN_LIMITER = Limiter(key_func=get_remote_address)
 _LOGIN_RATE = parse_rate_limit("5/minute")
 app.state.limiter = _LOGIN_LIMITER
+_RELOAD_LOCK = threading.Lock()
+
+
+def _configured_pdf_queue() -> Path | None:
+    value = os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", "").strip()
+    return Path(value).resolve() if value else None
 
 def _selected_pdf_projection() -> tuple[Path | None, dict[str, Any] | None]:
-    try:
-        return load_active_projection(PDF_RUNTIME_WIKI_DIR)
-    except (OSError, RuntimeError):
+    if PDF_RUNTIME_WIKI_DIR is None:
         return None, None
+    queue = _configured_pdf_queue()
+    if queue is None:
+        raise RuntimeError("PDF runtime Wiki requires the durable batch queue")
+    return load_active_projection(PDF_RUNTIME_WIKI_DIR, queue / "active.json")
 
 
 _startup_projection, _ = _selected_pdf_projection()
@@ -486,7 +496,11 @@ def registry_article(article_id: str) -> dict:
 
 
 @app.post("/api/reload")
-def reload_wiki(request: Request, x_reload_token: str | None = Header(default=None)) -> dict:
+def reload_wiki(
+    request: Request,
+    x_reload_token: str | None = Header(default=None),
+    generation_id: str | None = Query(default=None),
+) -> dict:
     client_host = (request.client.host if request.client else "").strip()
     is_local_client = client_host in {"127.0.0.1", "::1", "localhost"}
 
@@ -499,18 +513,59 @@ def reload_wiki(request: Request, x_reload_token: str | None = Header(default=No
             detail="Reload is restricted to localhost unless RELOAD_TOKEN is configured.",
         )
 
-    projection, metadata = _selected_pdf_projection()
-    if PDF_RUNTIME_WIKI_DIR is None:
-        responder.kb.reload()
-    else:
-        replacement = WikiKnowledgeBase(WIKI_DIR, SOURCE_DIR, projection)
-        responder.kb = replacement
-        _wiki_static_files.all_directories = (
-            [str(WIKI_DIR), str(projection)] if projection is not None else [str(WIKI_DIR)]
-        )
-    payload = _public_config()
-    payload["pdf_projection"] = metadata
-    return payload
+    with _RELOAD_LOCK:
+        queue = _configured_pdf_queue()
+        pending = queue / "pending.json" if queue is not None else None
+        if generation_id is not None:
+            if PDF_RUNTIME_WIKI_DIR is None or pending is None:
+                raise HTTPException(status_code=503, detail="PDF activation is not configured.")
+            try:
+                metadata = json.loads(pending.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=409, detail="PDF activation is not pending.") from exc
+            if metadata.get("generation_id") != generation_id:
+                raise HTTPException(status_code=409, detail="PDF activation generation does not match.")
+            projection, metadata = load_active_projection(PDF_RUNTIME_WIKI_DIR, pending)
+        else:
+            projection, metadata = _selected_pdf_projection()
+
+        if PDF_RUNTIME_WIKI_DIR is None:
+            responder.kb.reload()
+        else:
+            replacement = WikiKnowledgeBase(WIKI_DIR, SOURCE_DIR, projection)
+            if generation_id is not None:
+                try:
+                    current_pending = json.loads(pending.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise HTTPException(status_code=409, detail="PDF activation was withdrawn.") from exc
+                if current_pending != metadata:
+                    raise HTTPException(status_code=409, detail="PDF activation was replaced.")
+            elif _selected_pdf_projection()[1] != metadata:
+                raise HTTPException(status_code=409, detail="PDF active generation changed during reload.")
+            previous_kb = responder.kb
+            previous_directories = list(_wiki_static_files.all_directories)
+            responder.kb = replacement
+            _wiki_static_files.all_directories = (
+                [str(WIKI_DIR), str(projection)] if projection is not None else [str(WIKI_DIR)]
+            )
+            if generation_id is not None:
+                try:
+                    atomic_write_json(queue / "active.json", metadata)
+                except Exception:
+                    try:
+                        _, committed = load_active_projection(
+                            PDF_RUNTIME_WIKI_DIR, queue / "active.json"
+                        )
+                    except RuntimeError:
+                        committed = None
+                    if committed != metadata:
+                        responder.kb = previous_kb
+                        _wiki_static_files.all_directories = previous_directories
+                    raise
+                pending.unlink(missing_ok=True)
+        payload = _public_config()
+        payload["pdf_projection"] = metadata
+        return payload
 
 
 @app.post("/api/chat")
@@ -686,10 +741,9 @@ def _manage_call(callback):
 
 
 def _pdf_intake_queue() -> tuple[Path, None] | tuple[None, str]:
-    value = os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", "").strip()
-    if not value:
+    queue = _configured_pdf_queue()
+    if queue is None:
         return None, "PDF batch processing is not configured."
-    queue = Path(value).resolve()
     if queue == ROOT or ROOT in queue.parents:
         return None, "The PDF batch queue must be outside the application repository."
     if not queue.is_dir() or not os.access(queue, os.W_OK | os.X_OK):

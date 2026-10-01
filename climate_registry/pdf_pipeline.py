@@ -111,12 +111,14 @@ def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
     return status
 
 
-def load_active_projection(runtime_dir: Path | None) -> tuple[Path | None, dict[str, Any] | None]:
+def load_active_projection(
+    runtime_dir: Path | None, pointer_path: Path | None = None
+) -> tuple[Path | None, dict[str, Any] | None]:
     """Resolve the atomically selected read-only PDF observation projection."""
     if runtime_dir is None:
         return None, None
     root = runtime_dir.resolve()
-    pointer = root / "active.json"
+    pointer = pointer_path or root / "active.json"
     if not pointer.is_file():
         return None, None
     try:
@@ -245,6 +247,36 @@ class PdfIntakePipeline:
         self.runtime_wiki_dir = _external(runtime_wiki_dir, repository)
         self.reload_chat = reload_chat
 
+    @property
+    def active_pointer(self) -> Path:
+        return self.queue_dir / "active.json"
+
+    @property
+    def pending_pointer(self) -> Path:
+        return self.queue_dir / "pending.json"
+
+    def _active_projection(self) -> tuple[Path | None, dict[str, Any] | None]:
+        return load_active_projection(self.runtime_wiki_dir, self.active_pointer)
+
+    def _activate(self, metadata: dict[str, Any]) -> None:
+        atomic_write_json(self.pending_pointer, metadata)
+        try:
+            self.reload_chat(metadata["generation_id"])
+        except Exception:
+            _, active = self._active_projection()
+            if active is None or active.get("generation_id") != metadata["generation_id"]:
+                raise
+        finally:
+            try:
+                pending = json.loads(self.pending_pointer.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pending = None
+            if isinstance(pending, dict) and pending.get("generation_id") == metadata["generation_id"]:
+                self.pending_pointer.unlink(missing_ok=True)
+        _, active = self._active_projection()
+        if active is None or active.get("generation_id") != metadata["generation_id"]:
+            raise RuntimeError("Chat reload did not activate the requested PDF Wiki projection")
+
     def _save(self, batch_id: str, status: dict[str, Any], **changes: Any) -> dict[str, Any]:
         status.update(changes, updated_at=_now())
         atomic_write_json(_batch_dir(self.queue_dir, batch_id) / "status.json", status)
@@ -358,7 +390,7 @@ class PdfIntakePipeline:
                 )
 
             status = self._save(batch_id, status, stage="activating")
-            active_generation, active = load_active_projection(self.runtime_wiki_dir)
+            active_generation, active = self._active_projection()
             if (
                 active_generation is not None
                 and active is not None
@@ -372,7 +404,7 @@ class PdfIntakePipeline:
                     active_generation, document_sha256, filename, pages
                 ):
                     if not active_status.get("chat_ready"):
-                        self.reload_chat(active["generation_id"])
+                        self._activate(active)
                         self._save(
                             active_status["batch_id"],
                             active_status,
@@ -414,12 +446,7 @@ class PdfIntakePipeline:
                         "pages": sorted(active_pages),
                         "activated_at": _now(),
                     }
-                    atomic_write_json(self.runtime_wiki_dir / "active.json", replacement)
-                    try:
-                        self.reload_chat(generation.name)
-                    except Exception:
-                        atomic_write_json(self.runtime_wiki_dir / "active.json", active)
-                        raise
+                    self._activate(replacement)
                     self._save(
                         active_status["batch_id"],
                         active_status,
@@ -439,9 +466,7 @@ class PdfIntakePipeline:
                         registry_sha256=registry_sha256,
                     )
                 raise RuntimeError("a newer Wiki generation is already active")
-            active_pointer = self.runtime_wiki_dir / "active.json"
-            atomic_write_json(
-                active_pointer,
+            self._activate(
                 {
                     "batch_id": batch_id,
                     "batch_created_at": status["created_at"],
@@ -452,16 +477,8 @@ class PdfIntakePipeline:
                     "filename": filename,
                     "pages": sorted(pages),
                     "activated_at": _now(),
-                },
+                }
             )
-            try:
-                self.reload_chat(generation.name)
-            except Exception:
-                if active is None:
-                    active_pointer.unlink(missing_ok=True)
-                else:
-                    atomic_write_json(active_pointer, active)
-                raise
             return self._save(
                 batch_id, status, stage="chat_ready", chat_ready=True, error=None
             )

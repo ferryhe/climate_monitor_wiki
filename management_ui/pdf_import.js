@@ -37,7 +37,7 @@ async function pollBatch() {
   try {
     const value = await intake(`/api/manage/pdf-intake/batches/${batchId}`, undefined, 'GET');
     if (!showBatch(value)) setTimeout(pollBatch, 1000);
-  } catch (error) { message.textContent = error.message; }
+  } catch (error) { message.textContent = error.message; setTimeout(pollBatch, 1000); }
 }
 
 function show(value) {

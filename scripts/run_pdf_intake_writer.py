@@ -8,6 +8,7 @@ import os
 import time
 from pathlib import Path
 from urllib import request
+from urllib.parse import urlencode
 
 from climate_registry.pdf_pipeline import PdfIntakePipeline
 
@@ -21,7 +22,7 @@ def _required(name: str) -> str:
 
 def _reload_chat(expected_generation_id: str) -> None:
     call = request.Request(
-        _required("CLIMATE_PDF_RELOAD_URL"),
+        _required("CLIMATE_PDF_RELOAD_URL") + "?" + urlencode({"generation_id": expected_generation_id}),
         method="POST",
         headers={"X-Reload-Token": _required("RELOAD_TOKEN")},
     )

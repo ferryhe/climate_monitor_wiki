@@ -878,11 +878,24 @@ class WikiKnowledgeBase:
         )
 
     def _chunk_document(self, doc: WikiDocument) -> list[WikiChunk]:
-        sections = (
-            self._split_source_sections(doc)
-            if doc.corpus == "source"
-            else self._split_markdown_sections(doc.markdown, doc.title)
-        )
+        if doc.file == "registry-pdf-intake-observations.md":
+            sections: list[tuple[str, list[str]]] = []
+            heading, lines = doc.title, []
+            for line in doc.markdown.splitlines():
+                if line.startswith("## PDF report observation:"):
+                    if lines:
+                        sections.append((heading, lines))
+                    heading, lines = line[3:].strip(), [line]
+                else:
+                    lines.append(line)
+            if lines:
+                sections.append((heading, lines))
+        else:
+            sections = (
+                self._split_source_sections(doc)
+                if doc.corpus == "source"
+                else self._split_markdown_sections(doc.markdown, doc.title)
+            )
 
         chunks: list[WikiChunk] = []
         for index, (heading, lines) in enumerate(sections, start=1):
