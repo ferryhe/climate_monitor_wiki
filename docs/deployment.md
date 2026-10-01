@@ -572,12 +572,14 @@ directory, environment, and Compose global options and first asks Docker
 Compose itself for `--profile "*" config --format json`, with the wildcard
 passed as one literal argument. That all-profile model prevents an explicitly
 selected profile-hidden `wiki` service from bypassing validation. It validates
-every final `/registry`,
+every final `/registry`, `/runtime/wiki`, `/pdf-intake-queue`,
 `/delivery-output`, `/update-status`, and `/job-status` mount that appears in
-that resolved model. Each must be one unique, read-only bind from an absolute,
-existing ordinary directory. `/registry` may be writable only when the resolved
-service explicitly carries the management-import marker from the dedicated
-import overlay. The source and every existing parent are checked
+that resolved model. Each must be one unique bind from an absolute, existing
+ordinary directory and is read-only by default. A service may write the queue
+only when it explicitly selects `/pdf-intake-queue`; `/registry` and
+`/runtime/wiki` may be writable only on the dedicated `pdf-intake-writer`. The
+site Registry and runtime Wiki mounts remain read-only. The source and every
+existing parent are checked
 with no-follow metadata; symlinks and Windows reparse points or junctions are
 rejected. Errors do not print the source path or environment value.
 
@@ -607,35 +609,37 @@ docker compose -f docker-compose.yml config --quiet
 ### Explicit management PDF imports
 
 `docker-compose.registry.yml` remains read-only. To enable the authenticated
-`/manage/pdf-import` writer for a controlled import, add the explicit
-`docker-compose.registry-import.yml` overlay. It replaces the same `/registry`
-bind with a writable bind, sets the required import marker, and uses
-`/registry/pdf-intake-backups` for atomic backups. The wrapper permits that
-writable Registry bind only when the resolved marker is present; other
-protected mounts remain read-only.
+`/manage/pdf-import` flow, add `docker-compose.registry-import.yml`. Each import
+accepts exactly one PDF. The site keeps `/registry` and `/runtime/wiki`
+read-only and writes only to the durable queue. The separate
+`pdf-intake-writer` owns the writable Registry and runtime Wiki mounts, reuses
+the existing Registry persistence and Registry-to-Wiki projection, selects a
+PDF-observation generation atomically, then calls `/api/reload`. A batch is
+`chat_ready` only after that reload reports the requested generation active.
+
+Create `CLIMATE_PDF_QUEUE_HOST_DIR` and `CLIMATE_RUNTIME_WIKI_HOST_DIR` as empty
+directories outside the checkout before starting Compose. Keep `RELOAD_TOKEN`
+configured because the writer calls the site over the private Compose network.
 
 ```bash
 .venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml \
   -f docker-compose.registry.yml \
   -f docker-compose.registry-import.yml \
-  up -d --build --no-deps wiki
+  up -d --build wiki pdf-intake-writer
+
 docker compose restart caddy
 ```
 
-The backup directory may be absent before preview; preview does not create it.
-The confirmed import creates it only after the Registry and backup parent pass
-their writable checks. After the authorized import, recreate `wiki` using only
-the base and read-only Registry overlays, then restart Caddy to restore the
-public Registry mount to read-only:
+Restart Caddy immediately after recreating `wiki` so it resolves the new
+application-container address.
 
-```bash
-.venv/bin/python -m scripts.safe_compose \
-  -f docker-compose.yml \
-  -f docker-compose.registry.yml \
-  up -d --no-build --no-deps --force-recreate wiki
-docker compose restart caddy
-```
+The management page shows the durable `imported`, `indexed`, and `chat_ready`
+states. A failed indexing or reload step leaves the imported Registry row and
+queued bundle intact; use **Retry processing** without uploading the PDF again.
+The runtime overlay contains only confirmed management PDF observations under
+one reserved page name. Base Wiki pages are served first, so a later weekly or
+manual projection remains current while the PDF citation stays available.
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
 It must be a complete main database satisfying an exact supported schema contract

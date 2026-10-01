@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REAL_SUBPROCESS_RUN = subprocess.run
 PROTECTED_TARGETS = (
     "/registry",
+    "/runtime/wiki",
+    "/pdf-intake-queue",
     "/delivery-output",
     "/update-status",
     "/job-status",
@@ -517,7 +519,7 @@ def test_later_compose_file_cannot_change_protected_mount_safety(
     assert actual_calls == []
 
 
-def test_writable_registry_requires_the_explicit_import_marker(tmp_path):
+def test_only_the_independent_pdf_writer_may_mount_the_registry_writable(tmp_path):
     source = tmp_path / "registry"
     source.mkdir()
     model = {"services": {"wiki": {"environment": {}, "volumes": [{
@@ -527,9 +529,13 @@ def test_writable_registry_requires_the_explicit_import_marker(tmp_path):
     with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
         safe_compose._validate_final_model(model)
 
-    model["services"]["wiki"]["environment"] = {
-        "CLIMATE_REGISTRY_MANAGEMENT_IMPORT": "1",
-    }
+    model["services"]["wiki"]["environment"] = {"CLIMATE_REGISTRY_MANAGEMENT_IMPORT": "1"}
+    with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
+        safe_compose._validate_final_model(model)
+
+    writer = model["services"].pop("wiki")
+    model["services"]["pdf-intake-writer"] = writer
+    writer["environment"] = {"CLIMATE_PDF_INTAKE_WRITER": "1"}
     safe_compose._validate_final_model(model)
 
 

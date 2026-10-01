@@ -57,10 +57,12 @@ _TERMINAL_GLOBAL_OPTIONS = {"--help", "--version", "-h"}
 _PROTECTED_TARGETS = {
     "/delivery-output",
     "/job-status",
+    "/pdf-intake-queue",
     "/registry",
+    "/runtime/wiki",
     "/update-status",
 }
-_REGISTRY_IMPORT_MARKER = "CLIMATE_REGISTRY_MANAGEMENT_IMPORT"
+_PDF_WRITER_MARKER = "CLIMATE_PDF_INTAKE_WRITER"
 _USAGE_ERROR = "docker compose wrapper usage error: unknown or missing subcommand"
 
 
@@ -223,50 +225,62 @@ def _validate_final_model(model: Mapping[str, Any]) -> None:
         raise ComposeBindSourceError(
             "docker compose preflight failed: Compose config returned an invalid model"
         )
-    wiki = services.get("wiki")
-    if wiki is None:
-        return
-    if not isinstance(wiki, Mapping):
-        raise ComposeBindSourceError(
-            "docker compose preflight failed: Compose config returned an invalid model"
-        )
-    volumes = wiki.get("volumes", [])
-    if not isinstance(volumes, list) or not all(
-        isinstance(mount, Mapping) for mount in volumes
-    ):
-        raise ComposeBindSourceError(
-            "docker compose preflight failed: Compose config returned an invalid model"
-        )
-
-    environment = wiki.get("environment", {})
-    registry_import_enabled = (
-        isinstance(environment, Mapping)
-        and environment.get(_REGISTRY_IMPORT_MARKER) == "1"
-    )
-    for target in sorted(_PROTECTED_TARGETS):
-        matches = [mount for mount in volumes if mount.get("target") == target]
-        if len(matches) > 1:
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
             raise ComposeBindSourceError(
-                f"docker compose preflight failed: protected mount {target} must be unique"
+                "docker compose preflight failed: Compose config returned an invalid model"
             )
-        if not matches:
-            continue
-        mount = matches[0]
-        writable_registry_import = target == "/registry" and registry_import_enabled
-        if mount.get("type") != "bind" or (
-            mount.get("read_only") is not True and not writable_registry_import
+        volumes = service.get("volumes", [])
+        if not isinstance(volumes, list) or not all(
+            isinstance(mount, Mapping) for mount in volumes
         ):
             raise ComposeBindSourceError(
-                f"docker compose preflight failed: protected mount {target} "
-                "must be a read-only bind"
+                "docker compose preflight failed: Compose config returned an invalid model"
             )
-        source = mount.get("source")
-        if not isinstance(source, str) or not source:
-            raise ComposeBindSourceError(
-                f"docker compose preflight failed: protected mount {target} "
-                "must use an absolute existing directory"
+        environment = service.get("environment", {})
+        is_writer = (
+            service_name == "pdf-intake-writer"
+            and isinstance(environment, Mapping)
+            and environment.get(_PDF_WRITER_MARKER) == "1"
+        )
+        queue_enabled = (
+            isinstance(environment, Mapping)
+            and environment.get("CLIMATE_PDF_INTAKE_QUEUE_DIR") == "/pdf-intake-queue"
+        )
+        for target in sorted(_PROTECTED_TARGETS):
+            matches = [mount for mount in volumes if mount.get("target") == target]
+            if len(matches) > 1:
+                raise ComposeBindSourceError(
+                    f"docker compose preflight failed: protected mount {target} must be unique"
+                )
+            if not matches:
+                continue
+            mount = matches[0]
+            writable = mount.get("read_only") is not True
+            writable_allowed = (
+                (target == "/pdf-intake-queue" and queue_enabled)
+                or (is_writer and target in {"/registry", "/runtime/wiki"})
             )
-        _validate_source_directory(Path(source), target=target)
+            if mount.get("type") != "bind" or (writable and not writable_allowed):
+                raise ComposeBindSourceError(
+                    f"docker compose preflight failed: protected mount {target} "
+                    "must be a read-only bind"
+                )
+            source = mount.get("source")
+            if not isinstance(source, str) or not source:
+                raise ComposeBindSourceError(
+                    f"docker compose preflight failed: protected mount {target} "
+                    "must use an absolute existing directory"
+                )
+            source_path = Path(source)
+            _validate_source_directory(source_path, target=target)
+            repository = Path(__file__).resolve().parents[1]
+            resolved = source_path.resolve()
+            if writable and (resolved == repository or repository in resolved.parents):
+                raise ComposeBindSourceError(
+                    f"docker compose preflight failed: protected mount {target} "
+                    "must be outside the repository when writable"
+                )
 
 
 def _run_actual_compose(

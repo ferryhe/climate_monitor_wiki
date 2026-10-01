@@ -1,13 +1,54 @@
 services:
   wiki:
     environment:
-      CLIMATE_REGISTRY_MANAGEMENT_IMPORT: "1"
-      CLIMATE_REGISTRY_DB: /registry/article-registry.sqlite3
+      CLIMATE_PDF_INTAKE_QUEUE_DIR: /pdf-intake-queue
+      CLIMATE_PDF_RUNTIME_WIKI_DIR: /runtime/wiki
+    volumes:
+      - type: bind
+        source: ${CLIMATE_PDF_QUEUE_HOST_DIR:?set CLIMATE_PDF_QUEUE_HOST_DIR to an external queue directory}
+        target: /pdf-intake-queue
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CLIMATE_RUNTIME_WIKI_HOST_DIR:?set CLIMATE_RUNTIME_WIKI_HOST_DIR to an external runtime Wiki directory}
+        target: /runtime/wiki
+        read_only: true
+        bind:
+          create_host_path: false
+
+  pdf-intake-writer:
+    image: climate-monitor-wiki:local
+    container_name: climate-pdf-intake-writer
+    restart: unless-stopped
+    command: ["python", "-m", "scripts.run_pdf_intake_writer"]
+    depends_on:
+      wiki:
+        condition: service_healthy
+    environment:
+      CLIMATE_PDF_INTAKE_WRITER: "1"
+      CLIMATE_PDF_INTAKE_QUEUE_DIR: /pdf-intake-queue
+      CLIMATE_PDF_RUNTIME_WIKI_DIR: /runtime/wiki
+      CLIMATE_PDF_RELOAD_URL: http://wiki:8501/api/reload
+      CLIMATE_REGISTRY_WRITER_DB: /registry/article-registry.sqlite3
       CLIMATE_REGISTRY_BACKUP_DIR: /registry/pdf-intake-backups
+      RELOAD_TOKEN: ${RELOAD_TOKEN:?RELOAD_TOKEN is required for PDF intake}
     volumes:
       - type: bind
         source: ${CLIMATE_REGISTRY_HOST_DIR:?set CLIMATE_REGISTRY_HOST_DIR to the external registry directory}
         target: /registry
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CLIMATE_PDF_QUEUE_HOST_DIR:?set CLIMATE_PDF_QUEUE_HOST_DIR to an external queue directory}
+        target: /pdf-intake-queue
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CLIMATE_RUNTIME_WIKI_HOST_DIR:?set CLIMATE_RUNTIME_WIKI_HOST_DIR to an external runtime Wiki directory}
+        target: /runtime/wiki
         read_only: false
         bind:
           create_host_path: false

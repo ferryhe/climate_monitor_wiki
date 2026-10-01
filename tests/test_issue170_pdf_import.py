@@ -53,8 +53,11 @@ def _client(monkeypatch, tmp_path):
     connection.close()
     backup = tmp_path / "backups"
     backup.mkdir()
+    queue = tmp_path / "queue"
+    queue.mkdir()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setenv("CLIMATE_REGISTRY_BACKUP_DIR", str(backup))
+    monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
     monkeypatch.setenv("CLIMATE_CONSOLE_USERNAME", "operator")
     monkeypatch.setenv("CLIMATE_CONSOLE_PASSWORD_HASH", PasswordHelper().hash("correct horse"))
     monkeypatch.setenv("CLIMATE_CONSOLE_SESSION_SECRET", "test-secret-with-at-least-32-bytes")
@@ -125,8 +128,9 @@ def test_pdf_import_requires_session_and_preview_never_writes(monkeypatch, tmp_p
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone()[0] == 0
 
 
-def test_pdf_import_is_atomic_reports_duplicates_and_reads_back(monkeypatch, tmp_path):
+def test_pdf_import_queues_idempotently_without_writing_registry(monkeypatch, tmp_path):
     client, database = _client(monkeypatch, tmp_path)
+    original_database = database.read_bytes()
     valid = _pdf_bytes()
     real_import = api_server.import_pdf_reports
 
@@ -158,14 +162,22 @@ def test_pdf_import_is_atomic_reports_duplicates_and_reads_back(monkeypatch, tmp
         files={"files": ("first.pdf", valid, "application/pdf")},
     )
     assert mismatch.status_code == 422
-    imported = client.post(
+    queued = client.post(
         "/api/manage/pdf-intake/import", params=_confirmed_preview(first_preview),
         files={"files": ("first.pdf", valid, "application/pdf")},
     )
-    assert imported.status_code == 200, imported.text
-    assert imported.json()["new_documents"] == 1
-    assert imported.json()["article_occurrences"] >= 1
-    assert imported.json()["calendar_items"] >= 1
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["stage"] == "queued"
+    queue = tmp_path / "queue"
+    assert [path.name for path in queue.iterdir()] == [queued.json()["batch_id"]]
+    repeated = client.post(
+        "/api/manage/pdf-intake/import", params=_confirmed_preview(first_preview),
+        files={"files": ("first.pdf", valid, "application/pdf")},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["batch_id"] == queued.json()["batch_id"]
+    assert len(list(queue.iterdir())) == 1
+    assert database.read_bytes() == original_database
 
     renamed_preview = client.post(
         "/api/manage/pdf-intake/preview", files={"files": ("renamed.pdf", valid, "application/pdf")},
@@ -176,24 +188,14 @@ def test_pdf_import_is_atomic_reports_duplicates_and_reads_back(monkeypatch, tmp
         files={"files": ("renamed.pdf", valid, "application/pdf")},
     )
     assert renamed_mismatch.status_code == 422
-    repeated = client.post(
+    renamed = client.post(
         "/api/manage/pdf-intake/import", params=_confirmed_preview(renamed_preview),
         files={"files": ("renamed.pdf", valid, "application/pdf")},
     )
-    assert repeated.status_code == 200
-    assert repeated.json()["added"]["documents"] == 0
-    assert repeated.json()["existing_documents"] == 1
-    assert {item["filename"] for item in client.get("/api/registry/pdf-intake/calendar").json()["items"][0]["source_observations"]} == {"first.pdf", "renamed.pdf"}
-    core = next(item for item in client.get("/api/registry/articles").json()["items"]
-                if item["article_id"] == "core-climate-study")
-    detail = client.get(f"/api/registry/articles/{core['article_id']}").json()
-    occurrence = detail["pdf_occurrences"][0]
-    assert occurrence["source_document_sha256"] == first_preview["documents"][0]["sha256"]
-    assert occurrence["source_document"] == "first.pdf"
-    assert occurrence["page"] == 2
-    assert occurrence["raw_url"] == "https://example.org/climate-study"
-    assert occurrence["anchor_text"] == "Climate risk study"
-    assert "Article summary from the PDF." in occurrence["summary"]
+    assert renamed.status_code == 200
+    assert renamed.json()["batch_id"] != queued.json()["batch_id"]
+    assert len(list(queue.iterdir())) == 2
+    assert database.read_bytes() == original_database
 
 
 def test_pdf_import_rejects_changed_typesafe_result_after_preview(monkeypatch, tmp_path):
@@ -221,11 +223,11 @@ def test_pdf_import_rejects_changed_typesafe_result_after_preview(monkeypatch, t
 
 def test_pdf_import_disables_write_without_configured_targets(monkeypatch, tmp_path):
     client, _ = _client(monkeypatch, tmp_path)
-    monkeypatch.delenv("CLIMATE_REGISTRY_BACKUP_DIR")
+    monkeypatch.delenv("CLIMATE_PDF_INTAKE_QUEUE_DIR")
     preview = client.post("/api/manage/pdf-intake/preview", files={"files": ("report.pdf", _pdf_bytes(), "application/pdf")})
     assert preview.status_code == 200
     assert preview.json()["writable"] is False
-    assert "CLIMATE_REGISTRY_BACKUP_DIR" in preview.json()["error"]
+    assert "batch processing is not configured" in preview.json()["error"]
     blocked = client.post("/api/manage/pdf-intake/import?confirmed=true", files={"files": ("report.pdf", _pdf_bytes(), "application/pdf")})
     assert blocked.status_code == 503
 
@@ -238,16 +240,19 @@ def test_pdf_import_rejects_a_non_sqlite_registry_without_writing(monkeypatch, t
 
     preview = client.post("/api/manage/pdf-intake/preview", files=payload)
     assert preview.status_code == 200
-    assert preview.json()["writable"] is False
-    assert "Registry database is unavailable" in preview.json()["error"]
+    assert preview.json()["writable"] is True
 
-    blocked = client.post("/api/manage/pdf-intake/import?confirmed=true", files=payload)
-    assert blocked.status_code == 503
-    assert "Registry database is unavailable" in blocked.json()["detail"]
+    queued = client.post(
+        "/api/manage/pdf-intake/import",
+        params=_confirmed_preview(preview.json()),
+        files=payload,
+    )
+    assert queued.status_code == 200
+    assert queued.json()["stage"] == "queued"
     assert database.read_bytes() == original
 
 
-def test_pdf_import_creates_an_explicit_missing_backup_dir_only_after_confirmation(monkeypatch, tmp_path):
+def test_pdf_import_never_creates_site_backup_directory(monkeypatch, tmp_path):
     client, _ = _client(monkeypatch, tmp_path)
     backup = tmp_path / "backups"
     backup.rmdir()
@@ -262,4 +267,4 @@ def test_pdf_import_creates_an_explicit_missing_backup_dir_only_after_confirmati
         files=payload,
     )
     assert imported.status_code == 200, imported.text
-    assert backup.is_dir() and any(backup.iterdir())
+    assert not backup.exists()

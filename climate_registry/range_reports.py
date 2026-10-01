@@ -350,7 +350,7 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
                    p.core_article_id AS article_id,
                    p.canonical_url, p.title, p.core_article_id, o.source_document_sha256,
                    o.page, o.raw_url, o.publication_date, o.occurrence_json,
-                   d.filename, d.imported_at
+                   d.filename, d.period_start, d.period_end, d.imported_at
             FROM pdf_intake_article_occurrences o
             JOIN pdf_intake_articles p ON p.article_id=o.article_id
             JOIN articles core ON core.article_id=p.core_article_id
@@ -380,7 +380,10 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
                 "observation_id": row["occurrence_id"],
                 "pdf_article_id": row["pdf_article_id"],
                 "document_sha256": row["source_document_sha256"],
+                "batch_id": raw.get("management_batch_id"),
                 "filename": row["filename"],
+                "period_start": row["period_start"],
+                "period_end": row["period_end"],
                 "page": row["page"],
                 "url": row["raw_url"],
                 "title": raw.get("anchor_text") or row["title"],

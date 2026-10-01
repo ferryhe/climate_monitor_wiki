@@ -286,7 +286,8 @@ def _strip_markdown(text: str) -> str:
     cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
     cleaned = re.sub(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]", r"\2 \1", cleaned)
     cleaned = re.sub(r"<br\s*/?>", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"[#>*_`|]", " ", cleaned)
+    cleaned = re.sub(r"(?<!\w)_(?=\S)|(?<=\S)_(?!\w)", "", cleaned)
+    cleaned = re.sub(r"[#>*`|]", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -330,6 +331,18 @@ def _shorten(text: str, limit: int = 900) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[:limit].rstrip()}..."
+
+
+def _evidence_excerpt(text: str, limit: int, *, citation_text: str | None = None) -> str:
+    excerpt = _shorten(text, limit)
+    citation = re.search(
+        r"PDF:\s*[^;\n]+;\s*SHA-256:\s*[0-9a-f]{64};\s*page\s+(?:\d+|unknown)",
+        citation_text or text,
+        re.IGNORECASE,
+    )
+    if citation and citation.group(0) not in excerpt:
+        return f"{excerpt} [{citation.group(0)}]"
+    return excerpt
 
 
 def _summary_excerpt(text: str, limit: int = 240) -> str:
@@ -678,7 +691,9 @@ class SearchHit:
             "heading": self.chunk.heading,
             "url": url,
             "score": round(self.score, 3),
-            "snippet": _shorten(self.chunk.text, 420),
+            "snippet": _evidence_excerpt(
+                self.chunk.text, 420, citation_text=self.chunk.markdown
+            ),
             "source_urls": self.chunk.urls[:4],
             "type": self.chunk.type,
             "date": self.chunk.date,
@@ -704,9 +719,11 @@ class WikiKnowledgeBase:
         self,
         wiki_dir: Path = DEFAULT_WIKI_DIR,
         source_dir: Path = DEFAULT_SOURCE_DIR,
+        wiki_overlay_dir: Path | None = None,
     ) -> None:
         self.wiki_dir = wiki_dir
         self.source_dir = source_dir
+        self.wiki_overlay_dir = wiki_overlay_dir
         self.documents: list[WikiDocument] = []
         self.source_documents: list[WikiDocument] = []
         self.source_documents_by_title: dict[str, WikiDocument] = {}
@@ -722,7 +739,16 @@ class WikiKnowledgeBase:
         if not self.wiki_dir.exists():
             raise FileNotFoundError(f"Wiki directory not found: {self.wiki_dir}")
 
-        wiki_docs, wiki_chunks = self._load_directory(self.wiki_dir, "wiki")
+        wiki_docs, wiki_chunks = self._load_directory(
+            self.wiki_dir, "wiki", path_root="wiki"
+        )
+        if self.wiki_overlay_dir is not None:
+            overlay_docs, overlay_chunks = self._load_directory(
+                self.wiki_overlay_dir, "wiki", path_root="wiki"
+            )
+            base_paths = {doc.path for doc in wiki_docs}
+            wiki_docs += [doc for doc in overlay_docs if doc.path not in base_paths]
+            wiki_chunks += [chunk for chunk in overlay_chunks if chunk.path not in base_paths]
         source_docs, source_chunks = self._load_directory(self.source_dir, "source")
 
         self.documents = wiki_docs
@@ -746,6 +772,8 @@ class WikiKnowledgeBase:
         self,
         directory: Path,
         corpus: CorpusType,
+        *,
+        path_root: str | None = None,
     ) -> tuple[list[WikiDocument], list[WikiChunk]]:
         if not directory.exists():
             return [], []
@@ -764,7 +792,7 @@ class WikiKnowledgeBase:
             text = _strip_markdown(markdown)
             doc = WikiDocument(
                 title=title,
-                path=f"{directory.name}/{path.name}",
+                path=f"{path_root or directory.name}/{path.name}",
                 file=path.name,
                 type=_detect_type(title),
                 date=_extract_date(title, markdown),
@@ -850,11 +878,24 @@ class WikiKnowledgeBase:
         )
 
     def _chunk_document(self, doc: WikiDocument) -> list[WikiChunk]:
-        sections = (
-            self._split_source_sections(doc)
-            if doc.corpus == "source"
-            else self._split_markdown_sections(doc.markdown, doc.title)
-        )
+        if doc.file == "registry-pdf-intake-observations.md":
+            sections: list[tuple[str, list[str]]] = []
+            heading, lines = doc.title, []
+            for line in doc.markdown.splitlines():
+                if line.startswith("## PDF report observation:"):
+                    if lines:
+                        sections.append((heading, lines))
+                    heading, lines = line[3:].strip(), [line]
+                else:
+                    lines.append(line)
+            if lines:
+                sections.append((heading, lines))
+        else:
+            sections = (
+                self._split_source_sections(doc)
+                if doc.corpus == "source"
+                else self._split_markdown_sections(doc.markdown, doc.title)
+            )
 
         chunks: list[WikiChunk] = []
         for index, (heading, lines) in enumerate(sections, start=1):
@@ -1214,8 +1255,9 @@ class AgenticWikiResponder:
         self,
         wiki_dir: Path = DEFAULT_WIKI_DIR,
         source_dir: Path = DEFAULT_SOURCE_DIR,
+        wiki_overlay_dir: Path | None = None,
     ) -> None:
-        self.kb = WikiKnowledgeBase(wiki_dir, source_dir)
+        self.kb = WikiKnowledgeBase(wiki_dir, source_dir, wiki_overlay_dir)
         self.model = os.getenv("OPENAI_MODEL", "gpt-5.2")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
         self.base_source_url = self._github_blob_base_url()
@@ -2094,7 +2136,7 @@ class AgenticWikiResponder:
             source_urls = "\n".join(f"URL: {url}" for url in hit.chunk.urls[:4])
             block = (
                 f"[{index}] {hit.chunk.corpus.upper()} | {hit.chunk.path} | {hit.chunk.heading} | {hit.chunk.date}\n"
-                f"{_shorten(hit.chunk.text, block_limit)}\n"
+                f"{_evidence_excerpt(hit.chunk.text, block_limit, citation_text=hit.chunk.markdown)}\n"
                 f"{source_urls}".strip()
             )
             used_chars += len(block)
@@ -2115,7 +2157,10 @@ class AgenticWikiResponder:
                 "Major Themes:",
             ]
             for index, hit in enumerate(hits[:5], start=1):
-                lines.append(f"- [{index}] {hit.chunk.path}: {_shorten(hit.chunk.text, 220)}")
+                lines.append(
+                    f"- [{index}] {hit.chunk.path}: "
+                    f"{_evidence_excerpt(hit.chunk.text, 220, citation_text=hit.chunk.markdown)}"
+                )
             lines.append("")
             lines.append("Set OPENAI_API_KEY in .env to enable synthesized reports.")
             return "\n".join(lines)
@@ -2200,7 +2245,8 @@ class AgenticWikiResponder:
             for index, hit in enumerate(hits[:5], start=1):
                 corpus = "raw source" if hit.chunk.corpus == "source" else "wiki"
                 lines.append(
-                    f"- [{index}] ({corpus}) {hit.chunk.title}: {_shorten(hit.chunk.text, 240)}"
+                    f"- [{index}] ({corpus}) {hit.chunk.title}: "
+                    f"{_evidence_excerpt(hit.chunk.text, 240, citation_text=hit.chunk.markdown)}"
                 )
             lines.append("")
             lines.append("Set OPENAI_API_KEY in .env to enable synthesized answers.")
@@ -2226,7 +2272,10 @@ class AgenticWikiResponder:
                 if _is_boilerplate_heading(hit.chunk.heading):
                     continue
                 used_dates.add(hit.chunk.date)
-                lines.append(f"- {hit.chunk.date}: {_shorten(hit.chunk.text, 360)}")
+                lines.append(
+                    f"- {hit.chunk.date}: "
+                    f"{_evidence_excerpt(hit.chunk.text, 360, citation_text=hit.chunk.markdown)}"
+                )
 
             source_hits = [hit for hit in hits if hit.chunk.corpus == "source" and hit.chunk.date in report_dates]
             if source_hits:
@@ -2252,7 +2301,8 @@ class AgenticWikiResponder:
         for index, hit in enumerate(hits[:8], start=1):
             corpus = "raw source" if hit.chunk.corpus == "source" else "wiki"
             lines.append(
-                f"- [{index}] ({corpus}) {hit.chunk.path} | {hit.chunk.heading}: {_shorten(hit.chunk.text, 420)}"
+                f"- [{index}] ({corpus}) {hit.chunk.path} | {hit.chunk.heading}: "
+                f"{_evidence_excerpt(hit.chunk.text, 420, citation_text=hit.chunk.markdown)}"
             )
         source_hits = [hit for hit in hits[:8] if hit.chunk.corpus == "source"]
         if source_hits:
