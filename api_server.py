@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import secrets
-import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -21,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
-from agentic_wiki import AgenticWikiResponder
+from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
 from climate_delivery.artifacts import load_report_artifact
 from climate_delivery.errors import GenerationError, LockStateError
 from climate_monitor.job_status import (
@@ -56,9 +55,12 @@ from climate_registry.read_api import (
     RegistryReader,
     RegistryUnavailableError,
 )
-from climate_registry.errors import RegistryBuildError, RegistryInputError, RegistryLockError
-from climate_registry.pdf_intake import persist_pdf_intake
-from climate_registry.persistent import _read_only_connection, _validate_database
+from climate_registry.pdf_pipeline import (
+    enqueue_pdf_batch,
+    load_active_projection,
+    read_pdf_batch,
+    retry_pdf_batch,
+)
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -79,6 +81,11 @@ SHOWCASE_DIR = ROOT / "showcase"
 MANAGE_DIR = ROOT / "management_ui"
 WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
 SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
+PDF_RUNTIME_WIKI_DIR = (
+    Path(value).resolve()
+    if (value := os.getenv("CLIMATE_PDF_RUNTIME_WIKI_DIR", "").strip())
+    else None
+)
 ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadata")
 RANGE_REPORT_DIR = Path(
     os.getenv("CLIMATE_RANGE_REPORT_DIR", str(ROOT / "output" / "range-reports"))
@@ -112,7 +119,15 @@ _LOGIN_LIMITER = Limiter(key_func=get_remote_address)
 _LOGIN_RATE = parse_rate_limit("5/minute")
 app.state.limiter = _LOGIN_LIMITER
 
-responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR)
+def _selected_pdf_projection() -> tuple[Path | None, dict[str, Any] | None]:
+    try:
+        return load_active_projection(PDF_RUNTIME_WIKI_DIR)
+    except (OSError, RuntimeError):
+        return None, None
+
+
+_startup_projection, _ = _selected_pdf_projection()
+responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR, _startup_projection)
 RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
 management_service: ManagementService | None = None
 ConsolePrincipal = Annotated[ConsoleUser, Depends(current_console_user)]
@@ -484,8 +499,18 @@ def reload_wiki(request: Request, x_reload_token: str | None = Header(default=No
             detail="Reload is restricted to localhost unless RELOAD_TOKEN is configured.",
         )
 
-    responder.kb.reload()
-    return _public_config()
+    projection, metadata = _selected_pdf_projection()
+    if PDF_RUNTIME_WIKI_DIR is None:
+        responder.kb.reload()
+    else:
+        replacement = WikiKnowledgeBase(WIKI_DIR, SOURCE_DIR, projection)
+        responder.kb = replacement
+        _wiki_static_files.all_directories = (
+            [str(WIKI_DIR), str(projection)] if projection is not None else [str(WIKI_DIR)]
+        )
+    payload = _public_config()
+    payload["pdf_projection"] = metadata
+    return payload
 
 
 @app.post("/api/chat")
@@ -660,28 +685,16 @@ def _manage_call(callback):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _pdf_intake_targets() -> tuple[Path, Path] | tuple[None, str]:
-    database_value = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
-    backup_value = os.getenv("CLIMATE_REGISTRY_BACKUP_DIR", "").strip()
-    if not database_value or not backup_value:
-        return None, "PDF imports require CLIMATE_REGISTRY_DB and CLIMATE_REGISTRY_BACKUP_DIR."
-    database, backup_dir = Path(database_value), Path(backup_value)
-    if not database.is_file() or not os.access(database.parent, os.W_OK):
-        return None, "The configured Registry database is unavailable for writing."
-    try:
-        connection = _read_only_connection(database)
-        try:
-            _validate_database(connection)
-        finally:
-            connection.close()
-    except (OSError, sqlite3.DatabaseError, RegistryInputError, RegistryBuildError):
-        return None, "The configured Registry database is unavailable for writing."
-    backup_parent = backup_dir
-    while not backup_parent.exists():
-        backup_parent = backup_parent.parent
-    if not backup_parent.is_dir() or not os.access(backup_parent, os.W_OK | os.X_OK):
-        return None, "The configured Registry backup directory is unavailable for writing."
-    return database, backup_dir
+def _pdf_intake_queue() -> tuple[Path, None] | tuple[None, str]:
+    value = os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", "").strip()
+    if not value:
+        return None, "PDF batch processing is not configured."
+    queue = Path(value).resolve()
+    if queue == ROOT or ROOT in queue.parents:
+        return None, "The PDF batch queue must be outside the application repository."
+    if not queue.is_dir() or not os.access(queue, os.W_OK | os.X_OK):
+        return None, "The PDF batch queue is unavailable for writing."
+    return queue, None
 
 
 def _pdf_intake_preview(bundle: dict[str, Any], writable: bool, error: str | None = None) -> dict[str, Any]:
@@ -734,9 +747,13 @@ def _pdf_intake_bundle_digest(bundle: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _require_one_pdf(files: list[UploadFile]) -> None:
+    if len(files) != 1:
+        raise HTTPException(status_code=422, detail="Choose exactly one PDF file.")
+
+
 async def _uploaded_pdf_bundle(files: list[UploadFile]) -> dict[str, Any]:
-    if not files:
-        raise HTTPException(status_code=422, detail="Choose one or more PDF files.")
+    _require_one_pdf(files)
     with tempfile.TemporaryDirectory(prefix="climate-pdf-intake-") as directory:
         temporary = Path(directory)
         uploads: dict[str, str] = {}
@@ -845,10 +862,10 @@ def console_asset(filename: str, user: ConsolePrincipal) -> FileResponse:
 @app.post("/api/manage/pdf-intake/preview", include_in_schema=False)
 async def console_pdf_intake_preview(user: ConsolePrincipal, files: list[UploadFile] = File()) -> dict[str, Any]:
     bundle = await _uploaded_pdf_bundle(files)
-    targets = _pdf_intake_targets()
-    if targets[0] is None:
-        return _pdf_intake_preview(bundle, False, targets[1])
-    return _pdf_intake_preview(bundle, True)
+    queue = _pdf_intake_queue()
+    if queue[0] is not None:
+        return _pdf_intake_preview(bundle, True)
+    return _pdf_intake_preview(bundle, False, queue[1])
 
 
 @app.post("/api/manage/pdf-intake/import", include_in_schema=False)
@@ -856,21 +873,47 @@ async def console_pdf_intake_import(
     user: ConsolePrincipal, files: list[UploadFile] = File(), confirmed: bool = False,
     preview_sha: list[str] = Query(default=[]), preview_digest: str = "",
 ) -> dict[str, Any]:
+    _require_one_pdf(files)
     if not confirmed:
         raise HTTPException(status_code=422, detail="Confirm the PDF import before writing.")
-    targets = _pdf_intake_targets()
-    if targets[0] is None:
-        raise HTTPException(status_code=503, detail=targets[1])
+    queue = _pdf_intake_queue()
+    if queue[0] is None:
+        raise HTTPException(status_code=503, detail=queue[1])
     bundle = await _uploaded_pdf_bundle(files)
     if preview_sha != [document["source"]["sha256"] for document in bundle["documents"]]:
         raise HTTPException(status_code=422, detail="Uploaded PDFs do not match the preview.")
     if preview_digest != _pdf_intake_bundle_digest(bundle):
         raise HTTPException(status_code=422, detail="Parsed PDF details do not match the preview.")
     try:
-        result = persist_pdf_intake(targets[0], targets[1], bundle)
-    except (RegistryInputError, RegistryBuildError, RegistryLockError) as exc:
-        raise HTTPException(status_code=503, detail=f"PDF batch was not imported: {exc}") from exc
-    return result | _pdf_intake_preview(bundle, True)
+        return enqueue_pdf_batch(queue[0], bundle, repository_root=ROOT)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"PDF batch was not queued: {exc}") from exc
+
+
+@app.get("/api/manage/pdf-intake/batches/{batch_id}", include_in_schema=False)
+def console_pdf_intake_batch(batch_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    queue = _pdf_intake_queue()
+    if queue[0] is None:
+        raise HTTPException(status_code=503, detail=queue[1])
+    try:
+        return read_pdf_batch(queue[0], batch_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF batch was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid PDF batch status.") from exc
+
+
+@app.post("/api/manage/pdf-intake/batches/{batch_id}/retry", include_in_schema=False)
+def console_retry_pdf_intake_batch(batch_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    queue = _pdf_intake_queue()
+    if queue[0] is None:
+        raise HTTPException(status_code=503, detail=queue[1])
+    try:
+        return retry_pdf_batch(queue[0], batch_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF batch was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid PDF batch status.") from exc
 
 
 @app.get("/api/manage/config", include_in_schema=False)
@@ -999,7 +1042,10 @@ def console_meeting_snapshot(snapshot_id: str, user: ConsolePrincipal) -> dict[s
     return _manage_call(lambda: load_snapshot(database, snapshot_id))
 
 
-app.mount("/wiki", StaticFiles(directory=WIKI_DIR), name="wiki")
+_wiki_static_files = StaticFiles(directory=WIKI_DIR)
+if _startup_projection is not None:
+    _wiki_static_files.all_directories = [str(WIKI_DIR), str(_startup_projection)]
+app.mount("/wiki", _wiki_static_files, name="wiki")
 app.mount("/sources", StaticFiles(directory=SOURCE_DIR), name="sources")
 app.mount("/showcase", StaticFiles(directory=SHOWCASE_DIR), name="showcase")
 

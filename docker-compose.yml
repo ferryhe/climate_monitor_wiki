@@ -43,9 +43,9 @@ services:
     volumes:
       # Bind-mount the content so an ingest run on the host is picked up by
       # POST /api/reload without rebuilding the image.
-      - ./wiki:/app/wiki
-      - ./sources:/app/sources
-      - ./article_metadata:/app/article_metadata
+      - ./wiki:/app/wiki:ro
+      - ./sources:/app/sources:ro
+      - ./article_metadata:/app/article_metadata:ro
       - climate_runtime:/app/output
       - climate_runtime:/pipeline
       - web_listening_runtime:/opt/web-listening-data

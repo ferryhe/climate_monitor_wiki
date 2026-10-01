@@ -365,6 +365,12 @@ def _registry_pages(database: Path, wiki_dir: Path) -> dict[str, str]:
     return states
 
 
+def sync_registry_wiki(database: Path, wiki_dir: Path) -> dict[str, str]:
+    """Project Registry records into an explicitly selected Wiki directory."""
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    return _registry_pages(database, wiki_dir)
+
+
 def sync_source_wiki(
     *,
     source_dir: Path = DEFAULT_SOURCE_DIR,
@@ -379,7 +385,7 @@ def sync_source_wiki(
     source_dates = _discover_daily_dates(source_dir)
     existing_daily_dates = _discover_daily_dates(wiki_dir)
     known_dates = source_dates | existing_daily_dates
-    registry_states = _registry_pages(registry_database, wiki_dir) if registry_database else {}
+    registry_states = sync_registry_wiki(registry_database, wiki_dir) if registry_database else {}
     if not known_dates and not registry_states:
         raise RuntimeError(
             "No climate-monitor report files were found in sources/ or wiki/."

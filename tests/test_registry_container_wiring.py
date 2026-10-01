@@ -112,18 +112,34 @@ def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only
         RegistryReader(ROOT / "data" / "registry" / "article-registry.sqlite3", repository_root=ROOT)
 
 
-def test_registry_import_overlay_is_an_explicit_writable_opt_in():
+def test_registry_import_overlay_keeps_site_read_only_and_adds_one_writer():
     override = yaml.safe_load((ROOT / "docker-compose.registry-import.yml").read_text(encoding="utf-8"))
-    service = override["services"]["wiki"]
-    assert service["environment"] == {
-        "CLIMATE_REGISTRY_MANAGEMENT_IMPORT": "1",
-        "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3",
-        "CLIMATE_REGISTRY_BACKUP_DIR": "/registry/pdf-intake-backups",
+    site = override["services"]["wiki"]
+    assert site["environment"] == {
+        "CLIMATE_PDF_INTAKE_QUEUE_DIR": "/pdf-intake-queue",
+        "CLIMATE_PDF_RUNTIME_WIKI_DIR": "/runtime/wiki",
     }
-    mount = service["volumes"][0]
-    assert mount["target"] == "/registry"
-    assert mount["read_only"] is False
-    assert mount["bind"] == {"create_host_path": False}
+    assert {mount["target"]: mount["read_only"] for mount in site["volumes"]} == {
+        "/pdf-intake-queue": False,
+        "/runtime/wiki": True,
+    }
+    writer = override["services"]["pdf-intake-writer"]
+    assert writer["environment"]["CLIMATE_PDF_INTAKE_WRITER"] == "1"
+    assert {mount["target"]: mount["read_only"] for mount in writer["volumes"]} == {
+        "/registry": False,
+        "/pdf-intake-queue": False,
+        "/runtime/wiki": False,
+    }
+    assert all(mount["bind"] == {"create_host_path": False} for mount in writer["volumes"])
+
+
+def test_base_compose_mounts_repository_content_read_only():
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    volumes = compose["services"]["wiki"]["volumes"]
+
+    assert "./wiki:/app/wiki:ro" in volumes
+    assert "./sources:/app/sources:ro" in volumes
+    assert "./article_metadata:/app/article_metadata:ro" in volumes
 
 
 def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
