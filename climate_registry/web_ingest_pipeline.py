@@ -492,5 +492,3 @@ class WebIngestPipeline:
             return self._save(status, stage="chat_ready", chat_ready=True, error=None)
         except Exception as exc:
             return self._save(status, stage="failed", chat_ready=False, error=f"{type(exc).__name__}: {exc}")
-
-\n
