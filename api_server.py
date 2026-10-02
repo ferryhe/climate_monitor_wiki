@@ -665,6 +665,11 @@ def chat(request: ChatRequest) -> dict:
                 "renderer_version": RENDERER_VERSION,
                 "date_range": snapshot["date_range"],
                 "article_count": len(snapshot["articles"]),
+                "pdf_source_update_count": len(snapshot["pdf_source_updates"]),
+                "pdf_source_excluded_count": sum(
+                    snapshot["pdf_source_exclusion_counts"].values()
+                ),
+                "pdf_source_exclusion_counts": snapshot["pdf_source_exclusion_counts"],
                 "unknown_publication_date_count": snapshot["unknown_publication_date_count"],
                 "meeting_status": snapshot["meeting"]["status"],
                 "web_url": web_url,

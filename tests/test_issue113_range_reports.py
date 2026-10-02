@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
 import sys
@@ -36,7 +37,7 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _database(tmp_path: Path) -> Path:
+def _database(tmp_path: Path, *, b_published: str = "2026-09-25") -> Path:
     database = tmp_path / "registry.sqlite3"
     connection = sqlite3.connect(database)
     apply_migrations(connection)
@@ -136,7 +137,7 @@ def _database(tmp_path: Path) -> Path:
         "2026-09-20", second_url="https://mirror.example/a",
     )
     observation("a-2", 2, "article-a", "https://example.org/a?source=search", content_a, "2026-09-20")
-    observation("b-1", 3, "article-b", "https://example.org/b", content_b, "2026-09-25")
+    observation("b-1", 3, "article-b", "https://example.org/b", content_b, b_published)
     observation(
         "unknown-1", 4, "article-unknown", "https://example.org/unknown", content_unknown, None
     )
@@ -346,6 +347,133 @@ def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     )
 
 
+def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_path):
+    database = _database(tmp_path, b_published="2026-09-01")
+    connection = sqlite3.connect(database)
+
+    def pdf_article(pdf_id, url, *, core_id=None, confirmed=False):
+        connection.execute(
+            """INSERT INTO pdf_intake_articles(
+                   article_id, canonical_url, title, type_safe_classification_json, imported_at,
+                   core_article_id, confirmation_basis)
+               VALUES (?, ?, ?, '{"provider":"typesafe","label":"article"}', ?, ?, ?)""",
+            (pdf_id, url, pdf_id, NOW, core_id,
+             "exact_url_eligible_detail" if confirmed else None),
+        )
+
+    def occurrence(occurrence_id, pdf_id, sha, page, url, summary):
+        connection.execute(
+            """INSERT INTO pdf_intake_article_occurrences VALUES
+               (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)""",
+            (occurrence_id, pdf_id, sha, page, url, _sha(summary), _sha(url), json.dumps({
+                "occurrence_id": occurrence_id, "anchor_text": pdf_id, "summary": summary,
+            })),
+        )
+
+    def other_document(marker, filename, start, end):
+        sha = marker * 64
+        connection.execute(
+            """INSERT INTO pdf_intake_documents(
+                   document_sha256, source_path, filename, media_type, size_bytes,
+                   period_start, period_end, extracted_text_sha256, document_json, imported_at)
+               VALUES (?, ?, ?, 'application/pdf', 1, ?, ?, ?, '{}', ?)""",
+            (sha, f"C:/input/{filename}", filename, start, end, marker * 63 + "0", NOW),
+        )
+        return sha
+
+    overlap_sha = other_document(
+        "5", "IAA_CSC_Climate_Report_20260928.pdf", "2026-09-14", "2026-09-27"
+    )
+    unknown_sha = other_document("3", "unknown-period.pdf", None, None)
+    outside_sha = other_document("4", "outside-period.pdf", "2026-08-01", "2026-08-31")
+    pdf_article(
+        "pdf-linked-undated", "https://example.org/unknown",
+        core_id="article-unknown", confirmed=True,
+    )
+    occurrence(
+        "pdf-occ-linked-undated", "pdf-linked-undated", overlap_sha, 2,
+        "https://example.org/unknown", "Linked PDF-only observation",
+    )
+    pdf_article(
+        "pdf-outside-formal", "https://example.org/b", core_id="article-b", confirmed=True,
+    )
+    occurrence(
+        "pdf-occ-outside-formal", "pdf-outside-formal", overlap_sha, 3,
+        "https://example.org/b", "Observation linked to an evidenced formal article",
+    )
+    connection.execute(
+        "UPDATE articles SET publication_eligible=0, document_kind='landing_page' "
+        "WHERE article_id='article-b'"
+    )
+    pdf_article("pdf-only", "https://pdf.example/only")
+    occurrence(
+        "pdf-occ-only", "pdf-only", overlap_sha, 4,
+        "https://pdf.example/only", "Regional stress tests require updated scenarios.",
+    )
+    occurrence(
+        "pdf-occ-only-repeat", "pdf-only", overlap_sha, 4,
+        "https://pdf.example/only", "Regional stress tests require updated scenarios.",
+    )
+    pdf_article("pdf-unknown-period", "https://pdf.example/unknown-period")
+    occurrence(
+        "pdf-occ-unknown-period", "pdf-unknown-period", unknown_sha, 1,
+        "https://pdf.example/unknown-period", "Unknown coverage observation",
+    )
+    pdf_article("pdf-outside-period", "https://pdf.example/outside-period")
+    occurrence(
+        "pdf-occ-outside-period", "pdf-outside-period", outside_sha, 1,
+        "https://pdf.example/outside-period", "Outside coverage observation",
+    )
+    connection.commit()
+    connection.close()
+
+    root = tmp_path / "range-output"
+    snapshot = freeze_range_report(
+        _reader(database, tmp_path), root,
+        start_date="2026-09-14", end_date="2026-09-27",
+    )
+
+    assert [item["article_id"] for item in snapshot["articles"]] == ["article-a"]
+    assert len(snapshot["pdf_source_updates"]) == 2
+    assert snapshot["pdf_source_exclusion_counts"] == {
+        "non_overlapping_coverage": 1,
+        "unknown_coverage": 2,
+    }
+    updates = {item["pdf_article_id"]: item for item in snapshot["pdf_source_updates"]}
+    assert set(updates) == {"pdf-linked-undated", "pdf-only"}
+    assert updates["pdf-linked-undated"]["core_article_id"] == "article-unknown"
+    assert updates["pdf-only"]["core_article_id"] is None
+    assert "article-b" not in snapshot["unknown_publication_date_article_ids"]
+    example = updates["pdf-only"]
+    assert example["publication_date_label"] == "文章发布日期未确认"
+    assert example["coverage_period"] == {"start": "2026-09-14", "end": "2026-09-27"}
+    assert example["filename"] == "IAA_CSC_Climate_Report_20260928.pdf"
+    assert example["page"] == 4 and example["document_sha256"] == overlap_sha
+    assert example["url"] == "https://pdf.example/only"
+    assert example["summary"] == "Regional stress tests require updated scenarios."
+    assert "pdf-outside-formal" not in updates
+    assert sum(item["pdf_article_id"] == "pdf-only" for item in snapshot["pdf_source_updates"]) == 1
+    assert not any(
+        item["observation_id"] == "pdf-occ-a" for item in snapshot["pdf_source_updates"]
+    )
+
+    loaded = load_range_report(root, snapshot["snapshot_id"])
+    html_report = render_range_report_html(loaded)
+    pdf_text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
+    )
+    for rendered in (html_report, pdf_text):
+        assert "PDF Source Updates" in rendered
+        assert "IAA_CSC_Climate_Report_20260928.pdf" in rendered
+        assert "page 4" in rendered
+        assert "2026-09-14 through 2026-09-27" in rendered
+        assert "Regional stress tests require updated scenarios." in rendered
+        assert "https://pdf.example/only" in rendered
+    assert "文章发布日期未确认" in html_report
+    assert overlap_sha in html_report and overlap_sha in pdf_text
+
+
 def test_confirmed_pdf_cannot_restore_a_currently_ineligible_core_article(tmp_path):
     database = _database(tmp_path)
     connection = sqlite3.connect(database)
@@ -383,6 +511,55 @@ def test_snapshot_reopen_rerender_and_corruption_never_query_registry(tmp_path, 
     path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(RangeReportError, match="hash mismatch"):
         load_range_report(root, snapshot["snapshot_id"])
+
+
+def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, monkeypatch):
+    database = _database(tmp_path)
+    root = tmp_path / "range-output"
+    current = freeze_range_report(
+        _reader(database, tmp_path), root,
+        start_date="2026-09-17", end_date="2026-09-30",
+    )
+    legacy_frozen = {
+        key: value for key, value in current.items()
+        if key not in {
+            "snapshot_id", "snapshot_sha256", "created_at",
+            "pdf_source_updates", "pdf_source_exclusion_counts",
+        }
+    }
+    legacy_digest = range_reports._digest(legacy_frozen)
+    legacy_id = "range-report-" + legacy_digest[:24]
+    legacy = {
+        **legacy_frozen,
+        "snapshot_id": legacy_id,
+        "snapshot_sha256": legacy_digest,
+        "created_at": NOW,
+    }
+    legacy_dir = root / legacy_id
+    legacy_dir.mkdir()
+    (legacy_dir / "snapshot.json").write_text(
+        json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+    )
+
+    loaded = load_range_report(root, legacy_id)
+    assert "pdf_source_updates" not in loaded
+    assert "pdf_source_exclusion_counts" not in loaded
+    monkeypatch.setattr(api_server, "RANGE_REPORT_DIR", root)
+    client = TestClient(api_server.app)
+    web_url = f"/api/registry/range-reports/{legacy_id}/{RENDERER_VERSION}"
+    html_response = client.get(web_url)
+    pdf_response = client.get(web_url + "/pdf")
+    assert html_response.status_code == 200
+    assert "Registry-only climate article" in html_response.text
+    assert "PDF Source Updates" not in html_response.text
+    assert "PDF source observations excluded" not in html_response.text
+    assert pdf_response.status_code == 200 and pdf_response.content.startswith(b"%PDF-")
+    pdf_text = "\n".join(
+        page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf_response.content)).pages
+    )
+    assert "Registry-only climate article" in pdf_text
+    assert "PDF Source Updates" not in pdf_text
+    assert "PDF source observations excluded" not in pdf_text
 
 
 def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
@@ -449,6 +626,12 @@ def test_chat_returns_stable_web_and_pdf_links_without_normal_responder(tmp_path
     assert report["web_url"] in payload["text"] and report["pdf_url"] in payload["text"]
     assert payload["sources"] == [] and payload["agent_mode"] == "offline"
     assert report["article_count"] == 2
+    assert report["pdf_source_update_count"] == 0
+    assert report["pdf_source_excluded_count"] == 1
+    assert report["pdf_source_exclusion_counts"] == {
+        "non_overlapping_coverage": 0,
+        "unknown_coverage": 1,
+    }
     assert report["web_url"].endswith(f"/{RENDERER_VERSION}")
     page = client.get(report["web_url"])
     pdf = client.get(report["pdf_url"])
