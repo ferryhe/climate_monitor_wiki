@@ -29,6 +29,87 @@ def test_new_legacy_task_run_inherits_hermes_defaults(tmp_path, trigger):
         assert 'model' not in configuration
 
 
+def test_manual_ingest_only_mode_is_frozen_and_scheduled_default_is_unchanged(tmp_path):
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor='operator')
+    launched = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / 'runs',
+        launcher=lambda binding: launched.append(binding) or 123,
+    )
+    ingest = service.start(execution_mode='ingest_only')
+    assert ingest['execution_mode'] == 'ingest_only'
+    assert service.binding(ingest['run_id'])['execution_mode'] == 'ingest_only'
+    assert launched[-1]['execution_mode'] == 'ingest_only'
+    (tmp_path / 'runs' / ingest['run_id'] / 'attempt-1-result.json').write_text(json.dumps({
+        'exit_code': 0, 'retryable': False, 'execution_complete': True,
+        'outcome': 'ingest_only_chat_ready',
+    }))
+
+    scheduled = service.start(trigger='scheduled')
+    assert scheduled['execution_mode'] == 'report'
+    assert service.binding(scheduled['run_id'])['execution_mode'] == 'report'
+    with pytest.raises(ValueError, match='scheduled runs use report mode'):
+        service.start(trigger='scheduled', execution_mode='ingest_only')
+
+
+def test_ingest_only_no_eligible_progress_is_truthful(tmp_path, monkeypatch):
+    import climate_monitor.management as management
+    from climate_registry.persistent import initialize_registry
+
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor='operator')
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / 'runs', launcher=lambda _binding: 123,
+    )
+    started = service.start(execution_mode='ingest_only')
+    binding = service.binding(started['run_id'])
+    initialize_registry(Path(binding['registry_database']))
+    monkeypatch.setattr(management, 'load_acquisition_batch', lambda *_args: {
+        'items': [], 'searches': [], 'search_decision': 'no_search',
+        'no_search_reason': 'no eligible information',
+    })
+    (tmp_path / 'runs' / started['run_id'] / 'attempt-1-result.json').write_text(json.dumps({
+        'exit_code': 0, 'retryable': False, 'execution_complete': True,
+        'outcome': 'no_eligible_information',
+        'reportability': {
+            'outcome': 'no_eligible_information', 'reportable': False,
+            'selected_record_count': 0,
+        },
+    }))
+
+    progress = service.progress(started['run_id'])
+    assert progress['stage'] == 'no_eligible_information'
+    assert progress['report_phase'] == 'not_started'
+    assert progress['ingest_phase'] == {
+        'acquisition_complete': True, 'indexed': False, 'chat_ready': False,
+    }
+
+
+def test_ingest_only_resume_retries_post_processing_without_reacquisition(tmp_path):
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor='operator')
+    launched = []
+    service = ManagementService(
+        store=store, runtime_root=tmp_path / 'runs',
+        launcher=lambda binding: launched.append(binding) or 123,
+    )
+    started = service.start(execution_mode='ingest_only')
+    binding = service.binding(started['run_id'])
+    Path(binding['frozen_report_input']).parent.mkdir(parents=True, exist_ok=True)
+    Path(binding['frozen_report_input']).write_text('{}')
+    run_dir = tmp_path / 'runs' / started['run_id']
+    (run_dir / 'attempt-1-result.json').write_text(json.dumps({
+        'exit_code': 75, 'retryable': True, 'resume_phase': 'post_processing',
+    }))
+
+    resumed = service.resume(started['run_id'])
+    assert resumed['attempt'] == 1
+    assert resumed['phase'] == 'post_processing'
+    assert launched[-1]['execution_mode'] == 'ingest_only'
+    assert (run_dir / 'attempt-1-post-processing-failure.json').is_file()
+
+
 @pytest.mark.parametrize('legacy_override', [False, True])
 @pytest.mark.parametrize('active_enabled', [False, True])
 def test_first_manual_meeting_uses_acquisition_snapshot(tmp_path, monkeypatch, legacy_override, active_enabled):

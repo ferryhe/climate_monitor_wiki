@@ -1475,6 +1475,47 @@ def test_real_organization_fixture_reaches_frozen_report_input_and_detail(tmp_pa
     assert completed["stage"] == "report_completed"
     assert completed["report_phase"] == "completed"
 
+    ingest = service.start(
+        now=datetime(2026, 9, 10, 9, tzinfo=timezone.utc),
+        execution_mode="ingest_only",
+    )
+    ingest_dir = service._run_dir(ingest["run_id"])
+    service._write_progress(
+        ingest["run_id"], service.binding(ingest["run_id"]),
+        stage="indexed", error="Chat reload failed",
+        next_step="retry post-processing from the saved batch",
+    )
+    (ingest_dir / "attempt-1-result.json").write_text(json.dumps({
+        "schema_version": "climate-acquisition-attempt-result.v1",
+        "run_id": ingest["run_id"], "attempt": 1, "exit_code": 75,
+        "retryable": True, "resume_phase": "post_processing",
+        "execution_complete": False, "outcome": "ingest_only_activation_failed",
+        "finished_at": "2026-09-10T09:01:00Z", "error": "Chat reload failed",
+    }))
+    indexed = service.progress(ingest["run_id"])
+    assert indexed["stage"] == "indexed"
+    assert indexed["ingest_phase"] == {
+        "acquisition_complete": True, "indexed": True, "chat_ready": False,
+    }
+    assert indexed["report_phase"] == "not_started"
+
+    service._write_progress(
+        ingest["run_id"], service.binding(ingest["run_id"]), stage="chat_ready",
+    )
+    (ingest_dir / "attempt-1-result.json").write_text(json.dumps({
+        "schema_version": "climate-acquisition-attempt-result.v1",
+        "run_id": ingest["run_id"], "attempt": 1, "exit_code": 0,
+        "retryable": False, "execution_complete": True,
+        "outcome": "ingest_only_chat_ready", "finished_at": "2026-09-10T09:02:00Z",
+        "error": None,
+    }))
+    ready = service.progress(ingest["run_id"])
+    assert ready["stage"] == "chat_ready"
+    assert ready["ingest_phase"] == {
+        "acquisition_complete": True, "indexed": True, "chat_ready": True,
+    }
+    assert ready["report_phase"] == "not_started"
+
 
 def test_duplicate_scheduled_start_reuses_recovery_boundary(tmp_path):
     store = _store(tmp_path)

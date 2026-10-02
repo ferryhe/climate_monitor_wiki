@@ -349,6 +349,70 @@ def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     )
 
 
+def test_active_web_identity_survives_linked_pdf_overlay_merge(tmp_path):
+    database = _database(tmp_path)
+    later_body = "Later mutable Registry body must not replace the activated web version."
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO article_content_versions VALUES
+               ('content-later', 'article-a', ?, ?, ?, 'text/markdown', ?,
+                'reader', 'reader-v1', ?)""",
+            (_sha(later_body), later_body, _sha(later_body), len(later_body), NOW),
+        )
+        connection.execute(
+            "UPDATE articles SET current_content_version_id='content-later' "
+            "WHERE article_id='article-a'"
+        )
+
+    reader = _reader(database, tmp_path)
+    root = tmp_path / "range-output"
+    snapshot = freeze_range_report(
+        reader,
+        root,
+        start_date="2026-09-17",
+        end_date="2026-09-30",
+        overlay_reader=reader,
+        pdf_overlay_reader=reader,
+        overlay_manifest={
+            "web_items": [{"acquisition_item_id": "a-1"}],
+            "pdf_occurrence_ids": ["pdf-occ-a"],
+        },
+    )
+    article = next(item for item in snapshot["articles"] if item["article_id"] == "article-a")
+    assert article["content_version_id"] == "content-article-a"
+    assert "Long persisted climate evidence" in article["content"]
+    assert later_body not in article["content"]
+    assert {item["kind"] for item in article["source_observations"]} == {
+        "registry_acquisition", "registry_pdf",
+    }
+    assert {item["kind"] for item in article["citations"]} == {"url", "pdf_page"}
+    assert {"a-1", "pdf-occ-a"} <= {
+        item["observation_id"]
+        for item in article["provenance"]["publication_date"]["all_in_range"]
+    }
+
+    html = render_range_report_html(snapshot)
+    pdf_text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
+    )
+    for rendered in (html, pdf_text):
+        assert "content-article-a" in rendered
+        assert "https://example.org/a?source=site" in rendered
+        assert "report.pdf, page 7" in rendered
+    assert later_body not in html and later_body not in pdf_text
+
+    pdf_only = freeze_range_report(
+        reader,
+        tmp_path / "pdf-only-range-output",
+        start_date="2026-09-17",
+        end_date="2026-09-30",
+        pdf_overlay_reader=reader,
+        overlay_manifest={"web_items": [], "pdf_occurrence_ids": ["pdf-occ-a"]},
+    )
+    assert pdf_only["articles"][0]["content_version_id"] == "content-later"
+
+
 def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_path):
     database = _database(tmp_path, b_published="2026-09-01")
     connection = sqlite3.connect(database)

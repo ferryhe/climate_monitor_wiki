@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from climate_delivery.io import atomic_write_json
+from climate_delivery.io import atomic_write_json, exclusive_lock
 from scripts.sync_source_wiki import sync_registry_wiki
 
 from .pdf_intake import persist_pdf_intake
@@ -20,6 +20,7 @@ from .persistent import _file_sha256, _read_only_connection, _validate_database
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+PROJECTION_MANIFEST_SCHEMA = "climate-intake-projection.v1"
 
 
 def _now() -> str:
@@ -141,6 +142,73 @@ def load_active_projection(
     return generation, value
 
 
+def load_projection_manifest(
+    generation: Path | None, metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Load the exact activated intake allowlist, when the generation has one."""
+    if generation is None or metadata is None or "manifest_sha256" not in metadata:
+        return None
+    path = generation / "intake-manifest.json"
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError("active intake projection manifest is invalid") from exc
+    if (
+        hashlib.sha256(payload).hexdigest() != metadata["manifest_sha256"]
+        or value.get("schema_version") != PROJECTION_MANIFEST_SCHEMA
+        or value.get("generation_id") != metadata.get("generation_id")
+        or not isinstance(value.get("web_items"), list)
+        or not isinstance(value.get("pdf_occurrence_ids"), list)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {
+                "acquisition_item_id", "batch_id", "article_id", "content_version_id",
+                "publication_date", "publication_date_evidence",
+            }
+            or any(not isinstance(item.get(key), str) or not item[key] for key in (
+                "acquisition_item_id", "batch_id", "article_id", "content_version_id",
+                "publication_date",
+            ))
+            or not isinstance(item.get("publication_date_evidence"), dict)
+            or not item["publication_date_evidence"]
+            for item in value.get("web_items", [])
+        )
+        or any(not isinstance(item, str) or not item for item in value.get("pdf_occurrence_ids", []))
+    ):
+        raise RuntimeError("active intake projection manifest is invalid")
+    identities = [item["acquisition_item_id"] for item in value["web_items"]]
+    try:
+        valid_dates = all(
+            datetime.strptime(item["publication_date"], "%Y-%m-%d").strftime("%Y-%m-%d")
+            == item["publication_date"]
+            for item in value["web_items"]
+        )
+    except ValueError:
+        valid_dates = False
+    if len(identities) != len(set(identities)) or not valid_dates:
+        raise RuntimeError("active intake projection manifest is invalid")
+    return value
+
+
+def _write_projection_manifest(
+    generation: Path,
+    generation_id: str,
+    *,
+    web_items: list[dict[str, Any]],
+    pdf_occurrence_ids: set[str],
+) -> str:
+    value = {
+        "schema_version": PROJECTION_MANIFEST_SCHEMA,
+        "generation_id": generation_id,
+        "web_items": sorted(web_items, key=lambda item: item["acquisition_item_id"]),
+        "pdf_occurrence_ids": sorted(pdf_occurrence_ids),
+    }
+    payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+    (generation / "intake-manifest.json").write_bytes(payload)
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _snapshot_registry(database: Path, destination: Path) -> str:
     before = _file_sha256(database)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -181,8 +249,9 @@ def _projection_contains(
     return bool(found) and pages <= found
 
 
-def _retain_pdf_observations(staging: Path, blocked_occurrence_ids: set[str]) -> None:
+def _retain_pdf_observations(staging: Path, blocked_occurrence_ids: set[str]) -> set[str]:
     sections: dict[str, str] = {}
+    retained: set[str] = set()
     for page in sorted(staging.glob("*.md")):
         lines = page.read_text(encoding="utf-8").splitlines()
         start = 0
@@ -210,6 +279,7 @@ def _retain_pdf_observations(staging: Path, blocked_occurrence_ids: set[str]) ->
                 sections.setdefault(
                     heading, "\n".join(block[: citation + 1]).strip()
                 )
+                retained.add(occurrence_id)
             start = end
     if not sections:
         raise RuntimeError("the imported PDF produced no searchable Wiki observation")
@@ -225,6 +295,7 @@ def _retain_pdf_observations(staging: Path, blocked_occurrence_ids: set[str]) ->
     for page in staging.glob("*.md"):
         if page != output:
             page.unlink()
+    return retained
 
 
 class PdfIntakePipeline:
@@ -241,6 +312,7 @@ class PdfIntakePipeline:
         repository_root: Path | None = None,
     ) -> None:
         repository = repository_root or Path(__file__).resolve().parents[1]
+        self.repository_root = repository.resolve()
         self.queue_dir = _external(queue_dir, repository)
         self.database = _external(database, repository)
         self.backup_dir = _external(backup_dir, repository)
@@ -308,28 +380,45 @@ class PdfIntakePipeline:
         document_sha256: str,
         filename: str,
         pages: set[str],
-    ) -> tuple[Path, str, str]:
+    ) -> tuple[Path, str, str, str]:
         generation_id = f"{batch_id[:16]}-{attempt:04d}"
         generations = self.runtime_wiki_dir / "generations"
         generation = generations / generation_id
         snapshot = self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3"
         generations.mkdir(parents=True, exist_ok=True)
         registry_sha256 = _snapshot_registry(self.database, snapshot)
+        active_generation, active_metadata = self._active_projection()
+        active_manifest = load_projection_manifest(active_generation, active_metadata)
+        web_items = list((active_manifest or {}).get("web_items", []))
         staging = Path(tempfile.mkdtemp(prefix=f".{generation_id}.", dir=generations))
         try:
             sync_registry_wiki(snapshot, staging)
-            _retain_pdf_observations(staging, self._blocked_occurrence_ids(batch_id))
+            retained = _retain_pdf_observations(staging, self._blocked_occurrence_ids(batch_id))
+            if active_generation is not None:
+                for item in web_items:
+                    name = f"article-{item['article_id']}.md"
+                    source = active_generation / name
+                    if not source.is_file():
+                        raise RuntimeError("active web projection page is missing")
+                    shutil.copyfile(source, staging / name)
             if not _projection_contains(staging, document_sha256, filename, pages):
                 raise RuntimeError("the imported PDF produced no searchable Wiki projection")
             if generation.exists():
                 raise RuntimeError("Wiki generation already exists")
             os.replace(staging, generation)
+            manifest_sha256 = _write_projection_manifest(
+                generation, generation_id, web_items=web_items, pdf_occurrence_ids=retained,
+            )
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
-        return generation, generation_id, registry_sha256
+        return generation, generation_id, registry_sha256, manifest_sha256
 
     def process(self, batch_id: str) -> dict[str, Any]:
+        with exclusive_lock(self.queue_dir, "intake-writer"):
+            return self._process_unlocked(batch_id)
+
+    def _process_unlocked(self, batch_id: str) -> dict[str, Any]:
         status = read_pdf_batch(self.queue_dir, batch_id)
         if status.get("chat_ready"):
             return status
@@ -372,14 +461,23 @@ class PdfIntakePipeline:
                 candidate = self.runtime_wiki_dir / "generations" / str(
                     status.get("generation_id", "")
                 )
+                active_generation, active_metadata = self._active_projection()
+                active_manifest = load_projection_manifest(active_generation, active_metadata)
+                candidate_manifest = load_projection_manifest(candidate, {
+                    "generation_id": candidate.name,
+                    "manifest_sha256": status.get("manifest_sha256"),
+                }) if candidate.is_dir() and status.get("manifest_sha256") else None
                 if candidate.is_dir() and _projection_contains(
                     candidate, document_sha256, filename, pages
+                ) and list((candidate_manifest or {}).get("web_items", [])) == list(
+                    (active_manifest or {}).get("web_items", [])
                 ):
                     generation = candidate
             if generation is None:
-                generation, generation_id, registry_sha256 = self._build_generation(
+                generation, generation_id, registry_sha256, manifest_sha256 = self._build_generation(
                     batch_id, attempt, document_sha256, filename, pages
                 )
+                _, prior_active = self._active_projection()
                 status = self._save(
                     batch_id,
                     status,
@@ -387,15 +485,32 @@ class PdfIntakePipeline:
                     indexed=True,
                     generation_id=generation_id,
                     registry_sha256=registry_sha256,
+                    manifest_sha256=manifest_sha256,
+                    registry_snapshot=str((self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3").resolve()),
+                    pdf_registry_snapshot=str((self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3").resolve()),
+                    pdf_registry_sha256=registry_sha256,
+                    web_registry_snapshot=(prior_active or {}).get("web_registry_snapshot"),
+                    web_registry_sha256=(prior_active or {}).get("web_registry_sha256"),
                 )
 
             status = self._save(batch_id, status, stage="activating")
             active_generation, active = self._active_projection()
+            active_kind = active.get("projection_kind") if active is not None else None
+            if (
+                active is not None
+                and active_kind is None
+                and _SHA256.fullmatch(str(active.get("batch_id", ""))) is not None
+                and isinstance(active.get("document_sha256"), str)
+            ):
+                active_kind = "pdf"
+            if active is not None and active_kind not in {"pdf", "web"}:
+                raise RuntimeError("active intake projection kind is invalid")
             if (
                 active_generation is not None
                 and active is not None
                 and active["generation_id"] != generation.name
                 and str(active.get("batch_created_at", "")) > str(status["created_at"])
+                and active_kind == "pdf"
             ):
                 active_status = read_pdf_batch(
                     self.queue_dir, str(active.get("batch_id", ""))
@@ -438,13 +553,20 @@ class PdfIntakePipeline:
                     replacement = {
                         "batch_id": active["batch_id"],
                         "batch_created_at": active["batch_created_at"],
+                        "projection_kind": "pdf",
                         "generation_id": generation.name,
                         "path": str(generation.resolve()),
                         "registry_sha256": registry_sha256,
+                        "registry_snapshot": status.get("registry_snapshot"),
+                        "pdf_registry_snapshot": status.get("pdf_registry_snapshot"),
+                        "pdf_registry_sha256": status.get("pdf_registry_sha256"),
+                        "web_registry_snapshot": status.get("web_registry_snapshot"),
+                        "web_registry_sha256": status.get("web_registry_sha256"),
                         "document_sha256": active["document_sha256"],
                         "filename": active_filename,
                         "pages": sorted(active_pages),
                         "activated_at": _now(),
+                        "manifest_sha256": status.get("manifest_sha256"),
                     }
                     self._activate(replacement)
                     self._save(
@@ -470,13 +592,20 @@ class PdfIntakePipeline:
                 {
                     "batch_id": batch_id,
                     "batch_created_at": status["created_at"],
+                    "projection_kind": "pdf",
                     "generation_id": generation.name,
                     "path": str(generation.resolve()),
                     "registry_sha256": registry_sha256,
+                    "registry_snapshot": status.get("registry_snapshot"),
+                    "pdf_registry_snapshot": status.get("pdf_registry_snapshot"),
+                    "pdf_registry_sha256": status.get("pdf_registry_sha256"),
+                    "web_registry_snapshot": status.get("web_registry_snapshot"),
+                    "web_registry_sha256": status.get("web_registry_sha256"),
                     "document_sha256": document_sha256,
                     "filename": filename,
                     "pages": sorted(pages),
                     "activated_at": _now(),
+                    "manifest_sha256": status.get("manifest_sha256"),
                 }
             )
             return self._save(
@@ -500,11 +629,46 @@ class PdfIntakePipeline:
             except (OSError, json.JSONDecodeError):
                 continue
             if status.get("stage") in resumable:
-                candidates.append(status)
+                candidates.append({**status, "projection_kind": "pdf"})
+        for status_path in sorted((self.queue_dir / "web").glob("*/status.json")):
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            retry_requested = (status_path.parent / "retry.json").is_file()
+            if status.get("stage") in resumable or (
+                status.get("stage") == "failed" and retry_requested
+            ):
+                candidates.append({
+                    **status, "projection_kind": "web", "status_path": status_path,
+                })
         if not candidates:
             return None
         status = min(
             candidates,
             key=lambda item: (str(item.get("created_at", "")), str(item.get("batch_id", ""))),
         )
-        return self.process(str(status.get("batch_id", "")))
+        batch_id = str(status.get("batch_id", ""))
+        if status["projection_kind"] == "web":
+            from .web_ingest_pipeline import WebIngestPipeline, read_web_activation_request
+
+            try:
+                request = read_web_activation_request(self.queue_dir, batch_id)
+            except Exception as exc:
+                status_path = Path(status["status_path"])
+                persisted = json.loads(status_path.read_text(encoding="utf-8"))
+                persisted.update(
+                    stage="failed", chat_ready=False,
+                    error=f"{type(exc).__name__}: {exc}", updated_at=_now(),
+                )
+                atomic_write_json(status_path, persisted)
+                (status_path.parent / "retry.json").unlink(missing_ok=True)
+                return persisted
+            return WebIngestPipeline(
+                self.queue_dir,
+                Path(request["registry_snapshot_path"]),
+                self.runtime_wiki_dir,
+                self.reload_chat,
+                repository_root=self.repository_root,
+            ).process(batch_id)
+        return self.process(batch_id)

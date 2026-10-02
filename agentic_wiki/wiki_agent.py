@@ -746,9 +746,11 @@ class WikiKnowledgeBase:
             overlay_docs, overlay_chunks = self._load_directory(
                 self.wiki_overlay_dir, "wiki", path_root="wiki"
             )
-            base_paths = {doc.path for doc in wiki_docs}
-            wiki_docs += [doc for doc in overlay_docs if doc.path not in base_paths]
-            wiki_chunks += [chunk for chunk in overlay_chunks if chunk.path not in base_paths]
+            overlay_paths = {doc.path for doc in overlay_docs}
+            wiki_docs = [doc for doc in wiki_docs if doc.path not in overlay_paths] + overlay_docs
+            wiki_chunks = [
+                chunk for chunk in wiki_chunks if chunk.path not in overlay_paths
+            ] + overlay_chunks
         source_docs, source_chunks = self._load_directory(self.source_dir, "source")
 
         self.documents = wiki_docs

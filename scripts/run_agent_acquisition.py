@@ -3406,12 +3406,65 @@ def _resume_frozen_report(
     return 0
 
 
+def _run_ingest_activation(binding: Mapping[str, Any]) -> dict[str, Any]:
+    """Queue the saved batch for the existing intake writer and observe it."""
+    from climate_registry.web_ingest_pipeline import (
+        enqueue_web_activation,
+        wait_web_activation,
+    )
+
+    def required(*names: str) -> str:
+        value = next((os.getenv(name, "").strip() for name in names if os.getenv(name, "").strip()), "")
+        if not value:
+            raise RuntimeError(f"{names[0]} is required for ingest-only activation")
+        return value
+
+    queue = Path(required("CLIMATE_INTAKE_QUEUE_DIR", "CLIMATE_PDF_INTAKE_QUEUE_DIR"))
+    frozen = Path(binding["frozen_report_input"]).read_bytes()
+    enqueue_web_activation(
+        queue,
+        database=Path(binding["registry_database"]),
+        batch_id=str(binding["acquisition_batch_id"]),
+        frozen_payload_sha256=hashlib.sha256(frozen).hexdigest(),
+        repository_root=ROOT,
+    )
+    try:
+        timeout = float(os.getenv("CLIMATE_WEB_INGEST_WAIT_SECONDS", "30"))
+    except ValueError as exc:
+        raise RuntimeError("CLIMATE_WEB_INGEST_WAIT_SECONDS must be numeric") from exc
+    return wait_web_activation(
+        queue, str(binding["acquisition_batch_id"]), timeout_seconds=timeout,
+    )
+
+
+def _retryable_ingest_activation(binding: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return _run_ingest_activation(binding)
+    except Exception as exc:
+        return {
+            "stage": "acquisition_complete",
+            "acquisition_complete": True,
+            "indexed": False,
+            "chat_ready": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _ingest_progress_stage(status: Mapping[str, Any]) -> str:
+    if status.get("chat_ready"):
+        return "chat_ready"
+    if status.get("indexed"):
+        return "indexed"
+    return "acquisition_complete"
+
+
 def _execute_locked(
     binding_path: Path, *, state_lock_descriptor: int | None = None,
+    ingest_only: bool = False,
 ) -> int:
     try:
         return _execute_attempt(
-            binding_path, state_lock_descriptor=state_lock_descriptor,
+            binding_path, state_lock_descriptor=state_lock_descriptor, ingest_only=ingest_only,
         )
     finally:
         binding = json.loads(binding_path.read_text())
@@ -3421,6 +3474,7 @@ def _execute_locked(
 
 def _execute_attempt(
     binding_path: Path, *, state_lock_descriptor: int | None = None,
+    ingest_only: bool = False,
 ) -> int:
     acquisition_started = time.monotonic()
     binding_path = binding_path.resolve(strict=True)
@@ -3431,7 +3485,39 @@ def _execute_attempt(
     _validate_agent_prompt_protocol(binding)
     site_skill_hints = frozen_site_skill_hints(binding)
     try:
-        resumed_report = _resume_frozen_report(
+        if ingest_only and Path(binding["frozen_report_input"]).exists():
+            frozen = json.loads(Path(binding["frozen_report_input"]).read_text(encoding="utf-8"))
+            acquisition_payload = json.loads(
+                (binding_path.parent / f"attempt-{binding['attempt']}-acquisition.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            verify_reportable_freeze(
+                binding["registry_database"], binding["acquisition_batch_id"],
+                report_date=binding["report_date"], payload=frozen,
+                acquisition_payload=acquisition_payload,
+            )
+            activated = _retryable_ingest_activation(binding)
+            if not activated.get("chat_ready"):
+                error = activated.get("error") or "ingest-only activation failed"
+                _write_result(
+                    binding_path, exit_code=75, retryable=True, error=error,
+                    resume_phase="post_processing", execution_complete=False,
+                    outcome="ingest_only_activation_failed",
+                )
+                _write_progress(
+                    binding_path, binding, stage=_ingest_progress_stage(activated),
+                    error=error, next_step="retry post-processing from the saved batch",
+                )
+                return 75
+            _commit_controlled_site_checkpoints(binding)
+            _write_result(
+                binding_path, exit_code=0, retryable=False, error=None,
+                execution_complete=True, outcome="ingest_only_chat_ready",
+            )
+            _write_progress(binding_path, binding, stage="chat_ready")
+            return 0
+        resumed_report = None if ingest_only else _resume_frozen_report(
             binding_path, binding, state_lock_descriptor=state_lock_descriptor,
         )
     except Exception as exc:
@@ -3842,6 +3928,29 @@ def _execute_attempt(
             return 75
         frozen_bytes = json.dumps(frozen, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n"
         _atomic_write(Path(binding["frozen_report_input"]), frozen_bytes)
+        if ingest_only:
+            _write_progress(binding_path, binding, stage="acquisition_complete", events=all_events)
+            activated = _retryable_ingest_activation(binding)
+            if not activated.get("chat_ready"):
+                error = activated.get("error") or "ingest-only activation failed"
+                _write_result(
+                    binding_path, exit_code=75, retryable=True, error=error,
+                    resume_phase="post_processing", execution_complete=False,
+                    outcome="ingest_only_activation_failed", reportability=reportability,
+                )
+                _write_progress(
+                    binding_path, binding, stage=_ingest_progress_stage(activated),
+                    error=error, next_step="retry post-processing from the saved batch",
+                )
+                return 75
+            _commit_controlled_site_checkpoints(binding)
+            _write_result(
+                binding_path, exit_code=0, retryable=False, error=None,
+                execution_complete=True, full_coverage=reportability["full_coverage"],
+                outcome="ingest_only_chat_ready", reportability=reportability,
+            )
+            _write_progress(binding_path, binding, stage="chat_ready", events=all_events)
+            return 0
         _write_progress(binding_path, binding, stage="report_preparing", events=all_events)
         _write_runtime(binding_path, binding, state="running", pid=os.getpid())
         report_exit = _run_report(
@@ -3900,16 +4009,22 @@ def _execute_attempt(
         return 65
 
 
-def execute(binding_path: Path) -> int:
+def execute(binding_path: Path, *, ingest_only: bool = False) -> int:
     """Own shared monitor state from collection through report finalization."""
     resolved = binding_path.resolve(strict=True)
     binding = json.loads(resolved.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise ValueError(f"unsupported binding schema at {resolved}")
+    binding_mode = binding.get("execution_mode", "report")
+    requested_mode = "ingest_only" if ingest_only else "report"
+    if binding_mode != requested_mode:
+        raise ValueError("execution mode differs from the frozen binding")
     from climate_monitor.hermes_identity import load_snapshot
     load_snapshot(resolved.parent, binding.get("hermes_snapshot"))
     with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
-        return _execute_locked(resolved, state_lock_descriptor=descriptor)
+        return _execute_locked(
+            resolved, state_lock_descriptor=descriptor, ingest_only=ingest_only,
+        )
 
 
 def main() -> int:
@@ -3917,12 +4032,18 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--binding", type=Path)
     group.add_argument("--scheduled-start", action="store_true")
+    parser.add_argument(
+        "--ingest-only", action="store_true",
+        help="Persist, index, and activate the acquisition without generating a report.",
+    )
     args = parser.parse_args()
     if args.scheduled_start:
+        if args.ingest_only:
+            parser.error("--ingest-only requires --binding")
         result = ManagementService.from_environment().start(trigger="scheduled")
         print(json.dumps(result, sort_keys=True))
         return 0
-    return execute(args.binding)
+    return execute(args.binding, ingest_only=args.ingest_only)
 
 
 if __name__ == "__main__":
