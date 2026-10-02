@@ -610,7 +610,7 @@ def reload_wiki(
             previous_directories = list(_wiki_static_files.all_directories)
             responder.kb = replacement
             _wiki_static_files.all_directories = (
-                [str(WIKI_DIR), str(projection)] if projection is not None else [str(WIKI_DIR)]
+                [str(projection), str(WIKI_DIR)] if projection is not None else [str(WIKI_DIR)]
             )
             if generation_id is not None:
                 try:
@@ -1177,7 +1177,7 @@ def console_meeting_snapshot(snapshot_id: str, user: ConsolePrincipal) -> dict[s
 
 _wiki_static_files = StaticFiles(directory=WIKI_DIR)
 if _startup_projection is not None:
-    _wiki_static_files.all_directories = [str(WIKI_DIR), str(_startup_projection)]
+    _wiki_static_files.all_directories = [str(_startup_projection), str(WIKI_DIR)]
 app.mount("/wiki", _wiki_static_files, name="wiki")
 app.mount("/sources", StaticFiles(directory=SOURCE_DIR), name="sources")
 app.mount("/showcase", StaticFiles(directory=SHOWCASE_DIR), name="showcase")

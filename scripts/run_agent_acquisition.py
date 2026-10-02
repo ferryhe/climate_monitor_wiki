@@ -4015,6 +4015,10 @@ def execute(binding_path: Path, *, ingest_only: bool = False) -> int:
     binding = json.loads(resolved.read_text(encoding="utf-8"))
     if binding.get("schema_version") != BINDING_SCHEMA:
         raise ValueError(f"unsupported binding schema at {resolved}")
+    binding_mode = binding.get("execution_mode", "report")
+    requested_mode = "ingest_only" if ingest_only else "report"
+    if binding_mode != requested_mode:
+        raise ValueError("execution mode differs from the frozen binding")
     from climate_monitor.hermes_identity import load_snapshot
     load_snapshot(resolved.parent, binding.get("hermes_snapshot"))
     with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:

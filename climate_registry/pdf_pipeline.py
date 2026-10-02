@@ -639,7 +639,9 @@ class PdfIntakePipeline:
             if status.get("stage") in resumable or (
                 status.get("stage") == "failed" and retry_requested
             ):
-                candidates.append({**status, "projection_kind": "web"})
+                candidates.append({
+                    **status, "projection_kind": "web", "status_path": status_path,
+                })
         if not candidates:
             return None
         status = min(
@@ -650,7 +652,18 @@ class PdfIntakePipeline:
         if status["projection_kind"] == "web":
             from .web_ingest_pipeline import WebIngestPipeline, read_web_activation_request
 
-            request = read_web_activation_request(self.queue_dir, batch_id)
+            try:
+                request = read_web_activation_request(self.queue_dir, batch_id)
+            except Exception as exc:
+                status_path = Path(status["status_path"])
+                persisted = json.loads(status_path.read_text(encoding="utf-8"))
+                persisted.update(
+                    stage="failed", chat_ready=False,
+                    error=f"{type(exc).__name__}: {exc}", updated_at=_now(),
+                )
+                atomic_write_json(status_path, persisted)
+                (status_path.parent / "retry.json").unlink(missing_ok=True)
+                return persisted
             return WebIngestPipeline(
                 self.queue_dir,
                 Path(request["registry_snapshot_path"]),

@@ -445,6 +445,50 @@ def test_failed_pdf_then_web_activation_then_pdf_retry_merges_both(tmp_path):
     assert (generation / "article-web-article.md").is_file()
 
 
+def test_invalid_web_request_does_not_starve_later_writer_jobs(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime-wiki"
+    queue.mkdir()
+    runtime.mkdir()
+    runtime_db = tmp_path / "runtime.sqlite3"
+    _seed_web(runtime_db)
+    enqueue_web_activation(
+        queue, runtime_db, "web-batch",
+        frozen_payload_sha256="3" * 64, repository_root=repository,
+    )
+    request_path = queue / "web" / _sha("web-batch") / "request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["registry_sha256"] = "0" * 64
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+
+    _add_web_observation(
+        runtime_db, batch_id="valid-later", item_id="valid-later-item",
+        article_id="valid-later-article", content_version_id="valid-later-content",
+        body="Later valid writer evidence.", discovered_at="2026-10-03T12:00:00Z",
+        publication_date="2026-02-01", title="Later valid evidence",
+    )
+    enqueue_web_activation(
+        queue, runtime_db, "valid-later",
+        frozen_payload_sha256="4" * 64, repository_root=repository,
+    )
+    public_db = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
+    writer = PdfIntakePipeline(
+        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        repository_root=repository,
+    )
+
+    invalid = writer.process_next()
+    assert invalid["batch_id"] == "web-batch"
+    assert invalid["stage"] == "failed" and invalid["chat_ready"] is False
+    assert "web activation request is invalid" in invalid["error"]
+    ready = writer.process_next()
+    assert ready["batch_id"] == "valid-later" and ready["chat_ready"] is True
+    assert writer.process_next() is None
+
+
 def test_delayed_web_retry_uses_one_snapshot_for_active_union(tmp_path):
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -591,6 +635,95 @@ def test_web_page_keeps_latest_observation_across_unrelated_activation(tmp_path)
     current = next(article for article in snapshot["articles"] if article["article_id"] == "web-article")
     assert current["content_version_id"] == "content-latest"
     assert "Latest validated transition body" in current["content"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
+def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    import api_server
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    queue, runtime, wiki, sources = (
+        tmp_path / name for name in ("queue", "runtime-wiki", "wiki", "sources")
+    )
+    for path in (queue, runtime, wiki, sources):
+        path.mkdir()
+    (wiki / "article-web-article.md").write_text(
+        "# Stale base article\n\nStale deployed body.\n", encoding="utf-8",
+    )
+    runtime_db = tmp_path / "runtime.sqlite3"
+    _seed_web(runtime_db)
+    public_db = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
+
+    monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
+    monkeypatch.setattr(api_server, "WIKI_DIR", wiki)
+    monkeypatch.setattr(api_server, "SOURCE_DIR", sources)
+    monkeypatch.setattr(api_server, "RELOAD_TOKEN", "reload-token")
+    initial = AgenticWikiResponder(wiki, sources)
+    initial.client = None
+    monkeypatch.setattr(api_server, "responder", initial)
+    monkeypatch.setattr(api_server._wiki_static_files, "all_directories", [str(wiki)])
+    client = TestClient(api_server.app)
+
+    def reload_chat(generation_id):
+        response = client.post(
+            "/api/reload", params={"generation_id": generation_id},
+            headers={"x-reload-token": "reload-token"},
+        )
+        assert response.status_code == 200, response.text
+        api_server.responder.client = None
+
+    writer = PdfIntakePipeline(
+        queue, public_db, tmp_path / "backups", runtime, reload_chat,
+        repository_root=repository,
+    )
+    enqueue_web_activation(
+        queue, runtime_db, "web-batch",
+        frozen_payload_sha256="5" * 64, repository_root=repository,
+    )
+    assert writer.process_next()["chat_ready"] is True
+    first_page = client.get("/wiki/article-web-article.md")
+    assert "Pinned web evidence says coastal resilience" in first_page.text
+    assert "Stale deployed body" not in first_page.text
+    first_answer = client.post(
+        "/api/chat",
+        json={"message": "coastal resilience funding", "answerMode": "brief"},
+    ).json()
+    assert any(
+        item["path"] == "wiki/article-web-article.md"
+        and "Pinned web evidence says coastal resilience" in item["snippet"]
+        for item in first_answer["sources"]
+    )
+
+    _add_web_observation(
+        runtime_db, batch_id="web-update", item_id="web-update-item",
+        article_id="web-article", content_version_id="web-update-content",
+        body="Updated active overlay body replaces both older copies.",
+        discovered_at="2026-10-03T12:00:00Z", publication_date="2026-02-01",
+        title="Updated active Web evidence",
+    )
+    enqueue_web_activation(
+        queue, runtime_db, "web-update",
+        frozen_payload_sha256="6" * 64, repository_root=repository,
+    )
+    assert writer.process_next()["chat_ready"] is True
+    updated_page = client.get("/wiki/article-web-article.md")
+    assert "Updated active overlay body" in updated_page.text
+    assert "Pinned web evidence says coastal resilience" not in updated_page.text
+    updated_answer = client.post(
+        "/api/chat",
+        json={"message": "updated active overlay body", "answerMode": "brief"},
+    ).json()
+    assert any(
+        item["path"] == "wiki/article-web-article.md"
+        and "Updated active overlay body" in item["snippet"]
+        for item in updated_answer["sources"]
+    )
 
 
 def test_legacy_pdf_projection_fails_closed_without_its_validated_snapshot(tmp_path):
