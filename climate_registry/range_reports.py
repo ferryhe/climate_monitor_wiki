@@ -281,6 +281,7 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
     article_rows: dict[str, dict[str, Any]] = {}
     evidenced_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
     all_identities: set[str] = set()
+    pdf_observations: list[dict[str, Any]] = []
 
     with reader.connect() as connection:
         for row in connection.execute(
@@ -307,17 +308,24 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
             JOIN articles a ON a.article_id=i.article_id
             JOIN sources s ON s.source_id=a.source_id
             LEFT JOIN article_versions av ON av.version_id=a.current_version_id
-            WHERE a.publication_eligible=1 AND a.document_kind='article'
             ORDER BY i.article_id, i.discovered_at, i.acquisition_item_id
             """
         ).fetchall() if RegistryReader._has_acquisition_projection(connection) else []
         for row in acquisition_rows:
             article_id = row["article_id"]
-            all_identities.add(article_id)
+            evidence = _json_object(row["publication_date_evidence_json"], "publication evidence")
+            publication_date = _day_precision_publication_date(row["publication_date"])
+            if publication_date and evidence:
+                evidenced_dates[article_id].append({
+                    "date": publication_date,
+                    "observation_id": row["acquisition_item_id"],
+                    "evidence": evidence,
+                })
+            if article_id not in article_rows:
+                continue
             origins = _json_list(row["origins_json"], "acquisition origins")
             if any(not isinstance(item, dict) for item in origins):
                 raise RegistryContractError("invalid acquisition origins")
-            evidence = _json_object(row["publication_date_evidence_json"], "publication evidence")
             observation = {
                 "kind": "registry_acquisition",
                 "observation_id": row["acquisition_item_id"],
@@ -332,14 +340,6 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
                 "origins": origins,
             }
             observations[article_id].append(observation)
-            publication_date = _day_precision_publication_date(row["publication_date"])
-            if publication_date and evidence:
-                evidenced_dates[article_id].append({
-                    "date": publication_date,
-                    "observation_id": row["acquisition_item_id"],
-                    "evidence": evidence,
-                })
-            article_rows.setdefault(article_id, dict(row))
 
         has_pdf = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'"
@@ -347,24 +347,18 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
         pdf_rows = connection.execute(
             """
             SELECT o.occurrence_id, o.article_id AS pdf_article_id,
-                   p.core_article_id AS article_id,
-                   p.canonical_url, p.title, p.core_article_id, o.source_document_sha256,
-                   o.page, o.raw_url, o.publication_date, o.occurrence_json,
+                   p.canonical_url, p.title, p.core_article_id, p.confirmation_basis,
+                   o.source_document_sha256, o.page, o.raw_url, o.publication_date,
+                   o.content_sha256, o.occurrence_json,
                    d.filename, d.period_start, d.period_end, d.imported_at
             FROM pdf_intake_article_occurrences o
             JOIN pdf_intake_articles p ON p.article_id=o.article_id
-            JOIN articles core ON core.article_id=p.core_article_id
             JOIN pdf_intake_documents d ON d.document_sha256=o.source_document_sha256
-            WHERE p.core_article_id IS NOT NULL
-              AND p.confirmation_basis='exact_url_eligible_detail'
-              AND core.document_kind='article'
-              AND core.publication_eligible=1
-            ORDER BY article_id, o.occurrence_id
+            ORDER BY o.source_document_sha256, o.occurrence_id
             """
         ).fetchall() if has_pdf else []
         for row in pdf_rows:
-            article_id = row["article_id"]
-            all_identities.add(article_id)
+            article_id = row["core_article_id"]
             raw = _json_object(row["occurrence_json"], "PDF occurrence") or {}
             evidence_text = raw.get("publication_date_evidence")
             evidence = (
@@ -379,32 +373,46 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
                 "kind": "registry_pdf",
                 "observation_id": row["occurrence_id"],
                 "pdf_article_id": row["pdf_article_id"],
+                "core_article_id": article_id,
+                "confirmation_basis": row["confirmation_basis"],
                 "document_sha256": row["source_document_sha256"],
+                "content_sha256": row["content_sha256"],
                 "batch_id": raw.get("management_batch_id"),
                 "filename": row["filename"],
                 "period_start": row["period_start"],
                 "period_end": row["period_end"],
                 "page": row["page"],
                 "url": row["raw_url"],
-                "title": raw.get("anchor_text") or row["title"],
+                "title": raw.get("anchor_text") or row["title"] or row["raw_url"],
                 "summary": raw.get("summary"),
                 "observed_at": row["imported_at"],
                 "publication_date": row["publication_date"],
                 "publication_date_evidence": evidence,
                 "source_observations": source_rows,
             }
-            observations[article_id].append(observation)
+            pdf_observations.append(observation)
+            confirmed_link = (
+                row["confirmation_basis"] == "exact_url_eligible_detail"
+                and isinstance(article_id, str)
+            )
             publication_date = _day_precision_publication_date(row["publication_date"])
-            if publication_date and evidence:
+            if confirmed_link and publication_date and evidence:
                 evidenced_dates[article_id].append({
                     "date": publication_date,
                     "observation_id": row["occurrence_id"],
                     "evidence": evidence,
                 })
+            formal_link = (
+                confirmed_link and article_id in article_rows
+            )
+            if not formal_link:
+                continue
+            observations[article_id].append(observation)
         selected_ids = {
             article_id
             for article_id, values in evidenced_dates.items()
-            if any(start <= date.fromisoformat(item["date"]) <= end for item in values)
+            if article_id in article_rows
+            and any(start <= date.fromisoformat(item["date"]) <= end for item in values)
         }
         articles = []
         for article_id in sorted(selected_ids):
@@ -523,9 +531,58 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
                 },
             })
 
+        selected_ids = {item["article_id"] for item in articles}
+        pdf_source_updates = []
+        pdf_exclusions = {"non_overlapping_coverage": 0, "unknown_coverage": 0}
+        seen_pdf_observations: set[tuple[Any, ...]] = set()
+        for item in pdf_observations:
+            identity = (
+                item["document_sha256"], item["page"], item["url"], item["content_sha256"]
+            )
+            if identity in seen_pdf_observations:
+                continue
+            seen_pdf_observations.add(identity)
+            article_id = item["core_article_id"]
+            confirmed_link = (
+                item["confirmation_basis"] == "exact_url_eligible_detail"
+                and isinstance(article_id, str)
+            )
+            formal_link = confirmed_link and article_id in article_rows
+            if (
+                (formal_link and article_id in selected_ids)
+                or (confirmed_link and evidenced_dates[article_id])
+                or (
+                    _day_precision_publication_date(item["publication_date"])
+                    and item["publication_date_evidence"]
+                )
+            ):
+                continue
+            period_start = _day_precision_publication_date(item["period_start"])
+            period_end = _day_precision_publication_date(item["period_end"])
+            if period_start is None or period_end is None or period_start > period_end:
+                pdf_exclusions["unknown_coverage"] += 1
+                continue
+            if date.fromisoformat(period_end) < start or date.fromisoformat(period_start) > end:
+                pdf_exclusions["non_overlapping_coverage"] += 1
+                continue
+            pdf_source_updates.append({
+                **item,
+                "publication_date_label": "文章发布日期未确认",
+                "coverage_period": {"start": period_start, "end": period_end},
+                "citations": [{
+                    "kind": "pdf_page",
+                    "document_sha256": item["document_sha256"],
+                    "filename": item["filename"],
+                    "page": item["page"],
+                    "url": item["url"],
+                }],
+            })
+
     unknown_ids = sorted(article_id for article_id in all_identities if not evidenced_dates[article_id])
     return {
         "articles": articles,
+        "pdf_source_updates": pdf_source_updates,
+        "pdf_source_exclusion_counts": pdf_exclusions,
         "unknown_publication_date_count": len(unknown_ids),
         "unknown_publication_date_article_ids": unknown_ids,
     }
@@ -574,6 +631,8 @@ def freeze_range_report(
         "date_range": {"start": start_date, "end": end_date, "inclusive": True},
         "timezone": TIMEZONE,
         "articles": source["articles"],
+        "pdf_source_updates": source["pdf_source_updates"],
+        "pdf_source_exclusion_counts": source["pdf_source_exclusion_counts"],
         "unknown_publication_date_count": source["unknown_publication_date_count"],
         "unknown_publication_date_article_ids": source["unknown_publication_date_article_ids"],
         "meeting": meeting,
@@ -613,6 +672,15 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         raise RangeReportError("invalid range report identity")
     date_range = value.get("date_range")
     articles = value.get("articles")
+    has_pdf_updates = "pdf_source_updates" in value
+    has_pdf_exclusions = "pdf_source_exclusion_counts" in value
+    if has_pdf_updates != has_pdf_exclusions:
+        raise RangeReportError("invalid range report schema")
+    pdf_source_updates = value.get("pdf_source_updates", [])
+    pdf_exclusions = value.get("pdf_source_exclusion_counts", {
+        "non_overlapping_coverage": 0,
+        "unknown_coverage": 0,
+    })
     meeting = value.get("meeting")
     unknown_ids = value.get("unknown_publication_date_article_ids")
     try:
@@ -626,6 +694,10 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         or value.get("timezone") != TIMEZONE
         or start > end
         or not isinstance(articles, list)
+        or not isinstance(pdf_source_updates, list)
+        or not isinstance(pdf_exclusions, dict)
+        or set(pdf_exclusions) != {"non_overlapping_coverage", "unknown_coverage"}
+        or any(not isinstance(count, int) or count < 0 for count in pdf_exclusions.values())
         or not isinstance(meeting, dict)
         or not isinstance(unknown_ids, list)
         or any(not isinstance(item, str) for item in unknown_ids)
@@ -656,6 +728,34 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         ):
             raise RangeReportError("invalid range report schema")
         seen_ids.add(article_id)
+    seen_pdf_ids: set[tuple[Any, ...]] = set()
+    for item in pdf_source_updates:
+        if not isinstance(item, dict):
+            raise RangeReportError("invalid range report schema")
+        coverage = item.get("coverage_period")
+        try:
+            period_start = date.fromisoformat(coverage["start"])
+            period_end = date.fromisoformat(coverage["end"])
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise RangeReportError("invalid range report schema") from exc
+        identity = (
+            item.get("document_sha256"), item.get("page"), item.get("url"),
+            item.get("content_sha256"),
+        )
+        if (
+            item.get("publication_date_label") != "文章发布日期未确认"
+            or period_start > period_end
+            or period_end < start
+            or period_start > end
+            or identity in seen_pdf_ids
+            or not isinstance(item.get("pdf_article_id"), str)
+            or not isinstance(item.get("filename"), str)
+            or not isinstance(item.get("page"), int)
+            or not isinstance(item.get("document_sha256"), str)
+            or not isinstance(item.get("citations"), list)
+        ):
+            raise RangeReportError("invalid range report schema")
+        seen_pdf_ids.add(identity)
     if meeting.get("status") not in {"not_requested", "included", "empty", "failed", "unavailable"}:
         raise RangeReportError("invalid range report schema")
     return value
@@ -688,8 +788,18 @@ def ensure_range_report_pdf(snapshot: dict[str, Any], artifact_root: str | Path)
 
 def _executive_summary(snapshot: dict[str, Any]) -> list[str]:
     articles = snapshot["articles"]
+    pdf_updates = snapshot.get("pdf_source_updates", [])
+    exclusions = snapshot.get("pdf_source_exclusion_counts", {})
     start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
     summary = [f"{len(articles)} evidenced Registry article(s) were published from {start} through {end}."]
+    if "pdf_source_updates" in snapshot:
+        summary.append(
+            f"{len(pdf_updates)} PDF source update(s) overlap the range; their article publication dates are unconfirmed."
+        )
+        summary.append(
+            f"PDF source observations excluded: {exclusions.get('unknown_coverage', 0)} with unknown coverage; "
+            f"{exclusions.get('non_overlapping_coverage', 0)} with non-overlapping coverage."
+        )
     if snapshot["unknown_publication_date_count"]:
         summary.append(
             f"{snapshot['unknown_publication_date_count']} Registry article(s) with unknown publication dates were excluded."
@@ -717,6 +827,9 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
         "<h2>Contents</h2><ol>" + "".join(
             f'<li><a href="#article-{index}">{esc(item["title"])}</a></li>'
             for index, item in enumerate(snapshot["articles"], start=1)
+        ) + "".join(
+            f'<li><a href="#pdf-update-{index}">{esc(item["title"])}</a></li>'
+            for index, item in enumerate(snapshot.get("pdf_source_updates", []), start=1)
         ) + "</ol>",
         "<h2>Executive Summary</h2>" + "".join(
             f"<p>{esc(line)}</p>" for line in _executive_summary(snapshot)
@@ -759,6 +872,29 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
                 else:
                     blocks.append(f"<li>{esc(label)}</li>")
         blocks.append("</ul></article>")
+    pdf_updates = snapshot.get("pdf_source_updates", [])
+    if pdf_updates:
+        blocks.append("<h2>PDF 来源更新 / PDF Source Updates</h2>")
+    for index, item in enumerate(pdf_updates, start=1):
+        coverage = item["coverage_period"]
+        blocks.extend([
+            f'<article id="pdf-update-{index}"><h2>{index}. {esc(item["title"])}</h2>',
+            f"<p><strong>{esc(item['publication_date_label'])}</strong><br>"
+            f"<strong>PDF coverage period:</strong> {esc(coverage['start'])} through {esc(coverage['end'])}<br>"
+            f"<strong>File:</strong> {esc(item['filename'])}, page {esc(item['page'])}<br>"
+            f"<strong>SHA-256:</strong> <code>{esc(item['document_sha256'])}</code>",
+        ])
+        if item.get("core_article_id"):
+            blocks.append(
+                f"<br><strong>Core article ID:</strong> <code>{esc(item['core_article_id'])}</code>"
+            )
+        blocks.append("</p>")
+        if item.get("summary"):
+            blocks.append(f"<p>{esc(item['summary'])}</p>")
+        url = esc(item["url"])
+        blocks.append(
+            f'<h3>Source</h3><p><a href="{url}" rel="noopener noreferrer">{url}</a></p></article>'
+        )
     blocks.append("</body></html>")
     return "".join(blocks)
 
@@ -874,6 +1010,29 @@ def render_range_report_pdf(snapshot: dict[str, Any], output: str | Path) -> Non
                     url = esc(citation["url"])
                     line += f' — <link href="{url}" color="#1a73e8">{url}</link>'
             story.append(Paragraph(line, body))
+
+    pdf_updates = snapshot.get("pdf_source_updates", [])
+    if pdf_updates:
+        story.append(Paragraph("PDF 来源更新 / PDF Source Updates", h1))
+    for index, item in enumerate(pdf_updates, start=1):
+        coverage = item["coverage_period"]
+        story.append(Paragraph(f"{index}. {esc(item['title'])}", h2))
+        metadata = (
+            f"{esc(item['publication_date_label'])}<br/>"
+            f"PDF coverage period: {esc(coverage['start'])} through {esc(coverage['end'])}<br/>"
+            f"File: {esc(item['filename'])}, page {esc(item['page'])}<br/>"
+            f"SHA-256: {esc(item['document_sha256'])}"
+        )
+        if item.get("core_article_id"):
+            metadata += f"<br/>Core article ID: {esc(item['core_article_id'])}"
+        story.append(Paragraph(metadata, body))
+        if item.get("summary"):
+            story.append(Paragraph(esc(item["summary"]), body))
+        url = esc(item["url"])
+        story.extend([
+            Paragraph("Source", h3),
+            Paragraph(f'<link href="{url}" color="#1a73e8">{url}</link>', body),
+        ])
 
     output = Path(output)
     buffer = io.BytesIO()
