@@ -659,13 +659,19 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
     monkeypatch.setattr(api_server, "RANGE_REPORT_DIR", root)
     client = TestClient(api_server.app)
     web_url = f"/api/registry/range-reports/{legacy_id}/{RENDERER_VERSION}"
+    legacy_web_url = f"/api/registry/range-reports/{legacy_id}/range-report-v1"
     html_response = client.get(web_url)
     pdf_response = client.get(web_url + "/pdf")
+    legacy_html_response = client.get(legacy_web_url)
+    legacy_pdf_response = client.get(legacy_web_url + "/pdf")
     assert html_response.status_code == 200
     assert "Registry-only climate article" in html_response.text
     assert "PDF Source Updates" not in html_response.text
     assert "PDF source observations excluded" not in html_response.text
     assert pdf_response.status_code == 200 and pdf_response.content.startswith(b"%PDF-")
+    assert legacy_html_response.status_code == 200
+    assert legacy_html_response.text == html_response.text
+    assert legacy_pdf_response.status_code == 200 and legacy_pdf_response.content == pdf_response.content
     pdf_text = "\n".join(
         page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf_response.content)).pages
     )
