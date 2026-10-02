@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -30,9 +31,10 @@ from reportlab.platypus import (
 from reportlab.platypus.tableofcontents import TableOfContents
 
 from climate_delivery.io import atomic_write_bytes, atomic_write_json, exclusive_lock
-from climate_monitor.meetings import load_snapshot as load_meeting_snapshot
+from climate_monitor.meetings import EVENT_TYPES, load_snapshot as load_meeting_snapshot
+from climate_monitor.meetings import query_events
 
-from .read_api import RegistryContractError, RegistryReader
+from .read_api import RegistryContractError, RegistryError, RegistryReader
 
 
 SCHEMA_VERSION = "climate-range-report-snapshot.v1"
@@ -588,28 +590,135 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
     }
 
 
-def _meeting_payload(reader: RegistryReader, snapshot_id: str | None) -> dict[str, Any]:
+def _meeting_status(coverage: dict[str, Any], records: list[Any]) -> str:
+    if coverage.get("status") in {"succeeded", "succeeded_empty", "complete"}:
+        return "included" if records else "empty"
+    if coverage.get("status") == "partial":
+        return "partial"
+    return "unavailable"
+
+
+def _default_meeting_query_filters() -> dict[str, Any]:
+    return {
+        "organizer": None, "event_types": sorted(EVENT_TYPES), "start_date": None,
+        "end_date": None, "include_unknown": False, "include_deadlines": False,
+        "include_cancelled": False, "include_retrospective": False,
+    }
+
+
+def _query_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    digest = _digest(payload)
+    return "meeting-query-" + digest[:24], digest
+
+
+def _meeting_payload(
+    reader: RegistryReader, snapshot_id: str | None, *, base_date: str
+) -> dict[str, Any]:
     if snapshot_id is None:
-        return {"status": "not_requested", "snapshot_id": None, "snapshot_sha256": None, "records": []}
+        try:
+            queried = query_events(reader.database, base_date=base_date, timezone_name=TIMEZONE)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            frozen_query = {
+                "schema_version": "climate-meeting-query.v1", "base_date": base_date,
+                "timezone": TIMEZONE, "filters": _default_meeting_query_filters(),
+                "coverage": {"status": "unavailable", "error": type(exc).__name__}, "records": [],
+            }
+            query_id, query_sha256 = _query_identity(frozen_query)
+            return {
+                "status": "unavailable", "source": "query", "snapshot_id": None,
+                "snapshot_sha256": None, "query_id": query_id, "query_sha256": query_sha256,
+                "base_date": base_date, "timezone": TIMEZONE,
+                "query": frozen_query["filters"], "query_payload": frozen_query,
+                "coverage": frozen_query["coverage"], "records": [],
+            }
+        records = queried.get("records") if isinstance(queried.get("records"), list) else []
+        coverage = queried.get("coverage") if isinstance(queried.get("coverage"), dict) else {
+            "status": "unavailable", "error": "invalid_query_coverage"
+        }
+        frozen_query = {
+            "schema_version": queried.get("schema_version"), "base_date": queried.get("base_date"),
+            "timezone": queried.get("timezone"), "filters": queried.get("filters"),
+            "coverage": coverage, "records": records,
+        }
+        query_id, query_sha256 = _query_identity(frozen_query)
+        return {
+            "status": _meeting_status(coverage, records), "source": "query", "snapshot_id": None,
+            "snapshot_sha256": None, "query_id": query_id,
+            "query_sha256": query_sha256, "base_date": queried.get("base_date"),
+            "timezone": queried.get("timezone"), "query": queried.get("filters"),
+            "query_payload": frozen_query, "coverage": coverage, "records": records,
+        }
     try:
         snapshot = load_meeting_snapshot(reader.database, snapshot_id)
     except (KeyError, OSError, ValueError):
         return {"status": "unavailable", "snapshot_id": snapshot_id, "snapshot_sha256": None, "records": []}
     coverage = snapshot.get("coverage") or {}
     records = snapshot.get("records") or []
-    coverage_status = coverage.get("status")
-    if coverage_status in {"failed", "partial"}:
-        status = "failed"
-    elif coverage_status in {"succeeded", "succeeded_empty"}:
-        status = "included" if records else "empty"
-    else:
-        status = "unavailable"
     return {
-        "status": status,
+        "status": "failed" if coverage.get("status") in {"failed", "partial"} else _meeting_status(coverage, records), "source": "snapshot",
         "snapshot_id": snapshot["snapshot_id"],
         "snapshot_sha256": snapshot["snapshot_sha256"],
+        "base_date": snapshot.get("base_date"), "timezone": snapshot.get("timezone"),
+        "query": snapshot.get("query"),
         "coverage": coverage,
         "records": records,
+    }
+
+
+def _calendar_end_date(item: dict[str, Any]) -> date | None:
+    value, precision = item.get("end_date") or item.get("start_date"), item.get("date_precision")
+    if not isinstance(value, str):
+        return None
+    try:
+        if precision == "day":
+            return date.fromisoformat(value)
+        if precision == "month":
+            year, month = map(int, value.split("-"))
+            return date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+        if precision == "quarter":
+            year, quarter = int(value[:4]), int(value[-1])
+            month = quarter * 3
+            return date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+        if precision == "year":
+            return date(int(value), 12, 31)
+    except ValueError:
+        pass
+    return None
+
+
+def _pdf_calendar_available(reader: RegistryReader) -> bool:
+    with reader.connect() as connection:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_calendar_items'"
+        ).fetchone() is not None
+
+
+def _pdf_calendar_payload(reader: RegistryReader, *, base_date: str) -> dict[str, Any]:
+    try:
+        if not _pdf_calendar_available(reader):
+            return {
+                "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
+                "base_date": base_date, "records": [],
+            }
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            result = reader.pdf_calendar_items(page=page, page_size=100)
+            batch = result["items"]
+            items.extend(batch)
+            if page >= result["pagination"]["pages"]:
+                break
+            page += 1
+    except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
+        return {
+            "status": "unavailable", "coverage": {"status": "unavailable", "error": type(exc).__name__},
+            "base_date": base_date, "records": [],
+        }
+    base = date.fromisoformat(base_date)
+    records = [item for item in items if (end := _calendar_end_date(item)) is not None and end >= base]
+    return {
+        "status": "included" if records else "empty", "coverage": {"status": "complete"},
+        "base_date": base_date, "records": records,
     }
 
 
@@ -620,12 +729,16 @@ def freeze_range_report(
     start_date: str,
     end_date: str,
     meeting_snapshot_id: str | None = None,
+    generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     if start > end or (end - start).days + 1 > MAX_RANGE_DAYS:
         raise RangeReportError("invalid report date range")
+    generated = generated_at or datetime.now(timezone.utc)
+    base_date = generated.astimezone(timezone.utc).date().isoformat()
     source = _range_source(reader, start_date, end_date)
-    meeting = _meeting_payload(reader, meeting_snapshot_id)
+    meeting = _meeting_payload(reader, meeting_snapshot_id, base_date=base_date)
+    pdf_calendar = _pdf_calendar_payload(reader, base_date=base_date)
     frozen = {
         "schema_version": SCHEMA_VERSION,
         "date_range": {"start": start_date, "end": end_date, "inclusive": True},
@@ -636,6 +749,7 @@ def freeze_range_report(
         "unknown_publication_date_count": source["unknown_publication_date_count"],
         "unknown_publication_date_article_ids": source["unknown_publication_date_article_ids"],
         "meeting": meeting,
+        "pdf_calendar": pdf_calendar,
     }
     digest = _digest(frozen)
     snapshot_id = "range-report-" + digest[:24]
@@ -652,7 +766,7 @@ def freeze_range_report(
                 **frozen,
                 "snapshot_id": snapshot_id,
                 "snapshot_sha256": digest,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": generated.isoformat(),
             }
             atomic_write_json(target, payload)
     ensure_range_report_pdf(payload, root)
@@ -682,6 +796,7 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         "unknown_coverage": 0,
     })
     meeting = value.get("meeting")
+    pdf_calendar = value.get("pdf_calendar")
     unknown_ids = value.get("unknown_publication_date_article_ids")
     try:
         start = date.fromisoformat(date_range["start"])
@@ -756,7 +871,46 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         ):
             raise RangeReportError("invalid range report schema")
         seen_pdf_ids.add(identity)
-    if meeting.get("status") not in {"not_requested", "included", "empty", "failed", "unavailable"}:
+    if meeting.get("status") not in {"not_requested", "included", "empty", "partial", "failed", "unavailable"}:
+        raise RangeReportError("invalid range report schema")
+    if meeting.get("source") == "query":
+        query_payload = meeting.get("query_payload")
+        digest = _digest(query_payload) if isinstance(query_payload, dict) else None
+        if (
+            digest is None or meeting.get("query_sha256") != digest
+            or meeting.get("query_id") != "meeting-query-" + digest[:24]
+            or meeting.get("query") != query_payload.get("filters")
+            or meeting.get("base_date") != query_payload.get("base_date")
+            or meeting.get("timezone") != query_payload.get("timezone")
+            or meeting.get("coverage") != query_payload.get("coverage")
+            or meeting.get("records") != query_payload.get("records")
+        ):
+            raise RangeReportError("invalid frozen meeting query identity")
+        try:
+            parsed_base = date.fromisoformat(query_payload["base_date"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RangeReportError("invalid frozen meeting query metadata") from exc
+        if (
+            query_payload.get("schema_version") != "climate-meeting-query.v1"
+            or parsed_base.isoformat() != query_payload["base_date"]
+            or query_payload.get("timezone") != TIMEZONE
+        ):
+            raise RangeReportError("invalid frozen meeting query metadata")
+        if (query_payload.get("coverage") or {}).get("status") == "unavailable":
+            if (
+                query_payload.get("filters") != _default_meeting_query_filters()
+                or query_payload.get("records") != []
+                or (query_payload.get("coverage") or {}).get("status") != "unavailable"
+                or not isinstance((query_payload.get("coverage") or {}).get("error"), str)
+                or not (query_payload["coverage"]["error"]).strip()
+            ):
+                raise RangeReportError("invalid unavailable meeting query")
+    if pdf_calendar is not None and (
+        not isinstance(pdf_calendar, dict)
+        or pdf_calendar.get("status") not in {"included", "empty", "unavailable"}
+        or not isinstance(pdf_calendar.get("coverage"), dict)
+        or not isinstance(pdf_calendar.get("records"), list)
+    ):
         raise RangeReportError("invalid range report schema")
     return value
 
@@ -810,6 +964,24 @@ def _executive_summary(snapshot: dict[str, Any]) -> list[str]:
     return summary
 
 
+def _meeting_metadata(meeting: dict[str, Any]) -> list[tuple[str, Any]]:
+    source = meeting.get("source") or ("snapshot" if meeting.get("snapshot_id") else "unavailable")
+    metadata = [("Meeting source", source)]
+    if meeting.get("snapshot_id"):
+        metadata.append(("Meeting snapshot ID", meeting["snapshot_id"]))
+    elif meeting.get("query_id"):
+        metadata.extend([
+            ("Meeting query ID", meeting["query_id"]),
+            ("Meeting query SHA-256", meeting.get("query_sha256") or "unavailable"),
+        ])
+    metadata.extend([
+        ("Meeting query base date", meeting.get("base_date") or "unavailable"),
+        ("Meeting query timezone", meeting.get("timezone") or "unavailable"),
+        ("Meeting coverage", (meeting.get("coverage") or {}).get("status", "unavailable")),
+    ])
+    return metadata
+
+
 def render_range_report_html(snapshot: dict[str, Any]) -> str:
     esc = lambda value: html.escape(str(value), quote=True)
     start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
@@ -836,13 +1008,35 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
         ),
     ]
     meeting = snapshot["meeting"]
+    pdf_calendar = snapshot.get("pdf_calendar")
+    if meeting["status"] != "not_requested" or pdf_calendar is not None:
+        blocks.append("<h2>Key Dates</h2>")
     if meeting["status"] != "not_requested":
-        blocks.append(f"<h2>Key Dates</h2><p>Meeting snapshot status: {esc(meeting['status'])}.</p>")
+        label = "Meeting query" if meeting.get("source") == "query" else "Meeting snapshot"
+        metadata = "<br>".join(
+            f"<strong>{esc(key)}:</strong> {esc(value)}" for key, value in _meeting_metadata(meeting)
+        )
+        blocks.append(f"<p>{label} status: {esc(meeting['status'])}.<br>{metadata}</p>")
+        if meeting["status"] == "empty":
+            blocks.append("<p>No future meetings.</p>")
         for record in meeting["records"]:
             blocks.append(
                 f"<p><strong>{esc(record.get('name', 'Meeting'))}</strong>: "
                 f"{esc(record.get('start_date') or record.get('raw_time_text') or 'date unavailable')}</p>"
             )
+    if pdf_calendar is not None:
+        blocks.append(f"<p>PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.</p>")
+        records = pdf_calendar["records"]
+        for heading, kinds in (("PDF Calendar Dates", {"event"}), ("PDF Deadlines", {"deadline"}), ("Other PDF Key Dates", None)):
+            selected = [item for item in records if (item.get("kind") in kinds if kinds else item.get("kind") not in {"event", "deadline"})]
+            if selected:
+                blocks.append(f"<h3>{heading}</h3><ul>")
+                for item in selected:
+                    blocks.append(
+                        f"<li><strong>{esc(item.get('name') or 'PDF key date')}</strong>: {esc(item.get('raw_date') or item.get('end_date'))} "
+                        f"({esc(item.get('source_filename'))}, page {esc(item.get('page'))}, <code>{esc(item.get('source_document_sha256'))}</code>)</li>"
+                    )
+                blocks.append("</ul>")
     blocks.append("<h2>Articles</h2>")
     for index, item in enumerate(snapshot["articles"], start=1):
         blocks.extend([
@@ -973,14 +1167,36 @@ def render_range_report_pdf(snapshot: dict[str, Any], output: str | Path) -> Non
     story.extend([toc, PageBreak(), Paragraph("Executive Summary", h1)])
     story.extend(Paragraph(esc(line), body) for line in _executive_summary(snapshot))
     meeting = snapshot["meeting"]
-    if meeting["status"] != "not_requested":
+    pdf_calendar = snapshot.get("pdf_calendar")
+    if meeting["status"] != "not_requested" or pdf_calendar is not None:
         story.append(Paragraph("Key Dates", h1))
-        story.append(Paragraph(f"Meeting snapshot status: {esc(meeting['status'])}.", body))
+    if meeting["status"] != "not_requested":
+        label = "Meeting query" if meeting.get("source") == "query" else "Meeting snapshot"
+        metadata = "<br/>".join(
+            f"<b>{esc(key)}:</b> {esc(value)}" for key, value in _meeting_metadata(meeting)
+        )
+        story.append(Paragraph(f"{label} status: {esc(meeting['status'])}.<br/>{metadata}", body))
+        if meeting["status"] == "empty":
+            story.append(Paragraph("No future meetings.", body))
         for record in meeting["records"]:
             story.append(Paragraph(
                 f"<b>{esc(record.get('name', 'Meeting'))}</b>: "
                 f"{esc(record.get('start_date') or record.get('raw_time_text') or 'date unavailable')}", body
             ))
+    if pdf_calendar is not None:
+        story.append(Paragraph(
+            f"PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.", body
+        ))
+        for heading, kinds in (("PDF Calendar Dates", {"event"}), ("PDF Deadlines", {"deadline"}), ("Other PDF Key Dates", None)):
+            selected = [item for item in pdf_calendar["records"] if (item.get("kind") in kinds if kinds else item.get("kind") not in {"event", "deadline"})]
+            if selected:
+                story.append(Paragraph(heading, h2))
+                for item in selected:
+                    story.append(Paragraph(
+                        f"<b>{esc(item.get('name') or 'PDF key date')}</b>: {esc(item.get('raw_date') or item.get('end_date'))}<br/>"
+                        f"File: {esc(item.get('source_filename'))}, page {esc(item.get('page'))}<br/>"
+                        f"SHA-256: {esc(item.get('source_document_sha256'))}", body
+                    ))
     story.append(Paragraph("Articles", h1))
     for index, item in enumerate(snapshot["articles"], start=1):
         story.append(Paragraph(f"{index}. {esc(item['title'])}", h2))

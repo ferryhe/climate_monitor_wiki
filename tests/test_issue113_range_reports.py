@@ -5,7 +5,7 @@ import io
 import json
 import sqlite3
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -299,9 +299,11 @@ def test_chat_date_routing_is_bounded_and_server_validated(monkeypatch):
 def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     database = _database(tmp_path)
     root = tmp_path / "range-output"
+    before = (hashlib.sha256(database.read_bytes()).hexdigest(), database.stat().st_mtime_ns)
     snapshot = freeze_range_report(
         _reader(database, tmp_path), root, start_date="2026-09-17", end_date="2026-09-30"
     )
+    assert (hashlib.sha256(database.read_bytes()).hexdigest(), database.stat().st_mtime_ns) == before
 
     assert [item["article_id"] for item in snapshot["articles"]] == ["article-a", "article-b"]
     assert snapshot["unknown_publication_date_count"] == 2
@@ -524,7 +526,7 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
         key: value for key, value in current.items()
         if key not in {
             "snapshot_id", "snapshot_sha256", "created_at",
-            "pdf_source_updates", "pdf_source_exclusion_counts",
+            "pdf_source_updates", "pdf_source_exclusion_counts", "pdf_calendar",
         }
     }
     legacy_digest = range_reports._digest(legacy_frozen)
@@ -560,6 +562,194 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
     assert "Registry-only climate article" in pdf_text
     assert "PDF Source Updates" not in pdf_text
     assert "PDF source observations excluded" not in pdf_text
+
+
+def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path, monkeypatch):
+    source = {
+        "articles": [], "pdf_source_updates": [],
+        "pdf_source_exclusion_counts": {"non_overlapping_coverage": 0, "unknown_coverage": 0},
+        "unknown_publication_date_count": 0, "unknown_publication_date_article_ids": [],
+    }
+    queried = {
+        "schema_version": "climate-meeting-query.v1", "base_date": "2026-09-30", "timezone": "UTC",
+        "filters": {"include_cancelled": False, "include_retrospective": False},
+        "coverage": {"status": "complete"},
+        "records": [{"name": "Future meeting", "start_date": "2026-10-02"}],
+    }
+    calls = []
+
+    def query(database, **kwargs):
+        calls.append((database, kwargs))
+        return queried
+
+    class Reader:
+        database = tmp_path / "readonly-registry.sqlite3"
+
+        def pdf_calendar_items(self, *, page, page_size):
+            assert page_size == 100
+            pages = {
+                1: [
+                    {"name": "PDF event", "kind": "event", "raw_date": "2 Oct 2026", "date_precision": "day", "end_date": "2026-10-02", "source_filename": "calendar.pdf", "page": 2, "source_document_sha256": "a" * 64},
+                    {"name": "Expired PDF event", "kind": "event", "raw_date": "1 Sep 2026", "date_precision": "day", "end_date": "2026-09-01", "source_filename": "calendar.pdf", "page": 4, "source_document_sha256": "a" * 64},
+                    {"name": "Unknown PDF event", "kind": "event", "raw_date": "TBA", "date_precision": "unknown", "end_date": None, "source_filename": "calendar.pdf", "page": 5, "source_document_sha256": "a" * 64},
+                    {"name": "Future month", "kind": "event", "raw_date": "November 2026", "date_precision": "month", "start_date": "2026-11", "end_date": None, "source_filename": "calendar.pdf", "page": 6, "source_document_sha256": "a" * 64},
+                    {"name": "Expired month", "kind": "event", "raw_date": "August 2026", "date_precision": "month", "start_date": "2026-08", "end_date": None, "source_filename": "calendar.pdf", "page": 7, "source_document_sha256": "a" * 64},
+                    {"name": "Future quarter", "kind": "event", "raw_date": "Q4 2026", "date_precision": "quarter", "start_date": "2026-Q4", "end_date": None, "source_filename": "calendar.pdf", "page": 8, "source_document_sha256": "a" * 64},
+                    {"name": "Expired quarter", "kind": "event", "raw_date": "Q2 2026", "date_precision": "quarter", "start_date": "2026-Q2", "end_date": None, "source_filename": "calendar.pdf", "page": 9, "source_document_sha256": "a" * 64},
+                    {"name": "Future year", "kind": "event", "raw_date": "2027", "date_precision": "year", "start_date": "2027", "end_date": None, "source_filename": "calendar.pdf", "page": 10, "source_document_sha256": "a" * 64},
+                    {"name": "Expired year", "kind": "event", "raw_date": "2025", "date_precision": "year", "start_date": "2025", "end_date": None, "source_filename": "calendar.pdf", "page": 11, "source_document_sha256": "a" * 64},
+                ],
+                2: [{"name": "Deadline", "kind": "deadline", "raw_date": "3 Oct 2026", "date_precision": "day", "end_date": "2026-10-03", "source_filename": "calendar.pdf", "page": 3, "source_document_sha256": "a" * 64}],
+            }
+            return {"items": pages[page], "pagination": {"pages": 2}}
+
+    monkeypatch.setattr(range_reports, "_range_source", lambda *_: source)
+    monkeypatch.setattr(range_reports, "query_events", query)
+    monkeypatch.setattr(range_reports, "_pdf_calendar_available", lambda _reader: True)
+    root = tmp_path / "range-output"
+    snapshot = freeze_range_report(
+        Reader(), root, start_date="2026-09-01", end_date="2026-09-10",
+        generated_at=datetime(2026, 9, 30, 23, 0, tzinfo=timezone.utc),
+    )
+    assert calls == [(Reader.database, {"base_date": "2026-09-30", "timezone_name": "UTC"})]
+    assert snapshot["meeting"]["status"] == "included"
+    assert snapshot["meeting"]["query_id"].startswith("meeting-query-")
+    assert snapshot["meeting"]["query_sha256"] and snapshot["meeting"]["base_date"] == "2026-09-30"
+    query_payload = snapshot["meeting"]["query_payload"]
+    assert range_reports._digest(query_payload) == snapshot["meeting"]["query_sha256"]
+    assert snapshot["meeting"]["query_id"] == "meeting-query-" + snapshot["meeting"]["query_sha256"][:24]
+    assert {item["name"] for item in snapshot["pdf_calendar"]["records"]} == {
+        "PDF event", "Deadline", "Future month", "Future quarter", "Future year",
+    }
+    before_html = render_range_report_html(load_range_report(root, snapshot["snapshot_id"]))
+    before_pdf = pdf_path(root, snapshot["snapshot_id"]).read_bytes()
+    queried["records"][:] = [{"name": "Changed live meeting", "start_date": "2027-01-01"}]
+    target = pdf_path(root, snapshot["snapshot_id"])
+    target.unlink()
+    rerendered = ensure_range_report_pdf(load_range_report(root, snapshot["snapshot_id"]), root).read_bytes()
+    assert render_range_report_html(load_range_report(root, snapshot["snapshot_id"])) == before_html
+    rerendered_text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(rerendered)).pages)
+    assert "Future meeting" in rerendered_text and "Changed live meeting" not in rerendered_text
+    assert before_pdf != b""
+    assert "PDF Calendar Dates" in before_html and "PDF Deadlines" in before_html
+    assert "calendar.pdf" in before_html and "a" * 64 in before_html
+    assert "Meeting source:</strong> query" in before_html
+    assert snapshot["meeting"]["query_id"] in before_html
+    assert snapshot["meeting"]["query_sha256"] in before_html
+    assert "Meeting query base date:</strong> 2026-09-30" in before_html
+    assert "Meeting query timezone:</strong> UTC" in before_html
+    assert "Meeting coverage:</strong> complete" in before_html
+    empty_snapshot = {**snapshot, "meeting": {**snapshot["meeting"], "status": "empty", "records": []}}
+    empty_html = render_range_report_html(empty_snapshot)
+    empty_path = tmp_path / "empty-meetings.pdf"
+    render_range_report_pdf(empty_snapshot, empty_path)
+    empty_pdf = "\n".join(page.extract_text() or "" for page in PdfReader(empty_path).pages)
+    assert "No future meetings." in empty_html and "No future meetings." in empty_pdf
+    tampered = json.loads(json.dumps(snapshot))
+    tampered["meeting"]["query_payload"]["records"] = []
+    frozen = {key: value for key, value in tampered.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    digest = range_reports._digest(frozen)
+    tampered["snapshot_id"] = "range-report-" + digest[:24]
+    tampered["snapshot_sha256"] = digest
+    with pytest.raises(RangeReportError, match="frozen meeting query identity"):
+        range_reports._validate_snapshot(tampered, tampered["snapshot_id"])
+    missing_identity = json.loads(json.dumps(snapshot))
+    missing_identity["meeting"]["query_id"] = None
+    missing_identity["meeting"]["query_sha256"] = None
+    frozen = {key: value for key, value in missing_identity.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    digest = range_reports._digest(frozen)
+    missing_identity["snapshot_id"] = "range-report-" + digest[:24]
+    missing_identity["snapshot_sha256"] = digest
+    with pytest.raises(RangeReportError, match="frozen meeting query identity"):
+        range_reports._validate_snapshot(missing_identity, missing_identity["snapshot_id"])
+    malformed_metadata = json.loads(json.dumps(snapshot))
+    malformed_metadata["meeting"]["query_payload"]["timezone"] = "America/New_York"
+    malformed_metadata["meeting"]["timezone"] = "America/New_York"
+    query_id, query_sha256 = range_reports._query_identity(malformed_metadata["meeting"]["query_payload"])
+    malformed_metadata["meeting"]["query_id"] = query_id
+    malformed_metadata["meeting"]["query_sha256"] = query_sha256
+    frozen = {key: value for key, value in malformed_metadata.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    digest = range_reports._digest(frozen)
+    malformed_metadata["snapshot_id"] = "range-report-" + digest[:24]
+    malformed_metadata["snapshot_sha256"] = digest
+    with pytest.raises(RangeReportError, match="frozen meeting query metadata"):
+        range_reports._validate_snapshot(malformed_metadata, malformed_metadata["snapshot_id"])
+
+
+def test_calendar_and_meeting_failures_are_marked_without_losing_articles(tmp_path, monkeypatch):
+    source = {
+        "articles": [{
+            "article_id": "article", "publication_date": "2026-09-02", "title": "Saved article",
+            "content_version_id": "content", "summary": "Saved summary", "content": "Saved content",
+            "categories": [], "keywords": [], "source_observations": [], "citations": [], "provenance": {},
+        }], "pdf_source_updates": [],
+        "pdf_source_exclusion_counts": {"non_overlapping_coverage": 0, "unknown_coverage": 0},
+        "unknown_publication_date_count": 0, "unknown_publication_date_article_ids": [],
+    }
+
+    class Reader:
+        database = tmp_path / "readonly-registry.sqlite3"
+
+        def pdf_calendar_items(self, **_kwargs):
+            raise OSError("unavailable")
+
+    monkeypatch.setattr(range_reports, "_range_source", lambda *_: source)
+    monkeypatch.setattr(range_reports, "query_events", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("unavailable")))
+    monkeypatch.setattr(range_reports, "_pdf_calendar_available", lambda _reader: True)
+    snapshot = freeze_range_report(
+        Reader(), tmp_path / "range-output", start_date="2026-09-01", end_date="2026-09-10",
+        generated_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+    )
+    assert snapshot["meeting"]["status"] == "unavailable"
+    query_payload = snapshot["meeting"]["query_payload"]
+    assert query_payload["coverage"] == {"status": "unavailable", "error": "OSError"}
+    assert query_payload["records"] == []
+    assert range_reports._digest(query_payload) == snapshot["meeting"]["query_sha256"]
+    assert snapshot["meeting"]["query_id"] == "meeting-query-" + snapshot["meeting"]["query_sha256"][:24]
+    assert snapshot["pdf_calendar"]["status"] == "unavailable"
+    assert snapshot["articles"][0]["title"] == "Saved article"
+    assert load_range_report(tmp_path / "range-output", snapshot["snapshot_id"])["meeting"]["status"] == "unavailable"
+    malformed = json.loads(json.dumps(snapshot))
+    malformed["meeting"]["query_payload"]["base_date"] = "not-a-date"
+    malformed["meeting"]["base_date"] = "not-a-date"
+    query_id, query_sha256 = range_reports._query_identity(malformed["meeting"]["query_payload"])
+    malformed["meeting"]["query_id"] = query_id
+    malformed["meeting"]["query_sha256"] = query_sha256
+    frozen = {key: value for key, value in malformed.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    digest = range_reports._digest(frozen)
+    malformed["snapshot_id"] = "range-report-" + digest[:24]
+    malformed["snapshot_sha256"] = digest
+    with pytest.raises(RangeReportError, match="frozen meeting query metadata"):
+        range_reports._validate_snapshot(malformed, malformed["snapshot_id"])
+
+
+def test_pre_pdf_registry_marks_calendar_unavailable_without_losing_articles(tmp_path, monkeypatch):
+    database = tmp_path / "registry-v12.sqlite3"
+    connection = sqlite3.connect(database)
+    apply_migrations(connection, target_version=12)
+    connection.close()
+    reader = RegistryReader(database, repository_root=tmp_path / "application")
+    assert reader.pdf_calendar_items()["items"] == []
+    source = {
+        "articles": [{
+            "article_id": "article", "publication_date": "2026-09-02", "title": "Saved article",
+            "content_version_id": "content", "summary": "Saved summary", "content": "Saved content",
+            "categories": [], "keywords": [], "source_observations": [], "citations": [], "provenance": {},
+        }], "pdf_source_updates": [],
+        "pdf_source_exclusion_counts": {"non_overlapping_coverage": 0, "unknown_coverage": 0},
+        "unknown_publication_date_count": 0, "unknown_publication_date_article_ids": [],
+    }
+    monkeypatch.setattr(range_reports, "_range_source", lambda *_: source)
+    snapshot = freeze_range_report(
+        reader, tmp_path / "range-output", start_date="2026-09-01", end_date="2026-09-10",
+        generated_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+    )
+    assert snapshot["pdf_calendar"] == {
+        "status": "unavailable",
+        "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
+        "base_date": "2026-09-30", "records": [],
+    }
+    assert snapshot["articles"][0]["title"] == "Saved article"
 
 
 def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
@@ -600,6 +790,13 @@ def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
             meeting_snapshot_id="meeting-snapshot-" + marker * 24,
         )
         assert snapshot["meeting"]["status"] == wanted
+        if marker == "a":
+            rendered = render_range_report_html(snapshot)
+            pdf_text = "\n".join(
+                page.extract_text() or "" for page in PdfReader(pdf_path(tmp_path / marker, snapshot["snapshot_id"])).pages
+            )
+            assert snapshot["meeting"]["snapshot_id"] in rendered and snapshot["meeting"]["snapshot_id"] in pdf_text
+            assert "Meeting source:</strong> snapshot" in rendered
 
     missing = freeze_range_report(
         reader, tmp_path / "missing", start_date="2026-09-17", end_date="2026-09-30",
@@ -632,6 +829,7 @@ def test_chat_returns_stable_web_and_pdf_links_without_normal_responder(tmp_path
         "non_overlapping_coverage": 0,
         "unknown_coverage": 1,
     }
+    assert load_range_report(output, report["snapshot_id"])["meeting"]["source"] == "query"
     assert report["web_url"].endswith(f"/{RENDERER_VERSION}")
     page = client.get(report["web_url"])
     pdf = client.get(report["pdf_url"])
