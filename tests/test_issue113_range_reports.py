@@ -458,7 +458,6 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
     assert not any(
         item["observation_id"] == "pdf-occ-a" for item in snapshot["pdf_source_updates"]
     )
-
     loaded = load_range_report(root, snapshot["snapshot_id"])
     html_report = render_range_report_html(loaded)
     pdf_text = "\n".join(
@@ -474,6 +473,106 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
         assert "https://pdf.example/only" in rendered
     assert "文章发布日期未确认" in html_report
     assert overlap_sha in html_report and overlap_sha in pdf_text
+    assert "PDF Source Updates" in pdf_text
+    assert "Article publication date unconfirmed" in pdf_text
+
+
+def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_path):
+    database = _database(tmp_path, b_published="2026-09-01")
+    connection = sqlite3.connect(database)
+    document_sha = hashlib.sha256(b"PDF-only executive summary").hexdigest()
+    connection.execute(
+        """INSERT INTO pdf_intake_documents(
+               document_sha256, source_path, filename, media_type, size_bytes, period_start, period_end,
+               extracted_text_sha256, document_json, imported_at)
+           VALUES (?, 'C:/input/summary.pdf', 'summary.pdf', 'application/pdf', 1,
+                   '2026-09-01', '2026-09-30', ?, '{}', ?)""",
+        (document_sha, _sha("x"), NOW),
+    )
+    connection.execute(
+        "INSERT INTO pdf_intake_document_sources VALUES (?, 'C:/input/summary.pdf', 'summary.pdf', ?)",
+        (document_sha, NOW),
+    )
+    connection.execute(
+        """INSERT INTO pdf_intake_articles(
+               article_id, canonical_url, title, type_safe_classification_json, imported_at,
+               core_article_id, confirmation_basis)
+           VALUES ('pdf-summary', 'https://pdf.example/summary', 'PDF-only summary',
+                   '{\"provider\":\"typesafe\",\"label\":\"article\"}', ?, NULL, NULL)""",
+        (NOW,),
+    )
+    occurrence = {"summary": "Stored PDF-only summary.", "coverage_period": "September 2026"}
+    connection.execute(
+        """INSERT INTO pdf_intake_article_occurrences VALUES
+           ('pdf-summary-occ', 'pdf-summary', ?, 5, 'https://pdf.example/summary', NULL,
+            NULL, ?, ?, ?)""",
+        (document_sha, _sha("summary"), _sha("summary-url"), json.dumps(occurrence)),
+    )
+    connection.commit()
+    connection.close()
+
+    snapshot = freeze_range_report(
+        _reader(database, tmp_path), tmp_path / "range-output",
+        start_date="2026-09-01", end_date="2026-09-30",
+    )
+    points = snapshot["executive_summary"]
+    article = next(point for point in points if point["kind"] == "registry_article")
+    pdf = next(point for point in points if point["kind"] == "pdf_source")
+    assert article["text"] == "Summary for Registry-only climate article — café μ — café μ"
+    assert article["article_id"] == "article-a"
+    assert article["citations"] == snapshot["articles"][0]["citations"]
+    assert pdf == {
+        "kind": "pdf_source", "text": "Stored PDF-only summary.", "title": "PDF-only summary",
+        "filename": "summary.pdf", "page": 5, "document_sha256": document_sha,
+        "coverage_period": {"start": "2026-09-01", "end": "2026-09-30"},
+        "citations": snapshot["pdf_source_updates"][-1]["citations"],
+    }
+    assert article["title"] == "Registry-only climate article — café μ"
+    assert article["publication_date"] == "2026-09-20"
+    html_report = render_range_report_html(snapshot)
+    assert "Stored PDF-only summary." in html_report
+    assert "Article ID: article-a" in html_report
+    assert f"summary.pdf, page 5, {document_sha}" in html_report
+    assert "article publication date unconfirmed; coverage period 2026-09-01 through 2026-09-30" in html_report
+    assert 'href="#publisher-1">Example Institute</a>' in html_report
+
+
+def test_executive_summary_states_when_selected_updates_have_no_stored_summary():
+    snapshot = {
+        "date_range": {"start": "2026-09-01", "end": "2026-09-30"},
+        "articles": [{"article_id": "article-a", "title": "Untitled", "summary": None, "citations": []}],
+        "pdf_source_updates": [{
+            "title": "PDF", "summary": None, "filename": "empty.pdf", "page": 1,
+            "document_sha256": "a" * 64, "citations": [],
+            "coverage_period": {"start": "2026-09-01", "end": "2026-09-30"},
+        }],
+        "pdf_source_exclusion_counts": {"unknown_coverage": 0, "non_overlapping_coverage": 0},
+        "unknown_publication_date_count": 0,
+        "executive_summary": [],
+    }
+    assert range_reports._executive_summary(snapshot) == [
+        "1 evidenced Registry article(s) were published from 2026-09-01 through 2026-09-30.",
+        "No stored Registry article summaries are available for the selected range.",
+        "1 PDF source update(s) overlap the range; their article publication dates are unconfirmed.",
+        "No stored PDF source summaries are available for the selected range.",
+        "PDF source observations excluded: 0 with unknown coverage; 0 with non-overlapping coverage.",
+    ]
+
+
+def test_empty_range_and_legacy_key_dates_have_accurate_saved_snapshot_status():
+    snapshot = {
+        "snapshot_id": "range-report-" + "a" * 24,
+        "date_range": {"start": "2026-09-01", "end": "2026-09-30", "inclusive": True},
+        "articles": [], "pdf_source_updates": [],
+        "unknown_publication_date_count": 0,
+        "unknown_publication_date_article_ids": [],
+        "meeting": {"status": "not_requested", "snapshot_id": None, "snapshot_sha256": None, "records": []},
+    }
+    html_report = render_range_report_html(snapshot)
+    assert "No selected Registry articles or PDF source updates matched this range." in html_report
+    assert '<a href="#key-dates">Key Dates</a>' in html_report
+    assert '<h2 id="key-dates">Key Dates</h2>' in html_report
+    assert "Key dates were not captured in this snapshot." in html_report
 
 
 def test_confirmed_pdf_cannot_restore_a_currently_ineligible_core_article(tmp_path):
@@ -522,11 +621,22 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
         _reader(database, tmp_path), root,
         start_date="2026-09-17", end_date="2026-09-30",
     )
+    invalid_current = json.loads(json.dumps(current))
+    invalid_current["executive_summary"] = None
+    frozen_invalid = {
+        key: value for key, value in invalid_current.items()
+        if key not in {"snapshot_id", "snapshot_sha256", "created_at"}
+    }
+    digest_invalid = range_reports._digest(frozen_invalid)
+    invalid_current["snapshot_id"] = "range-report-" + digest_invalid[:24]
+    invalid_current["snapshot_sha256"] = digest_invalid
+    with pytest.raises(RangeReportError, match="invalid range report schema"):
+        range_reports._validate_snapshot(invalid_current, invalid_current["snapshot_id"])
     legacy_frozen = {
         key: value for key, value in current.items()
         if key not in {
             "snapshot_id", "snapshot_sha256", "created_at",
-            "pdf_source_updates", "pdf_source_exclusion_counts", "pdf_calendar",
+            "pdf_source_updates", "pdf_source_exclusion_counts", "pdf_calendar", "executive_summary",
         }
     }
     legacy_digest = range_reports._digest(legacy_frozen)
@@ -927,7 +1037,7 @@ def _render_fixture(path: Path, *, count: int, repeat: int) -> dict:
             "publisher": "Fixture", "publication_date": "2026-09-20",
             "summary": "Evidence summary — café μ.", "categories": ["Physical risk"],
             "keywords": ["pricing"], "content_version_id": f"content-{index}",
-            "content": ("Multipage persisted evidence with Unicode café μ. " * repeat),
+            "content": ("Long persisted climate evidence with Unicode café μ. " * repeat),
             "source_observations": [],
             "citations": [{"kind": "url", "url": url}],
             "provenance": {},
@@ -949,6 +1059,42 @@ def _render_fixture(path: Path, *, count: int, repeat: int) -> dict:
     return snapshot
 
 
+def test_same_publisher_updates_are_grouped_by_frozen_topic_in_html_and_pdf(tmp_path):
+    snapshot = _render_fixture(tmp_path / "initial.pdf", count=2, repeat=1)
+    snapshot["articles"][1]["categories"] = ["Transition risk"]
+    frozen = {
+        key: value for key, value in snapshot.items()
+        if key not in {"snapshot_id", "snapshot_sha256", "created_at"}
+    }
+    digest = range_reports._digest(frozen)
+    snapshot["snapshot_id"] = "range-report-" + digest[:24]
+    snapshot["snapshot_sha256"] = digest
+    range_reports._validate_snapshot(snapshot, snapshot["snapshot_id"])
+    html_report = render_range_report_html(snapshot)
+    output = tmp_path / "topics.pdf"
+    render_range_report_pdf(snapshot, output)
+    reader = PdfReader(output)
+    pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    outline_titles = []
+
+    def collect_outline_titles(entries):
+        for entry in entries:
+            if isinstance(entry, list):
+                collect_outline_titles(entry)
+            else:
+                title = getattr(entry, "title", None)
+                outline_titles.append(title if title is not None else entry.get("/Title", ""))
+
+    collect_outline_titles(reader.outline)
+
+    assert '<a href="#publisher-1-topic-1">Physical risk</a>' in html_report
+    assert '<a href="#publisher-1-topic-2">Transition risk</a>' in html_report
+    assert '<h4 id="publisher-1-topic-1">Physical risk</h4>' in html_report
+    assert '<h4 id="publisher-1-topic-2">Transition risk</h4>' in html_report
+    assert "Physical risk" in pdf_text and "Transition risk" in pdf_text
+    assert "Physical risk" in outline_titles and "Transition risk" in outline_titles
+
+
 @pytest.mark.parametrize(("count", "repeat", "minimum_pages"), [(1, 2, 3), (8, 90, 10)])
 def test_short_and_long_pdf_fixtures_have_toc_bookmarks_pages_unicode_and_citations(
     tmp_path, count, repeat, minimum_pages,
@@ -962,5 +1108,6 @@ def test_short_and_long_pdf_fixtures_have_toc_bookmarks_pages_unicode_and_citati
     assert "Contents" in text
     assert "Page 1" in text and f"Page {len(reader.pages)}" in text
     assert "café μ" in text
+    assert "Long persisted climate evidence" in text
     assert "very-long-segment" in text
     assert snapshot["snapshot_id"] in text
