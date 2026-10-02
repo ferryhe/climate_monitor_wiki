@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from climate_monitor.pdf_intake import import_pdf_reports
 from climate_registry.pdf_pipeline import (
     PdfIntakePipeline,
     enqueue_pdf_batch,
+    list_pdf_batches,
     load_active_projection,
     read_pdf_batch,
     retry_pdf_batch,
@@ -219,6 +221,105 @@ def test_reload_failure_retries_one_imported_pdf_without_duplicate_rows_or_pages
         "IAA_CSC_Climate_Report_20260928.pdf"
     ) == citation_count
     assert (base_wiki / "manual.md").read_bytes() == original_base
+
+
+def test_pdf_failures_remain_in_history_after_retry_and_success(tmp_path):
+    database, queue, runtime, _, _, status = _setup(tmp_path)
+
+    def fail_reload(_generation_id: str) -> None:
+        raise RuntimeError("reload unavailable")
+
+    failed = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, fail_reload,
+        repository_root=tmp_path / "repository",
+    ).process(status["batch_id"])
+    assert failed["failure_history"] == [{
+        "attempt": 1, "reason": "RuntimeError: reload unavailable", "at": failed["failure_history"][0]["at"],
+    }]
+
+    assert retry_pdf_batch(queue, status["batch_id"])["error"] is None
+    ready = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, _ack_activation(queue),
+        repository_root=tmp_path / "repository",
+    ).process(status["batch_id"])
+    assert ready["stage"] == "chat_ready" and ready["chat_ready"] is True
+    assert ready["failure_history"] == failed["failure_history"]
+
+
+def test_retry_preserves_a_legacy_failure_before_clearing_its_error(tmp_path):
+    database, queue, runtime, _, _, status = _setup(tmp_path)
+    legacy_failure = {
+        "at": "2026-10-01T12:00:00Z",
+        "attempt": 4,
+        "reason": "RuntimeError: legacy reload failure",
+    }
+    path = queue / status["batch_id"] / "status.json"
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    persisted.update(stage="failed", error=legacy_failure["reason"], attempts=4,
+                     updated_at=legacy_failure["at"])
+    persisted.pop("failure_history")
+    path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    retried = retry_pdf_batch(queue, status["batch_id"])
+    assert retried["error"] is None
+    assert retried["failure_history"] == [legacy_failure]
+    ready = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, _ack_activation(queue),
+        repository_root=tmp_path / "repository",
+    ).process(status["batch_id"])
+    assert ready["stage"] == "chat_ready" and ready["failure_history"] == [legacy_failure]
+
+
+def test_pdf_batch_overview_renders_retained_failure_history():
+    script = (Path(__file__).parents[1] / "management_ui" / "pdf_import.js").read_text(
+        encoding="utf-8"
+    )
+    assert "value.failure_history || []" in script
+    assert "failure.at" in script and "failure.attempt" in script and "failure.reason" in script
+    assert "latest.reason !== value.error" in script
+
+
+def test_pdf_batch_summary_counts_current_stages_and_milestones_separately(tmp_path):
+    _, queue, _, _, _, queued = _setup(tmp_path)
+    failed = enqueue_pdf_batch(
+        queue, _bundle(tmp_path, filename="failed.pdf"), repository_root=tmp_path / "repository",
+    )
+    ready = enqueue_pdf_batch(
+        queue, _bundle(tmp_path, filename="ready.pdf"), repository_root=tmp_path / "repository",
+    )
+    for batch, changes in (
+        (failed, {"stage": "failed", "imported": True, "indexed": True, "error": "RuntimeError: unavailable"}),
+        (ready, {"stage": "chat_ready", "imported": True, "indexed": True, "chat_ready": True}),
+    ):
+        path = queue / batch["batch_id"] / "status.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value.update(changes)
+        path.write_text(json.dumps(value), encoding="utf-8")
+
+    summary = list_pdf_batches(queue)
+    assert summary["total_batches"] == 3
+    assert summary["stage_counts"] == {"chat_ready": 1, "failed": 1, "queued": 1}
+    assert summary["milestone_counts"] == {"imported": 2, "indexed": 2, "chat_ready": 1}
+    assert next(item for item in summary["batches"] if item["stage"] == "failed")["filename"] == "failed.pdf"
+
+
+def test_pdf_retry_appends_another_failure_history_entry(tmp_path):
+    database, queue, runtime, _, _, status = _setup(tmp_path)
+
+    def fail_reload(_generation_id: str) -> None:
+        raise RuntimeError("reload unavailable")
+
+    pipeline = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, fail_reload,
+        repository_root=tmp_path / "repository",
+    )
+    pipeline.process(status["batch_id"])
+    retry_pdf_batch(queue, status["batch_id"])
+    failed = pipeline.process(status["batch_id"])
+    assert [(item["attempt"], item["reason"]) for item in failed["failure_history"]] == [
+        (1, "RuntimeError: reload unavailable"),
+        (2, "RuntimeError: reload unavailable"),
+    ]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")

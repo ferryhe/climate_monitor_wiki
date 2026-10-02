@@ -59,6 +59,7 @@ from climate_registry.read_api import (
 )
 from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
+    list_pdf_batches,
     load_active_projection,
     load_projection_manifest,
     read_pdf_batch,
@@ -1015,6 +1016,17 @@ async def console_pdf_intake_import(
         return enqueue_pdf_batch(queue[0], bundle, repository_root=ROOT)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"PDF batch was not queued: {exc}") from exc
+
+
+@app.get("/api/manage/pdf-intake/batches", include_in_schema=False)
+def console_pdf_intake_batches(user: ConsolePrincipal) -> dict[str, Any]:
+    queue = _pdf_intake_queue()
+    if queue[0] is None:
+        raise HTTPException(status_code=503, detail=queue[1])
+    try:
+        return list_pdf_batches(queue[0])
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid PDF batch status.") from exc
 
 
 @app.get("/api/manage/pdf-intake/batches/{batch_id}", include_in_schema=False)

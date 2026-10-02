@@ -198,6 +198,40 @@ def test_pdf_import_queues_idempotently_without_writing_registry(monkeypatch, tm
     assert database.read_bytes() == original_database
 
 
+def test_pdf_batch_overview_separates_stages_from_milestones(monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path)
+    queue = tmp_path / "queue"
+    batches = []
+    for filename in ("queued.pdf", "failed.pdf", "ready.pdf"):
+        payload = {"files": (filename, _pdf_bytes(), "application/pdf")}
+        preview = client.post("/api/manage/pdf-intake/preview", files=payload).json()
+        batches.append(client.post(
+            "/api/manage/pdf-intake/import", params=_confirmed_preview(preview), files=payload,
+        ).json())
+    states = (
+        {"stage": "queued", "imported": False, "indexed": False, "chat_ready": False},
+        {"stage": "failed", "imported": True, "indexed": True, "chat_ready": False,
+         "error": "RuntimeError: reload unavailable"},
+        {"stage": "chat_ready", "imported": True, "indexed": True, "chat_ready": True},
+    )
+    for batch, changes in zip(batches, states):
+        path = queue / batch["batch_id"] / "status.json"
+        status = api_server.json.loads(path.read_text(encoding="utf-8"))
+        status.update(changes)
+        path.write_text(api_server.json.dumps(status), encoding="utf-8")
+
+    overview = client.get("/api/manage/pdf-intake/batches")
+    assert overview.status_code == 200, overview.text
+    value = overview.json()
+    assert value["total_batches"] == 3
+    assert value["stage_counts"] == {"chat_ready": 1, "failed": 1, "queued": 1}
+    assert value["milestone_counts"] == {"imported": 2, "indexed": 2, "chat_ready": 1}
+    failed = next(item for item in value["batches"] if item["stage"] == "failed")
+    assert failed["filename"] == "failed.pdf"
+    assert failed["error"] == "RuntimeError: reload unavailable"
+    assert {"created_at", "updated_at", "attempts", "imported", "indexed", "chat_ready"} <= failed.keys()
+
+
 def test_pdf_import_rejects_changed_typesafe_result_after_preview(monkeypatch, tmp_path):
     client, database = _client(monkeypatch, tmp_path)
     real_import = api_server.import_pdf_reports

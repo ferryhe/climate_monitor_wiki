@@ -80,6 +80,7 @@ def enqueue_pdf_batch(
         "indexed": False,
         "chat_ready": False,
         "error": None,
+        "failure_history": [],
         "attempts": 0,
         "document_sha256": documents[0]["source"]["sha256"],
         "created_at": now,
@@ -103,10 +104,50 @@ def read_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
     return value
 
 
+def list_pdf_batches(queue_dir: Path) -> dict[str, Any]:
+    """Return the PDF queue's current stages and independent milestones."""
+    batches: list[dict[str, Any]] = []
+    for status_path in queue_dir.glob("*/status.json"):
+        status = read_pdf_batch(queue_dir, status_path.parent.name)
+        bundle = json.loads((status_path.parent / "bundle.json").read_text(encoding="utf-8"))
+        documents = bundle.get("documents", [])
+        filename = documents[0].get("source", {}).get("filename") if len(documents) == 1 else None
+        batches.append({**status, "filename": filename})
+    batches.sort(key=lambda item: (str(item.get("created_at", "")), item["batch_id"]), reverse=True)
+    stage_counts: dict[str, int] = {}
+    for status in batches:
+        stage = str(status.get("stage", "unknown"))
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    return {
+        "total_batches": len(batches),
+        "stage_counts": dict(sorted(stage_counts.items())),
+        "milestone_counts": {
+            name: sum(bool(status.get(name)) for status in batches)
+            for name in ("imported", "indexed", "chat_ready")
+        },
+        "batches": batches,
+    }
+
+
 def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
     status = read_pdf_batch(queue_dir, batch_id)
     if status.get("chat_ready") or status.get("stage") != "failed":
         return status
+    if status.get("error"):
+        failure = {
+            "at": status.get("updated_at"),
+            "attempt": status.get("attempts"),
+            "reason": status["error"],
+        }
+        history = list(status.get("failure_history", []))
+        if not any(
+            item.get("attempt") == failure["attempt"]
+            and item.get("reason") == failure["reason"]
+            for item in history
+            if isinstance(item, dict)
+        ):
+            history.append(failure)
+        status["failure_history"] = history
     status.update(stage="queued", error=None, updated_at=_now())
     atomic_write_json(_batch_dir(queue_dir, batch_id) / "status.json", status)
     return status
@@ -612,12 +653,16 @@ class PdfIntakePipeline:
                 batch_id, status, stage="chat_ready", chat_ready=True, error=None
             )
         except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            history = list(status.get("failure_history", []))
+            history.append({"at": _now(), "attempt": attempt, "reason": reason})
             return self._save(
                 batch_id,
                 status,
                 stage="failed",
                 chat_ready=False,
-                error=f"{type(exc).__name__}: {exc}",
+                error=reason,
+                failure_history=history,
             )
 
     def process_next(self) -> dict[str, Any] | None:
