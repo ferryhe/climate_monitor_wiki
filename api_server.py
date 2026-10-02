@@ -690,7 +690,7 @@ def chat(request: ChatRequest) -> dict:
 
 
 def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[str, Any]:
-    if renderer_version != RENDERER_VERSION:
+    if renderer_version not in {RENDERER_VERSION, "range-report-v1"}:
         raise HTTPException(status_code=404, detail="Report renderer not found.")
     try:
         return load_range_report(RANGE_REPORT_DIR, snapshot_id)
