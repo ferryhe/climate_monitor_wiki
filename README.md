@@ -411,7 +411,30 @@ existing web-listening adapter + climate_registry.acquisition (#112)
 frozen report input ──► existing monitor authoring/checkpoint/publish gates
 ```
 
-There is no console queue, search wrapper, second executor, or report/publish
+#### Manual ingest-only activation
+
+An authenticated operator can choose **Start ingest-only run** in `/manage`
+(the equivalent API request is `POST /api/manage/runs` with
+`{"mode":"ingest_only"}`). It uses the normal governed acquisition and frozen
+batch, then indexes and activates Wiki/Chat without creating a weekly report,
+PDF, email, or rolling PR. The default manual request and every scheduled start
+remain report mode; the delivery times and deployment boundary do not change.
+The wiki-side producer writes an immutable request and validated SQLite snapshot
+to the shared intake queue; the existing `pdf-intake-writer` remains the sole
+owner of the writable runtime Wiki mount and handles both activation job types.
+
+Progress records `acquisition_complete`, `indexed`, and `chat_ready` separately.
+If indexing or Chat activation fails, **Resume frozen run** retries post-processing
+from the saved batch without fetching it again. Range reports use the activated
+`climate-intake-projection.v1` allowlist and hash-validated, read-only Runtime
+snapshot, preserving each article ID, pinned content-version ID, publication
+date, and its evidence. Invalid manifests, snapshots, or reload acknowledgements
+fail closed and leave the prior active projection available. The Runtime database
+itself is not exposed or promoted into the Public Registry; see
+[docs/deployment.md](docs/deployment.md#explicit-management-pdf-imports) for the
+separate Registry roles and activation boundary.
+
+There is no separate console queue, search wrapper, second executor, or report/publish
 bypass. Concurrent start/resume requests for the shared
 monitor state are rejected by an interprocess lock; the worker owns that lock
 from collection through report finalization. The scheduler snapshot remains separate from live

@@ -276,7 +276,14 @@ def _day_precision_publication_date(value: Any) -> str | None:
         return None
 
 
-def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dict[str, Any]:
+def _range_source(
+    reader: RegistryReader,
+    start_date: str,
+    end_date: str,
+    *,
+    acquisition_item_ids: set[str] | None = None,
+    pdf_occurrence_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Freeze persisted Registry evidence without consulting reports or the web."""
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     observations: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -296,7 +303,8 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
                WHERE a.publication_eligible=1 AND a.document_kind='article'
                ORDER BY a.article_id"""
         ):
-            all_identities.add(row["article_id"])
+            if acquisition_item_ids is None:
+                all_identities.add(row["article_id"])
             article_rows[row["article_id"]] = dict(row)
         acquisition_rows = connection.execute(
             """
@@ -314,7 +322,10 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
             """
         ).fetchall() if RegistryReader._has_acquisition_projection(connection) else []
         for row in acquisition_rows:
+            if acquisition_item_ids is not None and row["acquisition_item_id"] not in acquisition_item_ids:
+                continue
             article_id = row["article_id"]
+            all_identities.add(article_id)
             evidence = _json_object(row["publication_date_evidence_json"], "publication evidence")
             publication_date = _day_precision_publication_date(row["publication_date"])
             if publication_date and evidence:
@@ -360,7 +371,11 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
             """
         ).fetchall() if has_pdf else []
         for row in pdf_rows:
+            if pdf_occurrence_ids is not None and row["occurrence_id"] not in pdf_occurrence_ids:
+                continue
             article_id = row["core_article_id"]
+            if isinstance(article_id, str):
+                all_identities.add(article_id)
             raw = _json_object(row["occurrence_json"], "PDF occurrence") or {}
             evidence_text = raw.get("publication_date_evidence")
             evidence = (
@@ -430,7 +445,21 @@ def _range_source(reader: RegistryReader, start_date: str, end_date: str) -> dic
             ))
             content = None
             enrichment = None
-            version_id = base.get("current_content_version_id")
+            pinned_version = next((
+                item["content_version_id"] for item in reversed(sorted(
+                    source_items,
+                    key=lambda value: (value.get("observed_at") or "", value["observation_id"]),
+                ))
+                if item["kind"] == "registry_acquisition"
+                and item.get("content_version_id")
+                and (published := _day_precision_publication_date(item.get("publication_date")))
+                and start <= date.fromisoformat(published) <= end
+            ), None)
+            version_id = (
+                pinned_version
+                if acquisition_item_ids is not None and pinned_version
+                else base.get("current_content_version_id")
+            )
             if version_id:
                 content = connection.execute(
                     """SELECT content_version_id, markdown_content, content_sha256,
@@ -693,19 +722,38 @@ def _pdf_calendar_available(reader: RegistryReader) -> bool:
         ).fetchone() is not None
 
 
-def _pdf_calendar_payload(reader: RegistryReader, *, base_date: str) -> dict[str, Any]:
+def _pdf_calendar_payload(
+    reader: RegistryReader,
+    *,
+    base_date: str,
+    activated_pdf_occurrence_ids: set[str] | None = None,
+) -> dict[str, Any]:
     try:
         if not _pdf_calendar_available(reader):
             return {
                 "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
                 "base_date": base_date, "records": [],
             }
+        allowed_documents: set[str] | None = None
+        if activated_pdf_occurrence_ids is not None:
+            with reader.connect() as connection:
+                allowed_documents = {
+                    str(row["source_document_sha256"])
+                    for row in connection.execute(
+                        "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_article_occurrences"
+                    )
+                    if row["occurrence_id"] in activated_pdf_occurrence_ids
+                }
         items: list[dict[str, Any]] = []
         page = 1
         while True:
             result = reader.pdf_calendar_items(page=page, page_size=100)
             batch = result["items"]
-            items.extend(batch)
+            items.extend(
+                item for item in batch
+                if allowed_documents is None
+                or item.get("source_document_sha256") in allowed_documents
+            )
             if page >= result["pagination"]["pages"]:
                 break
             page += 1
@@ -722,6 +770,101 @@ def _pdf_calendar_payload(reader: RegistryReader, *, base_date: str) -> dict[str
     }
 
 
+def _merge_range_sources(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    *,
+    preferred_acquisition_item_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    articles = {item["article_id"]: item for item in base["articles"]}
+    for incoming in overlay["articles"]:
+        existing = articles.get(incoming["article_id"])
+        if existing is None:
+            articles[incoming["article_id"]] = incoming
+            continue
+        existing_has_web = bool(preferred_acquisition_item_ids) and any(
+            item.get("kind") == "registry_acquisition"
+            and item.get("observation_id") in preferred_acquisition_item_ids
+            for item in existing["source_observations"]
+        )
+        incoming_has_web = bool(preferred_acquisition_item_ids) and any(
+            item.get("kind") == "registry_acquisition"
+            and item.get("observation_id") in preferred_acquisition_item_ids
+            for item in incoming["source_observations"]
+        )
+        primary, secondary = (
+            (existing, incoming)
+            if existing_has_web and not incoming_has_web
+            else (incoming, existing)
+        )
+        merged = dict(primary)
+        observations = {}
+        for item in [*primary["source_observations"], *secondary["source_observations"]]:
+            observations.setdefault((item["kind"], item["observation_id"]), item)
+        citations = {}
+        for item in [*primary["citations"], *secondary["citations"]]:
+            identity = (
+                ("url", item.get("url"))
+                if item["kind"] == "url"
+                else (
+                    "pdf_page", item.get("document_sha256"),
+                    item.get("page"), item.get("url"),
+                )
+            )
+            citations.setdefault(identity, item)
+        primary_dates = primary["provenance"]["publication_date"]
+        date_evidence = {
+            (item["date"], item["observation_id"]): item
+            for article in (primary, secondary)
+            for item in article["provenance"]["publication_date"]["all_in_range"]
+        }
+        merged["source_observations"] = list(observations.values())
+        merged["citations"] = list(citations.values())
+        merged["provenance"] = {
+            **primary["provenance"],
+            "publication_date": {
+                **primary_dates,
+                "all_in_range": [date_evidence[key] for key in sorted(date_evidence)],
+            },
+        }
+        articles[incoming["article_id"]] = merged
+    updates: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for item in [*base["pdf_source_updates"], *overlay["pdf_source_updates"]]:
+        updates[(item["document_sha256"], item["page"], item.get("url"), item["content_sha256"])] = item
+    unknown = (
+        set(base["unknown_publication_date_article_ids"])
+        | set(overlay["unknown_publication_date_article_ids"])
+    ) - set(articles)
+    return {
+        "articles": sorted(articles.values(), key=lambda item: (item["publication_date"], item["article_id"])),
+        "pdf_source_updates": list(updates.values()),
+        "pdf_source_exclusion_counts": {
+            key: base["pdf_source_exclusion_counts"].get(key, 0)
+            + overlay["pdf_source_exclusion_counts"].get(key, 0)
+            for key in {"non_overlapping_coverage", "unknown_coverage"}
+        },
+        "unknown_publication_date_count": len(unknown),
+        "unknown_publication_date_article_ids": sorted(unknown),
+    }
+
+
+def _merge_pdf_calendars(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    if overlay["status"] == "unavailable":
+        return base
+    if base["status"] == "unavailable":
+        return overlay
+    records: dict[str, dict[str, Any]] = {}
+    for item in [*base["records"], *overlay["records"]]:
+        identity = str(item.get("occurrence_id") or item.get("event_id") or _digest(item))
+        records[identity] = item
+    return {
+        "status": "included" if records else "empty",
+        "coverage": {"status": "complete"},
+        "base_date": overlay["base_date"],
+        "records": list(records.values()),
+    }
+
+
 def freeze_range_report(
     reader: RegistryReader,
     artifact_root: str | Path,
@@ -730,15 +873,71 @@ def freeze_range_report(
     end_date: str,
     meeting_snapshot_id: str | None = None,
     generated_at: datetime | None = None,
+    overlay_reader: RegistryReader | None = None,
+    pdf_overlay_reader: RegistryReader | None = None,
+    overlay_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     if start > end or (end - start).days + 1 > MAX_RANGE_DAYS:
         raise RangeReportError("invalid report date range")
     generated = generated_at or datetime.now(timezone.utc)
     base_date = generated.astimezone(timezone.utc).date().isoformat()
-    source = _range_source(reader, start_date, end_date)
+    activated_pdf_ids = (
+        {
+            str(value)
+            for value in overlay_manifest.get("pdf_occurrence_ids", [])
+        }
+        if overlay_manifest is not None
+        else None
+    )
+    activated_web_ids = {
+        str(item["acquisition_item_id"])
+        for item in (overlay_manifest or {}).get("web_items", [])
+    }
+    source = (
+        _range_source(reader, start_date, end_date)
+        if overlay_manifest is None
+        else _range_source(reader, start_date, end_date, pdf_occurrence_ids=set())
+    )
+    if overlay_reader is not None and overlay_manifest is not None:
+        overlay = _range_source(
+            overlay_reader,
+            start_date,
+            end_date,
+            acquisition_item_ids=activated_web_ids,
+            pdf_occurrence_ids=set(),
+        )
+        source = _merge_range_sources(source, overlay)
+    if pdf_overlay_reader is not None and activated_pdf_ids:
+        pdf_overlay = _range_source(
+            pdf_overlay_reader,
+            start_date,
+            end_date,
+            acquisition_item_ids=set(),
+            pdf_occurrence_ids=activated_pdf_ids,
+        )
+        source = _merge_range_sources(
+            source,
+            pdf_overlay,
+            preferred_acquisition_item_ids=activated_web_ids,
+        )
     meeting = _meeting_payload(reader, meeting_snapshot_id, base_date=base_date)
-    pdf_calendar = _pdf_calendar_payload(reader, base_date=base_date)
+    pdf_calendar = (
+        _pdf_calendar_payload(reader, base_date=base_date)
+        if overlay_manifest is None
+        else {
+            "status": "empty", "coverage": {"status": "complete"},
+            "base_date": base_date,
+            "records": [],
+        }
+    )
+    if pdf_overlay_reader is not None and activated_pdf_ids:
+        overlay_calendar = _pdf_calendar_payload(
+            pdf_overlay_reader,
+            base_date=base_date,
+            activated_pdf_occurrence_ids=activated_pdf_ids,
+        )
+        pdf_calendar = _merge_pdf_calendars(pdf_calendar, overlay_calendar)
     frozen = {
         "schema_version": SCHEMA_VERSION,
         "date_range": {"start": start_date, "end": end_date, "inclusive": True},

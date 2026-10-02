@@ -1,4 +1,4 @@
-"""Run the independent PDF intake writer."""
+"""Run the independent PDF and web activation intake writer."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _pipeline() -> PdfIntakePipeline:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Process durable management PDF batches.")
+    parser = argparse.ArgumentParser(description="Process durable PDF and web activation batches.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()

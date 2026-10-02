@@ -222,6 +222,94 @@ def test_reload_failure_retries_one_imported_pdf_without_duplicate_rows_or_pages
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
+def test_legacy_active_pdf_overlay_excludes_later_failed_pdf(monkeypatch, tmp_path):
+    import api_server
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    database = tmp_path / "registry.sqlite3"
+    _registry(database)
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime-wiki"
+    queue.mkdir()
+    runtime.mkdir()
+
+    def bundle(filename, summary, event_id, event_name):
+        value = _bundle(tmp_path, filename=filename, summary=summary)
+        value["calendar_items"].append({
+            "event_id": event_id,
+            "occurrence_id": f"{event_id}-occurrence",
+            "source_document_sha256": value["documents"][0]["source"]["sha256"],
+            "page": 2,
+            "name": event_name,
+            "kind": "deadline",
+            "raw_date": "2027-03-01",
+            "date_precision": "day",
+            "start_date": "2027-03-01",
+            "end_date": "2027-03-01",
+            "summary": event_name,
+            "content_sha256": "a" * 64,
+            "source_urls": [],
+        })
+        return value
+
+    first = enqueue_pdf_batch(
+        queue,
+        bundle("active-a.pdf", "Active PDF A evidence.", "active-a-date", "Active A filing"),
+        repository_root=repository,
+    )
+    ready = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, _ack_activation(queue),
+        repository_root=repository,
+    ).process(first["batch_id"])
+    assert ready["chat_ready"] is True
+
+    generation, active = load_active_projection(runtime, queue / "active.json")
+    (generation / "intake-manifest.json").unlink()
+    for key in (
+        "manifest_sha256", "projection_kind", "registry_snapshot",
+        "pdf_registry_snapshot", "pdf_registry_sha256",
+        "web_registry_snapshot", "web_registry_sha256",
+    ):
+        active.pop(key, None)
+    (queue / "active.json").write_text(json.dumps(active), encoding="utf-8")
+
+    second = enqueue_pdf_batch(
+        queue,
+        bundle("failed-b.pdf", "Failed PDF B evidence.", "failed-b-date", "Failed B filing"),
+        repository_root=repository,
+    )
+    failed = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime,
+        lambda _generation_id: (_ for _ in ()).throw(RuntimeError("reload unavailable")),
+        repository_root=repository,
+    ).process(second["batch_id"])
+    assert failed["stage"] == "failed" and failed["chat_ready"] is False
+
+    monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
+    overlay_reader, pdf_overlay_reader, manifest = api_server._range_report_overlay()
+    report = freeze_range_report(
+        RegistryReader(database, repository_root=repository),
+        tmp_path / "range-reports",
+        start_date="2026-09-14", end_date="2026-09-14",
+        overlay_reader=overlay_reader,
+        pdf_overlay_reader=pdf_overlay_reader,
+        overlay_manifest=manifest,
+    )
+    observations = [
+        observation
+        for article in report["articles"]
+        for observation in article["source_observations"]
+        if observation["kind"] == "registry_pdf"
+    ]
+    assert {item["filename"] for item in observations} == {"active-a.pdf"}
+    assert {item["event_id"] for item in report["pdf_calendar"]["records"]} == {
+        "active-a-date"
+    }
+    assert read_pdf_batch(queue, second["batch_id"])["chat_ready"] is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
 def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     monkeypatch, tmp_path
 ):
@@ -275,6 +363,40 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
         for item in hidden["sources"]
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" not in hidden["text"]
+
+    overlay_reader, pdf_overlay_reader, manifest = api_server._range_report_overlay()
+    assert overlay_reader is None and pdf_overlay_reader is None
+    assert manifest == {"web_items": [], "pdf_occurrence_ids": []}
+    configured_report = freeze_range_report(
+        RegistryReader(database, repository_root=tmp_path / "repository"),
+        tmp_path / "configured-range-reports",
+        start_date="2026-09-14", end_date="2026-09-14",
+        overlay_reader=overlay_reader, pdf_overlay_reader=pdf_overlay_reader,
+        overlay_manifest=manifest,
+    )
+    assert configured_report["pdf_source_updates"] == []
+    assert all(
+        observation["kind"] != "registry_pdf"
+        for article in configured_report["articles"]
+        for observation in article["source_observations"]
+    )
+
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", None)
+    legacy_overlay = api_server._range_report_overlay()
+    assert legacy_overlay == (None, None, None)
+    legacy_report = freeze_range_report(
+        RegistryReader(database, repository_root=tmp_path / "repository"),
+        tmp_path / "legacy-range-reports",
+        start_date="2026-09-14", end_date="2026-09-14",
+        overlay_reader=legacy_overlay[0], pdf_overlay_reader=legacy_overlay[1],
+        overlay_manifest=legacy_overlay[2],
+    )
+    assert any(
+        observation["kind"] == "registry_pdf"
+        for article in legacy_report["articles"]
+        for observation in article["source_observations"]
+    )
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
 
     assert retry_pdf_batch(queue, status["batch_id"])["stage"] == "queued"
 

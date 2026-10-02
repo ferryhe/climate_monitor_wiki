@@ -60,9 +60,11 @@ from climate_registry.read_api import (
 from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
     load_active_projection,
+    load_projection_manifest,
     read_pdf_batch,
     retry_pdf_batch,
 )
+from climate_registry.web_ingest_pipeline import _active_pdf_ids, _active_pdf_snapshot
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -85,7 +87,10 @@ WIKI_DIR = ROOT / os.getenv("WIKI_DIR", "wiki")
 SOURCE_DIR = ROOT / os.getenv("SOURCE_DIR", "sources")
 PDF_RUNTIME_WIKI_DIR = (
     Path(value).resolve()
-    if (value := os.getenv("CLIMATE_PDF_RUNTIME_WIKI_DIR", "").strip())
+    if (value := (
+        os.getenv("CLIMATE_RUNTIME_WIKI_DIR", "").strip()
+        or os.getenv("CLIMATE_PDF_RUNTIME_WIKI_DIR", "").strip()
+    ))
     else None
 )
 ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadata")
@@ -124,7 +129,10 @@ _RELOAD_LOCK = threading.Lock()
 
 
 def _configured_pdf_queue() -> Path | None:
-    value = os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", "").strip()
+    value = (
+        os.getenv("CLIMATE_INTAKE_QUEUE_DIR", "").strip()
+        or os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", "").strip()
+    )
     return Path(value).resolve() if value else None
 
 def _selected_pdf_projection() -> tuple[Path | None, dict[str, Any] | None]:
@@ -134,6 +142,62 @@ def _selected_pdf_projection() -> tuple[Path | None, dict[str, Any] | None]:
     if queue is None:
         raise RuntimeError("PDF runtime Wiki requires the durable batch queue")
     return load_active_projection(PDF_RUNTIME_WIKI_DIR, queue / "active.json")
+
+
+def _range_report_overlay(
+) -> tuple[RegistryReader | None, RegistryReader | None, dict[str, Any] | None]:
+    if PDF_RUNTIME_WIKI_DIR is None:
+        return None, None, None
+    generation, metadata = _selected_pdf_projection()
+    if generation is None and metadata is None:
+        return None, None, {"web_items": [], "pdf_occurrence_ids": []}
+    manifest = load_projection_manifest(generation, metadata)
+    if manifest is None:
+        pdf_ids = _active_pdf_ids(generation, manifest)
+        if not pdf_ids:
+            raise RegistryContractError("active legacy PDF projection has no validated identities")
+        try:
+            snapshot_path, _ = _active_pdf_snapshot(
+                PDF_RUNTIME_WIKI_DIR, metadata, pdf_ids,
+            )
+            pdf_reader = RegistryReader(snapshot_path, repository_root=ROOT)
+            with pdf_reader.connect() as connection:
+                found = {
+                    str(row["occurrence_id"])
+                    for row in connection.execute(
+                        "SELECT occurrence_id FROM pdf_intake_article_occurrences"
+                    )
+                    if row["occurrence_id"] in pdf_ids
+                }
+        except (OSError, RuntimeError, RegistryContractError) as exc:
+            raise RegistryContractError("active legacy PDF projection is invalid") from exc
+        if found != pdf_ids:
+            raise RegistryContractError("active legacy PDF projection is invalid")
+        return None, pdf_reader, {
+            "web_items": [], "pdf_occurrence_ids": sorted(pdf_ids),
+        }
+    expected_parent = (PDF_RUNTIME_WIKI_DIR / "registry-snapshots").resolve()
+
+    def selected(kind: str, required: bool) -> RegistryReader | None:
+        raw_path = metadata.get(f"{kind}_registry_snapshot")
+        raw_sha256 = metadata.get(f"{kind}_registry_sha256")
+        if not raw_path and not required:
+            return None
+        snapshot = Path(str(raw_path or "")).resolve()
+        if (
+            snapshot.parent != expected_parent
+            or not snapshot.is_file()
+            or not isinstance(raw_sha256, str)
+            or hashlib.sha256(snapshot.read_bytes()).hexdigest() != raw_sha256
+        ):
+            raise RegistryContractError("active intake Registry projection is invalid")
+        return RegistryReader(snapshot, repository_root=ROOT)
+
+    return (
+        selected("web", bool(manifest["web_items"])),
+        selected("pdf", bool(manifest["pdf_occurrence_ids"])),
+        manifest,
+    )
 
 
 _startup_projection, _ = _selected_pdf_projection()
@@ -625,12 +689,16 @@ def chat(request: ChatRequest) -> dict:
         }
     if report_route.action == "generate":
         try:
+            overlay_reader, pdf_overlay_reader, overlay_manifest = _range_report_overlay()
             snapshot = freeze_range_report(
                 _registry_reader(),
                 RANGE_REPORT_DIR,
                 start_date=report_route.start_date,
                 end_date=report_route.end_date,
                 meeting_snapshot_id=report_route.meeting_snapshot_id,
+                overlay_reader=overlay_reader,
+                pdf_overlay_reader=pdf_overlay_reader,
+                overlay_manifest=overlay_manifest,
             )
         except (RegistryUnavailableError, RegistryContractError) as exc:
             raise HTTPException(status_code=503, detail="Article registry is unavailable.") from exc
@@ -1012,9 +1080,15 @@ def console_all_progress(user: ConsolePrincipal) -> list[dict[str, Any]]:
 
 @app.post("/api/manage/runs", include_in_schema=False)
 def console_start(payload: dict[str, Any], user: ConsolePrincipal) -> dict[str, Any]:
-    if payload:
-        raise HTTPException(status_code=422, detail="Manual start accepts no overrides; save a version first.")
-    return _manage_call(lambda: _management_service().start(trigger="manual"))
+    if set(payload) - {"mode"} or payload.get("mode", "report") not in {"report", "ingest_only"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Manual start accepts only mode=report or mode=ingest_only; save task changes first.",
+        )
+    mode = payload.get("mode", "report")
+    return _manage_call(
+        lambda: _management_service().start(trigger="manual", execution_mode=mode)
+    )
 
 
 @app.post("/api/manage/runs/{run_id}/resume", include_in_schema=False)

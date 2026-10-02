@@ -952,8 +952,11 @@ class ManagementService:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("ab")
         try:
+            command = [sys.executable, str(script), "--binding", str(attempt_path.resolve())]
+            if binding.get("execution_mode") == "ingest_only":
+                command.append("--ingest-only")
             process = subprocess.Popen(
-                [sys.executable, str(script), "--binding", str(attempt_path.resolve())],
+                command,
                 cwd=Path(__file__).resolve().parents[1], stdin=subprocess.DEVNULL,
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
             )
@@ -1158,9 +1161,19 @@ class ManagementService:
         database, context = self._meeting_query_context()
         return freeze_snapshot(database, **filters, **context)
 
-    def start(self, *, trigger: str = "manual", now: datetime | None = None) -> dict[str, Any]:
+    def start(
+        self,
+        *,
+        trigger: str = "manual",
+        now: datetime | None = None,
+        execution_mode: str = "report",
+    ) -> dict[str, Any]:
         if trigger not in {"manual", "scheduled"}:
             raise ValueError("trigger must be manual or scheduled")
+        if execution_mode not in {"report", "ingest_only"}:
+            raise ValueError("execution mode must be report or ingest_only")
+        if trigger == "scheduled" and execution_mode != "report":
+            raise ValueError("scheduled runs use report mode")
         loaded = self.store.load(include_raw=True)
         stamp = now or _utc_now()
         run_id = stamp.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4)
@@ -1170,6 +1183,7 @@ class ManagementService:
             definition_sha256=loaded["hashes"]["definition_sha256"],
         )
         binding["trigger"] = trigger
+        binding["execution_mode"] = execution_mode
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
                 existing = self._existing_scheduled_run(binding)
@@ -1195,7 +1209,10 @@ class ManagementService:
                 pid = launch_info.get("pid")
                 self._write_runtime(run_id, {"schema_version": "climate-acquisition-runtime.v1", "state": "running", "attempt": 1, "pid": pid, "command": launch_info.get("command"), "launched_at": launched_at, "heartbeat_at": _rfc3339(_utc_now())})
                 self._write_progress(run_id, binding, stage="running")
-        return {"accepted": True, "run_id": run_id, "attempt": 1, "pid": pid, "task_version": loaded["version"]}
+        return {
+            "accepted": True, "run_id": run_id, "attempt": 1, "pid": pid,
+            "task_version": loaded["version"], "execution_mode": execution_mode,
+        }
 
     def _write_runtime(self, run_id: str, payload: dict[str, Any]) -> None:
         _atomic_write(self._run_dir(run_id) / "runtime.json", json.dumps(payload, sort_keys=True, indent=2).encode() + b"\n")
@@ -1364,14 +1381,21 @@ class ManagementService:
                 if result.get("exit_code") != 0 and not result.get("retryable"):
                     raise RuntimeError("acquisition attempt is terminal and non-retryable")
             if Path(original["frozen_report_input"]).exists():
+                resume_phase = (
+                    "post_processing"
+                    if current.get("execution_mode") == "ingest_only"
+                    else "report"
+                )
                 if result is not None:
                     if result.get("exit_code") == 0:
-                        raise RuntimeError("report preparation is already complete")
-                    if not result.get("retryable") or result.get("resume_phase") != "report":
-                        raise RuntimeError("frozen report run is terminal and non-retryable")
+                        raise RuntimeError("frozen run is already complete")
+                    if not result.get("retryable") or result.get("resume_phase") != resume_phase:
+                        raise RuntimeError("frozen run is terminal and non-retryable")
                 launched_at = _rfc3339(_utc_now())
                 if result is not None:
-                    archived_result = self._run_dir(run_id) / f"attempt-{current['attempt']}-report-failure.json"
+                    archived_result = self._run_dir(run_id) / (
+                        f"attempt-{current['attempt']}-{resume_phase.replace('_', '-')}-failure.json"
+                    )
                     _atomic_write(
                         archived_result,
                         json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n",
@@ -1381,7 +1405,7 @@ class ManagementService:
                     "schema_version": "climate-acquisition-runtime.v1", "state": "launching",
                     "attempt": current["attempt"], "pid": None, "command": None,
                     "launched_at": launched_at, "heartbeat_at": launched_at,
-                    "resume_phase": "report",
+                    "resume_phase": resume_phase,
                 })
                 launched = self._launcher(copy.deepcopy(current))
                 launch_info = dict(launched) if isinstance(launched, Mapping) else {"pid": launched}
@@ -1390,12 +1414,15 @@ class ManagementService:
                     "schema_version": "climate-acquisition-runtime.v1", "state": "running",
                     "attempt": current["attempt"], "pid": pid,
                     "command": launch_info.get("command"), "launched_at": launched_at,
-                    "heartbeat_at": _rfc3339(_utc_now()), "resume_phase": "report",
+                    "heartbeat_at": _rfc3339(_utc_now()), "resume_phase": resume_phase,
                 })
-                self._write_progress(run_id, current, stage="report_resuming")
+                self._write_progress(
+                    run_id, current,
+                    stage=("post_processing_resuming" if resume_phase == "post_processing" else "report_resuming"),
+                )
                 return {
                     "accepted": True, "run_id": run_id, "attempt": current["attempt"],
-                    "pid": pid, "task_version": current["task_version"], "phase": "report",
+                    "pid": pid, "task_version": current["task_version"], "phase": resume_phase,
                 }
             attempt = int(current["attempt"]) + 1
             resumed = copy.deepcopy(original)
@@ -1422,6 +1449,7 @@ class ManagementService:
 
     def progress(self, run_id: str) -> dict[str, Any]:
         binding = self.binding(run_id)
+        ingest_only = binding.get("execution_mode") == "ingest_only"
         runtime_path = self._run_dir(run_id) / "runtime.json"
         runtime = json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.exists() else {}
         result_path = self._run_dir(run_id) / f"attempt-{binding['attempt']}-result.json"
@@ -1493,6 +1521,7 @@ class ManagementService:
             else None
         )
         stage = str(persisted_stage or runtime.get("state") or "unknown")
+        frozen_valid = False
         if result:
             stage = (
                 "report_failed"
@@ -1543,17 +1572,41 @@ class ManagementService:
                     report_date=binding["report_date"], payload=frozen_payload,
                     acquisition_payload=acquisition_payload,
                 )
-                if frozen_payload["reportability"]["reportable"]:
+                frozen_valid = True
+                if ingest_only:
+                    stage = (
+                        "chat_ready"
+                        if result and result.get("outcome") == "ingest_only_chat_ready"
+                        else (
+                            persisted_stage
+                            if persisted_stage in {"acquisition_complete", "indexed", "chat_ready"}
+                            else "acquisition_complete"
+                        )
+                    )
+                elif frozen_payload["reportability"]["reportable"]:
                     stage = ("report_completed" if result and result.get("exit_code") == 0
                              else ("report_failed" if result and result.get("resume_phase") == "report"
                                    else "report_input_frozen"))
             except (AcquisitionIncompleteError, FileNotFoundError, json.JSONDecodeError, ValueError):
                 pass
-            if result and stage not in {"report_input_frozen", "report_completed", "report_failed"}:
+            if (result and not ingest_only
+                    and stage not in {"report_input_frozen", "report_completed", "report_failed"}):
                 stage = ("terminal_partial" if result.get("retryable")
                          else ("completed" if result.get("exit_code") == 0 else "terminal_failure"))
         else:
             used_budget = None
+        no_eligible_ingest = bool(
+            ingest_only
+            and batch
+            and result
+            and result.get("exit_code") == 0
+            and result.get("execution_complete") is True
+            and result.get("outcome") == "no_eligible_information"
+            and (result.get("reportability") or {}).get("outcome")
+            == "no_eligible_information"
+            and (result.get("reportability") or {}).get("reportable") is False
+            and (result.get("reportability") or {}).get("selected_record_count") == 0
+        )
         if active_report_stage and batch:
             # A matching running attempt is authoritative while authoring is
             # inside the existing report command; frozen is only the idle handoff.
@@ -1580,7 +1633,9 @@ class ManagementService:
                 "selected_record_count", 0
             ),
         }
-        if result and result.get("execution_complete"):
+        if result and result.get("execution_complete") and (
+            not ingest_only or no_eligible_ingest
+        ):
             if result.get("outcome") == "no_eligible_information":
                 stage = "no_eligible_information"
             elif result.get("outcome") == "completed_with_gaps":
@@ -1625,11 +1680,17 @@ class ManagementService:
             "updated_at": updated_at,
             "items": items,
             "scheduler_snapshot": None,
-            "report_phase": ("completed" if stage in {"report_completed", "report_completed_with_gaps"}
+            "report_phase": ("not_started" if ingest_only else
+                             ("completed" if stage in {"report_completed", "report_completed_with_gaps"}
                              else ("failed" if stage == "report_failed"
                              else ("active" if stage in {"report_preparing", "report_resuming"}
                              else ("frozen" if stage == "report_input_frozen"
-                                   else "not_started")))),
+                                   else "not_started"))))),
+            "ingest_phase": ({
+                "acquisition_complete": bool(batch) and (frozen_valid or no_eligible_ingest),
+                "indexed": stage in {"indexed", "chat_ready"},
+                "chat_ready": stage == "chat_ready",
+            } if ingest_only else None),
             "publish_phase": "not_started",
             "error": persisted.get("error") or (result or {}).get("error"),
             "next_step": persisted.get("next_step"),

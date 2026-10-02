@@ -3001,6 +3001,53 @@ def test_frozen_report_resume_projects_validated_zero_item_as_no_eligible(
     assert "report" not in recorded[0]
 
 
+def test_ingest_only_resume_activates_saved_batch_without_report(tmp_path, monkeypatch):
+    import scripts.run_agent_acquisition as runner
+
+    task_binding, path, _, _ = _frozen_report_resume(tmp_path)
+    verified = []
+    committed = []
+    monkeypatch.setattr(
+        runner, "verify_reportable_freeze", lambda *_args, **_kwargs: verified.append(True),
+    )
+    activation_batches = []
+
+    def activate(binding):
+        activation_batches.append(binding["acquisition_batch_id"])
+        if len(activation_batches) == 1:
+            raise RuntimeError("reload endpoint unavailable")
+        return {
+            "stage": "chat_ready", "acquisition_complete": True,
+            "indexed": True, "chat_ready": True,
+        }
+
+    monkeypatch.setattr(runner, "_run_ingest_activation", activate)
+    monkeypatch.setattr(
+        runner, "_run_report", lambda *_args, **_kwargs: pytest.fail("ingest-only must not run a report"),
+    )
+    monkeypatch.setattr(
+        runner, "_commit_controlled_site_checkpoints",
+        lambda binding: committed.append(binding["run_id"]),
+    )
+
+    assert runner._execute_attempt(path, ingest_only=True) == 75
+    blocked = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert blocked["retryable"] is True
+    assert blocked["resume_phase"] == "post_processing"
+    assert blocked["outcome"] == "ingest_only_activation_failed"
+    assert blocked["error"] == "RuntimeError: reload endpoint unavailable"
+    assert json.loads(path.with_name("progress.json").read_text())["stage"] == "acquisition_complete"
+
+    assert runner._execute_attempt(path, ingest_only=True) == 0
+    assert verified == [True, True]
+    assert activation_batches == ["batch-resume", "batch-resume"]
+    assert committed == [task_binding["run_id"]]
+    assert not path.with_name("attempt-1-report-result.json").exists()
+    result = json.loads(path.with_name("attempt-1-result.json").read_text())
+    assert result["outcome"] == "ingest_only_chat_ready"
+    assert result["execution_complete"] is True
+
+
 @pytest.mark.parametrize(
     "receipt",
     [
