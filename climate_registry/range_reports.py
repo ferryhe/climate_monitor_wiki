@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import html
-import io
 import json
 import logging
 import os
@@ -15,21 +14,13 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (
-    BaseDocTemplate,
-    Frame,
-    PageBreak,
-    PageTemplate,
-    Paragraph,
-    Spacer,
+from climate_delivery.templates import render_identity, rendering_metadata, is_render_identity
+from climate_delivery.templates.adapters import (
+    adapt_range_report, range_executive_summary as _executive_summary,
+    meeting_metadata as _meeting_metadata, _date_basis, _caveats, _key_date_rows,
 )
-from reportlab.platypus.tableofcontents import TableOfContents
+from climate_delivery.templates.iaa_csc import render_report
+from climate_delivery.errors import GenerationError
 
 from climate_delivery.io import atomic_write_bytes, atomic_write_json, exclusive_lock
 from climate_monitor.meetings import EVENT_TYPES, load_snapshot as load_meeting_snapshot
@@ -41,7 +32,8 @@ from .wiki import snapshot_registry
 
 
 SCHEMA_VERSION = "climate-range-report-snapshot.v1"
-RENDERER_VERSION = "range-report-v2"
+RENDERER_VERSION = render_identity()
+LEGACY_RENDERER_VERSIONS = {"range-report-v1", "range-report-v2"}
 TIMEZONE = "UTC"
 MAX_RANGE_DAYS = 366
 _SNAPSHOT_ID = re.compile(r"range-report-[0-9a-f]{24}")
@@ -1316,15 +1308,30 @@ def load_range_report(artifact_root: str | Path, snapshot_id: str) -> dict[str, 
     return _validate_snapshot(value, snapshot_id)
 
 
-def pdf_path(artifact_root: str | Path, snapshot_id: str) -> Path:
-    return Path(artifact_root).resolve(strict=False) / snapshot_id / f"{snapshot_id}-{RENDERER_VERSION}.pdf"
+def pdf_path(artifact_root: str | Path, snapshot_id: str, renderer_version: str | None = None) -> Path:
+    version = renderer_version or render_identity()
+    if version not in LEGACY_RENDERER_VERSIONS and not is_render_identity(version):
+        raise RangeReportError("unknown report renderer")
+    return Path(artifact_root).resolve(strict=False) / snapshot_id / f"{snapshot_id}-{version}.pdf"
 
 
-def ensure_range_report_pdf(snapshot: dict[str, Any], artifact_root: str | Path) -> Path:
-    """Render a missing current-version PDF from the saved snapshot only."""
-    target = pdf_path(artifact_root, snapshot["snapshot_id"])
+def ensure_range_report_pdf(snapshot: dict[str, Any], artifact_root: str | Path, renderer_version: str | None = None) -> Path:
+    """Reuse exact archived bytes; render only a missing artifact from frozen input."""
+    target = pdf_path(artifact_root, snapshot["snapshot_id"], renderer_version)
     if not target.is_file():
-        render_range_report_pdf(snapshot, target)
+        if renderer_version and renderer_version not in LEGACY_RENDERER_VERSIONS | {render_identity()}:
+            raise RangeReportError("archived report renderer is unavailable")
+        current = pdf_path(artifact_root, snapshot["snapshot_id"])
+        if not current.is_file():
+            render_range_report_pdf(snapshot, current)
+            atomic_write_json(current.with_suffix(".render.json"), {
+                "schema_version": "climate-pdf-render.v1",
+                "input": {"snapshot_id": snapshot["snapshot_id"], "snapshot_sha256": snapshot["snapshot_sha256"]},
+                "rendering": rendering_metadata(),
+                "pdf": {"path": current.name, "sha256": hashlib.sha256(current.read_bytes()).hexdigest()},
+            })
+        if target != current:
+            atomic_write_bytes(target, current.read_bytes())
     return target
 
 
@@ -1351,69 +1358,6 @@ def _freeze_executive_summary(source: dict[str, Any]) -> list[dict[str, Any]]:
     return points
 
 
-def _executive_summary(snapshot: dict[str, Any]) -> list[str]:
-    articles = snapshot["articles"]
-    pdf_updates = snapshot.get("pdf_source_updates", [])
-    exclusions = snapshot.get("pdf_source_exclusion_counts", {})
-    start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
-    summary = [f"{len(articles)} evidenced Registry article(s) were published from {start} through {end}."]
-    points = snapshot.get("executive_summary")
-    if points is None:  # Legacy snapshots predate frozen executive-summary points.
-        points = _freeze_executive_summary(snapshot)
-    article_points = [point for point in points if point["kind"] == "registry_article"]
-    pdf_points = [point for point in points if point["kind"] == "pdf_source"]
-    if not articles and not pdf_updates:
-        summary.append("No selected Registry articles or PDF source updates matched this range.")
-    if article_points:
-        summary.extend(
-            f"{point['title']}: {point['text']} (Article ID: {point['article_id']}; "
-            f"publication date {point['publication_date']})." for point in article_points
-        )
-    elif articles:
-        summary.append("No stored Registry article summaries are available for the selected range.")
-    if "pdf_source_updates" in snapshot:
-        summary.append(
-            f"{len(pdf_updates)} PDF source update(s) overlap the range; their article publication dates are unconfirmed."
-        )
-        if pdf_points:
-            summary.extend(
-                f"{point['text']} ({point['filename']}, page {point['page']}, "
-                f"{point['document_sha256']}; article publication date unconfirmed; "
-                f"coverage period {point['coverage_period']['start']} through "
-                f"{point['coverage_period']['end']})."
-                for point in pdf_points
-            )
-        elif pdf_updates:
-            summary.append("No stored PDF source summaries are available for the selected range.")
-        summary.append(
-            f"PDF source observations excluded: {exclusions.get('unknown_coverage', 0)} with unknown coverage; "
-            f"{exclusions.get('non_overlapping_coverage', 0)} with non-overlapping coverage."
-        )
-    if snapshot["unknown_publication_date_count"]:
-        summary.append(
-            f"{snapshot['unknown_publication_date_count']} Registry article(s) with unknown publication dates were excluded."
-        )
-    return summary
-
-
-def _meeting_metadata(meeting: dict[str, Any]) -> list[tuple[str, Any]]:
-    source = meeting.get("source") or ("snapshot" if meeting.get("snapshot_id") else "unavailable")
-    metadata = [("Meeting source", source)]
-    if meeting.get("snapshot_id"):
-        metadata.append(("Meeting snapshot ID", meeting["snapshot_id"]))
-    elif meeting.get("query_id"):
-        metadata.extend([
-            ("Meeting query ID", meeting["query_id"]),
-            ("Meeting query SHA-256", meeting.get("query_sha256") or "unavailable"),
-        ])
-    metadata.extend([
-        ("Meeting query base date", meeting.get("base_date") or "unavailable"),
-        ("Meeting query timezone", meeting.get("timezone") or "unavailable"),
-        ("Meeting coverage", (meeting.get("coverage") or {}).get("status", "unavailable")),
-    ])
-    return metadata
-
-
 def _articles_by_publisher_topic(snapshot: dict[str, Any]) -> dict[str, dict[str, list[tuple[int, dict[str, Any]]]]]:
     grouped: dict[str, dict[str, list[tuple[int, dict[str, Any]]]]] = {}
     for index, item in enumerate(snapshot["articles"], start=1):
@@ -1421,10 +1365,11 @@ def _articles_by_publisher_topic(snapshot: dict[str, Any]) -> dict[str, dict[str
         categories = [category for category in item.get("categories", []) if category.strip()]
         topic = ", ".join(categories) or "Topic not recorded"
         grouped.setdefault(publisher, {}).setdefault(topic, []).append((index, item))
-    return grouped
+    return {publisher: dict(sorted(topics.items(), key=lambda pair: pair[0].casefold()))
+            for publisher, topics in sorted(grouped.items(), key=lambda pair: pair[0].casefold())}
 
 
-def render_range_report_html(snapshot: dict[str, Any]) -> str:
+def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str | None = None) -> str:
     esc = lambda value: html.escape(str(value), quote=True)
     start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
     grouped_articles = _articles_by_publisher_topic(snapshot)
@@ -1448,7 +1393,7 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
         "</head><body>",
         f"<h1>Climate Registry report</h1><p class=\"meta\"><strong>{esc(start)} through {esc(end)}</strong> "
         f"(inclusive, {TIMEZONE})<br>Snapshot <code>{esc(snapshot['snapshot_id'])}</code><br>"
-        f"Renderer <code>{RENDERER_VERSION}</code></p>",
+        f"Renderer <code>{esc(renderer_version or RENDERER_VERSION)}</code></p>",
         "<h2>Contents</h2><ol>"
         '<li><a href="#executive-summary">Executive Summary</a></li>'
         '<li><a href="#key-dates">Key Dates</a></li>'
@@ -1462,6 +1407,7 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
     ]
     meeting = snapshot["meeting"]
     pdf_calendar = snapshot.get("pdf_calendar")
+    run_date = datetime.fromisoformat(snapshot["created_at"].replace("Z", "+00:00")).date().isoformat() if snapshot.get("created_at") else None
     blocks.append('<h2 id="key-dates">Key Dates</h2>')
     if meeting["status"] == "not_requested" and pdf_calendar is None:
         blocks.append("<p>Key dates were not captured in this snapshot.</p>")
@@ -1474,10 +1420,11 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
         if meeting["status"] == "empty":
             blocks.append("<p>No future meetings.</p>")
         for record in meeting["records"]:
-            blocks.append(
-                f"<p><strong>{esc(record.get('name', 'Meeting'))}</strong>: "
-                f"{esc(record.get('start_date') or record.get('raw_time_text') or 'date unavailable')}</p>"
-            )
+            for when, event, institution, relevance, source in _key_date_rows(record, run_date):
+                blocks.append(
+                    f"<p><strong>{esc(event)}</strong>: {esc(when)}<br>"
+                    f"Institution: {esc(institution)}; Relevance: {esc(relevance)}; Source: {esc(source)}</p>"
+                )
     if pdf_calendar is not None:
         blocks.append(f"<p>PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.</p>")
         records = pdf_calendar["records"]
@@ -1486,33 +1433,43 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
             if selected:
                 blocks.append(f"<h3>{heading}</h3><ul>")
                 for item in selected:
-                    blocks.append(
-                        f"<li><strong>{esc(item.get('name') or 'PDF key date')}</strong>: {esc(item.get('raw_date') or item.get('end_date'))} "
-                        f"({esc(item.get('source_filename'))}, page {esc(item.get('page'))}, <code>{esc(item.get('source_document_sha256'))}</code>)</li>"
-                    )
+                    for when, event, institution, relevance, source in _key_date_rows(item, run_date):
+                        blocks.append(
+                            f"<li><strong>{esc(event)}</strong>: {esc(when)}<br>"
+                            f"Institution: {esc(institution)}; Relevance: {esc(relevance)}; Source: {esc(source)}</li>"
+                        )
                 blocks.append("</ul>")
     blocks.append('<h2 id="updates">Updates by Publisher / Institution</h2>')
+    display_number = 0
     for group_index, (publisher, topics) in enumerate(grouped_articles.items(), start=1):
         blocks.append(f'<h3 id="publisher-{group_index}">{esc(publisher)}</h3>')
         for topic_index, (topic, items) in enumerate(topics.items(), start=1):
             blocks.append(f'<h4 id="publisher-{group_index}-topic-{topic_index}">{esc(topic)}</h4>')
             for index, item in items:
+                display_number += 1
                 blocks.extend([
-                    f'<article id="article-{index}"><h5>{index}. {esc(item["title"])}</h5>',
+                    f'<article id="article-{index}"><h5>{display_number}. {esc(item["title"])}</h5>',
                     f"<p><strong>Publication date:</strong> {esc(item['publication_date'])}<br>"
                     f"<strong>Article ID:</strong> <code>{esc(item['article_id'])}</code><br>"
                     f"<strong>Content version:</strong> <code>{esc(item['content_version_id'] or 'none')}</code></p>",
                 ])
+                for key, value in _date_basis(item.get("provenance", {}).get("publication_date")):
+                    blocks.append(f"<p><strong>{esc(key)}:</strong> {esc(value)}</p>")
+                content_sha = item.get("provenance", {}).get("content_version", {}).get("content_sha256")
+                if content_sha:
+                    blocks.append(f"<p><strong>Content SHA-256:</strong> <code>{esc(content_sha)}</code></p>")
                 if item.get("summary"):
                     blocks.append(f"<p>{esc(item['summary'])}</p>")
                 if item.get("content"):
                     blocks.append("".join(f"<p>{esc(part)}</p>" for part in item["content"].split("\n\n") if part.strip()))
+                blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
                 if item["categories"]:
                     blocks.append(f"<p><strong>Categories:</strong> {esc(', '.join(item['categories']))}</p>")
                 if item["keywords"]:
                     blocks.append(f"<p><strong>Keywords:</strong> {esc(', '.join(item['keywords']))}</p>")
                 blocks.append("<h6>Sources</h6><ul>")
-                for citation in item["citations"]:
+                citations = item["citations"] or ([{"kind": "url", "url": item["canonical_url"]}] if item.get("canonical_url") else [])
+                for citation in citations:
                     if citation["kind"] == "url":
                         url = esc(citation["url"])
                         blocks.append(f'<li><a href="{url}" rel="noopener noreferrer">{url}</a></li>')
@@ -1528,9 +1485,10 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
     if pdf_updates:
         blocks.append("<h2>PDF 来源更新 / PDF Source Updates</h2>")
     for index, item in enumerate(pdf_updates, start=1):
+        display_number += 1
         coverage = item["coverage_period"]
         blocks.extend([
-            f'<article id="pdf-update-{index}"><h2>{index}. {esc(item["title"])}</h2>',
+            f'<article id="pdf-update-{index}"><h2>{display_number}. {esc(item["title"])}</h2>',
             f"<p><strong>{esc(item['publication_date_label'])}</strong><br>"
             f"<strong>PDF coverage period:</strong> {esc(coverage['start'])} through {esc(coverage['end'])}<br>"
             f"<strong>File:</strong> {esc(item['filename'])}, page {esc(item['page'])}<br>"
@@ -1541,197 +1499,39 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
                 f"<br><strong>Core article ID:</strong> <code>{esc(item['core_article_id'])}</code>"
             )
         blocks.append("</p>")
+        if item.get("pdf_article_id"):
+            blocks.append(f"<p><strong>PDF article ID:</strong> <code>{esc(item['pdf_article_id'])}</code></p>")
+        if item.get("content_sha256"):
+            blocks.append(f"<p><strong>Content SHA-256:</strong> <code>{esc(item['content_sha256'])}</code></p>")
         if item.get("summary"):
             blocks.append(f"<p>{esc(item['summary'])}</p>")
+        blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
         url = esc(item["url"])
         blocks.append(
             f'<h3>Source</h3><p><a href="{url}" rel="noopener noreferrer">{url}</a></p></article>'
         )
+    if snapshot.get("cross_cutting_watch"):
+        blocks.append("<h2>Cross-Cutting Watch</h2>")
+        blocks.extend(f"<p>{esc(line)}</p>" for line in snapshot["cross_cutting_watch"])
+    for title, field, columns in (
+        ("Appendix A — Source Coverage", "coverage", ("institution", "status", "detail")),
+        ("Appendix B — Access / Route Corrections", "route_corrections", ("source", "detail")),
+        ("Appendix C — Glossary", "glossary", ("term", "definition")),
+    ):
+        if snapshot.get(field):
+            blocks.append(f"<h2>{esc(title)}</h2><table><thead><tr>" + "".join(f"<th>{esc(column)}</th>" for column in columns) + "</tr></thead><tbody>")
+            for row in snapshot[field]:
+                blocks.append("<tr>" + "".join(f"<td>{esc(row.get(column) or 'Not provided')}</td>" for column in columns) + "</tr>")
+            blocks.append("</tbody></table>")
     blocks.append("</body></html>")
     return "".join(blocks)
 
 
-def _fonts() -> tuple[str, str]:
-    candidates = [
-        (Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")),
-        (Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
-         Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf")),
-        (Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
-         Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf")),
-        (Path("C:/Windows/Fonts/arial.ttf"), Path("C:/Windows/Fonts/arialbd.ttf")),
-    ]
-    for regular, bold in candidates:
-        if regular.is_file() and bold.is_file():
-            if "ClimateRangeRegular" not in pdfmetrics.getRegisteredFontNames():
-                pdfmetrics.registerFont(TTFont("ClimateRangeRegular", regular))
-                pdfmetrics.registerFont(TTFont("ClimateRangeBold", bold))
-                pdfmetrics.registerFontFamily(
-                    "ClimateRangeRegular",
-                    normal="ClimateRangeRegular",
-                    bold="ClimateRangeBold",
-                )
-            return "ClimateRangeRegular", "ClimateRangeBold"
-    return "Helvetica", "Helvetica-Bold"
-
-
-class _RangeDocTemplate(BaseDocTemplate):
-    def afterFlowable(self, flowable):
-        if not isinstance(flowable, Paragraph) or flowable.style.name not in {"RangeH1", "RangeH2", "RangeH3"}:
-            return
-        level = {"RangeH1": 0, "RangeH2": 1, "RangeH3": 2}[flowable.style.name]
-        text = flowable.getPlainText()
-        key = f"heading-{self.seq.nextf('heading')}"
-        self.canv.bookmarkPage(key)
-        self.canv.addOutlineEntry(text, key, level=level, closed=False)
-        self.notify("TOCEntry", (level, text, self.page, key))
-
-
 def render_range_report_pdf(snapshot: dict[str, Any], output: str | Path) -> None:
-    regular, bold = _fonts()
-    base = getSampleStyleSheet()
-    body = ParagraphStyle(
-        "RangeBody", parent=base["BodyText"], fontName=regular, fontSize=9,
-        leading=13, textColor=colors.HexColor("#33424d"), splitLongWords=True,
-        spaceAfter=5,
-    )
-    h1 = ParagraphStyle(
-        "RangeH1", parent=base["Heading1"], fontName=bold, fontSize=16,
-        leading=20, textColor=colors.HexColor("#0b3d62"), spaceAfter=8,
-    )
-    h2 = ParagraphStyle(
-        "RangeH2", parent=base["Heading2"], fontName=bold, fontSize=12,
-        leading=16, textColor=colors.HexColor("#1f6f8b"), spaceBefore=6, spaceAfter=5,
-    )
-    h3 = ParagraphStyle(
-        "RangeH3", parent=base["Heading3"], fontName=bold, fontSize=10,
-        leading=13, textColor=colors.HexColor("#0b3d62"), spaceBefore=4, spaceAfter=3,
-    )
-    detail_label = ParagraphStyle("RangeLabel", parent=body, fontName=bold, spaceBefore=4, spaceAfter=3)
-    esc = lambda value: html.escape(str(value), quote=True)
-    story: list[Any] = []
-    start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
-    story.extend([
-        Paragraph("CLIMATE REGISTRY RANGE REPORT", h1),
-        Paragraph(f"{esc(start)} through {esc(end)} (inclusive, {TIMEZONE})", h2),
-        Paragraph(f"Snapshot: {esc(snapshot['snapshot_id'])}", body),
-        Paragraph(f"Renderer: {RENDERER_VERSION}", body),
-        Spacer(1, 8 * mm), PageBreak(), Paragraph("Contents", h1),
-    ])
-    toc = TableOfContents()
-    toc.levelStyles = [
-        ParagraphStyle("TOC1", fontName=regular, fontSize=9, leading=13, leftIndent=0),
-        ParagraphStyle("TOC2", fontName=regular, fontSize=8, leading=11, leftIndent=12),
-        ParagraphStyle("TOC3", fontName=regular, fontSize=8, leading=10, leftIndent=24),
-    ]
-    story.extend([toc, PageBreak(), Paragraph("Executive Summary", h1)])
-    story.extend(Paragraph(esc(line), body) for line in _executive_summary(snapshot))
-    meeting = snapshot["meeting"]
-    pdf_calendar = snapshot.get("pdf_calendar")
-    story.append(Paragraph("Key Dates", h1))
-    if meeting["status"] == "not_requested" and pdf_calendar is None:
-        story.append(Paragraph("Key dates were not captured in this snapshot.", body))
-    if meeting["status"] != "not_requested":
-        label = "Meeting query" if meeting.get("source") == "query" else "Meeting snapshot"
-        metadata = "<br/>".join(
-            f"<b>{esc(key)}:</b> {esc(value)}" for key, value in _meeting_metadata(meeting)
-        )
-        story.append(Paragraph(f"{label} status: {esc(meeting['status'])}.<br/>{metadata}", body))
-        if meeting["status"] == "empty":
-            story.append(Paragraph("No future meetings.", body))
-        for record in meeting["records"]:
-            story.append(Paragraph(
-                f"<b>{esc(record.get('name', 'Meeting'))}</b>: "
-                f"{esc(record.get('start_date') or record.get('raw_time_text') or 'date unavailable')}", body
-            ))
-    if pdf_calendar is not None:
-        story.append(Paragraph(
-            f"PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.", body
-        ))
-        for heading, kinds in (("PDF Calendar Dates", {"event"}), ("PDF Deadlines", {"deadline"}), ("Other PDF Key Dates", None)):
-            selected = [item for item in pdf_calendar["records"] if (item.get("kind") in kinds if kinds else item.get("kind") not in {"event", "deadline"})]
-            if selected:
-                story.append(Paragraph(heading, h2))
-                for item in selected:
-                    story.append(Paragraph(
-                        f"<b>{esc(item.get('name') or 'PDF key date')}</b>: {esc(item.get('raw_date') or item.get('end_date'))}<br/>"
-                        f"File: {esc(item.get('source_filename'))}, page {esc(item.get('page'))}<br/>"
-                        f"SHA-256: {esc(item.get('source_document_sha256'))}", body
-                    ))
-    story.append(Paragraph("Updates by Publisher / Institution", h1))
-    for publisher, topics in _articles_by_publisher_topic(snapshot).items():
-        story.append(Paragraph(esc(publisher), h2))
-        for topic, items in topics.items():
-            story.append(Paragraph(esc(topic), h3))
-            for index, item in items:
-                story.append(Paragraph(f"{index}. {esc(item['title'])}", detail_label))
-                story.append(Paragraph(
-                    f"Publication date: {esc(item['publication_date'])}<br/>"
-                    f"Article ID: {esc(item['article_id'])}<br/>"
-                    f"Content version: {esc(item['content_version_id'] or 'none')}", body
-                ))
-                if item.get("summary"):
-                    story.append(Paragraph(esc(item["summary"]), body))
-                if item.get("content"):
-                    for part in item["content"].split("\n\n"):
-                        if part.strip():
-                            story.append(Paragraph(esc(part), body))
-                if item["categories"]:
-                    story.append(Paragraph("Categories: " + esc(", ".join(item["categories"])), body))
-                if item["keywords"]:
-                    story.append(Paragraph("Keywords: " + esc(", ".join(item["keywords"])), body))
-                story.append(Paragraph("Sources", detail_label))
-                for citation in item["citations"]:
-                    if citation["kind"] == "url":
-                        url = esc(citation["url"])
-                        line = f'<link href="{url}" color="#1a73e8">{url}</link>'
-                    else:
-                        line = esc(f"{citation['filename']}, page {citation['page']}")
-                        if citation.get("url"):
-                            url = esc(citation["url"])
-                            line += f' — <link href="{url}" color="#1a73e8">{url}</link>'
-                    story.append(Paragraph(line, body))
-
-    pdf_updates = snapshot.get("pdf_source_updates", [])
-    if pdf_updates:
-        story.append(Paragraph("PDF Source Updates", h1))
-    for index, item in enumerate(pdf_updates, start=1):
-        coverage = item["coverage_period"]
-        story.append(Paragraph(f"{index}. {esc(item['title'])}", h2))
-        metadata = (
-            "Article publication date unconfirmed<br/>"
-            f"PDF coverage period: {esc(coverage['start'])} through {esc(coverage['end'])}<br/>"
-            f"File: {esc(item['filename'])}, page {esc(item['page'])}<br/>"
-            f"SHA-256: {esc(item['document_sha256'])}"
-        )
-        if item.get("core_article_id"):
-            metadata += f"<br/>Core article ID: {esc(item['core_article_id'])}"
-        story.append(Paragraph(metadata, body))
-        if item.get("summary"):
-            story.append(Paragraph(esc(item["summary"]), body))
-        url = esc(item["url"])
-        story.extend([
-            Paragraph("Source", detail_label),
-            Paragraph(f'<link href="{url}" color="#1a73e8">{url}</link>', body),
-        ])
-
-    output = Path(output)
-    buffer = io.BytesIO()
-    document = _RangeDocTemplate(
-        buffer, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
-        topMargin=18 * mm, bottomMargin=20 * mm,
-        title=f"Climate Registry report {start} to {end}",
-        author="Climate Monitor Wiki",
-    )
-    frame = Frame(document.leftMargin, document.bottomMargin, document.width, document.height, id="report")
-
-    def page_footer(pdf_canvas, doc):
-        pdf_canvas.saveState()
-        pdf_canvas.setFont(regular, 8)
-        pdf_canvas.drawString(18 * mm, 10 * mm, f"{snapshot['snapshot_id']} · {RENDERER_VERSION}")
-        pdf_canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {doc.page}")
-        pdf_canvas.restoreState()
-
-    document.addPageTemplates(PageTemplate(id="report", frames=frame, onPage=page_footer))
-    document.multiBuild(story)
-    atomic_write_bytes(output, buffer.getvalue())
+    """Render this saved snapshot with the shared default template."""
+    try:
+        render_report(adapt_range_report(snapshot), output)
+    except GenerationError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise GenerationError("range PDF input is invalid") from exc

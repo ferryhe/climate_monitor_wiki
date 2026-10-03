@@ -31,6 +31,7 @@ from agentic_wiki import (
 from climate_delivery.artifacts import load_report_artifact
 from climate_delivery.io import atomic_write_json
 from climate_delivery.errors import GenerationError, LockStateError
+from climate_delivery.templates import rendering_metadata, is_render_identity
 from climate_monitor.job_status import (
     JobStatusInvalidSnapshotError,
     JobStatusLocationError,
@@ -727,6 +728,7 @@ def chat(request: ChatRequest) -> dict:
                 "snapshot_id": snapshot_id,
                 "snapshot_sha256": snapshot["snapshot_sha256"],
                 "renderer_version": RENDERER_VERSION,
+                "rendering": rendering_metadata(),
                 "date_range": snapshot["date_range"],
                 "article_count": len(snapshot["articles"]),
                 "pdf_source_update_count": len(snapshot["pdf_source_updates"]),
@@ -754,8 +756,11 @@ def chat(request: ChatRequest) -> dict:
 
 
 def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[str, Any]:
-    if renderer_version not in {RENDERER_VERSION, "range-report-v1"}:
-        raise HTTPException(status_code=404, detail="Report renderer not found.")
+    if renderer_version not in {RENDERER_VERSION, "range-report-v1", "range-report-v2"}:
+        if not is_render_identity(renderer_version) or not (
+            RANGE_REPORT_DIR / snapshot_id / f"{snapshot_id}-{renderer_version}.pdf"
+        ).is_file():
+            raise HTTPException(status_code=404, detail="Report renderer not found.")
     try:
         return load_range_report(RANGE_REPORT_DIR, snapshot_id)
     except KeyError as exc:
@@ -770,7 +775,9 @@ def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[
 )
 def registry_range_report(snapshot_id: str, renderer_version: str) -> HTMLResponse:
     snapshot = _load_range_report_or_http(snapshot_id, renderer_version)
-    return HTMLResponse(render_range_report_html(snapshot))
+    return HTMLResponse(render_range_report_html(snapshot, renderer_version=(
+        None if renderer_version in {"range-report-v1", "range-report-v2"} else renderer_version
+    )))
 
 
 @app.get(
@@ -780,7 +787,7 @@ def registry_range_report(snapshot_id: str, renderer_version: str) -> HTMLRespon
 def registry_range_report_pdf(snapshot_id: str, renderer_version: str) -> Response:
     snapshot = _load_range_report_or_http(snapshot_id, renderer_version)
     try:
-        path = ensure_range_report_pdf(snapshot, RANGE_REPORT_DIR)
+        path = ensure_range_report_pdf(snapshot, RANGE_REPORT_DIR, renderer_version)
         pdf_bytes = path.read_bytes()
     except (GenerationError, OSError) as exc:
         raise HTTPException(status_code=503, detail="Range report PDF is unavailable.") from exc

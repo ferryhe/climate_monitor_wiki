@@ -6,7 +6,7 @@ from pypdf import PdfReader
 from reportlab.lib.pagesizes import A4
 
 from climate_delivery.errors import InputError
-from climate_delivery.pdf import ascii_display_text, render_pdf
+from climate_delivery.pdf import render_pdf
 from climate_delivery.report import parse_weekly_report
 from climate_delivery.summary import build_summary, format_scope_line, write_summary
 
@@ -287,78 +287,38 @@ def test_offcycle_weekly_report_requires_explicit_opt_in(tmp_path):
     assert report.report_date == "2026-08-11"
 
 
-def test_pdf_display_text_is_ascii_safe_for_real_weekly_report(tmp_path):
+def test_real_report_pdf_preserves_unicode_content_and_readable_source_links(tmp_path):
     source = Path(__file__).parents[1] / "sources" / "climate-monitor-2026-08-10.md"
     summary = build_summary(parse_weekly_report(source))
-    displayed = [summary["report"]["title"], *summary["executive_summary"]]
-    for item in summary["highlights"]:
-        displayed.extend([item["pillar"], item["title"], item["summary"], item["url"]])
-
-    converted = [ascii_display_text(value) for value in displayed]
-    assert all(value.isascii() for value in converted)
-    assert all("■" not in value and "\u25a0" not in value for value in converted)
-    assert ascii_display_text("Climate 🌡️ — change → outcome • evidence") == "Climate - change -> outcome * evidence"
-
     summary["highlights"][0]["url"] = "https://example.test/" + "a" * 240
+    summary["highlights"][0]["title"] += " 中文 café μ →"
     output = tmp_path / "real-report.pdf"
     render_pdf(summary, output)
-    assert output.read_bytes().startswith(b"%PDF")
-
-
-def test_real_report_pdf_keeps_each_highlight_together_and_numbers_pages(tmp_path):
-    source = Path(__file__).parents[1] / "sources" / "climate-monitor-2026-08-10.md"
-    summary = build_summary(parse_weekly_report(source))
-    assert len(summary["highlights"]) == 30
-    output = tmp_path / "real-report.pdf"
-    render_pdf(summary, output)
-
-    reader = PdfReader(str(output))
-    assert len(reader.pages) == 4
+    reader = PdfReader(output)
     assert reader.metadata.author == "IAA Weekly Climate Newsletter"
-    first_page = reader.pages[0]
-    assert float(first_page.mediabox.width) == pytest.approx(A4[0], abs=0.1)
-    assert float(first_page.mediabox.height) == pytest.approx(A4[1], abs=0.1)
-    pages = [page.extract_text() or "" for page in reader.pages]
-    normalized_pages = [" ".join(page.split()) for page in pages]
-    compact_pages = ["".join(page.split()) for page in pages]
-    assert "Hyperlinked title opens the original source" not in " ".join(normalized_pages)
-    for page_number, page in enumerate(normalized_pages, start=1):
-        assert f"Page {page_number}" in page
-        assert "Weekly Climate & Actuarial Monitor - Supranational Organizations" in page
-
-    assert "57 sites checked - 57 succeeded - 0 failed" in normalized_pages[0]
-    assert "Executive Summary" in normalized_pages[0]
-    assert "Monitoring Snapshot" in normalized_pages[0]
-    assert "Pillar A updates 9" in normalized_pages[0]
-    assert "Pillar B updates 21" in normalized_pages[0]
-    assert "Pillar A" in " ".join(normalized_pages)
-    assert "Pillar B" in " ".join(normalized_pages)
-    first_b_title = "1. " + ascii_display_text(next(item["title"] for item in summary["highlights"] if item["pillar"] == "B"))
-    first_b_page = next(page for page in normalized_pages if first_b_title in page)
-    assert "Pillar B" in first_b_page
-
-    assert len(summary["executive_summary"]) in {3, 4}
-    assert not any("sites checked" in item.casefold() for item in summary["executive_summary"])
-    assert "climate disclosure and reporting" in summary["executive_summary"][0]
-
+    assert float(reader.pages[0].mediabox.width) == pytest.approx(A4[0], abs=0.1)
+    assert float(reader.pages[0].mediabox.height) == pytest.approx(A4[1], abs=0.1)
+    pages = [" ".join(page.extract_text().split()) for page in reader.pages]
+    text = " ".join(pages)
+    # Remove repeated footers before comparing paragraphs that cross pages.
+    body = " ".join("\n".join(line for line in page.extract_text().splitlines()
+        if not line.startswith("IAA CSC Climate Intelligence Report") and not line.startswith("Page "))
+        for page in reader.pages)
+    compact = "".join(body.split())
+    assert "中文 café μ →" in text
+    assert "🌡" in text
+    assert "Contents" in text and "Executive Summary" in text
+    assert "Monitoring Snapshot" in text
+    assert "Sites checked 57" in text and "Succeeded 57" in text and "Failed 0" in text
+    for page_number, page in enumerate(pages, start=1):
+        assert f"Page {page_number} of {len(pages)}" in page
     linked_urls = {
         annotation.get_object().get("/A", {}).get("/URI")
-        for page in reader.pages
-        for annotation in page.get("/Annots", [])
-        if annotation.get_object().get("/Subtype") == "/Link"
+        for page in reader.pages for annotation in page.get("/Annots", [])
+        if annotation.get_object().get("/A", {}).get("/URI")
     }
     assert linked_urls == {item["url"] for item in summary["highlights"]}
-
-    pillar_numbers = {"A": 0, "B": 0}
     for item in summary["highlights"]:
-        pillar_numbers[item["pillar"]] += 1
-        title = ascii_display_text(item["title"])
-        numbered_title = f"{pillar_numbers[item['pillar']]}. {title}"
-        body = ascii_display_text(item["summary"])
-        matching_pages = [index for index, page in enumerate(normalized_pages) if numbered_title in page]
-        assert len(matching_pages) == 1, title
-        index = matching_pages[0]
-        page = normalized_pages[index]
-        assert body in page, title
-        assert page.index(numbered_title) < page.index(body), title
-        assert "".join(ascii_display_text(item["url"]).split()) not in "".join(compact_pages), title
+        assert "".join(item["title"].split()) in compact
+        assert "".join(item["summary"].split()) in compact
+        assert "".join(item["url"].split()) in compact

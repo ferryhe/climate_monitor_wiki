@@ -1,0 +1,12 @@
+{
+  "noto_source": "NotoSansSC-VF 2.004; static weight 400 instance; installed open-source Noto font",
+  "noto_license_source": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/OFL.txt",
+  "sha256": {
+    "DejaVuSans-Bold.ttf": "e6476c1b80502924294eed40894c5b18e06c181444ca953e5334262df9c27724",
+    "DejaVuSans.ttf": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+    "NotoSansSC-Regular.ttf": "60e04d495f45685e55b149489e4009f74b2aeaa38766c5b62e068c511ab1a1db",
+    "NotoSansSymbols2-Regular.ttf": "7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21"
+  },
+  "symbols_source": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
+  "symbols_license_source": "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssymbols2/OFL.txt"
+}

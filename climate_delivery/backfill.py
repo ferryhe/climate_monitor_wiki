@@ -56,6 +56,9 @@ class RegistryArticle:
     observed_summary: str
     version_title: str
     version_summary: str
+    article_id: str
+    report_version_id: str
+    publisher: str
 
 
 class _SkipReport(ValueError):
@@ -191,11 +194,13 @@ def _registry_articles(
         rows = connection.execute(
             """
             SELECT ra.ordinal, ra.section, ra.pillar, a.canonical_url,
+                   a.article_id, ra.version_id, s.display_name AS publisher,
                    d.raw_url, d.observed_title, d.observed_summary,
                    av.observed_title AS version_title,
                    av.observed_summary AS version_summary
             FROM report_appearances ra
             JOIN articles a ON a.article_id = ra.article_id
+            JOIN sources s ON s.source_id = a.source_id
             JOIN discoveries d ON d.discovery_id = ra.discovery_id
             JOIN article_versions av ON av.version_id = ra.version_id
             WHERE ra.report_id = ?
@@ -216,6 +221,9 @@ def _registry_articles(
             observed_summary=row["observed_summary"],
             version_title=row["version_title"],
             version_summary=row["version_summary"],
+            article_id=row["article_id"],
+            report_version_id=row["version_id"],
+            publisher=row["publisher"],
         )
         for row in rows
     )
@@ -413,10 +421,12 @@ def _artifact_is_valid(
     )
 
 
-def _write_candidate(staging_root: Path, report: WeeklyReport) -> Path:
+def _write_candidate(staging_root: Path, report: WeeklyReport, provenance: dict[str, Any] | None = None) -> Path:
     candidate = staging_root / report.report_date / report.sha256
     candidate.mkdir(parents=True)
     summary = build_summary(report)
+    if provenance:
+        summary["article_provenance"] = provenance
     summary_path = candidate / "summary.json"
     pdf_name = f"climate-monitor-{report.report_date}.pdf"
     pdf_path = candidate / pdf_name
@@ -536,10 +546,11 @@ def _generate(
     report: WeeklyReport,
     *,
     dry_run: bool,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     if dry_run:
         with tempfile.TemporaryDirectory(prefix="climate-delivery-backfill-") as temporary:
-            _write_candidate(Path(temporary), report)
+            _write_candidate(Path(temporary), report, provenance)
         return
     created_output = not output_dir.exists()
     try:
@@ -548,7 +559,7 @@ def _generate(
         raise GenerationError("could not prepare output directory") from exc
     try:
         with tempfile.TemporaryDirectory(prefix=".backfill-", dir=output_dir) as temporary:
-            candidate = _write_candidate(Path(temporary), report)
+            candidate = _write_candidate(Path(temporary), report, provenance)
             _publish_candidate(
                 candidate, output_dir / report.report_date / report.sha256
             )
@@ -680,7 +691,10 @@ def backfill_reports(
                         {"batch_files": annotation_batches},
                     )
                 enriched = _enriched_report(source, normalized, annotations)
-                _generate(output, enriched, dry_run=dry_run)
+                provenance = {item.raw_url: {"article_id": item.article_id,
+                    "report_version_id": item.report_version_id, "source": item.publisher}
+                    for item in registry_articles}
+                _generate(output, enriched, dry_run=dry_run, provenance=provenance)
                 generated.append(
                     _entry(
                         enriched,

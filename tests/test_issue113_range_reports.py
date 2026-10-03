@@ -1017,6 +1017,10 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
     assert "Meeting query timezone:</strong> UTC" in before_html
     assert "Meeting coverage:</strong> complete" in before_html
     empty_snapshot = {**snapshot, "meeting": {**snapshot["meeting"], "status": "empty", "records": []}}
+    # A different frozen input has its own identity before direct rendering.
+    frozen_empty = {key: value for key, value in empty_snapshot.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    empty_digest = range_reports._digest(frozen_empty)
+    empty_snapshot = {**empty_snapshot, "snapshot_id": "range-report-" + empty_digest[:24], "snapshot_sha256": empty_digest}
     empty_html = render_range_report_html(empty_snapshot)
     empty_path = tmp_path / "empty-meetings.pdf"
     render_range_report_pdf(empty_snapshot, empty_path)
@@ -1059,7 +1063,8 @@ def test_calendar_and_meeting_failures_are_marked_without_losing_articles(tmp_pa
         "articles": [{
             "article_id": "article", "publication_date": "2026-09-02", "title": "Saved article",
             "content_version_id": "content", "summary": "Saved summary", "content": "Saved content",
-            "categories": [], "keywords": [], "source_observations": [], "citations": [],
+            "categories": [], "keywords": [], "source_observations": [],
+            "citations": [{"kind": "url", "url": "https://example.test/saved-article"}],
             "provenance": {"publication_date": {"all_in_range": [{
                 "date": "2026-09-02", "observation_id": "fixture-date",
                 "evidence": {"kind": "fixture"},
@@ -1171,7 +1176,8 @@ def test_pre_pdf_registry_marks_calendar_unavailable_without_losing_articles(tmp
         "articles": [{
             "article_id": "article", "publication_date": "2026-09-02", "title": "Saved article",
             "content_version_id": "content", "summary": "Saved summary", "content": "Saved content",
-            "categories": [], "keywords": [], "source_observations": [], "citations": [],
+            "categories": [], "keywords": [], "source_observations": [],
+            "citations": [{"kind": "url", "url": "https://example.test/saved-article"}],
             "provenance": {"publication_date": {"all_in_range": [{
                 "date": "2026-09-02", "observation_id": "fixture-date",
                 "evidence": {"kind": "fixture"},
@@ -1383,7 +1389,7 @@ def _render_fixture(path: Path, *, count: int, repeat: int) -> dict:
                     "snapshot_sha256": None, "records": []},
     }
     snapshot = {
-        **frozen, "snapshot_id": "range-report-" + _sha(json.dumps(frozen))[:24],
+        **frozen, "snapshot_id": "range-report-" + range_reports._digest(frozen)[:24],
         "snapshot_sha256": range_reports._digest(frozen), "created_at": NOW,
     }
     render_range_report_pdf(snapshot, path)

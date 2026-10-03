@@ -233,6 +233,12 @@ def test_generates_complete_validated_artifact_from_annotations(tmp_path):
     assert manifest["delivery"] == {"status": "artifact-only", "recipients": []}
     assert manifest["artifacts"]["summary"]["sha256"] == hashlib.sha256(summary_raw).hexdigest()
     assert manifest["artifacts"]["pdf"]["sha256"] == hashlib.sha256(pdf_raw).hexdigest()
+    assert manifest["rendering"]["template_id"] == "iaa-csc"
+    assert manifest["rendering"]["template_version"] == "1"
+    connection = sqlite3.connect(database)
+    rows = connection.execute("SELECT a.canonical_url, a.article_id, ra.version_id FROM report_appearances ra JOIN articles a ON a.article_id=ra.article_id JOIN reports r ON r.report_id=ra.report_id WHERE r.report_date='2026-08-10'").fetchall()
+    connection.close()
+    assert {url: (item["article_id"], item["report_version_id"]) for url, item in summary["article_provenance"].items()} == {url: (article_id, version) for url, article_id, version in rows}
     assert pdf_raw.startswith(b"%PDF-")
 
     from climate_delivery.report import parse_weekly_report
