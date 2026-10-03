@@ -550,4 +550,3 @@ def snapshot_registry(database: Path, destination: Path) -> str:
         if target is not None:
             target.close()
         temporary.unlink(missing_ok=True)
-
