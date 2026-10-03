@@ -121,7 +121,10 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
     parts.extend(value for value in (item.get("raw_date"), item.get("raw_time_text")) if value and value not in parts)
     if precision:
         parts.append(f"Precision: {precision}")
-    if run_date and dates:
+    unresolved_end = bool(start and not end and item.get("needs_confirmation"))
+    if unresolved_end:
+        parts.append("End date unconfirmed")
+    if run_date and dates and not unresolved_end:
         # Import at use: meetings imports the delivery package while starting up.
         from climate_monitor.meetings import _date_bounds
         try:
@@ -140,9 +143,13 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
     if item.get("source_document_sha256"):
         citations.append("SHA-256: " + item["source_document_sha256"])
     citations.extend(url for url in (item.get("url"), item.get("source_url")) if url)
+    citations.extend(item.get("source_urls") or [])
     citations.extend(source["source_url"] for source in item.get("sources", []) if source.get("source_url"))
     citation = "\n".join(dict.fromkeys(citations)) or "Source not provided"
-    return (str(when), str(item.get("name") or "Key date"),
+    event = item.get("name") or "Key date"
+    if item.get("summary"):
+        event += "\nVerbatim context: " + item["summary"]
+    return (str(when), str(event),
             str(item.get("publisher") or item.get("institution") or item.get("organizer") or item.get("source") or "Not provided"),
             str(item.get("relevance") or item.get("actuarial_relevance") or item.get("relevance_reason") or "Not provided"), str(citation))
 
@@ -199,8 +206,10 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
             citations.append({"kind": "url", "url": item["url"]})
         updates.append(Update(_title(item["title"]), item.get("publisher") or "PDF Source Updates", "PDF Source Updates",
             item.get("core_article_id") or item["pdf_article_id"], None, None, coverage,
-            _paragraphs(item.get("summary")) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])), _citations(citations),
-            content_sha256=item.get("content_sha256")))
+            _paragraphs(item.get("summary")) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])) +
+            ((("PDF article ID", item["pdf_article_id"]),) if item.get("core_article_id") else ()), _citations(citations),
+            content_sha256=item.get("content_sha256"),
+            article_id_label="Core article ID" if item.get("core_article_id") else "PDF article ID"))
     meeting = snapshot["meeting"]
     notes = []
     records = []

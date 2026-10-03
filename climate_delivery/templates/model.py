@@ -21,6 +21,7 @@ class Update:
     metadata: tuple[tuple[str, str], ...]
     citations: tuple[Citation, ...]
     content_sha256: str | None = None
+    article_id_label: str = "Article ID"
 
 
 @dataclass(frozen=True)

@@ -248,7 +248,7 @@ def render_report(report: Report, output: str | Path) -> None:
                 if update.coverage_period:
                     story.append(p("PDF coverage period: " + " through ".join(update.coverage_period), "small"))
                 if update.article_id:
-                    story.append(p("Article ID: " + update.article_id, "small"))
+                    story.append(p(update.article_id_label + ": " + update.article_id, "small"))
                 story.append(p("Content version: " + (update.content_version or "not provided"), "small"))
                 if update.content_sha256:
                     story.append(p("Content SHA-256: " + update.content_sha256, "small"))

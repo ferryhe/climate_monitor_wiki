@@ -14,11 +14,11 @@ uses the same pure stored-summary helper as the range adapter.
 | executive prose | saved executive_summary points, or stored article summaries for legacy snapshots; existing range count/exclusion labels | executive_summary copied verbatim |
 | update title/body | articles title, summary, content; pdf_source_updates title/summary | highlights title/summary copied verbatim |
 | institution/topic | publisher and categories; unrecorded publisher explicitly labelled | article_provenance[url].source and article_semantics[url].categories; unrecorded publisher explicitly labelled |
-| article/content identity | article_id + content_version_id; PDF core_article_id/pdf_article_id + content_sha256 | optional article_provenance[url].article_id + content_version_id; content_hash shown separately as Content SHA-256; historical report_version_id separately labelled Report article version; unavailable if absent |
+| article/content identity | article_id + content_version_id; PDF core_article_id and pdf_article_id both retained with distinct Core article ID/PDF article ID labels + content_sha256 | optional article_provenance[url].article_id + content_version_id; content_hash shown separately as Content SHA-256; historical report_version_id separately labelled Report article version; unavailable if absent |
 | publication / PDF coverage | publication_date; PDF-only publication unconfirmed + coverage_period | provenance publication_date and coverage_period; publication unconfirmed if absent |
 | citations | frozen citations; a legacy empty citation list may use its frozen canonical_url; PDF filename/page retained, PDF update URL retained | optional provenance citations, otherwise highlight URL (required by existing summary contract) |
 | Key Dates | meeting.records and pdf_calendar.records; each source status and query identity retained | optional key_dates; unavailable when absent |
-| dates table | full start_date/end_date interval plus raw_date/raw_time_text and date_precision/precision; name; publisher/institution/organizer/source; relevance/actuarial_relevance/relevance_reason; source_filename/page/SHA, source_url/url and all sources[].source_url | same explicit fields in key_dates |
+| dates table | full start_date/end_date interval plus raw_date/raw_time_text and date_precision/precision; name and supplied summary explicitly labelled Verbatim context; publisher/institution/organizer/source; relevance/actuarial_relevance/relevance_reason; source_filename/page/SHA, source_url/url, source_urls and all sources[].source_url | same explicit fields in key_dates |
 | statistics | no institution coverage inferred from article counts | report.sites checked/succeeded/failed verbatim; unknown values labelled unavailable; Pillar A/B update counts derived only from frozen highlights |
 | coverage limitations | frozen meeting/calendar failure status retained | monitoring_notes copied verbatim |
 | optional A/B/C/watch | coverage (institution/status/detail), route_corrections (source/detail), glossary (term/definition), cross_cutting_watch strings | same optional fields |
@@ -35,6 +35,10 @@ The same pure display mapping feeds HTML and PDF. Past/current/future markers
 compare the entire interval with the frozen run date, using the existing meeting
 contract's pure calendar-bound helper; month/quarter/year precision keeps its
 full bounds. Unknown/raw-only dates have no guessed calendar marker.
+Start-only meetings with needs_confirmation retain an unconfirmed-end label and
+no calendar marker. Supported single-day meetings, complete intervals and PDF
+calendar dates retain their known bounds. Verbatim context does not supply or
+infer an institution or relevance value.
 An independently verified meeting deadline_date becomes a separate Key Dates
 row labelled with deadline_type, alongside any event interval. Its known ISO
 day is marked against the frozen run date even when event precision is unknown.

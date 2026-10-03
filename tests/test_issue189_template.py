@@ -106,6 +106,93 @@ def _refresh_snapshot_identity(snapshot):
     snapshot["snapshot_id"] = "range-report-" + snapshot["snapshot_sha256"][:24]
 
 
+@pytest.mark.parametrize("route", ["range", "weekly"])
+@pytest.mark.parametrize("run_date", ["2027-06-09", "2027-06-10", "2027-06-11"])
+def test_unknown_meeting_end_has_no_invented_marker(tmp_path, route, run_date):
+    from climate_monitor.meetings import process_batch, query_events
+    from climate_delivery.templates.adapters import adapt_range_report, adapt_weekly_report
+    from test_issue136_meetings import _database, _candidate
+    body = "Alpha Climate Summit 2027 starts June 10, 2027; end date TBC."
+    database = _database(tmp_path, [body])
+    candidate = _candidate(name="Alpha Climate Summit 2027", organizer=None,
+        start_date="2027-06-10", end_date=None, raw_time_text="June 10, 2027",
+        date_evidence="June 10, 2027", location=None, online_url=None,
+        deadline_type=None, deadline_date=None, deadline_evidence=None)
+    process_batch(database, "batch", prompt_text="v1", prompt_version="v1", provider="p", model="m",
+        extractor=lambda _: {"events": [candidate]})
+    record = query_events(database, base_date="2027-06-11", start_date="2027-06-11",
+        end_date="2027-06-11", include_unknown=True, timezone_name="UTC")["records"][0]
+    assert record["needs_confirmation"] == 1 and record["end_date"] is None
+    snapshot, summary = range_fixture(), weekly_fixture()
+    snapshot["created_at"] = run_date + "T08:00:00Z"
+    snapshot["meeting"]["records"] = [record]
+    snapshot["pdf_calendar"]["records"] = []
+    _refresh_snapshot_identity(snapshot)
+    summary["report"]["run_date"] = run_date
+    summary["key_dates"] = [record]
+    original = copy.deepcopy((snapshot, summary))
+    model = adapt_range_report(snapshot) if route == "range" else adapt_weekly_report(summary)
+    assert not any(f"({marker})" in model.key_dates[0][0] for marker in ("past", "current", "future"))
+    path = tmp_path / "unknown-end.pdf"
+    if route == "range":
+        range_reports.render_range_report_pdf(snapshot, path)
+    else:
+        render_pdf(summary, path)
+    _, text = text_of(path)
+    html = range_reports.render_range_report_html(snapshot)
+    assert "Enddateunconfirmed" in "".join(text.split()) and "End date unconfirmed" in html
+    assert (snapshot, summary) == original
+
+
+def test_supported_start_only_single_day_keeps_marker():
+    from climate_delivery.templates.adapters import _key_date_rows
+    record = {"name": "Verified single day", "start_date": "2027-06-10",
+        "end_date": None, "date_precision": "day", "needs_confirmation": 0}
+    assert "(past)" in _key_date_rows(record, "2027-06-11")[0][0]
+
+
+@pytest.mark.parametrize("route", ["range", "weekly"])
+def test_calendar_urls_and_verbatim_context_survive_both_outputs(tmp_path, route):
+    from climate_delivery.templates.adapters import adapt_range_report, adapt_weekly_report
+    # Shape emitted by pdf_intake calendar extraction and retained by Registry.
+    record = {"kind": "event", "name": "Calendar context sentinel", "start_date": "2026-10-05",
+        "end_date": "2026-10-08", "date_precision": "day", "raw_date": "5–8 October 2026",
+        "source_filename": "calendar.pdf", "page": 2, "source_document_sha256": "d" * 64,
+        "source_urls": ["https://example.test/calendar-primary", "https://example.test/calendar-secondary"],
+        "summary": "Frozen verbatim calendar context 中文 sentinel.", "summary_basis": "verbatim_pdf_row"}
+    snapshot, summary = range_fixture(), weekly_fixture()
+    snapshot["pdf_calendar"]["records"] = [record]
+    _refresh_snapshot_identity(snapshot)
+    summary["key_dates"] = [record]
+    original = copy.deepcopy((snapshot, summary))
+    model = adapt_range_report(snapshot) if route == "range" else adapt_weekly_report(summary)
+    assert model.key_dates[0][2:4] == ("Not provided", "Not provided")
+    path = tmp_path / "calendar-context.pdf"
+    if route == "range":
+        range_reports.render_range_report_pdf(snapshot, path)
+    else:
+        render_pdf(summary, path)
+    _, text = text_of(path)
+    html = range_reports.render_range_report_html(snapshot)
+    for value in [*record["source_urls"], record["summary"], "Verbatim context:", "calendar.pdf, page 2"]:
+        assert "".join(value.split()) in "".join(text.split()) and value in html
+    assert (snapshot, summary) == original
+
+
+def test_linked_pdf_update_keeps_both_distinct_article_ids(tmp_path):
+    snapshot = range_fixture()
+    snapshot["pdf_source_updates"][0]["core_article_id"] = "fixture-linked-core"
+    _refresh_snapshot_identity(snapshot)
+    original = copy.deepcopy(snapshot)
+    path = tmp_path / "linked-pdf.pdf"
+    range_reports.render_range_report_pdf(snapshot, path)
+    _, text = text_of(path)
+    html = range_reports.render_range_report_html(snapshot)
+    for value in ("Core article ID", "PDF article ID", "fixture-linked-core", "fixture-pdf-only"):
+        assert value in text and value in html
+    assert snapshot == original
+
+
 def test_key_dates_preserve_real_meeting_query_fields_and_sources(tmp_path):
     from datetime import datetime, timezone
     from climate_monitor.meetings import process_batch, query_events
