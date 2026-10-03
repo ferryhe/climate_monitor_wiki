@@ -8,6 +8,9 @@ const file = document.querySelector('#pdf-file');
 const batch = document.querySelector('#batch');
 const batchStatus = document.querySelector('#batch-status');
 const retry = document.querySelector('#retry');
+const batchOverview = document.querySelector('#batch-overview');
+const batchSummary = document.querySelector('#batch-summary');
+const batchList = document.querySelector('#batch-list');
 let previewShas = [];
 let previewDigest = '';
 let batchId = '';
@@ -32,10 +35,49 @@ function showBatch(value) {
   return value.chat_ready || value.stage === 'failed';
 }
 
+function failureDetails(value) {
+  const history = value.failure_history || [];
+  const details = history.map(failure => `${failure.at} · attempt ${failure.attempt} · ${failure.reason}`);
+  const latest = history[history.length - 1];
+  if (value.error && (!latest || latest.reason !== value.error)) details.push(value.error);
+  return details.join('\n');
+}
+
+function showOverview(value) {
+  batchOverview.hidden = false;
+  const stages = Object.entries(value.stage_counts).map(([stage, count]) => `${stage}: ${count}`).join(' · ');
+  const milestones = Object.entries(value.milestone_counts).map(([name, count]) => `${name}: ${count}`).join(' · ');
+  batchSummary.textContent = `Total: ${value.total_batches} · Stages: ${stages} · Milestones: ${milestones}`;
+  batchList.replaceChildren(...value.batches.map(value => {
+    const row = document.createElement('tr');
+    for (const text of [value.batch_id, value.filename || '', value.stage, value.created_at, value.updated_at, value.attempts,
+      `imported: ${value.imported ? 'yes' : 'no'}; indexed: ${value.indexed ? 'yes' : 'no'}; chat ready: ${value.chat_ready ? 'yes' : 'no'}`, failureDetails(value)]) {
+      const cell = document.createElement('td');
+      cell.textContent = text;
+      row.append(cell);
+    }
+    const action = document.createElement('td');
+    if (value.stage === 'failed') {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = 'Retry processing';
+      button.onclick = () => retryBatch(value.batch_id);
+      action.append(button);
+    }
+    row.append(action);
+    return row;
+  }));
+}
+
+async function loadOverview() {
+  try { showOverview(await intake('/api/manage/pdf-intake/batches', undefined, 'GET')); }
+  catch (error) { message.textContent = error.message; }
+}
+
 async function pollBatch() {
   if (!batchId) return;
   try {
     const value = await intake(`/api/manage/pdf-intake/batches/${batchId}`, undefined, 'GET');
+    await loadOverview();
     if (!showBatch(value)) setTimeout(pollBatch, 1000);
   } catch (error) { message.textContent = error.message; setTimeout(pollBatch, 1000); }
 }
@@ -74,14 +116,19 @@ confirm.onclick = async () => {
     preview.textContent = JSON.stringify(value, null, 2);
     message.textContent = `Batch ${value.batch_id} was queued.`;
     showBatch(value);
+    loadOverview();
     setTimeout(pollBatch, 250);
     confirm.disabled = true;
   } catch (error) { message.textContent = error.message; }
 };
 
-retry.onclick = async () => {
+async function retryBatch(id) {
   try {
-    showBatch(await intake(`/api/manage/pdf-intake/batches/${batchId}/retry`));
+    showBatch(await intake(`/api/manage/pdf-intake/batches/${id}/retry`));
+    loadOverview();
     setTimeout(pollBatch, 250);
   } catch (error) { message.textContent = error.message; }
-};
+}
+
+retry.onclick = () => retryBatch(batchId);
+loadOverview();
