@@ -173,13 +173,19 @@ def local_remote(tmp_path):
     _git(seed, "init", "-b", "main")
     _git(seed, "config", "user.name", "Test")
     _git(seed, "config", "user.email", "test@example.test")
-    (seed / ".gitattributes").write_text("*.md text eol=lf\n", encoding="ascii")
+    (seed / ".gitattributes").write_text(
+        "*.md text eol=lf\n*.yaml text eol=lf\n", encoding="ascii"
+    )
+    (seed / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="ascii")
     _report(seed / "sources" / "climate-monitor-2026-08-03.md", "2026-08-03")
     (seed / "scripts").mkdir()
     shutil.copyfile(
         Path(publisher.__file__).with_name("sync_source_wiki.py"),
         seed / "scripts" / "sync_source_wiki.py",
     )
+    ignored = shutil.ignore_patterns("__pycache__", "*.pyc")
+    for package in ("climate_registry", "climate_monitor", "climate_delivery", "monitoring"):
+        shutil.copytree(ROOT / package, seed / package, ignore=ignored)
     sync_source_wiki(
         source_dir=seed / "sources", wiki_dir=seed / "wiki", cadence="weekly"
     )
@@ -575,7 +581,8 @@ def test_publisher_accepts_acquisition_only_registry_article_and_syncs_with_regi
     )
     assert result.status == "published"
     assert len(runner.sync_commands) == 1
-    assert runner.sync_commands[0][-2:] == ["--registry-database", str(database)]
+    assert runner.sync_commands[0][-2] == "--registry-database"
+    assert Path(runner.sync_commands[0][-1]).name == "registry.sqlite3"
 
 
 def test_publisher_accepts_confirmed_pdf_only_registry_article_and_syncs_with_registry(
@@ -650,7 +657,8 @@ def test_publisher_accepts_confirmed_pdf_only_registry_article_and_syncs_with_re
     )
     assert result.status == "published"
     assert len(runner.sync_commands) == 1
-    assert runner.sync_commands[0][-2:] == ["--registry-database", str(database)]
+    assert runner.sync_commands[0][-2] == "--registry-database"
+    assert Path(runner.sync_commands[0][-1]).name == "registry.sqlite3"
 
 
 def test_multiple_pending_reports_use_an_in_memory_history_overlay(tmp_path):
@@ -2126,14 +2134,15 @@ def test_allowlist_permits_only_generated_registry_wiki_paths():
     publisher.validate_allowlist([
         ("A", "wiki/article-article-confirmed.md"),
         ("M", "wiki/article-article-confirmed.md"),
+        ("D", "wiki/article-article-confirmed.md"),
         ("A", "wiki/registry-source-observations.md"),
         ("M", "wiki/registry-source-observations.md"),
         ("D", "wiki/registry-source-observations.md"),
     ], {"2026-08-10"})
-    with pytest.raises(publisher.PublishError, match="deletion/rename"):
-        publisher.validate_allowlist([("D", "wiki/article-article-confirmed.md")])
     with pytest.raises(publisher.PublishError, match="outside weekly-report allowlist"):
         publisher.validate_allowlist([("A", "wiki/article-.md")])
+    with pytest.raises(publisher.PublishError, match="deletion/rename"):
+        publisher.validate_allowlist([("D", "wiki/article-manual.notes.md")])
 
 
 @pytest.mark.parametrize("status", ["T", "U", "X", "C100"])

@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -34,7 +35,9 @@ from climate_delivery.io import atomic_write_bytes, atomic_write_json, exclusive
 from climate_monitor.meetings import EVENT_TYPES, load_snapshot as load_meeting_snapshot
 from climate_monitor.meetings import query_events
 
+from .errors import RegistryBuildError, RegistryInputError
 from .read_api import RegistryContractError, RegistryError, RegistryReader
+from .wiki import snapshot_registry
 
 
 SCHEMA_VERSION = "climate-range-report-snapshot.v1"
@@ -283,6 +286,7 @@ def _range_source(
     *,
     acquisition_item_ids: set[str] | None = None,
     pdf_occurrence_ids: set[str] | None = None,
+    additional_evidenced_dates: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Freeze persisted Registry evidence without consulting reports or the web."""
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
@@ -296,7 +300,8 @@ def _range_source(
         for row in connection.execute(
             """SELECT a.article_id, a.canonical_url, a.current_version_id,
                       a.current_content_version_id, a.display_policy,
-                      s.display_name AS publisher, av.observed_title AS current_title
+                      s.display_name AS publisher, av.observed_title AS current_title,
+                      av.observed_summary AS current_summary
                FROM articles a
                JOIN sources s ON s.source_id=a.source_id
                LEFT JOIN article_versions av ON av.version_id=a.current_version_id
@@ -386,6 +391,11 @@ def _range_source(
             source_rows = RegistryReader._pdf_document_sources(
                 connection, row["source_document_sha256"]
             )
+            pdf_title = (
+                raw.get("anchor_text") or row["title"] or row["raw_url"]
+                if pdf_occurrence_ids is None
+                else raw.get("anchor_text") or raw.get("title") or row["raw_url"]
+            )
             observation = {
                 "kind": "registry_pdf",
                 "observation_id": row["occurrence_id"],
@@ -400,7 +410,7 @@ def _range_source(
                 "period_end": row["period_end"],
                 "page": row["page"],
                 "url": row["raw_url"],
-                "title": raw.get("anchor_text") or row["title"] or row["raw_url"],
+                "title": pdf_title,
                 "summary": raw.get("summary"),
                 "observed_at": row["imported_at"],
                 "publication_date": row["publication_date"],
@@ -425,10 +435,21 @@ def _range_source(
             if not formal_link:
                 continue
             observations[article_id].append(observation)
+        for article_id, values in (additional_evidenced_dates or {}).items():
+            if article_id in article_rows:
+                known = {
+                    (item["date"], item["observation_id"])
+                    for item in evidenced_dates[article_id]
+                }
+                evidenced_dates[article_id].extend(
+                    item for item in values
+                    if (item["date"], item["observation_id"]) not in known
+                )
         selected_ids = {
             article_id
             for article_id, values in evidenced_dates.items()
             if article_id in article_rows
+            and (acquisition_item_ids is None or observations[article_id])
             and any(start <= date.fromisoformat(item["date"]) <= end for item in values)
         }
         articles = []
@@ -440,9 +461,12 @@ def _range_source(
                 key=lambda item: (item["date"], item["observation_id"]),
             )
             source_items = observations[article_id]
-            latest_source = max(source_items, key=lambda item: (
-                item.get("observed_at") or "", item["observation_id"]
-            ))
+            latest_source = (
+                max(source_items, key=lambda item: (
+                    item.get("observed_at") or "", item["observation_id"]
+                ))
+                if source_items else None
+            )
             content = None
             enrichment = None
             pinned_version = next((
@@ -452,12 +476,10 @@ def _range_source(
                 ))
                 if item["kind"] == "registry_acquisition"
                 and item.get("content_version_id")
-                and (published := _day_precision_publication_date(item.get("publication_date")))
-                and start <= date.fromisoformat(published) <= end
             ), None)
             version_id = (
                 pinned_version
-                if acquisition_item_ids is not None and pinned_version
+                if acquisition_item_ids is not None
                 else base.get("current_content_version_id")
             )
             if version_id:
@@ -490,12 +512,21 @@ def _range_source(
                     },
                 }
             else:
-                summary = latest_source.get("summary")
+                summary = (
+                    latest_source.get("summary")
+                    if latest_source else base.get("current_summary")
+                )
                 categories, keywords = [], []
-                semantic_provenance = {
-                    "basis": latest_source["kind"],
-                    "observation_id": latest_source["observation_id"],
-                }
+                semantic_provenance = (
+                    {
+                        "basis": latest_source["kind"],
+                        "observation_id": latest_source["observation_id"],
+                    }
+                    if latest_source else {
+                        "basis": "current_article_version",
+                        "version_id": base.get("current_version_id"),
+                    }
+                )
             content_text = None
             if content is not None:
                 policy = base.get("display_policy")
@@ -503,7 +534,43 @@ def _range_source(
                     content_text = content["markdown_content"]
                 elif policy == "summary_excerpt":
                     content_text = " ".join(content["markdown_content"].split())[:500]
-            title = base.get("current_title") or latest_source.get("title") or base["canonical_url"]
+            if acquisition_item_ids is None:
+                title = (
+                    base.get("current_title")
+                    or (latest_source or {}).get("title")
+                    or base["canonical_url"]
+                )
+                title_provenance = {
+                    "basis": (
+                        "current_article_version"
+                        if base.get("current_title")
+                        else latest_source["kind"] if latest_source else "canonical_url"
+                    ),
+                    "version_id": base.get("current_version_id"),
+                }
+            else:
+                title_source = next(
+                    (
+                        item for item in reversed(sorted(
+                            source_items,
+                            key=lambda value: (
+                                value.get("observed_at") or "",
+                                value["observation_id"],
+                            ),
+                        ))
+                        if item.get("title")
+                    ),
+                    None,
+                )
+                title = (
+                    title_source["title"] if title_source else base["canonical_url"]
+                )
+                title_provenance = {
+                    "basis": title_source["kind"] if title_source else "canonical_url",
+                    "observation_id": (
+                        title_source["observation_id"] if title_source else None
+                    ),
+                }
             citations = []
             seen_citations: set[tuple[Any, ...]] = set()
             for item in source_items:
@@ -546,10 +613,7 @@ def _range_source(
                         "selected": exact_dates[0],
                         "all_in_range": exact_dates,
                     },
-                    "title": {
-                        "basis": "current_article_version" if base.get("current_title") else latest_source["kind"],
-                        "version_id": base.get("current_version_id"),
-                    },
+                    "title": title_provenance,
                     "summary": semantic_provenance,
                     "categories": semantic_provenance,
                     "keywords": semantic_provenance,
@@ -792,9 +856,16 @@ def _merge_range_sources(
             and item.get("observation_id") in preferred_acquisition_item_ids
             for item in incoming["source_observations"]
         )
+        incoming_is_pdf_only = bool(incoming["source_observations"]) and all(
+            item.get("kind") == "registry_pdf"
+            for item in incoming["source_observations"]
+        )
         primary, secondary = (
             (existing, incoming)
-            if existing_has_web and not incoming_has_web
+            if (
+                existing_has_web and not incoming_has_web
+                or incoming_is_pdf_only
+            )
             else (incoming, existing)
         )
         merged = dict(primary)
@@ -865,6 +936,74 @@ def _merge_pdf_calendars(base: dict[str, Any], overlay: dict[str, Any]) -> dict[
     }
 
 
+def load_active_range_overlay(
+    runtime_dir: Path | None,
+    queue_dir: Path | None,
+    *,
+    repository_root: Path,
+) -> tuple[RegistryReader | None, RegistryReader | None, dict[str, Any] | None]:
+    """Open the immutable Registry snapshots selected by the intake writer."""
+    if runtime_dir is None:
+        return None, None, None
+    if queue_dir is None:
+        raise RegistryContractError("runtime Wiki requires the durable intake queue")
+
+    from .pdf_pipeline import load_active_projection, load_projection_manifest
+    from .web_ingest_pipeline import _active_pdf_ids, _active_pdf_snapshot
+
+    generation, metadata = load_active_projection(runtime_dir, queue_dir / "active.json")
+    if generation is None and metadata is None:
+        return None, None, {"web_items": [], "pdf_occurrence_ids": []}
+    manifest = load_projection_manifest(generation, metadata)
+    if manifest is None:
+        pdf_ids = _active_pdf_ids(generation, manifest)
+        if not pdf_ids:
+            raise RegistryContractError(
+                "active legacy PDF projection has no validated identities"
+            )
+        try:
+            snapshot_path, _ = _active_pdf_snapshot(runtime_dir, metadata, pdf_ids)
+            pdf_reader = RegistryReader(snapshot_path, repository_root=repository_root)
+            with pdf_reader.connect() as connection:
+                found = {
+                    str(row["occurrence_id"])
+                    for row in connection.execute(
+                        "SELECT occurrence_id FROM pdf_intake_article_occurrences"
+                    )
+                    if row["occurrence_id"] in pdf_ids
+                }
+        except (OSError, RuntimeError, RegistryContractError) as exc:
+            raise RegistryContractError("active legacy PDF projection is invalid") from exc
+        if found != pdf_ids:
+            raise RegistryContractError("active legacy PDF projection is invalid")
+        return None, pdf_reader, {
+            "web_items": [], "pdf_occurrence_ids": sorted(pdf_ids),
+        }
+
+    expected_parent = (runtime_dir / "registry-snapshots").resolve()
+
+    def selected(kind: str, required: bool) -> RegistryReader | None:
+        raw_path = metadata.get(f"{kind}_registry_snapshot")
+        raw_sha256 = metadata.get(f"{kind}_registry_sha256")
+        if not raw_path and not required:
+            return None
+        snapshot = Path(str(raw_path or "")).resolve()
+        if (
+            snapshot.parent != expected_parent
+            or not snapshot.is_file()
+            or not isinstance(raw_sha256, str)
+            or hashlib.sha256(snapshot.read_bytes()).hexdigest() != raw_sha256
+        ):
+            raise RegistryContractError("active intake Registry projection is invalid")
+        return RegistryReader(snapshot, repository_root=repository_root)
+
+    return (
+        selected("web", bool(manifest["web_items"])),
+        selected("pdf", bool(manifest["pdf_occurrence_ids"])),
+        manifest,
+    )
+
+
 def freeze_range_report(
     reader: RegistryReader,
     artifact_root: str | Path,
@@ -894,20 +1033,16 @@ def freeze_range_report(
         str(item["acquisition_item_id"])
         for item in (overlay_manifest or {}).get("web_items", [])
     }
-    source = (
-        _range_source(reader, start_date, end_date)
-        if overlay_manifest is None
-        else _range_source(reader, start_date, end_date, pdf_occurrence_ids=set())
-    )
-    if overlay_reader is not None and overlay_manifest is not None:
-        overlay = _range_source(
-            overlay_reader,
-            start_date,
-            end_date,
-            acquisition_item_ids=activated_web_ids,
-            pdf_occurrence_ids=set(),
-        )
-        source = _merge_range_sources(source, overlay)
+
+    def selected_dates(source: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+        return {
+            item["article_id"]: list(
+                item["provenance"]["publication_date"]["all_in_range"]
+            )
+            for item in (source or {}).get("articles", [])
+        }
+
+    pdf_overlay = None
     if pdf_overlay_reader is not None and activated_pdf_ids:
         pdf_overlay = _range_source(
             pdf_overlay_reader,
@@ -916,21 +1051,67 @@ def freeze_range_report(
             acquisition_item_ids=set(),
             pdf_occurrence_ids=activated_pdf_ids,
         )
+    pdf_dates = selected_dates(pdf_overlay)
+
+    with tempfile.TemporaryDirectory(prefix="climate-range-report-") as temporary:
+        temporary_root = Path(temporary)
+        database = temporary_root / "registry.sqlite3"
+        try:
+            snapshot_registry(reader.database, database)
+        except (RegistryBuildError, RegistryInputError, sqlite3.DatabaseError, OSError) as exc:
+            raise RegistryContractError("Registry snapshot is invalid") from exc
+        snapshot_reader = RegistryReader(
+            database,
+            repository_root=temporary_root / "application",
+            source_dir=reader.source_dir,
+            metadata_dir=reader.metadata_dir,
+        )
+        public_source = _range_source(snapshot_reader, start_date, end_date)
+        public_dates = selected_dates(public_source)
+        web_selection_dates = dict(public_dates)
+        for article_id, values in pdf_dates.items():
+            bucket = web_selection_dates.setdefault(article_id, [])
+            known = {(item["date"], item["observation_id"]) for item in bucket}
+            bucket.extend(
+                item for item in values
+                if (item["date"], item["observation_id"]) not in known
+            )
+        web_overlay = None
+        if overlay_reader is not None and overlay_manifest is not None:
+            web_overlay = _range_source(
+                overlay_reader,
+                start_date,
+                end_date,
+                acquisition_item_ids=activated_web_ids,
+                pdf_occurrence_ids=set(),
+                additional_evidenced_dates=web_selection_dates,
+            )
+        selection_dates = dict(web_selection_dates)
+        for article_id, values in selected_dates(web_overlay).items():
+            bucket = selection_dates.setdefault(article_id, [])
+            known = {(item["date"], item["observation_id"]) for item in bucket}
+            bucket.extend(
+                item for item in values
+                if (item["date"], item["observation_id"]) not in known
+            )
+        source = _range_source(
+            snapshot_reader,
+            start_date,
+            end_date,
+            additional_evidenced_dates=selection_dates,
+        )
+        meeting = _meeting_payload(
+            snapshot_reader, meeting_snapshot_id, base_date=base_date
+        )
+        pdf_calendar = _pdf_calendar_payload(snapshot_reader, base_date=base_date)
+    if web_overlay is not None:
+        source = _merge_range_sources(source, web_overlay)
+    if pdf_overlay is not None:
         source = _merge_range_sources(
             source,
             pdf_overlay,
             preferred_acquisition_item_ids=activated_web_ids,
         )
-    meeting = _meeting_payload(reader, meeting_snapshot_id, base_date=base_date)
-    pdf_calendar = (
-        _pdf_calendar_payload(reader, base_date=base_date)
-        if overlay_manifest is None
-        else {
-            "status": "empty", "coverage": {"status": "complete"},
-            "base_date": base_date,
-            "records": [],
-        }
-    )
     if pdf_overlay_reader is not None and activated_pdf_ids:
         overlay_calendar = _pdf_calendar_payload(
             pdf_overlay_reader,

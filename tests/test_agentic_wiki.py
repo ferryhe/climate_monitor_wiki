@@ -1,8 +1,11 @@
 from datetime import date, timedelta
+from pathlib import Path
 
+import anyio
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
 from agentic_wiki.wiki_agent import _expand_query, _requested_dates, _strip_markdown
-from api_server import app, responder
+from api_server import WikiStaticFiles, app, responder
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
@@ -15,6 +18,112 @@ def test_wiki_index_loads_documents_and_chunks():
     assert kb.stats()["chunks"] >= kb.stats()["documents"]
     assert any(doc["path"] == "wiki/index.md" for doc in kb.document_catalog())
     assert any(concept["label"] == "Parametric Insurance" for concept in kb.concept_catalog())
+
+
+def test_runtime_registry_overlay_merges_public_history_and_keeps_other_precedence(tmp_path):
+    base, overlay, sources = (
+        tmp_path / "wiki", tmp_path / "runtime", tmp_path / "sources"
+    )
+    for directory in (base, overlay, sources):
+        directory.mkdir()
+    (base / "article-shared.md").write_text(
+        "# Shared\n\nPublished base body.\n\n"
+        "## PDF report observation: Public report\n\n"
+        "PDF: public-report.pdf; SHA-256: " + "b" * 64 + "; page 4\n",
+        encoding="utf-8",
+    )
+    (overlay / "article-shared.md").write_text(
+        "# Shared\n\nActivated runtime Web body.\n", encoding="utf-8"
+    )
+    (base / "registry-source-observations.md").write_text(
+        "# Public source history\n\nPublic PDF history.\n", encoding="utf-8"
+    )
+    (overlay / "registry-source-observations.md").write_text(
+        "# Runtime source observations\n\nActivated PDF source.\n", encoding="utf-8"
+    )
+    (overlay / "article-runtime-only.md").write_text(
+        "# Runtime only\n\nActivated-only evidence.\n", encoding="utf-8"
+    )
+    (base / "manual-shared.md").write_text(
+        "# Manual\n\nBase manual body.\n", encoding="utf-8"
+    )
+    (overlay / "manual-shared.md").write_text(
+        "# Manual\n\nRuntime manual body.\n", encoding="utf-8"
+    )
+    (base / "asset.bin").write_bytes(b"\xffbase")
+    (overlay / "asset.bin").write_bytes(b"\xffruntime")
+    for name in ("article-history.md", "registry-manual-history.md", "article-manual.notes.md"):
+        (base / name).write_text(f"# {name}\n\nBase history.\n", encoding="utf-8")
+
+    kb = WikiKnowledgeBase(base, sources, overlay)
+    static = WikiStaticFiles(directory=base)
+    static.all_directories = [str(overlay), str(base)]
+    static_app = FastAPI()
+    static_app.mount("/wiki", static)
+    client = TestClient(static_app)
+
+    shared = [doc for doc in kb.documents if doc.path == "wiki/article-shared.md"]
+    assert len(shared) == 1
+    assert "Published base body" in shared[0].markdown
+    assert "Activated runtime Web body" in shared[0].markdown
+    public_pdf_chunks = [
+        chunk for chunk in kb.chunks if "public-report.pdf" in chunk.markdown
+    ]
+    assert public_pdf_chunks
+    assert all(
+        "Activated runtime Web body" not in chunk.markdown
+        for chunk in public_pdf_chunks
+    )
+    assert any(
+        "Activated runtime Web body" in chunk.markdown for chunk in kb.chunks
+    )
+    source_history = next(
+        doc for doc in kb.documents
+        if doc.path == "wiki/registry-source-observations.md"
+    )
+    assert "Public PDF history" in source_history.markdown
+    assert "Activated PDF source" in source_history.markdown
+    merged = client.get("/wiki/article-shared.md")
+    assert "Published base body" in merged.text
+    assert "Activated runtime Web body" in merged.text
+    head = client.head("/wiki/article-shared.md")
+    assert head.content == b""
+    assert int(head.headers["content-length"]) == len(merged.content)
+    direct_get = anyio.run(
+        static.get_response, "article-shared.md", {"method": "GET"}
+    )
+    direct_head = anyio.run(
+        static.get_response, "article-shared.md", {"method": "HEAD"}
+    )
+    assert direct_head.body == b""
+    assert direct_head.headers["content-length"] == str(len(direct_get.body))
+    source_page = client.get("/wiki/registry-source-observations.md")
+    assert "Public PDF history" in source_page.text
+    assert "Activated PDF source" in source_page.text
+    manual = client.get("/wiki/manual-shared.md")
+    assert "Runtime manual body" in manual.text
+    assert "Base manual body" not in manual.text
+    assert client.get("/wiki/asset.bin").content == b"\xffruntime"
+    paths = {doc.path for doc in kb.documents}
+    for name in ("article-history.md", "registry-manual-history.md", "article-manual.notes.md"):
+        assert f"wiki/{name}" in paths
+        assert static.lookup_path(name)[1] is not None
+
+    next_generation = tmp_path / "next-runtime"
+    next_generation.mkdir()
+    fallback = WikiKnowledgeBase(base, sources, next_generation)
+    fallback_paths = {doc.path for doc in fallback.documents}
+    fallback_shared = next(
+        doc for doc in fallback.documents if doc.path == "wiki/article-shared.md"
+    )
+    assert "Published base body" in fallback_shared.markdown
+    assert "Activated runtime body" not in fallback_shared.markdown
+    assert "wiki/article-runtime-only.md" not in fallback_paths
+    static.all_directories = [str(next_generation), str(base)]
+    fallback_page = client.get("/wiki/article-shared.md")
+    assert "Published base body" in fallback_page.text
+    assert "Activated runtime Web body" not in fallback_page.text
+    assert client.get("/wiki/article-runtime-only.md").status_code == 404
 
 
 def test_strip_markdown_removes_report_break_tags():

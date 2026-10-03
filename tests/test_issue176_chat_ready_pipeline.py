@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -10,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pypdf import PdfReader
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen.canvas import Canvas
 
@@ -18,17 +20,25 @@ from agentic_wiki.wiki_agent import _evidence_excerpt
 from climate_delivery.errors import LockStateError
 from climate_delivery.io import exclusive_lock
 from climate_monitor.pdf_intake import import_pdf_reports
+from climate_registry.pdf_intake import persist_pdf_intake
 from climate_registry.pdf_pipeline import (
     PdfIntakePipeline,
     enqueue_pdf_batch,
     list_pdf_batches,
     load_active_projection,
+    load_projection_manifest,
     read_pdf_batch,
     retry_pdf_batch,
 )
-from climate_registry.range_reports import freeze_range_report
+from climate_registry.range_reports import (
+    ensure_range_report_pdf,
+    freeze_range_report,
+    load_active_range_overlay,
+    render_range_report_html,
+)
 from climate_registry.read_api import RegistryReader
 from climate_registry.schema import apply_migrations
+from climate_registry.wiki import sync_registry_wiki
 
 
 def _pdf_bytes(summary: str = "New PDF evidence says transition planning needs regional stress tests.") -> bytes:
@@ -149,7 +159,7 @@ def test_projection_keeps_citation_after_summary_markdown_subheading(tmp_path):
 
     assert result["stage"] == "chat_ready", result["error"]
     projection, _ = load_active_projection(runtime, queue / "active.json")
-    page = (projection / "registry-pdf-intake-observations.md").read_text(
+    page = (projection / "article-core-climate-study.md").read_text(
         encoding="utf-8"
     )
     assert "## Embedded report subheading" in page
@@ -193,7 +203,7 @@ def test_reload_failure_retries_one_imported_pdf_without_duplicate_rows_or_pages
     projection = runtime / "generations" / failed["generation_id"]
     pages_before = sorted(path.name for path in projection.glob("*.md"))
     generations_before = sorted(path.name for path in (runtime / "generations").iterdir())
-    observation = projection / "registry-pdf-intake-observations.md"
+    observation = projection / "article-core-climate-study.md"
     citation_count = observation.read_text(encoding="utf-8").count(
         "IAA_CSC_Climate_Report_20260928.pdf"
     )
@@ -223,6 +233,346 @@ def test_reload_failure_retries_one_imported_pdf_without_duplicate_rows_or_pages
         "IAA_CSC_Climate_Report_20260928.pdf"
     ) == citation_count
     assert (base_wiki / "manual.md").read_bytes() == original_base
+
+
+def test_private_writer_activation_never_mutates_or_exposes_public_registry(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    public_db = tmp_path / "public" / "article-registry.sqlite3"
+    public_db.parent.mkdir()
+    _registry(public_db)
+    public_bundle = _bundle(
+        tmp_path,
+        filename="public-history.pdf",
+        summary="Existing approved Public PDF history.",
+    )
+    persist_pdf_intake(public_db, tmp_path / "public-backups", public_bundle)
+    public_bytes = public_db.read_bytes()
+
+    writer_db = tmp_path / "pipeline" / "climate_registry.sqlite3"
+    writer_db.parent.mkdir()
+    _registry(writer_db)
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime"
+    queue.mkdir()
+    runtime.mkdir()
+    pending_bundle = _bundle(
+        tmp_path,
+        filename="pending-import.pdf",
+        summary="PENDING IMPORT SENTINEL before activation.",
+    )
+    queued = enqueue_pdf_batch(queue, pending_bundle, repository_root=repository)
+    failed = PdfIntakePipeline(
+        queue, writer_db, tmp_path / "pipeline" / "backups", runtime,
+        lambda _generation_id: (_ for _ in ()).throw(RuntimeError("reload unavailable")),
+        repository_root=repository,
+    ).process(queued["batch_id"])
+    assert failed["imported"] is True and failed["indexed"] is True
+    assert failed["chat_ready"] is False
+
+    web_reader, pdf_reader, manifest = load_active_range_overlay(
+        runtime, queue, repository_root=repository
+    )
+    assert (web_reader, pdf_reader, manifest) == (
+        None, None, {"web_items": [], "pdf_occurrence_ids": []},
+    )
+    public_report = freeze_range_report(
+        RegistryReader(public_db, repository_root=repository),
+        tmp_path / "public-report",
+        start_date="2026-09-14", end_date="2026-09-14",
+        overlay_reader=web_reader,
+        pdf_overlay_reader=pdf_reader,
+        overlay_manifest=manifest,
+    )
+    assert "Existing approved Public PDF history" in json.dumps(public_report)
+    assert "PENDING IMPORT SENTINEL" not in json.dumps(public_report)
+    public_wiki = tmp_path / "public-wiki"
+    sync_registry_wiki(public_db, public_wiki)
+    public_corpus = "\n".join(
+        path.read_text(encoding="utf-8") for path in public_wiki.glob("*.md")
+    )
+    assert "Existing approved Public PDF history" in public_corpus
+    assert "PENDING IMPORT SENTINEL" not in public_corpus
+    assert public_db.read_bytes() == public_bytes
+
+    retry_pdf_batch(queue, queued["batch_id"])
+    ready = PdfIntakePipeline(
+        queue, writer_db, tmp_path / "pipeline" / "backups", runtime,
+        _ack_activation(queue), repository_root=repository,
+    ).process(queued["batch_id"])
+    assert ready["chat_ready"] is True
+    generation, _ = load_active_projection(runtime, queue / "active.json")
+    runtime_corpus = "\n".join(
+        path.read_text(encoding="utf-8") for path in generation.glob("*.md")
+    )
+    assert "PENDING IMPORT SENTINEL" in runtime_corpus
+    assert "PENDING IMPORT SENTINEL" not in public_corpus
+    assert public_db.read_bytes() == public_bytes
+
+
+def test_legacy_occurrence_identity_is_reused_through_reload_failure_and_retry(tmp_path):
+    bundle = _bundle(tmp_path, filename="legacy-reimport.pdf")
+    article = next(
+        item for item in bundle["articles"]
+        if item["canonical_url"] == "https://example.org/climate-study"
+    )
+    occurrence = article["occurrences"][0]
+    document = bundle["documents"][0]
+    database = tmp_path / "legacy-registry.sqlite3"
+    legacy_id = "legacy-v13-article-occurrence"
+    with sqlite3.connect(database) as connection:
+        apply_migrations(connection, target_version=13)
+        connection.execute(
+            "INSERT INTO pdf_intake_documents (document_sha256, source_path, filename, "
+            "media_type, size_bytes, date_of_run, period_start, period_end, "
+            "extracted_text_sha256, document_json, imported_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)",
+            (
+                document["source"]["sha256"], document["source"]["path"],
+                document["source"]["filename"], "application/pdf",
+                document["source"]["size_bytes"], document.get("date_of_run"),
+                document.get("period_start"), document.get("period_end"),
+                document["extracted_text_sha256"], "2026-09-01T00:00:00Z",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO pdf_intake_articles (article_id, canonical_url, title, "
+            "type_safe_classification_json, imported_at) VALUES (?, ?, ?, NULL, ?)",
+            (
+                article["article_id"], article["canonical_url"], article["title"],
+                "2026-09-01T00:00:00Z",
+            ),
+        )
+        stored = dict(occurrence, occurrence_id=legacy_id)
+        connection.execute(
+            "INSERT INTO pdf_intake_article_occurrences (occurrence_id, article_id, "
+            "source_document_sha256, page, raw_url, report_date, publication_date, "
+            "content_sha256, page_sha256, occurrence_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                legacy_id, article["article_id"], occurrence["source_document_sha256"],
+                occurrence["page"], occurrence["raw_url"],
+                occurrence.get("report_date"), occurrence.get("publication_date"),
+                occurrence["content_sha256"], occurrence["page_sha256"],
+                json.dumps(stored),
+            ),
+        )
+    connection.close()
+
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime"
+    queue.mkdir()
+    runtime.mkdir()
+    queued = enqueue_pdf_batch(
+        queue, bundle, repository_root=tmp_path / "repository"
+    )
+    failed = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime,
+        lambda _generation_id: (_ for _ in ()).throw(RuntimeError("reload unavailable")),
+        repository_root=tmp_path / "repository",
+    ).process(queued["batch_id"])
+    assert failed["indexed"] is True, failed["error"]
+    assert failed["stage"] == "failed"
+    candidate = runtime / "generations" / failed["generation_id"]
+    assert load_projection_manifest(candidate, {
+        "generation_id": failed["generation_id"],
+        "manifest_sha256": failed["manifest_sha256"],
+    })["pdf_occurrence_ids"] == [legacy_id]
+
+    retry_pdf_batch(queue, queued["batch_id"])
+    ready = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, _ack_activation(queue),
+        repository_root=tmp_path / "repository",
+    ).process(queued["batch_id"])
+    assert ready["stage"] == "chat_ready"
+    assert ready["generation_id"] == failed["generation_id"]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT occurrence_id FROM pdf_intake_article_occurrences"
+        ).fetchall() == [(legacy_id,)]
+
+
+def test_active_pdf_only_article_excludes_unactivated_core_content_from_wiki_and_range(
+    tmp_path,
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    writer_db = tmp_path / "writer.sqlite3"
+    _registry(writer_db)
+    with sqlite3.connect(writer_db) as connection:
+        connection.execute(
+            "INSERT INTO article_versions VALUES "
+            "('unactivated-title', 'core-climate-study', 'UNACTIVATED PDF TITLE', "
+            "'unactivated pdf title', 'Unactivated summary', ?, "
+            "'report-title-summary', '2026-10-03', '2026-10-03')",
+            ("f" * 64,),
+        )
+        body = "UNACTIVATED FULL WEB BODY"
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        connection.execute(
+            "INSERT INTO article_content_versions VALUES "
+            "('unactivated-content', 'core-climate-study', ?, ?, ?, "
+            "'text/markdown', ?, 'reader', 'reader-v1', '2026-10-03')",
+            (digest, body, digest, len(body)),
+        )
+        connection.execute(
+            "UPDATE articles SET current_version_id='unactivated-title', "
+            "current_content_version_id='unactivated-content', "
+            "display_policy='full_markdown' WHERE article_id='core-climate-study'"
+        )
+    public_db = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime"
+    queue.mkdir()
+    runtime.mkdir()
+    bundle = _bundle(
+        tmp_path,
+        filename="approved-confirmed.pdf",
+        summary=(
+            "Approved PDF evidence for transition stress tests. "
+            "Published 14 September 2026."
+        ),
+    )
+    approved = next(
+        item for item in bundle["articles"]
+        if item["canonical_url"] == "https://example.org/climate-study"
+    )
+    occurrence = approved["occurrences"][0]
+    queued = enqueue_pdf_batch(queue, bundle, repository_root=repository)
+    ready = PdfIntakePipeline(
+        queue, writer_db, tmp_path / "backups", runtime, _ack_activation(queue),
+        repository_root=repository,
+    ).process(queued["batch_id"])
+    assert ready["chat_ready"] is True
+
+    generation, active = load_active_projection(runtime, queue / "active.json")
+    page = (generation / "article-core-climate-study.md").read_text(encoding="utf-8")
+    expected_title = (
+        occurrence.get("anchor_text") or occurrence.get("title")
+        or occurrence["raw_url"]
+    )
+    assert page.startswith(f"# {expected_title}\n")
+    assert "UNACTIVATED PDF TITLE" not in page
+    assert "UNACTIVATED FULL WEB BODY" not in page
+    assert "Approved PDF evidence for transition stress tests" in page
+    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
+    wiki.mkdir()
+    sources.mkdir()
+    kb_corpus = "\n".join(
+        document.markdown
+        for document in AgenticWikiResponder(wiki, sources, generation).kb.documents
+    )
+    assert "UNACTIVATED PDF TITLE" not in kb_corpus
+    assert "Approved PDF evidence for transition stress tests" in kb_corpus
+
+    manifest = load_projection_manifest(generation, active)
+    snapshot = freeze_range_report(
+        RegistryReader(public_db, repository_root=repository),
+        tmp_path / "range-reports",
+        start_date="2026-09-14", end_date="2026-09-14",
+        pdf_overlay_reader=RegistryReader(
+            active["pdf_registry_snapshot"], repository_root=repository
+        ),
+        overlay_manifest=manifest,
+    )
+    article = snapshot["articles"][0]
+    assert article["title"] == expected_title
+    assert article["content_version_id"] is None and article["content"] is None
+    html = render_range_report_html(snapshot)
+    pdf_text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(
+            ensure_range_report_pdf(snapshot, tmp_path / "range-reports")
+        ).pages
+    )
+    for rendered in (html, pdf_text):
+        normalized = " ".join(rendered.split())
+        assert "UNACTIVATED PDF TITLE" not in normalized
+        assert "UNACTIVATED FULL WEB BODY" not in normalized
+        assert (
+            "Approved PDF evidence for transition stress tests. "
+            "Published 14 September 2026."
+        ) in normalized
+        assert "approved-confirmed.pdf, page 2" in normalized
+
+
+def test_active_untitled_pdf_source_ignores_failed_aggregate_title(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    writer_db = tmp_path / "writer.sqlite3"
+    public_db = tmp_path / "public.sqlite3"
+    for database in (writer_db, public_db):
+        with sqlite3.connect(database) as connection:
+            apply_migrations(connection)
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime"
+    queue.mkdir()
+    runtime.mkdir()
+
+    failed_bundle = _bundle(
+        tmp_path,
+        filename="failed-title.pdf",
+        summary="Failed PDF evidence with an aggregate title.",
+    )
+    failed_bundle["articles"][0]["title"] = "UNACTIVATED AGGREGATE PDF TITLE"
+    failed = enqueue_pdf_batch(queue, failed_bundle, repository_root=repository)
+    failed_status = PdfIntakePipeline(
+        queue, writer_db, tmp_path / "backups", runtime,
+        lambda _generation_id: (_ for _ in ()).throw(RuntimeError("reload unavailable")),
+        repository_root=repository,
+    ).process(failed["batch_id"])
+    assert failed_status["stage"] == "failed" and failed_status["imported"] is True
+
+    approved_bundle = _bundle(
+        tmp_path,
+        filename="approved-untitled.pdf",
+        summary="Approved PDF source evidence for regional stress tests.",
+    )
+    approved = approved_bundle["articles"][0]
+    approved["title"] = None
+    approved_occurrence = approved["occurrences"][0]
+    approved_occurrence["anchor_text"] = ""
+    approved_occurrence["publication_date"] = None
+    approved_occurrence["publication_date_evidence"] = None
+    approved_id = approved_occurrence["occurrence_id"]
+    approved_url = approved_occurrence["raw_url"]
+    queued = enqueue_pdf_batch(queue, approved_bundle, repository_root=repository)
+    ready = PdfIntakePipeline(
+        queue, writer_db, tmp_path / "backups", runtime, _ack_activation(queue),
+        repository_root=repository,
+    ).process(queued["batch_id"])
+    assert ready["chat_ready"] is True
+
+    generation, active = load_active_projection(runtime, queue / "active.json")
+    manifest = load_projection_manifest(generation, active)
+    assert manifest["pdf_occurrence_ids"] == [approved_id]
+    page = (generation / "registry-source-observations.md").read_text(encoding="utf-8")
+    assert "UNACTIVATED AGGREGATE PDF TITLE" not in page
+    assert "Approved PDF source evidence for regional stress tests" in page
+    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
+    wiki.mkdir()
+    sources.mkdir()
+    kb_corpus = "\n".join(
+        document.markdown
+        for document in AgenticWikiResponder(wiki, sources, generation).kb.documents
+    )
+    assert "UNACTIVATED AGGREGATE PDF TITLE" not in kb_corpus
+    assert "Approved PDF source evidence for regional stress tests" in kb_corpus
+
+    snapshot = freeze_range_report(
+        RegistryReader(public_db, repository_root=repository),
+        tmp_path / "range-reports",
+        start_date="2026-09-14", end_date="2026-09-14",
+        pdf_overlay_reader=RegistryReader(
+            active["pdf_registry_snapshot"], repository_root=repository
+        ),
+        overlay_manifest=manifest,
+    )
+    update = snapshot["pdf_source_updates"][0]
+    assert update["observation_id"] == approved_id
+    assert update["title"] == approved_url
+    html = render_range_report_html(snapshot)
+    assert "UNACTIVATED AGGREGATE PDF TITLE" not in html
+    assert "Approved PDF source evidence for regional stress tests" in html
+    assert "approved-untitled.pdf" in html
 
 
 def test_pdf_failures_remain_in_history_after_retry_and_success(tmp_path):
@@ -404,8 +754,11 @@ def test_legacy_active_pdf_overlay_excludes_later_failed_pdf(monkeypatch, tmp_pa
     monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
     monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
     overlay_reader, pdf_overlay_reader, manifest = api_server._range_report_overlay()
+    public_database = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_database) as connection:
+        apply_migrations(connection)
     report = freeze_range_report(
-        RegistryReader(database, repository_root=repository),
+        RegistryReader(public_database, repository_root=repository),
         tmp_path / "range-reports",
         start_date="2026-09-14", end_date="2026-09-14",
         overlay_reader=overlay_reader,
@@ -452,7 +805,10 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
         ).fetchone()
     generations_before = sorted(path.name for path in (runtime / "generations").iterdir())
 
-    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    public_database = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_database) as connection:
+        apply_migrations(connection)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(public_database))
     monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
     monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
     monkeypatch.setattr(api_server, "WIKI_DIR", base_wiki)
@@ -466,7 +822,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     monkeypatch.setattr(api_server._wiki_static_files, "all_directories", [str(base_wiki)])
     client = TestClient(api_server.app)
 
-    assert client.get("/wiki/registry-pdf-intake-observations.md").status_code == 404
+    assert client.get("/wiki/article-core-climate-study.md").status_code == 404
     hidden = client.post(
         "/api/chat",
         json={
@@ -475,7 +831,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
         },
     ).json()
     assert all(
-        item["path"] != "wiki/registry-pdf-intake-observations.md"
+        item["path"] != "wiki/article-core-climate-study.md"
         for item in hidden["sources"]
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" not in hidden["text"]
@@ -484,7 +840,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     assert overlay_reader is None and pdf_overlay_reader is None
     assert manifest == {"web_items": [], "pdf_occurrence_ids": []}
     configured_report = freeze_range_report(
-        RegistryReader(database, repository_root=tmp_path / "repository"),
+        RegistryReader(public_database, repository_root=tmp_path / "repository"),
         tmp_path / "configured-range-reports",
         start_date="2026-09-14", end_date="2026-09-14",
         overlay_reader=overlay_reader, pdf_overlay_reader=pdf_overlay_reader,
@@ -541,9 +897,9 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     projection, active = load_active_projection(runtime, queue / "active.json")
     assert active["generation_id"] == failed["generation_id"] == ready["generation_id"]
     assert sorted(path.name for path in projection.glob("*.md")) == [
-        "registry-pdf-intake-observations.md"
+        "article-core-climate-study.md"
     ]
-    page = client.get("/wiki/registry-pdf-intake-observations.md")
+    page = client.get("/wiki/article-core-climate-study.md")
     assert page.status_code == 200
     assert "IAA_CSC_Climate_Report_20260928.pdf" in page.text
     answer = client.post(
@@ -556,7 +912,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     citation = next(
         item
         for item in answer["sources"]
-        if item["path"] == "wiki/registry-pdf-intake-observations.md"
+        if item["path"] == "wiki/article-core-climate-study.md"
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" in citation["snippet"]
     assert "page 2" in citation["snippet"]
@@ -649,7 +1005,7 @@ def test_older_filename_retry_publishes_compatible_newer_projection(tmp_path):
     assert failed["stage"] == "failed" and failed["chat_ready"] is False
     assert "reload unavailable" in failed["error"]
     assert active_after_failure["generation_id"] == active_before["generation_id"]
-    old_page = (projection / "registry-pdf-intake-observations.md").read_text(
+    old_page = (projection / "article-core-climate-study.md").read_text(
         encoding="utf-8"
     )
     assert "renamed.pdf" in old_page
@@ -669,7 +1025,7 @@ def test_older_filename_retry_publishes_compatible_newer_projection(tmp_path):
     assert active_after_retry["batch_id"] == newer["batch_id"]
     assert active_after_retry["generation_id"] == ready["generation_id"]
     assert active_after_retry["generation_id"] != active_before["generation_id"]
-    page = (projection / "registry-pdf-intake-observations.md").read_text(
+    page = (projection / "article-core-climate-study.md").read_text(
         encoding="utf-8"
     )
     assert "renamed.pdf" in page
@@ -836,7 +1192,7 @@ def test_authenticated_api_accepts_one_pdf_and_rejects_zero_or_multiple_before_p
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
-def test_ready_pdf_survives_weekly_registry_change_and_real_reload_with_current_base(
+def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
     monkeypatch, tmp_path
 ):
     from fastapi.testclient import TestClient
@@ -870,7 +1226,7 @@ def test_ready_pdf_survives_weekly_registry_change_and_real_reload_with_current_
     assert ready["chat_ready"] is True
     projection, metadata = load_active_projection(runtime, queue / "active.json")
     assert sorted(path.name for path in projection.glob("*.md")) == [
-        "registry-pdf-intake-observations.md"
+        "article-core-climate-study.md"
     ]
 
     # Simulate the scheduled Registry promotion and deployed base projection update.
@@ -895,7 +1251,7 @@ def test_ready_pdf_survives_weekly_registry_change_and_real_reload_with_current_
     citation = next(
         item
         for item in pdf_answer["sources"]
-        if item["path"] == "wiki/registry-pdf-intake-observations.md"
+        if item["path"] == "wiki/article-core-climate-study.md"
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" in citation["snippet"]
     assert "page 2" in citation["snippet"]
@@ -905,13 +1261,14 @@ def test_ready_pdf_survives_weekly_registry_change_and_real_reload_with_current_
         json={"message": "What is in the updated weekly Registry projection?", "answerMode": "brief"},
     ).json()
     assert "Updated weekly Registry projection" in base_answer["text"]
-    assert "Updated weekly Registry projection" in client.get(
-        "/wiki/article-core-climate-study.md"
-    ).text
-    pdf_page = client.get("/wiki/registry-pdf-intake-observations.md")
+    pdf_page = client.get("/wiki/article-core-climate-study.md")
     assert pdf_page.status_code == 200
+    assert "Updated weekly Registry projection" in pdf_page.text
     assert "IAA_CSC_Climate_Report_20260928.pdf" in pdf_page.text
     assert "page 2" in pdf_page.text
+    pdf_head = client.head("/wiki/article-core-climate-study.md")
+    assert pdf_head.content == b""
+    assert int(pdf_head.headers["content-length"]) == len(pdf_page.content)
     assert read_pdf_batch(queue, queued["batch_id"])["chat_ready"] is True
 
     snapshot = freeze_range_report(
@@ -966,7 +1323,7 @@ def test_later_success_excludes_failed_batch_until_retry(tmp_path):
     ).process(later["batch_id"])
     assert ready["chat_ready"] is True
     projection, _ = load_active_projection(runtime, queue / "active.json")
-    page = (projection / "registry-pdf-intake-observations.md").read_text(encoding="utf-8")
+    page = (projection / "article-core-climate-study.md").read_text(encoding="utf-8")
     assert "later-report.pdf" in page
     assert "IAA_CSC_Climate_Report_20260928.pdf" not in page
     rag_corpus = "\n".join(
@@ -992,7 +1349,7 @@ def test_later_success_excludes_failed_batch_until_retry(tmp_path):
     ).process(failed_batch["batch_id"])
     assert retried["chat_ready"] is True
     projection, _ = load_active_projection(runtime, queue / "active.json")
-    page = (projection / "registry-pdf-intake-observations.md").read_text(encoding="utf-8")
+    page = (projection / "article-core-climate-study.md").read_text(encoding="utf-8")
     assert page.count("later-report.pdf") == 1
     assert page.count("IAA_CSC_Climate_Report_20260928.pdf") == 1
     with sqlite3.connect(database) as connection:

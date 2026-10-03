@@ -17,6 +17,7 @@ from agentic_wiki import AgenticWikiResponder
 from climate_delivery.errors import LockStateError
 from climate_delivery.io import exclusive_lock
 from climate_monitor.pdf_intake import import_pdf_reports
+from climate_registry.pdf_intake import persist_pdf_intake
 from climate_registry.pdf_pipeline import (
     PdfIntakePipeline,
     enqueue_pdf_batch,
@@ -27,6 +28,7 @@ from climate_registry.pdf_pipeline import (
 from climate_registry.range_reports import (
     ensure_range_report_pdf,
     freeze_range_report,
+    load_active_range_overlay,
     render_range_report_html,
 )
 from climate_registry.read_api import RegistryReader
@@ -35,9 +37,9 @@ from climate_registry.web_ingest_pipeline import (
     _active_pdf_snapshot,
     enqueue_web_activation,
     read_web_activation_request,
-    _render_web_page,
     wait_web_activation,
 )
+from climate_registry.wiki import render_runtime_registry
 
 
 NOW = "2026-10-02T12:00:00Z"
@@ -47,7 +49,14 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _pdf(path) -> None:
+def _pdf(
+    path,
+    *,
+    url: str = "https://pdf-only.example/study",
+    summary: str = "PDF-only evidence requires transition scenario testing.",
+    publication_date_text: str | None = None,
+    extra_url: str | None = None,
+) -> None:
     output = BytesIO()
     canvas = Canvas(output, pagesize=letter)
     canvas.drawString(50, 760, "Climate Risk Outlook")
@@ -55,14 +64,24 @@ def _pdf(path) -> None:
     canvas.drawString(50, 760, "UPDATES")
     canvas.drawString(50, 740, "PDF-only transition source")
     canvas.drawString(50, 720, "REPORT COVERAGE")
-    canvas.drawString(50, 700, "PDF-only evidence requires transition scenario testing.")
-    canvas.linkURL("https://pdf-only.example/study", (48, 738, 320, 754), relative=0)
+    canvas.drawString(50, 700, summary)
+    if publication_date_text:
+        canvas.drawString(50, 680, f"IN WINDOW {publication_date_text} REPORT")
+    canvas.linkURL(url, (48, 738, 320, 754), relative=0)
+    if extra_url:
+        canvas.drawString(50, 660, "Unapproved Web identity with approved PDF evidence")
+        canvas.linkURL(extra_url, (48, 658, 360, 674), relative=0)
     canvas.showPage()
     canvas.save()
     path.write_bytes(output.getvalue())
 
 
-def _seed_web(database) -> None:
+def _seed_web(
+    database,
+    *,
+    item_title: str = "Web transition evidence",
+    publication_date: str = "2026-01-01",
+) -> None:
     with sqlite3.connect(database) as connection:
         apply_migrations(connection)
         connection.execute("INSERT INTO sources VALUES ('web', 'web.example', 'Web Source', ?, ?)", (NOW, NOW))
@@ -105,7 +124,9 @@ def _seed_web(database) -> None:
                'https://web.example/article', ?, 'success', 200, 'text/markdown', 'content-pinned')""",
             (NOW,),
         )
-        evidence = json.dumps({"kind": "publisher", "text": "Published 2026-01-01"})
+        evidence = json.dumps({
+            "kind": "publisher", "text": f"Published {publication_date}",
+        })
         connection.execute(
             """INSERT INTO acquisition_items(acquisition_item_id, batch_id, ordinal, article_id,
                raw_url, source_name, title, summary, discovered_at, discovery_kind, discovery_ref,
@@ -113,10 +134,10 @@ def _seed_web(database) -> None:
                selection_status, selection_reason, update_status, material_status, fetch_id,
                content_version_id, attempts_json, processing_status)
                VALUES ('web-item', 'web-batch', 1, 'web-article', 'https://web.example/article',
-               'Web Source', 'Web transition evidence', 'Web acquisition summary', ?, 'site',
-               'https://web.example/article', '[]', '2026-01-01', ?, 'eligible', 'selected',
+               'Web Source', ?, 'Web acquisition summary', ?, 'site',
+               'https://web.example/article', '[]', ?, ?, 'eligible', 'selected',
                'relevant', 'baseline', 'full_content', 'fetch-web', 'content-pinned', '[]', 'complete')""",
-            (NOW, evidence),
+            (item_title, NOW, publication_date, evidence),
         )
 
 
@@ -298,12 +319,15 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     assert "Pinned web evidence says coastal resilience funding" in corpus
     assert "later unactivated body" not in corpus
     assert "PDF-only evidence requires transition scenario testing" in corpus
+    assert "Publication date: 2026-01-01" in corpus
+    assert 'Publication-date evidence: {"kind": "publisher", "text": "Published 2026-01-01"}' in corpus
+    assert f"discovered: {NOW}" in corpus
     responder.client = None
     web_answer = responder.answer("coastal resilience funding", answer_mode="brief")
     pdf_answer = responder.answer("transition scenario testing", answer_mode="brief")
     assert any(source["path"].endswith("article-web-article.md") for source in web_answer["sources"])
     assert any(
-        source["path"].endswith("registry-pdf-intake-observations.md")
+        source["path"].endswith("registry-source-observations.md")
         for source in pdf_answer["sources"]
     )
     legacy_overlay_report = freeze_range_report(
@@ -355,6 +379,187 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     assert sentinel.read_text(encoding="utf-8") == "clean"
 
 
+@pytest.mark.parametrize("date_source", ["runtime_pdf", "public_pdf", "public_web"])
+def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, date_source):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    writer_db = tmp_path / "writer" / "climate_registry.sqlite3"
+    writer_db.parent.mkdir()
+    _seed_web(writer_db, publication_date="2026-09-20")
+    _add_web_observation(
+        writer_db,
+        batch_id="unapproved-web-batch",
+        item_id="unapproved-web-item",
+        article_id="unapproved-article",
+        content_version_id="unapproved-content",
+        body="UNAPPROVED WRITER BODY",
+        discovered_at="2026-10-02T13:00:00Z",
+        publication_date="2026-09-25",
+        title="Unapproved writer title",
+    )
+    with sqlite3.connect(writer_db) as connection:
+        connection.execute(
+            """INSERT INTO article_enrichments VALUES
+               ('approved-web-enrichment', 'content-pinned', 'complete', ?, ?, ?,
+                'en', 'deterministic', 'fixture', 'semantic-v3', ?, NULL, NULL)""",
+            (
+                "Approved Web enrichment summary",
+                json.dumps(["Physical risk"]),
+                json.dumps(["resilience"]),
+                NOW,
+            ),
+        )
+    public_db = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
+        connection.execute(
+            "INSERT INTO sources VALUES ('public', 'public.example', 'Public', ?, ?)",
+            (NOW, NOW),
+        )
+        connection.execute(
+            """INSERT INTO articles(article_id, canonical_url, source_id, first_seen,
+               last_seen, document_kind, publication_eligible, display_policy)
+               VALUES ('web-article', 'https://web.example/article', 'public', ?, ?,
+               'article', 1, 'full_markdown')""",
+            (NOW, NOW),
+        )
+        connection.execute(
+            "INSERT INTO article_versions VALUES "
+            "('public-title', 'web-article', 'Public title', 'public title', "
+            "'Public summary', ?, 'report-title-summary', ?, ?)",
+            (_sha("public title"), NOW, NOW),
+        )
+        public_body = "Authorized Public body without a local date observation."
+        connection.execute(
+            "INSERT INTO article_content_versions VALUES "
+            "('public-content', 'web-article', ?, ?, ?, 'text/markdown', ?, "
+            "'reader', 'reader-v1', ?)",
+            (
+                _sha(public_body), public_body, _sha(public_body),
+                len(public_body), NOW,
+            ),
+        )
+        connection.execute(
+            "UPDATE articles SET current_version_id='public-title', "
+            "current_content_version_id='public-content' WHERE article_id='web-article'"
+        )
+    connection.close()
+    if date_source == "public_web":
+        _add_web_observation(
+            public_db,
+            batch_id="public-date-batch",
+            item_id="public-date-item",
+            article_id="web-article",
+            content_version_id="public-date-content",
+            body="Authorized Public Web date source body.",
+            discovered_at="2026-10-02T11:00:00Z",
+            publication_date="2026-09-25",
+            title="Public date observation title",
+        )
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime"
+    queue.mkdir()
+    runtime.mkdir()
+    enqueue_web_activation(
+        queue, writer_db, "web-batch",
+        frozen_payload_sha256="9" * 64, repository_root=repository,
+    )
+    writer = PdfIntakePipeline(
+        queue, writer_db, tmp_path / "backups", runtime, _ack(queue),
+        repository_root=repository,
+    )
+    assert writer.process_next()["chat_ready"] is True
+
+    occurrence = None
+    if date_source.endswith("_pdf"):
+        pdf_path = tmp_path / "approved-date-update.pdf"
+        _pdf(
+            pdf_path,
+            url="https://web.example/article",
+            summary="Approved later PDF observation for the same article.",
+            publication_date_text="25 SEP 2026",
+            extra_url="https://web.example/unapproved-article",
+        )
+        bundle = import_pdf_reports([pdf_path])
+        bundle["documents"][0].update(
+            period_start="2026-09-25", period_end="2026-09-25"
+        )
+        pdf_article = next(
+            item for item in bundle["articles"]
+            if item["canonical_url"] == "https://web.example/article"
+        )
+        for item in bundle["articles"]:
+            item["type_safe_classification"] = {
+                "provider": "typesafe", "label": "article",
+            }
+        occurrence = pdf_article["occurrences"][0]
+        if date_source == "runtime_pdf":
+            queued = enqueue_pdf_batch(queue, bundle, repository_root=repository)
+            assert writer.process(queued["batch_id"])["chat_ready"] is True
+        else:
+            persist_pdf_intake(public_db, tmp_path / "public-backups", bundle)
+
+    generation, _ = load_active_projection(runtime, queue / "active.json")
+    assert "Pinned web evidence says coastal resilience funding" in (
+        generation / "article-web-article.md"
+    ).read_text(encoding="utf-8")
+    web_reader, pdf_reader, manifest = load_active_range_overlay(
+        runtime, queue, repository_root=repository
+    )
+    snapshot = freeze_range_report(
+        RegistryReader(public_db, repository_root=repository),
+        tmp_path / "range-reports",
+        start_date="2026-09-25", end_date="2026-09-25",
+        generated_at=datetime(2026, 10, 2, tzinfo=timezone.utc),
+        overlay_reader=web_reader,
+        pdf_overlay_reader=pdf_reader,
+        overlay_manifest=manifest,
+    )
+    expected_ids = {"web-article"}
+    if date_source == "runtime_pdf":
+        expected_ids.add("unapproved-article")
+    assert {item["article_id"] for item in snapshot["articles"]} == expected_ids
+    article = next(
+        item for item in snapshot["articles"] if item["article_id"] == "web-article"
+    )
+    assert article["publication_date"] == "2026-09-25"
+    assert article["content_version_id"] == "content-pinned"
+    assert "Pinned web evidence says coastal resilience funding" in article["content"]
+    assert "later unactivated body" not in article["content"]
+    assert article["summary"] == "Approved Web enrichment summary"
+    assert article["categories"] == ["Physical risk"]
+    assert article["keywords"] == ["resilience"]
+    citation_kinds = {item["kind"] for item in article["citations"]}
+    assert citation_kinds == (
+        {"url", "pdf_page"} if occurrence is not None else {"url"}
+    )
+    selected = article["provenance"]["publication_date"]["selected"]
+    if occurrence is not None:
+        assert selected == {
+            "date": "2026-09-25",
+            "observation_id": occurrence["occurrence_id"],
+            "evidence": {
+                "kind": "pdf_text",
+                "text": "25 SEP 2026",
+                "document_sha256": occurrence["source_document_sha256"],
+                "page": occurrence["page"],
+            },
+        }
+    else:
+        assert selected == {
+            "date": "2026-09-25",
+            "observation_id": "public-date-item",
+            "evidence": {"kind": "publisher", "text": "Published 2026-09-25"},
+        }
+    if date_source == "runtime_pdf":
+        unapproved = next(
+            item for item in snapshot["articles"]
+            if item["article_id"] == "unapproved-article"
+        )
+        assert unapproved["content_version_id"] is None
+        assert unapproved["content"] is None
+    assert "UNAPPROVED WRITER BODY" not in json.dumps(snapshot)
+
+
 def test_invalid_active_manifest_is_a_controlled_handoff_error(tmp_path):
     generation = tmp_path / "runtime" / "generations" / "gen"
     generation.mkdir(parents=True)
@@ -375,9 +580,9 @@ def test_failed_pdf_then_web_activation_then_pdf_retry_merges_both(tmp_path):
     runtime_db = tmp_path / "runtime" / "registry.sqlite3"
     runtime_db.parent.mkdir()
     _seed_web(runtime_db)
-    public_db = tmp_path / "public" / "registry.sqlite3"
-    public_db.parent.mkdir()
-    connection = sqlite3.connect(public_db)
+    writer_db = tmp_path / "writer" / "registry.sqlite3"
+    writer_db.parent.mkdir()
+    connection = sqlite3.connect(writer_db)
     try:
         apply_migrations(connection)
     finally:
@@ -402,14 +607,14 @@ def test_failed_pdf_then_web_activation_then_pdf_retry_merges_both(tmp_path):
         raise RuntimeError("reload unavailable")
 
     failed = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, fail_reload,
+        queue, writer_db, tmp_path / "backups", runtime, fail_reload,
         repository_root=repository,
     ).process(pdf["batch_id"])
     assert failed["stage"] == "failed", failed
     assert failed["indexed"] is True, failed["error"]
 
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        queue, writer_db, tmp_path / "backups", runtime, _ack(queue),
         repository_root=repository,
     )
     enqueue_web_activation(
@@ -421,6 +626,10 @@ def test_failed_pdf_then_web_activation_then_pdf_retry_merges_both(tmp_path):
     assert web_active["projection_kind"] == "web"
     web_manifest = load_projection_manifest(web_generation, web_active)
     assert web_manifest["pdf_occurrence_ids"] == []
+    public_db = tmp_path / "public" / "registry.sqlite3"
+    public_db.parent.mkdir()
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
     web_only_report = freeze_range_report(
         RegistryReader(public_db, repository_root=repository),
         tmp_path / "web-only-reports",
@@ -637,8 +846,80 @@ def test_web_page_keeps_latest_observation_across_unrelated_activation(tmp_path)
     assert "Latest validated transition body" in current["content"]
 
 
+def test_empty_activated_title_falls_back_to_canonical_url_not_unactivated_title(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime-wiki"
+    queue.mkdir()
+    runtime.mkdir()
+    runtime_db = tmp_path / "runtime.sqlite3"
+    _seed_web(runtime_db, item_title="")
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO article_versions VALUES "
+            "('title-unactivated', 'web-article', 'UNACTIVATED TITLE', "
+            "'unactivated title', 'Unactivated summary', ?, "
+            "'report-title-summary', ?, ?)",
+            (_sha("unactivated title"), NOW, NOW),
+        )
+        connection.execute(
+            "UPDATE articles SET current_version_id='title-unactivated' "
+            "WHERE article_id='web-article'"
+        )
+    public_db = tmp_path / "public.sqlite3"
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
+    enqueue_web_activation(
+        queue, runtime_db, "web-batch",
+        frozen_payload_sha256="e" * 64, repository_root=repository,
+    )
+    ready = PdfIntakePipeline(
+        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        repository_root=repository,
+    ).process_next()
+    assert ready["chat_ready"] is True
+
+    generation, active = load_active_projection(runtime, queue / "active.json")
+    page = (generation / "article-web-article.md").read_text(encoding="utf-8")
+    assert page.startswith("# https://web.example/article\n")
+    assert "UNACTIVATED TITLE" not in page
+    assert "later unactivated body" not in page
+    assert "Pinned web evidence says coastal resilience funding" in page
+    assert "Web acquisition summary" in page
+    assert "Publication date: 2026-01-01" in page
+    assert "source: Web Source" in page
+
+    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
+    wiki.mkdir()
+    sources.mkdir()
+    kb = AgenticWikiResponder(wiki, sources, generation).kb
+    document = next(doc for doc in kb.documents if doc.file == "article-web-article.md")
+    assert document.markdown.startswith("# https://web.example/article\n")
+    assert "UNACTIVATED TITLE" not in document.markdown
+
+    manifest = load_projection_manifest(generation, active)
+    snapshot = freeze_range_report(
+        RegistryReader(public_db, repository_root=repository),
+        tmp_path / "range-reports",
+        start_date="2026-01-01", end_date="2026-01-31",
+        overlay_reader=RegistryReader(
+            active["web_registry_snapshot"], repository_root=repository
+        ),
+        overlay_manifest=manifest,
+    )
+    article = snapshot["articles"][0]
+    assert article["title"] == "https://web.example/article"
+    assert article["content_version_id"] == "content-pinned"
+    assert article["provenance"]["title"] == {
+        "basis": "canonical_url", "observation_id": None,
+    }
+    html = render_range_report_html(snapshot)
+    assert "UNACTIVATED TITLE" not in html
+    assert "Pinned web evidence says coastal resilience funding" in html
+
+
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
-def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch, tmp_path):
+def test_active_web_page_merges_same_named_public_history_for_chat_and_wiki(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     import api_server
@@ -651,7 +932,9 @@ def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch
     for path in (queue, runtime, wiki, sources):
         path.mkdir()
     (wiki / "article-web-article.md").write_text(
-        "# Stale base article\n\nStale deployed body.\n", encoding="utf-8",
+        "# Published Public article\n\nPublished Public body.\n\n"
+        "https://public.example/approved-history\n",
+        encoding="utf-8",
     )
     runtime_db = tmp_path / "runtime.sqlite3"
     _seed_web(runtime_db)
@@ -689,7 +972,14 @@ def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch
     assert writer.process_next()["chat_ready"] is True
     first_page = client.get("/wiki/article-web-article.md")
     assert "Pinned web evidence says coastal resilience" in first_page.text
-    assert "Stale deployed body" not in first_page.text
+    assert "Published Public body" in first_page.text
+    assert "https://public.example/approved-history" in first_page.text
+    merged_document = next(
+        doc for doc in api_server.responder.kb.documents
+        if doc.path == "wiki/article-web-article.md"
+    )
+    assert "Published Public body" in merged_document.markdown
+    assert "Pinned web evidence says coastal resilience" in merged_document.markdown
     first_answer = client.post(
         "/api/chat",
         json={"message": "coastal resilience funding", "answerMode": "brief"},
@@ -715,6 +1005,7 @@ def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch
     updated_page = client.get("/wiki/article-web-article.md")
     assert "Updated active overlay body" in updated_page.text
     assert "Pinned web evidence says coastal resilience" not in updated_page.text
+    assert "Published Public body" in updated_page.text
     updated_answer = client.post(
         "/api/chat",
         json={"message": "updated active overlay body", "answerMode": "brief"},
@@ -735,15 +1026,31 @@ def test_legacy_pdf_projection_fails_closed_without_its_validated_snapshot(tmp_p
         )
 
 
-def test_metadata_only_web_projection_does_not_expose_body():
-    item = {
-        "title": "Metadata record", "canonical_url": "https://example.org/item",
-        "raw_url": "https://example.org/item", "display_policy": "metadata_only",
-        "markdown_content": "private full article body", "article_id": "article",
-        "content_version_id": "content", "content_sha256": "a" * 64,
-        "acquisition_item_id": "item", "publication_date": "2026-01-01",
-        "publication_date_evidence": {"kind": "publisher"}, "summary": "Public summary",
-    }
-    page = _render_web_page(item)
-    assert "Public summary" in page
-    assert "private full article body" not in page
+def test_metadata_only_web_projection_does_not_expose_body(tmp_path):
+    database = tmp_path / "registry.sqlite3"
+    _seed_web(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE articles SET display_policy='metadata_only' "
+            "WHERE article_id='web-article'"
+        )
+    wiki = tmp_path / "wiki"
+    render_runtime_registry(
+        wiki,
+        web_database=database,
+        pdf_database=None,
+        manifest={
+            "web_items": [{
+                "acquisition_item_id": "web-item", "batch_id": "web-batch",
+                "article_id": "web-article", "content_version_id": "content-pinned",
+                "publication_date": "2026-01-01",
+                "publication_date_evidence": {
+                    "kind": "publisher", "text": "Published 2026-01-01",
+                },
+            }],
+            "pdf_occurrence_ids": [],
+        },
+    )
+    page = (wiki / "article-web-article.md").read_text(encoding="utf-8")
+    assert "Web acquisition summary" in page
+    assert "Pinned web evidence says coastal resilience funding" not in page

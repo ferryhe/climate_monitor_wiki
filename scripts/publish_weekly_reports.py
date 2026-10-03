@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,7 @@ from climate_registry.selection import (  # noqa: E402
     parse_strict_weekly_report,
     plan_selection,
 )
+from climate_registry.wiki import snapshot_registry  # noqa: E402
 
 DEFAULT_REPORT_DIR = Path(
     os.environ.get("CLIMATE_REPORTS_DIR", str(REPO_ROOT.parent / "web_listening" / "data" / "reports"))
@@ -303,7 +305,7 @@ def validate_allowlist(
     )
     for status, path in changes:
         registry_article = re.fullmatch(r"wiki/article-[A-Za-z0-9_-]+\.md", path)
-        if registry_article and status in {"A", "M"}:
+        if registry_article and status in {"A", "M", "D"}:
             continue
         if path == "wiki/registry-source-observations.md" and status in {"A", "M", "D"}:
             continue
@@ -842,6 +844,13 @@ def _publish_attempt(
     allow_offcycle: bool = False,
 ) -> PublishResult:
     with tempfile.TemporaryDirectory(prefix="climate-weekly-publish-") as tmp:
+        registry_snapshot: Path | None = None
+        if registry_database is not None:
+            registry_snapshot = Path(tmp) / "registry.sqlite3"
+            try:
+                snapshot_registry(registry_database, registry_snapshot)
+            except (OSError, sqlite3.DatabaseError, RegistryBuildError, RegistryInputError) as exc:
+                raise PublishError("registry snapshot is invalid") from exc
         checkout = Path(tmp) / "repo"
         runner(
             ["git", "clone", "--branch", BASE_BRANCH, remote_url, str(checkout)],
@@ -877,7 +886,7 @@ def _publish_attempt(
         validated_reports = validate_pending_reports(
             pending,
             source_dir=checkout / "sources",
-            registry_database=registry_database,
+            registry_database=registry_snapshot,
             allow_offcycle=allow_offcycle,
         )
 
@@ -902,8 +911,8 @@ def _publish_attempt(
             "--cadence",
             "weekly",
         ]
-        if registry_database is not None:
-            sync_command.extend(("--registry-database", str(registry_database)))
+        if registry_snapshot is not None:
+            sync_command.extend(("--registry-database", str(registry_snapshot)))
         runner(sync_command, cwd=checkout)
         verifier(checkout, runner)
         changes = _stage_and_validate(

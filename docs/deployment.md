@@ -359,7 +359,7 @@ at the required schema before the write side runs:
 | Database | Host path | In-container path | Writer |
 | --- | --- | --- | --- |
 | Public/site Registry | the directory named by `CLIMATE_REGISTRY_HOST_DIR` (required, no default — see `docker-compose.registry.yml`) | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
-| Runtime Registry | the `climate_runtime` Compose volume (`docker volume inspect` for the host path) | `/app/output/climate_registry.sqlite3` | the acquisition writer in the producer container |
+| Runtime Registry | the existing `climate_runtime` Compose volume (`docker volume inspect` for the host path) | producer: `/app/output/climate_registry.sqlite3`; intake writer: `/pipeline/climate_registry.sqlite3` (same volume file) | acquisition producer and the single Web/PDF intake writer |
 
 Deployment-specific values — host paths, hostnames and credentials — belong to the
 host and to the untracked `.env`, not to tracked documentation: new and edited content
@@ -608,14 +608,27 @@ docker compose -f docker-compose.yml config --quiet
 
 ### Explicit management PDF imports
 
-`docker-compose.registry.yml` remains read-only. To enable the authenticated
-`/manage/pdf-import` flow, add `docker-compose.registry-import.yml`. Each import
-accepts exactly one PDF. The site keeps `/registry` and `/runtime/wiki`
-read-only and writes only to the durable queue. The separate
-`pdf-intake-writer` owns the writable Registry and runtime Wiki mounts, reuses
-the existing Registry persistence and Registry-to-Wiki projection, selects a
-PDF-observation generation atomically, then calls `/api/reload`. A batch is
-`chat_ready` only after that reload reports the requested generation active.
+`docker-compose.registry.yml` keeps the Public Registry read-only. To enable the
+authenticated `/manage/pdf-import` flow, add `docker-compose.registry-import.yml`.
+Each import accepts exactly one PDF. The site keeps `/registry` and `/runtime/wiki`
+read-only and writes import requests to the durable queue. The existing
+`pdf-intake-writer` consumes both Web activation and PDF intake requests and owns
+the writable Runtime Registry and Wiki projection.
+
+The writer mounts the existing `climate_runtime` volume at `/pipeline`, with
+`CLIMATE_REGISTRY_WRITER_DB=/pipeline/climate_registry.sqlite3` and private backups
+under `/pipeline/pdf-intake-backups`. This is the same Runtime database file used
+by the acquisition producer at `/app/output/climate_registry.sqlite3`; `/pipeline`
+is outside `/app` and satisfies the existing external-path checks. The writer
+must not have a writable Public `/registry` bind. The application Compose wrapper
+rejects that old shared-Public configuration.
+
+The writer reuses the existing persistence, lock, batch status and retry flow.
+It builds a fresh generation from the approved manifest and hash-checked Web/PDF
+snapshots, then calls `/api/reload`. A batch is `chat_ready` only after that reload
+reports the requested generation active. A failed reload leaves the previous
+active projection available; imported pending records stay in Runtime and cannot
+enter Public range reports or the publisher.
 
 Create `CLIMATE_PDF_QUEUE_HOST_DIR` and `CLIMATE_RUNTIME_WIKI_HOST_DIR` as empty
 directories outside the checkout before starting Compose. Keep `RELOAD_TOKEN`
@@ -637,9 +650,23 @@ application-container address.
 The management page shows the durable `imported`, `indexed`, and `chat_ready`
 states. A failed indexing or reload step leaves the imported Registry row and
 queued bundle intact; use **Retry processing** without uploading the PDF again.
-The runtime overlay contains only confirmed management PDF observations under
-one reserved page name. Base Wiki pages are served first, so a later weekly or
-manual projection remains current while the PDF citation stays available.
+The Runtime overlay contains only the approved manifest's Web and PDF identities,
+using their pinned snapshots. Same-name generated Registry pages combine Public
+history with activated intake evidence in both Chat and HTTP; ordinary Runtime
+pages retain overlay precedence, and pages absent from the overlay fall back to
+Public Wiki history. A new generation does not inherit unrelated pages from the
+previous one. Public PDF articles, citations and calendar records remain readable
+when Runtime has no active generation; the Runtime allowlist does not restrict
+Public history.
+
+Before enabling the revised import configuration, back up both Registry roles,
+the queue, active metadata and referenced snapshots, and verify the Runtime file
+meets the current writer schema. An existing shared-Public import deployment is
+not migrated by this configuration change. Review its retained import states and
+approved manifests before preparing the Public candidate and Runtime data;
+preserve legitimate published history and private evidence. Do not clear either
+database or discard queued batches to obtain a clean cutover. This repository
+change does not perform a production migration or install jobs.
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
 It must be a complete main database satisfying an exact supported schema contract
