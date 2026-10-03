@@ -919,7 +919,7 @@ def test_empty_activated_title_falls_back_to_canonical_url_not_unactivated_title
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
-def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch, tmp_path):
+def test_active_web_page_merges_same_named_public_history_for_chat_and_wiki(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     import api_server
@@ -932,7 +932,9 @@ def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch
     for path in (queue, runtime, wiki, sources):
         path.mkdir()
     (wiki / "article-web-article.md").write_text(
-        "# Stale base article\n\nStale deployed body.\n", encoding="utf-8",
+        "# Published Public article\n\nPublished Public body.\n\n"
+        "https://public.example/approved-history\n",
+        encoding="utf-8",
     )
     runtime_db = tmp_path / "runtime.sqlite3"
     _seed_web(runtime_db)
@@ -970,7 +972,14 @@ def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch
     assert writer.process_next()["chat_ready"] is True
     first_page = client.get("/wiki/article-web-article.md")
     assert "Pinned web evidence says coastal resilience" in first_page.text
-    assert "Stale deployed body" not in first_page.text
+    assert "Published Public body" in first_page.text
+    assert "https://public.example/approved-history" in first_page.text
+    merged_document = next(
+        doc for doc in api_server.responder.kb.documents
+        if doc.path == "wiki/article-web-article.md"
+    )
+    assert "Published Public body" in merged_document.markdown
+    assert "Pinned web evidence says coastal resilience" in merged_document.markdown
     first_answer = client.post(
         "/api/chat",
         json={"message": "coastal resilience funding", "answerMode": "brief"},
@@ -996,6 +1005,7 @@ def test_active_web_page_overrides_same_named_base_for_chat_and_wiki(monkeypatch
     updated_page = client.get("/wiki/article-web-article.md")
     assert "Updated active overlay body" in updated_page.text
     assert "Pinned web evidence says coastal resilience" not in updated_page.text
+    assert "Published Public body" in updated_page.text
     updated_answer = client.post(
         "/api/chat",
         json={"message": "updated active overlay body", "answerMode": "brief"},

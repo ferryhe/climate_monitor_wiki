@@ -56,7 +56,7 @@ Registry 是业务上的文章库；部署沿用既有 Public 与 Runtime Writer
 - Registry：文章身份、网页正文版本、语义信息、抓取与搜索观察、PDF 原件及出现记录的事实库。
 - `sources/`：已归档周报的事实来源，保持 append-mostly。文章采集不必先制造一份周报。
 - `wiki/`：随 GitHub 发布的可再生知识投影；历史 `daily` 文档类型和 Obsidian payload 保持兼容。
-- runtime generations：已激活入库 manifest 的即时投影，网页与 PDF 各用 hash 校验的固定数据库快照。每次从空 staging 按清单生成，不继承上一代无关页面。同名页面优先于基础 Wiki；缺失页面回落到公共历史 Wiki。Runtime 完整性只指其清单覆盖范围，不能用来删除公共历史文章。只有 runtime 中存在、已从新清单撤销且基础 Wiki 没有的页面才会消失。
+- runtime generations：已激活入库 manifest 的即时投影，网页与 PDF 各用 hash 校验的固定数据库快照。每次从空 staging 按清单生成，不继承上一代无关页面。同名 Registry 生成页在 Chat 与 `/wiki` 中合并公共历史和已激活证据；其他同名页保持 runtime 优先，缺失页面回落到公共历史 Wiki。Runtime 完整性只指其清单覆盖范围，不能用来删除公共历史文章。只有 runtime 中存在、已从新清单撤销且基础 Wiki 没有的页面才会消失。
 - report artifacts：固定输入和 renderer 版本的报告、PDF、manifest；邮件发送引用实际 PDF，重试不能偷偷换附件。
 - run/queue/status：运行事实、来源覆盖、失败和恢复点，放外部持久存储，不进 Git。
 
@@ -67,7 +67,7 @@ Registry 是业务上的文章库；部署沿用既有 Public 与 Runtime Writer
 1. 把 Registry 的 Wiki 渲染收拢到 `climate_registry/wiki.py`，供现有 intake pipeline 和 publisher 使用。source/date/index 脚本继续负责周报页，库层不反向调用操作脚本。
 2. 复用 `scripts/run_pdf_intake_writer.py` 处理网页和 PDF 激活任务。取消整合前新增的 `sync_registry_index.py`，沿用唯一 `intake-writer` 锁、pending → reload → active、批次进度和失败恢复入口。
 3. 每个 runtime generation 只渲染 manifest 指定的网页文章/正文版本/发布日期证据与 PDF occurrence。合并时按 article ID 保留获准来源，不读取 live Writer DB 的新记录，不复制旧代遗留页。
-4. KB 与 `/wiki/` 均采用同名 runtime 优先、缺失回落基础 Wiki。公共历史页面继续可查；失败 reload 保留上一 active 代。#183 的批次摘要、阶段计数、失败历史和只重试失败项保持原契约。
+4. KB 与 `/wiki/` 对同名 Registry 生成页采用同一合并规则，公共历史在前、已激活 intake 证据在后；普通同名页保持 runtime 优先，缺失页回落基础 Wiki。失败 reload 保留上一 active 代。#183 的批次摘要、阶段计数、失败历史和只重试失败项保持原契约。
 5. publisher 的 Registry 选取与渲染使用同一 SQLite backup。公共生成页清理仅限 `article-[A-Za-z0-9_-]+.md` 与既有 `registry-source-observations.md`；该命名范围为生成页保留，保留仍合格的历史文章、周报、原始资料及范围之外的手工页面，保持 rolling PR 与 main/lease 校验。
 6. 增加独立日期范围报告入口。API 与 CLI 共享只读的 active manifest/快照解析，配置了 runtime 却没有 active 清单时使用空 overlay，不读取 pending 或 live Writer DB。文章、会议与 PDF 日历从同一份基础数据库 backup 冻结；Runtime 清单只限制对应 Runtime 快照，不能隐藏已发布 Public 的 PDF 文章、引用或日历。选入文章的日期证据与读取主事实分开：任一合法来源日期命中范围后，保留合法 Public 或已激活网页的固定正文、版本与语义信息；PDF-only overlay 追加来源和日期证据。网页自身日期在范围之外，也不能因此丢掉同一文章已获准的主事实。现有 renderer 和历史产物契约继续复用。
 

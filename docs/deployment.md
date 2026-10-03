@@ -651,11 +651,13 @@ The management page shows the durable `imported`, `indexed`, and `chat_ready`
 states. A failed indexing or reload step leaves the imported Registry row and
 queued bundle intact; use **Retry processing** without uploading the PDF again.
 The Runtime overlay contains only the approved manifest's Web and PDF identities,
-using their pinned snapshots. Same-name Runtime pages take priority in both Chat
-and HTTP; pages absent from the overlay fall back to Public Wiki history. A new
-generation does not inherit unrelated pages from the previous one. Public PDF
-articles, citations and calendar records remain readable when Runtime has no
-active generation; the Runtime allowlist does not restrict Public history.
+using their pinned snapshots. Same-name generated Registry pages combine Public
+history with activated intake evidence in both Chat and HTTP; ordinary Runtime
+pages retain overlay precedence, and pages absent from the overlay fall back to
+Public Wiki history. A new generation does not inherit unrelated pages from the
+previous one. Public PDF articles, citations and calendar records remain readable
+when Runtime has no active generation; the Runtime allowlist does not restrict
+Public history.
 
 Before enabling the revised import configuration, back up both Registry roles,
 the queue, active metadata and referenced snapshots, and verify the Runtime file

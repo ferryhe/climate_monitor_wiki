@@ -26,6 +26,7 @@ MAX_EVIDENCE_CHARS_DETAILED = 18000
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.+:/-]*|[\u4e00-\u9fff]+", re.IGNORECASE)
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
+REGISTRY_RUNTIME_PATH_RE = re.compile(r"article-[A-Za-z0-9_-]+\.md")
 SOURCE_ITEM_RE = re.compile(r"^(?:→\s*)?\*\*(.+?)\*\*\s*$")
 DAY_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:day|days)", re.IGNORECASE)
 WEEK_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:week|weeks)", re.IGNORECASE)
@@ -277,6 +278,28 @@ def _normalize_text(text: str) -> str:
         .replace("â€˜", "'")
         .replace("â€™", "'")
         .replace("�", "")
+    )
+
+
+def is_registry_runtime_path(filename: str) -> bool:
+    return bool(
+        REGISTRY_RUNTIME_PATH_RE.fullmatch(filename)
+        or filename == "registry-source-observations.md"
+    )
+
+
+def merge_registry_runtime_markdown(
+    filename: str, public_markdown: str, runtime_markdown: str
+) -> str | None:
+    """Combine approved Public history with the activated intake projection."""
+    if not is_registry_runtime_path(filename):
+        return None
+    if public_markdown == runtime_markdown:
+        return runtime_markdown
+    return (
+        public_markdown.rstrip()
+        + "\n\n---\n\n## Activated intake projection\n\n"
+        + runtime_markdown.lstrip()
     )
 
 
@@ -743,14 +766,41 @@ class WikiKnowledgeBase:
             self.wiki_dir, "wiki", path_root="wiki"
         )
         if self.wiki_overlay_dir is not None:
-            overlay_docs, overlay_chunks = self._load_directory(
+            overlay_docs, _ = self._load_directory(
                 self.wiki_overlay_dir, "wiki", path_root="wiki"
             )
             overlay_paths = {doc.path for doc in overlay_docs}
-            wiki_docs = [doc for doc in wiki_docs if doc.path not in overlay_paths] + overlay_docs
+            base_by_path = {doc.path: doc for doc in wiki_docs}
+            merged_overlay_docs = []
+            for overlay_doc in overlay_docs:
+                base_doc = base_by_path.get(overlay_doc.path)
+                merged = (
+                    merge_registry_runtime_markdown(
+                        overlay_doc.file, base_doc.markdown, overlay_doc.markdown
+                    )
+                    if base_doc is not None
+                    else None
+                )
+                merged_overlay_docs.append(
+                    self._document_from_markdown(
+                        self.wiki_overlay_dir / overlay_doc.file,
+                        merged,
+                        "wiki",
+                        path_root="wiki",
+                    )
+                    if merged is not None
+                    else overlay_doc
+                )
+            wiki_docs = [
+                doc for doc in wiki_docs if doc.path not in overlay_paths
+            ] + merged_overlay_docs
             wiki_chunks = [
                 chunk for chunk in wiki_chunks if chunk.path not in overlay_paths
-            ] + overlay_chunks
+            ] + [
+                chunk
+                for doc in merged_overlay_docs
+                for chunk in self._chunk_document(doc)
+            ]
         source_docs, source_chunks = self._load_directory(self.source_dir, "source")
 
         self.documents = wiki_docs
@@ -783,30 +833,47 @@ class WikiKnowledgeBase:
         docs: list[WikiDocument] = []
         chunks: list[WikiChunk] = []
         for path in sorted(directory.glob("*.md")):
-            markdown = _normalize_text(path.read_text(encoding="utf-8"))
-            title = _title_from_file(path)
-            links = []
-            if corpus == "wiki":
-                links = [
-                    item.replace("wiki/", "").replace(".md", "").strip()
-                    for item in LINK_RE.findall(markdown)
-                ]
-            text = _strip_markdown(markdown)
-            doc = WikiDocument(
-                title=title,
-                path=f"{path_root or directory.name}/{path.name}",
-                file=path.name,
-                type=_detect_type(title),
-                date=_extract_date(title, markdown),
-                markdown=markdown,
-                text=text,
-                links=links,
-                words=len(_tokens(text)),
-                corpus=corpus,
+            doc = self._document_from_markdown(
+                path,
+                path.read_text(encoding="utf-8"),
+                corpus,
+                path_root=path_root,
             )
             docs.append(doc)
             chunks.extend(self._chunk_document(doc))
         return docs, chunks
+
+    def _document_from_markdown(
+        self,
+        path: Path,
+        markdown: str,
+        corpus: CorpusType,
+        *,
+        path_root: str | None = None,
+    ) -> WikiDocument:
+        markdown = _normalize_text(markdown)
+        title = _title_from_file(path)
+        links = (
+            [
+                item.replace("wiki/", "").replace(".md", "").strip()
+                for item in LINK_RE.findall(markdown)
+            ]
+            if corpus == "wiki"
+            else []
+        )
+        text = _strip_markdown(markdown)
+        return WikiDocument(
+            title=title,
+            path=f"{path_root or path.parent.name}/{path.name}",
+            file=path.name,
+            type=_detect_type(title),
+            date=_extract_date(title, markdown),
+            markdown=markdown,
+            text=text,
+            links=links,
+            words=len(_tokens(text)),
+            corpus=corpus,
+        )
 
     def _split_markdown_sections(self, markdown: str, title: str) -> list[tuple[str, list[str]]]:
         sections: list[tuple[str, list[str]]] = []
@@ -838,7 +905,10 @@ class WikiKnowledgeBase:
         for line in markdown.splitlines():
             markdown_heading = re.match(r"^(#{1,4})\s+(.+?)\s*$", line)
             starts_pdf = line.startswith("## PDF report observation:")
-            ends_pdf = line.startswith("## Acquisition observation:")
+            ends_pdf = (
+                line.startswith("## Acquisition observation:")
+                or line == "## Activated intake projection"
+            )
             if markdown_heading and (not in_pdf or starts_pdf or ends_pdf):
                 if lines:
                     sections.append((heading, lines))

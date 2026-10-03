@@ -1192,7 +1192,7 @@ def test_authenticated_api_accepts_one_pdf_and_rejects_zero_or_multiple_before_p
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
-def test_ready_pdf_overlay_wins_same_path_after_weekly_base_reload(
+def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
     monkeypatch, tmp_path
 ):
     from fastapi.testclient import TestClient
@@ -1260,14 +1260,15 @@ def test_ready_pdf_overlay_wins_same_path_after_weekly_base_reload(
         "/api/chat",
         json={"message": "What is in the updated weekly Registry projection?", "answerMode": "brief"},
     ).json()
-    assert "Updated weekly Registry projection" not in base_answer["text"]
-    assert "Updated weekly Registry projection" not in client.get(
-        "/wiki/article-core-climate-study.md"
-    ).text
+    assert "Updated weekly Registry projection" in base_answer["text"]
     pdf_page = client.get("/wiki/article-core-climate-study.md")
     assert pdf_page.status_code == 200
+    assert "Updated weekly Registry projection" in pdf_page.text
     assert "IAA_CSC_Climate_Report_20260928.pdf" in pdf_page.text
     assert "page 2" in pdf_page.text
+    pdf_head = client.head("/wiki/article-core-climate-study.md")
+    assert pdf_head.content == b""
+    assert int(pdf_head.headers["content-length"]) == len(pdf_page.content)
     assert read_pdf_batch(queue, queued["batch_id"])["chat_ready"] is True
 
     snapshot = freeze_range_report(

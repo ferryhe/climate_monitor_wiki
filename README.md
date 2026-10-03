@@ -46,8 +46,9 @@ Chat now also exposes three answer modes:
 ## Runtime
 
 - `api_server.py` serves the Codespaces demo and the `/api/*` API routes.
-- `agentic_wiki/` loads public Wiki, raw reports and the activated runtime overlay,
-  then retrieves evidence and synthesizes cited answers.
+- `agentic_wiki/` loads public Wiki, raw reports and the activated runtime overlay.
+  Same-name generated Registry pages retain Public history and activated intake
+  evidence before retrieval and cited answer synthesis.
 - `climate_registry/` owns article identity and evidence, intake activation,
   shared Wiki rendering, frozen range reports, historical enrichment and exact
   restore. Its Public and Runtime deployment roles remain separate.

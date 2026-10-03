@@ -70,9 +70,11 @@ activation and PDF intake requests. It remains the only runtime writer, with the
 same `intake-writer` lock, activation handshake, status and retry rules.
 
 The runtime generation is rebuilt from its validated manifest and pinned web/PDF
-snapshots. It overlays same-name public Wiki pages; missing pages continue to use
-the public history. Runtime configuration does not promote the Writer DB into the
-Public Registry. Existing PDF-named configuration fields remain compatible.
+snapshots. Same-name generated Registry pages combine Public history with the
+activated intake projection in both Chat and `/wiki`; other same-name runtime
+pages keep normal overlay precedence, and missing pages use Public history.
+Runtime configuration does not promote the Writer DB into the Public Registry.
+Existing PDF-named configuration fields remain compatible.
 
 The writer service uses the existing environment: `CLIMATE_REGISTRY_WRITER_DB`,
 `CLIMATE_REGISTRY_BACKUP_DIR`, `CLIMATE_PDF_INTAKE_QUEUE_DIR`,

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
+import anyio
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from limits import parse as parse_rate_limit
@@ -21,7 +22,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
-from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
+from agentic_wiki import (
+    AgenticWikiResponder,
+    WikiKnowledgeBase,
+    is_registry_runtime_path,
+    merge_registry_runtime_markdown,
+)
 from climate_delivery.artifacts import load_report_artifact
 from climate_delivery.io import atomic_write_json
 from climate_delivery.errors import GenerationError, LockStateError
@@ -151,6 +157,43 @@ def _range_report_overlay(
         _configured_pdf_queue(),
         repository_root=ROOT,
     )
+
+
+class WikiStaticFiles(StaticFiles):
+    """Serve the same approved Public + activated Registry view used by RAG."""
+
+    def _merged_markdown(self, path: str) -> str | None:
+        if not is_registry_runtime_path(path):
+            return None
+        layers = []
+        for directory in reversed(tuple(self.all_directories)):
+            full_path, stat_result = StaticFiles(
+                directory=directory,
+                follow_symlink=self.follow_symlink,
+            ).lookup_path(path)
+            if stat_result is not None and Path(full_path).is_file():
+                layers.append(Path(full_path).read_text(encoding="utf-8"))
+        if len(layers) < 2:
+            return None
+        merged = layers[0]
+        for runtime in layers[1:]:
+            candidate = merge_registry_runtime_markdown(path, merged, runtime)
+            if candidate is None:
+                return None
+            merged = candidate
+        return merged
+
+    async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+        if scope["method"] in {"GET", "HEAD"}:
+            merged = await anyio.to_thread.run_sync(self._merged_markdown, path)
+            if merged is not None:
+                body = merged.encode("utf-8")
+                return Response(
+                    content=body if scope["method"] == "GET" else b"",
+                    media_type="text/markdown",
+                    headers={"content-length": str(len(body))},
+                )
+        return await super().get_response(path, scope)
 
 
 _startup_projection, _ = _selected_pdf_projection()
@@ -1141,7 +1184,7 @@ def console_meeting_snapshot(snapshot_id: str, user: ConsolePrincipal) -> dict[s
     return _manage_call(lambda: load_snapshot(database, snapshot_id))
 
 
-_wiki_static_files = StaticFiles(directory=WIKI_DIR)
+_wiki_static_files = WikiStaticFiles(directory=WIKI_DIR)
 if _startup_projection is not None:
     _wiki_static_files.all_directories = [str(_startup_projection), str(WIKI_DIR)]
 app.mount("/wiki", _wiki_static_files, name="wiki")
