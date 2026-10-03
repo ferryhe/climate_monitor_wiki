@@ -125,12 +125,27 @@ def test_registry_import_overlay_keeps_site_read_only_and_adds_one_writer():
     }
     writer = override["services"]["pdf-intake-writer"]
     assert writer["environment"]["CLIMATE_PDF_INTAKE_WRITER"] == "1"
+    assert writer["environment"]["CLIMATE_REGISTRY_WRITER_DB"] == (
+        "/pipeline/climate_registry.sqlite3"
+    )
+    assert writer["environment"]["CLIMATE_REGISTRY_BACKUP_DIR"] == (
+        "/pipeline/pdf-intake-backups"
+    )
     assert {mount["target"]: mount["read_only"] for mount in writer["volumes"]} == {
-        "/registry": False,
+        "/pipeline": False,
         "/pdf-intake-queue": False,
         "/runtime/wiki": False,
     }
-    assert all(mount["bind"] == {"create_host_path": False} for mount in writer["volumes"])
+    pipeline = next(mount for mount in writer["volumes"] if mount["target"] == "/pipeline")
+    assert pipeline["type"] == "volume" and pipeline["source"] == "climate_runtime"
+    with pytest.raises(ValueError):
+        PurePosixPath(writer["environment"]["CLIMATE_REGISTRY_WRITER_DB"]).relative_to(
+            PurePosixPath("/app")
+        )
+    base = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert pipeline["source"] in base["volumes"]
+    binds = [mount for mount in writer["volumes"] if mount["type"] == "bind"]
+    assert all(mount["bind"] == {"create_host_path": False} for mount in binds)
 
 
 def test_base_compose_mounts_repository_content_read_only():

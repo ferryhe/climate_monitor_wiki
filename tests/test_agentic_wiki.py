@@ -1,8 +1,10 @@
 from datetime import date, timedelta
+from pathlib import Path
 
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
 from agentic_wiki.wiki_agent import _expand_query, _requested_dates, _strip_markdown
 from api_server import app, responder
+from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
 
@@ -15,6 +17,36 @@ def test_wiki_index_loads_documents_and_chunks():
     assert kb.stats()["chunks"] >= kb.stats()["documents"]
     assert any(doc["path"] == "wiki/index.md" for doc in kb.document_catalog())
     assert any(concept["label"] == "Parametric Insurance" for concept in kb.concept_catalog())
+
+
+def test_runtime_overlay_overrides_same_path_and_keeps_absent_base_history(tmp_path):
+    base, overlay, sources = (
+        tmp_path / "wiki", tmp_path / "runtime", tmp_path / "sources"
+    )
+    for directory in (base, overlay, sources):
+        directory.mkdir()
+    (base / "article-shared.md").write_text(
+        "# Shared\n\nPublished base body.\n", encoding="utf-8"
+    )
+    (overlay / "article-shared.md").write_text(
+        "# Shared\n\nActivated runtime body.\n", encoding="utf-8"
+    )
+    for name in ("article-history.md", "registry-manual-history.md", "article-manual.notes.md"):
+        (base / name).write_text(f"# {name}\n\nBase history.\n", encoding="utf-8")
+
+    kb = WikiKnowledgeBase(base, sources, overlay)
+    static = StaticFiles(directory=base)
+    static.all_directories = [str(overlay), str(base)]
+
+    shared = [doc for doc in kb.documents if doc.path == "wiki/article-shared.md"]
+    assert len(shared) == 1 and "Activated runtime body" in shared[0].markdown
+    assert all("Published base body" not in chunk.markdown for chunk in kb.chunks)
+    shared_path, _ = static.lookup_path("article-shared.md")
+    assert "Activated runtime body" in Path(shared_path).read_text(encoding="utf-8")
+    paths = {doc.path for doc in kb.documents}
+    for name in ("article-history.md", "registry-manual-history.md", "article-manual.notes.md"):
+        assert f"wiki/{name}" in paths
+        assert static.lookup_path(name)[1] is not None
 
 
 def test_strip_markdown_removes_report_break_tags():

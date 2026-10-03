@@ -259,7 +259,7 @@ def _validate_final_model(model: Mapping[str, Any]) -> None:
             writable = mount.get("read_only") is not True
             writable_allowed = (
                 (target == "/pdf-intake-queue" and queue_enabled)
-                or (is_writer and target in {"/registry", "/runtime/wiki"})
+                or (is_writer and target == "/runtime/wiki")
             )
             if mount.get("type") != "bind" or (writable and not writable_allowed):
                 raise ComposeBindSourceError(

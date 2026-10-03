@@ -46,9 +46,11 @@ Chat now also exposes three answer modes:
 ## Runtime
 
 - `api_server.py` serves the Codespaces demo and the `/api/*` API routes.
-- `agentic_wiki/` loads both `wiki/*.md` and `sources/*.md`, chunks notes and raw reports, plans retrieval, ranks evidence, and synthesizes cited answers.
-- `climate_registry/` owns the historical SQLite Registry, DB-first Article
-  Detail enrichment, weekly candidate transaction, and exact restore.
+- `agentic_wiki/` loads public Wiki, raw reports and the activated runtime overlay,
+  then retrieves evidence and synthesizes cited answers.
+- `climate_registry/` owns article identity and evidence, intake activation,
+  shared Wiki rendering, frozen range reports, historical enrichment and exact
+  restore. Its Public and Runtime deployment roles remain separate.
 - `climate_delivery/` owns the retained 09:00 summary/PDF/manifest and email
   delivery pipeline.
 - `showcase/` is a static frontend with the shared chat and wiki workspace.
@@ -172,34 +174,48 @@ Titles are metadata: different URLs with the same title remain separate articles
 | Report/state transaction | `climate_monitor/orchestrator.py`, `seen_state.py` | Finalize the validated Markdown, sidecar, candidate evidence and URL history |
 | Delivery | `climate_delivery/` | Reuse the executive narrative, render PDF/manifest and perform retained email delivery |
 | Publication | `scripts/publish_weekly_reports.py` | Regenerate wiki in an isolated clone and update the rolling content PR |
-| Registry and application | `climate_registry/`, `agentic_wiki/`, `api_server.py` | Post-deploy Registry sync, historical reports, retrieval and web API |
+| Registry and knowledge | `climate_registry/`, `agentic_wiki/`, `api_server.py` | Pre-report article storage, shared Wiki/runtime projection, historical reports, retrieval and post-deploy report association |
 
 ### New flow
 
-This diagram describes the implemented monitor and intended downstream cutover.
-Acquisition and search must supply current artifacts before the monitor runs;
-the monitor does not automatically perform Pillar B search.
+The article-first flow is documented in
+[Article-first architecture](docs/article-first-architecture.md). Registry
+acquisition writes happen before report authoring. A report is one output of
+the article library; runtime knowledge indexing does not require a new report
+or a GitHub merge. The scheduler and deployment edges below require separate
+live verification.
 
 ```mermaid
-flowchart TD
-    A["Pillar A: governed Runtime<br/>site result + climate bridge artifacts"] --> P
-    B["Pillar B: Hermes search<br/>completed queries + dated article evidence"] --> P
-    P["Prepare: run_climate_monitor.py<br/>canonical URL merge + frozen evidence"] --> T
-    T["Optional article_title helper<br/>verified page H1/title"] --> Q
-    Q["Existing driver: serial URL queue"] --> U
-    U["One fresh Hermes context per URL<br/>climate AND actuarial relevance<br/>summary + categories + keywords"] --> V
-    V["Validate and save this URL result"] --> N{"All URLs complete?"}
-    N -->|more URLs| Q
-    N -->|failed URL| R["Keep successful checkpoints<br/>resume unfinished URLs"]
-    R --> Q
-    N -->|yes| E["One executive-summary invocation<br/>qualified article summaries only"]
-    E --> F["Finalize: weekly_monitor + orchestrator<br/>Markdown + sidecar + URL-state transaction"]
-    F --> L["Hermes wrapper verifies report hash + sidecar<br/>append monitor ledger, then complete slot"]
-    L --> D["climate_delivery<br/>PDF + manifest + email"]
-    F --> W["Isolated publisher<br/>rolling content PR"]
-    W --> M["Review + merge + controlled deploy"]
-    M --> G["climate_registry<br/>gated weekly sync"]
+flowchart LR
+    A["web_listening sites"] --> R
+    B["Hermes search + governed extraction"] --> R
+    P["Management PDF import"] --> R
+    R["Registry<br/>canonical article + immutable evidence + all origins"] --> K
+    K["Pinned intake manifest + snapshots<br/>existing writer / shared Wiki rendering"] --> C["Wiki + RAG + Chat"]
+    R --> Q["Frozen date-range report"]
+    C --> Q
+    Q --> F["HTML/PDF<br/>existing versioned renderer"]
+    R --> M["Existing serial monitor<br/>article summaries + executive"]
+    M --> S["sources/<br/>report + semantic sidecar"]
+    S --> E["climate_delivery<br/>PDF/manifest + retained email"]
+    S --> G["Isolated publisher<br/>rolling content PR"]
+    R -->|Public Registry snapshot| G
+    G --> D["Human review + merge + deploy"]
+    D --> V["Registry report association<br/>exact identity and coverage gates"]
+    H["Management parameters/prompts + Hermes"] -. "independent jobs" .-> K
+    H -.-> M
+    H -.-> Q
 ```
+
+Registry stores article identity and provenance. `sources/` remains the
+append-mostly report archive. Runtime intake generations are rebuilt from their
+validated manifests and pinned snapshots, using the existing single writer.
+Same-name runtime pages take precedence; missing pages fall back to public Wiki
+history. The Public Registry remains the publisher input; runtime intake does
+not promote its database into it. Range reports reuse the same frozen inputs
+and renderer from Chat or the independent CLI.
+The future IAA CSC template module is tracked in [#189](https://github.com/ferryhe/climate_monitor_wiki/issues/189)
+and follows the user's `docs/input` samples; this change keeps current PDF formats.
 
 Each URL sees only its own evidence. The relevance rules are maintained
 separately but included in the same invocation as summary, categories and
@@ -212,12 +228,11 @@ stream failure.
 
 ### Module configuration
 
-- Search wording: `monitoring/jobs/weekly-climate-monitor-08h/prompts/pillar-b-search-v1.prompt.md`.
+- Managed acquisition/search wording: the versioned saved task in `/manage`; tracked prompt files seed the bootstrap. Explicit legacy prompt paths remain compatibility overrides.
 - Relevance rules: the same directory's `article-relevance-v1.prompt.md`.
 - Categories/semantic constraints: `monitoring/taxonomies/article_categories_v1.yaml`, validated against its versioned identity.
 - Page titles: `python -m climate_monitor.article_title saved-page.html`; disable in the monitor with `--no-page-titles` on a fresh prepare.
-- Article/executive response instructions currently remain in the existing CLI;
-  the pinned `weekly-monitor-v1.prompt.md` retains its contract/provenance role.
+- Article/executive instructions: the same saved task exposes `article_summary` and `executive_summary`, alongside acquisition, search and relevance prompts. Runs freeze these versions and hashes; see [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md#prompt-templates).
   Not every prompt section has been externalized.
 
 Keep these modules in the existing driver path. Reuse upstream public acquisition
@@ -335,7 +350,7 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 ├── wiki/              # Derived report pages, topics, and Obsidian vault content
 ├── showcase/          # Three-tab static operator workspace
 ├── agentic_wiki/      # Mixed-corpus retrieval over wiki + raw sources
-├── climate_registry/  # Historical Registry, enrichment, weekly sync and restore
+├── climate_registry/  # Article storage, intake, Wiki projection, range snapshots and restore
 ├── climate_delivery/  # Summary/PDF/manifest and retained email delivery
 ├── scripts/           # Monitor, publisher, reload, Registry and QA entrypoints
 ├── tests/             # API, transaction, browser, and regression tests

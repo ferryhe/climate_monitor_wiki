@@ -519,7 +519,7 @@ def test_later_compose_file_cannot_change_protected_mount_safety(
     assert actual_calls == []
 
 
-def test_only_the_independent_pdf_writer_may_mount_the_registry_writable(tmp_path):
+def test_public_registry_mount_remains_read_only_for_the_pdf_writer(tmp_path):
     source = tmp_path / "registry"
     source.mkdir()
     model = {"services": {"wiki": {"environment": {}, "volumes": [{
@@ -536,6 +536,10 @@ def test_only_the_independent_pdf_writer_may_mount_the_registry_writable(tmp_pat
     writer = model["services"].pop("wiki")
     model["services"]["pdf-intake-writer"] = writer
     writer["environment"] = {"CLIMATE_PDF_INTAKE_WRITER": "1"}
+    with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
+        safe_compose._validate_final_model(model)
+
+    writer["volumes"][0]["target"] = "/runtime/wiki"
     safe_compose._validate_final_model(model)
 
 

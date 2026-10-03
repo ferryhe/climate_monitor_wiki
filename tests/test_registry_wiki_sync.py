@@ -265,6 +265,38 @@ def test_registry_sync_generates_confirmed_and_source_only_pages(tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM article_content_versions WHERE article_id='article-confirmed'").fetchone()[0] == 2
 
 
+def test_registry_sync_removes_only_generated_articles_absent_from_projection(tmp_path):
+    sources, wiki = tmp_path / "sources", tmp_path / "wiki"
+    sources.mkdir()
+    wiki.mkdir()
+    database = tmp_path / "registry.sqlite3"
+    _registry(database)
+    sync_source_wiki(
+        source_dir=sources, wiki_dir=wiki, cadence="weekly",
+        registry_database=database,
+    )
+    retired = wiki / "article-article-confirmed.md"
+    retained = wiki / "article-article-pdf-only.md"
+    manual = wiki / "article-manual.notes.md"
+    manual.write_text("manual page", encoding="utf-8")
+    assert retired.is_file() and retained.is_file()
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE articles SET publication_eligible=0, document_kind='landing_page' "
+            "WHERE article_id='article-confirmed'"
+        )
+    result = sync_source_wiki(
+        source_dir=sources, wiki_dir=wiki, cadence="weekly",
+        registry_database=database,
+    )
+
+    assert not retired.exists()
+    assert retained.is_file()
+    assert manual.read_text(encoding="utf-8") == "manual page"
+    assert retired.name in result.pruned_pages
+
+
 def test_registry_pdf_occurrence_chunks_keep_distinct_headings_and_citations(tmp_path):
     sources, wiki = tmp_path / 'sources', tmp_path / 'wiki'
     sources.mkdir()

@@ -1,8 +1,10 @@
 # Climate Monitor Pipeline — Reference
 
-The program and artifact map for the modular weekly pipeline. See
+The program and artifact map for the modular monitor and article-first pipeline. See
 [README.md](README.md#new-flow) for the flowchart and
 [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md) for editable prompts and scheduling.
+
+See [Article-first architecture](docs/article-first-architecture.md) for the shared Registry-to-Wiki/RAG boundary, shared intake activation and independent report tasks and deferred IAA CSC template requirements. Registry article ingestion precedes reports; the post-deploy Registry slot associates published reports and checks exact identity rather than ingesting articles for the first time.
 
 Weekly finalization writes `acquisition-report-YYYY-MM-DD.md` into the run's
 `report-staging/` directory and returns `acquisition_report_path` in its JSON
@@ -44,7 +46,10 @@ path, not competing report generators.
 | Publication | `publish_weekly_reports.py`, `weekly_wiki_refresh.sh` | Unpublished reports → isolated clone, regenerated `sources/`/`wiki/`, rolling content PR |
 | Deployment | `reload_and_smoke_test.py` and controlled deployment runbook | Reviewed/merged content and code → deployed corpus and verified API |
 | Registry | `weekly_registry_refresh.py`, `climate_registry.weekly` | Exact deployed report + delivery identity → candidate sync, coverage checks, backup/promotion |
-| Web / retrieval | `api_server.py`, `agentic_wiki/`, `showcase/` | Published corpus + Registry → historical reports, article details, cited chat |
+| Registry Wiki rendering | `climate_registry/wiki.py` | One consistent Registry snapshot → article pages and PDF source observations |
+| Runtime knowledge activation | `scripts/run_pdf_intake_writer.py`, `climate_registry.pdf_pipeline` | Validated web/PDF intake manifest + pinned snapshots → fresh runtime overlay via the existing single writer, reload and active pointer |
+| Date-range PDF | `scripts/generate_range_report.py`, `climate_registry.range_reports` | Explicit dates + consistent Public snapshot + validated active overlay → the same frozen inputs and renderer used by Chat |
+| Web / retrieval | `api_server.py`, `agentic_wiki/`, `showcase/` | Published reports + active Registry projection → historical reports, article details, cited chat |
 
 Module paths without a directory prefix are under `climate_monitor/`. Upstream
 reader and tool-selection policy belongs to `web_listening`; climate does not implement a second

@@ -61,11 +61,9 @@ from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
     list_pdf_batches,
     load_active_projection,
-    load_projection_manifest,
     read_pdf_batch,
     retry_pdf_batch,
 )
-from climate_registry.web_ingest_pipeline import _active_pdf_ids, _active_pdf_snapshot
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -73,6 +71,7 @@ from climate_registry.range_reports import (
     freeze_range_report,
     is_report_clarification,
     load_range_report,
+    load_active_range_overlay,
     render_range_report_html,
     resolve_report_followup,
     resolve_report_route,
@@ -147,57 +146,10 @@ def _selected_pdf_projection() -> tuple[Path | None, dict[str, Any] | None]:
 
 def _range_report_overlay(
 ) -> tuple[RegistryReader | None, RegistryReader | None, dict[str, Any] | None]:
-    if PDF_RUNTIME_WIKI_DIR is None:
-        return None, None, None
-    generation, metadata = _selected_pdf_projection()
-    if generation is None and metadata is None:
-        return None, None, {"web_items": [], "pdf_occurrence_ids": []}
-    manifest = load_projection_manifest(generation, metadata)
-    if manifest is None:
-        pdf_ids = _active_pdf_ids(generation, manifest)
-        if not pdf_ids:
-            raise RegistryContractError("active legacy PDF projection has no validated identities")
-        try:
-            snapshot_path, _ = _active_pdf_snapshot(
-                PDF_RUNTIME_WIKI_DIR, metadata, pdf_ids,
-            )
-            pdf_reader = RegistryReader(snapshot_path, repository_root=ROOT)
-            with pdf_reader.connect() as connection:
-                found = {
-                    str(row["occurrence_id"])
-                    for row in connection.execute(
-                        "SELECT occurrence_id FROM pdf_intake_article_occurrences"
-                    )
-                    if row["occurrence_id"] in pdf_ids
-                }
-        except (OSError, RuntimeError, RegistryContractError) as exc:
-            raise RegistryContractError("active legacy PDF projection is invalid") from exc
-        if found != pdf_ids:
-            raise RegistryContractError("active legacy PDF projection is invalid")
-        return None, pdf_reader, {
-            "web_items": [], "pdf_occurrence_ids": sorted(pdf_ids),
-        }
-    expected_parent = (PDF_RUNTIME_WIKI_DIR / "registry-snapshots").resolve()
-
-    def selected(kind: str, required: bool) -> RegistryReader | None:
-        raw_path = metadata.get(f"{kind}_registry_snapshot")
-        raw_sha256 = metadata.get(f"{kind}_registry_sha256")
-        if not raw_path and not required:
-            return None
-        snapshot = Path(str(raw_path or "")).resolve()
-        if (
-            snapshot.parent != expected_parent
-            or not snapshot.is_file()
-            or not isinstance(raw_sha256, str)
-            or hashlib.sha256(snapshot.read_bytes()).hexdigest() != raw_sha256
-        ):
-            raise RegistryContractError("active intake Registry projection is invalid")
-        return RegistryReader(snapshot, repository_root=ROOT)
-
-    return (
-        selected("web", bool(manifest["web_items"])),
-        selected("pdf", bool(manifest["pdf_occurrence_ids"])),
-        manifest,
+    return load_active_range_overlay(
+        PDF_RUNTIME_WIKI_DIR,
+        _configured_pdf_queue(),
+        repository_root=ROOT,
     )
 
 

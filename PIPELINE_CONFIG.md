@@ -60,6 +60,60 @@ from successful governed exploration and stored with changing SiteState on
 persistent runtime storage outside the production checkout. Check the effective
 `CLIMATE_MANAGED_STATE_DIR` before a live run; the code default is inside the repo.
 
+## Independent article-library jobs
+
+[Article-first architecture](docs/article-first-architecture.md) defines the
+Registry, Wiki/RAG and report boundaries. Manual **Start ingest-only run** in
+`/manage` uses the normal acquisition and immutable batch, without producing a
+weekly report. The existing `scripts/run_pdf_intake_writer.py` consumes both web
+activation and PDF intake requests. It remains the only runtime writer, with the
+same `intake-writer` lock, activation handshake, status and retry rules.
+
+The runtime generation is rebuilt from its validated manifest and pinned web/PDF
+snapshots. It overlays same-name public Wiki pages; missing pages continue to use
+the public history. Runtime configuration does not promote the Writer DB into the
+Public Registry. Existing PDF-named configuration fields remain compatible.
+
+The writer service uses the existing environment: `CLIMATE_REGISTRY_WRITER_DB`,
+`CLIMATE_REGISTRY_BACKUP_DIR`, `CLIMATE_PDF_INTAKE_QUEUE_DIR`,
+`CLIMATE_PDF_RUNTIME_WIKI_DIR`, `CLIMATE_PDF_RELOAD_URL` and `RELOAD_TOKEN`.
+Keep the token in environment configuration. In the optional import Compose
+configuration, the writer uses the existing `climate_runtime` volume and private
+Runtime Registry; it must not writable-mount the Public Registry host directory.
+The site and publisher read Public history independently of Runtime activation.
+See [the import deployment recipe](docs/deployment.md#explicit-management-pdf-imports).
+For one queued job:
+
+```bash
+python scripts/run_pdf_intake_writer.py --once
+```
+
+`scripts/generate_range_report.py` independently creates date-range HTML/PDF with
+Chat's frozen inputs and the existing renderer. `--runtime-dir` and `--queue-dir`
+can select an explicit runtime; by default the API's existing
+`CLIMATE_RUNTIME_WIKI_DIR` / `CLIMATE_INTAKE_QUEUE_DIR` names and PDF compatibility
+names are used. Both must be configured together. It reads the Public/base Registry
+plus the validated active runtime overlay when configured. It never acquires,
+writes Registry, publishes Git, sends mail or installs jobs. Automatic email
+continues to use the existing weekly `climate_delivery` contract.
+
+```bash
+python scripts/generate_range_report.py \
+  --database "$CLIMATE_REGISTRY_DB" \
+  --artifact-root "$CLIMATE_RANGE_REPORT_DIR" \
+  --start-date 2026-09-14 --end-date 2026-09-27
+```
+
+These are independent entrypoints, not additional installed slots. Keep the
+four-slot schedule and monitor/publisher gap until the actual Hermes jobs and
+timezone are verified and a cutover is authorized. Consumers use successful
+artifact identities rather than assuming an earlier slot completed.
+
+The IAA CSC template module is tracked in [#189](https://github.com/ferryhe/climate_monitor_wiki/issues/189)
+and follows the reference PDFs in `docs/input` after this integration. Current
+formats remain in use. Templates consume frozen report data and own neither
+acquisition, Registry writes nor SMTP.
+
 ## Prompt Templates
 
 The one versioned state exposes exactly `acquisition_task`, `search_guidance`,

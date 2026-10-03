@@ -830,6 +830,26 @@ class WikiKnowledgeBase:
             sections = [(title, [markdown])]
         return sections
 
+    def _split_registry_pdf_sections(
+        self, markdown: str, title: str
+    ) -> list[tuple[str, list[str]]]:
+        sections: list[tuple[str, list[str]]] = []
+        heading, lines, in_pdf = title, [], False
+        for line in markdown.splitlines():
+            markdown_heading = re.match(r"^(#{1,4})\s+(.+?)\s*$", line)
+            starts_pdf = line.startswith("## PDF report observation:")
+            ends_pdf = line.startswith("## Acquisition observation:")
+            if markdown_heading and (not in_pdf or starts_pdf or ends_pdf):
+                if lines:
+                    sections.append((heading, lines))
+                heading, lines = markdown_heading.group(2).strip(), [line]
+                in_pdf = starts_pdf
+            else:
+                lines.append(line)
+        if lines:
+            sections.append((heading, lines))
+        return sections
+
     def _split_source_sections(self, doc: WikiDocument) -> list[tuple[str, list[str]]]:
         blocks: list[tuple[str, list[str]]] = []
 
@@ -880,18 +900,8 @@ class WikiKnowledgeBase:
         )
 
     def _chunk_document(self, doc: WikiDocument) -> list[WikiChunk]:
-        if doc.file == "registry-pdf-intake-observations.md":
-            sections: list[tuple[str, list[str]]] = []
-            heading, lines = doc.title, []
-            for line in doc.markdown.splitlines():
-                if line.startswith("## PDF report observation:"):
-                    if lines:
-                        sections.append((heading, lines))
-                    heading, lines = line[3:].strip(), [line]
-                else:
-                    lines.append(line)
-            if lines:
-                sections.append((heading, lines))
+        if "## PDF report observation:" in doc.markdown:
+            sections = self._split_registry_pdf_sections(doc.markdown, doc.title)
         else:
             sections = (
                 self._split_source_sections(doc)

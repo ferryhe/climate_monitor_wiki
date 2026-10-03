@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import tempfile
 import time
@@ -24,6 +23,7 @@ from .pdf_pipeline import (
     load_projection_manifest,
 )
 from .persistent import _file_sha256, _read_only_connection, _validate_database
+from .wiki import render_runtime_registry
 
 
 WEB_ACTIVATION_REQUEST_SCHEMA = "climate-web-activation-request.v1"
@@ -315,32 +315,6 @@ def _resolve_items(database: Path, allowlist: list[dict[str, Any]]) -> list[dict
     return resolved
 
 
-def _render_web_page(item: dict[str, Any]) -> str:
-    policy = item["display_policy"]
-    blocks = [
-        f"# {item['title'] or item['canonical_url']}", "",
-        f"Canonical article: [{item['canonical_url']}]({item['canonical_url']})", "",
-    ]
-    if policy != "metadata_only":
-        content = (
-            item["markdown_content"]
-            if policy == "full_markdown"
-            else " ".join(item["markdown_content"].split())[:500]
-        )
-        blocks.extend(["## Verified article content", "", content, ""])
-    blocks.extend([
-        f"Article citation: [{item['raw_url']}]({item['raw_url']})",
-        f"Registry article ID: {item['article_id']}",
-        f"Registry content version: {item['content_version_id']}",
-        f"Content SHA-256: {item['content_sha256']}",
-        f"Acquisition observation: {item['acquisition_item_id']}",
-        f"Publication date: {item['publication_date']}",
-        f"Publication-date evidence: {json.dumps(item['publication_date_evidence'], ensure_ascii=False, sort_keys=True)}", "",
-        "## Acquisition summary", "", item.get("summary") or "No summary was stored for this observation.", "",
-    ])
-    return "\n".join(blocks)
-
-
 class WebIngestPipeline:
     """Retryable post-processing for an already persisted and frozen web batch."""
 
@@ -428,27 +402,22 @@ class WebIngestPipeline:
             registry_sha256 = _snapshot_registry(selected_database, snapshot)
             staging = Path(tempfile.mkdtemp(prefix=f".{generation_id}.", dir=generations))
             try:
-                if active_generation:
-                    for page in active_generation.glob("*.md"):
-                        shutil.copyfile(page, staging / page.name)
-                latest_items: dict[str, dict[str, Any]] = {}
-                for item in resolved_items:
-                    current = latest_items.get(item["article_id"])
-                    if current is None or (
-                        item["discovered_at"], item["acquisition_item_id"]
-                    ) > (
-                        current["discovered_at"], current["acquisition_item_id"]
-                    ):
-                        latest_items[item["article_id"]] = item
-                for item in latest_items.values():
-                    (staging / f"article-{item['article_id']}.md").write_text(
-                        _render_web_page(item), encoding="utf-8"
-                    )
+                render_runtime_registry(
+                    staging,
+                    web_database=snapshot,
+                    pdf_database=Path(pdf_registry_snapshot) if pdf_registry_snapshot else None,
+                    manifest={
+                        "web_items": list(web.values()),
+                        "pdf_occurrence_ids": sorted(pdf_ids),
+                    },
+                )
                 if generation.exists():
                     raise RuntimeError("Wiki generation already exists")
                 os.replace(staging, generation)
             finally:
                 if staging.exists():
+                    import shutil
+
                     shutil.rmtree(staging)
             manifest_sha256 = _write_projection_manifest(
                 generation, generation_id, web_items=list(web.values()), pdf_occurrence_ids=pdf_ids,
