@@ -130,27 +130,28 @@ def list_pdf_batches(queue_dir: Path) -> dict[str, Any]:
 
 
 def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
-    status = read_pdf_batch(queue_dir, batch_id)
-    if status.get("chat_ready") or status.get("stage") != "failed":
+    with exclusive_lock(queue_dir, "intake-writer"):
+        status = read_pdf_batch(queue_dir, batch_id)
+        if status.get("chat_ready") or status.get("stage") != "failed":
+            return status
+        if status.get("error"):
+            failure = {
+                "at": status.get("updated_at"),
+                "attempt": status.get("attempts"),
+                "reason": status["error"],
+            }
+            history = list(status.get("failure_history", []))
+            if not any(
+                item.get("attempt") == failure["attempt"]
+                and item.get("reason") == failure["reason"]
+                for item in history
+                if isinstance(item, dict)
+            ):
+                history.append(failure)
+            status["failure_history"] = history
+        status.update(stage="queued", error=None, updated_at=_now())
+        atomic_write_json(_batch_dir(queue_dir, batch_id) / "status.json", status)
         return status
-    if status.get("error"):
-        failure = {
-            "at": status.get("updated_at"),
-            "attempt": status.get("attempts"),
-            "reason": status["error"],
-        }
-        history = list(status.get("failure_history", []))
-        if not any(
-            item.get("attempt") == failure["attempt"]
-            and item.get("reason") == failure["reason"]
-            for item in history
-            if isinstance(item, dict)
-        ):
-            history.append(failure)
-        status["failure_history"] = history
-    status.update(stage="queued", error=None, updated_at=_now())
-    atomic_write_json(_batch_dir(queue_dir, batch_id) / "status.json", status)
-    return status
 
 
 def load_active_projection(

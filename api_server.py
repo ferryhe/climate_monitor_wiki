@@ -1049,6 +1049,8 @@ def console_retry_pdf_intake_batch(batch_id: str, user: ConsolePrincipal) -> dic
         raise HTTPException(status_code=503, detail=queue[1])
     try:
         return retry_pdf_batch(queue[0], batch_id)
+    except LockStateError as exc:
+        raise HTTPException(status_code=409, detail="PDF batch processing is busy.") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="PDF batch was not found.") from exc
     except ValueError as exc:

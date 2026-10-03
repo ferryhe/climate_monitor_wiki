@@ -15,6 +15,8 @@ from reportlab.pdfgen.canvas import Canvas
 
 from agentic_wiki import AgenticWikiResponder
 from agentic_wiki.wiki_agent import _evidence_excerpt
+from climate_delivery.errors import LockStateError
+from climate_delivery.io import exclusive_lock
 from climate_monitor.pdf_intake import import_pdf_reports
 from climate_registry.pdf_pipeline import (
     PdfIntakePipeline,
@@ -268,6 +270,19 @@ def test_retry_preserves_a_legacy_failure_before_clearing_its_error(tmp_path):
         repository_root=tmp_path / "repository",
     ).process(status["batch_id"])
     assert ready["stage"] == "chat_ready" and ready["failure_history"] == [legacy_failure]
+
+
+def test_retry_does_not_overwrite_a_batch_while_the_writer_is_processing(tmp_path):
+    _, queue, _, _, _, status = _setup(tmp_path)
+    path = queue / status["batch_id"] / "status.json"
+    failed = json.loads(path.read_text(encoding="utf-8"))
+    failed.update(stage="failed", error="RuntimeError: reload unavailable", attempts=1)
+    path.write_text(json.dumps(failed), encoding="utf-8")
+
+    with exclusive_lock(queue, "intake-writer"):
+        with pytest.raises(LockStateError):
+            retry_pdf_batch(queue, status["batch_id"])
+    assert read_pdf_batch(queue, status["batch_id"])["stage"] == "failed"
 
 
 def test_pdf_batch_overview_renders_retained_failure_history():
