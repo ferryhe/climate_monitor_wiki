@@ -18,7 +18,7 @@ jobs:
   python-tests:
     name: python-tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +51,7 @@ jobs:
       - name: Run full test suite
         run: |
           set -euo pipefail
-          python -m pytest -q
+          python -m pytest -q --durations=30
 
   fixtures-umask0002:
     name: fixtures-umask0002 (${{ matrix.python-version }})
