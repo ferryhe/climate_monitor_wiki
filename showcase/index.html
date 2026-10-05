@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/showcase/styles.css" />
+    <link rel="stylesheet" href="/showcase/styles.css?v=meetings-agenda-v8" />
   </head>
   <body>
     <div class="app-shell">
@@ -34,6 +34,17 @@
             aria-selected="true"
           >
             Historical Reports
+          </button>
+          <button
+            id="meetingsTab"
+            class="tabbar__tab"
+            role="tab"
+            type="button"
+            data-view="meetingsView"
+            aria-controls="meetingsView"
+            aria-selected="false"
+          >
+            Meetings
           </button>
           <button
             id="chatTab"
@@ -278,6 +289,45 @@
           </div>
         </section>
 
+        <section id="meetingsView" class="view-panel" role="tabpanel" aria-labelledby="meetingsTab" hidden>
+          <div class="registry-shell">
+            <header class="registry-hero">
+              <div>
+                <p class="panel__eyebrow">Current calendar</p>
+                <h2>Meetings &amp; Key Dates</h2>
+                <p class="registry-hero__subtitle">
+                  Future and ongoing meetings, plus upcoming deadlines. Dates use UTC.
+                </p>
+              </div>
+            </header>
+            <section class="panel">
+              <div class="panel__head">
+                <h3>Current &amp; Upcoming Meetings</h3>
+                <form id="registryMeetingSearchForm" class="registry-filters">
+                  <label class="sr-only" for="registryMeetingSearch">Search meetings</label>
+                  <input id="registryMeetingSearch" class="search-input" type="search" placeholder="Search meeting or host" />
+                  <label class="sr-only" for="registryMeetingVerification">Verification</label>
+                  <select id="registryMeetingVerification" class="search-input">
+                    <option value="">All verification statuses</option>
+                    <option value="unchecked">PDF pending check</option>
+                    <option value="partial">Partially checked</option>
+                    <option value="verified">Verified / collected</option>
+                    <option value="conflict">Conflicting information</option>
+                  </select>
+                  <button class="ghost-button" type="submit">Apply</button>
+                </form>
+              </div>
+              <p id="registryMeetingCounts" class="muted"></p>
+              <div id="registryMeetings" class="registry-list" aria-live="polite"></div>
+              <div class="registry-pagination">
+                <button id="meetingsPrevious" class="ghost-button" type="button">Previous</button>
+                <span id="meetingsPage" class="muted">Page —</span>
+                <button id="meetingsNext" class="ghost-button" type="button">Next</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <section
           id="obsidianView"
           class="view-panel"
@@ -446,6 +496,6 @@ Select a note to preview its markdown source.</pre
       </main>
     </div>
 
-    <script src="/showcase/app.js"></script>
+    <script src="/showcase/app.js?v=meetings-agenda-v14"></script>
   </body>
 </html>

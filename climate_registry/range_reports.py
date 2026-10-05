@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import html
-import io
 import json
 import logging
 import os
@@ -14,34 +13,32 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote, urlsplit
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (
-    BaseDocTemplate,
-    Frame,
-    PageBreak,
-    PageTemplate,
-    Paragraph,
-    Spacer,
+from climate_delivery.templates import render_identity, rendering_metadata, is_render_identity
+from climate_delivery.templates.adapters import (
+    adapt_range_report, range_executive_summary as _executive_summary,
+    meeting_metadata as _meeting_metadata, _date_basis, _range_date_label,
+    _caveats, _key_date_rows, calendar_date_bounds, calendar_details,
 )
-from reportlab.platypus.tableofcontents import TableOfContents
+from climate_delivery.templates.iaa_csc import render_report
+from climate_delivery.errors import GenerationError
 
 from climate_delivery.io import atomic_write_bytes, atomic_write_json, exclusive_lock
 from climate_monitor.meetings import EVENT_TYPES, load_snapshot as load_meeting_snapshot
 from climate_monitor.meetings import query_events
+from climate_monitor.publisher_mapping import publisher_name
 
 from .errors import RegistryBuildError, RegistryInputError
+from .capture import article_body_markdown, article_preview
 from .read_api import RegistryContractError, RegistryError, RegistryReader
 from .wiki import snapshot_registry
 
 
-SCHEMA_VERSION = "climate-range-report-snapshot.v1"
-RENDERER_VERSION = "range-report-v2"
+SCHEMA_VERSION = "climate-range-report-snapshot.v2"
+LEGACY_SCHEMA_VERSIONS = {"climate-range-report-snapshot.v1"}
+RENDERER_VERSION = render_identity()
+LEGACY_RENDERER_VERSIONS = {"range-report-v1", "range-report-v2"}
 TIMEZONE = "UTC"
 MAX_RANGE_DAYS = 366
 _SNAPSHOT_ID = re.compile(r"range-report-[0-9a-f]{24}")
@@ -57,11 +54,20 @@ _REPORT_CREATION = re.compile(
 )
 _REPORT_NOUN = re.compile(r"\b(?:report|briefing|newsletter)\b|(?:报告|简报|周报|月报)", re.IGNORECASE)
 _RELATIVE_DAYS = re.compile(
-    r"(?:last|past|recent)\s+(\d{1,4})\s+days?|最近\s*(\d{1,4})\s*天",
+    r"(?:last|past|recent)\s+(\d{1,4})\s+days?|(?:最近|过去|近)\s*(\d{1,4})\s*天",
+    re.IGNORECASE,
+)
+_RELATIVE_WEEKS = re.compile(
+    r"(?:last|past|recent)\s+(\d{1,4})\s+weeks?|(?:最近|过去|近)\s*(\d{1,4})\s*周", re.IGNORECASE,
+)
+_PERIOD_QUERY = re.compile(
+    r"\bwhat\s+(?:has\s+)?changed\b|有什么(?:新)?(?:变化|更新)"
+    r"|(?:\b(?:list|show|find|query|summarize)\b|查询|列出|查一下|查看|汇总).{0,120}"
+    r"(?:\b(?:items|updates|developments|events|meetings|projects)\b|项目|更新|变化|会议|活动)",
     re.IGNORECASE,
 )
 _FOURTEEN_DAYS = re.compile(
-    r"(?:last|past|recent)\s+(?:two\s+weeks|14\s+days?)|最近\s*(?:两周|十四天|14\s*天)",
+    r"(?:last|past|recent)\s+(?:two\s+weeks|14\s+days?)|(?:最近|过去|近)\s*(?:两周|十四天|14\s*天)",
     re.IGNORECASE,
 )
 _ROUTE_CHOICES = frozenset({"normal_chat", "generate_registry_report"})
@@ -159,12 +165,17 @@ def resolve_report_route(
     text = " ".join(message.split())
     type_safe = (typesafe_router or _typesafe_route)(text)
     explicit_values = _ISO_DATE.findall(text)
+    period_query = bool(_PERIOD_QUERY.search(text)) and (
+        bool(explicit_values) or bool(_FOURTEEN_DAYS.search(text))
+        or bool(_RELATIVE_DAYS.search(text)) or bool(_RELATIVE_WEEKS.search(text))
+    )
     supported_range_request = bool(_REPORT_NOUN.search(text)) and (
         bool(_FOURTEEN_DAYS.search(text))
         or bool(_RELATIVE_DAYS.search(text))
+        or bool(_RELATIVE_WEEKS.search(text))
         or len(explicit_values) == 2
     )
-    report_requested = (
+    report_requested = period_query or (
         type_safe["action"] == "generate_registry_report"
         if type_safe is not None
         else bool(_REPORT_CREATION.search(text)) or supported_range_request
@@ -175,10 +186,12 @@ def resolve_report_route(
     meeting_match = _MEETING_SNAPSHOT_ID.search(text)
     meeting_snapshot_id = meeting_match.group(0) if meeting_match else None
     relative = _RELATIVE_DAYS.search(text)
+    weeks = _RELATIVE_WEEKS.search(text)
     if _FOURTEEN_DAYS.search(text):
         start, end = today - timedelta(days=13), today
-    elif relative:
-        days = int(relative.group(1) or relative.group(2))
+    elif relative or weeks:
+        selected = relative or weeks
+        days = int(selected.group(1) or selected.group(2)) * (1 if relative else 7)
         if not 1 <= days <= MAX_RANGE_DAYS:
             return ReportRoute(
                 "clarify",
@@ -279,6 +292,49 @@ def _day_precision_publication_date(value: Any) -> str | None:
         return None
 
 
+def _collection_timestamp(value: Any) -> tuple[str, str]:
+    if not isinstance(value, str):
+        raise RegistryContractError("invalid Registry collection timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RegistryContractError("invalid Registry collection timestamp") from exc
+    if parsed.tzinfo is None:
+        raise RegistryContractError("Registry collection timestamp has no timezone")
+    normalized = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return normalized, parsed.astimezone(timezone.utc).date().isoformat()
+
+
+def _active_pdf_date_fallback_article_ids(
+    reader: RegistryReader,
+    pdf_occurrence_ids: set[str],
+    activated_web_item_ids: set[str],
+) -> set[str]:
+    """Allow exact linked PDF dates only when no unactivated web item owns the core row."""
+    if not pdf_occurrence_ids:
+        return set()
+    with reader.connect() as connection:
+        linked_articles = {
+            str(row["core_article_id"])
+            for row in connection.execute(
+                """SELECT o.occurrence_id, p.core_article_id, p.confirmation_basis
+                   FROM pdf_intake_article_occurrences o
+                   JOIN pdf_intake_articles p ON p.article_id=o.article_id
+                   WHERE p.confirmation_basis='exact_url_eligible_detail'
+                     AND p.core_article_id IS NOT NULL"""
+            )
+            if row["occurrence_id"] in pdf_occurrence_ids
+        }
+        unactivated_articles = {
+            str(row["article_id"])
+            for row in connection.execute(
+                "SELECT acquisition_item_id, article_id FROM acquisition_items WHERE article_id IS NOT NULL"
+            )
+            if row["acquisition_item_id"] not in activated_web_item_ids
+        }
+    return linked_articles - unactivated_articles
+
+
 def _range_source(
     reader: RegistryReader,
     start_date: str,
@@ -286,6 +342,7 @@ def _range_source(
     *,
     acquisition_item_ids: set[str] | None = None,
     pdf_occurrence_ids: set[str] | None = None,
+    pdf_date_fallback_article_ids: set[str] | None = None,
     additional_evidenced_dates: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Freeze persisted Registry evidence without consulting reports or the web."""
@@ -293,6 +350,11 @@ def _range_source(
     observations: dict[str, list[dict[str, Any]]] = defaultdict(list)
     article_rows: dict[str, dict[str, Any]] = {}
     evidenced_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    publication_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    pdf_publication_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    collection_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    information_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    selected_fetch_ids: set[str] = set()
     all_identities: set[str] = set()
     pdf_observations: list[dict[str, Any]] = []
 
@@ -315,7 +377,8 @@ def _range_source(
             """
             SELECT i.acquisition_item_id, i.article_id, i.raw_url, i.source_name, i.title,
                    i.summary, i.discovered_at, i.origins_json, i.publication_date,
-                   i.publication_date_evidence_json, i.content_version_id,
+                   i.publication_date_evidence_json, i.content_version_id, i.fetch_id,
+                   i.resolved_by_fetch_id,
                    a.canonical_url, a.current_version_id, a.current_content_version_id,
                    a.display_policy, s.display_name AS publisher,
                    av.observed_title AS current_title
@@ -329,16 +392,21 @@ def _range_source(
         for row in acquisition_rows:
             if acquisition_item_ids is not None and row["acquisition_item_id"] not in acquisition_item_ids:
                 continue
+            selected_fetch_ids.add(row["fetch_id"])
+            if row["resolved_by_fetch_id"]:
+                selected_fetch_ids.add(row["resolved_by_fetch_id"])
             article_id = row["article_id"]
             all_identities.add(article_id)
             evidence = _json_object(row["publication_date_evidence_json"], "publication evidence")
             publication_date = _day_precision_publication_date(row["publication_date"])
             if publication_date and evidence:
-                evidenced_dates[article_id].append({
+                date_evidence = {
                     "date": publication_date,
                     "observation_id": row["acquisition_item_id"],
                     "evidence": evidence,
-                })
+                }
+                evidenced_dates[article_id].append(date_evidence)
+                publication_dates[article_id].append(date_evidence)
             if article_id not in article_rows:
                 continue
             origins = _json_list(row["origins_json"], "acquisition origins")
@@ -359,6 +427,58 @@ def _range_source(
             }
             observations[article_id].append(observation)
 
+        successful_fetches = connection.execute(
+            """SELECT fetch_id, article_id, requested_url, final_url, fetched_at
+               FROM article_fetches WHERE fetch_status='success' AND http_status BETWEEN 200 AND 299
+                 AND content_version_id IS NOT NULL ORDER BY fetched_at, fetch_id"""
+        ).fetchall()
+        for row in successful_fetches:
+            if acquisition_item_ids is not None and row["fetch_id"] not in selected_fetch_ids:
+                continue
+            if row["article_id"] not in article_rows:
+                continue
+            collected_at, collected_date = _collection_timestamp(row["fetched_at"])
+            collection_dates[row["article_id"]].append({
+                "date": collected_date,
+                "collected_at": collected_at,
+                "observation_id": row["fetch_id"],
+                "basis": "registry_fetch",
+                "evidence": {"requested_url": row["requested_url"], "final_url": row["final_url"]},
+            })
+
+        has_date_observations = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_date_observations'"
+        ).fetchone() is not None
+        if has_date_observations:
+            for row in connection.execute(
+                """SELECT observation_id, article_id, canonical_url, observation_kind,
+                          observed_at, evidence_json
+                   FROM article_date_observations ORDER BY article_id, observed_at, observation_id"""
+            ):
+                if row["article_id"] not in article_rows:
+                    continue
+                if article_rows[row["article_id"]]["canonical_url"] != row["canonical_url"]:
+                    raise RegistryContractError("article date observation URL differs from Registry identity")
+                evidence = _json_object(row["evidence_json"], "article date evidence")
+                observation = {
+                    "date": None,
+                    "observation_id": row["observation_id"],
+                    "evidence": evidence,
+                }
+                if row["observation_kind"] == "collection":
+                    collected_at, collected_date = _collection_timestamp(row["observed_at"])
+                    observation.update(date=collected_date, collected_at=collected_at,
+                                       basis="web_listening_snapshot")
+                    collection_dates[row["article_id"]].append(observation)
+                elif row["observation_kind"] == "page_information":
+                    publication_date = _day_precision_publication_date(row["observed_at"])
+                    if publication_date is None:
+                        raise RegistryContractError("invalid Registry page information date")
+                    observation.update(date=publication_date, basis="page_information")
+                    information_dates[row["article_id"]].append(observation)
+                else:
+                    raise RegistryContractError("invalid Registry article date observation kind")
+
         has_pdf = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'"
         ).fetchone() is not None
@@ -366,6 +486,7 @@ def _range_source(
             """
             SELECT o.occurrence_id, o.article_id AS pdf_article_id,
                    p.canonical_url, p.title, p.core_article_id, p.confirmation_basis,
+                   p.type_safe_classification_json,
                    o.source_document_sha256, o.page, o.raw_url, o.publication_date,
                    o.content_sha256, o.occurrence_json,
                    d.filename, d.period_start, d.period_end, d.imported_at
@@ -375,6 +496,11 @@ def _range_source(
             ORDER BY o.source_document_sha256, o.occurrence_id
             """
         ).fetchall() if has_pdf else []
+        pdf_documents = {}
+        if has_pdf:
+            pdf_documents = {row["document_sha256"]: _json_object(row["document_json"], "PDF document") or {}
+                for row in connection.execute("SELECT document_sha256, document_json FROM pdf_intake_documents")}
+        from climate_monitor.pdf_intake import report_update_fields
         for row in pdf_rows:
             if pdf_occurrence_ids is not None and row["occurrence_id"] not in pdf_occurrence_ids:
                 continue
@@ -382,6 +508,10 @@ def _range_source(
             if isinstance(article_id, str):
                 all_identities.add(article_id)
             raw = _json_object(row["occurrence_json"], "PDF occurrence") or {}
+            if raw.get("summary_basis") == "verbatim_pdf_calendar_row":
+                continue
+            document = pdf_documents[row["source_document_sha256"]]
+            report_fields = report_update_fields(dict(raw, raw_url=row["raw_url"], page=row["page"]), document)
             evidence_text = raw.get("publication_date_evidence")
             evidence = (
                 {"kind": "pdf_text", "text": evidence_text,
@@ -416,42 +546,67 @@ def _range_source(
                 "publication_date": row["publication_date"],
                 "publication_date_evidence": evidence,
                 "source_observations": source_rows,
+                "report_fields": report_fields,
+                "pdf_classification": _json_object(row["type_safe_classification_json"], "PDF classification") or {},
+                "structured_report": any("IN WINDOW" in page["text"] for page in document.get("pages", [])),
             }
             pdf_observations.append(observation)
             confirmed_link = (
                 row["confirmation_basis"] == "exact_url_eligible_detail"
                 and isinstance(article_id, str)
             )
+            formal_link = confirmed_link and article_id in article_rows
             publication_date = _day_precision_publication_date(row["publication_date"])
             if confirmed_link and publication_date and evidence:
-                evidenced_dates[article_id].append({
+                date_evidence = {
                     "date": publication_date,
                     "observation_id": row["occurrence_id"],
+                    "basis": "pdf_stated_publication_date",
                     "evidence": evidence,
-                })
-            formal_link = (
-                confirmed_link and article_id in article_rows
-            )
+                }
+                evidenced_dates[article_id].append(date_evidence)
+                if formal_link:
+                    pdf_publication_dates[article_id].append(date_evidence)
             if not formal_link:
                 continue
             observations[article_id].append(observation)
         for article_id, values in (additional_evidenced_dates or {}).items():
             if article_id in article_rows:
-                known = {
-                    (item["date"], item["observation_id"])
-                    for item in evidenced_dates[article_id]
-                }
-                evidenced_dates[article_id].extend(
-                    item for item in values
-                    if (item["date"], item["observation_id"]) not in known
-                )
-        selected_ids = {
-            article_id
-            for article_id, values in evidenced_dates.items()
-            if article_id in article_rows
-            and (acquisition_item_ids is None or observations[article_id])
-            and any(start <= date.fromisoformat(item["date"]) <= end for item in values)
-        }
+                for item in values:
+                    basis = item.get("date_basis", "publication_date")
+                    target = (
+                        collection_dates[article_id] if basis == "collection_time"
+                        else information_dates[article_id] if basis == "information_date"
+                        else pdf_publication_dates[article_id] if basis == "pdf_stated_date"
+                        else publication_dates[article_id]
+                    )
+                    identity = (item["date"], item["observation_id"])
+                    if not any((existing["date"], existing["observation_id"]) == identity for existing in target):
+                        target.append(item)
+                    if basis not in {"collection_time", "information_date"}:
+                        evidenced_dates[article_id].append(item)
+        selected_dates: dict[str, tuple[str, dict[str, Any]]] = {}
+        for article_id in article_rows:
+            if acquisition_item_ids is not None and not observations[article_id]:
+                continue
+            collection_values = collection_dates[article_id]
+            candidates = (collection_values or information_dates[article_id]
+                          or publication_dates[article_id]
+                          or (pdf_publication_dates[article_id]
+                              if pdf_date_fallback_article_ids is None
+                              or article_id in pdf_date_fallback_article_ids else []))
+            in_range = [item for item in candidates
+                        if start <= date.fromisoformat(item["date"]) <= end]
+            if not in_range:
+                continue
+            basis = ("collection_time" if collection_values else
+                     "information_date" if information_dates[article_id] else "publication_date")
+            selected = max(
+                in_range,
+                key=lambda item: (item.get("collected_at") or item["date"], item["observation_id"]),
+            )
+            selected_dates[article_id] = (basis, selected)
+        selected_ids = set(selected_dates)
         articles = []
         for article_id in sorted(selected_ids):
             base = article_rows[article_id]
@@ -459,6 +614,25 @@ def _range_source(
                 (item for item in evidenced_dates[article_id]
                  if start <= date.fromisoformat(item["date"]) <= end),
                 key=lambda item: (item["date"], item["observation_id"]),
+            )
+            basis, selected_date = selected_dates[article_id]
+            all_publication_dates = sorted(
+                publication_dates[article_id] or pdf_publication_dates[article_id],
+                key=lambda item: (item["date"], item["observation_id"]),
+            )
+            publication_date = all_publication_dates[-1]["date"] if all_publication_dates else None
+            page_information_values = information_dates[article_id]
+            latest_information_date = (
+                max(page_information_values, key=lambda item: (item["date"], item["observation_id"]))
+                if page_information_values else None
+            )
+            information_date = (
+                latest_information_date["date"] if latest_information_date else None
+            )
+            in_range_collections = sorted(
+                (item for item in collection_dates[article_id]
+                 if start <= date.fromisoformat(item["date"]) <= end),
+                key=lambda item: (item["collected_at"], item["observation_id"]),
             )
             source_items = observations[article_id]
             latest_source = (
@@ -531,9 +705,9 @@ def _range_source(
             if content is not None:
                 policy = base.get("display_policy")
                 if policy == "full_markdown":
-                    content_text = content["markdown_content"]
+                    content_text = article_body_markdown(content["markdown_content"])
                 elif policy == "summary_excerpt":
-                    content_text = " ".join(content["markdown_content"].split())[:500]
+                    content_text = article_preview(content["markdown_content"])
             if acquisition_item_ids is None:
                 title = (
                     base.get("current_title")
@@ -599,7 +773,11 @@ def _range_source(
                 "canonical_url": base["canonical_url"],
                 "title": title,
                 "publisher": base.get("publisher"),
-                "publication_date": exact_dates[0]["date"],
+                "publication_date": publication_date,
+                "information_date": information_date,
+                "date_basis": basis,
+                "range_date": selected_date["date"],
+                "collected_at": selected_date.get("collected_at") if basis == "collection_time" else None,
                 "summary": summary,
                 "categories": categories,
                 "keywords": keywords,
@@ -610,9 +788,23 @@ def _range_source(
                 "provenance": {
                     "publication_date": {
                         "basis": "evidenced_registry_observation",
-                        "selected": exact_dates[0],
+                        "selected": next((item for item in all_publication_dates
+                                           if item["date"] == publication_date), None),
                         "all_in_range": exact_dates,
                     },
+                    "information_date": {
+                        "basis": "publisher_page_information" if latest_information_date else "none",
+                        "selected": latest_information_date,
+                        "all_in_range": sorted(information_dates[article_id],
+                            key=lambda item: (item["date"], item["observation_id"])),
+                    },
+                    "collection_time": {
+                        "selected": selected_date if basis == "collection_time" else None,
+                        "all_in_range": in_range_collections,
+                        "all": sorted(collection_dates[article_id],
+                                      key=lambda item: (item["collected_at"], item["observation_id"])),
+                    },
+                    "date_basis": basis,
                     "title": title_provenance,
                     "summary": semantic_provenance,
                     "categories": semantic_provenance,
@@ -630,6 +822,7 @@ def _range_source(
         pdf_source_updates = []
         pdf_exclusions = {"non_overlapping_coverage": 0, "unknown_coverage": 0}
         seen_pdf_observations: set[tuple[Any, ...]] = set()
+        seen_pdf_updates: dict[tuple[Any, ...], dict[str, Any]] = {}
         for item in pdf_observations:
             identity = (
                 item["document_sha256"], item["page"], item["url"], item["content_sha256"]
@@ -643,26 +836,30 @@ def _range_source(
                 and isinstance(article_id, str)
             )
             formal_link = confirmed_link and article_id in article_rows
-            if (
-                (formal_link and article_id in selected_ids)
-                or (confirmed_link and evidenced_dates[article_id])
-                or (
-                    _day_precision_publication_date(item["publication_date"])
-                    and item["publication_date_evidence"]
-                )
-            ):
+            published = (_day_precision_publication_date(item["publication_date"])
+                if item["publication_date_evidence"] else None)
+            if formal_link and article_id in selected_ids:
+                continue
+            if confirmed_link and not published and article_id and evidenced_dates[article_id]:
+                continue
+            fields = item["report_fields"]
+            if fields is None and (item["structured_report"] or item["pdf_classification"].get("label") == "landing_page"):
+                continue
+            if published and not start <= date.fromisoformat(published) <= end:
                 continue
             period_start = _day_precision_publication_date(item["period_start"])
             period_end = _day_precision_publication_date(item["period_end"])
             if period_start is None or period_end is None or period_start > period_end:
                 pdf_exclusions["unknown_coverage"] += 1
                 continue
-            if date.fromisoformat(period_end) < start or date.fromisoformat(period_start) > end:
+            if not published and (date.fromisoformat(period_end) < start or date.fromisoformat(period_start) > end):
                 pdf_exclusions["non_overlapping_coverage"] += 1
                 continue
-            pdf_source_updates.append({
+            update = {
                 **item,
-                "publication_date_label": "文章发布日期未确认",
+                **(fields or {}),
+                "publication_date": published,
+                "publication_date_label": "PDF-stated publication date" if published else "文章发布日期未确认",
                 "coverage_period": {"start": period_start, "end": period_end},
                 "citations": [{
                     "kind": "pdf_page",
@@ -671,15 +868,31 @@ def _range_source(
                     "page": item["page"],
                     "url": item["url"],
                 }],
-            })
+            }
+            display_key = (item["document_sha256"], item["url"], update["publication_date"],
+                " ".join(update["title"].split()), " ".join((update.get("summary") or "").split()))
+            if fields and display_key in seen_pdf_updates:
+                previous = seen_pdf_updates[display_key]
+                previous["citations"].extend(c for c in update["citations"] if c not in previous["citations"])
+                continue
+            seen_pdf_updates[display_key] = update
+            pdf_source_updates.append(update)
 
-    unknown_ids = sorted(article_id for article_id in all_identities if not evidenced_dates[article_id])
+    unknown_publication_ids = sorted(article_id for article_id in all_identities
+                                     if not evidenced_dates[article_id])
+    unknown_date_ids = sorted(
+        article_id for article_id in all_identities
+        if not (collection_dates[article_id] or information_dates[article_id]
+                or publication_dates[article_id] or evidenced_dates[article_id])
+    )
     return {
         "articles": articles,
         "pdf_source_updates": pdf_source_updates,
         "pdf_source_exclusion_counts": pdf_exclusions,
-        "unknown_publication_date_count": len(unknown_ids),
-        "unknown_publication_date_article_ids": unknown_ids,
+        "unknown_publication_date_count": len(unknown_publication_ids),
+        "unknown_publication_date_article_ids": unknown_publication_ids,
+        "date_unknown_count": len(unknown_date_ids),
+        "date_unknown_article_ids": unknown_date_ids,
     }
 
 
@@ -694,7 +907,7 @@ def _meeting_status(coverage: dict[str, Any], records: list[Any]) -> str:
 def _default_meeting_query_filters() -> dict[str, Any]:
     return {
         "organizer": None, "event_types": sorted(EVENT_TYPES), "start_date": None,
-        "end_date": None, "include_unknown": False, "include_deadlines": False,
+        "end_date": None, "include_unknown": False, "include_deadlines": True,
         "include_cancelled": False, "include_retrospective": False,
     }
 
@@ -709,7 +922,7 @@ def _meeting_payload(
 ) -> dict[str, Any]:
     if snapshot_id is None:
         try:
-            queried = query_events(reader.database, base_date=base_date, timezone_name=TIMEZONE)
+            queried = query_events(reader.database, base_date=base_date, timezone_name=TIMEZONE, include_deadlines=True)
         except (OSError, ValueError, sqlite3.Error) as exc:
             frozen_query = {
                 "schema_version": "climate-meeting-query.v1", "base_date": base_date,
@@ -759,24 +972,16 @@ def _meeting_payload(
 
 
 def _calendar_end_date(item: dict[str, Any]) -> date | None:
-    value, precision = item.get("end_date") or item.get("start_date"), item.get("date_precision")
-    if not isinstance(value, str):
-        return None
-    try:
-        if precision == "day":
-            return date.fromisoformat(value)
-        if precision == "month":
-            year, month = map(int, value.split("-"))
-            return date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
-        if precision == "quarter":
-            year, quarter = int(value[:4]), int(value[-1])
-            month = quarter * 3
-            return date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
-        if precision == "year":
-            return date(int(value), 12, 31)
-    except ValueError:
-        pass
-    return None
+    from climate_monitor.meetings import _date_bounds
+    ends = []
+    for value, precision in ((item.get("end_date") or item.get("start_date"), item.get("date_precision")),
+        (item.get("deadline_date"), "day")):
+        if isinstance(value, str):
+            try:
+                ends.append(_date_bounds(value, precision, end=True))
+            except ValueError:
+                pass
+    return max(ends, default=None)
 
 
 def _pdf_calendar_available(reader: RegistryReader) -> bool:
@@ -790,46 +995,81 @@ def _pdf_calendar_payload(
     reader: RegistryReader,
     *,
     base_date: str,
+    overlay_reader: RegistryReader | None = None,
     activated_pdf_occurrence_ids: set[str] | None = None,
+    activated_calendar_ids: set[str] | None = None,
+    identity_reader: RegistryReader | None = None,
 ) -> dict[str, Any]:
-    try:
-        if not _pdf_calendar_available(reader):
+    def observations(
+        source: RegistryReader,
+        *,
+        allowed_pdf_ids: set[str] | None = None,
+        allowed_calendar_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            if not _pdf_calendar_available(source):
+                return {
+                    "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
+                    "base_date": base_date, "records": [],
+                }
+            allowed = allowed_calendar_ids
+            if allowed_pdf_ids is not None:
+                with source.connect() as connection:
+                    allowed_documents = {
+                        str(row["source_document_sha256"])
+                        for row in connection.execute(
+                            "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_article_occurrences"
+                        )
+                        if row["occurrence_id"] in allowed_pdf_ids
+                    }
+                    if allowed is None:
+                        allowed = {
+                            str(row["occurrence_id"])
+                            for row in connection.execute(
+                                "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_calendar_items"
+                            )
+                            if row["source_document_sha256"] in allowed_documents
+                        }
+            items = source.pdf_calendar_items_all(allowed_occurrence_ids=allowed)
+        except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
             return {
-                "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
+                "status": "unavailable", "coverage": {"status": "unavailable", "error": type(exc).__name__},
                 "base_date": base_date, "records": [],
             }
-        allowed_documents: set[str] | None = None
-        if activated_pdf_occurrence_ids is not None:
-            with reader.connect() as connection:
-                allowed_documents = {
-                    str(row["source_document_sha256"])
-                    for row in connection.execute(
-                        "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_article_occurrences"
-                    )
-                    if row["occurrence_id"] in activated_pdf_occurrence_ids
-                }
-        items: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            result = reader.pdf_calendar_items(page=page, page_size=100)
-            batch = result["items"]
-            items.extend(
-                item for item in batch
-                if allowed_documents is None
-                or item.get("source_document_sha256") in allowed_documents
+        return {
+            "status": "included" if items else "empty", "coverage": {"status": "complete"},
+            "base_date": base_date, "records": items,
+        }
+
+    try:
+        if overlay_reader is None:
+            payload = observations(
+                reader,
+                allowed_pdf_ids=activated_pdf_occurrence_ids,
+                allowed_calendar_ids=activated_calendar_ids,
             )
-            if page >= result["pagination"]["pages"]:
-                break
-            page += 1
+        else:
+            payload = observations(reader)
+            payload = _merge_pdf_calendars(payload, observations(
+                overlay_reader,
+                allowed_pdf_ids=activated_pdf_occurrence_ids,
+                allowed_calendar_ids=activated_calendar_ids,
+            ))
+        if payload["status"] == "unavailable":
+            return payload
+        items = (identity_reader or reader).resolve_pdf_meeting_identities(payload["records"])
     except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
         return {
             "status": "unavailable", "coverage": {"status": "unavailable", "error": type(exc).__name__},
             "base_date": base_date, "records": [],
         }
     base = date.fromisoformat(base_date)
-    records = [item for item in items if (end := _calendar_end_date(item)) is not None and end >= base]
+    from climate_monitor.meeting_fields import collected_pdf_meeting
+    records = [collected_pdf_meeting(item) for item in items]
+    records = [item for item in records if (end := _calendar_end_date(item)) is not None and end >= base]
+    records = [item for item in records if item.get("status") not in {"cancelled", "retrospective"}]
     return {
-        "status": "included" if records else "empty", "coverage": {"status": "complete"},
+        "status": "included" if records else "empty", "coverage": payload["coverage"],
         "base_date": base_date, "records": records,
     }
 
@@ -906,8 +1146,12 @@ def _merge_range_sources(
         set(base["unknown_publication_date_article_ids"])
         | set(overlay["unknown_publication_date_article_ids"])
     ) - set(articles)
+    date_unknown = (
+        set(base.get("date_unknown_article_ids", []))
+        | set(overlay.get("date_unknown_article_ids", []))
+    ) - set(articles)
     return {
-        "articles": sorted(articles.values(), key=lambda item: (item["publication_date"], item["article_id"])),
+        "articles": sorted(articles.values(), key=lambda item: (item["range_date"], item["article_id"])),
         "pdf_source_updates": list(updates.values()),
         "pdf_source_exclusion_counts": {
             key: base["pdf_source_exclusion_counts"].get(key, 0)
@@ -916,6 +1160,8 @@ def _merge_range_sources(
         },
         "unknown_publication_date_count": len(unknown),
         "unknown_publication_date_article_ids": sorted(unknown),
+        "date_unknown_count": len(date_unknown),
+        "date_unknown_article_ids": sorted(date_unknown),
     }
 
 
@@ -924,10 +1170,14 @@ def _merge_pdf_calendars(base: dict[str, Any], overlay: dict[str, Any]) -> dict[
         return base
     if base["status"] == "unavailable":
         return overlay
+    from .information_checks import merge_checked_observation
     records: dict[str, dict[str, Any]] = {}
     for item in [*base["records"], *overlay["records"]]:
         identity = str(item.get("occurrence_id") or item.get("event_id") or _digest(item))
-        records[identity] = item
+        records[identity] = (
+            merge_checked_observation(records[identity], item)
+            if identity in records else item
+        )
     return {
         "status": "included" if records else "empty",
         "coverage": {"status": "complete"},
@@ -999,7 +1249,7 @@ def load_active_range_overlay(
 
     return (
         selected("web", bool(manifest["web_items"])),
-        selected("pdf", bool(manifest["pdf_occurrence_ids"])),
+        selected("pdf", bool(manifest["pdf_occurrence_ids"] or manifest.get("pdf_calendar_occurrence_ids"))),
         manifest,
     )
 
@@ -1035,21 +1285,46 @@ def freeze_range_report(
     }
 
     def selected_dates(source: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
-        return {
-            item["article_id"]: list(
-                item["provenance"]["publication_date"]["all_in_range"]
-            )
-            for item in (source or {}).get("articles", [])
-        }
+        selected = {}
+        for item in (source or {}).get("articles", []):
+            basis = item["date_basis"]
+            if basis == "collection_time":
+                observation = item["provenance"]["collection_time"]["selected"]
+            elif basis == "information_date":
+                observation = item["provenance"]["information_date"]["selected"]
+            else:
+                matching_dates = [
+                    value for value in item["provenance"]["publication_date"]["all_in_range"]
+                    if value["date"] == item["range_date"]
+                ]
+                observation = next(
+                    (value for value in matching_dates
+                     if value.get("basis") != "pdf_stated_publication_date"),
+                    matching_dates[0] if matching_dates else None,
+                )
+            if observation is not None:
+                selected_basis = (
+                    "pdf_stated_date"
+                    if observation.get("basis") == "pdf_stated_publication_date"
+                    else basis
+                )
+                selected[item["article_id"]] = [{
+                    **observation, "date_basis": selected_basis,
+                }]
+        return selected
 
     pdf_overlay = None
-    if pdf_overlay_reader is not None and activated_pdf_ids:
+    if pdf_overlay_reader is not None and (activated_pdf_ids or (overlay_manifest or {}).get("pdf_calendar_occurrence_ids")):
+        pdf_fallback_article_ids = _active_pdf_date_fallback_article_ids(
+            pdf_overlay_reader, activated_pdf_ids, activated_web_ids
+        )
         pdf_overlay = _range_source(
             pdf_overlay_reader,
             start_date,
             end_date,
             acquisition_item_ids=set(),
             pdf_occurrence_ids=activated_pdf_ids,
+            pdf_date_fallback_article_ids=pdf_fallback_article_ids,
         )
     pdf_dates = selected_dates(pdf_overlay)
 
@@ -1103,7 +1378,21 @@ def freeze_range_report(
         meeting = _meeting_payload(
             snapshot_reader, meeting_snapshot_id, base_date=base_date
         )
-        pdf_calendar = _pdf_calendar_payload(snapshot_reader, base_date=base_date)
+        activated_calendar_ids = (
+            set(overlay_manifest["pdf_calendar_occurrence_ids"])
+            if overlay_manifest is not None and "pdf_calendar_occurrence_ids" in overlay_manifest else None
+        )
+        include_pdf_overlay = pdf_overlay_reader is not None and (
+            activated_pdf_ids or activated_calendar_ids
+        )
+        pdf_calendar = _pdf_calendar_payload(
+            snapshot_reader,
+            base_date=base_date,
+            overlay_reader=pdf_overlay_reader if include_pdf_overlay else None,
+            activated_pdf_occurrence_ids=activated_pdf_ids if include_pdf_overlay else None,
+            activated_calendar_ids=activated_calendar_ids if include_pdf_overlay else None,
+            identity_reader=snapshot_reader,
+        )
     if web_overlay is not None:
         source = _merge_range_sources(source, web_overlay)
     if pdf_overlay is not None:
@@ -1112,13 +1401,6 @@ def freeze_range_report(
             pdf_overlay,
             preferred_acquisition_item_ids=activated_web_ids,
         )
-    if pdf_overlay_reader is not None and activated_pdf_ids:
-        overlay_calendar = _pdf_calendar_payload(
-            pdf_overlay_reader,
-            base_date=base_date,
-            activated_pdf_occurrence_ids=activated_pdf_ids,
-        )
-        pdf_calendar = _merge_pdf_calendars(pdf_calendar, overlay_calendar)
     frozen = {
         "schema_version": SCHEMA_VERSION,
         "date_range": {"start": start_date, "end": end_date, "inclusive": True},
@@ -1129,6 +1411,8 @@ def freeze_range_report(
         "pdf_source_exclusion_counts": source["pdf_source_exclusion_counts"],
         "unknown_publication_date_count": source["unknown_publication_date_count"],
         "unknown_publication_date_article_ids": source["unknown_publication_date_article_ids"],
+        "date_unknown_count": source.get("date_unknown_count", 0),
+        "date_unknown_article_ids": source.get("date_unknown_article_ids", []),
         "meeting": meeting,
         "pdf_calendar": pdf_calendar,
     }
@@ -1155,8 +1439,9 @@ def freeze_range_report(
 
 
 def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(value, dict) or value.get("schema_version") not in {SCHEMA_VERSION, *LEGACY_SCHEMA_VERSIONS}:
         raise RangeReportError("invalid range report snapshot")
+    legacy = value["schema_version"] in LEGACY_SCHEMA_VERSIONS
     if value.get("snapshot_id") != snapshot_id:
         raise RangeReportError("invalid range report identity")
     frozen = {key: item for key, item in value.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
@@ -1181,6 +1466,7 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
     meeting = value.get("meeting")
     pdf_calendar = value.get("pdf_calendar")
     unknown_ids = value.get("unknown_publication_date_article_ids")
+    date_unknown_ids = value.get("date_unknown_article_ids")
     try:
         start = date.fromisoformat(date_range["start"])
         end = date.fromisoformat(date_range["end"])
@@ -1200,7 +1486,14 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         or not isinstance(meeting, dict)
         or not isinstance(unknown_ids, list)
         or any(not isinstance(item, str) for item in unknown_ids)
+        or len(set(unknown_ids)) != len(unknown_ids)
         or value.get("unknown_publication_date_count") != len(unknown_ids)
+        or (not legacy and (
+            not isinstance(date_unknown_ids, list)
+            or any(not isinstance(item, str) for item in date_unknown_ids)
+            or len(set(date_unknown_ids)) != len(date_unknown_ids)
+            or value.get("date_unknown_count") != len(date_unknown_ids)
+        ))
     ):
         raise RangeReportError("invalid range report schema")
     seen_ids: set[str] = set()
@@ -1210,14 +1503,53 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         article_id = article.get("article_id")
         publication_date = article.get("publication_date")
         try:
-            published = date.fromisoformat(publication_date)
-        except (TypeError, ValueError) as exc:
+            published = date.fromisoformat(publication_date) if publication_date else None
+            if legacy:
+                range_date = published
+                information_date = None
+            else:
+                range_date_raw = article["range_date"]
+                range_date = date.fromisoformat(range_date_raw)
+                information_date_raw = article.get("information_date")
+                information_date = (
+                    date.fromisoformat(information_date_raw)
+                    if information_date_raw is not None else None
+                )
+        except (KeyError, TypeError, ValueError) as exc:
             raise RangeReportError("invalid range report schema") from exc
+        basis = article.get("date_basis")
+        collected_at = article.get("collected_at")
+        if not legacy:
+            if basis not in {"collection_time", "information_date", "publication_date"}:
+                raise RangeReportError("invalid range report schema")
+            if (
+                publication_date is not None
+                and (published is None or published.isoformat() != publication_date)
+                or range_date.isoformat() != range_date_raw
+                or information_date_raw is not None
+                and (information_date is None or information_date.isoformat() != information_date_raw)
+            ):
+                raise RangeReportError("invalid range report schema")
+            if basis == "collection_time":
+                try:
+                    normalized, collected_date = _collection_timestamp(collected_at)
+                except RegistryContractError as exc:
+                    raise RangeReportError("invalid range report schema") from exc
+                if normalized != collected_at or date.fromisoformat(collected_date) != range_date:
+                    raise RangeReportError("invalid range report schema")
+            elif collected_at is not None:
+                raise RangeReportError("invalid range report schema")
+            if basis == "information_date" and (information_date is None or information_date != range_date):
+                raise RangeReportError("invalid range report schema")
+            if basis == "publication_date" and (published is None or published != range_date):
+                raise RangeReportError("invalid range report schema")
         if (
             not isinstance(article_id, str)
             or not article_id
             or article_id in seen_ids
-            or not start <= published <= end
+            or range_date is None
+            or not start <= range_date <= end
+            or publication_date is not None and published is None
             or not isinstance(article.get("title"), str)
             or not isinstance(article.get("source_observations"), list)
             or not isinstance(article.get("citations"), list)
@@ -1241,11 +1573,14 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
             item.get("document_sha256"), item.get("page"), item.get("url"),
             item.get("content_sha256"),
         )
+        published = _day_precision_publication_date(item.get("publication_date"))
         if (
-            item.get("publication_date_label") != "文章发布日期未确认"
+            (item.get("publication_date_label") != "PDF-stated publication date" if published
+             else item.get("publication_date_label") != "文章发布日期未确认")
+            or (published is not None and (not start <= date.fromisoformat(published) <= end
+                or not item.get("publication_date_evidence")))
             or period_start > period_end
-            or period_end < start
-            or period_start > end
+            or (published is None and (period_end < start or period_start > end))
             or identity in seen_pdf_ids
             or not isinstance(item.get("pdf_article_id"), str)
             or not isinstance(item.get("filename"), str)
@@ -1257,7 +1592,7 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         seen_pdf_ids.add(identity)
     if has_executive_summary and executive_summary != _freeze_executive_summary({
         "articles": articles, "pdf_source_updates": pdf_source_updates,
-    }):
+    }, legacy=legacy):
         raise RangeReportError("invalid frozen executive summary")
     if meeting.get("status") not in {"not_requested", "included", "empty", "partial", "failed", "unavailable"}:
         raise RangeReportError("invalid range report schema")
@@ -1316,29 +1651,49 @@ def load_range_report(artifact_root: str | Path, snapshot_id: str) -> dict[str, 
     return _validate_snapshot(value, snapshot_id)
 
 
-def pdf_path(artifact_root: str | Path, snapshot_id: str) -> Path:
-    return Path(artifact_root).resolve(strict=False) / snapshot_id / f"{snapshot_id}-{RENDERER_VERSION}.pdf"
+def pdf_path(artifact_root: str | Path, snapshot_id: str, renderer_version: str | None = None) -> Path:
+    version = renderer_version or render_identity()
+    if version not in LEGACY_RENDERER_VERSIONS and not is_render_identity(version):
+        raise RangeReportError("unknown report renderer")
+    return Path(artifact_root).resolve(strict=False) / snapshot_id / f"{snapshot_id}-{version}.pdf"
 
 
-def ensure_range_report_pdf(snapshot: dict[str, Any], artifact_root: str | Path) -> Path:
-    """Render a missing current-version PDF from the saved snapshot only."""
-    target = pdf_path(artifact_root, snapshot["snapshot_id"])
+def ensure_range_report_pdf(snapshot: dict[str, Any], artifact_root: str | Path, renderer_version: str | None = None) -> Path:
+    """Reuse exact archived bytes; render only a missing artifact from frozen input."""
+    target = pdf_path(artifact_root, snapshot["snapshot_id"], renderer_version)
     if not target.is_file():
-        render_range_report_pdf(snapshot, target)
+        if renderer_version and renderer_version not in LEGACY_RENDERER_VERSIONS | {render_identity()}:
+            raise RangeReportError("archived report renderer is unavailable")
+        current = pdf_path(artifact_root, snapshot["snapshot_id"])
+        if not current.is_file():
+            render_range_report_pdf(snapshot, current)
+            atomic_write_json(current.with_suffix(".render.json"), {
+                "schema_version": "climate-pdf-render.v1",
+                "input": {"snapshot_id": snapshot["snapshot_id"], "snapshot_sha256": snapshot["snapshot_sha256"]},
+                "rendering": rendering_metadata(),
+                "pdf": {"path": current.name, "sha256": hashlib.sha256(current.read_bytes()).hexdigest()},
+            })
+        if target != current:
+            atomic_write_bytes(target, current.read_bytes())
     return target
 
 
-def _freeze_executive_summary(source: dict[str, Any]) -> list[dict[str, Any]]:
+def _freeze_executive_summary(source: dict[str, Any], *, legacy: bool = False) -> list[dict[str, Any]]:
     """Copy selected stored summaries and their locators into the digest-checked snapshot."""
     points = []
     for article in source["articles"]:
         summary = article.get("summary")
         if isinstance(summary, str) and summary.strip():
-            points.append({
+            point = {
                 "kind": "registry_article", "text": summary,
                 "article_id": article["article_id"], "title": article["title"],
                 "publication_date": article["publication_date"], "citations": article["citations"],
-            })
+            }
+            if not legacy:
+                point.update(date_basis=article.get("date_basis"), range_date=article.get("range_date"),
+                             information_date=article.get("information_date"),
+                             collected_at=article.get("collected_at"))
+            points.append(point)
     for item in source.get("pdf_source_updates", []):
         summary = item.get("summary")
         if isinstance(summary, str) and summary.strip():
@@ -1351,80 +1706,19 @@ def _freeze_executive_summary(source: dict[str, Any]) -> list[dict[str, Any]]:
     return points
 
 
-def _executive_summary(snapshot: dict[str, Any]) -> list[str]:
-    articles = snapshot["articles"]
-    pdf_updates = snapshot.get("pdf_source_updates", [])
-    exclusions = snapshot.get("pdf_source_exclusion_counts", {})
-    start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
-    summary = [f"{len(articles)} evidenced Registry article(s) were published from {start} through {end}."]
-    points = snapshot.get("executive_summary")
-    if points is None:  # Legacy snapshots predate frozen executive-summary points.
-        points = _freeze_executive_summary(snapshot)
-    article_points = [point for point in points if point["kind"] == "registry_article"]
-    pdf_points = [point for point in points if point["kind"] == "pdf_source"]
-    if not articles and not pdf_updates:
-        summary.append("No selected Registry articles or PDF source updates matched this range.")
-    if article_points:
-        summary.extend(
-            f"{point['title']}: {point['text']} (Article ID: {point['article_id']}; "
-            f"publication date {point['publication_date']})." for point in article_points
-        )
-    elif articles:
-        summary.append("No stored Registry article summaries are available for the selected range.")
-    if "pdf_source_updates" in snapshot:
-        summary.append(
-            f"{len(pdf_updates)} PDF source update(s) overlap the range; their article publication dates are unconfirmed."
-        )
-        if pdf_points:
-            summary.extend(
-                f"{point['text']} ({point['filename']}, page {point['page']}, "
-                f"{point['document_sha256']}; article publication date unconfirmed; "
-                f"coverage period {point['coverage_period']['start']} through "
-                f"{point['coverage_period']['end']})."
-                for point in pdf_points
-            )
-        elif pdf_updates:
-            summary.append("No stored PDF source summaries are available for the selected range.")
-        summary.append(
-            f"PDF source observations excluded: {exclusions.get('unknown_coverage', 0)} with unknown coverage; "
-            f"{exclusions.get('non_overlapping_coverage', 0)} with non-overlapping coverage."
-        )
-    if snapshot["unknown_publication_date_count"]:
-        summary.append(
-            f"{snapshot['unknown_publication_date_count']} Registry article(s) with unknown publication dates were excluded."
-        )
-    return summary
-
-
-def _meeting_metadata(meeting: dict[str, Any]) -> list[tuple[str, Any]]:
-    source = meeting.get("source") or ("snapshot" if meeting.get("snapshot_id") else "unavailable")
-    metadata = [("Meeting source", source)]
-    if meeting.get("snapshot_id"):
-        metadata.append(("Meeting snapshot ID", meeting["snapshot_id"]))
-    elif meeting.get("query_id"):
-        metadata.extend([
-            ("Meeting query ID", meeting["query_id"]),
-            ("Meeting query SHA-256", meeting.get("query_sha256") or "unavailable"),
-        ])
-    metadata.extend([
-        ("Meeting query base date", meeting.get("base_date") or "unavailable"),
-        ("Meeting query timezone", meeting.get("timezone") or "unavailable"),
-        ("Meeting coverage", (meeting.get("coverage") or {}).get("status", "unavailable")),
-    ])
-    return metadata
-
-
 def _articles_by_publisher_topic(snapshot: dict[str, Any]) -> dict[str, dict[str, list[tuple[int, dict[str, Any]]]]]:
     grouped: dict[str, dict[str, list[tuple[int, dict[str, Any]]]]] = {}
     for index, item in enumerate(snapshot["articles"], start=1):
-        publisher = item.get("publisher") or "Publisher not recorded"
+        urls = [item.get("canonical_url"), *(citation.get("url") for citation in item.get("citations", []))]
+        publisher = publisher_name(item.get("publisher"), urls)
         categories = [category for category in item.get("categories", []) if category.strip()]
         topic = ", ".join(categories) or "Topic not recorded"
         grouped.setdefault(publisher, {}).setdefault(topic, []).append((index, item))
-    return grouped
+    return {publisher: dict(sorted(topics.items(), key=lambda pair: pair[0].casefold()))
+            for publisher, topics in sorted(grouped.items(), key=lambda pair: pair[0].casefold())}
 
 
-def render_range_report_html(snapshot: dict[str, Any]) -> str:
+def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str | None = None) -> str:
     esc = lambda value: html.escape(str(value), quote=True)
     start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
     grouped_articles = _articles_by_publisher_topic(snapshot)
@@ -1448,7 +1742,7 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
         "</head><body>",
         f"<h1>Climate Registry report</h1><p class=\"meta\"><strong>{esc(start)} through {esc(end)}</strong> "
         f"(inclusive, {TIMEZONE})<br>Snapshot <code>{esc(snapshot['snapshot_id'])}</code><br>"
-        f"Renderer <code>{RENDERER_VERSION}</code></p>",
+        f"Renderer <code>{esc(renderer_version or RENDERER_VERSION)}</code></p>",
         "<h2>Contents</h2><ol>"
         '<li><a href="#executive-summary">Executive Summary</a></li>'
         '<li><a href="#key-dates">Key Dates</a></li>'
@@ -1462,6 +1756,11 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
     ]
     meeting = snapshot["meeting"]
     pdf_calendar = snapshot.get("pdf_calendar")
+    from climate_monitor.meeting_fields import merge_meeting_observations
+    calendar_records = merge_meeting_observations(
+        meeting["records"] + (pdf_calendar["records"] if pdf_calendar else []))
+    is_pdf = lambda item: bool(item.get("source_document_sha256") or item.get("pdf_observations"))
+    run_date = datetime.fromisoformat(snapshot["created_at"].replace("Z", "+00:00")).date().isoformat() if snapshot.get("created_at") else None
     blocks.append('<h2 id="key-dates">Key Dates</h2>')
     if meeting["status"] == "not_requested" and pdf_calendar is None:
         blocks.append("<p>Key dates were not captured in this snapshot.</p>")
@@ -1473,265 +1772,232 @@ def render_range_report_html(snapshot: dict[str, Any]) -> str:
         blocks.append(f"<p>{label} status: {esc(meeting['status'])}.<br>{metadata}</p>")
         if meeting["status"] == "empty":
             blocks.append("<p>No future meetings.</p>")
-        for record in meeting["records"]:
-            blocks.append(
-                f"<p><strong>{esc(record.get('name', 'Meeting'))}</strong>: "
-                f"{esc(record.get('start_date') or record.get('raw_time_text') or 'date unavailable')}</p>"
-            )
+        for record in calendar_records:
+            if is_pdf(record):
+                continue
+            for when, event, institution, relevance, source in _key_date_rows(record, run_date):
+                urls = re.findall(r"https?://[^\s]+", source)
+                event_html = (
+                    f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{esc(event)}</a>'
+                    if urls else esc(event)
+                )
+                details = calendar_details(record)
+                details_html = (
+                    "<br><strong>Calendar details:</strong> " + "<br>".join(esc(value) for value in details)
+                    if details else ""
+                )
+                marker = " · PDF import" if "PDF import" in source else ""
+                blocks.append(
+                    f"<p><strong>{event_html}</strong>: {esc(when)}<br>"
+                    f"Institution: {esc(institution)}; Relevance: {esc(relevance)}{esc(marker)}{details_html}</p>"
+                )
     if pdf_calendar is not None:
         blocks.append(f"<p>PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.</p>")
-        records = pdf_calendar["records"]
+        records = [item for item in calendar_records if is_pdf(item)]
+        calendar_kind = lambda item: item.get("kind") or next(
+            (source.get("kind") for source in item.get("pdf_observations", []) if source.get("kind")), None)
         for heading, kinds in (("PDF Calendar Dates", {"event"}), ("PDF Deadlines", {"deadline"}), ("Other PDF Key Dates", None)):
-            selected = [item for item in records if (item.get("kind") in kinds if kinds else item.get("kind") not in {"event", "deadline"})]
+            selected = [item for item in records if (calendar_kind(item) in kinds if kinds else calendar_kind(item) not in {"event", "deadline"})]
             if selected:
                 blocks.append(f"<h3>{heading}</h3><ul>")
                 for item in selected:
-                    blocks.append(
-                        f"<li><strong>{esc(item.get('name') or 'PDF key date')}</strong>: {esc(item.get('raw_date') or item.get('end_date'))} "
-                        f"({esc(item.get('source_filename'))}, page {esc(item.get('page'))}, <code>{esc(item.get('source_document_sha256'))}</code>)</li>"
-                    )
+                    for when, event, institution, relevance, source in _key_date_rows(item, run_date):
+                        urls = re.findall(r"https?://[^\s]+", source)
+                        event_html = (
+                            f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{esc(event)}</a>'
+                            if urls else esc(event)
+                        )
+                        details = calendar_details(item)
+                        details_html = (
+                            "<br><strong>Calendar details:</strong> " + "<br>".join(esc(value) for value in details)
+                            if details else ""
+                        )
+                        marker = " · PDF import" if "PDF import" in source else ""
+                        blocks.append(
+                            f"<li><strong>{event_html}</strong>: {esc(when)}<br>"
+                            f"Institution: {esc(institution)}; Relevance: {esc(relevance)}{esc(marker)}{details_html}</li>"
+                        )
                 blocks.append("</ul>")
     blocks.append('<h2 id="updates">Updates by Publisher / Institution</h2>')
+    display_number = 0
     for group_index, (publisher, topics) in enumerate(grouped_articles.items(), start=1):
         blocks.append(f'<h3 id="publisher-{group_index}">{esc(publisher)}</h3>')
         for topic_index, (topic, items) in enumerate(topics.items(), start=1):
             blocks.append(f'<h4 id="publisher-{group_index}-topic-{topic_index}">{esc(topic)}</h4>')
             for index, item in items:
+                display_number += 1
+                date_label = (
+                    _range_date_label(item)
+                    if item.get("date_basis")
+                    else f"publication date {item.get('publication_date') or 'unconfirmed'}"
+                )
+                other_dates = []
+                if item.get("publication_date") and item.get("date_basis") != "publication_date":
+                    other_dates.append(f"Publication date: {item['publication_date']}")
+                if item.get("information_date") and item.get("date_basis") != "information_date":
+                    other_dates.append(f"Information date: {item['information_date']}")
+                other_dates_html = "<br>".join(esc(value) for value in other_dates)
+                date_details = f"<strong>Date used for range:</strong> {esc(date_label)}<br>"
+                if other_dates_html:
+                    date_details += other_dates_html + "<br>"
                 blocks.extend([
-                    f'<article id="article-{index}"><h5>{index}. {esc(item["title"])}</h5>',
-                    f"<p><strong>Publication date:</strong> {esc(item['publication_date'])}<br>"
+                    f'<article id="article-{index}"><h5>{display_number}. {esc(item["title"])}</h5>',
+                    f"<p>{date_details}"
                     f"<strong>Article ID:</strong> <code>{esc(item['article_id'])}</code><br>"
                     f"<strong>Content version:</strong> <code>{esc(item['content_version_id'] or 'none')}</code></p>",
                 ])
+                for _key, value in _date_basis(item.get("provenance", {}).get("publication_date")):
+                    blocks.append(f"<p><strong>Publication date provenance:</strong> {esc(value)}</p>")
+                content_sha = item.get("provenance", {}).get("content_version", {}).get("content_sha256")
+                if content_sha:
+                    blocks.append(f"<p><strong>Content SHA-256:</strong> <code>{esc(content_sha)}</code></p>")
                 if item.get("summary"):
                     blocks.append(f"<p>{esc(item['summary'])}</p>")
                 if item.get("content"):
                     blocks.append("".join(f"<p>{esc(part)}</p>" for part in item["content"].split("\n\n") if part.strip()))
+                blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
                 if item["categories"]:
                     blocks.append(f"<p><strong>Categories:</strong> {esc(', '.join(item['categories']))}</p>")
                 if item["keywords"]:
                     blocks.append(f"<p><strong>Keywords:</strong> {esc(', '.join(item['keywords']))}</p>")
                 blocks.append("<h6>Sources</h6><ul>")
-                for citation in item["citations"]:
-                    if citation["kind"] == "url":
-                        url = esc(citation["url"])
-                        blocks.append(f'<li><a href="{url}" rel="noopener noreferrer">{url}</a></li>')
-                    else:
-                        label = f"{citation['filename']}, page {citation['page']}"
-                        if citation.get("url"):
-                            url = esc(citation["url"])
-                            blocks.append(f'<li>{esc(label)} — <a href="{url}" rel="noopener noreferrer">{url}</a></li>')
-                        else:
-                            blocks.append(f"<li>{esc(label)}</li>")
+                citations = item["citations"] or ([{"kind": "url", "url": item["canonical_url"]}] if item.get("canonical_url") else [])
+                for url in dict.fromkeys(c["url"] for c in citations if c.get("url")):
+                    url = esc(url)
+                    blocks.append(f'<li><a href="{url}" rel="noopener noreferrer">{url}</a></li>')
+                if any(c["kind"] in {"pdf", "pdf_page"} for c in citations):
+                    blocks.append("<li>PDF import</li>")
                 blocks.append("</ul></article>")
     pdf_updates = snapshot.get("pdf_source_updates", [])
     if pdf_updates:
         blocks.append("<h2>PDF 来源更新 / PDF Source Updates</h2>")
     for index, item in enumerate(pdf_updates, start=1):
-        coverage = item["coverage_period"]
+        display_number += 1
+        publisher = publisher_name(item.get("publisher"), [item.get("url")])
         blocks.extend([
-            f'<article id="pdf-update-{index}"><h2>{index}. {esc(item["title"])}</h2>',
-            f"<p><strong>{esc(item['publication_date_label'])}</strong><br>"
-            f"<strong>PDF coverage period:</strong> {esc(coverage['start'])} through {esc(coverage['end'])}<br>"
-            f"<strong>File:</strong> {esc(item['filename'])}, page {esc(item['page'])}<br>"
-            f"<strong>SHA-256:</strong> <code>{esc(item['document_sha256'])}</code>",
+            f'<article id="pdf-update-{index}"><h2>{display_number}. {esc(item["title"])}</h2>',
+            f"<p><strong>Publisher / Institution:</strong> {esc(publisher)}</p>",
+            f"<p><strong>{esc(item.get('publication_date') or item['publication_date_label'])}</strong></p>",
         ])
-        if item.get("core_article_id"):
-            blocks.append(
-                f"<br><strong>Core article ID:</strong> <code>{esc(item['core_article_id'])}</code>"
-            )
-        blocks.append("</p>")
         if item.get("summary"):
             blocks.append(f"<p>{esc(item['summary'])}</p>")
+        blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
         url = esc(item["url"])
         blocks.append(
-            f'<h3>Source</h3><p><a href="{url}" rel="noopener noreferrer">{url}</a></p></article>'
+            f'<h3>Source</h3><p><a href="{url}" rel="noopener noreferrer">{url}</a> · PDF import</p></article>'
         )
+    if snapshot.get("cross_cutting_watch"):
+        blocks.append("<h2>Cross-Cutting Watch</h2>")
+        blocks.extend(f"<p>{esc(line)}</p>" for line in snapshot["cross_cutting_watch"])
+    for title, field, columns in (
+        ("Appendix A — Source Coverage", "coverage", ("institution", "status", "detail")),
+        ("Appendix B — Access / Route Corrections", "route_corrections", ("source", "detail")),
+        ("Appendix C — Glossary", "glossary", ("term", "definition")),
+    ):
+        if snapshot.get(field):
+            blocks.append(f"<h2>{esc(title)}</h2><table><thead><tr>" + "".join(f"<th>{esc(column)}</th>" for column in columns) + "</tr></thead><tbody>")
+            for row in snapshot[field]:
+                blocks.append("<tr>" + "".join(f"<td>{esc(row.get(column) or 'Not provided')}</td>" for column in columns) + "</tr>")
+            blocks.append("</tbody></table>")
     blocks.append("</body></html>")
     return "".join(blocks)
 
 
-def _fonts() -> tuple[str, str]:
-    candidates = [
-        (Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")),
-        (Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
-         Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf")),
-        (Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
-         Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf")),
-        (Path("C:/Windows/Fonts/arial.ttf"), Path("C:/Windows/Fonts/arialbd.ttf")),
+def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url: str) -> str:
+    """List the same frozen projects/calendar as the PDF, using Chat Markdown."""
+    report = adapt_range_report(snapshot)
+
+    def plain(value):
+        return " ".join(str(value).split()).replace("|", "│")
+
+    def link(label, url):
+        label = plain(label).replace("[", "(").replace("]", ")")
+        encoded = quote(url, safe=":/?#@!$&'+,;=%")
+        return f"[{label}]({encoded})"
+
+    def sources(citations):
+        return "; ".join(link(url, url) for url in dict.fromkeys(c.url for c in citations if c.url)) or "URL not provided"
+
+    lines = ["# Climate Risk Intelligence Report", f"**Reporting period:** {report.window}",
+        f"**Calendar as at:** {report.run_date} (UTC)",
+        link("Open web report", web_url) + " · " + link("Download PDF", pdf_url),
+        "## Executive Summary", *report.executive_summary, "## Projects in the Reporting Period"]
+    number = 0
+    for pdf_context in (False, True):
+        updates = sorted((u for u in report.updates
+                          if (u.date_basis is None and u.imported_from_pdf and u.publication_date is None) == pdf_context),
+            key=lambda u: (u.institution.casefold(), u.topic.casefold()))
+        if pdf_context:
+            if not updates:
+                continue
+            lines += ["## PDF Source Context - Publication Date Unconfirmed",
+                "These source records overlap the requested period by PDF coverage; they are not confirmed publications inside the date window."]
+        elif not updates:
+            lines.append("No date-confirmed projects matched this reporting period.")
+        previous = None
+        for update in updates:
+            if update.institution != previous:
+                lines.append("### " + plain(update.institution))
+                previous = update.institution
+            number += 1
+            url = next((c.url for c in update.citations if c.url), None)
+            title = link(update.title, url) if url else plain(update.title)
+            if update.date_basis == "collection_time":
+                date_label = "**Collected at:** " + (update.collected_at or "Not recorded")
+            elif update.date_basis == "information_date":
+                date_label = "**Information date:** " + (update.information_date or "Not recorded")
+            elif update.date_basis == "publication_date":
+                date_label = "**Publication date:** " + (update.publication_date or "Not recorded")
+            else:
+                date_label = "**Publication date:** " + (update.publication_date or "Unconfirmed")
+            lines += [f"#### {number}. {title}",
+                date_label + " · **Topic:** " + plain(update.topic)]
+            if update.publication_date and update.date_basis != "publication_date":
+                lines.append("**Publication date:** " + update.publication_date)
+            if update.information_date and update.date_basis != "information_date":
+                lines.append("**Information date:** " + update.information_date)
+            if update.coverage_period and not update.imported_from_pdf:
+                lines.append("**PDF coverage:** " + " through ".join(update.coverage_period))
+            lines += [plain(part) for part in update.paragraphs]
+            lines.append("**Source:** " + sources(update.citations) + (" · PDF import" if update.imported_from_pdf else ""))
+
+    lines += ["## Current Meetings and Key Dates",
+        "Current and future calendar entries are listed as at the date above, independently of the historical project window."]
+    lines += [plain(line) for line in report.date_notes
+        if not line.startswith("Calendar details: ")
+        and not any(token in line for token in (" ID:", "SHA-256:", "timezone:", "base date:"))]
+    calendar_sources = [
+        "- " + plain(line.removeprefix("Calendar details: "))
+        for line in report.date_notes if line.startswith("Calendar details: ")
     ]
-    for regular, bold in candidates:
-        if regular.is_file() and bold.is_file():
-            if "ClimateRangeRegular" not in pdfmetrics.getRegisteredFontNames():
-                pdfmetrics.registerFont(TTFont("ClimateRangeRegular", regular))
-                pdfmetrics.registerFont(TTFont("ClimateRangeBold", bold))
-                pdfmetrics.registerFontFamily(
-                    "ClimateRangeRegular",
-                    normal="ClimateRangeRegular",
-                    bold="ClimateRangeBold",
-                )
-            return "ClimateRangeRegular", "ClimateRangeBold"
-    return "Helvetica", "Helvetica-Bold"
-
-
-class _RangeDocTemplate(BaseDocTemplate):
-    def afterFlowable(self, flowable):
-        if not isinstance(flowable, Paragraph) or flowable.style.name not in {"RangeH1", "RangeH2", "RangeH3"}:
-            return
-        level = {"RangeH1": 0, "RangeH2": 1, "RangeH3": 2}[flowable.style.name]
-        text = flowable.getPlainText()
-        key = f"heading-{self.seq.nextf('heading')}"
-        self.canv.bookmarkPage(key)
-        self.canv.addOutlineEntry(text, key, level=level, closed=False)
-        self.notify("TOCEntry", (level, text, self.page, key))
+    for precise in (True, False):
+        rows = [(i, row) for i, row in enumerate(report.key_dates, 1)
+            if (calendar_date_bounds(row[0])[2] == "day") == precise]
+        if not rows:
+            continue
+        if not precise:
+            lines.append("### Broader Windows - Day Unconfirmed")
+        table = ["| Date(s) | Event | Host | Relevance |", "| --- | --- | --- | --- |"]
+        for index, (when, event, host, relevance, raw_sources) in sorted(rows, key=lambda pair: calendar_date_bounds(pair[1][0])[0] or "9999"):
+            urls = re.findall(r"https?://[^\s]+", raw_sources)
+            event_text = link(event, urls[0]) if urls else plain(event)
+            if "PDF import" in raw_sources:
+                event_text += " · PDF import"
+            table.append("| " + " | ".join((plain(when), event_text, plain(host), plain(relevance))) + " |")
+        lines.append("\n".join(table))
+    if not report.key_dates:
+        lines.append("No current calendar entries are available in this snapshot; see the coverage status above.")
+    lines.append("## Source Notes")
+    lines += list(report.coverage_notes) + calendar_sources
+    lines.append("Dates, summaries and citations are retained from stored evidence. Consult the original sources before relying on individual statements.")
+    return "\n\n".join(lines)
 
 
 def render_range_report_pdf(snapshot: dict[str, Any], output: str | Path) -> None:
-    regular, bold = _fonts()
-    base = getSampleStyleSheet()
-    body = ParagraphStyle(
-        "RangeBody", parent=base["BodyText"], fontName=regular, fontSize=9,
-        leading=13, textColor=colors.HexColor("#33424d"), splitLongWords=True,
-        spaceAfter=5,
-    )
-    h1 = ParagraphStyle(
-        "RangeH1", parent=base["Heading1"], fontName=bold, fontSize=16,
-        leading=20, textColor=colors.HexColor("#0b3d62"), spaceAfter=8,
-    )
-    h2 = ParagraphStyle(
-        "RangeH2", parent=base["Heading2"], fontName=bold, fontSize=12,
-        leading=16, textColor=colors.HexColor("#1f6f8b"), spaceBefore=6, spaceAfter=5,
-    )
-    h3 = ParagraphStyle(
-        "RangeH3", parent=base["Heading3"], fontName=bold, fontSize=10,
-        leading=13, textColor=colors.HexColor("#0b3d62"), spaceBefore=4, spaceAfter=3,
-    )
-    detail_label = ParagraphStyle("RangeLabel", parent=body, fontName=bold, spaceBefore=4, spaceAfter=3)
-    esc = lambda value: html.escape(str(value), quote=True)
-    story: list[Any] = []
-    start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
-    story.extend([
-        Paragraph("CLIMATE REGISTRY RANGE REPORT", h1),
-        Paragraph(f"{esc(start)} through {esc(end)} (inclusive, {TIMEZONE})", h2),
-        Paragraph(f"Snapshot: {esc(snapshot['snapshot_id'])}", body),
-        Paragraph(f"Renderer: {RENDERER_VERSION}", body),
-        Spacer(1, 8 * mm), PageBreak(), Paragraph("Contents", h1),
-    ])
-    toc = TableOfContents()
-    toc.levelStyles = [
-        ParagraphStyle("TOC1", fontName=regular, fontSize=9, leading=13, leftIndent=0),
-        ParagraphStyle("TOC2", fontName=regular, fontSize=8, leading=11, leftIndent=12),
-        ParagraphStyle("TOC3", fontName=regular, fontSize=8, leading=10, leftIndent=24),
-    ]
-    story.extend([toc, PageBreak(), Paragraph("Executive Summary", h1)])
-    story.extend(Paragraph(esc(line), body) for line in _executive_summary(snapshot))
-    meeting = snapshot["meeting"]
-    pdf_calendar = snapshot.get("pdf_calendar")
-    story.append(Paragraph("Key Dates", h1))
-    if meeting["status"] == "not_requested" and pdf_calendar is None:
-        story.append(Paragraph("Key dates were not captured in this snapshot.", body))
-    if meeting["status"] != "not_requested":
-        label = "Meeting query" if meeting.get("source") == "query" else "Meeting snapshot"
-        metadata = "<br/>".join(
-            f"<b>{esc(key)}:</b> {esc(value)}" for key, value in _meeting_metadata(meeting)
-        )
-        story.append(Paragraph(f"{label} status: {esc(meeting['status'])}.<br/>{metadata}", body))
-        if meeting["status"] == "empty":
-            story.append(Paragraph("No future meetings.", body))
-        for record in meeting["records"]:
-            story.append(Paragraph(
-                f"<b>{esc(record.get('name', 'Meeting'))}</b>: "
-                f"{esc(record.get('start_date') or record.get('raw_time_text') or 'date unavailable')}", body
-            ))
-    if pdf_calendar is not None:
-        story.append(Paragraph(
-            f"PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.", body
-        ))
-        for heading, kinds in (("PDF Calendar Dates", {"event"}), ("PDF Deadlines", {"deadline"}), ("Other PDF Key Dates", None)):
-            selected = [item for item in pdf_calendar["records"] if (item.get("kind") in kinds if kinds else item.get("kind") not in {"event", "deadline"})]
-            if selected:
-                story.append(Paragraph(heading, h2))
-                for item in selected:
-                    story.append(Paragraph(
-                        f"<b>{esc(item.get('name') or 'PDF key date')}</b>: {esc(item.get('raw_date') or item.get('end_date'))}<br/>"
-                        f"File: {esc(item.get('source_filename'))}, page {esc(item.get('page'))}<br/>"
-                        f"SHA-256: {esc(item.get('source_document_sha256'))}", body
-                    ))
-    story.append(Paragraph("Updates by Publisher / Institution", h1))
-    for publisher, topics in _articles_by_publisher_topic(snapshot).items():
-        story.append(Paragraph(esc(publisher), h2))
-        for topic, items in topics.items():
-            story.append(Paragraph(esc(topic), h3))
-            for index, item in items:
-                story.append(Paragraph(f"{index}. {esc(item['title'])}", detail_label))
-                story.append(Paragraph(
-                    f"Publication date: {esc(item['publication_date'])}<br/>"
-                    f"Article ID: {esc(item['article_id'])}<br/>"
-                    f"Content version: {esc(item['content_version_id'] or 'none')}", body
-                ))
-                if item.get("summary"):
-                    story.append(Paragraph(esc(item["summary"]), body))
-                if item.get("content"):
-                    for part in item["content"].split("\n\n"):
-                        if part.strip():
-                            story.append(Paragraph(esc(part), body))
-                if item["categories"]:
-                    story.append(Paragraph("Categories: " + esc(", ".join(item["categories"])), body))
-                if item["keywords"]:
-                    story.append(Paragraph("Keywords: " + esc(", ".join(item["keywords"])), body))
-                story.append(Paragraph("Sources", detail_label))
-                for citation in item["citations"]:
-                    if citation["kind"] == "url":
-                        url = esc(citation["url"])
-                        line = f'<link href="{url}" color="#1a73e8">{url}</link>'
-                    else:
-                        line = esc(f"{citation['filename']}, page {citation['page']}")
-                        if citation.get("url"):
-                            url = esc(citation["url"])
-                            line += f' — <link href="{url}" color="#1a73e8">{url}</link>'
-                    story.append(Paragraph(line, body))
-
-    pdf_updates = snapshot.get("pdf_source_updates", [])
-    if pdf_updates:
-        story.append(Paragraph("PDF Source Updates", h1))
-    for index, item in enumerate(pdf_updates, start=1):
-        coverage = item["coverage_period"]
-        story.append(Paragraph(f"{index}. {esc(item['title'])}", h2))
-        metadata = (
-            "Article publication date unconfirmed<br/>"
-            f"PDF coverage period: {esc(coverage['start'])} through {esc(coverage['end'])}<br/>"
-            f"File: {esc(item['filename'])}, page {esc(item['page'])}<br/>"
-            f"SHA-256: {esc(item['document_sha256'])}"
-        )
-        if item.get("core_article_id"):
-            metadata += f"<br/>Core article ID: {esc(item['core_article_id'])}"
-        story.append(Paragraph(metadata, body))
-        if item.get("summary"):
-            story.append(Paragraph(esc(item["summary"]), body))
-        url = esc(item["url"])
-        story.extend([
-            Paragraph("Source", detail_label),
-            Paragraph(f'<link href="{url}" color="#1a73e8">{url}</link>', body),
-        ])
-
-    output = Path(output)
-    buffer = io.BytesIO()
-    document = _RangeDocTemplate(
-        buffer, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
-        topMargin=18 * mm, bottomMargin=20 * mm,
-        title=f"Climate Registry report {start} to {end}",
-        author="Climate Monitor Wiki",
-    )
-    frame = Frame(document.leftMargin, document.bottomMargin, document.width, document.height, id="report")
-
-    def page_footer(pdf_canvas, doc):
-        pdf_canvas.saveState()
-        pdf_canvas.setFont(regular, 8)
-        pdf_canvas.drawString(18 * mm, 10 * mm, f"{snapshot['snapshot_id']} · {RENDERER_VERSION}")
-        pdf_canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {doc.page}")
-        pdf_canvas.restoreState()
-
-    document.addPageTemplates(PageTemplate(id="report", frames=frame, onPage=page_footer))
-    document.multiBuild(story)
-    atomic_write_bytes(output, buffer.getvalue())
+    """Render this saved snapshot with the shared default template."""
+    try:
+        render_report(adapt_range_report(snapshot), output)
+    except GenerationError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise GenerationError("range PDF input is invalid") from exc

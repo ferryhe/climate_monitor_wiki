@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
@@ -43,6 +44,8 @@ def _database(
     *,
     b_published: str = "2026-09-25",
     include_article_a_acquisitions: bool = True,
+    fetched_at: str = NOW,
+    pdf_period: tuple[str | None, str | None] = (None, None),
 ) -> Path:
     database = tmp_path / "registry.sqlite3"
     connection = sqlite3.connect(database)
@@ -114,7 +117,7 @@ def _database(
                    fetch_id, article_id, requested_url, final_url, fetched_at, fetch_status,
                    http_status, content_type, content_version_id)
                VALUES (?, ?, ?, ?, ?, 'success', 200, 'text/markdown', ?)""",
-            (fetch_id, article_id, url, url, NOW, content_id),
+            (fetch_id, article_id, url, url, fetched_at, content_id),
         )
         origins = [{"url": url, "source": "site"}]
         if second_url:
@@ -157,9 +160,9 @@ def _database(
     connection.execute(
         """INSERT INTO pdf_intake_documents(
                document_sha256, source_path, filename, media_type, size_bytes, original_pdf,
-               extracted_text_sha256, document_json, imported_at)
-           VALUES (?, 'C:/input/report.pdf', 'report.pdf', 'application/pdf', ?, ?, ?, '{}', ?)""",
-        (document_sha, len(pdf_bytes), pdf_bytes, "b" * 64, NOW),
+               period_start, period_end, extracted_text_sha256, document_json, imported_at)
+           VALUES (?, 'C:/input/report.pdf', 'report.pdf', 'application/pdf', ?, ?, ?, ?, ?, '{}', ?)""",
+        (document_sha, len(pdf_bytes), pdf_bytes, *pdf_period, "b" * 64, NOW),
     )
     connection.execute(
         "INSERT INTO pdf_intake_document_sources VALUES (?, 'C:/input/report.pdf', 'report.pdf', ?)",
@@ -231,7 +234,11 @@ def _reader(database: Path, tmp_path: Path) -> RegistryReader:
     return RegistryReader(database, repository_root=tmp_path / "application")
 
 
-def _insert_pdf_calendar(database: Path, name: str) -> None:
+def _insert_pdf_calendar(
+    database: Path, name: str, *, raw_date: str = "2 Oct 2026",
+    start_date: str = "2026-10-02", end_date: str = "2026-10-02",
+    source_url: str | None = None,
+) -> str:
     occurrence_id = "calendar-" + _sha(name)[:12]
     with sqlite3.connect(database) as connection:
         document_sha = connection.execute(
@@ -244,20 +251,78 @@ def _insert_pdf_calendar(database: Path, name: str) -> None:
             "page": 2,
             "name": name,
             "kind": "event",
-            "raw_date": "2 Oct 2026",
+            "raw_date": raw_date,
             "date_precision": "day",
-            "start_date": "2026-10-02",
-            "end_date": "2026-10-02",
+            "start_date": start_date,
+            "end_date": end_date,
             "summary": name,
+            "source_urls": [source_url] if source_url else [],
         }
         connection.execute(
             "INSERT INTO pdf_intake_calendar_items VALUES "
-            "(?, ?, ?, 2, ?, 'event', '2 Oct 2026', 'day', "
-            "'2026-10-02', '2026-10-02', ?, ?, NULL, ?)",
+            "(?, ?, ?, 2, ?, 'event', ?, 'day', ?, ?, ?, ?, NULL, ?)",
             (
-                occurrence_id, occurrence_id, document_sha, name, name,
+                occurrence_id, occurrence_id, document_sha, name, raw_date, start_date, end_date, name,
                 _sha(name), json.dumps(item),
             ),
+        )
+    return occurrence_id
+
+
+def _insert_pdf_article(database: Path, article_id: str, url: str, occurrence_id: str, report_date: str) -> None:
+    with sqlite3.connect(database) as connection:
+        document_sha = connection.execute(
+            "SELECT document_sha256 FROM pdf_intake_documents LIMIT 1"
+        ).fetchone()[0]
+        occurrence = {
+            "occurrence_id": occurrence_id, "raw_url": url, "report_date": report_date,
+            "summary": f"Evidence summary for {article_id}",
+        }
+        connection.execute(
+            """INSERT INTO pdf_intake_articles(
+                   article_id, canonical_url, title, type_safe_classification_json, imported_at,
+                   core_article_id, confirmation_basis)
+               VALUES (?, ?, ?, '{"provider":"fixture","label":"article"}', ?, NULL, NULL)""",
+            (article_id, url, article_id, NOW),
+        )
+        connection.execute(
+            """INSERT INTO pdf_intake_article_occurrences VALUES
+               (?, ?, ?, 2, ?, ?, NULL, ?, ?, ?)""",
+            (occurrence_id, article_id, document_sha, url, report_date,
+             _sha(occurrence_id), _sha(article_id), json.dumps(occurrence)),
+        )
+
+
+def _insert_meeting_check(
+    database: Path, occurrence_id: str, *, website_candidate: dict | None = None,
+    canonical_event_id: str | None = None, verification_status: str = "verified",
+    checked_at: str = NOW, run_id: str = "fixture-run", attempt_id: str = "fixture-attempt",
+    source_url: str | None = None,
+) -> None:
+    from climate_registry.information_checks import _sha as check_sha, source_revision
+
+    reader = _reader(database, database.parent)
+    item = next(item for item in reader.pdf_calendar_items_all() if item["occurrence_id"] == occurrence_id)
+    source_url = source_url if source_url is not None else next(iter(item.get("source_urls") or [""]))
+    packet = {
+        "checked_at": checked_at, "access_status": "accessible", "verification_status": verification_status,
+        "reader": {"content_hash": "a" * 64, "final_url": "https://example.org/calendar"},
+        "website_candidate": website_candidate, "canonical_event_id": canonical_event_id,
+    }
+    packet_json = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO meeting_check_runs(
+                   run_id, input_json, input_sha256, created_at, completed_at, status,
+                   item_count, completed_count, error_message)
+               VALUES (?, '{}', ?, ?, ?, 'complete', 1, 1, NULL)""",
+            (run_id, check_sha({}), checked_at, checked_at),
+        )
+        connection.execute(
+            """INSERT INTO meeting_check_attempts VALUES
+               (?, ?, ?, ?, ?, ?, 'accessible', ?, ?, ?)""",
+            (attempt_id, run_id, occurrence_id, source_url, source_revision("meetings", item),
+             checked_at, verification_status, packet_json, check_sha(packet)),
         )
 
 
@@ -345,9 +410,13 @@ def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     )
     assert (hashlib.sha256(database.read_bytes()).hexdigest(), database.stat().st_mtime_ns) == before
 
-    assert [item["article_id"] for item in snapshot["articles"]] == ["article-a", "article-b"]
+    assert [item["article_id"] for item in snapshot["articles"]] == [
+        "article-a", "article-b", "article-unknown",
+    ]
     assert snapshot["unknown_publication_date_count"] == 2
     assert snapshot["unknown_publication_date_article_ids"] == ["article-month", "article-unknown"]
+    assert snapshot["date_unknown_count"] == 1
+    assert snapshot["date_unknown_article_ids"] == ["article-month"]
     assert "pdf-unconfirmed" not in {item["article_id"] for item in snapshot["articles"]}
     assert "pdf-unconfirmed" not in snapshot["unknown_publication_date_article_ids"]
     article = snapshot["articles"][0]
@@ -378,7 +447,9 @@ def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     pdf_text = "\n".join(
         value.extract_text() or "" for value in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
     )
-    assert "article-a" in pdf_text and "content-article-a" in pdf_text
+    assert "article-a" not in pdf_text and "content-article-a" not in pdf_text
+    assert article["article_id"] == "article-a" and article["content_version_id"] == "content-article-a"
+    assert "Long persisted climate evidence" in pdf_text and "PDF import" in pdf_text
     assert "https://example.org/a.pdf" in pdf_text
     escaped = dict(loaded)
     escaped["articles"] = [dict(loaded["articles"][0], title="<script>alert(1)</script>")]
@@ -468,9 +539,9 @@ def test_active_web_identity_survives_linked_pdf_overlay_merge(tmp_path):
         for page in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
     )
     for rendered in (html, pdf_text):
-        assert "content-article-a" in rendered
         assert "https://example.org/a?source=site" in rendered
-        assert "report.pdf, page 7" in rendered
+        assert "report.pdf, page 7" not in rendered and "PDF import" in rendered
+    assert "content-article-a" in html and "content-article-a" not in pdf_text
     assert later_body not in html and later_body not in pdf_text
 
     pdf_only = freeze_range_report(
@@ -533,7 +604,7 @@ def test_pdf_overlay_preserves_authorized_public_article_facts_across_databases(
     html = render_range_report_html(snapshot)
     assert writer_body not in html
     assert "content-article-a" in html
-    assert "report.pdf, page 7" in html
+    assert "report.pdf, page 7" not in html and "PDF import" in html
 
 
 def test_public_pdf_only_article_and_calendar_survive_runtime_modes(tmp_path):
@@ -599,6 +670,9 @@ def test_public_pdf_only_article_and_calendar_survive_runtime_modes(tmp_path):
         assert article["provenance"]["content_version"]["content_version_id"] == (
             "content-article-a"
         )
+        assert article["date_basis"] == "publication_date"
+        assert article["range_date"] == article["publication_date"] == "2026-09-20"
+        assert article["collected_at"] is None
         assert {item["kind"] for item in article["source_observations"]} == {
             "registry_pdf"
         }
@@ -608,8 +682,323 @@ def test_public_pdf_only_article_and_calendar_survive_runtime_modes(tmp_path):
         }
 
 
+@pytest.mark.parametrize("checked_copy", ["public", "runtime"])
+def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
+    tmp_path, monkeypatch, checked_copy,
+):
+    public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
+    public_root.mkdir()
+    runtime_root.mkdir()
+    public_database = _database(public_root, include_article_a_acquisitions=False)
+    runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
+
+    shared_url = "https://pdf.example/shared"
+    _insert_pdf_article(public_database, "public-shared", shared_url, "public-shared-occ", "2026-09-20")
+    _insert_pdf_article(runtime_database, "runtime-shared", shared_url, "runtime-shared-occ", "2026-09-24")
+    _insert_pdf_article(public_database, "public-only", "https://pdf.example/public", "public-only-occ", "2026-09-21")
+    _insert_pdf_article(runtime_database, "runtime-only", "https://pdf.example/runtime", "runtime-only-occ", "2026-09-25")
+    _insert_pdf_article(runtime_database, "runtime-blocked", "https://pdf.example/blocked", "blocked-occ", "2026-09-26")
+
+    public_calendar = {
+        _insert_pdf_calendar(public_database, "Public PDF meeting"),
+        _insert_pdf_calendar(public_database, "Shared PDF meeting"),
+    }
+    shared_calendar = _insert_pdf_calendar(runtime_database, "Shared PDF meeting")
+    runtime_calendar = _insert_pdf_calendar(runtime_database, "Runtime PDF meeting")
+    _insert_pdf_calendar(runtime_database, "Inactive PDF meeting")
+    with sqlite3.connect(runtime_database) as connection:
+        document_sha = connection.execute(
+            "SELECT document_sha256 FROM pdf_intake_documents LIMIT 1"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO pdf_intake_document_sources VALUES (?, 'C:/runtime/report-copy.pdf', 'runtime-copy.pdf', ?)",
+            (document_sha, NOW),
+        )
+    checked_candidate = {
+        "name": "Shared PDF meeting", "event_type": "event", "organizer": "Example Institute",
+        "status": "scheduled", "date_precision": "day", "start_date": "2026-10-10",
+        "end_date": "2026-10-11", "date_evidence": "10-11 October 2026",
+        "timezone": None, "location": None, "online_url": None, "deadline_type": None,
+        "deadline_date": None, "deadline_evidence": None,
+        "relevance_reason": "Verified original website event.",
+    }
+    checked_database = public_database if checked_copy == "public" else runtime_database
+    _insert_meeting_check(
+        checked_database, shared_calendar, website_candidate=checked_candidate,
+        canonical_event_id="event-checked-shared",
+    )
+
+    public_reader = _reader(public_database, public_root)
+    runtime_reader = _reader(runtime_database, runtime_root)
+    manifest = {
+        "pdf_occurrence_ids": ["runtime-shared-occ", "runtime-only-occ"],
+        "pdf_calendar_occurrence_ids": sorted({shared_calendar, runtime_calendar}),
+    }
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: public_reader)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, runtime_reader, manifest))
+
+    article_pages = [api_server.registry_pdf_articles(page_size="2", page=str(page)) for page in ("1", "2")]
+    articles = [item for result in article_pages for item in result["items"]]
+    assert article_pages[0]["pagination"] == {"page": 1, "page_size": 2, "total": 4, "pages": 2}
+    assert len({item["canonical_url"] for item in articles}) == 4
+    shared = next(item for item in articles if item["canonical_url"] == shared_url)
+    assert shared["article_id"] == "public-shared" and shared["occurrence_count"] == 2
+    assert shared["latest_occurrence"]["occurrence_id"] == "runtime-shared-occ"
+    assert all(item["canonical_url"] != "https://pdf.example/blocked" for item in articles)
+    assert {item["canonical_url"] for item in articles} >= {
+        "https://pdf.example/public", "https://pdf.example/runtime",
+    }
+
+    for article_id in ("public-shared", "runtime-shared"):
+        detail = api_server.registry_pdf_article(article_id)
+        assert detail["canonical_url"] == shared_url
+        assert {item["occurrence_id"] for item in detail["occurrences"]} == {
+            "public-shared-occ", "runtime-shared-occ",
+        }
+
+    calendar_pages = [api_server.registry_pdf_calendar(page_size="1", page=str(page))
+                      for page in ("1", "2", "3")]
+    calendar = [item for result in calendar_pages for item in result["items"]]
+    assert calendar_pages[0]["pagination"] == {"page": 1, "page_size": 1, "total": 3, "pages": 3}
+    assert {item["name"] for item in calendar} == {
+        "Public PDF meeting", "Shared PDF meeting", "Runtime PDF meeting",
+    }
+    shared_item = next(item for item in calendar if item["name"] == "Shared PDF meeting")
+    assert shared_item["occurrence_id"] == shared_calendar
+    assert shared_item["verification_status"] == "verified"
+    assert shared_item["access_status"] == "accessible"
+    assert shared_item["collection_status"] == "collected"
+    assert shared_item["checked_at"] == NOW
+    assert {check["attempt_id"] for check in shared_item["checks"]} == {"fixture-attempt"}
+    assert "runtime-copy.pdf" in {source["filename"] for source in shared_item["source_observations"]}
+
+    meetings = api_server.registry_meetings(base_date="2026-09-30")
+    assert meetings["pagination"]["total"] == 3
+    assert {item["occurrence_id"] for item in meetings["items"]} == public_calendar | {
+        shared_calendar, runtime_calendar,
+    }
+    verified_meetings = api_server.registry_meetings(
+        verification_status="verified", base_date="2026-09-30",
+    )
+    assert verified_meetings["pagination"]["total"] == 1
+    verified_shared = verified_meetings["items"][0]
+    assert verified_shared["occurrence_id"] == shared_calendar
+    assert verified_shared["verification_status"] == "verified"
+    assert verified_shared["access_status"] == "accessible"
+    assert verified_shared["collection_status"] == "collected"
+    assert verified_shared["checked_at"] == NOW
+    assert {check["attempt_id"] for check in verified_shared["checks"]} == {"fixture-attempt"}
+    assert {source["filename"] for source in verified_shared["source_observations"]} >= {
+        "report.pdf", "runtime-copy.pdf",
+    }
+
+    report = freeze_range_report(
+        public_reader, tmp_path / f"range-merge-{checked_copy}",
+        start_date="2026-09-17", end_date="2026-09-30",
+        generated_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+        pdf_overlay_reader=runtime_reader,
+        overlay_manifest={
+            "web_items": [], "pdf_occurrence_ids": [],
+            "pdf_calendar_occurrence_ids": sorted({shared_calendar, runtime_calendar}),
+        },
+    )
+    range_shared = next(
+        item for item in report["pdf_calendar"]["records"]
+        if item["occurrence_id"] == shared_calendar
+    )
+    assert range_shared["verification_status"] == "verified"
+    assert range_shared["canonical_event_id"] == "event-checked-shared"
+    assert range_shared["event_id"] == "event-checked-shared"
+    assert range_shared["start_date"] == "2026-10-10"
+    assert range_shared["end_date"] == "2026-10-11"
+    assert range_shared["checked_at"] == NOW
+    assert {source["filename"] for source in range_shared["source_observations"]} >= {
+        "report.pdf", "runtime-copy.pdf",
+    }
+
+
+@pytest.mark.parametrize("newer_copy", ["public", "runtime"])
+def test_pdf_rechecks_select_latest_source_in_api_and_range(tmp_path, monkeypatch, newer_copy):
+    public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
+    public_root.mkdir()
+    runtime_root.mkdir()
+    public_database = _database(public_root, include_article_a_acquisitions=False)
+    runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
+    source_url = "https://example.org/meeting"
+    occurrence_id = _insert_pdf_calendar(
+        public_database, "Rechecked climate meeting", source_url=source_url,
+    )
+    assert occurrence_id == _insert_pdf_calendar(
+        runtime_database, "Rechecked climate meeting", source_url=source_url,
+    )
+    older_database, newer_database = (
+        (runtime_database, public_database) if newer_copy == "public"
+        else (public_database, runtime_database)
+    )
+    for database, day, checked_at, run_id, attempt_id in (
+        (older_database, "2026-10-10", "2026-10-04T10:00:00Z", "older-run", "older-attempt"),
+        (newer_database, "2026-10-20", "2026-10-05T10:00:00Z", "newer-run", "newer-attempt"),
+    ):
+        _insert_meeting_check(
+            database, occurrence_id,
+            website_candidate={
+                "name": "Rechecked climate meeting", "event_type": "event",
+                "organizer": "Example Institute", "status": "scheduled",
+                "date_precision": "day", "start_date": day, "end_date": day,
+                "date_evidence": day,
+            },
+            canonical_event_id="event-rechecked", checked_at=checked_at,
+            run_id=run_id, attempt_id=attempt_id, source_url=source_url,
+        )
+
+    public_reader = _reader(public_database, public_root)
+    runtime_reader = _reader(runtime_database, runtime_root)
+    manifest = {
+        "pdf_occurrence_ids": [], "pdf_calendar_occurrence_ids": [occurrence_id],
+    }
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: public_reader)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, runtime_reader, manifest))
+
+    meetings = api_server.registry_meetings(
+        verification_status="verified", base_date="2026-10-05",
+    )
+    assert meetings["pagination"]["total"] == 1
+    api_item = meetings["items"][0]
+    assert api_item["start_date"] == "2026-10-20"
+    assert api_item["collected_candidate"]["start_date"] == "2026-10-20"
+    assert api_item["checked_at"] == "2026-10-05T10:00:00Z"
+    assert {check["attempt_id"] for check in api_item["checks"]} == {"older-attempt", "newer-attempt"}
+    assert {check["source_url"] for check in api_item["checks"]} == {source_url}
+
+    report = freeze_range_report(
+        public_reader, tmp_path / f"range-recheck-{newer_copy}",
+        start_date="2026-09-17", end_date="2026-09-30",
+        generated_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
+        pdf_overlay_reader=runtime_reader,
+        overlay_manifest={
+            "web_items": [], "pdf_occurrence_ids": [],
+            "pdf_calendar_occurrence_ids": [occurrence_id],
+        },
+    )
+    range_item = report["pdf_calendar"]["records"][0]
+    assert range_item["start_date"] == "2026-10-20"
+    assert range_item["canonical_event_id"] == "event-rechecked"
+    assert range_item["checked_at"] == "2026-10-05T10:00:00Z"
+    assert {check["attempt_id"] for check in range_item["checks"]} == {"older-attempt", "newer-attempt"}
+
+
+@pytest.mark.parametrize("checked_copy", ["public", "runtime"])
+def test_range_merges_calendar_checks_before_expiry_and_cancellation_filters(tmp_path, checked_copy):
+    public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
+    public_root.mkdir()
+    runtime_root.mkdir()
+    public_database = _database(public_root, include_article_a_acquisitions=False)
+    runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
+    expired_public = _insert_pdf_calendar(public_database, "Expired conflicting event")
+    expired_runtime = _insert_pdf_calendar(runtime_database, "Expired conflicting event")
+    cancelled_public = _insert_pdf_calendar(
+        public_database, "Future cancelled event", raw_date="15 Oct 2026",
+        start_date="2026-10-15", end_date="2026-10-15",
+    )
+    cancelled_runtime = _insert_pdf_calendar(
+        runtime_database, "Future cancelled event", raw_date="15 Oct 2026",
+        start_date="2026-10-15", end_date="2026-10-15",
+    )
+    assert expired_public == expired_runtime
+    assert cancelled_public == cancelled_runtime
+
+    checked_database, unchecked_database = (
+        (public_database, runtime_database) if checked_copy == "public"
+        else (runtime_database, public_database)
+    )
+    candidate = {
+        "name": "Website event", "event_type": "event", "organizer": "Example Institute",
+        "status": "scheduled", "date_precision": "day", "start_date": "2026-10-10",
+        "end_date": "2026-10-11", "date_evidence": "10-11 October 2026",
+    }
+    _insert_meeting_check(
+        checked_database, expired_public, website_candidate=candidate,
+        canonical_event_id="event-expired", checked_at="2026-10-04T10:00:00Z",
+        run_id="verified-expired-run", attempt_id="verified-expired-attempt",
+    )
+    _insert_meeting_check(
+        unchecked_database, expired_runtime, verification_status="conflict",
+        checked_at="2026-10-04T11:00:00Z", run_id="conflict-expired-run",
+        attempt_id="conflict-expired-attempt",
+    )
+    cancelled_candidate = {
+        **candidate, "name": "Website cancelled event", "status": "cancelled",
+    }
+    _insert_meeting_check(
+        checked_database, cancelled_public, website_candidate=cancelled_candidate,
+        canonical_event_id="event-cancelled", checked_at="2026-10-04T12:00:00Z",
+        run_id="verified-cancelled-run", attempt_id="verified-cancelled-attempt",
+    )
+
+    public_reader = _reader(public_database, public_root)
+    runtime_reader = _reader(runtime_database, runtime_root)
+    runtime_items = runtime_reader.pdf_calendar_items_all(
+        allowed_occurrence_ids={expired_runtime, cancelled_runtime},
+    )
+    meetings = public_reader.meetings(
+        base_date="2026-10-05", additional_calendar_items=runtime_items,
+    )
+    assert meetings["pagination"]["total"] == 0
+
+    report = freeze_range_report(
+        public_reader, tmp_path / f"range-merged-filters-{checked_copy}",
+        start_date="2026-09-17", end_date="2026-09-30",
+        generated_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
+        pdf_overlay_reader=runtime_reader,
+        overlay_manifest={
+            "web_items": [], "pdf_occurrence_ids": [],
+            "pdf_calendar_occurrence_ids": [expired_runtime, cancelled_runtime],
+        },
+    )
+    assert report["pdf_calendar"]["records"] == []
+    assert report["pdf_calendar"]["status"] == "empty"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "params"),
+    [
+        (api_server.registry_meetings, {"page": "bad"}),
+        (api_server.registry_meetings, {"page": "0"}),
+        (api_server.registry_meetings, {"page_size": "101"}),
+        (api_server.registry_meetings, {"query": "x" * 201}),
+        (api_server.registry_meetings, {"verification_status": "unknown"}),
+        (api_server.registry_meetings, {"base_date": "2026-02-30"}),
+        (api_server.registry_pdf_article, {"article_id": "bad$id"}),
+        (api_server.registry_pdf_article, {"article_id": "x" * 129}),
+        (api_server.registry_pdf_articles, {"page": "0"}),
+        (api_server.registry_pdf_articles, {"report_date": "2026-02-30"}),
+        (api_server.registry_pdf_calendar, {"page_size": "101"}),
+    ],
+    ids=[
+        "meeting-page-not-decimal", "meeting-page-out-of-range", "meeting-size-out-of-range",
+        "meeting-query-too-long", "meeting-status-invalid", "meeting-date-invalid",
+        "article-id-invalid-character", "article-id-too-long", "article-page-out-of-range",
+        "article-date-invalid", "calendar-size-out-of-range",
+    ],
+)
+def test_pdf_endpoints_validate_filters_before_reading_overlay(monkeypatch, endpoint, params):
+    calls = []
+
+    def unexpected_overlay_read():
+        calls.append(True)
+        raise AssertionError("invalid request reached the PDF overlay read")
+
+    monkeypatch.setattr(api_server, "_pdf_registry_view", unexpected_overlay_read)
+    with pytest.raises(HTTPException) as error:
+        endpoint(**params)
+    assert error.value.status_code == 400
+    assert calls == []
+
+
 def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_path):
-    database = _database(tmp_path, b_published="2026-09-01")
+    database = _database(
+        tmp_path, b_published="2026-09-01", fetched_at="2026-09-20T12:00:00Z"
+    )
     connection = sqlite3.connect(database)
 
     def pdf_article(pdf_id, url, *, core_id=None, confirmed=False):
@@ -694,15 +1083,19 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
         start_date="2026-09-14", end_date="2026-09-27",
     )
 
-    assert [item["article_id"] for item in snapshot["articles"]] == ["article-a"]
-    assert len(snapshot["pdf_source_updates"]) == 2
+    assert [item["article_id"] for item in snapshot["articles"]] == [
+        "article-a", "article-unknown",
+    ]
+    assert all(item["date_basis"] == "collection_time" for item in snapshot["articles"])
+    assert all(item["range_date"] == "2026-09-20" for item in snapshot["articles"])
+    assert all(item["collected_at"] == "2026-09-20T12:00:00Z" for item in snapshot["articles"])
+    assert len(snapshot["pdf_source_updates"]) == 1
     assert snapshot["pdf_source_exclusion_counts"] == {
         "non_overlapping_coverage": 1,
         "unknown_coverage": 2,
     }
     updates = {item["pdf_article_id"]: item for item in snapshot["pdf_source_updates"]}
-    assert set(updates) == {"pdf-linked-undated", "pdf-only"}
-    assert updates["pdf-linked-undated"]["core_article_id"] == "article-unknown"
+    assert set(updates) == {"pdf-only"}
     assert updates["pdf-only"]["core_article_id"] is None
     assert "article-b" not in snapshot["unknown_publication_date_article_ids"]
     example = updates["pdf-only"]
@@ -725,15 +1118,104 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
     )
     for rendered in (html_report, pdf_text):
         assert "PDF Source Updates" in rendered
-        assert "IAA_CSC_Climate_Report_20260928.pdf" in rendered
-        assert "page 4" in rendered
+        assert "IAA_CSC_Climate_Report_20260928.pdf" not in rendered
+        assert "page 4" not in rendered
+        assert "PDF import" in rendered
         assert "2026-09-14 through 2026-09-27" in rendered
         assert "Regional stress tests require updated scenarios." in rendered
         assert "https://pdf.example/only" in rendered
     assert "文章发布日期未确认" in html_report
-    assert overlap_sha in html_report and overlap_sha in pdf_text
+    assert overlap_sha not in html_report and overlap_sha not in pdf_text
     assert "PDF Source Updates" in pdf_text
     assert "Article publication date unconfirmed" in pdf_text
+
+
+def test_pdf_stated_dates_select_unlinked_updates_and_keep_different_summaries(tmp_path):
+    database = _database(tmp_path)
+    sha, url, title = "9" * 64, "https://pdf.example/project", "Imported climate finance project"
+    page = {"page": 1, "text": "Example Institution\nWebsite: https://pdf.example\n" + title + "\nIN WINDOW",
+            "links": [{"url": url, "anchor_text": title}]}
+    with sqlite3.connect(database) as connection:
+        connection.execute("""INSERT INTO pdf_intake_documents(
+            document_sha256, source_path, filename, media_type, size_bytes, period_start,
+            period_end, extracted_text_sha256, document_json, imported_at)
+            VALUES (?, 'C:/input/projects.pdf', 'projects.pdf', 'application/pdf', 1,
+                    '2026-08-01', '2026-08-31', ?, ?, ?)""",
+            (sha, "8" * 64, json.dumps({"pages": [page]}), NOW))
+        connection.execute("""INSERT INTO pdf_intake_articles(
+            article_id, canonical_url, title, imported_at) VALUES ('pdf-project', ?, ?, ?)""",
+            (url, title, NOW))
+        for ordinal, (body, published, evidence) in enumerate([
+            ("Original project summary.", "2026-09-21", "21 SEP 2026"),
+            ("Original project summary.", "2026-09-21", "21 SEP 2026"),
+            ("Different summary for the same URL.", "2026-09-21", "21 SEP 2026"),
+            ("Outside the requested dates.", "2026-09-01", "1 SEP 2026"),
+            ("No date evidence; outside PDF coverage.", "2026-09-21", None),
+        ]):
+            summary = f"{title}\nIN WINDOW {evidence or 'SEPTEMBER 2026'} REPORT\n{body}\nSource: Example"
+            raw = {"summary": summary, "anchor_text": title, "publication_date_evidence": evidence}
+            connection.execute("""INSERT INTO pdf_intake_article_occurrences VALUES
+                (?, 'pdf-project', ?, 1, ?, NULL, ?, ?, ?, ?)""",
+                (f"project-occ-{ordinal}", sha, url, published, _sha(summary), _sha(url), json.dumps(raw)))
+    before = database.read_bytes()
+    snapshot = freeze_range_report(_reader(database, tmp_path), tmp_path / "range-output",
+        start_date="2026-09-14", end_date="2026-09-27")
+    updates = [item for item in snapshot["pdf_source_updates"] if item["pdf_article_id"] == "pdf-project"]
+    assert len(updates) == 2
+    assert {item["summary"] for item in updates} == {
+        "Original project summary.", "Different summary for the same URL."}
+    assert all(item["publication_date"] == "2026-09-21" and item["publisher"] == "Example Institution"
+               and item["publication_date_label"] == "PDF-stated publication date" for item in updates)
+    assert all(item["core_article_id"] is None for item in updates)
+    assert database.read_bytes() == before
+    assert load_range_report(tmp_path / "range-output", snapshot["snapshot_id"])["pdf_source_updates"] == snapshot["pdf_source_updates"]
+
+
+def test_collection_time_precedes_page_date_and_pdf_stated_date_keeps_its_own_basis(tmp_path):
+    database = _database(tmp_path, pdf_period=("2026-09-14", "2026-09-27"))
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO article_date_observations VALUES
+               ('page-date-a', 'article-a', 'https://example.org/a', 'page_information',
+                '2026-09-20', 'original_website', 'review.json', 'original_page_dates',
+                'page-check-a', ?, '2026-10-01T00:00:00Z')""",
+            (json.dumps({"date_kind": "published", "source_url": "https://example.org/a"}),),
+        )
+
+    snapshot = freeze_range_report(
+        _reader(database, tmp_path), tmp_path / "range-output",
+        start_date="2026-09-14", end_date="2026-09-27",
+    )
+
+    assert "article-a" not in {item["article_id"] for item in snapshot["articles"]}
+    assert "article-b" not in {item["article_id"] for item in snapshot["articles"]}
+    pdf_item = next(item for item in snapshot["pdf_source_updates"] if item["pdf_article_id"] == "pdf-a")
+    assert pdf_item["publication_date"] == "2026-09-20"
+    assert pdf_item["publication_date_label"] == "PDF-stated publication date"
+    html_report = render_range_report_html(snapshot)
+    assert "PDF observation" in html_report
+    assert "Date used for range: collection time" not in html_report
+
+
+def test_page_information_date_is_used_only_when_collection_is_absent(tmp_path):
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO article_date_observations VALUES
+               ('page-date-month', 'article-month', 'https://example.org/month', 'page_information',
+                '2026-09-18', 'original_website', 'review.json', 'original_page_dates',
+                'page-check-month', ?, '2026-10-01T00:00:00Z')""",
+            (json.dumps({"date_kind": "updated", "source_url": "https://example.org/month"}),),
+        )
+    snapshot = freeze_range_report(
+        _reader(database, tmp_path), tmp_path / "range-output",
+        start_date="2026-09-14", end_date="2026-09-27",
+    )
+    article = next(item for item in snapshot["articles"] if item["article_id"] == "article-month")
+    assert article["date_basis"] == "information_date"
+    assert article["range_date"] == article["information_date"] == "2026-09-18"
+    assert article["publication_date"] is None
+    assert article["collected_at"] is None
 
 
 def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_path):
@@ -790,8 +1272,9 @@ def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_p
     assert article["publication_date"] == "2026-09-20"
     html_report = render_range_report_html(snapshot)
     assert "Stored PDF-only summary." in html_report
-    assert "Article ID: article-a" in html_report
-    assert f"summary.pdf, page 5, {document_sha}" in html_report
+    assert "Publication date:" in html_report
+    assert "summary.pdf" not in html_report and document_sha not in html_report
+    assert "PDF import" in html_report
     assert "article publication date unconfirmed; coverage period 2026-09-01 through 2026-09-30" in html_report
     assert 'href="#publisher-1">Example Institute</a>' in html_report
 
@@ -848,7 +1331,10 @@ def test_confirmed_pdf_cannot_restore_a_currently_ineligible_core_article(tmp_pa
         _reader(database, tmp_path), tmp_path / "range-output",
         start_date="2026-09-17", end_date="2026-09-30",
     )
-    assert [item["article_id"] for item in snapshot["articles"]] == ["article-b"]
+    assert [item["article_id"] for item in snapshot["articles"]] == [
+        "article-b", "article-unknown",
+    ]
+    assert "article-a" not in {item["article_id"] for item in snapshot["articles"]}
     assert "article-a" not in snapshot["unknown_publication_date_article_ids"]
 
 
@@ -895,9 +1381,16 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
         key: value for key, value in current.items()
         if key not in {
             "snapshot_id", "snapshot_sha256", "created_at",
-            "pdf_source_updates", "pdf_source_exclusion_counts", "pdf_calendar", "executive_summary",
+            "schema_version", "pdf_source_updates", "pdf_source_exclusion_counts", "pdf_calendar",
+            "executive_summary", "date_unknown_count", "date_unknown_article_ids",
         }
     }
+    legacy_frozen["schema_version"] = "climate-range-report-snapshot.v1"
+    legacy_frozen["articles"] = [
+        {key: item for key, item in article.items()
+         if key not in {"range_date", "date_basis", "information_date", "collected_at"}}
+        for article in current["articles"] if article.get("publication_date")
+    ]
     legacy_digest = range_reports._digest(legacy_frozen)
     legacy_id = "range-report-" + legacy_digest[:24]
     legacy = {
@@ -917,26 +1410,33 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
     assert "pdf_source_exclusion_counts" not in loaded
     monkeypatch.setattr(api_server, "RANGE_REPORT_DIR", root)
     client = TestClient(api_server.app)
+    current_web_url = f"/api/registry/range-reports/{current['snapshot_id']}/{RENDERER_VERSION}"
     web_url = f"/api/registry/range-reports/{legacy_id}/{RENDERER_VERSION}"
     legacy_web_url = f"/api/registry/range-reports/{legacy_id}/range-report-v1"
-    html_response = client.get(web_url)
-    pdf_response = client.get(web_url + "/pdf")
+    html_response = client.get(current_web_url)
+    pdf_response = client.get(current_web_url + "/pdf")
+    legacy_current_renderer_response = client.get(web_url)
     legacy_html_response = client.get(legacy_web_url)
     legacy_pdf_response = client.get(legacy_web_url + "/pdf")
     assert html_response.status_code == 200
     assert "Registry-only climate article" in html_response.text
     assert "PDF Source Updates" not in html_response.text
-    assert "PDF source observations excluded" not in html_response.text
+    assert "PDF source observations excluded" in html_response.text
     assert pdf_response.status_code == 200 and pdf_response.content.startswith(b"%PDF-")
     assert legacy_html_response.status_code == 200
-    assert legacy_html_response.text == html_response.text
-    assert legacy_pdf_response.status_code == 200 and legacy_pdf_response.content == pdf_response.content
+    assert "Date used for range:</strong> collection time" in html_response.text
+    assert legacy_current_renderer_response.status_code == 200
+    assert "Date used for range:</strong> collection time" not in legacy_current_renderer_response.text
+    assert "PDF source observations excluded" not in legacy_current_renderer_response.text
+    assert "Date used for range:</strong> collection time" not in legacy_html_response.text
+    assert "PDF source observations excluded" not in legacy_html_response.text
+    assert legacy_pdf_response.status_code == 200 and legacy_pdf_response.content.startswith(b"%PDF-")
     pdf_text = "\n".join(
         page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf_response.content)).pages
     )
     assert "Registry-only climate article" in pdf_text
     assert "PDF Source Updates" not in pdf_text
-    assert "PDF source observations excluded" not in pdf_text
+    assert "PDF source observations excluded" in pdf_text
 
 
 def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path, monkeypatch):
@@ -948,7 +1448,7 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
     }
     queried = {
         "schema_version": "climate-meeting-query.v1", "base_date": "2026-09-30", "timezone": "UTC",
-        "filters": {"include_cancelled": False, "include_retrospective": False},
+        "filters": {"include_cancelled": False, "include_retrospective": False, "include_deadlines": True},
         "coverage": {"status": "complete"},
         "records": [{"name": "Future meeting", "start_date": "2026-10-02"}],
     }
@@ -958,10 +1458,8 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
         calls.append((database, kwargs))
         return queried
 
-    def pdf_calendar_items(_reader, *, page, page_size):
-        assert page_size == 100
-        pages = {
-                1: [
+    def pdf_calendar_items_all(_reader, *, allowed_occurrence_ids=None):
+        records = [
                     {"name": "PDF event", "kind": "event", "raw_date": "2 Oct 2026", "date_precision": "day", "end_date": "2026-10-02", "source_filename": "calendar.pdf", "page": 2, "source_document_sha256": "a" * 64},
                     {"name": "Expired PDF event", "kind": "event", "raw_date": "1 Sep 2026", "date_precision": "day", "end_date": "2026-09-01", "source_filename": "calendar.pdf", "page": 4, "source_document_sha256": "a" * 64},
                     {"name": "Unknown PDF event", "kind": "event", "raw_date": "TBA", "date_precision": "unknown", "end_date": None, "source_filename": "calendar.pdf", "page": 5, "source_document_sha256": "a" * 64},
@@ -971,15 +1469,14 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
                     {"name": "Expired quarter", "kind": "event", "raw_date": "Q2 2026", "date_precision": "quarter", "start_date": "2026-Q2", "end_date": None, "source_filename": "calendar.pdf", "page": 9, "source_document_sha256": "a" * 64},
                     {"name": "Future year", "kind": "event", "raw_date": "2027", "date_precision": "year", "start_date": "2027", "end_date": None, "source_filename": "calendar.pdf", "page": 10, "source_document_sha256": "a" * 64},
                     {"name": "Expired year", "kind": "event", "raw_date": "2025", "date_precision": "year", "start_date": "2025", "end_date": None, "source_filename": "calendar.pdf", "page": 11, "source_document_sha256": "a" * 64},
-                ],
-                2: [{"name": "Deadline", "kind": "deadline", "raw_date": "3 Oct 2026", "date_precision": "day", "end_date": "2026-10-03", "source_filename": "calendar.pdf", "page": 3, "source_document_sha256": "a" * 64}],
-        }
-        return {"items": pages[page], "pagination": {"pages": 2}}
+                    {"name": "Deadline", "kind": "deadline", "raw_date": "3 Oct 2026", "date_precision": "day", "end_date": "2026-10-03", "source_filename": "calendar.pdf", "page": 3, "source_document_sha256": "a" * 64},
+                ]
+        return records
 
     monkeypatch.setattr(range_reports, "_range_source", lambda *_args, **_kwargs: source)
     monkeypatch.setattr(range_reports, "query_events", query)
     monkeypatch.setattr(range_reports, "_pdf_calendar_available", lambda _reader: True)
-    monkeypatch.setattr(RegistryReader, "pdf_calendar_items", pdf_calendar_items)
+    monkeypatch.setattr(RegistryReader, "pdf_calendar_items_all", pdf_calendar_items_all)
     root = tmp_path / "range-output"
     snapshot = freeze_range_report(
         _reader(database, tmp_path), root,
@@ -988,7 +1485,7 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
     )
     assert len(calls) == 1
     assert calls[0][0] != database and not calls[0][0].exists()
-    assert calls[0][1] == {"base_date": "2026-09-30", "timezone_name": "UTC"}
+    assert calls[0][1] == {"base_date": "2026-09-30", "timezone_name": "UTC", "include_deadlines": True}
     assert snapshot["meeting"]["status"] == "included"
     assert snapshot["meeting"]["query_id"].startswith("meeting-query-")
     assert snapshot["meeting"]["query_sha256"] and snapshot["meeting"]["base_date"] == "2026-09-30"
@@ -1009,7 +1506,8 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
     assert "Future meeting" in rerendered_text and "Changed live meeting" not in rerendered_text
     assert before_pdf != b""
     assert "PDF Calendar Dates" in before_html and "PDF Deadlines" in before_html
-    assert "calendar.pdf" in before_html and "a" * 64 in before_html
+    assert "calendar.pdf" not in before_html and "a" * 64 not in before_html
+    assert "PDF import" in before_html
     assert "Meeting source:</strong> query" in before_html
     assert snapshot["meeting"]["query_id"] in before_html
     assert snapshot["meeting"]["query_sha256"] in before_html
@@ -1017,6 +1515,10 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
     assert "Meeting query timezone:</strong> UTC" in before_html
     assert "Meeting coverage:</strong> complete" in before_html
     empty_snapshot = {**snapshot, "meeting": {**snapshot["meeting"], "status": "empty", "records": []}}
+    # A different frozen input has its own identity before direct rendering.
+    frozen_empty = {key: value for key, value in empty_snapshot.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    empty_digest = range_reports._digest(frozen_empty)
+    empty_snapshot = {**empty_snapshot, "snapshot_id": "range-report-" + empty_digest[:24], "snapshot_sha256": empty_digest}
     empty_html = render_range_report_html(empty_snapshot)
     empty_path = tmp_path / "empty-meetings.pdf"
     render_range_report_pdf(empty_snapshot, empty_path)
@@ -1059,11 +1561,14 @@ def test_calendar_and_meeting_failures_are_marked_without_losing_articles(tmp_pa
         "articles": [{
             "article_id": "article", "publication_date": "2026-09-02", "title": "Saved article",
             "content_version_id": "content", "summary": "Saved summary", "content": "Saved content",
-            "categories": [], "keywords": [], "source_observations": [], "citations": [],
+            "categories": [], "keywords": [], "source_observations": [],
+            "citations": [{"kind": "url", "url": "https://example.test/saved-article"}],
             "provenance": {"publication_date": {"all_in_range": [{
                 "date": "2026-09-02", "observation_id": "fixture-date",
                 "evidence": {"kind": "fixture"},
             }]}},
+            "date_basis": "publication_date", "range_date": "2026-09-02",
+            "information_date": None, "collected_at": None,
         }], "pdf_source_updates": [],
         "pdf_source_exclusion_counts": {"non_overlapping_coverage": 0, "unknown_coverage": 0},
         "unknown_publication_date_count": 0, "unknown_publication_date_article_ids": [],
@@ -1075,7 +1580,7 @@ def test_calendar_and_meeting_failures_are_marked_without_losing_articles(tmp_pa
     monkeypatch.setattr(range_reports, "_range_source", lambda *_args, **_kwargs: source)
     monkeypatch.setattr(range_reports, "query_events", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("unavailable")))
     monkeypatch.setattr(range_reports, "_pdf_calendar_available", lambda _reader: True)
-    monkeypatch.setattr(RegistryReader, "pdf_calendar_items", unavailable_calendar)
+    monkeypatch.setattr(RegistryReader, "pdf_calendar_items_all", unavailable_calendar)
     snapshot = freeze_range_report(
         _reader(database, tmp_path), tmp_path / "range-output",
         start_date="2026-09-01", end_date="2026-09-10",
@@ -1171,11 +1676,14 @@ def test_pre_pdf_registry_marks_calendar_unavailable_without_losing_articles(tmp
         "articles": [{
             "article_id": "article", "publication_date": "2026-09-02", "title": "Saved article",
             "content_version_id": "content", "summary": "Saved summary", "content": "Saved content",
-            "categories": [], "keywords": [], "source_observations": [], "citations": [],
+            "categories": [], "keywords": [], "source_observations": [],
+            "citations": [{"kind": "url", "url": "https://example.test/saved-article"}],
             "provenance": {"publication_date": {"all_in_range": [{
                 "date": "2026-09-02", "observation_id": "fixture-date",
                 "evidence": {"kind": "fixture"},
             }]}},
+            "date_basis": "publication_date", "range_date": "2026-09-02",
+            "information_date": None, "collected_at": None,
         }], "pdf_source_updates": [],
         "pdf_source_exclusion_counts": {"non_overlapping_coverage": 0, "unknown_coverage": 0},
         "unknown_publication_date_count": 0, "unknown_publication_date_article_ids": [],
@@ -1236,7 +1744,9 @@ def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
             pdf_text = "\n".join(
                 page.extract_text() or "" for page in PdfReader(pdf_path(tmp_path / marker, snapshot["snapshot_id"])).pages
             )
-            assert snapshot["meeting"]["snapshot_id"] in rendered and snapshot["meeting"]["snapshot_id"] in pdf_text
+            assert snapshot["meeting"]["snapshot_id"] in rendered and snapshot["meeting"]["snapshot_id"] not in pdf_text
+            from climate_delivery.templates.adapters import adapt_range_report
+            assert snapshot["meeting"]["snapshot_id"] in str(adapt_range_report(snapshot).date_notes)
             assert "Meeting source:</strong> snapshot" in rendered
 
     missing = freeze_range_report(
@@ -1246,7 +1756,11 @@ def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
     assert missing["meeting"]["status"] == "unavailable"
 
 
-def test_chat_returns_stable_web_and_pdf_links_without_normal_responder(tmp_path, monkeypatch):
+@pytest.mark.parametrize("question", [
+    "Create a climate report from 2026-09-17 to 2026-09-30",
+    "查询2026-09-17到2026-09-30的项目和当前会议",
+])
+def test_chat_returns_stable_web_and_pdf_links_without_normal_responder(tmp_path, monkeypatch, question):
     database = _database(tmp_path)
     output = tmp_path / "range-output"
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
@@ -1256,14 +1770,18 @@ def test_chat_returns_stable_web_and_pdf_links_without_normal_responder(tmp_path
     client = TestClient(api_server.app)
 
     created = client.post(
-        "/api/chat", json={"message": "Create a climate report from 2026-09-17 to 2026-09-30"}
+        "/api/chat", json={"message": question}
     )
     assert created.status_code == 200, created.text
     payload = created.json()
     report = payload["range_report"]
     assert report["web_url"] in payload["text"] and report["pdf_url"] in payload["text"]
+    assert "## Projects in the Reporting Period" in payload["text"]
+    assert "Registry-only climate article" in payload["text"]
+    assert "Second article" in payload["text"]
+    assert "## Current Meetings and Key Dates" in payload["text"]
     assert payload["sources"] == [] and payload["agent_mode"] == "offline"
-    assert report["article_count"] == 2
+    assert report["article_count"] == 3
     assert report["pdf_source_update_count"] == 0
     assert report["pdf_source_excluded_count"] == 1
     assert report["pdf_source_exclusion_counts"] == {
@@ -1366,6 +1884,8 @@ def _render_fixture(path: Path, *, count: int, repeat: int) -> dict:
             "article_id": f"fixture-{index}", "canonical_url": url,
             "title": f"Unicode café μ article {index} " + ("long title " * 10),
             "publisher": "Fixture", "publication_date": "2026-09-20",
+            "date_basis": "publication_date", "range_date": "2026-09-20",
+            "information_date": None, "collected_at": None,
             "summary": "Evidence summary — café μ.", "categories": ["Physical risk"],
             "keywords": ["pricing"], "content_version_id": f"content-{index}",
             "content": ("Long persisted climate evidence with Unicode café μ. " * repeat),
@@ -1379,11 +1899,12 @@ def _render_fixture(path: Path, *, count: int, repeat: int) -> dict:
         "timezone": "UTC", "articles": articles,
         "unknown_publication_date_count": 0,
         "unknown_publication_date_article_ids": [],
+        "date_unknown_count": 0, "date_unknown_article_ids": [],
         "meeting": {"status": "not_requested", "snapshot_id": None,
                     "snapshot_sha256": None, "records": []},
     }
     snapshot = {
-        **frozen, "snapshot_id": "range-report-" + _sha(json.dumps(frozen))[:24],
+        **frozen, "snapshot_id": "range-report-" + range_reports._digest(frozen)[:24],
         "snapshot_sha256": range_reports._digest(frozen), "created_at": NOW,
     }
     render_range_report_pdf(snapshot, path)
@@ -1441,4 +1962,6 @@ def test_short_and_long_pdf_fixtures_have_toc_bookmarks_pages_unicode_and_citati
     assert "café μ" in text
     assert "Long persisted climate evidence" in text
     assert "very-long-segment" in text
-    assert snapshot["snapshot_id"] in text
+    assert snapshot["snapshot_id"] not in text
+    from climate_delivery.templates.adapters import adapt_range_report
+    assert adapt_range_report(snapshot).input_id == snapshot["snapshot_id"]

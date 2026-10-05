@@ -115,6 +115,7 @@ ARTICLE_EVIDENCE_SCHEMA: dict[str, Any] = {
                         ],
                         "properties": {
                             "discovered_at": {"type": "string"},
+                            "collected_at": {"type": ["string", "null"]},
                             "publication_date": {"type": ["string", "null"]},
                             "publication_date_evidence": {
                                 "type": ["object", "null"]
@@ -152,6 +153,7 @@ ARTICLE_EVIDENCE_SCHEMA: dict[str, Any] = {
                     "requested_url": {"type": "string"},
                     "canonical_url": {"type": "string"},
                     "discovered_at": {"type": "string"},
+                    "collected_at": {"type": ["string", "null"]},
                     "publication_date": {"type": ["string", "null"]},
                     "publication_date_evidence": {"type": ["object", "null"]},
                     "date_status": {

@@ -43,7 +43,7 @@ from .persistent import (
 
 EXTRACTOR_VERSION = "1"
 GENERATOR_NAME = "climate-registry-rules"
-GENERATOR_VERSION = "1"
+GENERATOR_VERSION = "2"
 MAX_BATCH = 100
 MAX_PDF_PAGES = 250
 MAX_EXTRACTED_TEXT_CHARS = 2_000_000
@@ -234,13 +234,201 @@ _CATEGORY_TERMS = {
 }
 
 
+_BODY_NAVIGATION = re.compile(
+    r"(?i)\b(?:skip to (?:main )?(?:content|main)|quick navigation|"
+    r"primary navigation|secondary navigation|main navigation|"
+    r"business unit navigation|service navigation|navigation on [\w.-]+|"
+    r"open navigation|close universal navigation|search menu close)\b"
+)
+_BODY_METADATA = re.compile(
+    r"(?i)^(?:written by\b|author(?:s)?\s*:|published on\b|updated on\b|"
+    r"date\s*:|share(?: this| this report)?\s*:|follow\s+share\b|"
+    r"download report\b|listen to this conversation\b|"
+    r"this audio discussion was generated\b|copyright\b|privacy policy\b|"
+    r"\d{1,2}\s+[a-z]+\s+\d{4}$|"
+    r"\d{1,2}\s+[a-z]+\s+\d{4}\s+(?:facebook|x|linkedin)\b|"
+    r"(?:facebook|x|linkedin|whatsapp)(?:\s+(?:facebook|x|linkedin|whatsapp))*$)"
+)
+_BODY_ENDING = re.compile(
+    r"(?i)^#{1,6}\s+(?:related resources\b|related events\b|related articles\b|"
+    r"you might be interested\b|you may be interested\b|subscribe\b|get the highlights\b|"
+    r"have questions about\b|further information\b|follow (?:the )?ipcc\b|"
+    r"engage with the ipcc\b|event navigation\b|your privacy\b|cookie preferences\b|"
+    r"google(?:™)? translation disclaimer\b|sign up for the latest updates\b|"
+    r"enter your info to download\b)"
+)
+_TITLE_WORDS = {"about", "and", "for", "from", "home", "in", "of", "on", "the", "to"}
+_PAGE_MARKDOWN = re.compile(r"(?mi)^#{1,6}\s+page\s+\d+\s*$")
+
+
+def _plain_markdown(value: str) -> str:
+    value = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", value)
+    value = re.sub(r"\[\[([^\]]+)\]\]\([^)]*\)", r"\1", value)
+    value = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", value)
+    value = re.sub(r"\[([^\]]+)\]\s*\[[^\]]*\]", r"\1", value)
+    value = re.sub(r"(?m)^#{1,6}\s+", "", value)
+    value = re.sub(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", value)
+    value = re.sub(r"[`*_~]", "", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _substantive_paragraph(block: str) -> bool:
+    if re.match(r"(?m)^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s)", block):
+        return False
+    visible = _plain_markdown(block)
+    if len(visible) < 80 or len(re.findall(r"\b\w+\b", visible)) < 12:
+        return False
+    if not re.search(r"[.!?。！？]\d*[\"'’”\])}]*\s*$", visible):
+        return False
+    if _BODY_METADATA.match(visible):
+        return False
+    if re.search(
+        r"(?i)\b(?:navigation|main menu|search menu|skip to content|related resources|"
+        r"you might be interested|you may be interested|cookie preferences|"
+        r"accept optional cookies)\b",
+        visible[:160],
+    ):
+        return False
+    linked = sum(len(match.group(1)) for match in re.finditer(r"\[([^\]]+)\]\([^)]*\)", block))
+    return linked <= len(visible) * 0.3
+
+
+def _title_tokens(value: str) -> set[str]:
+    return {
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9]+", _plain_markdown(value))
+        if len(token) > 2 and token.lower() not in _TITLE_WORDS
+    }
+
+
+def _clean_selected_block(block: str) -> str:
+    block = re.sub(
+        r"(?i)\b\d{1,2}\s+[a-z]+\s+\d{4}\s+(?:facebook\s+)?(?:x\s+)?(?:linkedin\b|whatsapp\b)",
+        "",
+        block,
+    )
+    return re.sub(r"^©\s+[^.;]{1,40}\s+(?=[A-Z])", "", block).strip()
+
+
+def _selected_body(blocks: list[str], start: int) -> str:
+    end = next(
+        (index for index in range(start + 1, len(blocks)) if _BODY_ENDING.match(blocks[index])),
+        len(blocks),
+    )
+    selected = []
+    for offset, block in enumerate(blocks[start:end]):
+        if offset and "©" in block:
+            continue
+        cleaned = _clean_selected_block(block)
+        if cleaned and not _BODY_METADATA.match(_plain_markdown(cleaned)):
+            selected.append(cleaned)
+    return "\n\n".join(selected).strip()
+
+
+def _matching_article_heading(blocks: list[str]) -> int | None:
+    first_title = next((block for block in blocks if re.match(r"^#\s+", block)), None)
+    if first_title is None:
+        return None
+    title = _title_tokens(first_title)
+    if not title:
+        return None
+    for index, block in enumerate(blocks[1:], start=1):
+        if re.match(r"^#{1,2}\s+", block) is None or index < 8:
+            continue
+        candidate = _title_tokens(block)
+        shared = len(title & candidate)
+        if shared >= min(2, len(title)) and shared / min(len(title), len(candidate) or 1) >= 0.6:
+            if any(_substantive_paragraph(item) for item in blocks[index + 1 : index + 50]):
+                return index
+    return None
+
+
+def article_body_markdown(markdown: str) -> str | None:
+    """Return the article body after a verified page-navigation prefix, if present."""
+    text = markdown.strip()
+    if not text:
+        return None
+    if _PAGE_MARKDOWN.search(text):
+        return markdown
+
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+    heading_index = _matching_article_heading(blocks)
+    has_navigation = bool(_BODY_NAVIGATION.search("\n\n".join(blocks[:40])))
+    if heading_index is None and not has_navigation:
+        return markdown
+
+    if heading_index is not None:
+        start = next(
+            (
+                index
+                for index in range(heading_index + 1, min(len(blocks), heading_index + 50))
+                if _substantive_paragraph(blocks[index])
+            ),
+            None,
+        )
+        if start is None:
+            return None
+        return _selected_body(blocks, start)
+
+    # Pages without a distinct body heading (such as the ACI homepage) are
+    # identified by a sustained run of narrative paragraphs after their menus.
+    positions = [index for index, block in enumerate(blocks) if _substantive_paragraph(block)]
+    if not positions:
+        return None
+    runs: list[list[int]] = []
+    for index in positions:
+        if runs and index - runs[-1][-1] <= 2:
+            runs[-1].append(index)
+        else:
+            runs.append([index])
+    longest = max(runs, key=lambda run: (len(run), -run[0]))
+    return _selected_body(blocks, longest[0])
+
+
+def article_preview(markdown: str, *, limit: int = 500) -> str | None:
+    body = article_body_markdown(markdown)
+    if body is None:
+        return None
+    if body == markdown or _PAGE_MARKDOWN.search(body):
+        return " ".join(body.split())[:limit].strip() or None
+    visible = _plain_markdown(body)
+    return visible[:limit].strip() or None
+
+
+def _summary_sentences(text: str, *, selected_english_html: bool) -> list[str]:
+    if not selected_english_html:
+        return [item.strip() for item in re.split(r"(?<=[.!?。！？])\s*", text) if item.strip()]
+
+    marker = "\ue000"
+
+    def protect(match: re.Match[str]) -> str:
+        return match.group(0).replace(".", marker)
+
+    text = re.sub(r"\b(?:[A-Z]\.\s*){2,}", protect, text)
+    text = re.sub(r"\b([A-Z])\.(?=\s+[A-Z][a-z])", protect, text)
+    text = re.sub(r"(?i)\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.(?=\s+[A-Z])", protect, text)
+    text = re.sub(r"(?i)\b(?:e\.g|i\.e)\.", protect, text)
+    sentences = re.split(r"(?<=[.!?])\d*(?=\s+[\"'’”\])}]*[A-Z0-9])", text)
+    return [item.replace(marker, ".").strip() for item in sentences if item.strip()]
+
+
 def deterministic_enrichment(markdown: str) -> dict[str, object]:
-    visible = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", markdown)
+    body = article_body_markdown(markdown)
+    if body is None:
+        raise FetchFailure("insufficient_content", "no reliable article body was extracted")
+    if body == markdown or _PAGE_MARKDOWN.search(body):
+        visible = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", body)
+    else:
+        visible = _plain_markdown(body)
     visible = re.sub(r"(?mi)^#{1,6}\s+page\s+\d+\s*$", "", visible)
     visible = re.sub(r"(?m)^#{1,6}\s+", "", visible)
     visible = re.sub(r"(?m)^[-*]\s+", "", visible)
     compact = re.sub(r"\s+", " ", visible).strip()
-    sentences = [item.strip() for item in re.split(r"(?<=[.!?。！？])\s*", compact) if item.strip()]
+    english_words = re.search(r"(?i)\b(?:the|and|is|are|of|to|in|with|for|that)\b", compact)
+    selected_english_html = (
+        body != markdown and not _PAGE_MARKDOWN.search(markdown) and english_words is not None
+    )
+    sentences = _summary_sentences(compact, selected_english_html=selected_english_html)
     summary = " ".join(sentences[:3])[:600].strip()
     if len(summary) < 40:
         raise FetchFailure("insufficient_content", "content is too short for deterministic enrichment")

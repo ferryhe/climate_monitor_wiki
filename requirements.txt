@@ -15,6 +15,7 @@ boto3==1.42.89
 websockets==15.0.1
 reportlab>=4.2.0
 pypdf>=5.0.0
+pdfplumber>=0.11.9
 typesafe-sdk>=0.7.1,<1
 idna>=3,<4
 web-listening @ git+https://github.com/ferryhe/web_listening_new.git@ac2343f89bc7939736d85f049ebe2beac571034a ; python_version >= "3.12"

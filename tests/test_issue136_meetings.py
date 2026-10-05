@@ -90,7 +90,7 @@ def test_schema_v12_keeps_meeting_reads_and_rejects_writes(tmp_path):
 
     assert query_events(database, base_date="2026-01-01", timezone_name="UTC")["records"] == []
     assert load_snapshot(database, "snapshot-v12")["records"] == []
-    with pytest.raises(ValueError, match="schema 16 for writes"):
+    with pytest.raises(ValueError, match="schema 18 for writes"):
         freeze_snapshot(database, base_date="2026-01-01", timezone_name="UTC")
 
 
@@ -431,6 +431,18 @@ def test_transparent_label_chain_stops_at_another_activity(tmp_path, separator):
     )
     records = query_events(database, base_date="2027-01-01", timezone_name="UTC")["records"]
     assert [record["name"] for record in records] == ["Beta Climate Summit 2027"]
+    assert records[0]["sources"][0]["collected_at"] == "2026-01-01T00:00:00Z"
+    assert records[0]["sources"][0]["observed_at"] != records[0]["sources"][0]["collected_at"]
+    frozen = freeze_snapshot(
+        database, base_date="2027-01-01", timezone_name="UTC"
+    )
+    loaded = load_snapshot(database, frozen["snapshot_id"])
+    assert loaded["records"][0]["sources"][0]["collected_at"] == "2026-01-01T00:00:00Z"
+    from climate_registry.read_api import RegistryReader
+    meeting = RegistryReader(database, repository_root=tmp_path / "app").meetings(
+        base_date="2027-01-01"
+    )["items"][0]
+    assert meeting["sources"][0]["collected_at"] == "2026-01-01T00:00:00Z"
 
 
 @pytest.mark.parametrize("separator", [" / ", "; ", " | "])
@@ -1165,8 +1177,8 @@ def test_schema_10_upgrades_to_exact_versioned_meeting_contract():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=10)
     assert validate_registry_contract(connection) == 10
-    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16]
-    assert validate_registry_contract(connection) == 16
+    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18]
+    assert validate_registry_contract(connection) == 18
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"meeting_runs", "meeting_run_items", "climate_events", "climate_event_sources",
             "climate_event_versions", "meeting_snapshots"} <= tables
@@ -1177,8 +1189,8 @@ def test_schema_11_upgrades_existing_meeting_sources_without_losing_evidence(tmp
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=11)
     assert validate_registry_contract(connection) == 11
-    assert apply_migrations(connection) == [12, 13, 14, 15, 16]
-    assert validate_registry_contract(connection) == 16
+    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18]
+    assert validate_registry_contract(connection) == 18
     columns = {row[1] for row in connection.execute("PRAGMA table_info(climate_event_sources)")}
     assert {"candidate_ordinal", "interpretation_seq"} <= columns
     connection.close()

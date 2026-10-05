@@ -31,6 +31,7 @@ from agentic_wiki import (
 from climate_delivery.artifacts import load_report_artifact
 from climate_delivery.io import atomic_write_json
 from climate_delivery.errors import GenerationError, LockStateError
+from climate_delivery.templates import rendering_metadata, is_render_identity
 from climate_monitor.job_status import (
     JobStatusInvalidSnapshotError,
     JobStatusLocationError,
@@ -62,6 +63,11 @@ from climate_registry.read_api import (
     RegistryQueryError,
     RegistryReader,
     RegistryUnavailableError,
+    page_pdf_articles,
+    page_pdf_calendar_items,
+    validate_article_id,
+    validate_page,
+    validate_report_date,
 )
 from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
@@ -70,6 +76,7 @@ from climate_registry.pdf_pipeline import (
     read_pdf_batch,
     retry_pdf_batch,
 )
+from climate_registry.information_checks import merge_checked_observation
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -79,6 +86,7 @@ from climate_registry.range_reports import (
     load_range_report,
     load_active_range_overlay,
     render_range_report_html,
+    render_range_report_chat,
     resolve_report_followup,
     resolve_report_route,
 )
@@ -384,6 +392,65 @@ def _registry_reader() -> RegistryReader:
     )
 
 
+def _pdf_registry_view() -> tuple[RegistryReader, set[str] | None, set[str] | None]:
+    """Select activated Runtime PDF observations using the same Chat manifest."""
+    _, pdf_reader, manifest = _range_report_overlay()
+    if pdf_reader is None:
+        return _registry_reader(), None, None
+    article_ids = set((manifest or {}).get("pdf_occurrence_ids", []))
+    calendar_ids = (set(manifest["pdf_calendar_occurrence_ids"])
+        if manifest is not None and "pdf_calendar_occurrence_ids" in manifest else None)
+    if calendar_ids is None:
+        from climate_registry.pdf_pipeline import _active_calendar_ids
+        calendar_ids = _active_calendar_ids(pdf_reader.database, manifest, article_ids)
+    return pdf_reader, article_ids, calendar_ids
+
+
+def _merge_pdf_article_payloads(
+    public: dict[str, Any] | None, runtime: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    payloads = [item for item in (public, runtime) if item is not None]
+    if not payloads:
+        return None
+    merged = {**payloads[-1], **payloads[0]}
+    occurrences: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for item in payload.get("occurrences", []):
+            occurrence_id = item["occurrence_id"]
+            occurrences[occurrence_id] = (
+                merge_checked_observation(occurrences[occurrence_id], item)
+                if occurrence_id in occurrences else item
+            )
+    merged["occurrences"] = sorted(
+        occurrences.values(),
+        key=lambda item: (item.get("report_date") or "", item.get("page") or 0, item["occurrence_id"]),
+        reverse=True,
+    )
+    dates = [item.get("report_date") for item in merged["occurrences"] if item.get("report_date")]
+    merged["first_seen"] = min(dates) if dates else None
+    merged["last_seen"] = max(dates) if dates else None
+    if runtime and runtime.get("type_safe_classification") is not None:
+        merged["type_safe_classification"] = runtime["type_safe_classification"]
+    if merged["occurrences"]:
+        merged["summary"] = merged["occurrences"][0].get("summary")
+    return merged
+
+
+def _merge_pdf_calendar_items(
+    public_items: list[dict[str, Any]], runtime_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items = {item["occurrence_id"]: item for item in public_items}
+    for item in runtime_items:
+        occurrence_id = item["occurrence_id"]
+        items[occurrence_id] = (
+            merge_checked_observation(items[occurrence_id], item)
+            if occurrence_id in items else item
+        )
+    return sorted(items.values(), key=lambda item: (
+        item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
+    ))
+
+
 def _registry_query(callable_):
     try:
         return callable_()
@@ -525,17 +592,60 @@ def registry_pdf_articles(
     source: str = "", report_date: str = "",
 ) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
-    return _registry_query(
-        lambda: _registry_reader().pdf_articles(
-            page=parsed_page, page_size=parsed_size, query=query, source=source,
-            report_date=report_date,
+    def query_pdf():
+        validate_page(parsed_page, parsed_size)
+        if len(query) > 200 or len(source) > 253:
+            raise RegistryQueryError("filter is too long")
+        if report_date:
+            validate_report_date(report_date)
+        reader, article_ids, _ = _pdf_registry_view()
+        if article_ids is None:
+            return reader.pdf_articles(
+                page=parsed_page, page_size=parsed_size, query=query, source=source,
+                report_date=report_date,
+            )
+        public_items = _registry_reader().pdf_articles_all()
+        runtime_items = reader.pdf_articles_all(allowed_occurrence_ids=article_ids)
+        by_url: dict[str, dict[str, Any]] = {}
+        for item in public_items:
+            by_url[item["canonical_url"]] = item
+        for item in runtime_items:
+            url = item["canonical_url"]
+            by_url[url] = _merge_pdf_article_payloads(by_url.get(url), item)
+        return page_pdf_articles(
+            list(by_url.values()), page=parsed_page, page_size=parsed_size,
+            query=query, source=source, report_date=report_date,
         )
-    )
+    return _registry_query(query_pdf)
 
 
 @app.get("/api/registry/pdf-intake/articles/{article_id}")
 def registry_pdf_article(article_id: str) -> dict:
-    return _registry_query(lambda: _registry_reader().pdf_article(article_id))
+    def query_pdf():
+        validate_article_id(article_id)
+        reader, article_ids, _ = _pdf_registry_view()
+        if article_ids is None:
+            return reader.pdf_article(article_id)
+        public_reader = _registry_reader()
+        try:
+            public = public_reader.pdf_article(article_id)
+        except RegistryNotFoundError:
+            public = None
+        try:
+            runtime = reader.pdf_article(article_id, allowed_occurrence_ids=article_ids)
+        except RegistryNotFoundError:
+            runtime = None
+        if runtime is not None and public is None:
+            public = next((item for item in public_reader.pdf_articles_all()
+                if item["canonical_url"] == runtime["canonical_url"]), None)
+        elif public is not None and (runtime is None or runtime["canonical_url"] != public["canonical_url"]):
+            runtime = next((item for item in reader.pdf_articles_all(allowed_occurrence_ids=article_ids)
+                if item["canonical_url"] == public["canonical_url"]), None)
+        payload = _merge_pdf_article_payloads(public, runtime)
+        if payload is None:
+            raise RegistryNotFoundError("article not found")
+        return payload
+    return _registry_query(query_pdf)
 
 
 @app.get("/api/registry/pdf-intake/calendar")
@@ -543,11 +653,43 @@ def registry_pdf_calendar(
     page: str = "1", page_size: str = "20", query: str = "", kind: str = "",
 ) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
-    return _registry_query(
-        lambda: _registry_reader().pdf_calendar_items(
-            page=parsed_page, page_size=parsed_size, query=query, kind=kind,
+    def query_calendar():
+        validate_page(parsed_page, parsed_size)
+        if len(query) > 200 or len(kind) > 80:
+            raise RegistryQueryError("filter is too long")
+        reader, _, calendar_ids = _pdf_registry_view()
+        if calendar_ids is None:
+            return reader.pdf_calendar_items(page=parsed_page, page_size=parsed_size, query=query, kind=kind)
+        items = _merge_pdf_calendar_items(
+            _registry_reader().pdf_calendar_items_all(),
+            reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids),
         )
-    )
+        return page_pdf_calendar_items(
+            items, page=parsed_page, page_size=parsed_size, query=query, kind=kind,
+        )
+    return _registry_query(query_calendar)
+
+
+@app.get("/api/registry/meetings")
+def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
+    verification_status: str = "", base_date: str | None = None) -> dict:
+    def query_meetings():
+        parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
+        validate_page(parsed_page, parsed_size)
+        if len(query) > 200 or verification_status not in {"", "unchecked", "partial", "conflict", "verified"}:
+            raise RegistryQueryError("invalid meeting filter")
+        if base_date:
+            validate_report_date(base_date)
+        reader, _, calendar_ids = _pdf_registry_view()
+        items = (
+            [] if calendar_ids is None
+            else reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids)
+        )
+        return _registry_reader().meetings(
+            page=parsed_page, page_size=parsed_size,
+            query=query, verification_status=verification_status, base_date=base_date,
+            additional_calendar_items=items)
+    return _registry_query(query_meetings)
 
 
 @app.get("/api/registry/articles/{article_id}")
@@ -711,11 +853,7 @@ def chat(request: ChatRequest) -> dict:
         snapshot_id = snapshot["snapshot_id"]
         web_url = f"/api/registry/range-reports/{snapshot_id}/{RENDERER_VERSION}"
         pdf_url = web_url + "/pdf"
-        text = (
-            f"Your report for {report_route.start_date} through {report_route.end_date} "
-            f"is ready: [open the web report]({web_url}) or "
-            f"[download the PDF]({pdf_url})."
-        )
+        text = render_range_report_chat(snapshot, web_url=web_url, pdf_url=pdf_url)
         return {
             "text": text,
             "sources": [],
@@ -727,6 +865,7 @@ def chat(request: ChatRequest) -> dict:
                 "snapshot_id": snapshot_id,
                 "snapshot_sha256": snapshot["snapshot_sha256"],
                 "renderer_version": RENDERER_VERSION,
+                "rendering": rendering_metadata(),
                 "date_range": snapshot["date_range"],
                 "article_count": len(snapshot["articles"]),
                 "pdf_source_update_count": len(snapshot["pdf_source_updates"]),
@@ -754,8 +893,11 @@ def chat(request: ChatRequest) -> dict:
 
 
 def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[str, Any]:
-    if renderer_version not in {RENDERER_VERSION, "range-report-v1"}:
-        raise HTTPException(status_code=404, detail="Report renderer not found.")
+    if renderer_version not in {RENDERER_VERSION, "range-report-v1", "range-report-v2"}:
+        if not is_render_identity(renderer_version) or not (
+            RANGE_REPORT_DIR / snapshot_id / f"{snapshot_id}-{renderer_version}.pdf"
+        ).is_file():
+            raise HTTPException(status_code=404, detail="Report renderer not found.")
     try:
         return load_range_report(RANGE_REPORT_DIR, snapshot_id)
     except KeyError as exc:
@@ -770,7 +912,7 @@ def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[
 )
 def registry_range_report(snapshot_id: str, renderer_version: str) -> HTMLResponse:
     snapshot = _load_range_report_or_http(snapshot_id, renderer_version)
-    return HTMLResponse(render_range_report_html(snapshot))
+    return HTMLResponse(render_range_report_html(snapshot, renderer_version=renderer_version))
 
 
 @app.get(
@@ -780,9 +922,9 @@ def registry_range_report(snapshot_id: str, renderer_version: str) -> HTMLRespon
 def registry_range_report_pdf(snapshot_id: str, renderer_version: str) -> Response:
     snapshot = _load_range_report_or_http(snapshot_id, renderer_version)
     try:
-        path = ensure_range_report_pdf(snapshot, RANGE_REPORT_DIR)
+        path = ensure_range_report_pdf(snapshot, RANGE_REPORT_DIR, renderer_version)
         pdf_bytes = path.read_bytes()
-    except (GenerationError, OSError) as exc:
+    except (GenerationError, RangeReportError, OSError) as exc:
         raise HTTPException(status_code=503, detail="Range report PDF is unavailable.") from exc
     if not pdf_bytes.startswith(b"%PDF-"):
         raise HTTPException(status_code=503, detail="Range report PDF is invalid.")

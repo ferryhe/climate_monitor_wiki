@@ -136,6 +136,11 @@ REQUIRED_TABLE_COLUMNS = {
         "raw_date", "date_precision", "start_date", "end_date", "summary", "content_sha256",
         "type_safe_classification_json", "item_json",
     },
+    "article_date_observations": {
+        "observation_id", "article_id", "canonical_url", "observation_kind", "observed_at",
+        "source_system", "source_database", "source_table", "source_record_id", "evidence_json",
+        "recorded_at",
+    },
 }
 
 # Tables introduced per migration. The contract is validated per deployed
@@ -153,19 +158,36 @@ _V13_TABLES = frozenset({
     "pdf_intake_calendar_items",
 })
 _V14_TABLES = frozenset({"pdf_intake_document_sources"})
-V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
-V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
-V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES
+_V18_TABLES = frozenset({"article_date_observations"})
+V3_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V4_TABLES - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES - _V18_TABLES
+V4_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V5_TABLES - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES - _V18_TABLES
+V5_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V7_TABLES - _V11_TABLES - _V13_TABLES - _V14_TABLES - _V18_TABLES
 V6_TABLES = V5_TABLES
-V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V11_TABLES - _V13_TABLES - _V14_TABLES
-V11_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V13_TABLES - _V14_TABLES
-V13_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V14_TABLES
-V14_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+V7_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V11_TABLES - _V13_TABLES - _V14_TABLES - _V18_TABLES
+V11_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V13_TABLES - _V14_TABLES - _V18_TABLES
+V13_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V14_TABLES - _V18_TABLES
+V14_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V18_TABLES
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+for _kind in ("meeting", "article"):
+    REQUIRED_TABLE_COLUMNS[f"{_kind}_check_runs"] = {
+        "run_id", "input_json", "input_sha256", "created_at", "completed_at", "status",
+        "item_count", "completed_count", "error_message",
+    }
+    REQUIRED_TABLE_COLUMNS[f"{_kind}_check_attempts"] = {
+        "attempt_id", "run_id", "occurrence_id", "source_url", "source_revision_sha256",
+        "checked_at", "access_status", "verification_status", "packet_json", "packet_sha256",
+    }
+V17_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V18_TABLES
+V18_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 18:
+        return V18_TABLES
+    if version >= 17:
+        return V17_TABLES
     if version == 3:
         return V3_TABLES
     if version == 4:
@@ -293,6 +315,9 @@ REQUIRED_FOREIGN_KEYS = {
     "pdf_intake_articles": {
         ("articles", ("core_article_id",), ("article_id",)),
     },
+    "article_date_observations": {
+        ("articles", ("article_id",), ("article_id",)),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -332,6 +357,8 @@ REQUIRED_TRIGGERS = frozenset(
         "pdf_intake_calendar_items_are_append_only_update",
         "pdf_intake_calendar_items_are_append_only_delete",
         "pdf_intake_articles_confirmed_link_is_immutable",
+        "article_date_observations_are_append_only_update",
+        "article_date_observations_are_append_only_delete",
     }
 )
 
@@ -363,8 +390,24 @@ REQUIRED_INDEXES = frozenset(
         "idx_pdf_calendar_event",
         "idx_pdf_calendar_document",
         "idx_pdf_articles_core",
+        "idx_article_date_observations_article_kind_time",
     }
 )
+
+
+_CHECK_TRIGGERS = frozenset(
+    f"{kind}_check_{suffix}" for kind in ("meeting", "article")
+    for suffix in ("attempts_immutable_update", "attempts_immutable_delete", "inputs_immutable")
+)
+_CHECK_INDEXES = frozenset(f"idx_{kind}_checks_occurrence" for kind in ("meeting", "article"))
+REQUIRED_TRIGGERS |= _CHECK_TRIGGERS
+REQUIRED_INDEXES |= _CHECK_INDEXES
+for _kind, _source_table in (("meeting", "pdf_intake_calendar_items"),
+                             ("article", "pdf_intake_article_occurrences")):
+    REQUIRED_FOREIGN_KEYS[f"{_kind}_check_attempts"] = {
+        (f"{_kind}_check_runs", ("run_id",), ("run_id",)),
+        (_source_table, ("occurrence_id",), ("occurrence_id",)),
+    }
 
 
 def _normalize_sql(sql: str) -> str:
@@ -457,6 +500,13 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version < 18:
+        names -= {
+            "article_date_observations_are_append_only_update",
+            "article_date_observations_are_append_only_delete",
+        }
+    if version < 17:
+        names -= _CHECK_TRIGGERS
     if version < 11:
         names = names - {
             "climate_event_versions_are_append_only_update",
@@ -501,6 +551,10 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version < 18:
+        names -= {"idx_article_date_observations_article_kind_time"}
+    if version < 17:
+        names -= _CHECK_INDEXES
     if version < 11:
         names = frozenset(name for name in names if not name.startswith("idx_meeting_")
                           and not name.startswith("idx_climate_event"))

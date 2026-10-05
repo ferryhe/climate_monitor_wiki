@@ -357,8 +357,9 @@ def test_existing_content_addressed_artifacts_are_never_overwritten(tmp_path, mo
             lambda summary, path, *, allow_offcycle=False: path.write_bytes(b"different pdf"),
         )
 
-    with pytest.raises(LockStateError, match="artifact"):
-        run_delivery(report, output, state, config, dry_run=True)
+    # Template/summary changes after archiving reuse the original frozen bytes.
+    # Their former byte-comparison gate assumed one permanent renderer.
+    run_delivery(report, output, state, config, dry_run=True)
     assert {name: (artifact_dir / name).read_bytes() for name in before} == before
 
 

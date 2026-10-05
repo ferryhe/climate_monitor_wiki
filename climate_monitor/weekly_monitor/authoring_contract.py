@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -339,13 +339,30 @@ def _build_evidence_request(
             "upstream_summary_basis": record.get("summary_basis"),
         }
         acquisition = record.get("acquisition")
-        if acquisition is not None and (
-            not isinstance(acquisition, Mapping) or set(acquisition) != {
-                "discovered_at", "publication_date", "publication_date_evidence",
-                "date_status", "update_status",
-            }
-        ):
-            raise AuthoringContractError("article evidence acquisition semantics are invalid")
+        legacy_acquisition_fields = {
+            "discovered_at", "publication_date", "publication_date_evidence",
+            "date_status", "update_status",
+        }
+        if acquisition is not None:
+            if not isinstance(acquisition, Mapping) or frozenset(acquisition) not in {
+                frozenset(legacy_acquisition_fields),
+                frozenset(legacy_acquisition_fields | {"collected_at"}),
+            }:
+                raise AuthoringContractError("article evidence acquisition semantics are invalid")
+            if "collected_at" in acquisition and acquisition["collected_at"] is not None:
+                collected_at = acquisition["collected_at"]
+                if not isinstance(collected_at, str):
+                    raise AuthoringContractError("article evidence collection time is invalid")
+                try:
+                    parsed_collected_at = datetime.fromisoformat(
+                        collected_at.replace("Z", "+00:00")
+                    )
+                except ValueError as exc:
+                    raise AuthoringContractError(
+                        "article evidence collection time is invalid"
+                    ) from exc
+                if parsed_collected_at.tzinfo is None:
+                    raise AuthoringContractError("article evidence collection time is invalid")
         # display_pillar fallback: explicit record value wins; otherwise
         # "A wins when any A origin exists, B otherwise" per the candidate
         # contract. This avoids mis-rendering cross-pillar merges when the

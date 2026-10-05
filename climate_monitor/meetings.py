@@ -64,7 +64,7 @@ _UNRESOLVED_EVENT_END = re.compile(
     re.I,
 )
 _SOURCE_TIMEZONE_LABEL = re.compile(
-    r"(?:ET|EDT|BST|UTC(?:[+-](?:0?\d|1[0-4])(?::[0-5]\d)?)?)",
+    r"(?:ET|EDT|BST|(?:UTC|GMT)(?:[+-](?:0?\d|1[0-4])(?::[0-5]\d)?)?)",
     re.I,
 )
 _DATE_ONLY_SEGMENT = re.compile(
@@ -813,6 +813,17 @@ def _event_id(
     if len(direct) > 1:
         candidate["_identity_ambiguous"] = True
     return "event-" + _digest(_default_event_key(candidate, content_version_id))[:24]
+
+
+def resolve_event_identity(
+    connection: sqlite3.Connection, candidate: Mapping[str, Any], content_version_id: str,
+) -> str:
+    """Read the collector's established identity, including supported reschedules."""
+    historical_sources = [dict(row) for row in connection.execute(
+        """SELECT event_id, content_version_id, candidate_json, interpretation_seq
+           FROM climate_event_sources"""
+    )]
+    return _event_id(connection, dict(candidate), content_version_id, historical_sources)
 
 
 def _single_day_evidence(
@@ -1756,10 +1767,13 @@ def query_events(
             ):
                 continue
             event["sources"] = [
-                {key: value for key, value in source.items() if key not in {
-                    "candidate_json", "markdown_content", "first_fetched_at", "report_date",
-                    "batch_started_at", "batch_id",
-                }}
+                {
+                    **{key: value for key, value in source.items() if key not in {
+                        "candidate_json", "markdown_content", "first_fetched_at", "report_date",
+                        "batch_started_at", "batch_id",
+                    }},
+                    "collected_at": source["first_fetched_at"],
+                }
                 for source in source_rows
             ]
             result.append(event)

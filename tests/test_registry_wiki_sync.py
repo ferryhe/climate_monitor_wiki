@@ -9,6 +9,7 @@ from climate_registry.schema import apply_migrations
 from climate_registry.acquisition import PublicationDatePolicy, store_acquisition_batch
 from climate_registry.persistent import initialize_registry
 from climate_registry.read_api import RegistryReader
+from climate_registry.wiki import sync_registry_wiki
 from agentic_wiki.wiki_agent import WikiKnowledgeBase
 from scripts.sync_source_wiki import _render_registry_article, sync_source_wiki
 
@@ -215,6 +216,41 @@ def test_registry_sync_generates_summary_only_article_without_appearance(tmp_pat
     assert 'Unattached Registry report summary.' in page
     assert 'Registry article version: report-version-only' in page
     assert 'Article citation: [https://example.org/summary-only](https://example.org/summary-only)' in page
+
+
+def test_registry_wiki_sync_keeps_real_report_filename_and_hash(tmp_path):
+    database = tmp_path / 'registry.sqlite3'
+    _registry(database)
+    report_sha = 'e' * 64
+    report_filename = 'climate-monitor-2026-09-28.md'
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO reports VALUES (?, ?, ?, ?, ?, 'weekly', 'weekly-pillars-v1', 1, 1, 0, '[]')",
+            ('report-2026-09-28', '2026-09-28', report_filename,
+             'Weekly climate report', report_sha),
+        )
+        connection.execute(
+            """INSERT INTO discoveries VALUES
+               ('discovery-report-article', 'report-2026-09-28', 1, 'Pillar A', 'A',
+                'article-confirmed', 'article-version', 'https://example.org/confirmed',
+                'Confirmed climate article', 'Report summary for confirmed article.', 1, NULL)"""
+        )
+        connection.execute(
+            """INSERT INTO report_appearances(
+                   report_id, article_id, version_id, discovery_id, section, pillar,
+                   ordinal, disposition
+               ) VALUES ('report-2026-09-28', 'article-confirmed', 'article-version',
+                   'discovery-report-article', 'Pillar A', 'A', 1, 'new')"""
+        )
+
+    wiki = tmp_path / 'wiki'
+    wiki.mkdir()
+    states = sync_registry_wiki(database, wiki)
+    page = (wiki / 'article-article-confirmed.md').read_text(encoding='utf-8')
+
+    assert states['article-article-confirmed.md'] == 'created'
+    assert f'## Report observation: {report_filename}' in page
+    assert f'Report citation: {report_filename}; SHA-256: {report_sha}' in page
 
 
 def test_registry_sync_generates_confirmed_and_source_only_pages(tmp_path):
