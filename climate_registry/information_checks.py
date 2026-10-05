@@ -277,6 +277,45 @@ def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier
     return packet
 
 
+def _check_state(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_by_source = {}
+    for index, check in enumerate(checks):
+        source_url = check.get("source_url")
+        key = ("source", source_url) if isinstance(source_url, str) else ("legacy", index)
+        previous = latest_by_source.get(key)
+        if previous is None or (check.get("checked_at", ""), index) >= previous[0]:
+            latest_by_source[key] = ((check.get("checked_at", ""), index), check)
+    current = [entry[1] for entry in latest_by_source.values()]
+    verified = next((check for check in current if check["verification_status"] == "verified"), None)
+    conflict = any(check["verification_status"] == "conflict" for check in current)
+    status = "conflict" if conflict else "verified" if verified else "partial" if any(
+        check["verification_status"] == "partial" for check in current) else "unchecked"
+    return {"access_status": "accessible" if any(check["access_status"] == "accessible" for check in current)
+        else current[-1]["access_status"] if current else "unchecked",
+        "verification_status": status, "collection_status": "collected" if status == "verified" else "pending",
+        "checked_at": max((check["checked_at"] for check in current), default=None), "checks": checks,
+        "collected_candidate": verified["website_candidate"] if status == "verified" else None,
+        "canonical_event_id": verified.get("canonical_event_id") if status == "verified" else None}
+
+
+def merge_checked_observation(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """Merge duplicate PDF copies without letting an unchecked copy erase valid checks."""
+    merged = {**first, **second}
+    for key in ("source_observations", "checks"):
+        values = []
+        seen = set()
+        for value in first.get(key, []) + second.get(key, []):
+            identity = _json(value)
+            if identity not in seen:
+                seen.add(identity)
+                values.append(value)
+        if values or key in first or key in second:
+            merged[key] = values
+    if merged.get("checks"):
+        merged.update(_check_state(merged["checks"]))
+    return merged
+
+
 def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any]) -> dict[str, Any]:
     prefix = KINDS[kind]
     if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (prefix + "_check_attempts",)).fetchone():
@@ -295,17 +334,9 @@ def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any
         checks.append({key: value for key, value in packet.items() if key != "reader"} | {
             "body_sha256": packet["reader"].get("content_hash"),
             "final_url": packet["reader"].get("final_url"), "attempt_id": row["attempt_id"], "run_id": row["run_id"],
+            "source_url": row["source_url"],
         })
-    verified = next((check for check in checks if check["verification_status"] == "verified"), None)
-    conflict = any(check["verification_status"] == "conflict" for check in checks)
-    status = "conflict" if conflict else "verified" if verified else "partial" if any(
-        check["verification_status"] == "partial" for check in checks) else "unchecked"
-    return {"access_status": "accessible" if any(check["access_status"] == "accessible" for check in checks)
-        else checks[-1]["access_status"] if checks else "unchecked",
-        "verification_status": status, "collection_status": "collected" if status == "verified" else "pending",
-        "checked_at": max((check["checked_at"] for check in checks), default=None), "checks": checks,
-        "collected_candidate": verified["website_candidate"] if status == "verified" else None,
-        "canonical_event_id": verified.get("canonical_event_id") if status == "verified" else None}
+    return _check_state(checks)
 
 
 def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: set[str] | None = None,

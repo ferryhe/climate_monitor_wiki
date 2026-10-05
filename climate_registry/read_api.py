@@ -939,9 +939,16 @@ class RegistryReader:
         payload = query_events(self.database, base_date=base_date, timezone_name="UTC", include_deadlines=True)
         collected = {record["event_id"]: dict(record, origin="web_collection", collection_status="collected",
             verification_status="verified", access_status="accessible") for record in payload["records"] + (additional_events or [])}
-        imported = self.pdf_calendar_items_all()
-        imported = list({item["occurrence_id"]: item for item in imported + (additional_calendar_items or [])}.values())
         from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations
+        from .information_checks import merge_checked_observation
+        imported_by_id = {}
+        for item in self.pdf_calendar_items_all() + (additional_calendar_items or []):
+            occurrence_id = item["occurrence_id"]
+            imported_by_id[occurrence_id] = (
+                merge_checked_observation(imported_by_id[occurrence_id], item)
+                if occurrence_id in imported_by_id else item
+            )
+        imported = list(imported_by_id.values())
         for item in self.resolve_pdf_meeting_identities(imported):
             item = collected_pdf_meeting(item)
             end = _calendar_end_date(item)

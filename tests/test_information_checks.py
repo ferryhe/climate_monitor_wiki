@@ -12,6 +12,7 @@ import pytest
 from climate_monitor.meetings import EXTRACTION_FIELDS
 from climate_monitor.meeting_fields import merge_meeting_observations
 from climate_registry.information_checks import check_targets, evaluate, latest_checks, run_checks
+from climate_registry.information_checks import merge_checked_observation
 from climate_registry.read_api import RegistryReader
 from climate_registry.schema import apply_migrations
 
@@ -144,6 +145,75 @@ def test_changed_source_revision_does_not_inherit_verification(tmp_path):
     assert len(result) == 1 and len(result[0]["pdf_observations"]) == 1
     other = dict(imported, canonical_event_id="event-another-occurrence", occurrence_id="other")
     assert len(merge_meeting_observations([native, other])) == 2
+
+
+def test_merge_keeps_verified_checks_and_does_not_erase_conflict():
+    candidate = {"event_type": "event", "name": "Climate forum"}
+    public = {
+        "access_status": "accessible", "verification_status": "verified",
+        "collection_status": "collected", "checked_at": "2026-10-04T10:00:00Z",
+        "collected_candidate": candidate, "canonical_event_id": "event-canonical",
+        "checks": [{
+            "access_status": "accessible", "verification_status": "verified",
+            "checked_at": "2026-10-04T10:00:00Z", "website_candidate": candidate,
+            "canonical_event_id": "event-canonical",
+        }],
+        "source_observations": [{"filename": "public.pdf"}],
+    }
+    runtime = {
+        "access_status": "unchecked", "verification_status": "unchecked",
+        "collection_status": "pending", "checks": [],
+        "source_observations": [{"filename": "runtime.pdf"}],
+    }
+    merged = merge_checked_observation(public, runtime)
+    assert merged["verification_status"] == "verified"
+    assert merged["collection_status"] == "collected"
+    assert merged["checked_at"] == "2026-10-04T10:00:00Z"
+    assert merged["collected_candidate"] == candidate
+    assert merged["canonical_event_id"] == "event-canonical"
+    assert {item["filename"] for item in merged["source_observations"]} == {
+        "public.pdf", "runtime.pdf",
+    }
+
+    conflict = {
+        "checks": [{
+            "access_status": "accessible", "verification_status": "conflict",
+            "checked_at": "2026-10-05T10:00:00Z", "website_candidate": candidate,
+            "canonical_event_id": "event-canonical",
+        }],
+    }
+    conflicted = merge_checked_observation(public, conflict)
+    assert conflicted["verification_status"] == "conflict"
+    assert conflicted["collection_status"] == "pending"
+    assert conflicted["collected_candidate"] is None
+    assert conflicted["canonical_event_id"] is None
+
+
+def test_merge_uses_latest_check_per_source_url_and_keeps_history():
+    def check(source_url, checked_at, status, start_day, attempt_id):
+        return {
+            "source_url": source_url, "checked_at": checked_at, "access_status": "accessible",
+            "verification_status": status,
+            "website_candidate": {"name": "Climate forum", "start_date": start_day},
+            "canonical_event_id": "event-climate-forum", "attempt_id": attempt_id,
+        }
+
+    old_verified = check("https://example.org/event", "2026-10-04T10:00:00Z", "verified", "2026-10-10", "old")
+    new_verified = check("https://example.org/event", "2026-10-05T10:00:00Z", "verified", "2026-10-20", "new")
+    old_conflict = check("https://example.org/event", "2026-10-04T10:00:00Z", "conflict", "2026-10-10", "old-conflict")
+    new_conflict = check("https://example.org/event", "2026-10-05T10:00:00Z", "conflict", "2026-10-20", "new-conflict")
+
+    for checks, status, selected_date in (
+        ([old_verified, new_verified], "verified", "2026-10-20"),
+        ([old_conflict, new_verified], "verified", "2026-10-20"),
+        ([old_verified, new_conflict], "conflict", None),
+        ([old_verified, check("https://example.org/other", "2026-10-05T10:00:00Z", "conflict", "2026-10-20", "other-conflict")], "conflict", None),
+    ):
+        merged = merge_checked_observation({"checks": [checks[0]]}, {"checks": [checks[1]]})
+        assert merged["verification_status"] == status
+        assert len(merged["checks"]) == 2
+        assert merged["checked_at"] == "2026-10-05T10:00:00Z"
+        assert (merged["collected_candidate"] or {}).get("start_date") == selected_date
 
 
 @pytest.mark.parametrize("separate_databases", [False, True])

@@ -76,6 +76,7 @@ from climate_registry.pdf_pipeline import (
     read_pdf_batch,
     retry_pdf_batch,
 )
+from climate_registry.information_checks import merge_checked_observation
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -405,21 +406,6 @@ def _pdf_registry_view() -> tuple[RegistryReader, set[str] | None, set[str] | No
     return pdf_reader, article_ids, calendar_ids
 
 
-def _merge_pdf_observation(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    merged = {**first, **second}
-    for key in ("source_observations", "checks"):
-        values = []
-        seen = set()
-        for value in first.get(key, []) + second.get(key, []):
-            identity = json.dumps(value, sort_keys=True, separators=(",", ":"))
-            if identity not in seen:
-                seen.add(identity)
-                values.append(value)
-        if values or key in first or key in second:
-            merged[key] = values
-    return merged
-
-
 def _merge_pdf_article_payloads(
     public: dict[str, Any] | None, runtime: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -432,7 +418,7 @@ def _merge_pdf_article_payloads(
         for item in payload.get("occurrences", []):
             occurrence_id = item["occurrence_id"]
             occurrences[occurrence_id] = (
-                _merge_pdf_observation(occurrences[occurrence_id], item)
+                merge_checked_observation(occurrences[occurrence_id], item)
                 if occurrence_id in occurrences else item
             )
     merged["occurrences"] = sorted(
@@ -457,7 +443,7 @@ def _merge_pdf_calendar_items(
     for item in runtime_items:
         occurrence_id = item["occurrence_id"]
         items[occurrence_id] = (
-            _merge_pdf_observation(items[occurrence_id], item)
+            merge_checked_observation(items[occurrence_id], item)
             if occurrence_id in items else item
         )
     return sorted(items.values(), key=lambda item: (

@@ -995,36 +995,69 @@ def _pdf_calendar_payload(
     reader: RegistryReader,
     *,
     base_date: str,
+    overlay_reader: RegistryReader | None = None,
     activated_pdf_occurrence_ids: set[str] | None = None,
     activated_calendar_ids: set[str] | None = None,
     identity_reader: RegistryReader | None = None,
 ) -> dict[str, Any]:
-    try:
-        if not _pdf_calendar_available(reader):
+    def observations(
+        source: RegistryReader,
+        *,
+        allowed_pdf_ids: set[str] | None = None,
+        allowed_calendar_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            if not _pdf_calendar_available(source):
+                return {
+                    "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
+                    "base_date": base_date, "records": [],
+                }
+            allowed = allowed_calendar_ids
+            if allowed_pdf_ids is not None:
+                with source.connect() as connection:
+                    allowed_documents = {
+                        str(row["source_document_sha256"])
+                        for row in connection.execute(
+                            "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_article_occurrences"
+                        )
+                        if row["occurrence_id"] in allowed_pdf_ids
+                    }
+                    if allowed is None:
+                        allowed = {
+                            str(row["occurrence_id"])
+                            for row in connection.execute(
+                                "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_calendar_items"
+                            )
+                            if row["source_document_sha256"] in allowed_documents
+                        }
+            items = source.pdf_calendar_items_all(allowed_occurrence_ids=allowed)
+        except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
             return {
-                "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
+                "status": "unavailable", "coverage": {"status": "unavailable", "error": type(exc).__name__},
                 "base_date": base_date, "records": [],
             }
-        allowed_calendar_ids = activated_calendar_ids
-        if activated_pdf_occurrence_ids is not None:
-            with reader.connect() as connection:
-                allowed_documents = {
-                    str(row["source_document_sha256"])
-                    for row in connection.execute(
-                        "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_article_occurrences"
-                    )
-                    if row["occurrence_id"] in activated_pdf_occurrence_ids
-                }
-                if allowed_calendar_ids is None:
-                    allowed_calendar_ids = {
-                        str(row["occurrence_id"])
-                        for row in connection.execute(
-                            "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_calendar_items"
-                        )
-                        if row["source_document_sha256"] in allowed_documents
-                    }
-        items = reader.pdf_calendar_items_all(allowed_occurrence_ids=allowed_calendar_ids)
-        items = (identity_reader or reader).resolve_pdf_meeting_identities(items)
+        return {
+            "status": "included" if items else "empty", "coverage": {"status": "complete"},
+            "base_date": base_date, "records": items,
+        }
+
+    try:
+        if overlay_reader is None:
+            payload = observations(
+                reader,
+                allowed_pdf_ids=activated_pdf_occurrence_ids,
+                allowed_calendar_ids=activated_calendar_ids,
+            )
+        else:
+            payload = observations(reader)
+            payload = _merge_pdf_calendars(payload, observations(
+                overlay_reader,
+                allowed_pdf_ids=activated_pdf_occurrence_ids,
+                allowed_calendar_ids=activated_calendar_ids,
+            ))
+        if payload["status"] == "unavailable":
+            return payload
+        items = (identity_reader or reader).resolve_pdf_meeting_identities(payload["records"])
     except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
         return {
             "status": "unavailable", "coverage": {"status": "unavailable", "error": type(exc).__name__},
@@ -1036,7 +1069,7 @@ def _pdf_calendar_payload(
     records = [item for item in records if (end := _calendar_end_date(item)) is not None and end >= base]
     records = [item for item in records if item.get("status") not in {"cancelled", "retrospective"}]
     return {
-        "status": "included" if records else "empty", "coverage": {"status": "complete"},
+        "status": "included" if records else "empty", "coverage": payload["coverage"],
         "base_date": base_date, "records": records,
     }
 
@@ -1137,10 +1170,14 @@ def _merge_pdf_calendars(base: dict[str, Any], overlay: dict[str, Any]) -> dict[
         return base
     if base["status"] == "unavailable":
         return overlay
+    from .information_checks import merge_checked_observation
     records: dict[str, dict[str, Any]] = {}
     for item in [*base["records"], *overlay["records"]]:
         identity = str(item.get("occurrence_id") or item.get("event_id") or _digest(item))
-        records[identity] = item
+        records[identity] = (
+            merge_checked_observation(records[identity], item)
+            if identity in records else item
+        )
     return {
         "status": "included" if records else "empty",
         "coverage": {"status": "complete"},
@@ -1341,17 +1378,21 @@ def freeze_range_report(
         meeting = _meeting_payload(
             snapshot_reader, meeting_snapshot_id, base_date=base_date
         )
-        pdf_calendar = _pdf_calendar_payload(snapshot_reader, base_date=base_date)
-        if pdf_overlay_reader is not None and (activated_pdf_ids or (overlay_manifest or {}).get("pdf_calendar_occurrence_ids")):
-            overlay_calendar = _pdf_calendar_payload(
-                pdf_overlay_reader,
-                base_date=base_date,
-                activated_pdf_occurrence_ids=activated_pdf_ids,
-                activated_calendar_ids=(set(overlay_manifest["pdf_calendar_occurrence_ids"])
-                    if overlay_manifest is not None and "pdf_calendar_occurrence_ids" in overlay_manifest else None),
-                identity_reader=snapshot_reader,
-            )
-            pdf_calendar = _merge_pdf_calendars(pdf_calendar, overlay_calendar)
+        activated_calendar_ids = (
+            set(overlay_manifest["pdf_calendar_occurrence_ids"])
+            if overlay_manifest is not None and "pdf_calendar_occurrence_ids" in overlay_manifest else None
+        )
+        include_pdf_overlay = pdf_overlay_reader is not None and (
+            activated_pdf_ids or activated_calendar_ids
+        )
+        pdf_calendar = _pdf_calendar_payload(
+            snapshot_reader,
+            base_date=base_date,
+            overlay_reader=pdf_overlay_reader if include_pdf_overlay else None,
+            activated_pdf_occurrence_ids=activated_pdf_ids if include_pdf_overlay else None,
+            activated_calendar_ids=activated_calendar_ids if include_pdf_overlay else None,
+            identity_reader=snapshot_reader,
+        )
     if web_overlay is not None:
         source = _merge_range_sources(source, web_overlay)
     if pdf_overlay is not None:

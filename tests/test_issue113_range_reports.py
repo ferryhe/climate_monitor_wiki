@@ -234,7 +234,11 @@ def _reader(database: Path, tmp_path: Path) -> RegistryReader:
     return RegistryReader(database, repository_root=tmp_path / "application")
 
 
-def _insert_pdf_calendar(database: Path, name: str) -> str:
+def _insert_pdf_calendar(
+    database: Path, name: str, *, raw_date: str = "2 Oct 2026",
+    start_date: str = "2026-10-02", end_date: str = "2026-10-02",
+    source_url: str | None = None,
+) -> str:
     occurrence_id = "calendar-" + _sha(name)[:12]
     with sqlite3.connect(database) as connection:
         document_sha = connection.execute(
@@ -247,18 +251,18 @@ def _insert_pdf_calendar(database: Path, name: str) -> str:
             "page": 2,
             "name": name,
             "kind": "event",
-            "raw_date": "2 Oct 2026",
+            "raw_date": raw_date,
             "date_precision": "day",
-            "start_date": "2026-10-02",
-            "end_date": "2026-10-02",
+            "start_date": start_date,
+            "end_date": end_date,
             "summary": name,
+            "source_urls": [source_url] if source_url else [],
         }
         connection.execute(
             "INSERT INTO pdf_intake_calendar_items VALUES "
-            "(?, ?, ?, 2, ?, 'event', '2 Oct 2026', 'day', "
-            "'2026-10-02', '2026-10-02', ?, ?, NULL, ?)",
+            "(?, ?, ?, 2, ?, 'event', ?, 'day', ?, ?, ?, ?, NULL, ?)",
             (
-                occurrence_id, occurrence_id, document_sha, name, name,
+                occurrence_id, occurrence_id, document_sha, name, raw_date, start_date, end_date, name,
                 _sha(name), json.dumps(item),
             ),
         )
@@ -289,15 +293,21 @@ def _insert_pdf_article(database: Path, article_id: str, url: str, occurrence_id
         )
 
 
-def _insert_verified_meeting_check(database: Path, occurrence_id: str) -> None:
+def _insert_meeting_check(
+    database: Path, occurrence_id: str, *, website_candidate: dict | None = None,
+    canonical_event_id: str | None = None, verification_status: str = "verified",
+    checked_at: str = NOW, run_id: str = "fixture-run", attempt_id: str = "fixture-attempt",
+    source_url: str | None = None,
+) -> None:
     from climate_registry.information_checks import _sha as check_sha, source_revision
 
     reader = _reader(database, database.parent)
     item = next(item for item in reader.pdf_calendar_items_all() if item["occurrence_id"] == occurrence_id)
+    source_url = source_url if source_url is not None else next(iter(item.get("source_urls") or [""]))
     packet = {
-        "checked_at": NOW, "access_status": "accessible", "verification_status": "verified",
+        "checked_at": checked_at, "access_status": "accessible", "verification_status": verification_status,
         "reader": {"content_hash": "a" * 64, "final_url": "https://example.org/calendar"},
-        "website_candidate": None,
+        "website_candidate": website_candidate, "canonical_event_id": canonical_event_id,
     }
     packet_json = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     with sqlite3.connect(database) as connection:
@@ -305,13 +315,14 @@ def _insert_verified_meeting_check(database: Path, occurrence_id: str) -> None:
             """INSERT INTO meeting_check_runs(
                    run_id, input_json, input_sha256, created_at, completed_at, status,
                    item_count, completed_count, error_message)
-               VALUES ('fixture-run', '{}', ?, ?, ?, 'complete', 1, 1, NULL)""",
-            (check_sha({}), NOW, NOW),
+               VALUES (?, '{}', ?, ?, ?, 'complete', 1, 1, NULL)""",
+            (run_id, check_sha({}), checked_at, checked_at),
         )
         connection.execute(
             """INSERT INTO meeting_check_attempts VALUES
-               ('fixture-attempt', 'fixture-run', ?, '', ?, ?, 'accessible', 'verified', ?, ?)""",
-            (occurrence_id, source_revision("meetings", item), NOW, packet_json, check_sha(packet)),
+               (?, ?, ?, ?, ?, ?, 'accessible', ?, ?, ?)""",
+            (attempt_id, run_id, occurrence_id, source_url, source_revision("meetings", item),
+             checked_at, verification_status, packet_json, check_sha(packet)),
         )
 
 
@@ -671,7 +682,10 @@ def test_public_pdf_only_article_and_calendar_survive_runtime_modes(tmp_path):
         }
 
 
-def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(tmp_path, monkeypatch):
+@pytest.mark.parametrize("checked_copy", ["public", "runtime"])
+def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
+    tmp_path, monkeypatch, checked_copy,
+):
     public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
     public_root.mkdir()
     runtime_root.mkdir()
@@ -700,7 +714,19 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
             "INSERT INTO pdf_intake_document_sources VALUES (?, 'C:/runtime/report-copy.pdf', 'runtime-copy.pdf', ?)",
             (document_sha, NOW),
         )
-    _insert_verified_meeting_check(runtime_database, shared_calendar)
+    checked_candidate = {
+        "name": "Shared PDF meeting", "event_type": "event", "organizer": "Example Institute",
+        "status": "scheduled", "date_precision": "day", "start_date": "2026-10-10",
+        "end_date": "2026-10-11", "date_evidence": "10-11 October 2026",
+        "timezone": None, "location": None, "online_url": None, "deadline_type": None,
+        "deadline_date": None, "deadline_evidence": None,
+        "relevance_reason": "Verified original website event.",
+    }
+    checked_database = public_database if checked_copy == "public" else runtime_database
+    _insert_meeting_check(
+        checked_database, shared_calendar, website_candidate=checked_candidate,
+        canonical_event_id="event-checked-shared",
+    )
 
     public_reader = _reader(public_database, public_root)
     runtime_reader = _reader(runtime_database, runtime_root)
@@ -740,6 +766,10 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     shared_item = next(item for item in calendar if item["name"] == "Shared PDF meeting")
     assert shared_item["occurrence_id"] == shared_calendar
     assert shared_item["verification_status"] == "verified"
+    assert shared_item["access_status"] == "accessible"
+    assert shared_item["collection_status"] == "collected"
+    assert shared_item["checked_at"] == NOW
+    assert {check["attempt_id"] for check in shared_item["checks"]} == {"fixture-attempt"}
     assert "runtime-copy.pdf" in {source["filename"] for source in shared_item["source_observations"]}
 
     meetings = api_server.registry_meetings(base_date="2026-09-30")
@@ -747,6 +777,186 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     assert {item["occurrence_id"] for item in meetings["items"]} == public_calendar | {
         shared_calendar, runtime_calendar,
     }
+    verified_meetings = api_server.registry_meetings(
+        verification_status="verified", base_date="2026-09-30",
+    )
+    assert verified_meetings["pagination"]["total"] == 1
+    verified_shared = verified_meetings["items"][0]
+    assert verified_shared["occurrence_id"] == shared_calendar
+    assert verified_shared["verification_status"] == "verified"
+    assert verified_shared["access_status"] == "accessible"
+    assert verified_shared["collection_status"] == "collected"
+    assert verified_shared["checked_at"] == NOW
+    assert {check["attempt_id"] for check in verified_shared["checks"]} == {"fixture-attempt"}
+    assert {source["filename"] for source in verified_shared["source_observations"]} >= {
+        "report.pdf", "runtime-copy.pdf",
+    }
+
+    report = freeze_range_report(
+        public_reader, tmp_path / f"range-merge-{checked_copy}",
+        start_date="2026-09-17", end_date="2026-09-30",
+        generated_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+        pdf_overlay_reader=runtime_reader,
+        overlay_manifest={
+            "web_items": [], "pdf_occurrence_ids": [],
+            "pdf_calendar_occurrence_ids": sorted({shared_calendar, runtime_calendar}),
+        },
+    )
+    range_shared = next(
+        item for item in report["pdf_calendar"]["records"]
+        if item["occurrence_id"] == shared_calendar
+    )
+    assert range_shared["verification_status"] == "verified"
+    assert range_shared["canonical_event_id"] == "event-checked-shared"
+    assert range_shared["event_id"] == "event-checked-shared"
+    assert range_shared["start_date"] == "2026-10-10"
+    assert range_shared["end_date"] == "2026-10-11"
+    assert range_shared["checked_at"] == NOW
+    assert {source["filename"] for source in range_shared["source_observations"]} >= {
+        "report.pdf", "runtime-copy.pdf",
+    }
+
+
+@pytest.mark.parametrize("newer_copy", ["public", "runtime"])
+def test_pdf_rechecks_select_latest_source_in_api_and_range(tmp_path, monkeypatch, newer_copy):
+    public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
+    public_root.mkdir()
+    runtime_root.mkdir()
+    public_database = _database(public_root, include_article_a_acquisitions=False)
+    runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
+    source_url = "https://example.org/meeting"
+    occurrence_id = _insert_pdf_calendar(
+        public_database, "Rechecked climate meeting", source_url=source_url,
+    )
+    assert occurrence_id == _insert_pdf_calendar(
+        runtime_database, "Rechecked climate meeting", source_url=source_url,
+    )
+    older_database, newer_database = (
+        (runtime_database, public_database) if newer_copy == "public"
+        else (public_database, runtime_database)
+    )
+    for database, day, checked_at, run_id, attempt_id in (
+        (older_database, "2026-10-10", "2026-10-04T10:00:00Z", "older-run", "older-attempt"),
+        (newer_database, "2026-10-20", "2026-10-05T10:00:00Z", "newer-run", "newer-attempt"),
+    ):
+        _insert_meeting_check(
+            database, occurrence_id,
+            website_candidate={
+                "name": "Rechecked climate meeting", "event_type": "event",
+                "organizer": "Example Institute", "status": "scheduled",
+                "date_precision": "day", "start_date": day, "end_date": day,
+                "date_evidence": day,
+            },
+            canonical_event_id="event-rechecked", checked_at=checked_at,
+            run_id=run_id, attempt_id=attempt_id, source_url=source_url,
+        )
+
+    public_reader = _reader(public_database, public_root)
+    runtime_reader = _reader(runtime_database, runtime_root)
+    manifest = {
+        "pdf_occurrence_ids": [], "pdf_calendar_occurrence_ids": [occurrence_id],
+    }
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: public_reader)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, runtime_reader, manifest))
+
+    meetings = api_server.registry_meetings(
+        verification_status="verified", base_date="2026-10-05",
+    )
+    assert meetings["pagination"]["total"] == 1
+    api_item = meetings["items"][0]
+    assert api_item["start_date"] == "2026-10-20"
+    assert api_item["collected_candidate"]["start_date"] == "2026-10-20"
+    assert api_item["checked_at"] == "2026-10-05T10:00:00Z"
+    assert {check["attempt_id"] for check in api_item["checks"]} == {"older-attempt", "newer-attempt"}
+    assert {check["source_url"] for check in api_item["checks"]} == {source_url}
+
+    report = freeze_range_report(
+        public_reader, tmp_path / f"range-recheck-{newer_copy}",
+        start_date="2026-09-17", end_date="2026-09-30",
+        generated_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
+        pdf_overlay_reader=runtime_reader,
+        overlay_manifest={
+            "web_items": [], "pdf_occurrence_ids": [],
+            "pdf_calendar_occurrence_ids": [occurrence_id],
+        },
+    )
+    range_item = report["pdf_calendar"]["records"][0]
+    assert range_item["start_date"] == "2026-10-20"
+    assert range_item["canonical_event_id"] == "event-rechecked"
+    assert range_item["checked_at"] == "2026-10-05T10:00:00Z"
+    assert {check["attempt_id"] for check in range_item["checks"]} == {"older-attempt", "newer-attempt"}
+
+
+@pytest.mark.parametrize("checked_copy", ["public", "runtime"])
+def test_range_merges_calendar_checks_before_expiry_and_cancellation_filters(tmp_path, checked_copy):
+    public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
+    public_root.mkdir()
+    runtime_root.mkdir()
+    public_database = _database(public_root, include_article_a_acquisitions=False)
+    runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
+    expired_public = _insert_pdf_calendar(public_database, "Expired conflicting event")
+    expired_runtime = _insert_pdf_calendar(runtime_database, "Expired conflicting event")
+    cancelled_public = _insert_pdf_calendar(
+        public_database, "Future cancelled event", raw_date="15 Oct 2026",
+        start_date="2026-10-15", end_date="2026-10-15",
+    )
+    cancelled_runtime = _insert_pdf_calendar(
+        runtime_database, "Future cancelled event", raw_date="15 Oct 2026",
+        start_date="2026-10-15", end_date="2026-10-15",
+    )
+    assert expired_public == expired_runtime
+    assert cancelled_public == cancelled_runtime
+
+    checked_database, unchecked_database = (
+        (public_database, runtime_database) if checked_copy == "public"
+        else (runtime_database, public_database)
+    )
+    candidate = {
+        "name": "Website event", "event_type": "event", "organizer": "Example Institute",
+        "status": "scheduled", "date_precision": "day", "start_date": "2026-10-10",
+        "end_date": "2026-10-11", "date_evidence": "10-11 October 2026",
+    }
+    _insert_meeting_check(
+        checked_database, expired_public, website_candidate=candidate,
+        canonical_event_id="event-expired", checked_at="2026-10-04T10:00:00Z",
+        run_id="verified-expired-run", attempt_id="verified-expired-attempt",
+    )
+    _insert_meeting_check(
+        unchecked_database, expired_runtime, verification_status="conflict",
+        checked_at="2026-10-04T11:00:00Z", run_id="conflict-expired-run",
+        attempt_id="conflict-expired-attempt",
+    )
+    cancelled_candidate = {
+        **candidate, "name": "Website cancelled event", "status": "cancelled",
+    }
+    _insert_meeting_check(
+        checked_database, cancelled_public, website_candidate=cancelled_candidate,
+        canonical_event_id="event-cancelled", checked_at="2026-10-04T12:00:00Z",
+        run_id="verified-cancelled-run", attempt_id="verified-cancelled-attempt",
+    )
+
+    public_reader = _reader(public_database, public_root)
+    runtime_reader = _reader(runtime_database, runtime_root)
+    runtime_items = runtime_reader.pdf_calendar_items_all(
+        allowed_occurrence_ids={expired_runtime, cancelled_runtime},
+    )
+    meetings = public_reader.meetings(
+        base_date="2026-10-05", additional_calendar_items=runtime_items,
+    )
+    assert meetings["pagination"]["total"] == 0
+
+    report = freeze_range_report(
+        public_reader, tmp_path / f"range-merged-filters-{checked_copy}",
+        start_date="2026-09-17", end_date="2026-09-30",
+        generated_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
+        pdf_overlay_reader=runtime_reader,
+        overlay_manifest={
+            "web_items": [], "pdf_occurrence_ids": [],
+            "pdf_calendar_occurrence_ids": [expired_runtime, cancelled_runtime],
+        },
+    )
+    assert report["pdf_calendar"]["records"] == []
+    assert report["pdf_calendar"]["status"] == "empty"
 
 
 @pytest.mark.parametrize(
