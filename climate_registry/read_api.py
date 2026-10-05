@@ -917,7 +917,7 @@ class RegistryReader:
             if (not verification_status or item["verification_status"] == verification_status)
             and (not query or query.casefold() in " ".join(str(item.get(key) or "") for key in
                 ("name", "organizer", "relevance_reason", "raw_date")).casefold())]
-        items.sort(key=lambda item: (item.get("start_date") or "9999", item.get("name") or ""))
+        items.sort(key=lambda item: (item.get("start_date") or item.get("deadline_date") or "9999", item.get("name") or ""))
         counts = {status: sum(item.get("verification_status") == status for item in collected.values())
             for status in ("unchecked", "partial", "conflict", "verified")}
         offset = (page - 1) * page_size

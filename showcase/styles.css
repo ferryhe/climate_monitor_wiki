@@ -1072,6 +1072,95 @@ a {
   gap: 10px;
 }
 
+.meetings-agenda {
+  display: grid;
+}
+
+.meeting-date-group {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+
+.meeting-date-group__date {
+  margin: 3px 0 0;
+  color: #b9ddc6;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.meeting-date-group__entries {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meeting-entry {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--ink);
+}
+
+.meeting-entry__summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.meeting-entry__summary::after {
+  content: "+";
+  flex: 0 0 auto;
+  width: 1.25em;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: #9dd0b1;
+  line-height: 1.25em;
+  text-align: center;
+}
+
+.meeting-entry[open] > .meeting-entry__summary::after {
+  content: "−";
+}
+
+.meeting-entry__summary:focus-visible {
+  outline: 2px solid rgba(126, 182, 150, 0.65);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.meeting-entry__name {
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.meeting-entry__institution {
+  flex: 0 0 auto;
+  max-width: 38%;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.meeting-entry[open] > .meeting-entry__summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.meeting-entry__body {
+  padding: 0 14px 14px;
+  overflow-wrap: anywhere;
+}
+
 .registry-card {
   width: 100%;
   display: grid;
@@ -1584,6 +1673,26 @@ tbody tr.is-selected {
 
   .detail-meta {
     grid-template-columns: 1fr;
+  }
+
+  .meeting-date-group {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .meeting-entry__summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .meeting-entry__summary::after {
+    align-self: flex-end;
+  }
+
+  .meeting-entry__institution {
+    max-width: 100%;
+    text-align: left;
   }
 
   .registry-snapshot-metrics {

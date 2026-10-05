@@ -1652,6 +1652,29 @@ function appendInformationCheck(container, item) {
   container.append(details);
 }
 
+function meetingDateGroup(item) {
+  const date = item.start_date || item.deadline_date;
+  const day = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? new Date(`${date}T00:00:00Z`)
+    : null;
+  if (day && !Number.isNaN(day.getTime())) {
+    return {
+      key: `day:${date}`,
+      label: new Intl.DateTimeFormat("en", {
+        timeZone: "UTC", weekday: "short", year: "numeric", month: "short", day: "numeric",
+      }).format(day),
+    };
+  }
+  const label = item.raw_date || date || (item.end_date ? `Through ${item.end_date}` : "Date not specified");
+  return { key: `period:${label}`, label };
+}
+
+function meetingInstitution(item) {
+  const values = [item.organizer, item.institution, item.publisher, item.source_name,
+    typeof item.source === "string" ? item.source : item.source?.name];
+  return values.find((value) => typeof value === "string" && value.trim())?.trim() || "Institution not specified";
+}
+
 async function loadRegistryMeetings() {
   const sequence = ++state.registry.meetingRequestSequence;
   renderRegistryNotice(els.registryMeetings, "Loading meetings…");
@@ -1666,29 +1689,49 @@ async function loadRegistryMeetings() {
     const counts = payload.verification_counts || {};
     els.registryMeetingCounts.textContent = `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
       `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
+    const groups = new Map();
     payload.items.forEach((item) => {
-      const card = registryElement("article", "registry-card");
-      card.append(registryElement("h4", "", item.name));
-      const fields = registryElement("dl", "detail-meta");
-      const values = { "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through "),
-        "Time": item.raw_time_text, "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
-        "Location": item.location, "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
-        "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
-      Object.entries(values).forEach(([label, value]) => {
-        if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));
-      });
-      card.append(fields);
-      const urls = [...new Set([...(item.source_urls || []), ...(item.sources || []).map((source) => source.source_url), item.online_url])];
-      urls.forEach((url) => {
-        const safe = safeSourceUrl(url);
-        if (!safe) return;
-        const link = registryElement("a", "registry-source-link", url);
-        link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
-        card.append(link);
-      });
-      appendInformationCheck(card, item);
-      els.registryMeetings.append(card);
+      const date = meetingDateGroup(item);
+      if (!groups.has(date.key)) groups.set(date.key, { ...date, items: [] });
+      groups.get(date.key).items.push(item);
     });
+    const agenda = registryElement("div", "meetings-agenda");
+    groups.forEach((group) => {
+      const section = registryElement("section", "meeting-date-group");
+      section.append(registryElement("h4", "meeting-date-group__date", group.label));
+      const entries = registryElement("div", "meeting-date-group__entries");
+      group.items.forEach((item) => {
+        const card = registryElement("details", "meeting-entry");
+        const summary = registryElement("summary", "meeting-entry__summary");
+        summary.append(registryElement("span", "meeting-entry__name", item.name),
+          registryElement("span", "meeting-entry__institution", meetingInstitution(item)));
+        card.append(summary);
+        const body = registryElement("div", "meeting-entry__body");
+        const fields = registryElement("dl", "detail-meta");
+        const values = { "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
+          "Time": item.raw_time_text, "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
+          "Location": item.location, "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
+          "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
+        Object.entries(values).forEach(([label, value]) => {
+          if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));
+        });
+        body.append(fields);
+        const urls = [...new Set([...(item.source_urls || []), ...(item.sources || []).map((source) => source.source_url), item.online_url])];
+        urls.forEach((url) => {
+          const safe = safeSourceUrl(url);
+          if (!safe) return;
+          const link = registryElement("a", "registry-source-link", url);
+          link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
+          body.append(link);
+        });
+        appendInformationCheck(body, item);
+        card.append(body);
+        entries.append(card);
+      });
+      section.append(entries);
+      agenda.append(section);
+    });
+    els.registryMeetings.append(agenda);
     if (!payload.items.length) renderRegistryNotice(els.registryMeetings, "No current meetings match these filters.");
     updateRegistryPagination("meetings", payload.pagination);
   } catch (error) {
