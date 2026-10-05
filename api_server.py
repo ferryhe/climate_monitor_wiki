@@ -688,9 +688,13 @@ def registry_articles(
         core_by_url, by_url = {}, {}
         for reader, allowed_ids in readers:
             core = _all_registry_pages(reader.articles)
+            if allowed_ids is not None:
+                core = [dict(item, pdf_occurrence_count=0) for item in core]
             core_by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in core
                 if allowed_ids is None or item["article_id"] in allowed_ids})
             matches = _all_registry_pages(reader.articles, **filters) if any(filters.values()) else core
+            if allowed_ids is not None:
+                matches = [dict(item, pdf_occurrence_count=0) for item in matches]
             by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in matches
                 if allowed_ids is None or item["article_id"] in allowed_ids})
         if not pillar:
@@ -817,6 +821,8 @@ def registry_article(article_id: str) -> dict:
         active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
         payload = (web_reader.article(article_id) if web_reader and article_id in active_ids
             else _registry_reader().article(article_id))
+        if web_reader and article_id in active_ids:
+            payload.pop("pdf_occurrences", None)
         for reader, allowed_ids in [(_registry_reader(), None)] + ([(pdf_reader, set((manifest or {}).get("pdf_occurrence_ids", [])))] if pdf_reader else []):
             with reader.connect() as connection:
                 row = connection.execute("SELECT article_id FROM pdf_intake_articles WHERE canonical_url=?",

@@ -122,6 +122,32 @@ def test_pdf_history_and_downloads_only_include_active_runtime_documents(tmp_pat
     assert client.get("/api/registry/reports?include_pdf=true").json()["pagination"]["total"] == 1
 
 
+def test_active_web_article_excludes_pending_pdf_until_separately_activated(tmp_path, monkeypatch):
+    client, runtime = _client(monkeypatch, tmp_path)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    with sqlite3.connect(runtime) as connection:
+        connection.execute("UPDATE articles SET canonical_url='https://example.org/first-study'")
+    path = tmp_path / "pending.pdf"
+    _report_pdf_with_two_articles(path)
+    bundle = import_pdf_reports([path])
+    persist_pdf_intake(runtime, tmp_path / "backups", bundle)
+    public = tmp_path / "public.sqlite3"
+    initialize_registry(public)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(public))
+    reader = RegistryReader(runtime, repository_root=tmp_path / "application")
+    manifest = {"web_items": [{"article_id": "core-climate-study"}], "pdf_occurrence_ids": []}
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (reader, None, manifest))
+    listed = client.get("/api/registry/articles?include_pdf=true").json()["items"]
+    assert len(listed) == 1 and listed[0]["pdf_occurrence_count"] == 0
+    detail = client.get("/api/registry/articles/core-climate-study").json()
+    assert not detail.get("pdf_occurrences") and detail["report_summary"] == "Core report summary."
+    assert client.get("/api/registry/pdf-intake/articles").json()["pagination"]["total"] == 0
+    manifest["pdf_occurrence_ids"] = [item["occurrence_id"] for article in bundle["articles"] for item in article["occurrences"]]
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (reader, reader, manifest))
+    assert len(client.get("/api/registry/articles/core-climate-study").json()["pdf_occurrences"]) == 1
+    assert client.get("/api/registry/articles?include_pdf=true").json()["items"][0].get("pdf_occurrence_count", 0) == 1
+
+
 def test_verified_article_uses_existing_body_enrichment_and_conflict_has_none(tmp_path):
     database = _database(tmp_path)
     target = check_targets(database, "articles", {"article-1"})[0]
