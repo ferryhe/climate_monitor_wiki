@@ -5,6 +5,8 @@ import hashlib
 from datetime import date, datetime
 from typing import Any
 
+from climate_monitor.publisher_mapping import publisher_name
+
 from .model import Citation, Report, Update
 
 
@@ -186,6 +188,8 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
     citations.extend(url for url in (item.get("url"), item.get("source_url")) if url)
     citations.extend(item.get("source_urls") or [])
     citations.extend(source["source_url"] for source in item.get("sources", []) if source.get("source_url"))
+    if item.get("online_url"):
+        citations.append(item["online_url"])
     citation = "\n".join(dict.fromkeys(citations)) or "Source not provided"
     imported = item.get("source_kind") == "pdf" or bool(item.get("source_document_sha256"))
     if imported and item.get("raw_date"):
@@ -194,17 +198,39 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
         if detail and detail not in when:
             when += "\n" + detail
     event = item.get("name") or "Key date"
-    if item.get("location"):
-        event += "\nLocation: " + item["location"]
-    if item.get("online_url"):
-        event += "\n" + item["online_url"]
-    if item.get("summary") and item.get("calendar_field_basis") != "pdf_table_cells":
-        event += "\nVerbatim context: " + item["summary"]
     if imported:
         citation = "\n".join(dict.fromkeys(value for value in citations if value.startswith(("https://", "http://")))) + "\nPDF import"
+    host = str(item.get("publisher") or item.get("institution") or item.get("organizer") or item.get("source") or "Not provided")
     return (str(when), str(event),
-            str(item.get("publisher") or item.get("institution") or item.get("organizer") or item.get("source") or "Not provided"),
+            host,
             str(item.get("relevance") or item.get("actuarial_relevance") or item.get("relevance_reason") or "Not provided"), str(citation))
+
+
+def calendar_details(item: dict[str, Any]) -> tuple[str, ...]:
+    """Return supplied venue/context outside the linked event-name cell."""
+    details = []
+    if item.get("location"):
+        details.append("Location: " + str(item["location"]))
+    source_urls = [value for value in (item.get("url"), item.get("source_url")) if value]
+    source_urls.extend(item.get("source_urls") or [])
+    source_urls.extend(source["source_url"] for source in item.get("sources", []) if source.get("source_url"))
+    online_url = item.get("online_url")
+    if online_url and source_urls and online_url not in source_urls:
+        details.append("Online event: " + str(online_url))
+    if item.get("deadline_type"):
+        details.append("Deadline type: " + str(item["deadline_type"]))
+    if item.get("summary") and item.get("calendar_field_basis") != "pdf_table_cells":
+        details.append("Verbatim context: " + str(item["summary"]))
+    return tuple(details)
+
+
+def calendar_detail_notes(items: list[dict[str, Any]]) -> tuple[str, ...]:
+    notes = []
+    for item in items:
+        details = calendar_details(item)
+        if details:
+            notes.append("Calendar details: " + str(item.get("name") or "Key date") + " — " + "; ".join(details))
+    return tuple(notes)
 
 
 def _key_date_rows(item: dict[str, Any], run_date: str | None = None) -> tuple[tuple[str, str, str, str, str], ...]:
@@ -218,8 +244,7 @@ def _key_date_rows(item: dict[str, Any], run_date: str | None = None) -> tuple[t
         deadline = _date(deadline)
         rows.append(_key_date(dict(item, start_date=deadline, end_date=deadline,
             date_precision="day", raw_date=item.get("raw_date") if pure_deadline else None, raw_time_text=None,
-            name=(item.get("name") or "Key date") if pure_deadline and item.get("source_document_sha256") else
-                f"{item.get('name') or 'Key date'} — Deadline: {item.get('deadline_type') or 'type not provided'}"), run_date))
+            name=item.get("name") or "Key date"), run_date))
     return tuple(rows)
 
 
@@ -266,12 +291,14 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
             date_metadata += (("Publication date", item["publication_date"]),)
         if item.get("information_date") and basis != "information_date":
             date_metadata += (("Information date", item["information_date"]),)
-        updates.append(Update(_title(item["title"]), item.get("publisher") or "Publisher not recorded",
+        citations = _citations(item["citations"] or ([{"kind": "url", "url": item["canonical_url"]}] if item.get("canonical_url") else []))
+        institution = publisher_name(item.get("publisher"), [citation.url for citation in citations if citation.url])
+        updates.append(Update(_title(item["title"]), institution,
             ", ".join(item.get("categories", [])) or "Topic not recorded", _title(item["article_id"]),
             item.get("content_version_id"), _date(item["publication_date"]) if item.get("publication_date") else None, None,
             _paragraphs(item.get("summary"), item.get("content")) + _caveats(item),
             date_metadata + tuple((label, ", ".join(item[field])) for label, field in (("Categories", "categories"), ("Keywords", "keywords")) if item.get(field)),
-            _citations(item["citations"] or ([{"kind": "url", "url": item["canonical_url"]}] if item.get("canonical_url") else [])),
+            citations,
             content_sha256=item.get("provenance", {}).get("content_version", {}).get("content_sha256"),
             imported_from_pdf=any(c.get("kind") in {"pdf", "pdf_page"} for c in item["citations"]),
             date_basis=basis, information_date=item.get("information_date"), collected_at=item.get("collected_at")))
@@ -282,7 +309,9 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         citations = list(item["citations"])
         if item.get("url") and not any(c.get("url") == item["url"] for c in citations):
             citations.append({"kind": "url", "url": item["url"]})
-        updates.append(Update(_title(item["title"]), item.get("publisher") or "PDF Source Updates", item.get("topic") or "PDF Source Updates",
+        source_urls = [item.get("url"), *(citation.get("url") for citation in item.get("citations", []))]
+        institution = publisher_name(item.get("publisher"), source_urls)
+        updates.append(Update(_title(item["title"]), institution, item.get("topic") or "PDF Source Updates",
             item.get("core_article_id") or item["pdf_article_id"], None,
             _date(item["publication_date"]) if item.get("publication_date") else None, coverage,
             _paragraphs(item.get("summary")) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])) +
@@ -308,6 +337,7 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         records.extend(calendar["records"])
     from climate_monitor.meeting_fields import merge_meeting_observations
     records = merge_meeting_observations(records)
+    notes.extend(calendar_detail_notes(records))
     # The full stored summaries appear once in the numbered updates. The
     # executive page states selection facts, without repeating raw PDF rows.
     executive = [_range_selection_summary(snapshot["articles"], start, end)]
@@ -340,7 +370,9 @@ def adapt_weekly_report(summary: dict[str, Any]) -> Report:
         provenance = summary.get("article_provenance", {}).get(item["url"], {})
         semantics = summary.get("article_semantics", {}).get(item["url"], {})
         coverage = provenance.get("coverage_period")
-        updates.append(Update(_title(item["title"]), provenance.get("source") or "Publisher not recorded",
+        citations = _citations(provenance.get("citations") or [{"kind": "url", "url": item["url"]}])
+        institution = publisher_name(provenance.get("source"), [citation.url for citation in citations if citation.url])
+        updates.append(Update(_title(item["title"]), institution,
             ", ".join(semantics.get("categories", [])) or "Topic not recorded",
             provenance.get("article_id"), provenance.get("content_version_id"),
             _date(provenance["publication_date"]) if provenance.get("publication_date") else None,
@@ -349,7 +381,7 @@ def adapt_weekly_report(summary: dict[str, Any]) -> Report:
             ((("Report article version", provenance["report_version_id"]),) if provenance.get("report_version_id") else ()) +
             _date_basis(provenance.get("publication_date_evidence") or provenance.get("date_basis")) +
             tuple((label, ", ".join(semantics[field])) for label, field in (("Categories", "categories"), ("Keywords", "keywords")) if semantics.get(field)),
-            _citations(provenance.get("citations") or [{"kind": "url", "url": item["url"]}]),
+            citations,
             content_sha256=provenance.get("content_hash"),
             imported_from_pdf=any(c.get("kind") in {"pdf", "pdf_page"} for c in provenance.get("citations", []))))
     sites = report.get("sites", {})
@@ -360,5 +392,5 @@ def adapt_weekly_report(summary: dict[str, Any]) -> Report:
         run_date,
         tuple(summary["executive_summary"]), tuple(c for update in updates for c in update.citations),
         tuple(updates), key_dates=tuple(row for item in summary.get("key_dates", []) for row in _key_date_rows(item, run_date)),
-        date_notes=() if summary.get("key_dates") else ("Key dates were not provided in the frozen summary.",),
+        date_notes=calendar_detail_notes(summary.get("key_dates", [])) if summary.get("key_dates") else ("Key dates were not provided in the frozen summary.",),
         statistics=statistics, coverage_notes=tuple(summary.get("monitoring_notes", [])), **_optional_tables(summary))

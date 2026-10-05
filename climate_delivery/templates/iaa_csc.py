@@ -324,15 +324,11 @@ def render_report(report: Report, output: str | Path) -> None:
             story.append(p("BROADER WINDOWS - DAY UNCONFIRMED", "label", True))
         rows, highlights = [], []
         for index, (number, (when, event, host, relevance, sources)) in enumerate(selected):
-            name, separator, context = event.partition("\nVerbatim context: ")
             urls = re.findall(r"https?://[^\s]+", sources)
-            title = link(name, urls[0]) if urls else _markup(name)
-            if urls:
-                title += "<br/>" + "<br/>".join(link(url, url) for url in urls)
+            title = link(event, urls[0]) if urls else _markup(event)
             if "PDF import" in sources:
                 title += "<br/>PDF import"
-            detail = relevance + ("\nVerbatim context: " + _prose(context) if separator else "")
-            rows.append([p(when, "cell", True), p(title, "cell", raw=True), p(host, "cell"), p(detail, "cell")])
+            rows.append([p(when, "cell", True), p(title, "cell", raw=True), p(host, "cell"), p(relevance, "cell")])
             lower, upper, _ = calendar_date_bounds(when)
             if precise and lower and upper and report.run_date and "End date unconfirmed" not in when:
                 base = date.fromisoformat(report.run_date)

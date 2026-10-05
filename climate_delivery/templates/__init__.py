@@ -7,7 +7,7 @@ import reportlab
 import re
 
 TEMPLATE_ID = "iaa-csc"
-TEMPLATE_VERSION = "7"
+TEMPLATE_VERSION = "8"
 RENDERER_VERSION = "reportlab-2"
 
 

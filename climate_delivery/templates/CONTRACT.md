@@ -1,4 +1,4 @@
-# IAA CSC reference template v7
+# IAA CSC reference template v8
 
 The renderer uses the approved independent PDF sample: Liberation Sans body
 9.5 pt / 14.25 pt leading, navy/gold cover and banners, two-column contents,
@@ -24,8 +24,12 @@ stored summaries and bodies appear once in the numbered updates. The HTML
 report retains its stored executive-summary mapping. Weekly executive prose,
 monitoring notes and highlight summaries remain source supplied.
 
-Updates retain title, publisher, topic, full body and caveats. Long paragraphs
-can split across pages. Full source URLs and a single PDF import marker are
+Updates retain title, publisher, topic, full body and caveats. Publisher names
+are normalized from configured and explicitly mapped official source URLs or
+exact known aliases; a known URL owner takes precedence over an inherited report
+heading. Unknown publisher names remain unchanged, and titles are never used to
+infer publishers. Long paragraphs can split across pages. Full source URLs and a
+single PDF import marker are
 shown to readers. File/page locators, article IDs, content versions and hashes
 remain in frozen snapshots and model metadata. Missing publisher and
 publication date are labelled explicitly.
@@ -48,7 +52,12 @@ Import reads table column geometry and accepts fields only when all cell text
 matches the retained raw row. Existing imports can recover fields from the
 SHA-matched original PDF without rewriting history. Unmatched summaries remain
 labelled Verbatim context; recovered rows use their four cells directly.
-Calendar event cells retain every frozen source URL and a PDF import marker.
+Calendar event names link to the first stored source URL; duplicate visible URL
+lines are omitted. PDF-imported rows retain their PDF import marker. Supplied
+locations, distinct online links and verbatim context remain in separate
+calendar details/source notes, not in the event name. With no source citation,
+the event name links to its supplied online URL. The frozen record retains all
+original fields and source URLs.
 Rows can split when longer than a page; table headers repeat.
 
 Optional coverage, route corrections, glossary and cross-cutting watch blocks
@@ -57,7 +66,7 @@ Unavailable acquisition or calendar data is never presented as quiet.
 
 ## Versions and archives
 
-The default is iaa-csc v7, renderer reportlab-2. Calendar clocks, timezones and
+The default is iaa-csc v8, renderer reportlab-2. Calendar clocks, timezones and
 venues appear only when supplied by the source. Cache identity also includes
 ReportLab's version. A new template receives a new cache path. Existing PDFs
 are never overwritten, including prior shared templates and range-report-v1/v2.

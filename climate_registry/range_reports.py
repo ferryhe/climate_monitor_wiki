@@ -19,7 +19,7 @@ from climate_delivery.templates import render_identity, rendering_metadata, is_r
 from climate_delivery.templates.adapters import (
     adapt_range_report, range_executive_summary as _executive_summary,
     meeting_metadata as _meeting_metadata, _date_basis, _range_date_label,
-    _caveats, _key_date_rows, calendar_date_bounds,
+    _caveats, _key_date_rows, calendar_date_bounds, calendar_details,
 )
 from climate_delivery.templates.iaa_csc import render_report
 from climate_delivery.errors import GenerationError
@@ -27,6 +27,7 @@ from climate_delivery.errors import GenerationError
 from climate_delivery.io import atomic_write_bytes, atomic_write_json, exclusive_lock
 from climate_monitor.meetings import EVENT_TYPES, load_snapshot as load_meeting_snapshot
 from climate_monitor.meetings import query_events
+from climate_monitor.publisher_mapping import publisher_name
 
 from .errors import RegistryBuildError, RegistryInputError
 from .capture import article_body_markdown, article_preview
@@ -1671,7 +1672,8 @@ def _freeze_executive_summary(source: dict[str, Any], *, legacy: bool = False) -
 def _articles_by_publisher_topic(snapshot: dict[str, Any]) -> dict[str, dict[str, list[tuple[int, dict[str, Any]]]]]:
     grouped: dict[str, dict[str, list[tuple[int, dict[str, Any]]]]] = {}
     for index, item in enumerate(snapshot["articles"], start=1):
-        publisher = item.get("publisher") or "Publisher not recorded"
+        urls = [item.get("canonical_url"), *(citation.get("url") for citation in item.get("citations", []))]
+        publisher = publisher_name(item.get("publisher"), urls)
         categories = [category for category in item.get("categories", []) if category.strip()]
         topic = ", ".join(categories) or "Topic not recorded"
         grouped.setdefault(publisher, {}).setdefault(topic, []).append((index, item))
@@ -1737,9 +1739,20 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
             if is_pdf(record):
                 continue
             for when, event, institution, relevance, source in _key_date_rows(record, run_date):
+                urls = re.findall(r"https?://[^\s]+", source)
+                event_html = (
+                    f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{esc(event)}</a>'
+                    if urls else esc(event)
+                )
+                details = calendar_details(record)
+                details_html = (
+                    "<br><strong>Calendar details:</strong> " + "<br>".join(esc(value) for value in details)
+                    if details else ""
+                )
+                marker = " · PDF import" if "PDF import" in source else ""
                 blocks.append(
-                    f"<p><strong>{esc(event)}</strong>: {esc(when)}<br>"
-                    f"Institution: {esc(institution)}; Relevance: {esc(relevance)}; Source: {esc(source)}</p>"
+                    f"<p><strong>{event_html}</strong>: {esc(when)}<br>"
+                    f"Institution: {esc(institution)}; Relevance: {esc(relevance)}{esc(marker)}{details_html}</p>"
                 )
     if pdf_calendar is not None:
         blocks.append(f"<p>PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.</p>")
@@ -1752,9 +1765,20 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
                 blocks.append(f"<h3>{heading}</h3><ul>")
                 for item in selected:
                     for when, event, institution, relevance, source in _key_date_rows(item, run_date):
+                        urls = re.findall(r"https?://[^\s]+", source)
+                        event_html = (
+                            f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{esc(event)}</a>'
+                            if urls else esc(event)
+                        )
+                        details = calendar_details(item)
+                        details_html = (
+                            "<br><strong>Calendar details:</strong> " + "<br>".join(esc(value) for value in details)
+                            if details else ""
+                        )
+                        marker = " · PDF import" if "PDF import" in source else ""
                         blocks.append(
-                            f"<li><strong>{esc(event)}</strong>: {esc(when)}<br>"
-                            f"Institution: {esc(institution)}; Relevance: {esc(relevance)}; Source: {esc(source)}</li>"
+                            f"<li><strong>{event_html}</strong>: {esc(when)}<br>"
+                            f"Institution: {esc(institution)}; Relevance: {esc(relevance)}{esc(marker)}{details_html}</li>"
                         )
                 blocks.append("</ul>")
     blocks.append('<h2 id="updates">Updates by Publisher / Institution</h2>')
@@ -1812,8 +1836,10 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
         blocks.append("<h2>PDF 来源更新 / PDF Source Updates</h2>")
     for index, item in enumerate(pdf_updates, start=1):
         display_number += 1
+        publisher = publisher_name(item.get("publisher"), [item.get("url")])
         blocks.extend([
             f'<article id="pdf-update-{index}"><h2>{display_number}. {esc(item["title"])}</h2>',
+            f"<p><strong>Publisher / Institution:</strong> {esc(publisher)}</p>",
             f"<p><strong>{esc(item.get('publication_date') or item['publication_date_label'])}</strong></p>",
         ])
         if item.get("summary"):
@@ -1901,8 +1927,12 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
     lines += ["## Current Meetings and Key Dates",
         "Current and future calendar entries are listed as at the date above, independently of the historical project window."]
     lines += [plain(line) for line in report.date_notes
-        if not any(token in line for token in (" ID:", "SHA-256:", "timezone:", "base date:"))]
-    calendar_sources = []
+        if not line.startswith("Calendar details: ")
+        and not any(token in line for token in (" ID:", "SHA-256:", "timezone:", "base date:"))]
+    calendar_sources = [
+        "- " + plain(line.removeprefix("Calendar details: "))
+        for line in report.date_notes if line.startswith("Calendar details: ")
+    ]
     for precise in (True, False):
         rows = [(i, row) for i, row in enumerate(report.key_dates, 1)
             if (calendar_date_bounds(row[0])[2] == "day") == precise]
@@ -1912,15 +1942,11 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
             lines.append("### Broader Windows - Day Unconfirmed")
         table = ["| Date(s) | Event | Host | Relevance |", "| --- | --- | --- | --- |"]
         for index, (when, event, host, relevance, raw_sources) in sorted(rows, key=lambda pair: calendar_date_bounds(pair[1][0])[0] or "9999"):
-            title, _, context = event.partition("\nVerbatim context: ")
             urls = re.findall(r"https?://[^\s]+", raw_sources)
-            event_text = link(title, urls[0]) if urls else plain(title)
-            event_text += "; " + "; ".join(link(url, url) for url in dict.fromkeys(urls)) if urls else ""
+            event_text = link(event, urls[0]) if urls else plain(event)
             if "PDF import" in raw_sources:
                 event_text += " · PDF import"
             table.append("| " + " | ".join((plain(when), event_text, plain(host), plain(relevance))) + " |")
-            if context:
-                calendar_sources.append(f"- {plain(title)}; Verbatim context: " + plain(context))
         lines.append("\n".join(table))
     if not report.key_dates:
         lines.append("No current calendar entries are available in this snapshot; see the coverage status above.")
