@@ -697,13 +697,20 @@ def registry_articles(
                 matches = [dict(item, pdf_occurrence_count=0) for item in matches]
             by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in matches
                 if allowed_ids is None or item["article_id"] in allowed_ids})
+        pdf_method = lambda page, page_size, **filters: registry_pdf_articles(
+            page=str(page), page_size=str(page_size), include_linked=True, **filters)
+        pdf_items = _all_registry_pages(pdf_method)
+        for item in pdf_items:
+            core = core_by_url.get(item["canonical_url"])
+            if core:
+                core.update(source_label="Registry · PDF import", pdf_occurrence_count=item["occurrence_count"])
+        by_url = {url: core_by_url[url] for url in by_url}
         if not pillar:
-            for item in _all_registry_pages(lambda page, page_size, **filters: registry_pdf_articles(
-                page=str(page), page_size=str(page_size), include_linked=True, **filters),
-                query=query, source=source, report_date=report_date):
+            pdf_matches = _all_registry_pages(pdf_method, query=query, source=source, report_date=report_date) if any(
+                (query, source, report_date)) else pdf_items
+            for item in pdf_matches:
                 core = core_by_url.get(item["canonical_url"])
-                by_url[item["canonical_url"]] = dict(core, source_label="Registry · PDF import",
-                    pdf_occurrence_count=item["occurrence_count"]) if core else item
+                by_url[item["canonical_url"]] = core or item
         items = list(by_url.values())
         items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
         offset = (parsed_page - 1) * parsed_size

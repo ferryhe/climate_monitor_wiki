@@ -74,6 +74,9 @@ def test_unified_articles_share_pagination_and_keep_linked_pdf_details(tmp_path,
     assert {item["source_kind"] for item in items} == {"registry", "pdf"}
     core = next(item for item in items if item["source_kind"] == "registry")
     assert core["source_label"] == "Registry · PDF import"
+    core_search = client.get("/api/registry/articles?include_pdf=true&query=Core").json()["items"]
+    assert len(core_search) == 1 and core_search[0]["source_label"] == core["source_label"]
+    assert core_search[0]["pdf_occurrence_count"] == core["pdf_occurrence_count"]
     searched = client.get("/api/registry/articles?include_pdf=true&query=First").json()["items"]
     assert len(searched) == 1 and searched[0]["article_id"] == core["article_id"] and searched[0]["source_kind"] == "registry"
     assert client.get(f"/api/registry/articles/{searched[0]['article_id']}").json()["report_summary"] == "Core report summary."
