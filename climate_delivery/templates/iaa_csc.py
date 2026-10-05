@@ -370,6 +370,7 @@ def render_report(report: Report, output: str | Path) -> None:
             else:
                 labels = [update.publication_date or "Article publication date unconfirmed"]
             labels.append(update.topic)
+            labels.extend(f"{key}: {value}" for key, value in update.metadata if key in {"Categories", "Keywords"})
             if update.coverage_period and not update.imported_from_pdf:
                 labels.append("PDF coverage: " + " through ".join(update.coverage_period))
             story += [row, p(" | ".join(labels), "badge")]
