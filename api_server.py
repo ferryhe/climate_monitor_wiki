@@ -68,6 +68,7 @@ from climate_registry.read_api import (
     validate_article_id,
     validate_page,
     validate_report_date,
+    _pagination,
 )
 from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
@@ -76,7 +77,7 @@ from climate_registry.pdf_pipeline import (
     read_pdf_batch,
     retry_pdf_batch,
 )
-from climate_registry.information_checks import merge_checked_observation
+from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -422,7 +423,7 @@ def _merge_pdf_article_payloads(
                 if occurrence_id in occurrences else item
             )
     merged["occurrences"] = sorted(
-        occurrences.values(),
+        deduplicate_pdf_occurrences(list(occurrences.values())),
         key=lambda item: (item.get("report_date") or "", item.get("page") or 0, item["occurrence_id"]),
         reverse=True,
     )
@@ -468,8 +469,53 @@ def _parse_registry_decimal(value: str) -> int:
     return int(value)
 
 
+def _all_registry_pages(method, **filters) -> list[dict[str, Any]]:
+    # ponytail: merge the small archive in memory; use SQL union if it outgrows this.
+    items, page = [], 1
+    while True:
+        payload = method(page=page, page_size=100, **filters)
+        items.extend(payload["items"])
+        if page >= payload["pagination"]["pages"]:
+            return items
+        page += 1
+
+
+def _pdf_reports() -> list[dict[str, Any]]:
+    public = _registry_reader().pdf_reports_all()
+    reader, article_ids, calendar_ids = _pdf_registry_view()
+    runtime = [] if article_ids is None else reader.pdf_reports_all(
+        allowed_occurrence_ids=article_ids, allowed_calendar_ids=calendar_ids)
+    return list({item["document_sha256"]: item for item in runtime + public}.values())
+
+
+def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[str, Any]:
+    reader, article_ids, calendar_ids = _pdf_registry_view()
+    try:
+        public = _registry_reader().pdf_report(document_sha256, include_bytes=include_bytes)
+    except RegistryNotFoundError:
+        public = None
+    runtime = None
+    if article_ids is not None:
+        try:
+            runtime = reader.pdf_report(document_sha256, include_bytes=include_bytes,
+                allowed_occurrence_ids=article_ids, allowed_calendar_ids=calendar_ids)
+        except RegistryNotFoundError:
+            pass
+    if public is None and runtime is None:
+        raise RegistryNotFoundError("PDF report not found")
+    if not public or not runtime or include_bytes:
+        return public or runtime
+    by_url = {item["canonical_url"]: item for item in public["articles"]}
+    for item in runtime["articles"]:
+        by_url[item["canonical_url"]] = _merge_pdf_article_payloads(by_url.get(item["canonical_url"]), item)
+    public["articles"] = list(by_url.values())
+    public["calendar_items"] = _merge_pdf_calendar_items(public["calendar_items"], runtime["calendar_items"])
+    public["source_filenames"] = sorted(set(public["source_filenames"] + runtime["source_filenames"]))
+    return public
+
+
 @app.get("/api/registry/status", response_model=None)
-def registry_status():
+def registry_status(include_pdf: bool = False):
     configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     if not configured:
         return JSONResponse(
@@ -477,7 +523,13 @@ def registry_status():
             content={"available": False, "reason": "not_configured"},
         )
     try:
-        return RegistryReader(configured, repository_root=ROOT).status()
+        status = RegistryReader(configured, repository_root=ROOT).status()
+        if include_pdf:
+            status["reports"] = registry_reports(include_pdf=True)["pagination"]["total"]
+            status["articles"] = registry_articles(include_pdf=True)["pagination"]["total"]
+            dates = [item["report_date"] for item in _pdf_reports() if item.get("report_date")]
+            status["latest_report_date"] = max(dates + [status["latest_report_date"] or ""]) or None
+        return status
     except RegistryLocationError:
         return JSONResponse(
             status_code=503,
@@ -496,9 +548,37 @@ def registry_status():
 
 
 @app.get("/api/registry/reports")
-def registry_reports(page: str = "1", page_size: str = "20") -> dict:
+def registry_reports(page: str = "1", page_size: str = "20", include_pdf: bool = False) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
-    return _registry_query(lambda: _registry_reader().reports(page=parsed_page, page_size=parsed_size))
+    def query_reports():
+        validate_page(parsed_page, parsed_size)
+        if not include_pdf:
+            return _registry_reader().reports(page=parsed_page, page_size=parsed_size)
+        items = _all_registry_pages(_registry_reader().reports) + _pdf_reports()
+        items.sort(key=lambda item: (item.get("report_date") or "", item.get("report_id") or ""), reverse=True)
+        offset = (parsed_page - 1) * parsed_size
+        return {"items": items[offset:offset + parsed_size], "pagination": _pagination(parsed_page, parsed_size, len(items))}
+    return _registry_query(query_reports)
+
+
+@app.get("/api/registry/pdf-intake/reports/{document_sha256}")
+def registry_pdf_report(document_sha256: str) -> dict:
+    return _registry_query(lambda: _pdf_report(document_sha256))
+
+
+@app.get("/api/registry/pdf-intake/reports/{document_sha256}/pdf", response_class=Response)
+def registry_imported_report_pdf(document_sha256: str) -> Response:
+    def download():
+        report = _pdf_report(document_sha256, include_bytes=True)
+        body = report["pdf_bytes"]
+        if body is None:
+            raise RegistryNotFoundError("original PDF unavailable")
+        if hashlib.sha256(body).hexdigest() != document_sha256:
+            raise RegistryContractError("original PDF hash mismatch")
+        return Response(content=body, media_type="application/pdf", headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(report['filename'], safe='')}",
+            "X-Content-Type-Options": "nosniff"})
+    return _registry_query(download)
 
 
 @app.get("/api/registry/reports/{report_date}")
@@ -560,8 +640,18 @@ def registry_report_pdf(report_date: str) -> Response:
 
 
 @app.get("/api/registry/publishers")
-def registry_publishers() -> dict:
-    return _registry_query(lambda: _registry_reader().publishers())
+def registry_publishers(include_pdf: bool = False) -> dict:
+    def query_publishers():
+        payload = _registry_reader().publishers()
+        if not include_pdf:
+            return payload
+        by_host = {item["hostname"]: item for item in payload["items"]}
+        for item in _all_registry_pages(lambda page, page_size: registry_articles(
+            page=str(page), page_size=str(page_size), include_pdf=True)):
+            by_host.setdefault(item["source"], {"hostname": item["source"], "label": item["publisher"]})
+        items = sorted(by_host.values(), key=lambda item: item["hostname"])
+        return {"items": items[:500], "total": len(items), "truncated": payload["truncated"] or len(items) > 500}
+    return _registry_query(query_publishers)
 
 
 @app.get("/api/registry/articles")
@@ -572,24 +662,41 @@ def registry_articles(
     source: str = "",
     pillar: str = "",
     report_date: str = "",
+    include_pdf: bool = False,
 ) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
-    return _registry_query(
-        lambda: _registry_reader().articles(
-            page=parsed_page,
-            page_size=parsed_size,
-            query=query,
-            source=source,
-            pillar=pillar,
-            report_date=report_date,
-        )
-    )
+    def query_articles():
+        validate_page(parsed_page, parsed_size)
+        filters = dict(query=query, source=source, pillar=pillar, report_date=report_date)
+        if not include_pdf:
+            return _registry_reader().articles(page=parsed_page, page_size=parsed_size, **filters)
+        core = _all_registry_pages(_registry_reader().articles, **filters)
+        web_reader, _, manifest = _range_report_overlay()
+        if web_reader is not None:
+            active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
+            core += [item for item in _all_registry_pages(web_reader.articles, **filters) if item["article_id"] in active_ids]
+        by_url = {item["canonical_url"]: dict(item, source_kind="registry") for item in core}
+        if not pillar:
+            for item in _all_registry_pages(lambda page, page_size, **filters: registry_pdf_articles(
+                page=str(page), page_size=str(page_size), include_linked=True, **filters),
+                query=query, source=source, report_date=report_date):
+                if item["canonical_url"] in by_url:
+                    by_url[item["canonical_url"]]["source_label"] = "Registry · PDF import"
+                    by_url[item["canonical_url"]]["pdf_occurrence_count"] = item["occurrence_count"]
+                else:
+                    by_url[item["canonical_url"]] = item
+        items = list(by_url.values())
+        items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
+        offset = (parsed_page - 1) * parsed_size
+        return {"items": items[offset:offset + parsed_size], "pagination": _pagination(parsed_page, parsed_size, len(items))}
+    return _registry_query(query_articles)
 
 
 @app.get("/api/registry/pdf-intake/articles")
 def registry_pdf_articles(
     page: str = "1", page_size: str = "20", query: str = "",
     source: str = "", report_date: str = "",
+    include_linked: bool = False,
 ) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_pdf():
@@ -599,16 +706,12 @@ def registry_pdf_articles(
         if report_date:
             validate_report_date(report_date)
         reader, article_ids, _ = _pdf_registry_view()
-        if article_ids is None:
-            return reader.pdf_articles(
-                page=parsed_page, page_size=parsed_size, query=query, source=source,
-                report_date=report_date,
-            )
-        public_items = _registry_reader().pdf_articles_all()
-        runtime_items = reader.pdf_articles_all(allowed_occurrence_ids=article_ids)
+        public_items = _registry_reader().pdf_articles_all(include_linked=include_linked)
+        runtime_items = [] if article_ids is None else reader.pdf_articles_all(
+            allowed_occurrence_ids=article_ids, include_linked=include_linked)
         by_url: dict[str, dict[str, Any]] = {}
         for item in public_items:
-            by_url[item["canonical_url"]] = item
+            by_url[item["canonical_url"]] = _merge_pdf_article_payloads(item, None)
         for item in runtime_items:
             url = item["canonical_url"]
             by_url[url] = _merge_pdf_article_payloads(by_url.get(url), item)
@@ -625,7 +728,7 @@ def registry_pdf_article(article_id: str) -> dict:
         validate_article_id(article_id)
         reader, article_ids, _ = _pdf_registry_view()
         if article_ids is None:
-            return reader.pdf_article(article_id)
+            return _merge_pdf_article_payloads(reader.pdf_article(article_id), None)
         public_reader = _registry_reader()
         try:
             public = public_reader.pdf_article(article_id)
@@ -694,7 +797,23 @@ def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
 
 @app.get("/api/registry/articles/{article_id}")
 def registry_article(article_id: str) -> dict:
-    return _registry_query(lambda: _registry_reader().article(article_id))
+    def query_article():
+        web_reader, pdf_reader, manifest = _range_report_overlay()
+        active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
+        payload = (web_reader.article(article_id) if web_reader and article_id in active_ids
+            else _registry_reader().article(article_id))
+        for reader, allowed_ids in [(_registry_reader(), None)] + ([(pdf_reader, set((manifest or {}).get("pdf_occurrence_ids", [])))] if pdf_reader else []):
+            with reader.connect() as connection:
+                row = connection.execute("SELECT article_id FROM pdf_intake_articles WHERE canonical_url=?",
+                    (payload["canonical_url"],)).fetchone() if reader._has_pdf_intake(connection) else None
+                if row:
+                    occurrences = reader._pdf_occurrences(connection, row[0], payload["canonical_url"],
+                        pdf_article_id=row[0], allowed_occurrence_ids=allowed_ids)
+                    payload["pdf_occurrences"] = deduplicate_pdf_occurrences(payload.get("pdf_occurrences", []) + occurrences)
+        if "pdf_occurrences" in payload:
+            payload["pdf_occurrences"] = deduplicate_pdf_occurrences(payload["pdf_occurrences"])
+        return payload
+    return _registry_query(query_article)
 
 
 @app.post("/api/reload")

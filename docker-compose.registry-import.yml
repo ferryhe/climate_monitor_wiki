@@ -32,6 +32,8 @@ services:
       CLIMATE_PDF_RELOAD_URL: http://wiki:8501/api/reload
       CLIMATE_REGISTRY_WRITER_DB: /pipeline/climate_registry.sqlite3
       CLIMATE_REGISTRY_BACKUP_DIR: /pipeline/pdf-intake-backups
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      CLIMATE_WEB_LISTENING_DATA_DIR: /pipeline/web-listening
       RELOAD_TOKEN: ${RELOAD_TOKEN:?RELOAD_TOKEN is required for PDF intake}
     volumes:
       - type: volume

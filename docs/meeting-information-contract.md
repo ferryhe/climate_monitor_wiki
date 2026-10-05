@@ -111,8 +111,42 @@ run and attempt tables; one does not block the other.
 `--refresh-chat --queue-dir ... --runtime-wiki-dir ...` publishes a fresh immutable
 snapshot for already activated PDF observations and reloads Chat using the existing
 writer's reload configuration. It does not activate pending PDF batches or alter
-previously generated reports/PDFs. A future scheduler can call the same commands.
-No recurring job is installed by this module.
+previously generated reports/PDFs.
+`scripts/hermes_job_information_check.sh` is the daily Hermes entrypoint. It
+checks PDF article and calendar observations in the intake writer, saves separate
+run summaries, and refreshes only already activated knowledge. The checker shares
+the `intake-writer` queue lock with imports. A failed article check does not skip
+the calendar checks. Missing TypeSafe or governed-reader configuration fails
+preflight before changing the database.
+
+Copy the wrapper to the existing Hermes scripts directory after reviewing it,
+then register one script-only job with two UTC ticks. The wrapper admits only
+05:00 `America/New_York`, so it runs once daily across EDT/EST:
+
+```bash
+install -m 700 scripts/hermes_job_information_check.sh "$HOME/.hermes/scripts/climate-pdf-information-check.sh"
+bash "$HOME/.hermes/scripts/climate-pdf-information-check.sh" --preflight
+hermes cron create '0 9,10 * * *' --name 'Daily PDF Information Check (05:00 ET)' \
+  --script climate-pdf-information-check.sh --no-agent --deliver local
+```
+
+Read back the existing jobs first and reuse a matching job rather than creating
+duplicates. These ticks assume the verified Hermes scheduler uses UTC. The
+wrapper reuses the deployed `scripts/check_information.py`; installing the job
+does not deploy application code. Each run reads `TYPESAFE_API_KEY` from
+`~/climate_monitor_wiki/.env` through the container's existing dotenv parser,
+without restarting the writer or copying the key into scripts. Set
+`CLIMATE_WIKI_ENV_FILE` for a different configuration location. The key is passed
+through stdin and remains outside Git and command-line arguments.
+
+After article fields are verified, the checker reuses the Registry's
+`deterministic_enrichment` implementation (also used by `capture-enrich`) on the
+same checked website body. Summary, categories, keywords, generator and body
+hash are saved together in the immutable check packet and displayed as
+**Verified information**. Accessible, partial or conflicting pages are not
+labelled verified. An enrichment failure retains the verification audit, makes
+the run partial and remains retryable without inventing categories or keywords.
+Original PDF text remains separate.
 
 PDF calendar-only imports activate their own observation IDs and searchable
 meeting page. They do not require artificial article observations. Verified web

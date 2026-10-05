@@ -1483,7 +1483,11 @@ def test_frontend_exposes_safe_registry_workspace_without_operations():
     assert "/api/registry/articles" in script
     assert "registryMarkdown.textContent" in script
     assert "function registrySummaryPresentation(article)" in script
-    assert script.count("registrySummaryPresentation(article)") == 4
+    article_list = script.split("async function loadRegistryArticles()", 1)[1].split("function appendVerifiedInformation", 1)[0]
+    assert "registry-card__summary" not in article_list
+    assert "registrySummaryPresentation(article)" not in article_list
+    assert "data-article-source=" not in index
+    assert "include_pdf" in article_list
     assert script.index("if (article.summary)") < script.index("else if (article.enrichment?.summary)")
     assert script.index("else if (article.enrichment?.summary)") < script.index(
         "else if (article.report_summary)"

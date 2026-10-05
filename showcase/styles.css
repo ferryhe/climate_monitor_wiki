@@ -1042,15 +1042,6 @@ a {
   color: var(--ink);
 }
 
-.registry-article-sources {
-  margin: 14px 0 0;
-}
-
-.registry-article-source-hint {
-  margin: 8px 0 14px;
-  font-size: 0.82rem;
-}
-
 .registry-grid {
   display: grid;
   grid-template-columns: minmax(340px, 0.8fr) minmax(0, 1.35fr);

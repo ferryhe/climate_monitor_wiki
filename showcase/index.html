@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/showcase/styles.css?v=meetings-agenda-v8" />
+    <link rel="stylesheet" href="/showcase/styles.css?v=pdf-history-v1" />
   </head>
   <body>
     <div class="app-shell">
@@ -214,10 +214,11 @@
                 </div>
               </section>
               <aside id="registryReportDetail" class="panel registry-detail-panel" aria-live="polite" aria-busy="false">
-                <p class="panel__eyebrow">Weekly report</p>
+                <p class="panel__eyebrow">Report detail</p>
                 <h3 id="registryReportTitle">Select a report</h3>
                 <div id="registryReportMeta" class="registry-meta muted">Choose a week to see monitoring coverage and its ordered source articles.</div>
                 <a id="registryReportPdf" class="ghost-button registry-report-pdf" hidden>Download report PDF</a>
+                <section id="registryImportedReport" class="registry-detail-section" hidden></section>
                 <section id="registryExecutiveSummary" class="registry-executive-summary" hidden>
                   <h4>Executive Summary</h4>
                   <div id="registryBriefingExecutiveSummaryItems" class="registry-briefing-summary__items" hidden></div>
@@ -252,17 +253,6 @@
                     <button class="ghost-button" type="submit">Apply</button>
                   </form>
                 </div>
-                <div class="registry-switch registry-article-sources" role="group" aria-label="Article database source">
-                  <button class="registry-switch__button is-active" type="button" data-article-source="registry" aria-pressed="true">
-                    Registry articles
-                  </button>
-                  <button class="registry-switch__button" type="button" data-article-source="pdf" aria-pressed="false">
-                    PDF imports
-                  </button>
-                </div>
-                <p id="registryArticleSourceHint" class="muted registry-article-source-hint">
-                  PDF links that match a Registry article are shown in that article’s detail.
-                </p>
                 <div id="registryArticles" class="registry-list" aria-live="polite"></div>
                 <div class="registry-pagination">
                   <button id="articlesPrevious" class="ghost-button" type="button">Previous</button>
@@ -496,6 +486,6 @@ Select a note to preview its markdown source.</pre
       </main>
     </div>
 
-    <script src="/showcase/app.js?v=meetings-agenda-v14"></script>
+    <script src="/showcase/app.js?v=pdf-history-v1"></script>
   </body>
 </html>

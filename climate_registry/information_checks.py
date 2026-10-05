@@ -24,6 +24,7 @@ from climate_monitor.meetings import (
 )
 from .persistent import _backup_connection, _backup_name, _exclusive_database_lock
 from .schema import apply_migrations
+from .capture import deterministic_enrichment, GENERATOR_NAME, GENERATOR_VERSION
 
 CHECK_VERSION = "information-check.v1"
 KINDS = {"meetings": "meeting", "articles": "article"}
@@ -92,7 +93,7 @@ def check_targets(database: Path, kind: str, occurrence_ids: set[str] | None = N
         with reader.connect() as connection:
             for row in connection.execute("SELECT * FROM pdf_intake_articles ORDER BY article_id"):
                 items.extend(reader._pdf_occurrences(connection, row["article_id"], row["canonical_url"],
-                    pdf_article_id=row["article_id"]))
+                    pdf_article_id=row["article_id"], allowed_occurrence_ids=occurrence_ids))
     else:
         raise ValueError("kind must be meetings or articles")
     targets = []
@@ -268,6 +269,17 @@ def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier
             if ((target["fields"].get("date_precision") in {None, "unknown"} or not target["fields"].get("start_date"))
                 and not (candidate and candidate.get("event_type") == "deadline" and candidate.get("deadline_date"))):
                 packet["verification_status"] = "partial" if packet["verification_status"] == "verified" else packet["verification_status"]
+        elif packet["verification_status"] == "verified":
+            try:
+                packet["verified_information"] = {
+                    **deterministic_enrichment(body),
+                    "body_sha256": record["content_hash"],
+                    "source_url": record.get("final_url") or target["source_url"],
+                    "generated_at": packet["checked_at"],
+                    "generator": {"name": GENERATOR_NAME, "version": GENERATOR_VERSION},
+                }
+            except Exception as exc:
+                packet["enrichment_error"] = getattr(exc, "code", type(exc).__name__)
     except Exception as exc:
         packet["error"] = str(exc)[:240] if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
         if packet["verification_status"] != "conflict":
@@ -295,6 +307,7 @@ def _check_state(checks: list[dict[str, Any]]) -> dict[str, Any]:
         "verification_status": status, "collection_status": "collected" if status == "verified" else "pending",
         "checked_at": max((check["checked_at"] for check in current), default=None), "checks": checks,
         "collected_candidate": verified["website_candidate"] if status == "verified" else None,
+        "verified_information": verified.get("verified_information") if status == "verified" else None,
         "canonical_event_id": verified.get("canonical_event_id") if status == "verified" else None}
 
 
@@ -314,6 +327,18 @@ def merge_checked_observation(first: dict[str, Any], second: dict[str, Any]) -> 
     if merged.get("checks"):
         merged.update(_check_state(merged["checks"]))
     return merged
+
+
+def deduplicate_pdf_occurrences(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one display observation per exact PDF passage, retaining its checks."""
+    from climate_monitor.dedupe import canonical_url
+    merged = {}
+    for item in items:
+        sha = item.get("source_document_sha256")
+        key = (sha, item.get("page"), canonical_url(item.get("raw_url") or ""),
+            " ".join((item.get("summary") or "").split())) if sha else item["occurrence_id"]
+        merged[key] = merge_checked_observation(merged[key], item) if key in merged else item
+    return list(merged.values())
 
 
 def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -362,12 +387,13 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
             with sqlite3.connect(database) as connection:
                 if not connection.execute(f"SELECT 1 FROM {prefix}_check_runs WHERE run_id=?", (retry_run_id,)).fetchone():
                     raise ValueError("retry run does not exist in this information kind")
-                previous = {tuple(row[:2]): row[2] for row in connection.execute(
-                    f"SELECT occurrence_id,source_url,verification_status FROM {prefix}_check_attempts WHERE run_id=?", (retry_run_id,))}
+                previous = {tuple(row[:2]): row[2] == "verified" and not json.loads(row[3]).get("enrichment_error")
+                    for row in connection.execute(
+                    f"SELECT occurrence_id,source_url,verification_status,packet_json FROM {prefix}_check_attempts WHERE run_id=?", (retry_run_id,))}
                 original = json.loads(connection.execute(f"SELECT input_json FROM {prefix}_check_runs WHERE run_id=?", (retry_run_id,)).fetchone()[0])
                 keys = {(target["occurrence_id"], target["source_url"]) for target in original["targets"]}
             targets = [target for target in targets if (target["occurrence_id"], target["source_url"]) in keys
-                and previous.get((target["occurrence_id"], target["source_url"])) != "verified"]
+                and not previous.get((target["occurrence_id"], target["source_url"]), False)]
         run_id = f"{prefix}-check-" + uuid.uuid4().hex
         frozen = {"schema_version": CHECK_VERSION, "kind": kind, "targets": targets, "retry_of": retry_run_id}
         encoded = _json(frozen)
@@ -403,10 +429,14 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
         count += 1
         if progress:
             progress({"run_id": run_id, "occurrence_id": target["occurrence_id"], "source_url": target["source_url"],
-                "access_status": packet["access_status"], "verification_status": packet["verification_status"], "error": packet["error"]})
+                "access_status": packet["access_status"], "verification_status": packet["verification_status"],
+                "error": packet["error"], "enrichment_error": packet.get("enrichment_error")})
     with _writer(database) as connection:
         row = connection.execute(f"SELECT item_count,completed_count FROM {prefix}_check_runs WHERE run_id=?", (run_id,)).fetchone()
         failures = connection.execute(f"SELECT count(*) FROM {prefix}_check_attempts WHERE run_id=? AND verification_status!='verified'", (run_id,)).fetchone()[0]
-        status = "pending" if row[1] < row[0] else "partial" if failures else "complete"
+        enrichment_failures = sum(bool(json.loads(value[0]).get("enrichment_error")) for value in connection.execute(
+            f"SELECT packet_json FROM {prefix}_check_attempts WHERE run_id=?", (run_id,)))
+        status = "pending" if row[1] < row[0] else "partial" if failures or enrichment_failures else "complete"
         connection.execute(f"UPDATE {prefix}_check_runs SET status=?,completed_at=? WHERE run_id=?", (status, _now() if row[0] == row[1] else None, run_id))
-    return {"run_id": run_id, "kind": kind, "status": status, "item_count": row[0], "completed_count": row[1], "unverified_count": failures}
+    return {"run_id": run_id, "kind": kind, "status": status, "item_count": row[0], "completed_count": row[1],
+        "unverified_count": failures, "enrichment_failed_count": enrichment_failures}

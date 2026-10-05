@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from climate_registry.information_checks import run_checks
+from climate_delivery.io import exclusive_lock
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,10 +37,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--resume uses its frozen observations; omit --occurrence-id")
     if args.refresh_chat and (not args.queue_dir or not args.runtime_wiki_dir):
         parser.error("--refresh-chat needs --queue-dir and --runtime-wiki-dir")
-    result = run_checks(args.database.resolve(), kind=args.kind, backup_dir=args.backup_dir.resolve(),
-        occurrence_ids=set(args.occurrence_id) if args.occurrence_id else None,
-        resume_run_id=args.resume, retry_run_id=args.retry, limit=args.limit, data_root=args.data_root,
-        progress=lambda item: print(json.dumps(item, ensure_ascii=False), flush=True))
+    with exclusive_lock(args.queue_dir, "intake-writer") if args.queue_dir else nullcontext():
+        result = run_checks(args.database.resolve(), kind=args.kind, backup_dir=args.backup_dir.resolve(),
+            occurrence_ids=set(args.occurrence_id) if args.occurrence_id else None,
+            resume_run_id=args.resume, retry_run_id=args.retry, limit=args.limit, data_root=args.data_root,
+            progress=lambda item: print(json.dumps(item, ensure_ascii=False), flush=True))
     if args.refresh_chat:
         from climate_registry.pdf_pipeline import PdfIntakePipeline
         from scripts.run_pdf_intake_writer import _reload_chat
