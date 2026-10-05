@@ -74,6 +74,9 @@ def test_unified_articles_share_pagination_and_keep_linked_pdf_details(tmp_path,
     assert {item["source_kind"] for item in items} == {"registry", "pdf"}
     core = next(item for item in items if item["source_kind"] == "registry")
     assert core["source_label"] == "Registry · PDF import"
+    searched = client.get("/api/registry/articles?include_pdf=true&query=First").json()["items"]
+    assert len(searched) == 1 and searched[0]["article_id"] == core["article_id"] and searched[0]["source_kind"] == "registry"
+    assert client.get(f"/api/registry/articles/{searched[0]['article_id']}").json()["report_summary"] == "Core report summary."
     assert client.get(f"/api/registry/articles/{core['article_id']}").json()["pdf_occurrences"]
     assert client.get("/api/registry/articles?include_pdf=true&query=Second").json()["pagination"]["total"] == 1
     assert client.get("/api/registry/articles?include_pdf=true&source=missing.org").json()["pagination"]["total"] == 0
@@ -104,6 +107,19 @@ def test_pdf_history_and_downloads_only_include_active_runtime_documents(tmp_pat
     assert client.get(f"/api/registry/pdf-intake/reports/{pending_sha}/pdf").status_code == 404
     active_sha = active["documents"][0]["source"]["sha256"]
     assert client.get(f"/api/registry/pdf-intake/reports/{active_sha}/pdf").status_code == 200
+    with sqlite3.connect(public) as connection:
+        # Migrated Public documents can predate retained original PDF bytes.
+        connection.execute("ATTACH DATABASE ? AS imported", (str(runtime),))
+        for table in ("pdf_intake_documents", "pdf_intake_articles", "pdf_intake_article_occurrences", "pdf_intake_calendar_items"):
+            columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
+            values = ",".join("NULL" if name == "original_pdf" else name for name in columns)
+            column = "document_sha256" if table == "pdf_intake_documents" else "source_document_sha256"
+            condition = "" if table == "pdf_intake_articles" else f" WHERE {column}=?"
+            connection.execute(f"INSERT INTO {table} SELECT {values} FROM imported.{table}{condition}", () if not condition else (active_sha,))
+    overlapping = client.get(f"/api/registry/pdf-intake/reports/{active_sha}").json()
+    downloaded = client.get(overlapping["report_pdf"]["download_url"])
+    assert downloaded.status_code == 200 and hashlib.sha256(downloaded.content).hexdigest() == active_sha
+    assert client.get("/api/registry/reports?include_pdf=true").json()["pagination"]["total"] == 1
 
 
 def test_verified_article_uses_existing_body_enrichment_and_conflict_has_none(tmp_path):
@@ -187,6 +203,48 @@ def test_duplicate_pdf_passages_merge_checks_but_keep_different_reports():
     assert values[0]["verified_information"]["categories"] == ["Physical risk"]
 
 
+@pytest.mark.parametrize("filename,public_filename", [
+    ("registry-source-observations.md", "registry-source-observations.md"),
+    ("article-example.md", "article-example.md"),
+    ("article-example.md", "registry-source-observations.md")])
+def test_public_and_runtime_pdf_passage_merge_retains_verified_information(tmp_path, filename, public_filename):
+    from agentic_wiki.wiki_agent import AgenticWikiResponder, merge_registry_runtime_markdown
+    from climate_registry.wiki import _render_registry_article, _render_registry_source_observations
+    original = {"occurrence_id": "public-copy", "source_document_sha256": "a" * 64, "page": 26,
+        "raw_url": "https://example.org/study", "summary": "Original climate PDF passage.",
+        "source_observations": [{"filename": "climate.pdf"}]}
+    checked = {**original, "occurrence_id": "runtime-copy", "verified_information": {
+        "summary": "Website climate evidence.", "categories": ["Physical risk"], "keywords": ["insurance"],
+        "source_url": original["raw_url"], "generated_at": "2026-10-05"}}
+    other = {**original, "occurrence_id": "other-passage", "summary": "Another distinct PDF passage."}
+    def render(name, occurrences):
+        if name.startswith("article-"):
+            return _render_registry_article({"article_id": "example", "title": "Climate study",
+                "canonical_url": original["raw_url"], "pdf_occurrences": occurrences})
+        return _render_registry_source_observations([{"occurrences": occurrences}])
+    public, runtime = render(public_filename, [original, other]), render(filename, [checked])
+    merged = merge_registry_runtime_markdown(filename, public, runtime)
+    assert merged.count(original["summary"]) == merged.count(other["summary"]) == 1
+    assert merged.count("Verified information") == 1 and "Physical risk" in merged and "insurance" in merged
+    reverse = merge_registry_runtime_markdown(filename, runtime, public)
+    assert reverse.count(original["summary"]) == 1 and "Verified information" in reverse
+    wiki, overlay, sources = [tmp_path / name for name in ("wiki", "overlay", "sources")]
+    for path in (wiki, overlay, sources):
+        path.mkdir()
+    (wiki / public_filename).write_text(public)
+    (overlay / filename).write_text(runtime)
+    responder = AgenticWikiResponder(wiki, sources, overlay)
+    corpus = "\n".join(doc.markdown for doc in responder.kb.documents)
+    assert corpus.count(original["summary"]) == 1 and "Verified information" in corpus
+    assert sum(chunk.markdown.count(original["summary"]) for chunk in responder.kb.chunks) == 1
+    files = api_server.WikiStaticFiles(directory=str(wiki))
+    files.all_directories.insert(0, str(overlay))
+    assert files._merged_markdown(filename).count(original["summary"]) == 1
+    if filename != public_filename:
+        assert original["summary"] not in files._merged_markdown(public_filename)
+        assert other["summary"] in files._merged_markdown(public_filename)
+
+
 @pytest.mark.parametrize("instant,runs", [("2026-10-06T09:00:00Z", True), ("2026-10-06T10:00:00Z", False),
     ("2026-12-06T09:00:00Z", False), ("2026-12-06T10:00:00Z", True)])
 def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, monkeypatch):
@@ -215,3 +273,7 @@ def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, 
         with pytest.raises(SystemExit) as ready:
             exec(compile(packet.read_text(), "daily-check", "exec"), {})
         assert ready.value.code == 0 and os.environ["TYPESAFE_API_KEY"] == "test-only-placeholder"
+        monkeypatch.setattr(sys, "stdin", StringIO(""))
+        with pytest.raises(SystemExit) as missing:
+            exec(compile(packet.read_text(), "daily-check", "exec"), {})
+        assert missing.value.code == 2 and os.environ["TYPESAFE_API_KEY"] == ""

@@ -294,13 +294,36 @@ def merge_registry_runtime_markdown(
     """Combine approved Public history with the activated intake projection."""
     if not is_registry_runtime_path(filename):
         return None
-    if public_markdown == runtime_markdown:
-        return runtime_markdown
-    return (
+    combined = runtime_markdown if not public_markdown or public_markdown == runtime_markdown else (
         public_markdown.rstrip()
         + "\n\n---\n\n## Activated intake projection\n\n"
         + runtime_markdown.lstrip()
     )
+    return deduplicate_registry_pdf_markdown({filename: combined})[filename]
+
+
+def deduplicate_registry_pdf_markdown(files: dict[str, str]) -> dict[str, str]:
+    """Keep one physical PDF passage, including when intake links it to an article."""
+    from climate_monitor.dedupe import canonical_url
+    blocks, passages = {}, {}
+    # ponytail: only generated PDF sections; update this parser with renderer format changes.
+    for filename in sorted(files, key=lambda name: (name.startswith("article-"), name)):
+        blocks[filename] = []
+        for block in re.split(r"(?=^## )", files[filename], flags=re.MULTILINE):
+            passage = re.match(r"## PDF report observation: [^\n]+\n+(.*?)\n+PDF: [^\n]*?; "
+                r"SHA-256: ([0-9a-f]{64}); page (\d+|unknown)(?:; \[original link\]\(([^\n]+)\))?", block, re.DOTALL)
+            if passage:
+                summary = passage[1].strip().removesuffix("Report-provided summary; article details are unconfirmed.").strip()
+                key = (passage[2], passage[3], canonical_url(passage[4] or ""), " ".join(summary.split()))
+                if key in passages:
+                    previous_file, index = passages[key]
+                    previous = blocks[previous_file][index]
+                    if "### Verified information" in previous and "### Verified information" not in block:
+                        block = block.rstrip() + "\n\n### Verified information" + previous.split("### Verified information", 1)[1]
+                    blocks[previous_file][index] = ""
+                passages[key] = (filename, len(blocks[filename]))
+            blocks[filename].append(block)
+    return {filename: "".join(parts) for filename, parts in blocks.items()}
 
 
 def _strip_markdown(text: str) -> str:
@@ -803,6 +826,14 @@ class WikiKnowledgeBase:
             ]
         source_docs, source_chunks = self._load_directory(self.source_dir, "source")
 
+        registry_markdown = deduplicate_registry_pdf_markdown({
+            doc.file: doc.markdown for doc in wiki_docs if is_registry_runtime_path(doc.file)})
+        wiki_docs = [self._document_from_markdown(self.wiki_dir / doc.file,
+            registry_markdown[doc.file], "wiki", path_root="wiki")
+            if doc.file in registry_markdown and registry_markdown[doc.file] != doc.markdown else doc
+            for doc in wiki_docs]
+        wiki_chunks = [chunk for doc in wiki_docs for chunk in self._chunk_document(doc)]
+
         self.documents = wiki_docs
         self.source_documents = source_docs
         self.source_documents_by_title = {doc.title: doc for doc in source_docs}
@@ -852,6 +883,8 @@ class WikiKnowledgeBase:
         path_root: str | None = None,
     ) -> WikiDocument:
         markdown = _normalize_text(markdown)
+        if is_registry_runtime_path(path.name):
+            markdown = merge_registry_runtime_markdown(path.name, "", markdown)
         title = _title_from_file(path)
         links = (
             [

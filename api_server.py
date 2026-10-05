@@ -28,6 +28,7 @@ from agentic_wiki import (
     is_registry_runtime_path,
     merge_registry_runtime_markdown,
 )
+from agentic_wiki.wiki_agent import deduplicate_registry_pdf_markdown
 from climate_delivery.artifacts import load_report_artifact
 from climate_delivery.io import atomic_write_json
 from climate_delivery.errors import GenerationError, LockStateError
@@ -174,6 +175,14 @@ class WikiStaticFiles(StaticFiles):
     def _merged_markdown(self, path: str) -> str | None:
         if not is_registry_runtime_path(path):
             return None
+        # ponytail: small generated archive; cache at reload if serving it becomes costly.
+        names = {path}
+        for directory in self.all_directories:
+            names.update(file.name for file in Path(directory).glob("*.md") if is_registry_runtime_path(file.name))
+        files = {name: markdown for name in names if (markdown := self._layered_markdown(name)) is not None}
+        return deduplicate_registry_pdf_markdown(files).get(path)
+
+    def _layered_markdown(self, path: str) -> str | None:
         layers = []
         for directory in reversed(tuple(self.all_directories)):
             full_path, stat_result = StaticFiles(
@@ -182,9 +191,9 @@ class WikiStaticFiles(StaticFiles):
             ).lookup_path(path)
             if stat_result is not None and Path(full_path).is_file():
                 layers.append(Path(full_path).read_text(encoding="utf-8"))
-        if len(layers) < 2:
+        if not layers:
             return None
-        merged = layers[0]
+        merged = merge_registry_runtime_markdown(path, "", layers[0])
         for runtime in layers[1:]:
             candidate = merge_registry_runtime_markdown(path, merged, runtime)
             if candidate is None:
@@ -503,7 +512,9 @@ def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[st
             pass
     if public is None and runtime is None:
         raise RegistryNotFoundError("PDF report not found")
-    if not public or not runtime or include_bytes:
+    if include_bytes:
+        return next((item for item in (public, runtime) if item and item["pdf_bytes"] is not None), public or runtime)
+    if not public or not runtime:
         return public or runtime
     by_url = {item["canonical_url"]: item for item in public["articles"]}
     for item in runtime["articles"]:
@@ -511,6 +522,7 @@ def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[st
     public["articles"] = list(by_url.values())
     public["calendar_items"] = _merge_pdf_calendar_items(public["calendar_items"], runtime["calendar_items"])
     public["source_filenames"] = sorted(set(public["source_filenames"] + runtime["source_filenames"]))
+    public["report_pdf"] = public["report_pdf"] or runtime["report_pdf"]
     return public
 
 
@@ -670,21 +682,24 @@ def registry_articles(
         filters = dict(query=query, source=source, pillar=pillar, report_date=report_date)
         if not include_pdf:
             return _registry_reader().articles(page=parsed_page, page_size=parsed_size, **filters)
-        core = _all_registry_pages(_registry_reader().articles, **filters)
         web_reader, _, manifest = _range_report_overlay()
-        if web_reader is not None:
-            active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
-            core += [item for item in _all_registry_pages(web_reader.articles, **filters) if item["article_id"] in active_ids]
-        by_url = {item["canonical_url"]: dict(item, source_kind="registry") for item in core}
+        active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
+        readers = [(_registry_reader(), None)] + ([(web_reader, active_ids)] if web_reader else [])
+        core_by_url, by_url = {}, {}
+        for reader, allowed_ids in readers:
+            core = _all_registry_pages(reader.articles)
+            core_by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in core
+                if allowed_ids is None or item["article_id"] in allowed_ids})
+            matches = _all_registry_pages(reader.articles, **filters) if any(filters.values()) else core
+            by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in matches
+                if allowed_ids is None or item["article_id"] in allowed_ids})
         if not pillar:
             for item in _all_registry_pages(lambda page, page_size, **filters: registry_pdf_articles(
                 page=str(page), page_size=str(page_size), include_linked=True, **filters),
                 query=query, source=source, report_date=report_date):
-                if item["canonical_url"] in by_url:
-                    by_url[item["canonical_url"]]["source_label"] = "Registry · PDF import"
-                    by_url[item["canonical_url"]]["pdf_occurrence_count"] = item["occurrence_count"]
-                else:
-                    by_url[item["canonical_url"]] = item
+                core = core_by_url.get(item["canonical_url"])
+                by_url[item["canonical_url"]] = dict(core, source_label="Registry · PDF import",
+                    pdf_occurrence_count=item["occurrence_count"]) if core else item
         items = list(by_url.values())
         items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
         offset = (parsed_page - 1) * parsed_size

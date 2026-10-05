@@ -12,7 +12,7 @@ from io import StringIO
 from dotenv import dotenv_values
 
 configuration = dotenv_values(stream=StringIO(sys.stdin.read()), interpolate=False)
-os.environ["TYPESAFE_API_KEY"] = configuration.get("TYPESAFE_API_KEY") or os.getenv("TYPESAFE_API_KEY", "")
+os.environ["TYPESAFE_API_KEY"] = configuration.get("TYPESAFE_API_KEY") or ""
 
 required = ("TYPESAFE_API_KEY", "CLIMATE_REGISTRY_WRITER_DB", "CLIMATE_REGISTRY_BACKUP_DIR",
     "CLIMATE_PDF_INTAKE_QUEUE_DIR", "CLIMATE_PDF_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RELOAD_URL", "RELOAD_TOKEN")
