@@ -29,6 +29,7 @@ from climate_monitor.meetings import EVENT_TYPES, load_snapshot as load_meeting_
 from climate_monitor.meetings import query_events
 
 from .errors import RegistryBuildError, RegistryInputError
+from .capture import article_body_markdown, article_preview
 from .read_api import RegistryContractError, RegistryError, RegistryReader
 from .wiki import snapshot_registry
 
@@ -703,9 +704,9 @@ def _range_source(
             if content is not None:
                 policy = base.get("display_policy")
                 if policy == "full_markdown":
-                    content_text = content["markdown_content"]
+                    content_text = article_body_markdown(content["markdown_content"])
                 elif policy == "summary_excerpt":
-                    content_text = " ".join(content["markdown_content"].split())[:500]
+                    content_text = article_preview(content["markdown_content"])
             if acquisition_item_ids is None:
                 title = (
                     base.get("current_title")

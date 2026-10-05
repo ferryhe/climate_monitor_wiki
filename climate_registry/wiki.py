@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .persistent import _file_sha256, _read_only_connection, _validate_database
+from .capture import article_body_markdown, article_preview
 from .read_api import RegistryReader
 
 
@@ -319,11 +320,9 @@ def _pinned_web_article(
         "selection_basis": "active_intake_manifest",
     }
     if article["display_policy"] == "full_markdown":
-        pinned_content["markdown"] = content["markdown_content"]
+        pinned_content["markdown"] = article_body_markdown(content["markdown_content"])
     elif article["display_policy"] == "summary_excerpt":
-        pinned_content["supporting_excerpt"] = " ".join(
-            content["markdown_content"].split()
-        )[:500]
+        pinned_content["supporting_excerpt"] = article_preview(content["markdown_content"])
 
     article.update(
         title=selected.get("title") or article["canonical_url"],

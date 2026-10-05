@@ -15,6 +15,7 @@ from climate_delivery.errors import ClimateDeliveryError
 from climate_monitor.dedupe import canonical_url
 
 from .annotations import ArticleAnnotation, load_article_annotations
+from .capture import article_body_markdown, article_preview
 from .contract import SCHEMA_VERSION, SchemaContractError, validate_registry_contract
 from .reports import ParsedArticle, ParsedReport, parse_historical_report
 
@@ -1061,9 +1062,9 @@ class RegistryReader:
         available["collected_at"] = selected["fetched_at"]
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
         if display_policy == "full_markdown":
-            available["markdown"] = content["markdown_content"]
+            available["markdown"] = article_body_markdown(content["markdown_content"])
         elif display_policy == "summary_excerpt":
-            available["supporting_excerpt"] = " ".join(content["markdown_content"].split())[:500]
+            available["supporting_excerpt"] = article_preview(content["markdown_content"])
         return observations, available
 
     def article(self, article_id: str) -> dict[str, Any]:
@@ -1280,10 +1281,9 @@ class RegistryReader:
                 }
             )
             if policy == "summary_excerpt":
-                compact = " ".join(content["markdown_content"].split())
-                content_payload["supporting_excerpt"] = compact[:500]
+                content_payload["supporting_excerpt"] = article_preview(content["markdown_content"])
             elif policy == "full_markdown":
-                content_payload["markdown"] = content["markdown_content"]
+                content_payload["markdown"] = article_body_markdown(content["markdown_content"])
         enrichment_payload = {
             "summary": enrichment["summary"] if enrichment else None,
             "categories": _json_string_list(enrichment["categories_json"]) if enrichment else [],
