@@ -156,9 +156,11 @@ def test_verified_article_uses_existing_body_enrichment_and_conflict_has_none(tm
     target = check_targets(database, "articles", {"article-1"})[0]
     body = ("# Climate publication\n\nEmissions decreased. Climate insurance companies assess physical risk, "
         "capital exposure, biodiversity impacts and transition scenarios using scientific research and financial data.")
+    body = "[![](https://www.e.org/cover.png)](https://download.example.org/guide)\n\n" + body
     packet = evaluate(target, "articles", _record(target["occurrence_id"], target["source_url"], body), _judgment)
     assert packet["verification_status"] == "verified"
     information = packet["verified_information"]
+    assert information["summary"].startswith("Climate publication Emissions decreased.")
     assert information["categories"] and len(information["keywords"]) >= 8
     assert information["body_sha256"] == hashlib.sha256(body.encode()).hexdigest()
     conflicting = check_targets(database, "articles", {"article-2"})[0]
