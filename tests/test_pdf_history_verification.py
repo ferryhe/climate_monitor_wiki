@@ -33,6 +33,15 @@ def test_imported_pdf_history_retains_structure_original_download_and_one_copy(t
     renamed = tmp_path / "renamed.pdf"
     renamed.write_bytes(path.read_bytes())
     persist_pdf_intake(database, tmp_path / "backups", import_pdf_reports([renamed]))
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        article = dict(connection.execute("SELECT * FROM pdf_intake_articles LIMIT 1").fetchone())
+        article.update(article_id="legacy-calendar-article", canonical_url="https://example.org/calendar-only", core_article_id=None)
+        connection.execute("INSERT INTO pdf_intake_articles VALUES(" + ",".join("?" for _ in article) + ")", tuple(article.values()))
+        occurrence = dict(connection.execute("SELECT * FROM pdf_intake_article_occurrences LIMIT 1").fetchone())
+        occurrence.update(occurrence_id="legacy-calendar-occurrence", article_id=article["article_id"],
+            occurrence_json=json.dumps({**json.loads(occurrence["occurrence_json"]), "summary_basis": "verbatim_pdf_calendar_row"}))
+        connection.execute("INSERT INTO pdf_intake_article_occurrences VALUES(" + ",".join("?" for _ in occurrence) + ")", tuple(occurrence.values()))
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
     client = TestClient(api_server.app)
@@ -45,6 +54,7 @@ def test_imported_pdf_history_retains_structure_original_download_and_one_copy(t
     assert detail["edition"] == 9 and detail["reporting_period"]
     assert detail["executive_summary"] and detail["pages"] and detail["pdf_metadata"]
     assert detail["articles"] and detail["calendar_items"]
+    assert item["article_count"] == len(detail["articles"]) == 1
     assert detail["source_filenames"] == ["renamed.pdf", "report.pdf"]
     assert "original_pdf_base64" not in json.dumps(detail)
     assert str(tmp_path) not in json.dumps(detail)

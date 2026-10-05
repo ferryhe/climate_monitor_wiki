@@ -420,7 +420,8 @@ class RegistryReader:
             if not self._has_pdf_intake(connection):
                 return []
             article_rows = connection.execute(
-                "SELECT occurrence_id,source_document_sha256,article_id FROM pdf_intake_article_occurrences"
+                "SELECT occurrence_id,source_document_sha256,article_id FROM pdf_intake_article_occurrences "
+                "WHERE COALESCE(json_extract(occurrence_json, '$.summary_basis'), '') != 'verbatim_pdf_calendar_row'"
             ).fetchall()
             calendar_rows = connection.execute(
                 "SELECT occurrence_id,source_document_sha256 FROM pdf_intake_calendar_items"
