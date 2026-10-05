@@ -215,4 +215,3 @@ def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, 
         with pytest.raises(SystemExit) as ready:
             exec(compile(packet.read_text(), "daily-check", "exec"), {})
         assert ready.value.code == 0 and os.environ["TYPESAFE_API_KEY"] == "test-only-placeholder"
-
