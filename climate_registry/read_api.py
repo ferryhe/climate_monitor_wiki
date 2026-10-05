@@ -237,7 +237,7 @@ class RegistryReader:
             raise RegistryUnavailableError("registry database is unavailable")
         try:
             connection = sqlite3.connect(
-                f"{self.database.as_uri()}?mode=ro&immutable=1",
+                f"{self.database.as_uri()}?mode=ro",
                 uri=True,
                 timeout=2,
             )
@@ -674,10 +674,13 @@ class RegistryReader:
         for row, value in zip(rows, values):
             value["occurrence_id"] = row["occurrence_id"]
             value["source_observations"] = sources[row["source_document_sha256"]]
-        return values
+        from .information_checks import latest_checks
+        return [dict(value, **latest_checks(connection, "articles", value)) for value in values
+            if value.get("summary_basis") != "verbatim_pdf_calendar_row"]
 
     @classmethod
-    def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row,
+        *, allowed_occurrence_ids: set[str] | None = None) -> dict[str, Any]:
         canonical_url = row["canonical_url"]
         core_article_id = (
             row["core_article_id"] if cls._has_pdf_article_links(connection) else row["article_id"]
@@ -686,6 +689,8 @@ class RegistryReader:
             connection, core_article_id or row["article_id"], canonical_url,
             pdf_article_id=row["article_id"],
         )
+        if allowed_occurrence_ids is not None:
+            occurrences = [item for item in occurrences if item["occurrence_id"] in allowed_occurrence_ids]
         latest = occurrences[0] if occurrences else {}
         try:
             classification = json.loads(row["type_safe_classification_json"]) if row["type_safe_classification_json"] else None
@@ -710,6 +715,7 @@ class RegistryReader:
     def pdf_articles(
         self, *, page: int = 1, page_size: int = 20, query: str = "",
         source: str = "", report_date: str = "",
+        allowed_occurrence_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         page, page_size = validate_page(page, page_size)
         if len(query) > 200 or len(source) > 253:
@@ -729,7 +735,9 @@ class RegistryReader:
             ).fetchall()
             items = []
             for row in rows:
-                item = self._pdf_article_payload(connection, row)
+                item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids)
+                if not item["occurrences"]:
+                    continue
                 if source and item["source"] != source.strip().lower().removeprefix("www."):
                     continue
                 if report_date and not any(value.get("report_date") == report_date for value in item["occurrences"]):
@@ -751,7 +759,7 @@ class RegistryReader:
         offset = (page - 1) * page_size
         return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
 
-    def pdf_article(self, article_id: str) -> dict[str, Any]:
+    def pdf_article(self, article_id: str, *, allowed_occurrence_ids: set[str] | None = None) -> dict[str, Any]:
         if not article_id or len(article_id) > 128 or any(
             char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id
         ):
@@ -764,10 +772,14 @@ class RegistryReader:
             ).fetchone()
             if row is None:
                 raise RegistryNotFoundError("article not found")
-            return self._pdf_article_payload(connection, row)
+            payload = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids)
+            if allowed_occurrence_ids is not None and not payload["occurrences"]:
+                raise RegistryNotFoundError("article not found")
+            return payload
 
     def pdf_calendar_items(
         self, *, page: int = 1, page_size: int = 20, query: str = "", kind: str = "",
+        allowed_occurrence_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         page, page_size = validate_page(page, page_size)
         if len(query) > 200 or len(kind) > 80:
@@ -785,6 +797,11 @@ class RegistryReader:
                 sha: self._pdf_document_sources(connection, sha)
                 for sha in {row["source_document_sha256"] for row in rows}
             }
+            originals = {}
+            if "original_pdf" in {column[1] for column in connection.execute("PRAGMA table_info(pdf_intake_documents)")}:
+                originals = {sha: connection.execute(
+                    "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (sha,),
+                ).fetchone()[0] for sha in sources}
         items = []
         for row in rows:
             try:
@@ -793,8 +810,6 @@ class RegistryReader:
                 raise RegistryContractError("invalid PDF calendar item data") from exc
             if not isinstance(item, dict):
                 raise RegistryContractError("invalid PDF calendar item data")
-            if kind and kind.casefold() not in str(item.get("kind", "")).casefold():
-                continue
             try:
                 item["type_safe_classification"] = (
                     json.loads(row["type_safe_classification_json"])
@@ -805,19 +820,108 @@ class RegistryReader:
             item["source_kind"] = "pdf"
             item["source_filename"] = row["source_filename"]
             item["source_observations"] = sources[row["source_document_sha256"]]
+            items.append(item)
+        if originals:
+            from climate_monitor.pdf_intake import recover_calendar_fields
+            for sha, raw in originals.items():
+                if raw is not None:
+                    recovered = recover_calendar_fields(raw, [item for item in items if item["source_document_sha256"] == sha])
+                    by_id = {item["occurrence_id"]: item for item in recovered}
+                    items = [by_id.get(item["occurrence_id"], item) for item in items]
+        from climate_monitor.meeting_fields import pdf_meeting_fields
+        from .information_checks import latest_checks
+        with self.connect() as connection:
+            items = [dict(pdf_meeting_fields(item), **latest_checks(connection, "meetings", item)) for item in items]
+        selected = []
+        for item in items:
+            if allowed_occurrence_ids is not None and item["occurrence_id"] not in allowed_occurrence_ids:
+                continue
+            if kind and kind.casefold() not in str(item.get("kind", "")).casefold():
+                continue
             searchable = " ".join((
                 item.get("name") or "", item.get("kind") or "", item.get("raw_date") or "",
                 item.get("summary") or "", " ".join(item.get("source_urls") or []),
             )).casefold()
             if query and query.casefold() not in searchable:
                 continue
-            items.append(item)
+            selected.append(item)
+        items = selected
         items.sort(key=lambda item: (
             item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
         ))
         total = len(items)
         offset = (page - 1) * page_size
         return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
+
+    def resolve_pdf_meeting_identities(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Bind verified overlays to identities in this reader's native event history."""
+        from climate_monitor.meetings import resolve_event_identity
+        result = []
+        with self.connect() as connection:
+            has_events = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='climate_event_sources'").fetchone()
+            for raw in items:
+                item = dict(raw)
+                if has_events and item.get("verification_status") == "verified" and item.get("collected_candidate"):
+                    body_hash = next((check.get("body_sha256") for check in item.get("checks", [])
+                        if check.get("verification_status") == "verified"), None)
+                    if body_hash:
+                        identity = resolve_event_identity(connection, item["collected_candidate"], body_hash)
+                        if connection.execute("SELECT 1 FROM climate_events WHERE event_id=?", (identity,)).fetchone():
+                            item["canonical_event_id"] = identity
+                result.append(item)
+        return result
+
+    def meetings(self, *, page: int = 1, page_size: int = 20, query: str = "",
+        verification_status: str = "", base_date: str | None = None,
+        additional_calendar_items: list[dict[str, Any]] | None = None,
+        additional_events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Meetings have their own reader; verified imports join collected records."""
+        from climate_monitor.meetings import query_events
+        from .range_reports import _calendar_end_date
+        page, page_size = validate_page(page, page_size)
+        if len(query) > 200 or verification_status not in {"", "unchecked", "partial", "conflict", "verified"}:
+            raise RegistryQueryError("invalid meeting filter")
+        base_date = validate_report_date(base_date or datetime.now(timezone.utc).date().isoformat())
+        payload = query_events(self.database, base_date=base_date, timezone_name="UTC", include_deadlines=True)
+        collected = {record["event_id"]: dict(record, origin="web_collection", collection_status="collected",
+            verification_status="verified", access_status="accessible") for record in payload["records"] + (additional_events or [])}
+        imported = []
+        cursor = 1
+        while True:
+            result = self.pdf_calendar_items(page=cursor, page_size=100)
+            imported.extend(result["items"])
+            if cursor >= result["pagination"]["pages"]:
+                break
+            cursor += 1
+        imported = list({item["occurrence_id"]: item for item in imported + (additional_calendar_items or [])}.values())
+        from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations
+        for item in self.resolve_pdf_meeting_identities(imported):
+            item = collected_pdf_meeting(item)
+            end = _calendar_end_date(item)
+            if end is not None and end < date.fromisoformat(base_date):
+                continue
+            candidate = item.get("collected_candidate")
+            identity = item.get("canonical_event_id")
+            if candidate and identity:
+                if candidate.get("status") in {"cancelled", "retrospective"}:
+                    continue
+                if identity in collected:
+                    collected[identity] = merge_meeting_observations([collected[identity], item])[0]
+                    continue
+            else:
+                identity = item["occurrence_id"]
+            collected[identity] = item
+        items = [item for item in collected.values()
+            if (not verification_status or item["verification_status"] == verification_status)
+            and (not query or query.casefold() in " ".join(str(item.get(key) or "") for key in
+                ("name", "organizer", "relevance_reason", "raw_date")).casefold())]
+        items.sort(key=lambda item: (item.get("start_date") or "9999", item.get("name") or ""))
+        counts = {status: sum(item.get("verification_status") == status for item in collected.values())
+            for status in ("unchecked", "partial", "conflict", "verified")}
+        offset = (page - 1) * page_size
+        return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, len(items)),
+            "base_date": base_date, "verification_counts": counts, "coverage": payload["coverage"]}
 
     @staticmethod
     def _has_acquisition_projection(connection: sqlite3.Connection) -> bool:
@@ -900,6 +1004,11 @@ class RegistryReader:
             }
             item["publication_date_evidence"] = date_evidence
             item["origins"] = origins
+            item["collected_at"] = (
+                row["fetched_at"] if row["fetch_status"] == "success"
+                else row["resolved_fetched_at"]
+                if row["resolved_fetch_status"] == "success" else None
+            )
             item["fetch"] = {
                 "status": row["fetch_status"], "fetched_at": row["fetched_at"],
                 "content_version_id": row["fetch_content_version_id"],
@@ -949,6 +1058,7 @@ class RegistryReader:
             if key not in {"markdown_content", "content_sha256"}
         }
         available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
+        available["collected_at"] = selected["fetched_at"]
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
         if display_policy == "full_markdown":
             available["markdown"] = content["markdown_content"]
@@ -1025,6 +1135,47 @@ class RegistryReader:
             acquisition_observations, available_content = self._acquisition_projection(
                 connection, article_id, article["current_content_version_id"], article["display_policy"],
             )
+            has_date_observations = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_date_observations'"
+            ).fetchone() is not None
+            date_observations = []
+            if has_date_observations:
+                for row in connection.execute(
+                    """SELECT observation_id, observation_kind, observed_at, evidence_json, recorded_at
+                       FROM article_date_observations WHERE article_id=?
+                       ORDER BY observed_at, observation_id""",
+                    (article_id,),
+                ):
+                    try:
+                        evidence = json.loads(row["evidence_json"])
+                    except (json.JSONDecodeError, TypeError) as exc:
+                        raise RegistryContractError("invalid article date observation data") from exc
+                    date_observations.append({
+                        "observation_id": row["observation_id"],
+                        "kind": row["observation_kind"],
+                        "observed_at": row["observed_at"],
+                        "evidence": evidence,
+                        "recorded_at": row["recorded_at"],
+                    })
+        collected_values = [
+            item["observed_at"] for item in date_observations if item["kind"] == "collection"
+        ]
+        if available_content.get("collected_at"):
+            collected_values.append(available_content["collected_at"])
+        collected_at = max(collected_values, key=self._timestamp_key) if collected_values else None
+        information_dates = []
+        for item in date_observations:
+            if item["kind"] != "page_information":
+                continue
+            try:
+                value = date.fromisoformat(item["observed_at"])
+            except (TypeError, ValueError) as exc:
+                raise RegistryContractError("invalid article information date") from exc
+            if value.isoformat() != item["observed_at"]:
+                raise RegistryContractError("invalid article information date")
+            information_dates.append(value.isoformat())
+        information_date = max(information_dates) if information_dates else None
+        date_basis = "collection_time" if collected_at else "information_date" if information_date else "unknown"
         appearance_payload = []
         report_categories: list[str] = []
         report_keywords: list[str] = []
@@ -1041,8 +1192,8 @@ class RegistryReader:
         source_annotation: ArticleAnnotation | None = None
         for row in appearances:
             item = dict(row)
-            source_filename = item.pop("source_filename")
-            source_sha256 = item.pop("source_sha256")
+            source_filename = item["source_filename"]
+            source_sha256 = item["source_sha256"]
             context_key = (item["report_date"], source_filename, source_sha256)
             if context_key not in contexts:
                 contexts[context_key] = self._source_report(*context_key)
@@ -1125,6 +1276,7 @@ class RegistryReader:
                     "extraction_method": content["extraction_method"],
                     "extraction_version": content["extraction_version"],
                     "fetched_at": content["first_fetched_at"],
+                    "collected_at": available_content.get("collected_at"),
                 }
             )
             if policy == "summary_excerpt":
@@ -1200,6 +1352,10 @@ class RegistryReader:
             "publisher": article["publisher"],
             "first_seen": article["first_seen"],
             "last_seen": article["last_seen"],
+            "collected_at": collected_at,
+            "information_date": information_date,
+            "date_basis": date_basis,
+            "date_observations": date_observations,
             "document_kind": article["document_kind"],
             "publication_eligible": bool(article["publication_eligible"]),
             "display_policy": policy,

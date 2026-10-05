@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,11 +21,23 @@ from .wiki import render_runtime_registry, snapshot_registry
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_RFC3339_TIMESTAMP = re.compile(
+    r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)\Z"
+)
 PROJECTION_MANIFEST_SCHEMA = "climate-intake-projection.v1"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _valid_collected_at(value: Any) -> bool:
+    if not isinstance(value, str) or _RFC3339_TIMESTAMP.fullmatch(value) is None:
+        return False
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
+    except ValueError:
+        return False
 
 
 def _external(path: Path, repository_root: Path) -> Path:
@@ -204,19 +217,25 @@ def load_projection_manifest(
         or not isinstance(value.get("pdf_occurrence_ids"), list)
         or any(
             not isinstance(item, dict)
-            or set(item) != {
+            or set(item) not in ({
                 "acquisition_item_id", "batch_id", "article_id", "content_version_id",
                 "publication_date", "publication_date_evidence",
-            }
+            }, {
+                "acquisition_item_id", "batch_id", "article_id", "content_version_id",
+                "collected_at", "publication_date", "publication_date_evidence",
+            })
             or any(not isinstance(item.get(key), str) or not item[key] for key in (
                 "acquisition_item_id", "batch_id", "article_id", "content_version_id",
                 "publication_date",
             ))
+            or "collected_at" in item and not _valid_collected_at(item["collected_at"])
             or not isinstance(item.get("publication_date_evidence"), dict)
             or not item["publication_date_evidence"]
             for item in value.get("web_items", [])
         )
         or any(not isinstance(item, str) or not item for item in value.get("pdf_occurrence_ids", []))
+        or not isinstance(value.get("pdf_calendar_occurrence_ids", []), list)
+        or any(not isinstance(item, str) or not item for item in value.get("pdf_calendar_occurrence_ids", []))
     ):
         raise RuntimeError("active intake projection manifest is invalid")
     identities = [item["acquisition_item_id"] for item in value["web_items"]]
@@ -239,12 +258,14 @@ def _write_projection_manifest(
     *,
     web_items: list[dict[str, Any]],
     pdf_occurrence_ids: set[str],
+    pdf_calendar_occurrence_ids: set[str] | None = None,
 ) -> str:
     value = {
         "schema_version": PROJECTION_MANIFEST_SCHEMA,
         "generation_id": generation_id,
         "web_items": sorted(web_items, key=lambda item: item["acquisition_item_id"]),
         "pdf_occurrence_ids": sorted(pdf_occurrence_ids),
+        "pdf_calendar_occurrence_ids": sorted(pdf_calendar_occurrence_ids or []),
     }
     payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
     (generation / "intake-manifest.json").write_bytes(payload)
@@ -287,6 +308,16 @@ def _active_pdf_occurrence_ids(
             re.MULTILINE,
         )
     }
+
+
+def _active_calendar_ids(database: Path, manifest: dict[str, Any] | None, pdf_ids: set[str]) -> set[str]:
+    if manifest is not None and "pdf_calendar_occurrence_ids" in manifest:
+        return set(manifest["pdf_calendar_occurrence_ids"])
+    with sqlite3.connect(database) as connection:
+        documents = {row[1] for row in connection.execute(
+            "SELECT occurrence_id,source_document_sha256 FROM pdf_intake_article_occurrences") if row[0] in pdf_ids}
+        return {row[0] for row in connection.execute(
+            "SELECT occurrence_id,source_document_sha256 FROM pdf_intake_calendar_items") if row[1] in documents}
 
 
 def _active_registry_snapshot(
@@ -338,6 +369,15 @@ def _stored_bundle_occurrence_ids(database: Path, bundle: dict[str, Any]) -> set
     if set(matches) != incoming:
         raise RuntimeError("persisted PDF occurrence identity is missing")
     return {str(value) for value in matches.values()}
+
+
+def _stored_calendar_ids(database: Path, bundle: dict[str, Any]) -> set[str]:
+    with sqlite3.connect(database) as connection:
+        _, matches = _existing_occurrence_ids(connection, bundle.get("documents", []),
+            bundle.get("articles", []), bundle.get("calendar_items", []))
+    if set(matches) != {item["occurrence_id"] for item in bundle.get("calendar_items", [])}:
+        raise RuntimeError("persisted PDF calendar identity is missing")
+    return set(matches.values())
 
 
 class PdfIntakePipeline:
@@ -404,6 +444,7 @@ class PdfIntakePipeline:
         filename: str,
         pages: set[str],
         occurrence_ids: set[str],
+        calendar_ids: set[str] | None = None,
     ) -> tuple[Path, str, str, str]:
         generation_id = f"{batch_id[:16]}-{attempt:04d}"
         generations = self.runtime_wiki_dir / "generations"
@@ -417,6 +458,8 @@ class PdfIntakePipeline:
         pdf_occurrence_ids = _active_pdf_occurrence_ids(
             active_generation, active_manifest
         ) | occurrence_ids
+        pdf_calendar_ids = _active_calendar_ids(self.database, active_manifest,
+            _active_pdf_occurrence_ids(active_generation, active_manifest)) | (calendar_ids or set())
         web_snapshot = _active_registry_snapshot(
             self.runtime_wiki_dir,
             active_metadata,
@@ -432,6 +475,7 @@ class PdfIntakePipeline:
                 manifest={
                     "web_items": web_items,
                     "pdf_occurrence_ids": sorted(pdf_occurrence_ids),
+                    "pdf_calendar_occurrence_ids": sorted(pdf_calendar_ids),
                 },
             )
             if not _projection_contains(staging, document_sha256, filename, pages):
@@ -444,6 +488,7 @@ class PdfIntakePipeline:
                 generation_id,
                 web_items=web_items,
                 pdf_occurrence_ids=pdf_occurrence_ids,
+                pdf_calendar_occurrence_ids=pdf_calendar_ids,
             )
         finally:
             if staging.exists():
@@ -484,6 +529,7 @@ class PdfIntakePipeline:
                 for article in bundle.get("articles", [])
                 for occurrence in article.get("occurrences", [])
             }
+            pages.update(str(item.get("page") or "unknown") for item in bundle.get("calendar_items", []))
             for article in bundle.get("articles", []):
                 for occurrence in article.get("occurrences", []):
                     occurrence["management_batch_id"] = batch_id
@@ -491,6 +537,7 @@ class PdfIntakePipeline:
                 persist_pdf_intake(self.database, self.backup_dir, bundle)
             status = self._save(batch_id, status, stage="imported", imported=True)
             occurrence_ids = _stored_bundle_occurrence_ids(self.database, bundle)
+            calendar_ids = _stored_calendar_ids(self.database, bundle)
 
             generation = None
             source_registry_sha256 = _file_sha256(self.database)
@@ -529,6 +576,7 @@ class PdfIntakePipeline:
                     filename,
                     pages,
                     occurrence_ids,
+                    calendar_ids,
                 )
                 _, prior_active = self._active_projection()
                 status = self._save(
@@ -677,6 +725,35 @@ class PdfIntakePipeline:
                 error=reason,
                 failure_history=history,
             )
+
+    def refresh_checks(self, run_id: str) -> dict[str, Any]:
+        """Publish only already activated observations with their new check results."""
+        with exclusive_lock(self.queue_dir, "intake-writer"):
+            prior_generation, metadata = self._active_projection()
+            if prior_generation is None or metadata is None:
+                return {"status": "not_active", "run_id": run_id}
+            manifest = load_projection_manifest(prior_generation, metadata)
+            pdf_ids = _active_pdf_occurrence_ids(prior_generation, manifest)
+            calendar_ids = _active_calendar_ids(self.database, manifest, pdf_ids)
+            generation_id = "checks-" + uuid.uuid4().hex
+            generation = self.runtime_wiki_dir / "generations" / generation_id
+            snapshot = self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3"
+            digest = _snapshot_registry(self.database, snapshot)
+            web_items = list((manifest or {}).get("web_items", []))
+            web_snapshot = _active_registry_snapshot(self.runtime_wiki_dir, metadata, "web", required=bool(web_items))
+            generation.mkdir()
+            render_runtime_registry(generation, web_database=web_snapshot, pdf_database=snapshot,
+                manifest={"web_items": web_items, "pdf_occurrence_ids": sorted(pdf_ids),
+                    "pdf_calendar_occurrence_ids": sorted(calendar_ids)})
+            manifest_sha = _write_projection_manifest(generation, generation_id, web_items=web_items,
+                pdf_occurrence_ids=pdf_ids, pdf_calendar_occurrence_ids=calendar_ids)
+            updated = {**metadata, "generation_id": generation_id, "path": str(generation.resolve()),
+                "pdf_registry_snapshot": str(snapshot.resolve()), "pdf_registry_sha256": digest,
+                "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id}
+            if metadata.get("projection_kind") != "web":
+                updated.update(registry_snapshot=str(snapshot.resolve()), registry_sha256=digest)
+            self._activate(updated)
+            return {"status": "chat_ready", "generation_id": generation_id, "run_id": run_id}
 
     def process_next(self) -> dict[str, Any] | None:
         resumable = {"queued", "processing", "imported", "indexed", "activating"}

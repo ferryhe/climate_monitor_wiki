@@ -579,6 +579,76 @@ a {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.message-bubble--report {
+  background: #fff;
+  color: #203040;
+  border-top: 5px solid #c8a456;
+  border-radius: 12px;
+  padding: 24px;
+  font-family: Arial, "Liberation Sans", sans-serif;
+}
+
+.message-bubble--report .message-markdown h2,
+.message-bubble--report .message-markdown h3,
+.message-bubble--report .message-markdown h4,
+.message-bubble--report .message-markdown h5,
+.message-bubble--report a,
+.message-bubble--report .citation {
+  color: #12304b;
+}
+
+.message-bubble--report .message-markdown h2 {
+  font-size: 1.55rem;
+}
+
+.message-bubble--report .message-markdown h3 {
+  margin-top: 1.4rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid #c8a456;
+  font-size: 1.15rem;
+}
+
+.message-bubble--report .message-markdown h4 {
+  font-size: 1rem;
+}
+
+.message-bubble--report .message-markdown h5 {
+  font-size: 0.95rem;
+}
+
+.report-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.message-bubble--report table {
+  min-width: 720px;
+  table-layout: fixed;
+  font-size: 0.85rem;
+}
+
+.message-bubble--report th,
+.message-bubble--report td {
+  border-color: #d8dee5;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.message-bubble--report thead {
+  position: static;
+}
+
+.message-bubble--report th {
+  background: #12304b;
+  color: #fff;
+}
+
+.message-bubble--report th:nth-child(1) { width: 18%; }
+.message-bubble--report th:nth-child(2) { width: 30%; }
+.message-bubble--report th:nth-child(3) { width: 16%; }
+.message-bubble--report th:nth-child(4) { width: 36%; }
+.message-bubble--report tbody tr:nth-child(even) { background: #f3f5f7; }
+
 .citation {
   display: inline-block;
   margin: 0 1px;
@@ -1202,6 +1272,11 @@ a {
   font-weight: 600;
 }
 
+.registry-card .registry-source-link {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .registry-detail-section {
   margin-top: 22px;
   padding-top: 18px;
@@ -1433,6 +1508,12 @@ tbody tr.is-selected {
   }
 }
 
+@media (max-height: 720px) {
+  .composer-shell {
+    position: static;
+  }
+}
+
 @media (max-width: 1080px) {
   .obsidian-grid {
     grid-template-columns: 1fr;
@@ -1468,6 +1549,10 @@ tbody tr.is-selected {
   .tabbar {
     flex-wrap: wrap;
     padding-inline: 14px;
+  }
+
+  .tabbar__tabs {
+    flex-wrap: wrap;
   }
 
   .status-pill {

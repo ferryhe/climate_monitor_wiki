@@ -27,7 +27,7 @@ from climate_registry.persistent import initialize_registry
 from climate_registry.schema import apply_migrations
 
 
-def _report_pdf(path, calendar_date="4–5 Sep 2026"):
+def _report_pdf(path, calendar_date="4–5 Sep 2026", *, include_article=False):
     output = BytesIO()
     canvas = Canvas(output, pagesize=letter)
     canvas.setTitle("Climate intake source metadata")
@@ -47,6 +47,11 @@ def _report_pdf(path, calendar_date="4–5 Sep 2026"):
     canvas.showPage()
     canvas.drawString(50, 760, "Executive Summary")
     canvas.drawString(50, 740, "Climate summary preserved exactly from the report.")
+    if include_article:
+        canvas.drawString(50, 700, "Climate publication")
+        canvas.drawString(50, 682, "IN WINDOW 2 SEP 2026 REPORT")
+        canvas.drawString(50, 664, "Independent publication summary.")
+        canvas.linkURL("https://example.org/climate-publication", (48, 696, 220, 712), relative=0)
     canvas.showPage()
     for y, line in zip(
         (760, 740, 720, 700, 680, 660),
@@ -184,13 +189,9 @@ def test_pdf_adapter_preserves_provenance_links_text_and_calendar_dates(tmp_path
     later_event = _extract_calendar_items(later_document)[0]
     assert later_event["event_id"] == event["event_id"]
     assert later_event["occurrence_id"] != event["occurrence_id"]
-    article = bundle["articles"][0]
-    assert article["canonical_url"] == "https://example.org/climate-risk-conference"
-    assert article["title"] == "Climate risk conference"
-    assert article["occurrences"][0]["source_document_sha256"] == document["source"]["sha256"]
-    assert article["occurrences"][0]["content_sha256"]
-    assert article["occurrences"][0]["summary_basis"] == "verbatim_pdf_calendar_row"
-    assert "A conference relevant to insurers" in article["occurrences"][0]["summary"]
+    assert bundle["articles"] == []  # Calendar observations belong only to meetings.
+    assert event["source_urls"] == ["https://example.org/climate-risk-conference/"]
+    assert event["content_sha256"]
 
 
 def test_article_context_is_bounded_to_its_record_and_keeps_publication_date(tmp_path, monkeypatch):
@@ -505,7 +506,8 @@ def test_calendar_classification_uses_canonical_source_url(tmp_path, monkeypatch
 
     bundle = import_pdf_reports([path])
 
-    assert bundle["articles"][0]["canonical_url"] == "https://example.org/climate-risk-conference"
+    assert bundle["articles"] == []
+    assert bundle["calendar_typesafe"]["classified"] == 1
     assert bundle["calendar_items"][0]["type_safe_classification"] == {
         "provider": "typesafe", "label": "event",
     }
@@ -553,10 +555,10 @@ def test_cli_writes_and_persists_bundle_idempotently(tmp_path, monkeypatch):
     assert bundle["documents"][0]["source"]["filename"] == "source.pdf"
     import sqlite3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
-        assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (1,)
-        assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_calendar_items").fetchone() == (1,)
         original_pdf, created_at, modified_at, document_json = connection.execute(
             "SELECT original_pdf, pdf_created_at, pdf_modified_at, document_json FROM pdf_intake_documents"
@@ -586,7 +588,7 @@ def test_cli_rejects_output_aliases_before_overwriting_pdf_or_registry(tmp_path,
         assert source.read_bytes() == original_pdf
         import sqlite3
         with sqlite3.connect(database) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+            assert connection.execute("PRAGMA user_version").fetchone() == (18,)
     assert not backup_dir.exists()
 
 
@@ -793,7 +795,7 @@ def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
           json.dumps({"occurrence_id": "occ-home"}))),
     )
     connection.commit()
-    assert apply_migrations(connection) == [16]
+    assert apply_migrations(connection) == [16, 17, 18]
     assert connection.execute(
         "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-exact'"
     ).fetchone() == ("core", "exact_url_eligible_detail")
@@ -812,7 +814,7 @@ def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
 def test_registry_backfills_classification_and_tracks_duplicate_pdf_sources(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     first_pdf, second_pdf, third_pdf = (tmp_path / name for name in ("first.pdf", "second.pdf", "third.pdf"))
-    _report_pdf(first_pdf)
+    _report_pdf(first_pdf, include_article=True)
     second_pdf.write_bytes(first_pdf.read_bytes())
     third_pdf.write_bytes(first_pdf.read_bytes())
 
@@ -867,7 +869,7 @@ def test_registry_backfills_classification_and_tracks_duplicate_pdf_sources(tmp_
 def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     source = tmp_path / "report.pdf"
-    _report_pdf(source)
+    _report_pdf(source, include_article=True)
     bundle = import_pdf_reports([source])
     document = bundle["documents"][0]
     database = tmp_path / "registry.sqlite3"
@@ -930,7 +932,7 @@ def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_pat
     persist_pdf_intake(database, tmp_path / "backups", bundle)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
         original_pdf, created_at, modified_at, raw_metadata = connection.execute(
             """SELECT original_pdf, pdf_created_at, pdf_modified_at, pdf_metadata_json
                FROM pdf_intake_documents"""
@@ -953,7 +955,7 @@ def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_pat
 def test_article_classification_retry_does_not_replace_existing_label(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     source = tmp_path / "report.pdf"
-    _report_pdf(source)
+    _report_pdf(source, include_article=True)
     first = import_pdf_reports([source])
     first["articles"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "event"}
     first["calendar_items"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "event"}

@@ -54,6 +54,7 @@ def _render_registry_article(article: dict) -> str | None:
     appearances = article.get("appearances", [])
     pdf_occurrences = article.get("pdf_occurrences", [])
     acquisition_observations = article.get("acquisition_observations", [])
+    date_observations = article.get("date_observations", [])
     current_version_has_appearance = any(
         appearance.get("version_id") == article.get("current_version_id")
         and appearance.get("summary") == report_summary
@@ -65,6 +66,7 @@ def _render_registry_article(article: dict) -> str | None:
         or article.get("summary")
         or report_summary
         or acquisition_observations
+        or date_observations
         or any(item.get("summary") for item in pdf_occurrences)
         or any(item.get("summary") for item in appearances)
     ):
@@ -79,6 +81,25 @@ def _render_registry_article(article: dict) -> str | None:
         "",
         f"Canonical article: [{article['canonical_url']}]({article['canonical_url']})",
     ]
+    if article.get("collected_at"):
+        blocks.append(f"Collected at: {article['collected_at']}")
+    if date_observations:
+        blocks.extend(["", "## Date observations", ""])
+        for observation in date_observations:
+            evidence = observation["evidence"]
+            label = ("Collection time" if observation["kind"] == "collection"
+                     else "Page information date")
+            detail = (
+                f"{label}: {observation['observed_at']}; source record: "
+                f"{evidence['source_system']}.{evidence['table']} {evidence['record_id']}; "
+                f"match: {evidence['match_basis']}"
+            )
+            if evidence.get("date_kind"):
+                detail += f"; page date kind: {evidence['date_kind']}"
+            if evidence.get("source_url"):
+                detail += f"; source URL: {evidence['source_url']}"
+            detail += f"; evidence imported at: {observation['recorded_at']}"
+            blocks.append(f"- {detail}")
     if article.get("categories"):
         blocks.extend(["", f"Categories: {', '.join(article['categories'])}"])
     if article.get("keywords"):
@@ -169,6 +190,8 @@ def _render_registry_article(article: dict) -> str | None:
             f"{observation.get('content_version_id') or observation.get('resolved_fetch', {}).get('content_version_id') or 'none'}; "
             f"status: {observation['processing_status']}/{observation['material_status']}",
         ]
+        if observation.get("collected_at"):
+            observation_blocks.append(f"Collected at: {observation['collected_at']}")
         if observation.get("publication_date"):
             observation_blocks.append(
                 f"Publication date: {observation['publication_date']}"
@@ -249,9 +272,12 @@ def _pinned_web_article(
         raise RuntimeError("active web projection identity is missing")
     for observation in observations:
         identity = expected[observation["acquisition_item_id"]]
+        bound_fields = ("batch_id", "content_version_id", "publication_date")
+        if "collected_at" in identity:
+            bound_fields += ("collected_at",)
         if any(
             observation.get(key) != identity[key]
-            for key in ("batch_id", "content_version_id", "publication_date")
+            for key in bound_fields
         ) or observation.get("publication_date_evidence") != identity["publication_date_evidence"]:
             raise RuntimeError("active web projection identity changed")
 
@@ -287,6 +313,7 @@ def _pinned_web_article(
         "extraction_method": content["extraction_method"],
         "extraction_version": content["extraction_version"],
         "fetched_at": content["first_fetched_at"],
+        "collected_at": selected.get("collected_at"),
         "acquisition_item_id": selected["acquisition_item_id"],
         "fetch_id": selected.get("fetch_id"),
         "selection_basis": "active_intake_manifest",
@@ -303,6 +330,7 @@ def _pinned_web_article(
         report_summary=None,
         appearances=[],
         acquisition_observations=observations,
+        collected_at=selected.get("collected_at"),
         pdf_occurrences=[],
         content=pinned_content,
         available_content=pinned_content,
@@ -391,6 +419,12 @@ def render_runtime_registry(
         selected = [row for row in rows if row["occurrence_id"] in pdf_ids]
         if {row["occurrence_id"] for row in selected} != pdf_ids:
             raise RuntimeError("active PDF projection identity is missing")
+        # Historical imports saved calendar links as article observations. Keep
+        # those rows intact, but route their content to the meeting projection.
+        with pdf_reader.connect() as connection:
+            calendar_links = {row[0] for row in connection.execute(
+                "SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE json_extract(occurrence_json,'$.summary_basis')='verbatim_pdf_calendar_row'")}
+        selected = [row for row in selected if row["occurrence_id"] not in calendar_links]
         confirmed: dict[str, set[str]] = defaultdict(set)
         unconfirmed: dict[str, set[str]] = defaultdict(set)
         for row in selected:
@@ -447,6 +481,34 @@ def render_runtime_registry(
     rendered_sources = _render_registry_source_observations(source_observations)
     if rendered_sources:
         pages["registry-source-observations.md"] = rendered_sources
+    calendar_ids = set(manifest.get("pdf_calendar_occurrence_ids", []))
+    if calendar_ids:
+        if pdf_database is None:
+            raise RuntimeError("active meeting Registry snapshot is missing")
+        meeting_reader = RegistryReader(pdf_database, repository_root=Path(__file__).resolve().parents[1])
+        records = []
+        cursor = 1
+        while True:
+            result = meeting_reader.pdf_calendar_items(page=cursor, page_size=100)
+            records.extend(item for item in result["items"] if item["occurrence_id"] in calendar_ids)
+            if cursor >= result["pagination"]["pages"]:
+                break
+            cursor += 1
+        if {item["occurrence_id"] for item in records} != calendar_ids:
+            raise RuntimeError("active PDF calendar observation is missing")
+        blocks = ["# Meetings and key dates", ""]
+        for item in records:
+            candidate = item.get("collected_candidate") or {}
+            blocks.extend([f"## {item['name']}", _citation(item),
+                "PDF calendar observation: " + item["occurrence_id"],
+                "Date(s): " + str(item.get("raw_date") or "Not provided"),
+                "Host: " + str(item.get("organizer") or "Not provided"),
+                "Relevance (PDF author): " + str(item.get("relevance_reason") or "Not provided"),
+                "Verification: " + item["verification_status"],
+                *[f"Collected {field}: {candidate[field]}" for field in
+                    ("raw_time_text", "timezone", "location", "online_url", "status") if candidate.get(field)],
+                *item.get("source_urls", []), ""])
+        pages["registry-meetings.md"] = "\n".join(blocks) + "\n"
     for name, content in pages.items():
         (wiki_dir / name).write_text(content, encoding="utf-8")
     return pages

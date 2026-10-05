@@ -11,6 +11,7 @@ import os
 import re
 from datetime import date, datetime, timezone
 from io import BytesIO
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit
@@ -537,10 +538,68 @@ def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
                 "raw_text": row_text,
                 "page": page["page"],
                 "source_urls": source_urls,
+                "source_links": [{"url": link["url"], "rect": link.get("rect", [])} for link in page_links],
                 "source_document_sha256": document["source"]["sha256"],
                 "content_sha256": _sha256(row_text),
             })
     return items
+
+
+@lru_cache(maxsize=2)
+def _calendar_table_rows(raw_pdf: bytes, pages: tuple[int, ...]) -> tuple[dict[str, Any], ...]:
+    """Read column geometry; line-order extraction mixes the four calendar cells."""
+    import pdfplumber
+
+    rows = []
+    with pdfplumber.open(BytesIO(raw_pdf)) as pdf:
+        for number in pages:
+            page = pdf.pages[number - 1]
+            for table in page.find_tables():
+                columns = None
+                for row, values in zip(table.rows, table.extract()):
+                    if [_compact(v) for v in values if v] == ["DATE(S)", "EVENT", "HOST", "RELEVANCE"]:
+                        columns = [cell for cell, value in zip(row.cells, values) if value]
+                        continue
+                    if columns is None:
+                        continue
+                    top, bottom = row.bbox[1], row.bbox[3]
+                    cells = [_compact(page.crop((cell[0] + 1, top + .3, cell[2] - .3, bottom - .3))
+                        .extract_text(x_tolerance=2, y_tolerance=2) or "") for cell in columns]
+                    match = re.fullmatch(r"(.+?)\s+(EVENT|DEADLINE|LAUNCH|PUBLICATION|WATCH|WEBINAR)", cells[0], re.I)
+                    if match is None:
+                        continue
+                    urls = list(dict.fromkeys(link["uri"] for link in page.hyperlinks
+                        if link.get("uri", "").startswith(("https://", "http://"))
+                        and link["top"] < bottom and link["bottom"] > top
+                        and link["x0"] < columns[1][2] and link["x1"] > columns[1][0]))
+                    rows.append({"page": number, "raw_date": match[1], "kind": match[2].lower(),
+                        "name": cells[1], "publisher": cells[2], "relevance": cells[3], "source_urls": urls})
+    return tuple(rows)
+
+
+def recover_calendar_fields(raw_pdf: bytes, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recover cells for existing and new imports, preserving stored observations."""
+    pages = tuple(sorted({item["page"] for item in items if item.get("raw_text")}))
+    if not pages:
+        return items
+    digest = _sha256(raw_pdf)
+    if any(item["source_document_sha256"] != digest for item in items):
+        raise ValueError("calendar PDF bytes do not match the source document")
+    normalize = lambda value: re.sub(r"[^\w]", "", value.casefold())
+    rows = _calendar_table_rows(raw_pdf, pages)
+    result = []
+    for item in items:
+        text = normalize(item.get("raw_text") or "")
+        matches = [row for row in rows if row["page"] == item["page"]
+            and row["kind"] == item["kind"] and normalize(row["raw_date"]) == normalize(item["raw_date"])
+            and all(normalize(row[key]) in text for key in ("name", "publisher", "relevance"))]
+        if len(matches) == 1:
+            row = matches[0]
+            item = dict(item, name=row["name"], publisher=row["publisher"], relevance=row["relevance"],
+                source_urls=row["source_urls"] or item["source_urls"],
+                calendar_field_basis="pdf_table_cells")
+        result.append(item)
+    return result
 
 
 def _read_pdf(path: Path) -> dict[str, Any]:
@@ -596,23 +655,57 @@ def _read_pdf(path: Path) -> dict[str, Any]:
         "executive_summary_sha256": _sha256(executive_summary) if executive_summary else None,
         "pages": pages,
     }
-    document["calendar_items"] = _extract_calendar_items(document)
+    document["calendar_items"] = recover_calendar_fields(raw, _extract_calendar_items(document))
     return document
+
+
+def report_update_fields(occurrence: dict[str, Any], document: dict[str, Any]) -> dict[str, Any] | None:
+    """Read an explicitly dated report item, excluding calendar/website links."""
+    summary, anchor = occurrence.get("summary") or "", occurrence.get("anchor_text") or ""
+    marker = re.search(r"\n(IN WINDOW[^\n]+)\n", summary, re.I)
+    if marker is None or re.fullmatch(r"(?:www\.)?[a-z0-9.-]+\.[a-z]+(?:/[^ ]*)?", anchor, re.I):
+        return None
+    normalize = lambda value: re.sub(r"[^\w]", "", value.casefold())
+    head = summary[:marker.start()]
+    page = next((page for page in document.get("pages", []) if page["page"] == occurrence["page"]), None)
+    if page is None:
+        return None
+    titles = [link["anchor_text"] for link in page["links"]
+        if canonical_url(link["url"]) == canonical_url(occurrence["raw_url"])
+        and len(link["anchor_text"]) > 20 and normalize(link["anchor_text"]) in normalize(head)]
+    title = _compact(max(titles, key=len) if titles else head)
+    publisher = None
+    for prior in document.get("pages", []):
+        if prior["page"] > page["page"]:
+            break
+        lines = prior["text"].splitlines()
+        if prior["page"] == page["page"]:
+            stop = _find_anchor_line(lines, title)
+            if stop is not None:
+                lines = lines[:stop]
+        for index, line in enumerate(lines):
+            if index and line.startswith("Website:"):
+                publisher = _compact(lines[index - 1])
+    tail = summary[marker.end():]
+    source = re.search(r"(?:📎\s*)?Source:\s*(.+)", tail)
+    source_label = _compact(source[1]) if source else ""
+    if source:
+        tail = tail[:source.start()]
+    badges = _compact(marker[1])[len("IN WINDOW "):]
+    date_label = _compact(occurrence.get("publication_date_evidence") or "")
+    if date_label and badges.casefold().startswith(date_label.casefold()):
+        badges = badges[len(date_label):].strip()
+    return {"title": title, "publisher": publisher, "topic": badges or "Update",
+        "summary": tail.strip(), "source_label": source_label}
 
 
 def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for document in documents:
         occurrence_ordinals: dict[tuple[str, int], int] = {}
-        event_titles = {
-            (event["page"], canonical_url(url)): event["name"]
-            for event in document["calendar_items"] for url in event["source_urls"]
-            if event.get("name") and canonical_url(url)
-        }
-        event_contexts = {
-            (event["page"], canonical_url(url)): event
-            for event in document["calendar_items"] for url in event["source_urls"]
-            if canonical_url(url)
+        calendar_links = {
+            (event["page"], canonical_url(link["url"]), tuple(link.get("rect", [])))
+            for event in document["calendar_items"] for link in event.get("source_links", [])
         }
         anchor_ordinals: dict[tuple[int, str], int] = {}
         for page in document["pages"]:
@@ -623,6 +716,10 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 canonical = canonical_url(link["url"])
                 if not canonical:
                     continue
+                # Calendar hyperlinks belong to the calendar observation. The same
+                # URL in a non-calendar paragraph remains an article occurrence.
+                if (page["page"], canonical, tuple(link.get("rect", []))) in calendar_links:
+                    continue
                 record = grouped.setdefault(canonical, {
                     "article_id": _stable_id("article", canonical),
                     "canonical_url": canonical,
@@ -630,16 +727,11 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "type_safe_classification": None,
                     "occurrences": [],
                 })
-                event_title = event_titles.get((page["page"], canonical))
                 anchor_key = (page["page"], _compact(link["anchor_text"]).casefold())
                 anchor_ordinals[anchor_key] = anchor_ordinals.get(anchor_key, 0) + 1
-                event = event_contexts.get((page["page"], canonical))
-                if event:
-                    context, summary_basis = event["raw_text"], "verbatim_pdf_calendar_row"
-                else:
-                    context, summary_basis = _record_context(
-                        page, link["anchor_text"] or event_title or "", anchor_ordinals[anchor_key] - 1
-                    )
+                context, summary_basis = _record_context(
+                    page, link["anchor_text"] or "", anchor_ordinals[anchor_key] - 1
+                )
                 publication_date_evidence, publication_date = _reported_publication_date(
                     context, link["anchor_text"]
                 )
@@ -665,7 +757,7 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "content_sha256": _sha256(context),
                     "page_sha256": page["content_sha256"],
                 })
-                title = link["anchor_text"] or event_title
+                title = link["anchor_text"]
                 if title and (not record["title"] or len(title) > len(record["title"])):
                     record["title"] = title
     return [grouped[key] for key in sorted(grouped)]
@@ -773,24 +865,21 @@ def import_pdf_reports(inputs: Iterable[str | Path]) -> dict[str, Any]:
         for page in document["pages"]:
             page.pop("_text_fragments", None)
     typesafe = _typesafe_classify(articles)
-    classifications = {
-        article["canonical_url"]: article["type_safe_classification"]
-        for article in articles if article["type_safe_classification"]
-    }
-    for document in documents:
-        for event in document["calendar_items"]:
-            event["type_safe_classification"] = next(
-                (classifications[url] for raw_url in event["source_urls"]
-                 if (url := canonical_url(raw_url)) in classifications),
-                None,
-            )
+    calendar_items = [item for document in documents for item in document["calendar_items"]]
+    calendar_inputs = [{"canonical_url": next(iter(item["source_urls"]), ""),
+                        "title": item.get("name"), "occurrences": [{"summary": item["raw_text"]}]}
+                       for item in calendar_items]
+    calendar_typesafe = _typesafe_classify(calendar_inputs)
+    for item, classified in zip(calendar_items, calendar_inputs):
+        item["type_safe_classification"] = classified.get("type_safe_classification")
     return {
         "schema_version": "climate-pdf-intake.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "typesafe": typesafe,
+        "calendar_typesafe": calendar_typesafe,
         "documents": documents,
         "articles": articles,
-        "calendar_items": [item for document in documents for item in document["calendar_items"]],
+        "calendar_items": calendar_items,
     }
 
 

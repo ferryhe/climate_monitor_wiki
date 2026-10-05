@@ -7,6 +7,7 @@ import sqlite3
 from copy import deepcopy
 from datetime import datetime, timezone
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader
@@ -81,6 +82,8 @@ def _seed_web(
     *,
     item_title: str = "Web transition evidence",
     publication_date: str = "2026-01-01",
+    fetched_at: str = NOW,
+    discovered_at: str = NOW,
 ) -> None:
     with sqlite3.connect(database) as connection:
         apply_migrations(connection)
@@ -122,7 +125,7 @@ def _seed_web(
                fetched_at, fetch_status, http_status, content_type, content_version_id)
                VALUES ('fetch-web', 'web-article', 'https://web.example/article',
                'https://web.example/article', ?, 'success', 200, 'text/markdown', 'content-pinned')""",
-            (NOW,),
+            (fetched_at,),
         )
         evidence = json.dumps({
             "kind": "publisher", "text": f"Published {publication_date}",
@@ -137,7 +140,7 @@ def _seed_web(
                'Web Source', ?, 'Web acquisition summary', ?, 'site',
                'https://web.example/article', '[]', ?, ?, 'eligible', 'selected',
                'relevant', 'baseline', 'full_content', 'fetch-web', 'content-pinned', '[]', 'complete')""",
-            (item_title, NOW, publication_date, evidence),
+            (item_title, discovered_at, publication_date, evidence),
         )
 
 
@@ -306,6 +309,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     assert manifest["web_items"] == [{
         "acquisition_item_id": "web-item", "batch_id": "web-batch",
         "article_id": "web-article", "content_version_id": "content-pinned",
+        "collected_at": NOW,
         "publication_date": "2026-01-01",
         "publication_date_evidence": {"kind": "publisher", "text": "Published 2026-01-01"},
     }]
@@ -320,6 +324,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     assert "later unactivated body" not in corpus
     assert "PDF-only evidence requires transition scenario testing" in corpus
     assert "Publication date: 2026-01-01" in corpus
+    assert f"Collected at: {NOW}" in corpus
     assert 'Publication-date evidence: {"kind": "publisher", "text": "Published 2026-01-01"}' in corpus
     assert f"discovered: {NOW}" in corpus
     responder.client = None
@@ -379,13 +384,82 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     assert sentinel.read_text(encoding="utf-8") == "clean"
 
 
+def test_web_activation_reads_legacy_six_field_request_and_projection(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime-wiki"
+    queue.mkdir()
+    runtime.mkdir()
+    runtime_db = tmp_path / "runtime" / "registry.sqlite3"
+    runtime_db.parent.mkdir()
+    _seed_web(runtime_db)
+    public_db = tmp_path / "public" / "registry.sqlite3"
+    public_db.parent.mkdir()
+    with sqlite3.connect(public_db) as connection:
+        apply_migrations(connection)
+
+    enqueue_web_activation(
+        queue, runtime_db, "web-batch",
+        frozen_payload_sha256="c" * 64, repository_root=repository,
+    )
+    request_path = queue / "web" / _sha("web-batch") / "request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    for item in request["web_items"]:
+        item.pop("collected_at")
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    legacy_request_bytes = request_path.read_bytes()
+
+    assert read_web_activation_request(queue, "web-batch")["web_items"] == request["web_items"]
+    assert enqueue_web_activation(
+        queue, runtime_db, "web-batch",
+        frozen_payload_sha256="c" * 64, repository_root=repository,
+    )["stage"] == "queued"
+    assert request_path.read_bytes() == legacy_request_bytes
+
+    writer = PdfIntakePipeline(
+        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        repository_root=repository,
+    )
+    assert writer.process_next()["chat_ready"] is True
+    generation, active = load_active_projection(runtime, queue / "active.json")
+    current_manifest = load_projection_manifest(generation, active)
+    assert current_manifest["web_items"][0]["collected_at"] == NOW
+
+    legacy_manifest = deepcopy(current_manifest)
+    for item in legacy_manifest["web_items"]:
+        item.pop("collected_at")
+    payload = (json.dumps(legacy_manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+    (generation / "intake-manifest.json").write_bytes(payload)
+    active_path = queue / "active.json"
+    active["manifest_sha256"] = hashlib.sha256(payload).hexdigest()
+    active_path.write_text(json.dumps(active), encoding="utf-8")
+
+    legacy_generation, legacy_active = load_active_projection(runtime, active_path)
+    loaded_legacy = load_projection_manifest(legacy_generation, legacy_active)
+    assert "collected_at" not in loaded_legacy["web_items"][0]
+    legacy_wiki = tmp_path / "legacy-wiki"
+    render_runtime_registry(
+        legacy_wiki,
+        web_database=Path(legacy_active["web_registry_snapshot"]),
+        pdf_database=None,
+        manifest=loaded_legacy,
+    )
+    assert f"Collected at: {NOW}" in (
+        legacy_wiki / "article-web-article.md"
+    ).read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("date_source", ["runtime_pdf", "public_pdf", "public_web"])
 def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, date_source):
     repository = tmp_path / "repository"
     repository.mkdir()
     writer_db = tmp_path / "writer" / "climate_registry.sqlite3"
     writer_db.parent.mkdir()
-    _seed_web(writer_db, publication_date="2026-09-20")
+    _seed_web(
+        writer_db,
+        publication_date="2026-09-20",
+        fetched_at="2026-09-25T12:00:00Z",
+    )
     _add_web_observation(
         writer_db,
         batch_id="unapproved-web-batch",
@@ -393,7 +467,7 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
         article_id="unapproved-article",
         content_version_id="unapproved-content",
         body="UNAPPROVED WRITER BODY",
-        discovered_at="2026-10-02T13:00:00Z",
+        discovered_at="2026-09-25T13:00:00Z",
         publication_date="2026-09-25",
         title="Unapproved writer title",
     )
@@ -452,7 +526,7 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
             article_id="web-article",
             content_version_id="public-date-content",
             body="Authorized Public Web date source body.",
-            discovered_at="2026-10-02T11:00:00Z",
+            discovered_at="2026-09-25T11:00:00Z",
             publication_date="2026-09-25",
             title="Public date observation title",
         )
@@ -515,13 +589,14 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
         overlay_manifest=manifest,
     )
     expected_ids = {"web-article"}
-    if date_source == "runtime_pdf":
-        expected_ids.add("unapproved-article")
     assert {item["article_id"] for item in snapshot["articles"]} == expected_ids
     article = next(
         item for item in snapshot["articles"] if item["article_id"] == "web-article"
     )
-    assert article["publication_date"] == "2026-09-25"
+    assert article["date_basis"] == "collection_time"
+    assert article["collected_at"] == "2026-09-25T12:00:00Z"
+    assert article["range_date"] == "2026-09-25"
+    assert article["publication_date"] == "2026-09-20"
     assert article["content_version_id"] == "content-pinned"
     assert "Pinned web evidence says coastal resilience funding" in article["content"]
     assert "later unactivated body" not in article["content"]
@@ -530,33 +605,14 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
     assert article["keywords"] == ["resilience"]
     citation_kinds = {item["kind"] for item in article["citations"]}
     assert citation_kinds == (
-        {"url", "pdf_page"} if occurrence is not None else {"url"}
+        {"url", "pdf_page"} if date_source.endswith("_pdf") else {"url"}
     )
     selected = article["provenance"]["publication_date"]["selected"]
-    if occurrence is not None:
-        assert selected == {
-            "date": "2026-09-25",
-            "observation_id": occurrence["occurrence_id"],
-            "evidence": {
-                "kind": "pdf_text",
-                "text": "25 SEP 2026",
-                "document_sha256": occurrence["source_document_sha256"],
-                "page": occurrence["page"],
-            },
-        }
-    else:
-        assert selected == {
-            "date": "2026-09-25",
-            "observation_id": "public-date-item",
-            "evidence": {"kind": "publisher", "text": "Published 2026-09-25"},
-        }
-    if date_source == "runtime_pdf":
-        unapproved = next(
-            item for item in snapshot["articles"]
-            if item["article_id"] == "unapproved-article"
-        )
-        assert unapproved["content_version_id"] is None
-        assert unapproved["content"] is None
+    assert selected == {
+        "date": "2026-09-20",
+        "observation_id": "web-item",
+        "evidence": {"kind": "publisher", "text": "Published 2026-09-20"},
+    }
     assert "UNAPPROVED WRITER BODY" not in json.dumps(snapshot)
 
 
@@ -706,7 +762,11 @@ def test_delayed_web_retry_uses_one_snapshot_for_active_union(tmp_path):
     runtime.mkdir()
     runtime_db = tmp_path / "runtime" / "registry.sqlite3"
     runtime_db.parent.mkdir()
-    _seed_web(runtime_db)
+    _seed_web(
+        runtime_db,
+        fetched_at="2026-01-31T10:00:00Z",
+        discovered_at="2026-01-31T10:00:00Z",
+    )
     public_db = tmp_path / "public" / "registry.sqlite3"
     public_db.parent.mkdir()
     connection = sqlite3.connect(public_db)
@@ -779,7 +839,11 @@ def test_web_page_keeps_latest_observation_across_unrelated_activation(tmp_path)
     runtime.mkdir()
     runtime_db = tmp_path / "runtime" / "registry.sqlite3"
     runtime_db.parent.mkdir()
-    _seed_web(runtime_db)
+    _seed_web(
+        runtime_db,
+        fetched_at="2026-01-31T10:00:00Z",
+        discovered_at="2026-01-31T10:00:00Z",
+    )
     public_db = tmp_path / "public" / "registry.sqlite3"
     public_db.parent.mkdir()
     connection = sqlite3.connect(public_db)
@@ -800,7 +864,7 @@ def test_web_page_keeps_latest_observation_across_unrelated_activation(tmp_path)
     _add_web_observation(
         runtime_db, batch_id="newer-batch", item_id="a-new", article_id="web-article",
         content_version_id="content-latest", body="Latest validated transition body.",
-        discovered_at="2026-10-03T12:00:00Z", publication_date="2026-02-01",
+        discovered_at="2026-02-01T12:00:00Z", publication_date="2026-02-01",
         title="Latest transition evidence",
     )
     enqueue_web_activation(
@@ -811,7 +875,7 @@ def test_web_page_keeps_latest_observation_across_unrelated_activation(tmp_path)
     _add_web_observation(
         runtime_db, batch_id="unrelated-batch", item_id="m-unrelated",
         article_id="unrelated-article", content_version_id="content-unrelated",
-        body="Unrelated validated evidence.", discovered_at="2026-10-04T12:00:00Z",
+        body="Unrelated validated evidence.", discovered_at="2026-02-02T12:00:00Z",
         publication_date="2026-03-01", title="Unrelated evidence",
     )
     enqueue_web_activation(
@@ -853,7 +917,7 @@ def test_empty_activated_title_falls_back_to_canonical_url_not_unactivated_title
     queue.mkdir()
     runtime.mkdir()
     runtime_db = tmp_path / "runtime.sqlite3"
-    _seed_web(runtime_db, item_title="")
+    _seed_web(runtime_db, item_title="", fetched_at="2026-01-05T12:00:00Z")
     with sqlite3.connect(runtime_db) as connection:
         connection.execute(
             "INSERT INTO article_versions VALUES "

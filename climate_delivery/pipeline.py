@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from climate_monitor.semantic_bundle import SemanticBundleError, verify_semantic_sidecar
 
-from .artifacts import ARTIFACT_ONLY_DELIVERY_STATUS
+from .artifacts import ARTIFACT_ONLY_DELIVERY_STATUS, load_report_artifact
 from .config import load_delivery_config
 from .delivery import deliver
 from .errors import DeliveryError, GenerationError, InputError, LockStateError
@@ -20,6 +20,7 @@ from .paths import (
 from .pdf import render_pdf
 from .report import parse_weekly_report
 from .summary import build_summary, write_summary
+from .templates import rendering_metadata
 
 
 def _index_sidecar_semantics(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -64,6 +65,21 @@ def _attach_verified_semantics(
     return summary
 
 
+def _attach_verified_provenance(summary: dict[str, Any], payload: Mapping[str, Any]) -> None:
+    """Preserve producer identity from the already verified frozen sidecar."""
+    index = {}
+    for article in payload["articles"]:
+        for key in (article.get("url"), article.get("canonical_url")):
+            if key:
+                index[key] = article
+    summary["article_provenance"] = {
+        item["url"]: {key: index[item["url"]][key] for key in
+            ("article_id", "content_hash", "source", "semantics_provenance")
+            if key in index[item["url"]]}
+        for item in summary["highlights"]
+    }
+
+
 def _file_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -78,8 +94,9 @@ def _manifest(
     summary_sha256: str,
     pdf_name: str,
     pdf_sha256: str,
+    rendering: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "schema_version": 1,
         "report": {
             "date": summary["report"]["date"],
@@ -96,6 +113,13 @@ def _manifest(
             "recipients": delivery["recipients"],
         },
     }
+    # Optional addition to schema v1: old manifests remain valid. Empty means
+    # an archived legacy artifact whose original renderer was not recorded.
+    if rendering is None:
+        rendering = rendering_metadata()
+    if rendering:
+        result["rendering"] = dict(rendering)
+    return result
 
 
 def _failure_status(recipients: list[dict[str, str]], error: Exception) -> str:
@@ -210,6 +234,7 @@ def run_delivery(
 
     summary = build_summary(report)
     _attach_verified_semantics(summary, semantics_index)
+    _attach_verified_provenance(summary, sidecar_payload)
     artifact_dir = output_dir / report.report_date / report.sha256
     summary_path = artifact_dir / "summary.json"
     pdf_name = f"climate-monitor-{report.report_date}.pdf"
@@ -220,18 +245,32 @@ def run_delivery(
         temporary_dir = Path(temporary)
         candidate_summary = temporary_dir / "summary.json"
         candidate_pdf = temporary_dir / pdf_name
-        write_summary(summary, candidate_summary)
-        render_pdf(summary, candidate_pdf, allow_offcycle=allow_offcycle)
-        summary_sha256 = _file_sha256(candidate_summary)
-        pdf_sha256 = _file_sha256(candidate_pdf)
-
         with exclusive_lock(state_dir, report.sha256):
-            _validate_or_install_artifacts(
-                [
-                    (candidate_summary, summary_path, summary_sha256),
-                    (candidate_pdf, pdf_path, pdf_sha256),
-                ]
-            )
+            rendering = rendering_metadata()
+            if manifest_path.exists():
+                archived = load_report_artifact(
+                    output_dir, report_date=report.report_date, report_filename=report.filename,
+                    report_title=report.title, report_sha256=report.sha256,
+                    include_pdf_bytes=False, allow_offcycle=allow_offcycle,
+                )
+                if archived is None:
+                    raise LockStateError("existing artifact failed validation")
+                # The retained delivery state is bound to these original bytes,
+                # even when current summary/template defaults have changed.
+                saved_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                rendering = saved_manifest.get("rendering", {})
+                summary_sha256 = _file_sha256(summary_path)
+                pdf_sha256 = _file_sha256(pdf_path)
+            else:
+                write_summary(summary, candidate_summary)
+                render_pdf(summary, candidate_pdf, allow_offcycle=allow_offcycle)
+                summary_sha256 = _file_sha256(candidate_summary)
+                pdf_sha256 = _file_sha256(candidate_pdf)
+                _validate_or_install_artifacts(
+                    [(candidate_summary, summary_path, summary_sha256),
+                     (candidate_pdf, pdf_path, pdf_sha256)]
+                )
             if artifact_only:
                 delivery = {
                     "status": ARTIFACT_ONLY_DELIVERY_STATUS,
@@ -274,6 +313,7 @@ def run_delivery(
                                 summary_sha256=summary_sha256,
                                 pdf_name=pdf_name,
                                 pdf_sha256=pdf_sha256,
+                                rendering=rendering,
                             ),
                         )
                     except Exception as manifest_error:
@@ -287,6 +327,7 @@ def run_delivery(
                     summary_sha256=summary_sha256,
                     pdf_name=pdf_name,
                     pdf_sha256=pdf_sha256,
+                    rendering=rendering,
                 ),
             )
     return {

@@ -168,6 +168,12 @@ def _load_validated(
     manifest = _mapping(json.loads(manifest_raw.decode("utf-8")))
     if manifest.get("schema_version") != 1:
         raise _InvalidArtifact("invalid manifest schema")
+    if "rendering" in manifest:
+        rendering = _mapping(manifest["rendering"])
+        if set(rendering) != {"template_id", "template_version", "renderer_version", "reportlab_version"} or any(
+            not isinstance(value, str) or not value.strip() for value in rendering.values()
+        ):
+            raise _InvalidArtifact("invalid rendering identity")
     manifest_report = _mapping(manifest.get("report"))
     if (
         manifest_report.get("date") != report_date
@@ -231,10 +237,11 @@ def _load_validated(
 
     sites = _mapping(summary_report.get("sites"))
     counts = tuple(sites.get(key) for key in ("checked", "succeeded", "failed"))
-    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+    unknown_counts = all(key in sites and sites[key] is None for key in ("checked", "succeeded", "failed"))
+    if not unknown_counts and any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
         raise _InvalidArtifact("invalid monitoring statistics")
     checked, succeeded, failed = counts
-    if succeeded + failed != checked:
+    if not unknown_counts and succeeded + failed != checked:
         raise _InvalidArtifact("inconsistent monitoring statistics")
 
     narratives = summary["executive_summary"]

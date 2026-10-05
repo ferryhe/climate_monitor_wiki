@@ -34,6 +34,37 @@ CURRENT_HISTORICAL_DATES = (
 )
 
 
+def test_meeting_default_uses_utc_date_and_preserves_explicit_base(tmp_path, monkeypatch):
+    from datetime import date, datetime, timezone
+    import climate_monitor.meetings as meetings
+    import climate_registry.read_api as read_api
+
+    class UtcClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is timezone.utc
+            return datetime(2026, 10, 4, 0, 30, tzinfo=timezone.utc)
+
+    class NewYorkDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 3)
+
+    calls = []
+
+    def query(_database, **kwargs):
+        calls.append(kwargs)
+        return {"records": [], "coverage": {"status": "not_processed"}}
+
+    monkeypatch.setattr(read_api, "datetime", UtcClock)
+    monkeypatch.setattr(read_api, "date", NewYorkDate)
+    monkeypatch.setattr(meetings, "query_events", query)
+    reader = RegistryReader(_registry(tmp_path), repository_root=ROOT)
+    assert reader.meetings()["base_date"] == "2026-10-04"
+    assert reader.meetings(base_date="2026-10-03")["base_date"] == "2026-10-03"
+    assert all(call["timezone_name"] == "UTC" for call in calls)
+
+
 def _write_retained_artifacts(output: Path) -> dict[str, tuple[dict, bytes]]:
     expected: dict[str, tuple[dict, bytes]] = {}
     for report_date in CURRENT_HISTORICAL_DATES:
@@ -351,7 +382,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 16,
+        "schema_version": 18,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -1073,6 +1104,53 @@ def test_article_detail_enforces_display_policy(
             "categories": "content_enrichment",
             "keywords": "content_enrichment",
         }
+
+
+def test_article_detail_exposes_collection_and_page_information_dates(registry_client):
+    client, database = registry_client
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO articles(
+                   article_id, canonical_url, source_id, first_seen, last_seen,
+                   document_kind, publication_eligible, display_policy
+               ) VALUES ('article-no-fetch', 'https://insurer.test/no-fetch',
+                   'source-b', '2026-08-10', '2026-08-10', 'article', 1,
+                   'metadata_only')"""
+        )
+        connection.executemany(
+            """INSERT INTO article_date_observations VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                (
+                    "collection-observation", "article-full", "https://example.com/full",
+                    "collection", "2026-08-12T09:00:00Z", "web_listening", "history.sqlite3",
+                    "site_snapshots", "snapshot-12",
+                    json.dumps({"match_basis": "snapshot_final_url"}), "2026-08-20T00:00:00Z",
+                ),
+                (
+                    "page-information-observation", "article-no-fetch",
+                    "https://insurer.test/no-fetch",
+                    "page_information", "2026-08-11", "publisher_page", "manual-review.json",
+                    "article_dates", "page-meta-11",
+                    json.dumps({"date_kind": "updated", "match_basis": "publisher_date_field"}),
+                    "2026-08-20T00:00:00Z",
+                ),
+            ),
+        )
+
+    collected = client.get("/api/registry/articles/article-full").json()
+    assert collected["collected_at"] == "2026-08-13T12:00:00Z"
+    assert collected["information_date"] is None
+    assert collected["date_basis"] == "collection_time"
+    assert [item["observed_at"] for item in collected["date_observations"]] == [
+        "2026-08-12T09:00:00Z",
+    ]
+
+    page_dated = client.get("/api/registry/articles/article-no-fetch").json()
+    assert page_dated["collected_at"] is None
+    assert page_dated["information_date"] == "2026-08-11"
+    assert page_dated["date_basis"] == "information_date"
+    assert page_dated["date_observations"][0]["evidence"]["date_kind"] == "updated"
 
 
 def test_invalid_enrichment_json_fails_closed_to_empty_lists(registry_client):

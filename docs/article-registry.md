@@ -9,17 +9,17 @@ reviewed publication and deployment.
 
 ## Boundaries
 
-`climate_registry.contract` validates exact read contracts for schemas 3 through
-8 and reports the actual version. New migrations/candidates target v8.
+`climate_registry.contract` validates exact read contracts for supported schemas
+3 through 18 and reports the actual version. Current writes target schema 18.
 Schema v4 introduced validated fallback resolutions; v5 added article semantic
 storage, v6 added its report binding and relational constraints, and v7 added
 durable pre-report acquisition batches. Migration v8 adds
 `acquisition_items.resolved_by_fetch_id` plus the trigger and index that ensure a
 failed fetch observation can be resolved only by a successful fetch for the same
-article. Acquisition writes require exactly schema 8; a v7 database is rejected
-with an instruction to migrate instead of failing later at SQL execution. Earlier
-supported snapshots remain read-only compatibility inputs; readers never migrate
-them implicitly.
+article. Acquisition writers require schema 12 or later; older databases must be
+migrated before writing. Migration v17 adds independent information checks;
+migration v18 adds append-only article date observations. Earlier supported snapshots remain
+read-only compatibility inputs; readers never migrate them implicitly.
 
 - Code, migrations, tests, and this contract live in Git.
 - Runtime SQLite files, WAL/SHM companions, and generated audit output do not.
@@ -351,6 +351,50 @@ unknown rather than falling back to discovery time); all selected and unselected
 (including `unchanged`) dispositions remain in `acquisition_dispositions`.
 A different report date requires a new immutable/reselected batch; an existing
 batch is never rebound. The isolated dry-run fixture seam remains Registry-free.
+
+## Article dates and collection evidence
+
+`publication_date` keeps its article-meaning: a date stated by the publisher.
+Successful Registry fetches also carry their actual `fetched_at` time through
+the article API, wiki projection, and range reports. Failed fetches and
+discovery times are not collection evidence. Historical collection observations
+from an upstream acquisition source are appended to
+`article_date_observations`; `observed_at` is the source time and `recorded_at`
+is when the evidence was imported.
+
+Range reports select each canonical article once. They use an in-range
+collection time when any reliable collection record exists. If no collection
+time exists, they use an evidenced page information date, then an existing
+publication date. A known collection time outside the range cannot be bypassed
+with a publication date. Reports label the date basis and show the publication,
+information, and collection dates separately. Articles with no reliable date
+are excluded and counted. A PDF occurrence with its own stated date continues
+to use that date for the separate PDF source update, even when its linked web
+article was collected outside the requested range.
+
+The importer defaults to read-only validation. It requires an absolute path to
+a migrated Registry and an observations JSON file using
+`article-date-observations.v1`; `--write` appends validated records and repeated
+imports are idempotent. Collection observations require an RFC 3339 timestamp
+with its original timezone. Page information observations use exact
+`YYYY-MM-DD` precision. Each row includes `article_id`, exact `canonical_url`,
+`observation_kind`, `observed_at`, and evidence identifying its original
+source, database, table, record ID, URL, and match basis.
+
+```bash
+python scripts/backfill_article_dates.py \
+  --database /external/path/article-registry.sqlite3 \
+  --observations /external/path/article-date-observations.json
+
+python scripts/backfill_article_dates.py \
+  --database /external/path/article-registry.sqlite3 \
+  --observations /external/path/article-date-observations.json \
+  --write
+```
+
+This import records evidence only; it does not create acquisition items or
+change article authoring eligibility. Existing v1 range snapshots remain
+readable. New range snapshots use v2 with explicit date basis fields.
 
 Migration 3 is populated by the separately invoked capture/enrichment command:
 

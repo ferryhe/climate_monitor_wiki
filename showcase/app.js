@@ -110,6 +110,9 @@ const state = {
     articleSource: "registry",
     reportPage: 1,
     articlePage: 1,
+    meetingPage: 1,
+    meetingPagination: null,
+    meetingRequestSequence: 0,
     reportPagination: null,
     articlePagination: null,
     selectedReportDate: null,
@@ -155,9 +158,18 @@ const els = {
   chatView: document.getElementById("chatView"),
   obsidianView: document.getElementById("obsidianView"),
   registryView: document.getElementById("registryView"),
+  meetingsView: document.getElementById("meetingsView"),
   registryStatus: document.getElementById("registryStatus"),
   registryReportsPanel: document.getElementById("registryReportsPanel"),
   registryArticlesPanel: document.getElementById("registryArticlesPanel"),
+  registryMeetings: document.getElementById("registryMeetings"),
+  registryMeetingSearchForm: document.getElementById("registryMeetingSearchForm"),
+  registryMeetingSearch: document.getElementById("registryMeetingSearch"),
+  registryMeetingVerification: document.getElementById("registryMeetingVerification"),
+  registryMeetingCounts: document.getElementById("registryMeetingCounts"),
+  meetingsPrevious: document.getElementById("meetingsPrevious"),
+  meetingsNext: document.getElementById("meetingsNext"),
+  meetingsPage: document.getElementById("meetingsPage"),
   registryReports: document.getElementById("registryReports"),
   registryReportDetail: document.getElementById("registryReportDetail"),
   registryReportTitle: document.getElementById("registryReportTitle"),
@@ -223,20 +235,26 @@ function normalizeMojibake(text) {
 
 function inlineFmt(raw) {
   const text = escapeHtml(raw);
+  const links = [];
+  const keepLink = (html) => {
+    links.push(html);
+    return `\u0000${links.length - 1}\u0000`;
+  };
   return text
     .replace(
       /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
       (_, page, alias) =>
-        `<a class="obs-wikilink" data-page="${encodeURIComponent(page.trim())}">${escapeHtml((alias || page).trim())}</a>`,
+        keepLink(`<a class="obs-wikilink" data-page="${encodeURIComponent(page.trim())}">${escapeHtml((alias || page).trim())}</a>`),
     )
     .replace(
       /\[([^\]]+)\]\(((?:https?:\/\/|\/)[^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+      (_, label, url) => keepLink(`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`),
     )
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/_(.*?)_/g, "<em>$1</em>")
+    .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>');
+    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>')
+    .replace(/\u0000(\d+)\u0000/g, (_, index) => links[index]);
 }
 
 function renderMarkdownFull(markdown) {
@@ -653,6 +671,9 @@ function setWorkspaceView(viewId) {
   if (els.registryView) {
     els.registryView.hidden = viewId !== "registryView";
   }
+  if (els.meetingsView) {
+    els.meetingsView.hidden = viewId !== "meetingsView";
+  }
   els.workspaceTabs.forEach((button) => {
     const active = button.dataset.view === viewId;
     button.classList.toggle("is-active", active);
@@ -660,6 +681,10 @@ function setWorkspaceView(viewId) {
   });
   if (viewId === "registryView" && !state.registry.loaded) {
     void loadRegistry();
+  }
+  if (viewId === "meetingsView") {
+    state.registry.meetingPage = 1;
+    void loadRegistryMeetings();
   }
   if (viewId === "obsidianView") {
     renderCurrentGraph();
@@ -669,7 +694,8 @@ function setWorkspaceView(viewId) {
 }
 
 function messageToApi(item) {
-  return { role: item.role, content: item.content };
+  // The API bounds history messages to 8000 characters; keep the full report in the UI.
+  return { role: item.role, content: item.role === "assistant" ? item.content.slice(0, 8000) : item.content };
 }
 
 function appendMessage(role, content, options = {}) {
@@ -683,12 +709,13 @@ function appendMessage(role, content, options = {}) {
   renderMessages();
 }
 
-function replacePendingAssistant(content, sources = []) {
+function replacePendingAssistant(content, sources = [], rangeReport = null) {
   for (let index = state.messages.length - 1; index >= 0; index -= 1) {
     const message = state.messages[index];
     if (message.role === "assistant" && message.pending) {
       message.content = content;
       message.sources = sources;
+      message.rangeReport = rangeReport;
       message.pending = false;
       saveThread();
       renderMessages();
@@ -696,7 +723,7 @@ function replacePendingAssistant(content, sources = []) {
     }
   }
 
-  state.messages.push({ role: "assistant", content, sources, pending: false });
+  state.messages.push({ role: "assistant", content, sources, rangeReport, pending: false });
   saveThread();
   renderMessages();
 }
@@ -784,6 +811,9 @@ function renderMessages() {
 
     const bubble = document.createElement("div");
     bubble.className = `message-bubble message-bubble--${item.role}`;
+    if (item.rangeReport) {
+      bubble.classList.add("message-bubble--report");
+    }
 
     if (item.pending) {
       bubble.innerHTML = `
@@ -797,6 +827,14 @@ function renderMessages() {
         <div class="message-markdown">${renderMarkdownFull(item.content)}</div>
         ${renderSourceCards(item.sources || [])}
       `;
+      if (item.rangeReport) {
+        bubble.querySelectorAll("table").forEach((table) => {
+          const scroll = document.createElement("div");
+          scroll.className = "report-table-scroll";
+          table.before(scroll);
+          scroll.appendChild(table);
+        });
+      }
     } else {
       bubble.innerHTML = `<p class="message-bubble__plain">${escapeHtml(item.content)}</p>`;
     }
@@ -841,7 +879,7 @@ async function sendMessage(message) {
     }
 
     const payload = await response.json();
-    replacePendingAssistant(payload.text, payload.sources || []);
+    replacePendingAssistant(payload.text, payload.sources || [], payload.range_report || null);
     setConnectionStatus(payload.agent_mode, payload.model);
     setAnswerMode(payload.answer_mode || state.answerMode);
   } catch (error) {
@@ -1491,9 +1529,9 @@ function renderRegistryNotice(container, message) {
 }
 
 function updateRegistryPagination(kind, pagination) {
-  const previous = kind === "reports" ? els.reportsPrevious : els.articlesPrevious;
-  const next = kind === "reports" ? els.reportsNext : els.articlesNext;
-  const label = kind === "reports" ? els.reportsPage : els.articlesPage;
+  const previous = kind === "reports" ? els.reportsPrevious : kind === "meetings" ? els.meetingsPrevious : els.articlesPrevious;
+  const next = kind === "reports" ? els.reportsNext : kind === "meetings" ? els.meetingsNext : els.articlesNext;
+  const label = kind === "reports" ? els.reportsPage : kind === "meetings" ? els.meetingsPage : els.articlesPage;
   if (!pagination) {
     previous.disabled = true;
     next.disabled = true;
@@ -1586,6 +1624,75 @@ function setRegistryMode(mode) {
   });
   if (state.registry.available && state.registry.mode === "articles" && !state.registry.articlePagination) {
     void loadRegistryArticles();
+  }
+}
+
+function appendInformationCheck(container, item) {
+  const labels = { unchecked: "Pending check", accessible: "URL accessible", unavailable: "URL unavailable",
+    failed: "URL check failed", partial: "Partially checked", conflict: "Conflicting information", verified: "Verified / collected" };
+  container.append(registryElement("p", "registry-card__meta", [
+    item.origin === "web_collection" ? (item.pdf_observations?.length ? "Web collection · PDF import" : "Web collection") : "PDF import",
+    labels[item.access_status] || "URL unchecked", labels[item.verification_status] || "Pending check",
+    item.checked_at ? `Checked ${item.checked_at}` : "",
+  ].filter(Boolean).join(" · ")));
+  if (!item.checks?.length) return;
+  const details = registryElement("details", "registry-detail-section");
+  details.append(registryElement("summary", "", "Field checks and evidence"));
+  item.checks.forEach((check) => {
+    const block = registryElement("dl", "detail-meta");
+    block.append(registryElement("dt", "", "Source"), registryElement("dd", "", check.source_url));
+    Object.entries(check.comparisons || {}).forEach(([field, value]) => {
+      const text = `${value.status} · PDF: ${String(value.expected ?? "Not provided")}\n` +
+        (value.observed != null ? `Website: ${String(value.observed)}\n` : "") + (value.evidence || "");
+      block.append(registryElement("dt", "", field.replaceAll("_", " ")), registryElement("dd", "", text));
+    });
+    if (check.error) block.append(registryElement("dt", "", "Check result"), registryElement("dd", "", check.error));
+    details.append(block);
+  });
+  container.append(details);
+}
+
+async function loadRegistryMeetings() {
+  const sequence = ++state.registry.meetingRequestSequence;
+  renderRegistryNotice(els.registryMeetings, "Loading meetings…");
+  const params = new URLSearchParams({ page: String(state.registry.meetingPage), page_size: "20" });
+  if (els.registryMeetingSearch.value.trim()) params.set("query", els.registryMeetingSearch.value.trim());
+  if (els.registryMeetingVerification.value) params.set("verification_status", els.registryMeetingVerification.value);
+  try {
+    const payload = await registryFetch(`/api/registry/meetings?${params}`);
+    if (sequence !== state.registry.meetingRequestSequence) return;
+    state.registry.meetingPagination = payload.pagination;
+    els.registryMeetings.replaceChildren();
+    const counts = payload.verification_counts || {};
+    els.registryMeetingCounts.textContent = `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
+      `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
+    payload.items.forEach((item) => {
+      const card = registryElement("article", "registry-card");
+      card.append(registryElement("h4", "", item.name));
+      const fields = registryElement("dl", "detail-meta");
+      const values = { "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through "),
+        "Time": item.raw_time_text, "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
+        "Location": item.location, "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
+        "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
+      Object.entries(values).forEach(([label, value]) => {
+        if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));
+      });
+      card.append(fields);
+      const urls = [...new Set([...(item.source_urls || []), ...(item.sources || []).map((source) => source.source_url), item.online_url])];
+      urls.forEach((url) => {
+        const safe = safeSourceUrl(url);
+        if (!safe) return;
+        const link = registryElement("a", "registry-source-link", url);
+        link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
+        card.append(link);
+      });
+      appendInformationCheck(card, item);
+      els.registryMeetings.append(card);
+    });
+    if (!payload.items.length) renderRegistryNotice(els.registryMeetings, "No current meetings match these filters.");
+    updateRegistryPagination("meetings", payload.pagination);
+  } catch (error) {
+    if (sequence === state.registry.meetingRequestSequence) renderRegistryNotice(els.registryMeetings, registryErrorMessage(error));
   }
 }
 
@@ -1981,6 +2088,7 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       registryElement("strong", "", `${sourceName} · ${date}${page}`),
       registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."),
     );
+    appendInformationCheck(item, occurrence);
     const sourceUrl = safeSourceUrl(occurrence.raw_url);
     if (sourceUrl) {
       const link = registryElement("a", "registry-source-link", "Open source link");
@@ -2062,8 +2170,12 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
     if (article.latest_fetch?.fetch_status) {
       metrics.push(registryMetric("Latest fetch", article.latest_fetch.fetch_status));
     }
-    if (article.content?.fetched_at) {
-      metrics.push(registryMetric("Captured", article.content.fetched_at));
+    if (article.collected_at || article.content?.collected_at || article.content?.fetched_at) {
+      metrics.push(registryMetric("Collected at", article.collected_at || article.content?.collected_at || article.content.fetched_at));
+    } else if (article.information_date) {
+      metrics.push(registryMetric("Information date", article.information_date));
+    } else {
+      metrics.push(registryMetric("Date basis", "Unconfirmed"));
     }
     els.registryArticleMeta.append(...metrics);
     const summaryPresentation = registrySummaryPresentation(article);
@@ -2148,6 +2260,14 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
 }
 
 function attachEvents() {
+  els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
+    event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
+  });
+  [[els.meetingsPrevious, -1], [els.meetingsNext, 1]].forEach(([button, direction]) => {
+    button?.addEventListener("click", () => {
+      state.registry.meetingPage += direction; void loadRegistryMeetings();
+    });
+  });
   if (els.form) {
     els.form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -2334,6 +2454,10 @@ function attachEvents() {
   });
 
   window.addEventListener("hashchange", () => {
+    if (window.location.hash === "#meetings") {
+      setWorkspaceView("meetingsView");
+      return;
+    }
     const reportDate = historicalReportDateFromHash();
     if (reportDate) {
       openHistoricalReport(reportDate, { updateHash: false });
@@ -2347,6 +2471,9 @@ function attachEvents() {
       stopGraphAnimation();
     } else if (state.activeView === "obsidianView") {
       renderCurrentGraph();
+    } else if (state.activeView === "meetingsView") {
+      state.registry.meetingPage = 1;
+      void loadRegistryMeetings();
     }
   });
 }
@@ -2361,7 +2488,7 @@ async function main() {
     .catch(() => {});
   setAnswerMode(state.answerMode);
   setGraphMode(state.graphMode);
-  setWorkspaceView(state.activeView);
+  setWorkspaceView(window.location.hash === "#meetings" ? "meetingsView" : state.activeView);
   renderMessages();
   attachEvents();
   const linkedReportDate = historicalReportDateFromHash();

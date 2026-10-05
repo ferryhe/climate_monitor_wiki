@@ -2,6 +2,44 @@ from __future__ import annotations
 
 import sqlite3
 
+_INFORMATION_CHECK_SQL = """
+CREATE TABLE {kind}_check_runs (
+    run_id TEXT PRIMARY KEY,
+    input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256)=64),
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending','running','complete','partial','failed')),
+    item_count INTEGER NOT NULL CHECK (item_count >= 0),
+    completed_count INTEGER NOT NULL DEFAULT 0 CHECK (completed_count >= 0),
+    error_message TEXT
+);
+CREATE TABLE {kind}_check_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES {kind}_check_runs(run_id),
+    occurrence_id TEXT NOT NULL REFERENCES {source_table}(occurrence_id),
+    source_url TEXT NOT NULL,
+    source_revision_sha256 TEXT NOT NULL CHECK (length(source_revision_sha256)=64),
+    checked_at TEXT NOT NULL,
+    access_status TEXT NOT NULL CHECK (access_status IN ('accessible','unavailable','failed')),
+    verification_status TEXT NOT NULL CHECK (verification_status IN ('unchecked','partial','verified','conflict')),
+    packet_json TEXT NOT NULL CHECK (json_valid(packet_json)),
+    packet_sha256 TEXT NOT NULL CHECK (length(packet_sha256)=64),
+    UNIQUE (run_id, occurrence_id, source_url)
+);
+CREATE INDEX idx_{kind}_checks_occurrence ON {kind}_check_attempts(occurrence_id, checked_at DESC);
+CREATE TRIGGER {kind}_check_attempts_immutable_update BEFORE UPDATE ON {kind}_check_attempts BEGIN
+    SELECT RAISE(ABORT, 'information check attempts are immutable');
+END;
+CREATE TRIGGER {kind}_check_attempts_immutable_delete BEFORE DELETE ON {kind}_check_attempts BEGIN
+    SELECT RAISE(ABORT, 'information check attempts are immutable');
+END;
+CREATE TRIGGER {kind}_check_inputs_immutable BEFORE UPDATE OF run_id, input_json, input_sha256, created_at, item_count
+ON {kind}_check_runs BEGIN
+    SELECT RAISE(ABORT, 'information check inputs are immutable');
+END;
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (
         1,
@@ -1209,6 +1247,50 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
               AND NEW.confirmation_basis IS NOT 'exact_url_eligible_detail')
         BEGIN
             SELECT RAISE(ABORT, 'PDF intake article confirmation is immutable');
+        END;
+        """,
+    ),
+    (
+        17,
+        "independent_information_checks",
+        "\n".join(_INFORMATION_CHECK_SQL.format(kind=kind, source_table=source_table)
+                  for kind, source_table in (("meeting", "pdf_intake_calendar_items"),
+                                              ("article", "pdf_intake_article_occurrences"))),
+    ),
+    (
+        18,
+        "article_date_observations",
+        """
+        CREATE TABLE article_date_observations (
+            observation_id TEXT PRIMARY KEY,
+            article_id TEXT NOT NULL REFERENCES articles(article_id),
+            canonical_url TEXT NOT NULL,
+            observation_kind TEXT NOT NULL CHECK (
+                observation_kind IN ('collection', 'page_information')
+            ),
+            observed_at TEXT NOT NULL,
+            source_system TEXT NOT NULL,
+            source_database TEXT NOT NULL,
+            source_table TEXT NOT NULL,
+            source_record_id TEXT NOT NULL,
+            evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),
+            recorded_at TEXT NOT NULL,
+            UNIQUE (
+                article_id, observation_kind, source_system, source_database,
+                source_table, source_record_id
+            )
+        );
+
+        CREATE INDEX idx_article_date_observations_article_kind_time
+            ON article_date_observations(article_id, observation_kind, observed_at);
+
+        CREATE TRIGGER article_date_observations_are_append_only_update
+        BEFORE UPDATE ON article_date_observations BEGIN
+            SELECT RAISE(ABORT, 'article date observations are append-only');
+        END;
+        CREATE TRIGGER article_date_observations_are_append_only_delete
+        BEFORE DELETE ON article_date_observations BEGIN
+            SELECT RAISE(ABORT, 'article date observations are append-only');
         END;
         """,
     ),

@@ -945,7 +945,7 @@ def test_acquisition_writer_rejects_schema_v9_with_actionable_error(tmp_path):
 def test_acquisition_writer_accepts_additive_schema_v13(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
 
     store_acquisition_batch(database, _batch([_item()]))
 
@@ -961,6 +961,7 @@ def test_registry_semantics_are_identity_bound_into_authoring_and_rendering(tmp_
     record = frozen["records"][0]
     assert record["acquisition"] == {
         "discovered_at": NOW,
+        "collected_at": NOW,
         "publication_date": None,
         "publication_date_evidence": None,
         "date_status": "eligible",
@@ -976,6 +977,20 @@ def test_registry_semantics_are_identity_bound_into_authoring_and_rendering(tmp_
                "blocked": 0, "failed": 0, "unresolved": 0},
     )
     assert request["articles"][0]["acquisition"] == record["acquisition"]
+
+    legacy_frozen = deepcopy(frozen)
+    legacy_frozen["records"][0]["acquisition"].pop("collected_at")
+    legacy_shell = _candidate_items_from_evidence(None, legacy_frozen)[0]
+    legacy_request = build_authoring_request(
+        report_date=date(2026, 9, 10), items=[legacy_shell],
+        prompt=load_weekly_monitor_prompt(), taxonomy=load_article_taxonomy(),
+        article_evidence=legacy_frozen,
+        stats={"total": 1, "updated": 1, "unchanged": 0,
+               "blocked": 0, "failed": 0, "unresolved": 0},
+    )
+    assert legacy_request["articles"][0]["acquisition"] == (
+        legacy_frozen["records"][0]["acquisition"]
+    )
 
     rendered_item = replace(
         shell, published=record["acquisition"]["publication_date"] or "",

@@ -879,6 +879,7 @@ def _verified_item_matches(row: sqlite3.Row, item: Mapping[str, Any]) -> bool:
         "final_url": evidence["final_url"],
         "http_status": evidence["http_status"],
         "content_type": evidence.get("content_type"),
+        "fetched_at": evidence["fetched_at"],
         "content_sha256": evidence["content_hash"],
     }
     return all(row[key] == value for key, value in expected.items())
@@ -976,7 +977,7 @@ def _reconcile_acquisition_batch(
         existing_successes = {}
         for row in connection.execute(
             """SELECT ai.*, a.canonical_url, cv.content_sha256,
-                      f.final_url, f.http_status, f.content_type
+                      f.final_url, f.fetched_at, f.http_status, f.content_type
                FROM acquisition_items ai
                JOIN articles a ON a.article_id=ai.article_id
                JOIN article_fetches f ON f.fetch_id=ai.fetch_id
@@ -1082,9 +1083,12 @@ def load_acquisition_batch(database: str | Path, batch_id: str) -> dict[str, Any
             """SELECT ai.*, a.canonical_url, cv.markdown_content, cv.content_sha256,
                  cv.extraction_method,
                  f.final_url, f.fetched_at, f.fetch_status, f.http_status, f.content_type,
-                 f.error_code, f.error_message
+                 f.error_code, f.error_message,
+                 r.fetched_at AS resolved_fetched_at, r.fetch_status AS resolved_fetch_status,
+                 r.content_version_id AS resolved_content_version_id
                FROM acquisition_items ai JOIN articles a ON a.article_id=ai.article_id
                JOIN article_fetches f ON f.fetch_id=ai.fetch_id
+               LEFT JOIN article_fetches r ON r.fetch_id=ai.resolved_by_fetch_id
                LEFT JOIN article_content_versions cv ON cv.content_version_id=ai.content_version_id
                WHERE ai.batch_id=? ORDER BY ai.ordinal""", (batch_id,))]
         result = dict(batch)
@@ -1151,6 +1155,11 @@ def freeze_acquisition_for_report(
                         for origin in item["origins"]],
             "acquisition": {
                 "discovered_at": item["discovered_at"],
+                "collected_at": (
+                    item["fetched_at"] if item["fetch_status"] == "success"
+                    else item["resolved_fetched_at"]
+                    if item["resolved_fetch_status"] == "success" else None
+                ),
                 "publication_date": item["publication_date"],
                 "publication_date_evidence": item["publication_date_evidence"],
                 "date_status": item["date_status"],
@@ -1159,6 +1168,11 @@ def freeze_acquisition_for_report(
             "extra": {"acquisition_batch_id": batch_id,
                       "raw_snapshot_ref": item["raw_snapshot_ref"],
                       "raw_snapshot_sha256": item["raw_snapshot_sha256"],
+                      "collected_at": (
+                          item["fetched_at"] if item["fetch_status"] == "success"
+                          else item["resolved_fetched_at"]
+                          if item["resolved_fetch_status"] == "success" else None
+                      ),
                       "publication_date": item["publication_date"],
                       "publication_date_evidence": item["publication_date_evidence"]},
         }
@@ -1169,6 +1183,11 @@ def freeze_acquisition_for_report(
         "requested_url": item["raw_url"],
         "canonical_url": item["canonical_url"],
         "discovered_at": item["discovered_at"],
+        "collected_at": (
+            item["fetched_at"] if item["fetch_status"] == "success"
+            else item["resolved_fetched_at"]
+            if item["resolved_fetch_status"] == "success" else None
+        ),
         "publication_date": item["publication_date"],
         "publication_date_evidence": item["publication_date_evidence"],
         "date_status": item["date_status"],

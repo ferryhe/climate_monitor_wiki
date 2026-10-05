@@ -19,6 +19,7 @@ from .pdf_pipeline import (
     _external,
     _snapshot_registry,
     _write_projection_manifest,
+    _active_calendar_ids,
     load_active_projection,
     load_projection_manifest,
 )
@@ -27,10 +28,32 @@ from .wiki import render_runtime_registry
 
 
 WEB_ACTIVATION_REQUEST_SCHEMA = "climate-web-activation-request.v1"
+_WEB_ITEM_KEYS = frozenset({
+    "acquisition_item_id", "batch_id", "article_id", "content_version_id",
+    "publication_date", "publication_date_evidence",
+})
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _web_item_matches(expected: Any, actual: dict[str, Any]) -> bool:
+    if not isinstance(expected, dict) or set(expected) not in (
+        _WEB_ITEM_KEYS, _WEB_ITEM_KEYS | {"collected_at"},
+    ):
+        return False
+    if "collected_at" not in expected:
+        actual = {key: value for key, value in actual.items() if key != "collected_at"}
+    return expected == actual
+
+
+def _web_items_match(expected: Any, actual: list[dict[str, Any]]) -> bool:
+    return (
+        isinstance(expected, list)
+        and len(expected) == len(actual)
+        and all(_web_item_matches(old, new) for old, new in zip(expected, actual))
+    )
 
 
 def _status_path(queue_dir: Path, batch_id: str) -> Path:
@@ -78,7 +101,9 @@ def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any
     finally:
         validation.close()
     expected = request["web_items"]
-    if expected != [_manifest_item(item) for item in _batch_items(snapshot, batch_id)]:
+    if not _web_items_match(
+        expected, [_manifest_item(item) for item in _batch_items(snapshot, batch_id)]
+    ):
         raise RuntimeError("web activation request differs from its Registry snapshot")
     request["registry_snapshot_path"] = str(snapshot)
     return request
@@ -149,7 +174,7 @@ def enqueue_web_activation(
     request = read_web_activation_request(queue, batch_id)
     if (
         request["frozen_payload_sha256"] != frozen_payload_sha256
-        or request["web_items"] != items
+        or not _web_items_match(request["web_items"], items)
     ):
         raise RuntimeError("web activation request is immutable")
     status = _read_status(queue, batch_id)
@@ -264,9 +289,11 @@ def _batch_items(database: Path, batch_id: str) -> list[dict[str, Any]]:
                    i.publication_date, i.publication_date_evidence_json, i.raw_url,
                    i.title, i.summary, i.discovered_at, i.source_name,
                    a.canonical_url, a.display_policy, c.content_sha256,
+                   f.fetched_at AS collected_at,
                    c.markdown_content
             FROM acquisition_items i
             JOIN articles a ON a.article_id=i.article_id
+            JOIN article_fetches f ON f.fetch_id=i.fetch_id AND f.fetch_status='success'
             JOIN article_content_versions c
               ON c.article_id=i.article_id AND c.content_version_id=i.content_version_id
             WHERE i.batch_id=? AND i.selection_status='selected'
@@ -295,7 +322,7 @@ def _manifest_item(item: dict[str, Any]) -> dict[str, Any]:
         key: item[key]
         for key in (
             "acquisition_item_id", "batch_id", "article_id", "content_version_id",
-            "publication_date", "publication_date_evidence",
+            "collected_at", "publication_date", "publication_date_evidence",
         )
     }
 
@@ -309,7 +336,7 @@ def _resolve_items(database: Path, allowlist: list[dict[str, Any]]) -> list[dict
         actual = {item["acquisition_item_id"]: item for item in _batch_items(database, batch_id)}
         for identity in expected:
             item = actual.get(identity["acquisition_item_id"])
-            if item is None or _manifest_item(item) != identity:
+            if item is None or not _web_item_matches(identity, _manifest_item(item)):
                 raise RuntimeError("activated web item differs from its pinned identity")
             resolved.append(item)
     return resolved
@@ -359,7 +386,9 @@ class WebIngestPipeline:
                 request = read_web_activation_request(self.queue_dir, batch_id)
                 if (
                     Path(request["registry_snapshot_path"]) != self.database
-                    or request["web_items"] != [_manifest_item(item) for item in new_items]
+                    or not _web_items_match(
+                        request["web_items"], [_manifest_item(item) for item in new_items]
+                    )
                 ):
                     raise RuntimeError("web activation writer input differs from its request")
             active_generation, active = load_active_projection(
@@ -391,9 +420,12 @@ class WebIngestPipeline:
             if resolved_items is None or selected_database is None:
                 raise RuntimeError("no immutable Registry snapshot contains the active web union")
             pdf_ids = _active_pdf_ids(active_generation, active_manifest)
+            calendar_ids = set((active_manifest or {}).get("pdf_calendar_occurrence_ids", []))
             pdf_registry_snapshot, pdf_registry_sha256 = _active_pdf_snapshot(
-                self.runtime_wiki_dir, active, pdf_ids,
+                self.runtime_wiki_dir, active, pdf_ids | calendar_ids,
             )
+            if pdf_registry_snapshot:
+                calendar_ids = _active_calendar_ids(Path(pdf_registry_snapshot), active_manifest, pdf_ids)
             generation_id = f"web-{hashlib.sha256(batch_id.encode()).hexdigest()[:16]}-{status['attempts']:04d}"
             generations = self.runtime_wiki_dir / "generations"
             generation = generations / generation_id
@@ -409,6 +441,7 @@ class WebIngestPipeline:
                     manifest={
                         "web_items": list(web.values()),
                         "pdf_occurrence_ids": sorted(pdf_ids),
+                        "pdf_calendar_occurrence_ids": sorted(calendar_ids),
                     },
                 )
                 if generation.exists():
@@ -421,6 +454,7 @@ class WebIngestPipeline:
                     shutil.rmtree(staging)
             manifest_sha256 = _write_projection_manifest(
                 generation, generation_id, web_items=list(web.values()), pdf_occurrence_ids=pdf_ids,
+                pdf_calendar_occurrence_ids=calendar_ids,
             )
             status = self._save(
                 status, stage="indexed", indexed=True, generation_id=generation_id,
