@@ -809,6 +809,65 @@ Climate risk reporting covers insurance capital, flood losses, investment disclo
     assert 8 <= len(first["keywords"]) <= 12
 
 
+@pytest.mark.parametrize(
+    ("markdown", "expected", "excluded"),
+    [
+        (
+            "# Swiss Re climate outlook\n\n"
+            "Navigation on swissre.com\n\nHome\n\nInsights\n\nAbout us\n\n"
+            "Quick navigation\n\nInvestors\n\nContact\n\nSearch\n\n"
+            "# Swiss Re climate outlook\n\nAuthor: Jane Smith\n\n"
+            "Global insured losses from natural catastrophes reached an estimated USD 42 billion in the first half of 2026, well below the long-term trend.\n\n"
+            "## Related Resources\n\nA separate recommended article about unrelated property coverage.",
+            "Global insured losses from natural catastrophes reached an estimated USD 42 billion in the first half of 2026, well below the long-term trend.",
+            "Navigation on swissre.com",
+        ),
+        (
+            "# Actuaries Climate Index\n\nMenu\n\nQuick navigation\n\nAbout\n\nData\n\n"
+            "The Actuaries Climate Index is an educational tool designed to help inform actuaries, public policymakers, and the general public about climate trends.\n\n"
+            "It reports changes in extreme weather and sea level indicators across the United States and Canada.\n\n"
+            "## Related Events\n\nA different event description that must not become part of this article.",
+            "The Actuaries Climate Index is an educational tool designed to help inform actuaries, public policymakers, and the general public about climate trends.",
+            "A different event description",
+        ),
+    ],
+)
+def test_article_body_markdown_selects_narrative_and_stops_at_related_sections(markdown, expected, excluded):
+    body = capture.article_body_markdown(markdown)
+    assert body is not None and body.startswith(expected)
+    assert excluded not in body
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "## Weekly report\n\nClimate risk analysis covers insurance markets and policy changes.",
+        "# Page 1\n\nNavigation on example.org\n\nClimate risk analysis covers insurance markets and policy changes.",
+    ],
+    ids=["ordinary-markdown", "pdf-page-markdown"],
+)
+def test_article_body_markdown_leaves_regular_and_pdf_markdown_unchanged(markdown):
+    assert capture.article_body_markdown(markdown) == markdown
+
+
+def test_selected_html_summary_keeps_common_abbreviations_inside_sentences():
+    markdown = (
+        "# Climate risk and insurance outlook\n\nNavigation on example.org\n\nHome\n\n"
+        "Reports\n\nResearch\n\nQuick navigation\n\nAbout\n\nData\n\nContact\n\n"
+        "# Climate risk and insurance outlook\n\nAuthor: Jane Smith\n\n"
+        "U.S. insurers assess climate risk as Dr. A. B. Jones reviews flood losses, reinsurance capital, underwriting standards, and investment resilience.\n\n"
+        "M. Afif said actuarial teams use catastrophe models to update global insurance pricing.\n\n"
+        "U.S. regulators expect disclosure and transition risk testing across financial markets.\n\n"
+        "## Related Resources\n\nAn unrelated resource paragraph follows."
+    )
+    summary = capture.deterministic_enrichment(markdown)["summary"]
+    assert "U.S. insurers" in summary
+    assert "Dr. A. B. Jones" in summary
+    assert "M. Afif said" in summary
+    assert "U.S. regulators" in summary
+    assert "unrelated resource" not in summary
+
+
 def test_keyword_extraction_is_deterministic_for_many_unique_terms():
     def letters(value):
         result = ""

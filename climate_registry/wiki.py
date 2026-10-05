@@ -485,14 +485,7 @@ def render_runtime_registry(
         if pdf_database is None:
             raise RuntimeError("active meeting Registry snapshot is missing")
         meeting_reader = RegistryReader(pdf_database, repository_root=Path(__file__).resolve().parents[1])
-        records = []
-        cursor = 1
-        while True:
-            result = meeting_reader.pdf_calendar_items(page=cursor, page_size=100)
-            records.extend(item for item in result["items"] if item["occurrence_id"] in calendar_ids)
-            if cursor >= result["pagination"]["pages"]:
-                break
-            cursor += 1
+        records = meeting_reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids)
         if {item["occurrence_id"] for item in records} != calendar_ids:
             raise RuntimeError("active PDF calendar observation is missing")
         blocks = ["# Meetings and key dates", ""]

@@ -367,7 +367,7 @@ def test_collected_future_deadline_survives_past_pdf_event_in_reader_and_report(
         date_precision="day", start_date="2026-10-01", end_date="2026-10-02",
         deadline_type="expert_review", deadline_date="2026-10-05")
     item["collected_candidate"] = candidate
-    monkeypatch.setattr(reader, "pdf_calendar_items", lambda **kwargs: {"items": [item], "pagination": {"pages": 1}})
+    monkeypatch.setattr(reader, "pdf_calendar_items_all", lambda **kwargs: [item])
     payload = _pdf_calendar_payload(reader, base_date="2026-10-04")
     assert len(payload["records"]) == 1
     projected = payload["records"][0]

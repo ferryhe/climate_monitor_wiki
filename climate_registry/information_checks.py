@@ -87,13 +87,7 @@ def check_targets(database: Path, kind: str, occurrence_ids: set[str] | None = N
     reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
     items: list[dict[str, Any]] = []
     if kind == "meetings":
-        page = 1
-        while True:
-            payload = reader.pdf_calendar_items(page=page, page_size=100)
-            items.extend(payload["items"])
-            if page >= payload["pagination"]["pages"]:
-                break
-            page += 1
+        items = reader.pdf_calendar_items_all(allowed_occurrence_ids=occurrence_ids)
     elif kind == "articles":
         with reader.connect() as connection:
             for row in connection.execute("SELECT * FROM pdf_intake_articles ORDER BY article_id"):

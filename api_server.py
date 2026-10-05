@@ -63,6 +63,11 @@ from climate_registry.read_api import (
     RegistryQueryError,
     RegistryReader,
     RegistryUnavailableError,
+    page_pdf_articles,
+    page_pdf_calendar_items,
+    validate_article_id,
+    validate_page,
+    validate_report_date,
 )
 from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
@@ -400,6 +405,66 @@ def _pdf_registry_view() -> tuple[RegistryReader, set[str] | None, set[str] | No
     return pdf_reader, article_ids, calendar_ids
 
 
+def _merge_pdf_observation(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    merged = {**first, **second}
+    for key in ("source_observations", "checks"):
+        values = []
+        seen = set()
+        for value in first.get(key, []) + second.get(key, []):
+            identity = json.dumps(value, sort_keys=True, separators=(",", ":"))
+            if identity not in seen:
+                seen.add(identity)
+                values.append(value)
+        if values or key in first or key in second:
+            merged[key] = values
+    return merged
+
+
+def _merge_pdf_article_payloads(
+    public: dict[str, Any] | None, runtime: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    payloads = [item for item in (public, runtime) if item is not None]
+    if not payloads:
+        return None
+    merged = {**payloads[-1], **payloads[0]}
+    occurrences: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for item in payload.get("occurrences", []):
+            occurrence_id = item["occurrence_id"]
+            occurrences[occurrence_id] = (
+                _merge_pdf_observation(occurrences[occurrence_id], item)
+                if occurrence_id in occurrences else item
+            )
+    merged["occurrences"] = sorted(
+        occurrences.values(),
+        key=lambda item: (item.get("report_date") or "", item.get("page") or 0, item["occurrence_id"]),
+        reverse=True,
+    )
+    dates = [item.get("report_date") for item in merged["occurrences"] if item.get("report_date")]
+    merged["first_seen"] = min(dates) if dates else None
+    merged["last_seen"] = max(dates) if dates else None
+    if runtime and runtime.get("type_safe_classification") is not None:
+        merged["type_safe_classification"] = runtime["type_safe_classification"]
+    if merged["occurrences"]:
+        merged["summary"] = merged["occurrences"][0].get("summary")
+    return merged
+
+
+def _merge_pdf_calendar_items(
+    public_items: list[dict[str, Any]], runtime_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items = {item["occurrence_id"]: item for item in public_items}
+    for item in runtime_items:
+        occurrence_id = item["occurrence_id"]
+        items[occurrence_id] = (
+            _merge_pdf_observation(items[occurrence_id], item)
+            if occurrence_id in items else item
+        )
+    return sorted(items.values(), key=lambda item: (
+        item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
+    ))
+
+
 def _registry_query(callable_):
     try:
         return callable_()
@@ -542,10 +607,28 @@ def registry_pdf_articles(
 ) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_pdf():
+        validate_page(parsed_page, parsed_size)
+        if len(query) > 200 or len(source) > 253:
+            raise RegistryQueryError("filter is too long")
+        if report_date:
+            validate_report_date(report_date)
         reader, article_ids, _ = _pdf_registry_view()
-        return reader.pdf_articles(
-            page=parsed_page, page_size=parsed_size, query=query, source=source,
-            report_date=report_date, allowed_occurrence_ids=article_ids,
+        if article_ids is None:
+            return reader.pdf_articles(
+                page=parsed_page, page_size=parsed_size, query=query, source=source,
+                report_date=report_date,
+            )
+        public_items = _registry_reader().pdf_articles_all()
+        runtime_items = reader.pdf_articles_all(allowed_occurrence_ids=article_ids)
+        by_url: dict[str, dict[str, Any]] = {}
+        for item in public_items:
+            by_url[item["canonical_url"]] = item
+        for item in runtime_items:
+            url = item["canonical_url"]
+            by_url[url] = _merge_pdf_article_payloads(by_url.get(url), item)
+        return page_pdf_articles(
+            list(by_url.values()), page=parsed_page, page_size=parsed_size,
+            query=query, source=source, report_date=report_date,
         )
     return _registry_query(query_pdf)
 
@@ -553,8 +636,29 @@ def registry_pdf_articles(
 @app.get("/api/registry/pdf-intake/articles/{article_id}")
 def registry_pdf_article(article_id: str) -> dict:
     def query_pdf():
+        validate_article_id(article_id)
         reader, article_ids, _ = _pdf_registry_view()
-        return reader.pdf_article(article_id, allowed_occurrence_ids=article_ids)
+        if article_ids is None:
+            return reader.pdf_article(article_id)
+        public_reader = _registry_reader()
+        try:
+            public = public_reader.pdf_article(article_id)
+        except RegistryNotFoundError:
+            public = None
+        try:
+            runtime = reader.pdf_article(article_id, allowed_occurrence_ids=article_ids)
+        except RegistryNotFoundError:
+            runtime = None
+        if runtime is not None and public is None:
+            public = next((item for item in public_reader.pdf_articles_all()
+                if item["canonical_url"] == runtime["canonical_url"]), None)
+        elif public is not None and (runtime is None or runtime["canonical_url"] != public["canonical_url"]):
+            runtime = next((item for item in reader.pdf_articles_all(allowed_occurrence_ids=article_ids)
+                if item["canonical_url"] == public["canonical_url"]), None)
+        payload = _merge_pdf_article_payloads(public, runtime)
+        if payload is None:
+            raise RegistryNotFoundError("article not found")
+        return payload
     return _registry_query(query_pdf)
 
 
@@ -564,9 +668,18 @@ def registry_pdf_calendar(
 ) -> dict:
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_calendar():
+        validate_page(parsed_page, parsed_size)
+        if len(query) > 200 or len(kind) > 80:
+            raise RegistryQueryError("filter is too long")
         reader, _, calendar_ids = _pdf_registry_view()
-        return reader.pdf_calendar_items(
-            page=parsed_page, page_size=parsed_size, query=query, kind=kind, allowed_occurrence_ids=calendar_ids,
+        if calendar_ids is None:
+            return reader.pdf_calendar_items(page=parsed_page, page_size=parsed_size, query=query, kind=kind)
+        items = _merge_pdf_calendar_items(
+            _registry_reader().pdf_calendar_items_all(),
+            reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids),
+        )
+        return page_pdf_calendar_items(
+            items, page=parsed_page, page_size=parsed_size, query=query, kind=kind,
         )
     return _registry_query(query_calendar)
 
@@ -575,17 +688,19 @@ def registry_pdf_calendar(
 def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
     verification_status: str = "", base_date: str | None = None) -> dict:
     def query_meetings():
+        parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
+        validate_page(parsed_page, parsed_size)
+        if len(query) > 200 or verification_status not in {"", "unchecked", "partial", "conflict", "verified"}:
+            raise RegistryQueryError("invalid meeting filter")
+        if base_date:
+            validate_report_date(base_date)
         reader, _, calendar_ids = _pdf_registry_view()
-        items = []
-        cursor = 1
-        while True:
-            payload = reader.pdf_calendar_items(page=cursor, page_size=100, allowed_occurrence_ids=calendar_ids)
-            items.extend(payload["items"])
-            if cursor >= payload["pagination"]["pages"]:
-                break
-            cursor += 1
+        items = (
+            [] if calendar_ids is None
+            else reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids)
+        )
         return _registry_reader().meetings(
-            page=_parse_registry_decimal(page), page_size=_parse_registry_decimal(page_size),
+            page=parsed_page, page_size=parsed_size,
             query=query, verification_status=verification_status, base_date=base_date,
             additional_calendar_items=items)
     return _registry_query(query_meetings)

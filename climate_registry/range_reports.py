@@ -1005,7 +1005,7 @@ def _pdf_calendar_payload(
                 "status": "unavailable", "coverage": {"status": "unavailable", "error": "pdf_calendar_unavailable"},
                 "base_date": base_date, "records": [],
             }
-        allowed_documents: set[str] | None = None
+        allowed_calendar_ids = activated_calendar_ids
         if activated_pdf_occurrence_ids is not None:
             with reader.connect() as connection:
                 allowed_documents = {
@@ -1015,19 +1015,15 @@ def _pdf_calendar_payload(
                     )
                     if row["occurrence_id"] in activated_pdf_occurrence_ids
                 }
-        items: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            result = reader.pdf_calendar_items(page=page, page_size=100)
-            batch = result["items"]
-            items.extend(
-                item for item in batch
-                if (item["occurrence_id"] in activated_calendar_ids if activated_calendar_ids is not None
-                    else allowed_documents is None or item.get("source_document_sha256") in allowed_documents)
-            )
-            if page >= result["pagination"]["pages"]:
-                break
-            page += 1
+                if allowed_calendar_ids is None:
+                    allowed_calendar_ids = {
+                        str(row["occurrence_id"])
+                        for row in connection.execute(
+                            "SELECT occurrence_id, source_document_sha256 FROM pdf_intake_calendar_items"
+                        )
+                        if row["source_document_sha256"] in allowed_documents
+                    }
+        items = reader.pdf_calendar_items_all(allowed_occurrence_ids=allowed_calendar_ids)
         items = (identity_reader or reader).resolve_pdf_meeting_identities(items)
     except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
         return {

@@ -404,7 +404,7 @@ def _summary_sentences(text: str, *, selected_english_html: bool) -> list[str]:
     def protect(match: re.Match[str]) -> str:
         return match.group(0).replace(".", marker)
 
-    text = re.sub(r"\b(?:[A-Z]\.){2,}", protect, text)
+    text = re.sub(r"\b(?:[A-Z]\.\s*){2,}", protect, text)
     text = re.sub(r"\b([A-Z])\.(?=\s+[A-Z][a-z])", protect, text)
     text = re.sub(r"(?i)\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.(?=\s+[A-Z])", protect, text)
     text = re.sub(r"(?i)\b(?:e\.g|i\.e)\.", protect, text)

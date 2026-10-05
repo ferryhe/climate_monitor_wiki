@@ -67,6 +67,14 @@ def validate_page(page: int, page_size: int) -> tuple[int, int]:
     return page, page_size
 
 
+def validate_article_id(article_id: str) -> str:
+    if not article_id or len(article_id) > 128 or any(
+        char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id
+    ):
+        raise RegistryQueryError("invalid article id")
+    return article_id
+
+
 def validate_report_date(value: str) -> str:
     try:
         parsed = date.fromisoformat(value)
@@ -96,6 +104,59 @@ def _pagination(page: int, page_size: int, total: int) -> dict[str, int]:
         "total": total,
         "pages": math.ceil(total / page_size) if total else 0,
     }
+
+
+def page_pdf_articles(
+    items: list[dict[str, Any]], *, page: int, page_size: int, query: str = "",
+    source: str = "", report_date: str = "",
+) -> dict[str, Any]:
+    page, page_size = validate_page(page, page_size)
+    if len(query) > 200 or len(source) > 253:
+        raise RegistryQueryError("filter is too long")
+    if report_date:
+        validate_report_date(report_date)
+    selected = []
+    for item in items:
+        if source and item["source"] != source.strip().lower().removeprefix("www."):
+            continue
+        if report_date and not any(value.get("report_date") == report_date for value in item["occurrences"]):
+            continue
+        searchable = " ".join((item["title"] or "", item["summary"] or "", item["canonical_url"])).casefold()
+        if query and query.casefold() not in searchable:
+            continue
+        latest = item["occurrences"][0] if item["occurrences"] else {}
+        selected.append({key: value for key, value in item.items() if key != "occurrences"} | {
+            "occurrence_count": len(item["occurrences"]), "latest_occurrence": latest,
+        })
+    selected.sort(key=lambda item: (item["last_seen"] or "", item["article_id"]), reverse=True)
+    total = len(selected)
+    offset = (page - 1) * page_size
+    return {"items": selected[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
+
+
+def page_pdf_calendar_items(
+    items: list[dict[str, Any]], *, page: int, page_size: int, query: str = "", kind: str = "",
+) -> dict[str, Any]:
+    page, page_size = validate_page(page, page_size)
+    if len(query) > 200 or len(kind) > 80:
+        raise RegistryQueryError("filter is too long")
+    selected = []
+    for item in items:
+        if kind and kind.casefold() not in str(item.get("kind", "")).casefold():
+            continue
+        searchable = " ".join((
+            item.get("name") or "", item.get("kind") or "", item.get("raw_date") or "",
+            item.get("summary") or "", " ".join(item.get("source_urls") or []),
+        )).casefold()
+        if query and query.casefold() not in searchable:
+            continue
+        selected.append(item)
+    selected.sort(key=lambda item: (
+        item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
+    ))
+    total = len(selected)
+    offset = (page - 1) * page_size
+    return {"items": selected[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
 
 
 def _monitoring_status(row: sqlite3.Row) -> str:
@@ -718,14 +779,21 @@ class RegistryReader:
         source: str = "", report_date: str = "",
         allowed_occurrence_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        page, page_size = validate_page(page, page_size)
+        validate_page(page, page_size)
         if len(query) > 200 or len(source) > 253:
             raise RegistryQueryError("filter is too long")
         if report_date:
             validate_report_date(report_date)
+        return page_pdf_articles(
+            self.pdf_articles_all(allowed_occurrence_ids=allowed_occurrence_ids),
+            page=page, page_size=page_size, query=query, source=source, report_date=report_date,
+        )
+
+    def pdf_articles_all(self, *, allowed_occurrence_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        """Read full PDF article observations before a caller merges and paginates."""
         with self.connect() as connection:
             if not self._has_pdf_intake(connection):
-                return {"items": [], "pagination": _pagination(page, page_size, 0)}
+                return []
             rows = connection.execute(
                 "SELECT * FROM pdf_intake_articles WHERE core_article_id IS NULL"
                 if self._has_pdf_article_links(connection) else
@@ -739,32 +807,12 @@ class RegistryReader:
                 item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids)
                 if not item["occurrences"]:
                     continue
-                if source and item["source"] != source.strip().lower().removeprefix("www."):
-                    continue
-                if report_date and not any(value.get("report_date") == report_date for value in item["occurrences"]):
-                    continue
-                searchable = " ".join((
-                    item["title"] or "", item["summary"] or "", item["canonical_url"],
-                )).casefold()
-                if query and query.casefold() not in searchable:
-                    continue
-                latest = item["occurrences"][0] if item["occurrences"] else {}
-                items.append({
-                    key: value for key, value in item.items() if key != "occurrences"
-                } | {
-                    "occurrence_count": len(item["occurrences"]),
-                    "latest_occurrence": latest,
-                })
+                items.append(item)
         items.sort(key=lambda item: (item["last_seen"] or "", item["article_id"]), reverse=True)
-        total = len(items)
-        offset = (page - 1) * page_size
-        return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
+        return items
 
     def pdf_article(self, article_id: str, *, allowed_occurrence_ids: set[str] | None = None) -> dict[str, Any]:
-        if not article_id or len(article_id) > 128 or any(
-            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id
-        ):
-            raise RegistryQueryError("invalid article id")
+        validate_article_id(article_id)
         with self.connect() as connection:
             if not self._has_pdf_intake(connection):
                 raise RegistryNotFoundError("article not found")
@@ -782,27 +830,41 @@ class RegistryReader:
         self, *, page: int = 1, page_size: int = 20, query: str = "", kind: str = "",
         allowed_occurrence_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        page, page_size = validate_page(page, page_size)
+        validate_page(page, page_size)
         if len(query) > 200 or len(kind) > 80:
             raise RegistryQueryError("filter is too long")
+        return page_pdf_calendar_items(
+            self.pdf_calendar_items_all(allowed_occurrence_ids=allowed_occurrence_ids),
+            page=page, page_size=page_size, query=query, kind=kind,
+        )
+
+    def pdf_calendar_items_all(
+        self, *, allowed_occurrence_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Recover each allow-listed source PDF once, then return all calendar rows."""
         with self.connect() as connection:
             if not self._has_pdf_intake(connection):
-                return {"items": [], "pagination": _pagination(page, page_size, 0)}
+                return []
             rows = connection.execute(
-                """SELECT c.item_json, c.source_document_sha256,
+                """SELECT c.occurrence_id, c.item_json, c.source_document_sha256,
                           c.type_safe_classification_json, d.filename AS source_filename
                    FROM pdf_intake_calendar_items c
                    JOIN pdf_intake_documents d ON d.document_sha256=c.source_document_sha256"""
             ).fetchall()
+            if allowed_occurrence_ids is not None:
+                rows = [row for row in rows if row["occurrence_id"] in allowed_occurrence_ids]
             sources = {
                 sha: self._pdf_document_sources(connection, sha)
                 for sha in {row["source_document_sha256"] for row in rows}
             }
             originals = {}
             if "original_pdf" in {column[1] for column in connection.execute("PRAGMA table_info(pdf_intake_documents)")}:
-                originals = {sha: connection.execute(
-                    "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (sha,),
-                ).fetchone()[0] for sha in sources}
+                for sha in sources:
+                    row = connection.execute(
+                        "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (sha,),
+                    ).fetchone()
+                    if row is not None:
+                        originals[sha] = row["original_pdf"]
         items = []
         for row in rows:
             try:
@@ -811,6 +873,7 @@ class RegistryReader:
                 raise RegistryContractError("invalid PDF calendar item data") from exc
             if not isinstance(item, dict):
                 raise RegistryContractError("invalid PDF calendar item data")
+            item["occurrence_id"] = row["occurrence_id"]
             try:
                 item["type_safe_classification"] = (
                     json.loads(row["type_safe_classification_json"])
@@ -824,35 +887,24 @@ class RegistryReader:
             items.append(item)
         if originals:
             from climate_monitor.pdf_intake import recover_calendar_fields
+            indexes_by_sha: dict[str, list[int]] = {}
+            for index, item in enumerate(items):
+                indexes_by_sha.setdefault(item["source_document_sha256"], []).append(index)
             for sha, raw in originals.items():
                 if raw is not None:
-                    recovered = recover_calendar_fields(raw, [item for item in items if item["source_document_sha256"] == sha])
+                    indexes = indexes_by_sha.get(sha, [])
+                    recovered = recover_calendar_fields(raw, [items[index] for index in indexes])
                     by_id = {item["occurrence_id"]: item for item in recovered}
-                    items = [by_id.get(item["occurrence_id"], item) for item in items]
+                    for index in indexes:
+                        items[index] = by_id.get(items[index]["occurrence_id"], items[index])
         from climate_monitor.meeting_fields import pdf_meeting_fields
         from .information_checks import latest_checks
         with self.connect() as connection:
             items = [dict(pdf_meeting_fields(item), **latest_checks(connection, "meetings", item)) for item in items]
-        selected = []
-        for item in items:
-            if allowed_occurrence_ids is not None and item["occurrence_id"] not in allowed_occurrence_ids:
-                continue
-            if kind and kind.casefold() not in str(item.get("kind", "")).casefold():
-                continue
-            searchable = " ".join((
-                item.get("name") or "", item.get("kind") or "", item.get("raw_date") or "",
-                item.get("summary") or "", " ".join(item.get("source_urls") or []),
-            )).casefold()
-            if query and query.casefold() not in searchable:
-                continue
-            selected.append(item)
-        items = selected
         items.sort(key=lambda item: (
             item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
         ))
-        total = len(items)
-        offset = (page - 1) * page_size
-        return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
+        return items
 
     def resolve_pdf_meeting_identities(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Bind verified overlays to identities in this reader's native event history."""
@@ -887,14 +939,7 @@ class RegistryReader:
         payload = query_events(self.database, base_date=base_date, timezone_name="UTC", include_deadlines=True)
         collected = {record["event_id"]: dict(record, origin="web_collection", collection_status="collected",
             verification_status="verified", access_status="accessible") for record in payload["records"] + (additional_events or [])}
-        imported = []
-        cursor = 1
-        while True:
-            result = self.pdf_calendar_items(page=cursor, page_size=100)
-            imported.extend(result["items"])
-            if cursor >= result["pagination"]["pages"]:
-                break
-            cursor += 1
+        imported = self.pdf_calendar_items_all()
         imported = list({item["occurrence_id"]: item for item in imported + (additional_calendar_items or [])}.values())
         from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations
         for item in self.resolve_pdf_meeting_identities(imported):

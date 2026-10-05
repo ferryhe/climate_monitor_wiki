@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
@@ -233,7 +234,7 @@ def _reader(database: Path, tmp_path: Path) -> RegistryReader:
     return RegistryReader(database, repository_root=tmp_path / "application")
 
 
-def _insert_pdf_calendar(database: Path, name: str) -> None:
+def _insert_pdf_calendar(database: Path, name: str) -> str:
     occurrence_id = "calendar-" + _sha(name)[:12]
     with sqlite3.connect(database) as connection:
         document_sha = connection.execute(
@@ -260,6 +261,57 @@ def _insert_pdf_calendar(database: Path, name: str) -> None:
                 occurrence_id, occurrence_id, document_sha, name, name,
                 _sha(name), json.dumps(item),
             ),
+        )
+    return occurrence_id
+
+
+def _insert_pdf_article(database: Path, article_id: str, url: str, occurrence_id: str, report_date: str) -> None:
+    with sqlite3.connect(database) as connection:
+        document_sha = connection.execute(
+            "SELECT document_sha256 FROM pdf_intake_documents LIMIT 1"
+        ).fetchone()[0]
+        occurrence = {
+            "occurrence_id": occurrence_id, "raw_url": url, "report_date": report_date,
+            "summary": f"Evidence summary for {article_id}",
+        }
+        connection.execute(
+            """INSERT INTO pdf_intake_articles(
+                   article_id, canonical_url, title, type_safe_classification_json, imported_at,
+                   core_article_id, confirmation_basis)
+               VALUES (?, ?, ?, '{"provider":"fixture","label":"article"}', ?, NULL, NULL)""",
+            (article_id, url, article_id, NOW),
+        )
+        connection.execute(
+            """INSERT INTO pdf_intake_article_occurrences VALUES
+               (?, ?, ?, 2, ?, ?, NULL, ?, ?, ?)""",
+            (occurrence_id, article_id, document_sha, url, report_date,
+             _sha(occurrence_id), _sha(article_id), json.dumps(occurrence)),
+        )
+
+
+def _insert_verified_meeting_check(database: Path, occurrence_id: str) -> None:
+    from climate_registry.information_checks import _sha as check_sha, source_revision
+
+    reader = _reader(database, database.parent)
+    item = next(item for item in reader.pdf_calendar_items_all() if item["occurrence_id"] == occurrence_id)
+    packet = {
+        "checked_at": NOW, "access_status": "accessible", "verification_status": "verified",
+        "reader": {"content_hash": "a" * 64, "final_url": "https://example.org/calendar"},
+        "website_candidate": None,
+    }
+    packet_json = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO meeting_check_runs(
+                   run_id, input_json, input_sha256, created_at, completed_at, status,
+                   item_count, completed_count, error_message)
+               VALUES ('fixture-run', '{}', ?, ?, ?, 'complete', 1, 1, NULL)""",
+            (check_sha({}), NOW, NOW),
+        )
+        connection.execute(
+            """INSERT INTO meeting_check_attempts VALUES
+               ('fixture-attempt', 'fixture-run', ?, '', ?, ?, 'accessible', 'verified', ?, ?)""",
+            (occurrence_id, source_revision("meetings", item), NOW, packet_json, check_sha(packet)),
         )
 
 
@@ -617,6 +669,120 @@ def test_public_pdf_only_article_and_calendar_survive_runtime_modes(tmp_path):
         assert {item["name"] for item in snapshot["pdf_calendar"]["records"]} == {
             "Public PDF meeting"
         }
+
+
+def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(tmp_path, monkeypatch):
+    public_root, runtime_root = tmp_path / "public", tmp_path / "runtime"
+    public_root.mkdir()
+    runtime_root.mkdir()
+    public_database = _database(public_root, include_article_a_acquisitions=False)
+    runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
+
+    shared_url = "https://pdf.example/shared"
+    _insert_pdf_article(public_database, "public-shared", shared_url, "public-shared-occ", "2026-09-20")
+    _insert_pdf_article(runtime_database, "runtime-shared", shared_url, "runtime-shared-occ", "2026-09-24")
+    _insert_pdf_article(public_database, "public-only", "https://pdf.example/public", "public-only-occ", "2026-09-21")
+    _insert_pdf_article(runtime_database, "runtime-only", "https://pdf.example/runtime", "runtime-only-occ", "2026-09-25")
+    _insert_pdf_article(runtime_database, "runtime-blocked", "https://pdf.example/blocked", "blocked-occ", "2026-09-26")
+
+    public_calendar = {
+        _insert_pdf_calendar(public_database, "Public PDF meeting"),
+        _insert_pdf_calendar(public_database, "Shared PDF meeting"),
+    }
+    shared_calendar = _insert_pdf_calendar(runtime_database, "Shared PDF meeting")
+    runtime_calendar = _insert_pdf_calendar(runtime_database, "Runtime PDF meeting")
+    _insert_pdf_calendar(runtime_database, "Inactive PDF meeting")
+    with sqlite3.connect(runtime_database) as connection:
+        document_sha = connection.execute(
+            "SELECT document_sha256 FROM pdf_intake_documents LIMIT 1"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO pdf_intake_document_sources VALUES (?, 'C:/runtime/report-copy.pdf', 'runtime-copy.pdf', ?)",
+            (document_sha, NOW),
+        )
+    _insert_verified_meeting_check(runtime_database, shared_calendar)
+
+    public_reader = _reader(public_database, public_root)
+    runtime_reader = _reader(runtime_database, runtime_root)
+    manifest = {
+        "pdf_occurrence_ids": ["runtime-shared-occ", "runtime-only-occ"],
+        "pdf_calendar_occurrence_ids": sorted({shared_calendar, runtime_calendar}),
+    }
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: public_reader)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, runtime_reader, manifest))
+
+    article_pages = [api_server.registry_pdf_articles(page_size="2", page=str(page)) for page in ("1", "2")]
+    articles = [item for result in article_pages for item in result["items"]]
+    assert article_pages[0]["pagination"] == {"page": 1, "page_size": 2, "total": 4, "pages": 2}
+    assert len({item["canonical_url"] for item in articles}) == 4
+    shared = next(item for item in articles if item["canonical_url"] == shared_url)
+    assert shared["article_id"] == "public-shared" and shared["occurrence_count"] == 2
+    assert shared["latest_occurrence"]["occurrence_id"] == "runtime-shared-occ"
+    assert all(item["canonical_url"] != "https://pdf.example/blocked" for item in articles)
+    assert {item["canonical_url"] for item in articles} >= {
+        "https://pdf.example/public", "https://pdf.example/runtime",
+    }
+
+    for article_id in ("public-shared", "runtime-shared"):
+        detail = api_server.registry_pdf_article(article_id)
+        assert detail["canonical_url"] == shared_url
+        assert {item["occurrence_id"] for item in detail["occurrences"]} == {
+            "public-shared-occ", "runtime-shared-occ",
+        }
+
+    calendar_pages = [api_server.registry_pdf_calendar(page_size="1", page=str(page))
+                      for page in ("1", "2", "3")]
+    calendar = [item for result in calendar_pages for item in result["items"]]
+    assert calendar_pages[0]["pagination"] == {"page": 1, "page_size": 1, "total": 3, "pages": 3}
+    assert {item["name"] for item in calendar} == {
+        "Public PDF meeting", "Shared PDF meeting", "Runtime PDF meeting",
+    }
+    shared_item = next(item for item in calendar if item["name"] == "Shared PDF meeting")
+    assert shared_item["occurrence_id"] == shared_calendar
+    assert shared_item["verification_status"] == "verified"
+    assert "runtime-copy.pdf" in {source["filename"] for source in shared_item["source_observations"]}
+
+    meetings = api_server.registry_meetings(base_date="2026-09-30")
+    assert meetings["pagination"]["total"] == 3
+    assert {item["occurrence_id"] for item in meetings["items"]} == public_calendar | {
+        shared_calendar, runtime_calendar,
+    }
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "params"),
+    [
+        (api_server.registry_meetings, {"page": "bad"}),
+        (api_server.registry_meetings, {"page": "0"}),
+        (api_server.registry_meetings, {"page_size": "101"}),
+        (api_server.registry_meetings, {"query": "x" * 201}),
+        (api_server.registry_meetings, {"verification_status": "unknown"}),
+        (api_server.registry_meetings, {"base_date": "2026-02-30"}),
+        (api_server.registry_pdf_article, {"article_id": "bad$id"}),
+        (api_server.registry_pdf_article, {"article_id": "x" * 129}),
+        (api_server.registry_pdf_articles, {"page": "0"}),
+        (api_server.registry_pdf_articles, {"report_date": "2026-02-30"}),
+        (api_server.registry_pdf_calendar, {"page_size": "101"}),
+    ],
+    ids=[
+        "meeting-page-not-decimal", "meeting-page-out-of-range", "meeting-size-out-of-range",
+        "meeting-query-too-long", "meeting-status-invalid", "meeting-date-invalid",
+        "article-id-invalid-character", "article-id-too-long", "article-page-out-of-range",
+        "article-date-invalid", "calendar-size-out-of-range",
+    ],
+)
+def test_pdf_endpoints_validate_filters_before_reading_overlay(monkeypatch, endpoint, params):
+    calls = []
+
+    def unexpected_overlay_read():
+        calls.append(True)
+        raise AssertionError("invalid request reached the PDF overlay read")
+
+    monkeypatch.setattr(api_server, "_pdf_registry_view", unexpected_overlay_read)
+    with pytest.raises(HTTPException) as error:
+        endpoint(**params)
+    assert error.value.status_code == 400
+    assert calls == []
 
 
 def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_path):
@@ -1082,10 +1248,8 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
         calls.append((database, kwargs))
         return queried
 
-    def pdf_calendar_items(_reader, *, page, page_size):
-        assert page_size == 100
-        pages = {
-                1: [
+    def pdf_calendar_items_all(_reader, *, allowed_occurrence_ids=None):
+        records = [
                     {"name": "PDF event", "kind": "event", "raw_date": "2 Oct 2026", "date_precision": "day", "end_date": "2026-10-02", "source_filename": "calendar.pdf", "page": 2, "source_document_sha256": "a" * 64},
                     {"name": "Expired PDF event", "kind": "event", "raw_date": "1 Sep 2026", "date_precision": "day", "end_date": "2026-09-01", "source_filename": "calendar.pdf", "page": 4, "source_document_sha256": "a" * 64},
                     {"name": "Unknown PDF event", "kind": "event", "raw_date": "TBA", "date_precision": "unknown", "end_date": None, "source_filename": "calendar.pdf", "page": 5, "source_document_sha256": "a" * 64},
@@ -1095,15 +1259,14 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
                     {"name": "Expired quarter", "kind": "event", "raw_date": "Q2 2026", "date_precision": "quarter", "start_date": "2026-Q2", "end_date": None, "source_filename": "calendar.pdf", "page": 9, "source_document_sha256": "a" * 64},
                     {"name": "Future year", "kind": "event", "raw_date": "2027", "date_precision": "year", "start_date": "2027", "end_date": None, "source_filename": "calendar.pdf", "page": 10, "source_document_sha256": "a" * 64},
                     {"name": "Expired year", "kind": "event", "raw_date": "2025", "date_precision": "year", "start_date": "2025", "end_date": None, "source_filename": "calendar.pdf", "page": 11, "source_document_sha256": "a" * 64},
-                ],
-                2: [{"name": "Deadline", "kind": "deadline", "raw_date": "3 Oct 2026", "date_precision": "day", "end_date": "2026-10-03", "source_filename": "calendar.pdf", "page": 3, "source_document_sha256": "a" * 64}],
-        }
-        return {"items": pages[page], "pagination": {"pages": 2}}
+                    {"name": "Deadline", "kind": "deadline", "raw_date": "3 Oct 2026", "date_precision": "day", "end_date": "2026-10-03", "source_filename": "calendar.pdf", "page": 3, "source_document_sha256": "a" * 64},
+                ]
+        return records
 
     monkeypatch.setattr(range_reports, "_range_source", lambda *_args, **_kwargs: source)
     monkeypatch.setattr(range_reports, "query_events", query)
     monkeypatch.setattr(range_reports, "_pdf_calendar_available", lambda _reader: True)
-    monkeypatch.setattr(RegistryReader, "pdf_calendar_items", pdf_calendar_items)
+    monkeypatch.setattr(RegistryReader, "pdf_calendar_items_all", pdf_calendar_items_all)
     root = tmp_path / "range-output"
     snapshot = freeze_range_report(
         _reader(database, tmp_path), root,
@@ -1207,7 +1370,7 @@ def test_calendar_and_meeting_failures_are_marked_without_losing_articles(tmp_pa
     monkeypatch.setattr(range_reports, "_range_source", lambda *_args, **_kwargs: source)
     monkeypatch.setattr(range_reports, "query_events", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("unavailable")))
     monkeypatch.setattr(range_reports, "_pdf_calendar_available", lambda _reader: True)
-    monkeypatch.setattr(RegistryReader, "pdf_calendar_items", unavailable_calendar)
+    monkeypatch.setattr(RegistryReader, "pdf_calendar_items_all", unavailable_calendar)
     snapshot = freeze_range_report(
         _reader(database, tmp_path), tmp_path / "range-output",
         start_date="2026-09-01", end_date="2026-09-10",
