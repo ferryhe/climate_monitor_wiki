@@ -217,7 +217,7 @@ def load_projection_manifest(
         or not isinstance(value.get("pdf_occurrence_ids"), list)
         or any(
             not isinstance(item, dict)
-            or set(item) not in ({
+            or set(item) - {"review"} not in ({
                 "acquisition_item_id", "batch_id", "article_id", "content_version_id",
                 "publication_date", "publication_date_evidence",
             }, {

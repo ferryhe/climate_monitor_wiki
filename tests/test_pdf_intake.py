@@ -555,7 +555,7 @@ def test_cli_writes_and_persists_bundle_idempotently(tmp_path, monkeypatch):
     assert bundle["documents"][0]["source"]["filename"] == "source.pdf"
     import sqlite3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (19,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (0,)
@@ -588,7 +588,7 @@ def test_cli_rejects_output_aliases_before_overwriting_pdf_or_registry(tmp_path,
         assert source.read_bytes() == original_pdf
         import sqlite3
         with sqlite3.connect(database) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone() == (18,)
+            assert connection.execute("PRAGMA user_version").fetchone() == (19,)
     assert not backup_dir.exists()
 
 
@@ -795,7 +795,7 @@ def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
           json.dumps({"occurrence_id": "occ-home"}))),
     )
     connection.commit()
-    assert apply_migrations(connection) == [16, 17, 18]
+    assert apply_migrations(connection) == [16, 17, 18, 19]
     assert connection.execute(
         "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-exact'"
     ).fetchone() == ("core", "exact_url_eligible_detail")
@@ -932,7 +932,7 @@ def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_pat
     persist_pdf_intake(database, tmp_path / "backups", bundle)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (19,)
         original_pdf, created_at, modified_at, raw_metadata = connection.execute(
             """SELECT original_pdf, pdf_created_at, pdf_modified_at, pdf_metadata_json
                FROM pdf_intake_documents"""

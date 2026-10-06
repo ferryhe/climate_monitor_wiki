@@ -49,8 +49,15 @@ def test_manual_ingest_only_mode_is_frozen_and_scheduled_default_is_unchanged(tm
     scheduled = service.start(trigger='scheduled')
     assert scheduled['execution_mode'] == 'report'
     assert service.binding(scheduled['run_id'])['execution_mode'] == 'report'
-    with pytest.raises(ValueError, match='scheduled runs use report mode'):
-        service.start(trigger='scheduled', execution_mode='ingest_only')
+    (tmp_path / 'runs' / scheduled['run_id'] / 'attempt-1-result.json').write_text(json.dumps({
+        'exit_code': 0, 'retryable': False, 'execution_complete': True, 'outcome': 'completed',
+    }))
+    # Explicit scheduled ingest-only is supported; the default stays report mode.
+    from datetime import datetime, timezone
+    next_ingest = service.start(trigger='scheduled', execution_mode='ingest_only',
+        acquisition_kind='weekly_search', now=datetime(2026, 10, 13, 10, tzinfo=timezone.utc))
+    assert next_ingest['execution_mode'] == 'ingest_only'
+    assert launched[-1]['execution_mode'] == 'ingest_only'
 
 
 def test_ingest_only_no_eligible_progress_is_truthful(tmp_path, monkeypatch):

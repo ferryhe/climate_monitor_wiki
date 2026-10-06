@@ -232,8 +232,41 @@ def _validate_job(
     return normalized
 
 
+def public_claim_status(value: dict[str, Any]) -> dict[str, Any]:
+    """Expose review progress without the private claim or native receipt identity."""
+    result = {key: value[key] for key in ("job_id", "status", "created_at", "deadline", "released_at",
+        "end_reason", "reconciled_at", "observed_at") if key in value}
+    if value.get("deadline"):
+        result["state"] = ("released" if value.get("released_at") else
+            "failed" if value.get("status") == "review_failed" else
+            "expired" if datetime.fromisoformat(value["deadline"].replace("Z", "+00:00")) <= datetime.now(timezone.utc) else "owned")
+    return result
+
+
 def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str, Any]:
     current = _aware_utc_now(now)
+    if isinstance(payload, dict) and payload.get("schema_version") == schedule.PIPELINE_SCHEMA:
+        top = _exact_object(payload, expected=frozenset({"schema_version", "generated_at", "jobs", "business"}), label="snapshot")
+        generated = _strict_utc(top["generated_at"], field="generated_at")
+        if generated > current or not isinstance(top["jobs"], dict) or set(top["jobs"]) != set(schedule.PIPELINE_SLOTS):
+            raise JobStatusInvalidSnapshotError("invalid independent scheduler observation")
+        if not isinstance(top["business"], dict) or set(top["business"]) - set(schedule.PIPELINE_SLOTS):
+            raise JobStatusInvalidSnapshotError("invalid independent business status")
+        identities = set()
+        for role, block in top["jobs"].items():
+            if not isinstance(block, dict) or set(block) - {"job_id", "scheduled_for", "state", "claimed_at", "started_at", "finished_at", "definition"} or not all(k in block for k in ("job_id", "scheduled_for", "state")):
+                raise JobStatusInvalidSnapshotError("invalid independent job fields")
+            if not isinstance(block["job_id"], str) or not block["job_id"] or block["job_id"] in identities or block["state"] not in STATES:
+                raise JobStatusInvalidSnapshotError("invalid independent job identity/state")
+            identities.add(block["job_id"])
+            scheduled = _strict_utc(block["scheduled_for"], field="scheduled_for")
+            if scheduled != schedule.pipeline_occurrence(role, generated):
+                raise JobStatusInvalidSnapshotError("job occurrence does not match its role")
+            for key in _TIME_FIELDS & set(block):
+                value = _strict_utc(block[key], field=key)
+                if not scheduled <= value <= generated:
+                    raise JobStatusInvalidSnapshotError("independent execution timestamp is out of bounds")
+        return top
     top = _exact_object(payload, expected=_TOP_LEVEL_FIELDS, label="snapshot")
     if top["schema_version"] not in {SCHEMA_VERSION, schedule.SCHEMA}:
         raise JobStatusInvalidSnapshotError("unsupported schema_version")
@@ -601,6 +634,11 @@ class JobStatusSnapshotReader:
             _read_snapshot_file(directory),
             now=current,
         )
+        for review in snapshot.get("business", {}).get("T10", {}).get("reviews", []):
+            if "claim" in review:
+                review["claim"] = public_claim_status(review["claim"])
+            if "claim_failures" in review:
+                review["claim_failures"] = [public_claim_status(value) for value in review["claim_failures"]]
         generated_at = _strict_utc(snapshot["generated_at"], field="generated_at")
         age = current - generated_at
         age_seconds = int(age.total_seconds())

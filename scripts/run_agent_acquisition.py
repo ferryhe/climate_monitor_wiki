@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -233,6 +234,10 @@ def _prompt(
         for name in definition["prompts"]
     )
     public_binding = json.loads(json.dumps(binding))
+    if binding.get("acquisition_kind") == "website_rotation":
+        public_binding["role_instructions"] = "Only frozen site evidence. Do not run web_search. Set search_decision to no_search, reason website_rotation. Do not generate a report."
+    elif binding.get("acquisition_kind") == "weekly_search":
+        public_binding["role_instructions"] = "Native weekly discovery only, with frozen source scope. Do not crawl rotation sites or generate reports. Successful query ledger is required even with no new candidates."
     for row in (public_binding.get("site_skill_inventory") or {}).get("records", []):
         if isinstance(row, dict):
             row.pop("guidance", None)
@@ -602,6 +607,7 @@ def _resume_history(binding_path: Path, binding: Mapping[str, Any]) -> dict[str,
         "batch_started_at": payload["started_at"],
         "resolved_items": resolved_items,
         "successful_searches": searches,
+        "source_results": payload.get("source_outcomes", []),
         "unresolved": {
             "search_refs": [search.get("search_ref") for search in payload.get("searches", [])
                             if search.get("status") == "failed"],
@@ -641,8 +647,12 @@ def _merge_resume_payload(
     return merged
 
 
-def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
+def _controlled_site_context(binding: Mapping[str, Any], *, source_keys=None) -> dict[str, Any]:
     """Read each governed source through the deployed web-listening adapter."""
+    if binding.get("acquisition_kind") == "weekly_search":
+        return {"status": "completed", "full_success": True, "source_results": [],
+            "candidates": [], "warnings": [], "attempts": [], "systemic_error": None,
+            "runtime_seconds": 0, "acquisition_kind": "weekly_search"}
     if os.environ.get("CLIMATE_MONITOR_ENABLE_LIVE_WEB_LISTENING") != "1":
         return {"status": "not_configured", "candidates": [], "warnings": [
             "controlled web-listening is not enabled; this is unknown coverage, not zero work"
@@ -650,7 +660,8 @@ def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
     from climate_monitor.models import MonitorSource, SiteScope
     from climate_monitor.web_listening_adapter import collect_website_items_with_evidence
 
-    sources = [MonitorSource(**record) for record in binding["source_inventory"]["records"]]
+    sources = [MonitorSource(**record) for record in binding["source_inventory"]["records"]
+        if source_keys is None or record["key"] in source_keys]
     scope_inventory = binding.get("site_scope_inventory")
     gateway = binding.get("governed_gateway")
     if not isinstance(scope_inventory, Mapping) or not isinstance(gateway, Mapping):
@@ -680,6 +691,23 @@ def _controlled_site_context(binding: Mapping[str, Any]) -> dict[str, Any]:
         "runtime_seconds": sum(float(row.get("runtime_seconds", 0)) for row in source_results),
         "systemic_error": evidence.get("systemic_error"),
     }
+
+
+def _resume_controlled_site_context(binding, history):
+    """Reuse Registry-verified source scans within the same governed rotation."""
+    retained = [row for row in (history or {}).get("source_results", [])
+        if row.get("status") == "succeeded" or row.get("coverage_status") == "rejected"]
+    if binding.get("activation_policy") != "acquisition_review" or not retained:
+        return _controlled_site_context(binding)
+    finished = {row["source"] for row in retained}
+    remaining = [row["key"] for row in binding["source_inventory"]["records"] if row["key"] not in finished]
+    context = (_controlled_site_context(binding, source_keys=remaining) if remaining else
+        {"source_results": [], "warnings": [], "attempts": [], "runtime_seconds": 0, "systemic_error": None})
+    rows = retained + context["source_results"]
+    complete = all(row.get("status") == "succeeded" for row in rows)
+    return {**context, "source_results": rows, "full_success": complete, "status": "completed" if complete else "partial",
+        "candidates": [{**candidate, "source": candidate.get("source") or row["source"]}
+            for row in rows for candidate in row.get("candidates", [])]}
 
 
 def _bounded_prompt_text(value: Any, limit: int) -> str:
@@ -3468,6 +3496,15 @@ def _execute_locked(
         )
     finally:
         binding = json.loads(binding_path.read_text())
+        if ingest_only and binding.get("activation_policy") == "acquisition_review":
+            result_path = binding_path.parent / f"attempt-{binding['attempt']}-result.json"
+            result = json.loads(result_path.read_text()) if result_path.is_file() else {"error": "attempt interrupted"}
+            if result.get("outcome") != "acquisition_pending_review":
+                from climate_registry.acquisition_review import queue_acquisition_review
+                context_path = binding_path.parent / f"attempt-{binding['attempt']}-controlled-site-evidence.json"
+                context = json.loads(context_path.read_text()) if context_path.exists() else {}
+                queue_acquisition_review(binding_path, binding,
+                    {"source_outcomes": context.get("source_results", [])}, error=result.get("error"))
         if "checkpoint_dir" in binding and ledger_path(binding).exists():
             RequestBudget(ledger_path(binding), binding).finish()
 
@@ -3554,7 +3591,7 @@ def _execute_attempt(
         budget = RequestBudget(ledger_path(binding), binding, prior=prior_usage)
         deadline = acquisition_started + budget.remaining_seconds()
         resume_history = _resume_history(binding_path, binding)
-        site_context = _controlled_site_context(binding)
+        site_context = _resume_controlled_site_context(binding, resume_history)
         site_handle_context: list[dict[str, Any]] = []
         if candidate_handle_protocol(binding):
             site_handles = budget.register_site_candidate_handles(
@@ -3872,13 +3909,15 @@ def _execute_attempt(
             binding, payload, cumulative_actual=provenance["cumulative_actual"], allow_unresolved=gaps
         )
         try:
-            _launch_meeting_worker(binding_path, binding)
+            if binding.get("acquisition_kind", "report") == "report":
+                _launch_meeting_worker(binding_path, binding)
         except Exception:
             pass
         reportability = _reportability_projection(
             payload, frozen, site_context, blocked_tool_prechecks, gaps=gaps,
         )
         if (reportability["outcome"] != "systemic_failure"
+                and not (ingest_only and binding.get("acquisition_kind") in {"website_rotation", "weekly_search"})
                 and frozen["dependency_status"] == "partial"):
             immutable = freeze_acquisition_for_report(
                 binding["registry_database"], binding["acquisition_batch_id"],
@@ -3895,6 +3934,34 @@ def _execute_attempt(
         from climate_registry.acquisition import readback_source_outcomes
         if readback_source_outcomes(binding["registry_database"], payload) != payload["source_outcomes"]:
             raise ValueError("Registry source-outcome readback differs")
+        if ingest_only and binding.get("activation_policy") == "acquisition_review":
+            from climate_registry.acquisition_review import queue_acquisition_review
+            queue_acquisition_review(binding_path, binding, payload)
+            _commit_controlled_site_checkpoints(binding)
+            _write_result(binding_path, exit_code=0, retryable=gaps, error=None,
+                execution_complete=not gaps, full_coverage=not gaps,
+                outcome="acquisition_pending_review", reportability=reportability)
+            _write_progress(binding_path, binding, stage="pending_acquisition_review", events=all_events)
+            return 0
+        if ingest_only and binding.get("acquisition_kind") == "weekly_search":
+            succeeded = any(search["status"] == "success" for search in payload["searches"])
+            if not succeeded or gaps:
+                _write_result(binding_path, exit_code=75, retryable=True, error="weekly search lacks complete successful query evidence",
+                    execution_complete=False, full_coverage=False, outcome="weekly_search_failed", reportability=reportability)
+                return 75
+            if not frozen["records"]:
+                _write_result(binding_path, exit_code=0, retryable=False, error=None,
+                    execution_complete=True, full_coverage=True, outcome="weekly_search_no_new", reportability=reportability)
+                return 0
+            # Independent search has no site crawl/report-only input dependency.
+            frozen_bytes = json.dumps(frozen, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n"
+            _atomic_write(Path(binding["frozen_report_input"]), frozen_bytes)
+            activated = _retryable_ingest_activation(binding)
+            ready = bool(activated.get("chat_ready"))
+            _write_result(binding_path, exit_code=0 if ready else 75, retryable=not ready,
+                error=activated.get("error"), resume_phase="post_processing", execution_complete=ready,
+                outcome="ingest_only_chat_ready" if ready else "ingest_only_activation_failed", reportability=reportability)
+            return 0 if ready else 75
         _write_report_inputs(binding, payload, site_context)
         if not reportability["reportable"]:
             _atomic_write(binding_path.parent / f"attempt-{binding['attempt']}-partial-projection.json",
@@ -4036,11 +4103,38 @@ def main() -> int:
         "--ingest-only", action="store_true",
         help="Persist, index, and activate the acquisition without generating a report.",
     )
+    parser.add_argument("--acquisition-kind", choices=("report", "website_rotation", "weekly_search"), default="report")
+    parser.add_argument("--rotation-root", type=Path)
     args = parser.parse_args()
     if args.scheduled_start:
-        if args.ingest_only:
-            parser.error("--ingest-only requires --binding")
-        result = ManagementService.from_environment().start(trigger="scheduled")
+        service = ManagementService.from_environment()
+        options = {"trigger": "scheduled", "execution_mode": "ingest_only" if args.ingest_only else "report"}
+        if args.acquisition_kind != "report":
+            from climate_monitor.schedule import pipeline_due, stamp, pipeline_occurrence
+            role = "T2" if args.acquisition_kind == "website_rotation" else "T3"
+            current = datetime.now(timezone.utc)
+            if not pipeline_due(role, current):
+                print(json.dumps({"status": "skipped", "role": role}))
+                return 0
+            options["acquisition_kind"] = args.acquisition_kind
+            for path in service.runtime_root.glob("*/binding.json"):
+                original = json.loads(path.read_text())
+                if (original.get("acquisition_kind") == args.acquisition_kind
+                    and original.get("trigger") == "scheduled"
+                    and original.get("report_date") == current.astimezone(ZoneInfo("America/New_York")).date().isoformat()):
+                    print(json.dumps(service.attach_or_resume(original["run_id"]), sort_keys=True))
+                    return 0
+            if role == "T2":
+                if not args.rotation_root:
+                    parser.error("website rotation requires --rotation-root")
+                from climate_registry.acquisition_review import reserve_rotation
+                loaded = service.store.load()
+                rotation = reserve_rotation(args.rotation_root, stamp(pipeline_occurrence(role, current)), loaded["definition"]["parameters"]["source_keys"])
+                if (service.runtime_root / rotation["run_id"] / "binding.json").is_file():
+                    print(json.dumps(service.attach_or_resume(rotation["run_id"]), sort_keys=True))
+                    return 0
+                options["rotation"] = rotation
+        result = service.start(**options)
         print(json.dumps(result, sort_keys=True))
         return 0
     return execute(args.binding, ingest_only=args.ingest_only)

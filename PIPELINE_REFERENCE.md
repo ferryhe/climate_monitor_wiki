@@ -15,7 +15,49 @@ The public weekly Markdown retains the checked/succeeded/failed totals but omits
 the Coverage Limitations section. Retrying finalization recreates the operator
 report from the frozen run evidence; it does not require another acquisition.
 
-## Implementation and deployment status
+## Independent acquisition, review and reporting
+
+The current target has T1–T10 plus the independent PDF writer. T2 stores five-site
+candidates and source outcomes; T10 owns native review, governed recovery and
+per-item activation. T3 is independent weekly search with a real query ledger.
+T1 maintains imported article/calendar information; it cannot approve a report.
+T4 reads activated Registry projections only, freezes the New York 14-calendar-day
+window by first ingestion/material update, and renders immutable revisions. T5
+checks saved full PDF text and every PNG in a fresh native cron context. T6 sends
+only the exact approved PDF after 60 minutes. There is no report-triggered
+acquisition, Registry sync or rolling publisher in this profile.
+
+`climate_registry/acquisition_review.py` adds rotation/material-version receipts
+and review gates around the existing managed runner and sole activation writer.
+`climate_delivery/report_review.py` reuses the range adapter/shared renderer and
+retained per-recipient delivery. `scripts/review_pipeline.py` is the native cron
+queue CLI; it does not start a substitute agent. Schema 19 adds append-only
+knowledge versions through the existing migration/backup/restore contract.
+
+Business state lives outside Git: run `acquisition-review/`, per-occurrence
+`reports/DATE/snapshot.json`, immutable `revisions/NNNN/{report-source.json,
+report.pdf,full-text.txt,page-*.png,packet.json,review.json}`, claim history and
+mail receipts. No-send validates approval/time/file identity without loading SMTP
+configuration. Native text evidence uses returned numbered lines, true
+`next_offset` and complete content coverage; image evidence binds actual
+`vision_analyze(image_url=...)` calls to successful persisted tool responses.
+Stored native image summaries are accepted; file existence/self-report is not.
+
+Verified historical PDF article import times and original calendar source commits
+remain selectable after migration, read without Registry writes. Legacy records
+without provable transaction times remain explicit coverage gaps.
+Unchanged retries/check metadata/whitespace preserve material time; supported
+content/field changes produce a new material version. Late website approvals
+carry into the next eligible report with their original time and a carryforward
+reason. Repeated generation returns the saved snapshot; background checks cannot
+rewrite it. Public detail/list, Chat Wiki and report overlay pin the active
+manifest, retaining the previous active version until a replacement activates.
+
+See [configuration](PIPELINE_CONFIG.md#independent-task-profile),
+[status](docs/job-status.md#independent-task-observation) and
+[cutover gates](docs/biweekly-et-deployment.md#independent-task-cutover).
+
+## Historical implementation and deployment status
 
 As of the 2026-09-08 SSH audit, the same-run prepare → serial URL authoring →
 executive summary → finalize path is implemented and sandbox-tested. Production

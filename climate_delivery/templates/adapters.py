@@ -72,6 +72,9 @@ def _caveats(item: dict) -> tuple[str, ...]:
 
 
 def _range_date_label(item: dict[str, Any]) -> str:
+    if item.get("material_versions"):
+        value = max(item["material_versions"], key=lambda v: v["original_period_time"])
+        return value["selection_reason"].replace("_", " ") + " " + value["original_period_time"]
     basis = item.get("date_basis")
     if basis == "collection_time":
         return f"collection time {item.get('collected_at') or 'not recorded'}"
@@ -281,9 +284,11 @@ def _optional_tables(value: dict) -> dict:
 
 def adapt_range_report(snapshot: dict[str, Any]) -> Report:
     identity = _identity(snapshot["snapshot_sha256"])
-    if snapshot["snapshot_id"] != "range-report-" + identity[:24]:
+    prefix = "biweekly-" if snapshot.get("schema_version") == "climate-biweekly-report.v1" else "range-report-"
+    if snapshot["snapshot_id"] != prefix + identity[:24]:
         raise ValueError("range report identity is invalid")
-    frozen = {key: value for key, value in snapshot.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    excluded = {"snapshot_id", "snapshot_sha256"} if prefix == "biweekly-" else {"snapshot_id", "snapshot_sha256", "created_at"}
+    frozen = {key: value for key, value in snapshot.items() if key not in excluded}
     if hashlib.sha256(json.dumps(frozen, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest() != identity:
         raise ValueError("range report input sha256 does not match frozen content")
     start, end = _date(snapshot["date_range"]["start"]), _date(snapshot["date_range"]["end"])
@@ -361,6 +366,17 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         executive.append(f"{snapshot['date_unknown_count']} Registry article(s) with no reliable collection or information date were excluded.")
     elif "date_unknown_count" not in snapshot and snapshot['unknown_publication_date_count']:
         executive.append(f"{snapshot['unknown_publication_date_count']} Registry article(s) with unknown publication dates were excluded.")
+    if snapshot.get("schema_version") == "climate-biweekly-report.v1":
+        executive = [f"{len(snapshot['articles'])} article(s) and {len(snapshot.get('pdf_source_updates', []))} PDF update(s) were selected by first ingestion or substantive information changes in the New York 14-day window.",
+            "Original publication dates are preserved independently of the selection time."]
+        late = sum(v["selection_reason"] == "late_review_carryforward" for v in snapshot["material_versions"])
+        if late:
+            executive.append(f"{late} previously unreported material version(s) were carried forward after delayed acquisition review.")
+        delayed = sum(v["selection_reason"] == "delayed_activation_carryforward" for v in snapshot["material_versions"])
+        if delayed:
+            executive.append(f"{delayed} previously unreported material version(s) were carried forward after delayed activation.")
+        if snapshot.get("coverage_gaps"):
+            executive.append(f"{len(snapshot['coverage_gaps'])} material version(s) lack reliable legacy ingestion times and remain a coverage gap.")
     return Report("range", snapshot["snapshot_id"], identity, f"Climate Registry report {start} to {end}",
         "Range report", f"{start} through {end} (inclusive, {snapshot['timezone']})", run_date,
         tuple(executive), (),

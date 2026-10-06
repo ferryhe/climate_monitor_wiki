@@ -1,9 +1,21 @@
 # Biweekly ET deployment and no-send rehearsal
 
-The target schedule is every other Monday from **September 14, 2026**, at
-08:00, 09:00, 10:00, and 10:30 ET (`America/New_York`). Persisted timestamps
-remain UTC instants. The shared guard in `climate_monitor.schedule` preserves
-these wall-clock times across daylight saving time and rejects alternate weeks.
+The current Issue #197 deployment target is the `independent-et` profile:
+ten Hermes cron jobs (T1–T10) plus the existing independent PDF intake writer.
+Retain T1 article and meeting information checks daily at 05:00 ET
+(`America/New_York`). Use the [ten-role configuration](../PIPELINE_CONFIG.md#independent-task-profile)
+and [independent task cutover](#independent-task-cutover) below for the current
+schedule and deployment gates.
+
+## Historical four-slot profile (compatibility only)
+
+The four-slot schedule and procedures below are retained only for historical
+receipts and controlled compatibility. They are superseded by the Issue #197
+target and must not be installed alongside it. The old schedule is every other
+Monday from **September 14, 2026**, at 08:00, 09:00, 10:00, and 10:30 ET.
+Persisted timestamps remain UTC instants. The shared guard in
+`climate_monitor.schedule` preserves these wall-clock times across daylight
+saving time and rejects alternate weeks.
 
 | ET | Slot | Completion evidence |
 |---|---|---|
@@ -277,3 +289,86 @@ or if selected-content integrity fails, the expected result is respectively
 `systemic_failure`, `no_eligible_information`, or a validation error—not a
 placeholder report. A useful partial report is valid evidence of recovery; it
 must never be described as full coverage.
+
+## Independent task cutover
+
+The Issue #197 target supersedes the four-slot business chain above; those
+contracts remain for historical receipts and controlled compatibility. The
+October 6, 2026 Issue inventory reported eight enabled jobs and twelve disabled
+Step jobs, with T10 uninstalled. This is dated evidence, not current deployment
+proof. Use the [ten-role configuration](../PIPELINE_CONFIG.md#independent-task-profile).
+
+Before switch, back up Registry databases and necessary SQLite sidecars, active
+pointers/immutable generations, all external runs/reviews/report/mail state, task
+definitions, job configuration/IDs and old image identity. Use normal schema
+migration with exact backup/restore verification. Read back actual deployed
+commit/image/mounts/fonts/Poppler/native tools and four-recipient private config.
+Stop the old Monitor/Artifact/Publisher/Registry dispatch before enabling the six
+new jobs; retain T1/T7–T9, the writer and twelve disabled Steps. Verify ten actual
+IDs, prompts/scripts, UTC ticker, no_agent, enabled and next occurrence.
+
+Native T5/T10 must run independent Hermes agent cron sessions. The identity
+bridge preflight proves only current session injection. Real T5 text/page-tool
+inspection, mixed five-source T10 review/recovery, original budget reuse,
+partial activation, governed refusals and proposals require isolated real runs.
+Keep T6 no-send throughout rehearsal; it must never load production SMTP.
+Verify repeated ticks, late approval, unchanged vs substantive checks, old PASS
+invalidations, code blockers, hash changes and unknown delivery.
+
+For a private native probe or rehearsal, use an external sandbox for every database,
+writer queue/runtime, managed run, rotation state, report and check output.
+Point `CLIMATE_ACQUISITION_RUN_DIR`, `CLIMATE_REPORT_REVIEW_DIR`,
+`CLIMATE_INTAKE_QUEUE_DIR` and the managed task's Registry/run paths there.
+Keep the native Hermes session DB readable by the review CLI (a read-only mount
+is sufficient if commands execute in the application container). The actual
+`HERMES_SESSION_ID` is injected per terminal command; do not select a latest
+session. Native `cron.scheduler.run_job(job, execution_id=...)` can run an
+isolated capability probe without registering it in the production job list: use a unique
+job ID, `no_agent=false`, `context_from=None`, the application workdir and the
+existing effective provider/model. T5 needs native file/terminal/vision tools;
+T10 needs file/terminal and the existing governed recovery environment.
+
+Use the exact installed prompt text from `monitoring/report-review.md` or
+`monitoring/acquisition-review.md`, with the read-only `review_pipeline.py peek`
+pre-script. Record that script/prompt hash, native job/session/tool-call IDs,
+run/batch/task/packet identity and all real outcomes. The peek JSON supplies the
+precise target and resolved frozen text/page paths. These commands are also
+available without installing jobs:
+
+```bash
+python scripts/review_pipeline.py peek --kind acquisition --root "$CLIMATE_ACQUISITION_RUN_DIR"
+python scripts/generate_range_report.py --biweekly-date YYYY-MM-DD --database SANDBOX_PUBLIC_DB --artifact-root "$CLIMATE_REPORT_REVIEW_DIR" --runtime-dir SANDBOX_RUNTIME --queue-dir "$CLIMATE_INTAKE_QUEUE_DIR"
+python scripts/review_pipeline.py peek --kind report --root "$CLIMATE_REPORT_REVIEW_DIR"
+python scripts/review_pipeline.py send --root "$CLIMATE_REPORT_REVIEW_DIR" --target YYYY-MM-DD
+```
+
+For AC-12/T5 rehearsal, use an isolated `HERMES_HOME` with temporary installed
+native cron definitions and real scheduler dispatches. Isolate the complete
+Hermes HOME, not only the cron store: `state.db`, `executions.db`, output,
+locks and workers must belong to that sandbox. Place pre-scripts in its
+`scripts/` directory and use an external absolute workdir. Dispatch with
+`cron.scheduler.tick(verbose=False, sync=True)` so due scanning, scheduler
+execution history and CAS occurrence claiming run through the actual entry.
+Keep production job definitions unchanged. Save precise before/after production
+snapshots and probe execution queries; distinguish ordinary production scheduler
+timestamps/history updates from sandbox writes, and do not claim whole-file SHA
+equality unless measured. Use a declared sandbox tick frequency, retain actual next
+dispatches, executions/history and native sessions, and require two distinct
+dispatch sessions for modification followed by PASS. Direct `run_job` probes
+prove identity/tool capability only and do not satisfy that next-cron gate.
+
+The last command defaults to no-send and needs no SMTP configuration. Do not
+pass `--send` during rehearsal. A changes-requested submission creates a new
+revision; wait for the next actual isolated scheduler dispatch to inspect it. `recover` uses the original
+run and token, while `activate` consumes only exact current PASS candidates.
+Read `state.json`, immutable packets/revisions, native claim history, review
+receipts, writer `status.json` and per-recipient delivery state; a native engine
+success is not a business approval. Use actual clocks for the sixty-minute
+real rehearsal gate; local tests alone exercise substituted boundary times.
+
+After deployment verify compose health, sanitized `/api/config`, activated
+Web/Chat/report corpus identity and fresh scheduler/business snapshots. The
+first real scheduled T1 article AND meeting results, plus a complete real
+biweekly production cycle and separately authorized exact-file sending, remain
+completion gates. Tests, preflight, job enabled/cron exit zero, no-send and Issue
+closure cannot substitute for them.

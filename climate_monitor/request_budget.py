@@ -129,9 +129,13 @@ class RequestBudget:
         # Preserve the exact pre-v2 digest for already-frozen legacy runs.
         if "agent_protocol" in binding:
             identity_fields["agent_protocol"] = binding["agent_protocol"]
+        if "acquisition_kind" in binding:
+            identity_fields.update(acquisition_kind=binding["acquisition_kind"],
+                activation_policy=binding["activation_policy"], rotation=binding.get("rotation"))
         self.identity = digest(identity_fields)
         self.limits = dict(binding["budgets"])
         self.provider_native_search = provider_native_unbounded_search(binding)
+        self.acquisition_kind = binding.get("acquisition_kind", "report")
         self.candidate_handles = candidate_handle_protocol(binding)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked(create=True) as state:
@@ -747,6 +751,8 @@ class RequestBudget:
                 usage = self._usage(state)
                 search = kind == "web_search"
                 if search:
+                    if self.acquisition_kind == "website_rotation":
+                        raise RequestBudgetError("website rotation does not dispatch weekly search")
                     if not self.provider_native_search:
                         if usage["search_attempts"] >= self.limits["search_attempts"]:
                             raise RequestBudgetError("search budget precheck blocked request")

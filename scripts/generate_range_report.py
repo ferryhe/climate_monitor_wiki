@@ -31,8 +31,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
-    parser.add_argument("--start-date", required=True)
-    parser.add_argument("--end-date", required=True)
+    parser.add_argument("--start-date")
+    parser.add_argument("--end-date")
+    parser.add_argument("--biweekly-date")
+    parser.add_argument("--scheduled-biweekly", action="store_true")
     parser.add_argument("--meeting-snapshot-id")
     parser.add_argument(
         "--runtime-dir",
@@ -51,6 +53,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.runtime_dir is None) != (args.queue_dir is None):
         parser.error("--runtime-dir and --queue-dir must be configured together")
+    if args.scheduled_biweekly:
+        from climate_monitor.schedule import pipeline_due, ET
+        from datetime import datetime, timezone
+        current = datetime.now(timezone.utc)
+        if not pipeline_due("T4", current):
+            print(json.dumps({"status": "skipped", "role": "T4"}))
+            return 0
+        args.biweekly_date = current.astimezone(ET).date().isoformat()
+    if args.biweekly_date and (args.start_date or args.end_date):
+        parser.error("biweekly selection cannot be combined with a publication-date range")
+    if not args.biweekly_date and not (args.start_date and args.end_date):
+        parser.error("provide --biweekly-date or both --start-date and --end-date")
 
     reader = RegistryReader(args.database, repository_root=ROOT)
     overlay_reader, pdf_overlay_reader, manifest = load_active_range_overlay(
@@ -58,6 +72,12 @@ def main(argv: list[str] | None = None) -> int:
         args.queue_dir,
         repository_root=ROOT,
     )
+    if args.biweekly_date:
+        from climate_delivery.report_review import freeze_biweekly
+        state = freeze_biweekly(reader, args.artifact_root, occurrence=args.biweekly_date,
+            web_reader=overlay_reader, pdf_reader=pdf_overlay_reader, manifest=manifest)
+        print(json.dumps(state, sort_keys=True))
+        return 0
     snapshot = freeze_range_report(
         reader,
         args.artifact_root,

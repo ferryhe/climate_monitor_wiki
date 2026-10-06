@@ -17,7 +17,7 @@ The existing deployed `/api/update-status` and Registry API expose their own
 available evidence; they do not prove Hermes dispatch. No new transport is added.
 See [current cutover status](../PIPELINE_REFERENCE.md#verification-and-cutover).
 
-The current four slots use 08:00, 09:00, 10:00 and 10:30 ET every other Monday,
+The historical four-slot contract uses 08:00, 09:00, 10:00 and 10:30 ET every other Monday,
 anchored to September 14, 2026. `biweekly-job-status.v1` stores UTC instants but
 validates them against `America/New_York`, including DST. See
 [the ET runbook](biweekly-et-deployment.md).
@@ -176,3 +176,20 @@ Public reader deployment and rollback are app-only: add or remove
 restart or reload Caddy. Do not modify the 08:00 Monitor, 09:00 Email, or 10:00
 Publisher jobs. This reader phase creates no scheduler job or exporter timer
 and does not create the pending 10:30 Weekly Registry Sync task.
+
+## Independent task observation
+
+`independent-job-status.v1` has ten real job IDs in `jobs.T1` through `jobs.T10`,
+with each role's own UTC occurrence and the observed enabled/no_agent/schedule
+fields. `business` separately stores T1 article and meeting results, T2 rotation
+runs, T3 query outcomes, T10 item/source conclusions, claim failures/activation,
+T4 snapshot/revision, T5 pending/approved/code blockers and T6 recipient states.
+Cron `completed` never implies a business PASS or an email delivery. Existing
+freshness handling still applies. Observer export has no notification side
+effect; native jobs remain silent on empty queues and unchanged blockers.
+
+The authenticated `/api/manage/pipeline` returns detailed report review history
+and business state; managed run detail includes the complete acquisition review
+packet, source/item receipts and proposals. Public historical reports additionally
+link `/api/registry/final-reports/DATE/pdf`, which reads and verifies the saved
+approved file without rendering. Pending candidates are restricted to management.

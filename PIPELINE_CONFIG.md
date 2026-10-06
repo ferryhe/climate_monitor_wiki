@@ -1,12 +1,19 @@
 # Pipeline Configuration
 
-The repository defines a four-slot biweekly ET Hermes sequence anchored to the
-single production driver path. This is the intended deployment, not proof
-that the server has switched to it. The 2026-09-08 SSH audit still found
-12 enabled legacy Step jobs and no installed four-slot sequence. Keep that
-deployment distinction until the live chain passes and the scheduler is switched.
+The current deployment target is the `independent-et` profile: ten Hermes cron
+jobs (T1–T10) plus the existing independent PDF intake writer. Daily site
+rotation, weekly search, acquisition review, daily information checks, biweekly
+report generation, final native PDF review and exact-file sending run separately.
+Use the [target task table below](#independent-task-profile) and
+[the deployment runbook](docs/biweekly-et-deployment.md) for cutover. Preparation
+and local tests do not prove deployment or a complete production cycle.
 
-## Biweekly ET schedule (anchor: September 14, 2026)
+## Historical four-slot profile (compatibility only)
+
+The `biweekly-et` profile below remains available for existing callers and
+historical reports. It is superseded as the deployment target; do not install
+its four-slot chain alongside the independent tasks. The September 14, 2026
+anchor and historical audit evidence are retained for traceability.
 
 | # | ET | Slot        | Hermes wrapper                            | Entry point invoked                                                  | Result                                                  |
 |---|-----|-------------|--------------------------------------------|----------------------------------------------------------------------|---------------------------------------------------------|
@@ -15,7 +22,7 @@ deployment distinction until the live chain passes and the scheduler is switched
 | 3 | 10  | `publisher` | `scripts/hermes_job_publisher.sh`         | `flock` + `python scripts/publish_weekly_reports.py`                   | Rolling `codex/hermes-weekly-monitor` PR update         |
 | 4 | 10:30 | `registry` | `scripts/hermes_job_registry.sh`          | `scripts/weekly_registry_refresh.py` (explicit gates)                                                        | `not_dispatched` until merge + deploy gate is satisfied |
 
-Each dispatched production wrapper writes local-only `scheduler-status.json` via `climate_monitor/scheduler_status.py
+Each legacy wrapper writes local-only `scheduler-status.json` via `climate_monitor/scheduler_status.py
 update_slot(name, state, …)`. The publisher slot is 2h after monitor so the
 report exists before ingest; preserve that gap if you ever re-schedule.
 `weekly_wiki_refresh.sh` remains a compatible direct Publisher wrapper; the
@@ -387,3 +394,39 @@ test rejected a result that borrowed a date from a different publisher page.
 The selected Hermes search backend also needs its pinned optional dependency
 installed before running in a read-only sandbox. Detailed evidence is listed in
 [PIPELINE_REFERENCE.md](PIPELINE_REFERENCE.md#verification-and-cutover).
+
+## Independent task profile
+
+Select `CLIMATE_SCHEDULE=independent-et` at the separately authorized cutover.
+The library daily cadence and legacy weekly/biweekly profiles remain unchanged.
+Use the current managed task's ordered `source_keys`; T2 snapshots its inventory
+and reserves five keys per occurrence in an external `--rotation-root`. Fewer
+than five sources run once each. Removed cursor keys advance to the next
+surviving configured source; repeated occurrences retain their original list.
+
+| Task | UTC ticker | Mode and entry |
+|---|---|---|
+| T1 | `0 9,10 * * *` | Existing information-check wrapper, script-only, NY05 guard |
+| T2 | `0 10,11 * * *` | `run_agent_acquisition.py --scheduled-start --ingest-only --acquisition-kind website_rotation --rotation-root EXTERNAL_ROOT`, script-only launcher |
+| T3 | `0 12,13 * * 0` | Same launcher with `--acquisition-kind weekly_search`, script-only |
+| T4 | `0 12,13 * * 1` | `generate_range_report.py --scheduled-biweekly --database PUBLIC_DB --artifact-root REPORT_ROOT --runtime-dir RUNTIME --queue-dir QUEUE`, script-only |
+| T5 | `*/15 * * * *` | Native agent, pre-script `review_pipeline.py peek --kind report --root REPORT_ROOT` |
+| T6 | `*/15 * * * *` | `review_pipeline.py send --kind report --root REPORT_ROOT`; add `--send --config PRIVATE_CONFIG` only after delivery cutover |
+| T7 | `*/5 * * * *` | Existing exporter, script-only, actual ten-ID map and Hermes jobs file |
+| T8 | `0 0 * * 1` | Existing LLM cost job |
+| T9 | `0 8,9 * * *` | Existing Docker cleanup, NY04 guard |
+| T10 | `*/15 * * * *` | Native agent, pre-script `review_pipeline.py peek --kind acquisition --root MANAGED_RUN_ROOT` |
+
+T5/T10 require `no_agent=false`, fresh context and the repository's native
+[T5](monitoring/report-review.md) / [T10](monitoring/acquisition-review.md) prompts. The pre-script is read-only; `wakeAgent=false` skips model startup
+when no claimable work exists. Never configure these as shell-only agent
+substitutes or launch another agent from the generation script. Native local
+terminal injects `HERMES_SESSION_ID`/`HERMES_CRON_SESSION`; claim defaults use that
+exact ID and the read-only Hermes `state.db`, never the latest session row.
+Expired claims require native owner completion evidence before reconciliation.
+
+`CLIMATE_REPORT_REVIEW_DIR` configures API/admin report state; share its exact external
+storage with T4–T6. `CLIMATE_INFORMATION_CHECK_DIR` points to the two daily-check results.
+T7 receives `--jobs-file`, `--report-root`, `--acquisition-root`, `--checks-root`
+and its existing database/map/status arguments. Map T1–T10 to actual installed
+IDs only after readback; no prospective ID is an installation record.

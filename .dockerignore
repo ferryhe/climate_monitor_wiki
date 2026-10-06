@@ -34,6 +34,8 @@ monitoring/*
 !monitoring/run_config.yaml
 !monitoring/supranational_sources.yaml
 !monitoring/site_scopes.yaml
+!monitoring/report-review.md
+!monitoring/acquisition-review.md
 
 # Miscellaneous host artifacts
 *.log

@@ -26,7 +26,7 @@ WORKDIR /app
 ARG WEB_LISTENING_REVISION=ac2343f89bc7939736d85f049ebe2beac571034a
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates git \
+    && apt-get install --yes --no-install-recommends ca-certificates git poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CLIMATE_WEB_LISTENING_DATA_DIR=/opt/web-listening-data
@@ -63,6 +63,7 @@ COPY climate_registry ./climate_registry
 COPY management_ui ./management_ui
 COPY monitoring/taxonomies ./monitoring/taxonomies
 COPY monitoring/jobs ./monitoring/jobs
+COPY monitoring/report-review.md monitoring/acquisition-review.md ./monitoring/
 COPY .agents/skills ./.agents/skills
 COPY monitoring/run_config.yaml ./monitoring/run_config.yaml
 COPY monitoring/supranational_sources.yaml ./monitoring/supranational_sources.yaml

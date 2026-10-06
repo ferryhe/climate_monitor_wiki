@@ -733,6 +733,28 @@ def _insert_item(connection: sqlite3.Connection, batch_id: str, ordinal: int,
             (article_id,),
         )
     }
+    # Migration must not make an unchanged historical body newly ingested.
+    legacy_content_id = existing["current_content_version_id"] if existing else None
+    if legacy_content_id is None and prior_content_count:
+        legacy_content_id = connection.execute("SELECT content_version_id FROM article_content_versions WHERE article_id=? ORDER BY rowid DESC LIMIT 1",
+            (article_id,)).fetchone()[0]
+    if (legacy_content_id and connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='knowledge_versions'").fetchone() and not connection.execute(
+        "SELECT 1 FROM knowledge_versions WHERE entity_kind='article' AND entity_id=?", (article_id,)).fetchone()):
+        prior = connection.execute("""SELECT title,summary,publication_date FROM acquisition_items
+            WHERE article_id=? AND content_version_id=? ORDER BY rowid DESC LIMIT 1""",
+            (article_id, legacy_content_id)).fetchone()
+        prior_content = connection.execute("SELECT markdown_content FROM article_content_versions WHERE content_version_id=?",
+            (legacy_content_id,)).fetchone()
+        if prior is None:
+            prior = connection.execute("""SELECT v.observed_title AS title,v.observed_summary AS summary,NULL AS publication_date
+                FROM articles a JOIN article_versions v ON v.version_id=a.current_version_id WHERE a.article_id=?""", (article_id,)).fetchone()
+        if prior and prior_content:
+            from .acquisition_review import record_knowledge
+            record_knowledge(connection, kind="article", entity_id=article_id, source_kind=item["discovery_kind"],
+                source_ref="legacy:" + legacy_content_id,
+                fields={**dict(prior), "content": " ".join(prior_content[0].split())},
+                evidence={"content_version_id": legacy_content_id}, time_basis="legacy_time_unknown")
     connection.execute(
         """INSERT INTO sources(source_id, hostname, display_name, first_seen, last_seen)
            VALUES (?, ?, ?, ?, ?)
@@ -844,6 +866,15 @@ def _insert_item(connection: sqlite3.Connection, batch_id: str, ordinal: int,
          item["processing_error"], item["resolved_by_fetch_id"]),
     )
     reconcile_pdf_article_links(connection, observed_at=observed, canonical_url=canonical)
+    if content_version_id is not None:
+        from .acquisition_review import record_knowledge
+        record_knowledge(connection, kind="article", entity_id=article_id,
+            source_kind=item["discovery_kind"], source_ref=acquisition_item_id,
+            fields={"title": item["title"], "summary": item["summary"],
+                    "content": " ".join(str(evidence.get("content") or "").split()),
+                    "publication_date": item["publication_date"] if "publication_date" in item else str(item["published"] or "")},
+            evidence={"content_version_id": content_version_id, "fetch_id": fetch_id,
+                      "content_sha256": evidence["content_hash"], "batch_id": batch_id})
 
 
 def _batch_summary(connection: sqlite3.Connection, batch_id: str) -> dict[str, Any]:

@@ -193,3 +193,33 @@ or `null`.
 `GET /api/registry/publishers` returns at most 500 deterministic publisher
 choices. Each item contains the canonical `hostname` used for filtering and a
 short `label` for display.
+
+## Biweekly material selection and immutable review
+
+The independent profile uses `knowledge_versions` (schema 19) for actual first
+ingestion and supported substantive field/body changes. Original publication
+dates remain separate. Repeated evidence, check timestamps/status and whitespace
+do not create material updates; unknown historical ingestion times are coverage
+gaps. Selection is New York `[DATE-14 days 00:00, DATE 00:00)`, not 336 hours.
+The September 14, 2026 anchor selects alternate Mondays.
+
+The 14-day window decides which materials qualify. At generation, T4 freezes
+the latest reviewed and activated content for each qualifying material, including
+a supported T1 update after the window closes. For example, an October 11 first
+ingestion still qualifies for October 12 when its latest verified summary is
+activated at New York 05:00 that morning. Material identity and displayed article
+and calendar fields come from that active version. First ingestion, substantive
+update and original publication dates stay separate; pending candidates cannot
+enter the report. Once frozen, that occurrence remains immutable. Approved
+materials activated too late for their intended report carry forward with their
+original timestamps and an explicit reason, unless already frozen in a report.
+
+The frozen snapshot binds active manifest and Registry hashes. Every candidate
+revision binds snapshot/source/renderer/PDF/text/all page hashes. T5 receipts bind
+real native session/job/tool-call evidence, including all page inspections.
+Supported title/summary/update paragraph edits create a new immutable revision
+for the next independent context; source identities/citations cannot change.
+Code/template blockers retain a concrete PR proposal and prevent delivery.
+T6 checks the saved PASS, exact attachment and final approval plus 60 minutes;
+it never regenerates the PDF. Per-recipient unknown/sending requires manual
+reconciliation, and a later revision cannot automatically resend an occurrence.
