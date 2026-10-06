@@ -232,6 +232,17 @@ def _validate_job(
     return normalized
 
 
+def public_claim_status(value: dict[str, Any]) -> dict[str, Any]:
+    """Expose review progress without the private claim or native receipt identity."""
+    result = {key: value[key] for key in ("job_id", "status", "created_at", "deadline", "released_at",
+        "end_reason", "reconciled_at", "observed_at") if key in value}
+    if value.get("deadline"):
+        result["state"] = ("released" if value.get("released_at") else
+            "failed" if value.get("status") == "review_failed" else
+            "expired" if datetime.fromisoformat(value["deadline"].replace("Z", "+00:00")) <= datetime.now(timezone.utc) else "owned")
+    return result
+
+
 def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str, Any]:
     current = _aware_utc_now(now)
     if isinstance(payload, dict) and payload.get("schema_version") == schedule.PIPELINE_SCHEMA:
@@ -623,6 +634,11 @@ class JobStatusSnapshotReader:
             _read_snapshot_file(directory),
             now=current,
         )
+        for review in snapshot.get("business", {}).get("T10", {}).get("reviews", []):
+            if "claim" in review:
+                review["claim"] = public_claim_status(review["claim"])
+            if "claim_failures" in review:
+                review["claim_failures"] = [public_claim_status(value) for value in review["claim_failures"]]
         generated_at = _strict_utc(snapshot["generated_at"], field="generated_at")
         age = current - generated_at
         age_seconds = int(age.total_seconds())

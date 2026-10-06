@@ -1,9 +1,21 @@
 # Biweekly ET deployment and no-send rehearsal
 
-The target schedule is every other Monday from **September 14, 2026**, at
-08:00, 09:00, 10:00, and 10:30 ET (`America/New_York`). Persisted timestamps
-remain UTC instants. The shared guard in `climate_monitor.schedule` preserves
-these wall-clock times across daylight saving time and rejects alternate weeks.
+The current Issue #197 deployment target is the `independent-et` profile:
+ten Hermes cron jobs (T1–T10) plus the existing independent PDF intake writer.
+Retain T1 article and meeting information checks daily at 05:00 ET
+(`America/New_York`). Use the [ten-role configuration](../PIPELINE_CONFIG.md#independent-task-profile)
+and [independent task cutover](#independent-task-cutover) below for the current
+schedule and deployment gates.
+
+## Historical four-slot profile (compatibility only)
+
+The four-slot schedule and procedures below are retained only for historical
+receipts and controlled compatibility. They are superseded by the Issue #197
+target and must not be installed alongside it. The old schedule is every other
+Monday from **September 14, 2026**, at 08:00, 09:00, 10:00, and 10:30 ET.
+Persisted timestamps remain UTC instants. The shared guard in
+`climate_monitor.schedule` preserves these wall-clock times across daylight
+saving time and rejects alternate weeks.
 
 | ET | Slot | Completion evidence |
 |---|---|---|

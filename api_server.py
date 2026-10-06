@@ -1130,7 +1130,7 @@ def managed_pipeline(_user: ConsoleUser = Depends(current_console_user)) -> dict
     from scripts.export_scheduler_status import business_status
     acquisition_root = _management_service().runtime_root
     checks_root = os.getenv("CLIMATE_INFORMATION_CHECK_DIR")
-    return {"business": business_status(report_root=REPORT_REVIEW_DIR, acquisition_root=acquisition_root, checks_root=checks_root),
+    return {"business": business_status(report_root=REPORT_REVIEW_DIR, acquisition_root=acquisition_root, checks_root=checks_root, public=False),
         "reports": report_states(REPORT_REVIEW_DIR) if REPORT_REVIEW_DIR else []}
 
 

@@ -1077,3 +1077,106 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
             fields=json.loads(material["fields_json"]),evidence={"retry":"check only"},recorded_at="2026-10-30T12:00:00Z")
         assert db.execute("SELECT count(*) FROM knowledge_versions").fetchone()[0]==prior
     assert report_review.freeze_biweekly(reader,artifacts,occurrence="2026-11-23",web_reader=active_reader,manifest=manifest,generated_at=datetime(2026,11,23,12,tzinfo=timezone.utc))["status"]=="no_eligible_information"
+
+
+@pytest.mark.parametrize("claim_status", ["owned", "released", "expired"])
+def test_public_claim_projection_and_managed_receipts(tmp_path, monkeypatch, claim_status):
+    import api_server
+    from fastapi.testclient import TestClient
+    from climate_registry.acquisition_review import claim_review
+    from scripts.export_scheduler_status import business_status, project_independent
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    native = tmp_path / "hermes.db"
+    first, second = "cron_t10_public_first", "cron_t10_public_second"
+    _native(native, first); _native(native, second)
+    with sqlite3.connect(native) as db:
+        db.execute("UPDATE sessions SET started_at=?", ((now - timedelta(hours=3)).isoformat(),))
+    runs = tmp_path / "runs"
+    root = runs / "rotation-public" / "acquisition-review"
+    packet = {"run_id": "rotation-public", "batch_id": "batch", "source_keys": ["wmo"]}
+    atomic_write_json(root / "state.json", {"packet": packet, "packet_sha256": digest(packet), "status": "reviewing",
+        "item_reviews": {"item": {"status": "pass"}}, "sources": {"wmo": {"status": "recovering"}}, "proposals": []})
+    old = claim_review(root, packet, session_id=first, execution_id="first", hermes_database=native,
+        reviewer="native-reviewer", now=now - timedelta(hours=3))
+    with sqlite3.connect(native) as db:
+        db.execute("UPDATE sessions SET end_reason='cron_error' WHERE id=?", (first,))
+    at = now - timedelta(hours=2) if claim_status == "expired" else now
+    current = claim_review(root, packet, session_id=second, execution_id="second", hermes_database=native,
+        reviewer="native-reviewer", now=at)
+    if claim_status == "released":
+        current["released_at"] = now.isoformat()
+        atomic_write_json(root / "claim.json", current)
+    claim_bytes = (root / "claim.json").read_bytes()
+    history_bytes = next((root / "claim-history").glob("*.json")).read_bytes()
+    business = business_status(acquisition_root=runs)
+    with sqlite3.connect(":memory:") as db:
+        db.execute("CREATE TABLE executions(job_id TEXT,status TEXT,claimed_at TEXT,started_at TEXT,finished_at TEXT)")
+        ids = {role: "test-" + role for role in schedule.PIPELINE_SLOTS}
+        snapshot = project_independent(db, ids, now=now, business=business,
+            definitions=[{"id": value, "enabled": True, "no_agent": role not in {"T5", "T10"}, "schedule": "fixture"}
+                for role, value in ids.items()])
+    status_root = tmp_path / "status"
+    atomic_write_json(status_root / "scheduler-status.json", snapshot)
+    monkeypatch.setenv("CLIMATE_JOB_STATUS_DIR", str(status_root))
+    client = TestClient(api_server.app)
+    public = client.get("/api/job-status")
+    assert public.status_code == 200
+    for private in (old["token"], current["token"], first, second, str(native.resolve()), "native-reviewer"):
+        assert private not in public.text
+    review = public.json()["business"]["T10"]["reviews"][0]
+    assert review["status"] == "reviewing" and review["source_statuses"] == {"wmo": "recovering"}
+    assert review["claim"]["state"] == claim_status
+    assert review["claim"]["created_at"] == current["created_at"] and review["claim"]["deadline"] == current["deadline"]
+    assert review["claim_failures"][0]["status"] == "review_failed"
+    assert review["claim_failures"][0]["end_reason"] == "cron_error"
+    assert review["claim_failures"][0]["state"] == "failed"
+    # A persisted observer snapshot from before this repair must use the same
+    # public projection; reading it does not alter the original receipt or file.
+    review["claim"] = json.loads(claim_bytes)
+    review["claim_failures"] = [json.loads(history_bytes)]
+    snapshot["business"]["T10"]["reviews"][0] = review
+    atomic_write_json(status_root / "scheduler-status.json", snapshot)
+    legacy_bytes = (status_root / "scheduler-status.json").read_bytes()
+    legacy = client.get("/api/job-status")
+    assert legacy.status_code == 200
+    for private in (old["token"], current["token"], first, second, str(native.resolve()), "native-reviewer"):
+        assert private not in legacy.text
+    assert legacy.json()["business"]["T10"]["reviews"][0]["claim"]["state"] == claim_status
+    assert (status_root / "scheduler-status.json").read_bytes() == legacy_bytes
+    monkeypatch.setattr(api_server, "REPORT_REVIEW_DIR", None)
+    monkeypatch.setattr(api_server, "_management_service", lambda: SimpleNamespace(runtime_root=runs))
+    api_server.app.dependency_overrides[api_server.current_console_user] = lambda: SimpleNamespace()
+    try:
+        managed = client.get("/api/manage/pipeline")
+    finally:
+        api_server.app.dependency_overrides.pop(api_server.current_console_user, None)
+    assert managed.status_code == 200
+    details = managed.json()["business"]["T10"]["reviews"][0]
+    for key, value in current.items():
+        assert details["claim"][key] == value
+    assert details["claim_failures"][0]["token"] == old["token"]
+    assert (root / "claim.json").read_bytes() == claim_bytes
+    assert next((root / "claim-history").glob("*.json")).read_bytes() == history_bytes
+
+
+@pytest.mark.parametrize("selected", ["initial", "pipeline", "runs", "meetings", "configuration"])
+def test_management_pipeline_tab_has_exclusive_visibility(selected):
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    program = r"""
+const vm = require('vm');
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const sections = new Map([...input.html.matchAll(/<section id="([^"]+)"([^>]*)>/g)].map(m => [m[1], {id: m[1], hidden: /\bhidden\b/.test(m[2])}]));
+const buttons = [...input.html.matchAll(/<button data-tab="([^"]+)"([^>]*)>/g)].map(m => ({dataset: {tab: m[1]}, classList: {toggle() {}}, onclick: null}));
+const nodes = new Map(), callbacks = [];
+const document = {querySelector(selector) { const id = selector.slice(1); if (sections.has(id)) return sections.get(id); if (!nodes.has(selector)) nodes.set(selector, {textContent: ''}); return nodes.get(selector); }, querySelectorAll(selector) { if (selector === 'nav button') return buttons; throw Error(selector); }, addEventListener(event, callback) { if (event === 'DOMContentLoaded') callbacks.push(callback); }};
+vm.runInNewContext(input.javascript, {document, Intl, Date, structuredClone, URLSearchParams, FormData: class { *[Symbol.iterator]() {} }, fetch: async () => ({status: 503, ok: false, json: async () => ({detail: 'offline test'})}), location: {}});
+callbacks.forEach(callback => callback());
+const observations = {initial: [...sections.values()].filter(n => !n.hidden).map(n => n.id)};
+for (const id of ['pipeline', 'runs', 'meetings', 'configuration']) { buttons.find(b => b.dataset.tab === id).onclick(); observations[id] = [...sections.values()].filter(n => !n.hidden).map(n => n.id); }
+console.log(JSON.stringify(observations));
+"""
+    result = subprocess.run(["node", "-e", program], input=json.dumps({
+        "html": (root / "management_ui/index.html").read_text(),
+        "javascript": (root / "management_ui/manage.js").read_text()}), text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout)[selected] == ["configuration" if selected == "initial" else selected]

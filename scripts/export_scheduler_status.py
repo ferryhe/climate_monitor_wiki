@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from climate_monitor import schedule
-from climate_monitor.job_status import JobStatusInvalidSnapshotError, validate_snapshot
+from climate_monitor.job_status import JobStatusInvalidSnapshotError, validate_snapshot, public_claim_status
 from climate_monitor.scheduler_status import _atomic_write, snapshot_transaction
 
 
@@ -127,13 +127,15 @@ def project(connection, job_ids, *, now, previous=None):
                               "generated_at": schedule.stamp(now), "jobs": jobs}, now=now)
 
 
-def business_status(*, report_root=None, acquisition_root=None, checks_root=None):
+def business_status(*, report_root=None, acquisition_root=None, checks_root=None, public=True):
     from climate_delivery.report_review import report_states
     def observed(path):
         if not path or not path.is_file():
             return {"status": "not_configured"}
         value = json.loads(path.read_text())
         return {**value, "observed_at": schedule.stamp(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))}
+    def claim_projection(value):
+        return public_claim_status(value) if public else value
     def run_order(binding, receipt):
         value = receipt.get("finished_at") or binding.get("created_at")
         stamp = schedule.stamp(datetime.fromisoformat(value.replace("Z", "+00:00"))) if value else ""
@@ -164,8 +166,8 @@ def business_status(*, report_root=None, acquisition_root=None, checks_root=None
             "packet_sha256": state["packet_sha256"], "item_statuses": {k: v["status"] for k, v in state["item_reviews"].items()},
             "source_statuses": {k: v["status"] for k, v in state.get("sources", {}).items()},
             "proposal_count": len(state.get("proposals", [])),
-            "claim": observed(path.parent / "claim.json"),
-            "claim_failures": [json.loads(p.read_text()) for p in sorted((path.parent / "claim-history").glob("*.json"))],
+            "claim": claim_projection(observed(path.parent / "claim.json")),
+            "claim_failures": [claim_projection(json.loads(p.read_text())) for p in sorted((path.parent / "claim-history").glob("*.json"))],
             "activation": observed(path.parent / "activation.json"), "writer_activations": state["writer_activations"]}))
     result["T10"] = {"status": "observed" if reviews else "not_configured", "reviews": [row for _, row in sorted(reviews, key=lambda pair: pair[0])[-3:]]}
     states = report_states(Path(report_root)) if report_root else []
