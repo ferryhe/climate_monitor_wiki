@@ -2,7 +2,15 @@
 
 A structured, interlinked knowledge base on climate risk, natural catastrophe insurance, and actuarial research, compiled weekly from automated monitoring.
 
-**Status, 2026-09-08:** the URL-by-URL monitor and editable discovery/relevance
+**Current target:** independent PDF intake, daily five-site rotation and weekly
+search feed activated knowledge; biweekly PDF generation, native Hermes review
+and delayed exact-file delivery are separate tasks. Website candidates require
+T10 approval before activation. The target is ten cron jobs plus the existing
+PDF writer. See [the current deployment contract](docs/biweekly-et-deployment.md).
+Repo tests, native identity preflight, isolated real-site rehearsal and production
+cycle evidence are separate gates; this description does not claim a cutover.
+
+**Historical audit, 2026-09-08:** the URL-by-URL monitor and editable discovery/relevance
 prompts are implemented and tested in the SSH sandbox. Production still uses
 the legacy Step jobs; the four-slot deployment below has not been switched on.
 Issue #87 was closed by the owner; its closure is not deployment evidence.
@@ -52,8 +60,9 @@ Chat now also exposes three answer modes:
 - `climate_registry/` owns article identity and evidence, intake activation,
   shared Wiki rendering, frozen range reports, historical enrichment and exact
   restore. Its Public and Runtime deployment roles remain separate.
-- `climate_delivery/` owns the retained 09:00 summary/PDF/manifest and email
-  delivery pipeline.
+- `climate_delivery/` owns shared rendering, immutable report revisions, native
+  review receipts and exact approved-file delivery. The historical weekly
+  summary/PDF/manifest contract remains readable.
 - `showcase/` is a static frontend with the shared chat and wiki workspace.
 
 Range-style weekly-report questions such as `Summarize the past 4 weeks`, `Give me an executive report for the past 12 weeks`, or `Summarize reports from 2026-07-27 to 2026-08-10` are anchored to the latest available corpus date. Chat covers the real reports found inside that calendar window and does not treat intervening non-report days as missing updates.

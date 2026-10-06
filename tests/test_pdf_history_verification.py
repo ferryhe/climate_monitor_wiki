@@ -136,10 +136,15 @@ def test_pdf_history_and_downloads_only_include_active_runtime_documents(tmp_pat
 
 
 def test_active_web_article_excludes_pending_pdf_until_separately_activated(tmp_path, monkeypatch):
-    client, runtime = _client(monkeypatch, tmp_path)
+    client, _ = _client(monkeypatch, tmp_path)
+    from test_issue113_range_reports import _database as active_database
+    from climate_registry.web_ingest_pipeline import _batch_items, _manifest_item
+    active_root = tmp_path / "active-web"
+    active_root.mkdir()
+    runtime = active_database(active_root)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     with sqlite3.connect(runtime) as connection:
-        connection.execute("UPDATE articles SET canonical_url='https://example.org/first-study'")
+        connection.execute("UPDATE articles SET canonical_url='https://example.org/first-study' WHERE article_id='article-a'")
     path = tmp_path / "pending.pdf"
     _report_pdf_with_two_articles(path)
     bundle = import_pdf_reports([path])
@@ -148,16 +153,19 @@ def test_active_web_article_excludes_pending_pdf_until_separately_activated(tmp_
     initialize_registry(public)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(public))
     reader = RegistryReader(runtime, repository_root=tmp_path / "application")
-    manifest = {"web_items": [{"article_id": "core-climate-study"}], "pdf_occurrence_ids": []}
+    identity = next(_manifest_item(item) for item in _batch_items(runtime, "batch") if item["acquisition_item_id"] == "a-1")
+    manifest = {"web_items": [identity], "pdf_occurrence_ids": []}
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (reader, None, manifest))
     listed = client.get("/api/registry/articles?include_pdf=true").json()["items"]
     assert len(listed) == 1 and listed[0]["pdf_occurrence_count"] == 0
-    detail = client.get("/api/registry/articles/core-climate-study").json()
-    assert not detail.get("pdf_occurrences") and detail["report_summary"] == "Core report summary."
+    detail = client.get("/api/registry/articles/article-a").json()
+    assert not detail.get("pdf_occurrences")
+    assert detail["content"]["content_version_id"] == identity["content_version_id"]
+    assert detail["summary"].startswith("Summary for Registry-only climate article")
     assert client.get("/api/registry/pdf-intake/articles").json()["pagination"]["total"] == 0
     manifest["pdf_occurrence_ids"] = [item["occurrence_id"] for article in bundle["articles"] for item in article["occurrences"]]
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (reader, reader, manifest))
-    assert len(client.get("/api/registry/articles/core-climate-study").json()["pdf_occurrences"]) == 1
+    assert len(client.get("/api/registry/articles/article-a").json()["pdf_occurrences"]) == 1
     assert client.get("/api/registry/articles?include_pdf=true").json()["items"][0].get("pdf_occurrence_count", 0) == 1
 
 

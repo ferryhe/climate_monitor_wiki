@@ -941,6 +941,7 @@ class ManagementService:
                 existing.get("trigger") == "scheduled"
                 and existing.get("task_id") == binding.get("task_id")
                 and existing.get("report_date") == binding.get("report_date")
+                and existing.get("acquisition_kind", "report") == binding.get("acquisition_kind", "report")
             ):
                 return path.name
         return None
@@ -1167,23 +1168,38 @@ class ManagementService:
         trigger: str = "manual",
         now: datetime | None = None,
         execution_mode: str = "report",
+        acquisition_kind: str = "report",
+        rotation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if trigger not in {"manual", "scheduled"}:
             raise ValueError("trigger must be manual or scheduled")
         if execution_mode not in {"report", "ingest_only"}:
             raise ValueError("execution mode must be report or ingest_only")
-        if trigger == "scheduled" and execution_mode != "report":
-            raise ValueError("scheduled runs use report mode")
+        if acquisition_kind not in {"report", "website_rotation", "weekly_search"}:
+            raise ValueError("invalid acquisition kind")
+        if acquisition_kind != "report" and execution_mode != "ingest_only":
+            raise ValueError("independent acquisition roles require ingest_only")
         loaded = self.store.load(include_raw=True)
         stamp = now or _utc_now()
-        run_id = stamp.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4)
+        run_id = (rotation["run_id"] if rotation else
+            stamp.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4))
+        definition = copy.deepcopy(loaded["_raw_definition"])
+        if acquisition_kind != "report":
+            definition["parameters"].update(report_date=stamp.astimezone(ZoneInfo("America/New_York")).date().isoformat(),
+                timezone="America/New_York", date_policy={"mode": "unlimited"})
+        if rotation:
+            definition["parameters"]["source_keys"] = rotation["source_keys"]
         binding = build_task_binding(
-            loaded["_raw_definition"], task_version=loaded["version"], run_id=run_id,
+            definition, task_version=loaded["version"], run_id=run_id,
             attempt=1, created_at=stamp,
-            definition_sha256=loaded["hashes"]["definition_sha256"],
+            definition_sha256=_sha(definition),
         )
         binding["trigger"] = trigger
         binding["execution_mode"] = execution_mode
+        if acquisition_kind != "report":
+            binding.update(acquisition_kind=acquisition_kind,
+                activation_policy="acquisition_review" if acquisition_kind == "website_rotation" else "existing_validated",
+                rotation=rotation, task_definition_sha256=loaded["hashes"]["definition_sha256"])
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
                 existing = self._existing_scheduled_run(binding)
@@ -1448,6 +1464,7 @@ class ManagementService:
         return result
 
     def progress(self, run_id: str) -> dict[str, Any]:
+        from climate_registry.acquisition_review import acquisition_state
         binding = self.binding(run_id)
         ingest_only = binding.get("execution_mode") == "ingest_only"
         runtime_path = self._run_dir(run_id) / "runtime.json"
@@ -1668,6 +1685,10 @@ class ManagementService:
             "run_id": run_id,
             "attempt": binding["attempt"],
             "stage": stage,
+            "acquisition_kind": binding.get("acquisition_kind", "report"),
+            "rotation": binding.get("rotation"),
+            "acquisition_review": (acquisition_state(self._run_dir(run_id) / "acquisition-review")
+                if (self._run_dir(run_id) / "acquisition-review" / "state.json").is_file() else None),
             "current": persisted.get("current") or {"organization": None, "url": None},
             "counts": counts,
             "coverage": coverage,

@@ -1297,6 +1297,31 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
 )
 
 
+MIGRATIONS += ((19, "material_knowledge_versions", """
+    CREATE TABLE knowledge_versions (
+        knowledge_id TEXT PRIMARY KEY,
+        entity_kind TEXT NOT NULL CHECK(entity_kind IN ('article','meeting')),
+        entity_id TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('site','search','pdf','information_check')),
+        source_ref TEXT NOT NULL,
+        material_sha256 TEXT NOT NULL,
+        fields_json TEXT NOT NULL CHECK(json_valid(fields_json)),
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        first_ingested_at TEXT,
+        substantive_updated_at TEXT,
+        recorded_at TEXT NOT NULL,
+        time_basis TEXT NOT NULL
+    );
+    CREATE INDEX idx_knowledge_entity ON knowledge_versions(entity_kind, entity_id, recorded_at);
+    CREATE TRIGGER knowledge_versions_append_only_update BEFORE UPDATE ON knowledge_versions BEGIN
+        SELECT RAISE(ABORT, 'knowledge versions are append-only');
+    END;
+    CREATE TRIGGER knowledge_versions_append_only_delete BEFORE DELETE ON knowledge_versions BEGIN
+        SELECT RAISE(ABORT, 'knowledge versions are append-only');
+    END;
+"""),)
+
+
 def _preflight_migration(connection: sqlite3.Connection, version: int) -> None:
     if version != 6:
         return

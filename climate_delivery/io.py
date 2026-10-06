@@ -53,6 +53,23 @@ def atomic_write_json(path: Path, value: Any) -> None:
 
 
 @contextmanager
+def transaction_lock(state_dir: Path, key: str) -> Iterator[None]:
+    """Short Linux business transactions release automatically after a crash."""
+    import fcntl
+    path = Path(state_dir) / "locks" / f"{key}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LockStateError(f"business transaction is already owned: {key}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextmanager
 def exclusive_lock(state_dir: Path, key: str) -> Iterator[None]:
     lock_dir = Path(state_dir) / "locks"
     lock_path = lock_dir / f"{key}.lock"

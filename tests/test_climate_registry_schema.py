@@ -145,10 +145,10 @@ def test_v9_contract_rejects_unversioned_v10_trigger():
 def test_migrations_are_idempotent_and_enable_foreign_keys():
     connection = sqlite3.connect(":memory:")
 
-    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     assert apply_migrations(connection) == []
     assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
-    assert connection.execute("PRAGMA user_version").fetchone() == (18,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (19,)
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -177,7 +177,7 @@ def test_schema_v17_remains_readable_and_v18_date_evidence_is_append_only():
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_date_observations'"
     ).fetchone() is None
 
-    assert apply_migrations(connection) == [18]
+    assert apply_migrations(connection, target_version=18) == [18]
     assert validate_registry_contract(connection) == 18
     connection.execute(
         "INSERT INTO sources VALUES ('s', 'example.com', 'Example', '2026-01-01', '2026-01-01')"
@@ -219,8 +219,8 @@ def test_schema_v13_migrates_pdf_sources_without_rewriting_evidence():
     )
     connection.commit()
 
-    assert apply_migrations(connection) == [14, 15, 16, 17, 18]
-    assert validate_registry_contract(connection) == 18
+    assert apply_migrations(connection) == [14, 15, 16, 17, 18, 19]
+    assert validate_registry_contract(connection) == 19
     assert connection.execute(
         "SELECT source_path, filename, observed_at FROM pdf_intake_document_sources"
     ).fetchone() == ("C:/input/report.pdf", "report.pdf", "2026-09-01T00:00:00Z")
@@ -361,9 +361,9 @@ def test_v2_to_v3_preserves_existing_rows_and_defaults_to_summary_excerpt():
         for table in ("sources", "articles", "article_versions", "reports", "discoveries")
     }
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
-    assert connection.execute("PRAGMA user_version").fetchone() == (18,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (19,)
     assert connection.execute(
         "SELECT current_content_version_id, display_policy FROM articles WHERE article_id = 'a'"
     ).fetchone() == (None, "summary_excerpt")
@@ -449,7 +449,7 @@ def test_v2_to_v3_preserves_the_historical_audit_baseline_counts():
         for table in counts_before
     } == counts_before
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
     assert {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

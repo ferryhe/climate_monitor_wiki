@@ -265,6 +265,12 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                                  json.dumps(stored_occurrence, ensure_ascii=False, sort_keys=True)),
                             )
                             added["article_occurrences"] += cursor.rowcount
+                            if cursor.rowcount:
+                                from .acquisition_review import record_knowledge
+                                record_knowledge(connection, kind="article", entity_id=article["article_id"],
+                                    source_kind="pdf", source_ref=occurrence_id, recorded_at=now,
+                                    fields={key: stored_occurrence.get(key) for key in ("title", "anchor_text", "summary", "publication_date")},
+                                    evidence={"document_sha256": occurrence["source_document_sha256"], "page": occurrence["page"]})
 
                     reconcile_pdf_article_links(connection, observed_at=now)
 
@@ -289,6 +295,14 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                              json.dumps(stored_item, ensure_ascii=False, sort_keys=True)),
                         )
                         added["calendar_items"] += cursor.rowcount
+                        if cursor.rowcount:
+                            from .acquisition_review import record_knowledge
+                            from climate_monitor.meeting_fields import pdf_meeting_fields, MEETING_FIELDS
+                            normalized = pdf_meeting_fields(stored_item)
+                            record_knowledge(connection, kind="meeting", entity_id=item["event_id"],
+                                source_kind="pdf", source_ref=occurrence_id, recorded_at=now,
+                                fields={key: normalized.get(key) for key in MEETING_FIELDS},
+                                evidence={"document_sha256": item["source_document_sha256"], "page": item["page"]})
                         if classification:
                             connection.execute(
                                 """UPDATE pdf_intake_calendar_items

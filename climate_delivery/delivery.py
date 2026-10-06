@@ -26,7 +26,7 @@ class _AttemptFailure(Exception):
         self.unknown = unknown
 
 
-def _validate_summary(summary: dict[str, Any], *, allow_offcycle: bool = False) -> None:
+def _validate_summary(summary: dict[str, Any], *, allow_offcycle: bool = False, allow_empty_links: bool = False) -> None:
     if not isinstance(summary, dict) or summary.get("schema_version") != 1:
         raise InputError("summary schema_version must be 1")
     report = summary.get("report")
@@ -59,7 +59,7 @@ def _validate_summary(summary: dict[str, Any], *, allow_offcycle: bool = False) 
         if not re.fullmatch(r"https?://[^\s]+", item["url"]):
             raise InputError("summary highlight URL must be HTTP(S)")
     original_links = summary.get("original_links")
-    if not isinstance(original_links, list) or not original_links:
+    if not isinstance(original_links, list) or not original_links and not allow_empty_links:
         raise InputError("summary original_links must be a non-empty list")
     if any(not isinstance(item, str) or not re.fullmatch(r"https?://[^\s]+", item) for item in original_links):
         raise InputError("summary original_links entries must be HTTP(S) strings")
@@ -432,8 +432,9 @@ def deliver(
     summary_artifact_sha256: str | None = None,
     clock: Callable[[], datetime] | None = None,
     allow_offcycle: bool = False,
+    allow_empty_links: bool = False,
 ) -> dict[str, Any]:
-    _validate_summary(summary, allow_offcycle=allow_offcycle)
+    _validate_summary(summary, allow_offcycle=allow_offcycle, allow_empty_links=allow_empty_links)
     summary_hash = summary_artifact_sha256 or _summary_sha256(summary)
     if not re.fullmatch(r"[0-9a-f]{64}", summary_hash):
         raise InputError("summary artifact sha256 is invalid")

@@ -32,6 +32,7 @@ _WEB_ITEM_KEYS = frozenset({
     "acquisition_item_id", "batch_id", "article_id", "content_version_id",
     "publication_date", "publication_date_evidence",
 })
+REVIEW_REQUEST_SCHEMA = "climate-web-activation-request.v2"
 
 
 def _now() -> str:
@@ -39,10 +40,10 @@ def _now() -> str:
 
 
 def _web_item_matches(expected: Any, actual: dict[str, Any]) -> bool:
-    if not isinstance(expected, dict) or set(expected) not in (
-        _WEB_ITEM_KEYS, _WEB_ITEM_KEYS | {"collected_at"},
-    ):
+    if not isinstance(expected, dict) or not _WEB_ITEM_KEYS <= set(expected) or set(expected) - _WEB_ITEM_KEYS - {"collected_at", "review"}:
         return False
+    expected = {key: value for key, value in expected.items() if key != "review"}
+    actual = {key: value for key, value in actual.items() if key != "review"}
     if "collected_at" not in expected:
         actual = {key: value for key, value in actual.items() if key != "collected_at"}
     return expected == actual
@@ -83,7 +84,7 @@ def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("web activation request is invalid") from exc
     if (
-        request.get("schema_version") != WEB_ACTIVATION_REQUEST_SCHEMA
+        request.get("schema_version") not in {WEB_ACTIVATION_REQUEST_SCHEMA, REVIEW_REQUEST_SCHEMA}
         or request.get("batch_id") != batch_id
         or request.get("registry_snapshot") != "registry.sqlite3"
         or snapshot.parent != job.resolve()
@@ -101,8 +102,23 @@ def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any
     finally:
         validation.close()
     expected = request["web_items"]
+    source_batch = request.get("source_batch_id", batch_id)
+    actual = [_manifest_item(item) for item in _batch_items(snapshot, source_batch,
+        require_frozen=request["schema_version"] == WEB_ACTIVATION_REQUEST_SCHEMA)]
+    if request["schema_version"] == REVIEW_REQUEST_SCHEMA:
+        from .acquisition_review import digest
+        from .acquisition import load_acquisition_batch
+        loaded = {item["acquisition_item_id"]: item for item in load_acquisition_batch(snapshot, source_batch)["items"]}
+        approved_ids = {item["acquisition_item_id"] for item in expected}
+        actual = [item for item in actual if item["acquisition_item_id"] in approved_ids]
+        for item in expected:
+            review = item.get("review", {})
+            raw = loaded[item["acquisition_item_id"]]
+            expected_sha = digest([raw, review["display"]]) if review.get("display") else digest(raw)
+            if review.get("status") != "pass" or review.get("raw_candidate_sha256") != digest(raw) or review.get("candidate_sha256") != expected_sha or not review.get("inspection_sha256"):
+                raise RuntimeError("activation approval does not match the exact candidate")
     if not _web_items_match(
-        expected, [_manifest_item(item) for item in _batch_items(snapshot, batch_id)]
+        expected, actual
     ):
         raise RuntimeError("web activation request differs from its Registry snapshot")
     request["registry_snapshot_path"] = str(snapshot)
@@ -274,14 +290,14 @@ def _active_web_snapshot(
     return snapshot
 
 
-def _batch_items(database: Path, batch_id: str) -> list[dict[str, Any]]:
+def _batch_items(database: Path, batch_id: str, *, require_frozen: bool = True) -> list[dict[str, Any]]:
     connection = sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         batch = connection.execute(
             "SELECT frozen_at FROM acquisition_batches WHERE batch_id=?", (batch_id,)
         ).fetchone()
-        if batch is None or not batch["frozen_at"]:
+        if batch is None or (require_frozen and not batch["frozen_at"]):
             raise RuntimeError("web acquisition batch is not frozen")
         rows = connection.execute(
             """
@@ -333,11 +349,14 @@ def _resolve_items(database: Path, allowlist: list[dict[str, Any]]) -> list[dict
     for item in allowlist:
         by_batch.setdefault(item["batch_id"], []).append(item)
     for batch_id, expected in by_batch.items():
-        actual = {item["acquisition_item_id"]: item for item in _batch_items(database, batch_id)}
+        actual = {item["acquisition_item_id"]: item for item in _batch_items(database, batch_id,
+            require_frozen=not any(identity.get("review") for identity in expected))}
         for identity in expected:
             item = actual.get(identity["acquisition_item_id"])
             if item is None or not _web_item_matches(identity, _manifest_item(item)):
                 raise RuntimeError("activated web item differs from its pinned identity")
+            if identity.get("review"):
+                item = dict(item, review=identity["review"])
             resolved.append(item)
     return resolved
 
@@ -381,9 +400,17 @@ class WebIngestPipeline:
         status = self._save(status, stage="processing", attempts=int(status["attempts"]) + 1, error=None)
         (_job_dir(self.queue_dir, batch_id) / "retry.json").unlink(missing_ok=True)
         try:
-            new_items = _batch_items(self.database, batch_id)
+            request = None
             if (_job_dir(self.queue_dir, batch_id) / "request.json").is_file():
                 request = read_web_activation_request(self.queue_dir, batch_id)
+            source_batch = request.get("source_batch_id", batch_id) if request else batch_id
+            new_items = _batch_items(self.database, source_batch,
+                require_frozen=not request or request["schema_version"] == WEB_ACTIVATION_REQUEST_SCHEMA)
+            if request:
+                if request["schema_version"] == REVIEW_REQUEST_SCHEMA:
+                    selected = {item["acquisition_item_id"]: item for item in request["web_items"]}
+                    new_items = [dict(item, review=selected[item["acquisition_item_id"]]["review"])
+                        for item in new_items if item["acquisition_item_id"] in selected]
                 if (
                     Path(request["registry_snapshot_path"]) != self.database
                     or not _web_items_match(
@@ -399,7 +426,10 @@ class WebIngestPipeline:
                 item["acquisition_item_id"]: item
                 for item in (active_manifest or {}).get("web_items", [])
             }
-            web.update({item["acquisition_item_id"]: _manifest_item(item) for item in new_items})
+            # An approved replacement supersedes that article's previous active version.
+            replaced = {item["article_id"] for item in new_items} if request and request["schema_version"] == REVIEW_REQUEST_SCHEMA else set()
+            web = {key: item for key, item in web.items() if item["article_id"] not in replaced}
+            web.update({item["acquisition_item_id"]: dict(_manifest_item(item), **({"review": item["review"]} if item.get("review") else {})) for item in new_items})
             allowlist = list(web.values())
             active_web_snapshot = _active_web_snapshot(
                 self.runtime_wiki_dir,
@@ -408,7 +438,7 @@ class WebIngestPipeline:
             )
             selected_database = None
             resolved_items = None
-            for candidate in (active_web_snapshot, self.database):
+            for candidate in (self.database, active_web_snapshot):
                 if candidate is None or candidate == selected_database:
                     continue
                 try:

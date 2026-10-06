@@ -179,11 +179,19 @@ for _kind in ("meeting", "article"):
     }
 V17_TABLES = frozenset(REQUIRED_TABLE_COLUMNS) - _V18_TABLES
 V18_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+REQUIRED_TABLE_COLUMNS["knowledge_versions"] = {
+    "knowledge_id", "entity_kind", "entity_id", "source_kind", "source_ref",
+    "material_sha256", "fields_json", "evidence_json", "first_ingested_at",
+    "substantive_updated_at", "recorded_at", "time_basis",
+}
+V19_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 19:
+        return V19_TABLES
     if version >= 18:
         return V18_TABLES
     if version >= 17:
@@ -500,6 +508,8 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version >= 19:
+        names |= {"knowledge_versions_append_only_update", "knowledge_versions_append_only_delete"}
     if version < 18:
         names -= {
             "article_date_observations_are_append_only_update",
@@ -551,6 +561,8 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version >= 19:
+        names |= {"idx_knowledge_entity"}
     if version < 18:
         names -= {"idx_article_date_observations_article_kind_time"}
     if version < 17:

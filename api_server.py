@@ -113,6 +113,7 @@ ARTICLE_METADATA_DIR = ROOT / os.getenv("ARTICLE_METADATA_DIR", "article_metadat
 RANGE_REPORT_DIR = Path(
     os.getenv("CLIMATE_RANGE_REPORT_DIR", str(ROOT / "output" / "range-reports"))
 )
+REPORT_REVIEW_DIR = Path(value).resolve() if (value := os.getenv("CLIMATE_REPORT_REVIEW_DIR", "").strip()) else None
 
 # In production, disable Swagger/OpenAPI documentation to reduce attack surface.
 # These are development conveniences, not required for the public site.
@@ -687,14 +688,22 @@ def registry_articles(
         readers = [(_registry_reader(), None)] + ([(web_reader, active_ids)] if web_reader else [])
         core_by_url, by_url = {}, {}
         for reader, allowed_ids in readers:
-            core = _all_registry_pages(reader.articles)
-            if allowed_ids is not None:
-                core = [dict(item, pdf_occurrence_count=0) for item in core]
+            if allowed_ids is None:
+                core = _all_registry_pages(reader.articles)
+            else:
+                from climate_registry.wiki import _pinned_web_article
+                core = [dict(_pinned_web_article(reader, [item for item in manifest["web_items"]
+                    if item["article_id"] == article_id]), pdf_occurrence_count=0) for article_id in sorted(allowed_ids)]
             core_by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in core
                 if allowed_ids is None or item["article_id"] in allowed_ids})
-            matches = _all_registry_pages(reader.articles, **filters) if any(filters.values()) else core
-            if allowed_ids is not None:
-                matches = [dict(item, pdf_occurrence_count=0) for item in matches]
+            if allowed_ids is None:
+                matches = _all_registry_pages(reader.articles, **filters) if any(filters.values()) else core
+            else:
+                matches = [item for item in core
+                    if (not query or query.casefold() in " ".join(str(item.get(k) or "") for k in ("title", "summary", "canonical_url")).casefold())
+                    and (not source or item.get("source") == source)
+                    and (not report_date or any(a.get("report_date") == report_date for a in item.get("appearances", [])))
+                    and (not pillar or any(o.get("pillar") == pillar for a in item.get("acquisition_observations", []) for o in a.get("origins", [])))]
             by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in matches
                 if allowed_ids is None or item["article_id"] in allowed_ids})
         pdf_method = lambda page, page_size, **filters: registry_pdf_articles(
@@ -826,7 +835,8 @@ def registry_article(article_id: str) -> dict:
     def query_article():
         web_reader, pdf_reader, manifest = _range_report_overlay()
         active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
-        payload = (web_reader.article(article_id) if web_reader and article_id in active_ids
+        from climate_registry.wiki import _pinned_web_article
+        payload = (_pinned_web_article(web_reader, [item for item in manifest["web_items"] if item["article_id"] == article_id]) if web_reader and article_id in active_ids
             else _registry_reader().article(article_id))
         if web_reader and article_id in active_ids:
             payload.pop("pdf_occurrences", None)
@@ -1083,6 +1093,45 @@ def registry_range_report_pdf(snapshot_id: str, renderer_version: str) -> Respon
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@app.get("/api/registry/final-reports")
+def registry_final_reports() -> dict:
+    from climate_delivery.report_review import report_states
+    return {"items": report_states(REPORT_REVIEW_DIR, public=True) if REPORT_REVIEW_DIR else []}
+
+
+@app.get("/api/registry/final-reports/{occurrence}/pdf")
+def registry_final_report_pdf(occurrence: str) -> Response:
+    if REPORT_REVIEW_DIR is None:
+        raise HTTPException(status_code=404, detail="Final report is not available.")
+    from climate_delivery.report_review import _root, _verify_packet
+    try:
+        root = _root(REPORT_REVIEW_DIR, occurrence)
+        state = json.loads((root / "state.json").read_text())
+        if state["status"] != "approved" or state["approval"]["status"] != "pass":
+            raise KeyError("no final approval")
+        revision_root, packet = _verify_packet(root, state)
+        if state["approval"]["packet"] != packet:
+            raise ValueError("approval identity changed")
+        content = (revision_root / "report.pdf").read_bytes()
+    except (OSError, KeyError) as exc:
+        raise HTTPException(status_code=404, detail="Final report is not available.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Saved final PDF identity is invalid.") from exc
+    return Response(content=content, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="climate-report-{occurrence}-r{state["revision"]}.pdf"',
+        "X-PDF-SHA256": packet["pdf_sha256"], "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/manage/pipeline", include_in_schema=False)
+def managed_pipeline(_user: ConsoleUser = Depends(current_console_user)) -> dict:
+    from climate_delivery.report_review import report_states
+    from scripts.export_scheduler_status import business_status
+    acquisition_root = _management_service().runtime_root
+    checks_root = os.getenv("CLIMATE_INFORMATION_CHECK_DIR")
+    return {"business": business_status(report_root=REPORT_REVIEW_DIR, acquisition_root=acquisition_root, checks_root=checks_root),
+        "reports": report_states(REPORT_REVIEW_DIR) if REPORT_REVIEW_DIR else []}
 
 
 def _manage_call(callback):

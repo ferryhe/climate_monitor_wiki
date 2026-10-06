@@ -3,6 +3,8 @@ let config, selectedRun;
 const LEGACY_SEARCH_BUDGETS = new Set(['search_attempts', 'search_results']);
 const SEARCH_POLICY_NOTICE = 'Search is adaptive and has no application limit on searches, total results, results per call, or tokens. Actual search activity is shown for information only (provider-native-unbounded).';
 const $ = selector => document.querySelector(selector);
+async function refreshPipeline() { $('#pipeline-detail').textContent = JSON.stringify(await api('/api/manage/pipeline'), null, 2); }
+document.addEventListener('DOMContentLoaded', () => { $('#refresh-pipeline').onclick = () => refreshPipeline().catch(error => $('#pipeline-detail').textContent = error.message); });
 const clear = node => { node.replaceChildren(); return node; };
 const text = (tag, value, className) => { const node = document.createElement(tag); node.textContent = String(value); if (className) node.className = className; return node; };
 const labeledInput = (label, name, value, attributes = {}) => { const wrapper = text('label', label); const input = document.createElement('input'); input.name = name; input.value = String(value ?? ''); Object.assign(input, attributes); wrapper.append(input); return wrapper; };

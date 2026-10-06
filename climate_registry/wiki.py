@@ -373,6 +373,8 @@ def _pinned_web_article(
             keywords=[],
             enrichment={},
         )
+    approved_display = expected[selected["acquisition_item_id"]].get("review", {}).get("display", {})
+    article.update(approved_display)
     return article
 
 

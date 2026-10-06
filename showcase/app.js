@@ -2357,6 +2357,41 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
   }
 }
 
+async function loadFinalPipelineReports() {
+  const panel = document.querySelector('#registryView');
+  if (!panel) return;
+  const section = registryElement('section', 'registry-notice');
+  section.append(registryElement('h3', '', 'Approved reports and pipeline status'));
+  panel.append(section);
+  const results = await Promise.allSettled([
+    fetch('/api/registry/final-reports').then(response => { if (!response.ok) throw new Error('unavailable'); return response.json(); }),
+    fetch('/api/job-status').then(response => { if (!response.ok) throw new Error('unavailable'); return response.json(); }),
+  ]);
+  if (results[0].status === 'fulfilled') {
+    const items = results[0].value.items || [];
+    for (const item of items) {
+      const link = registryElement('a', 'registry-source-link', `${item.occurrence} · approved PDF revision ${item.revision}`);
+      link.href = `/api/registry/final-reports/${encodeURIComponent(item.occurrence)}/pdf`;
+      section.append(link, document.createElement('br'));
+    }
+    if (!items.length) section.append(registryElement('p', '', 'No final approved report is archived yet.'));
+  } else section.append(registryElement('p', '', 'Final report history is unavailable.'));
+  if (results[1].status === 'fulfilled') {
+    const value = results[1].value;
+    const labels = {T1: 'Daily source checks', T2: 'Website rotation', T3: 'Weekly search', T4: 'Biweekly report', T5: 'Final PDF review', T6: 'Approved report delivery', T7: 'Status observer', T8: 'LLM cost report', T9: 'Docker cleanup', T10: 'Acquisition review and recovery'};
+    section.append(registryElement('p', '', value.observer?.is_stale ? 'Scheduler evidence is stale.' : `Scheduler observed at ${value.generated_at || 'unavailable'}.`));
+    for (const [role, job] of Object.entries(value.jobs || {})) {
+      const business = value.business?.[role];
+      section.append(registryElement('p', '', `${labels[role] || role}: scheduler ${job.state}; business ${business?.status || 'not observed'}`));
+      if (business) {
+        const detail = document.createElement('details');
+        detail.append(registryElement('summary', '', 'Saved business results'), registryElement('pre', '', JSON.stringify(business, null, 2)));
+        section.append(detail);
+      }
+    }
+  } else section.append(registryElement('p', '', 'Scheduler evidence is unavailable.'));
+}
+
 function attachEvents() {
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
@@ -2609,3 +2644,5 @@ async function main() {
 }
 
 main();
+
+loadFinalPipelineReports();

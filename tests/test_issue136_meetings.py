@@ -90,7 +90,7 @@ def test_schema_v12_keeps_meeting_reads_and_rejects_writes(tmp_path):
 
     assert query_events(database, base_date="2026-01-01", timezone_name="UTC")["records"] == []
     assert load_snapshot(database, "snapshot-v12")["records"] == []
-    with pytest.raises(ValueError, match="schema 18 for writes"):
+    with pytest.raises(ValueError, match="schema 19 for writes"):
         freeze_snapshot(database, base_date="2026-01-01", timezone_name="UTC")
 
 
@@ -1177,8 +1177,8 @@ def test_schema_10_upgrades_to_exact_versioned_meeting_contract():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=10)
     assert validate_registry_contract(connection) == 10
-    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18]
-    assert validate_registry_contract(connection) == 18
+    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19]
+    assert validate_registry_contract(connection) == 19
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"meeting_runs", "meeting_run_items", "climate_events", "climate_event_sources",
             "climate_event_versions", "meeting_snapshots"} <= tables
@@ -1189,8 +1189,8 @@ def test_schema_11_upgrades_existing_meeting_sources_without_losing_evidence(tmp
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=11)
     assert validate_registry_contract(connection) == 11
-    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18]
-    assert validate_registry_contract(connection) == 18
+    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19]
+    assert validate_registry_contract(connection) == 19
     columns = {row[1] for row in connection.execute("PRAGMA table_info(climate_event_sources)")}
     assert {"candidate_ordinal", "interpretation_seq"} <= columns
     connection.close()

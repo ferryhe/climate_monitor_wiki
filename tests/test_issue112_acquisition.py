@@ -945,7 +945,7 @@ def test_acquisition_writer_rejects_schema_v9_with_actionable_error(tmp_path):
 def test_acquisition_writer_accepts_additive_schema_v13(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (18,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (19,)
 
     store_acquisition_batch(database, _batch([_item()]))
 

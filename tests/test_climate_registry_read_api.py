@@ -382,7 +382,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 18,
+        "schema_version": 19,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,

@@ -28,17 +28,11 @@ if sys.argv[1] == "--preflight":
     print(json.dumps({"status": "ready", "timezone": "America/New_York", "hour": 5}), flush=True)
     raise SystemExit(0)
 
-from scripts.check_information import main
-result = 0
-for kind in ("articles", "meetings"):
-    try:
-        code = main(["--kind", kind, "--database", os.environ["CLIMATE_REGISTRY_WRITER_DB"],
-            "--backup-dir", os.environ["CLIMATE_REGISTRY_BACKUP_DIR"], "--refresh-chat",
-            "--data-root", os.getenv("CLIMATE_WEB_LISTENING_DATA_DIR", "/pipeline/web-listening"),
-            "--result", "/pipeline/" + kind + "-daily-check.json"])
-    except Exception as exc:
-        print(json.dumps({"kind": kind, "status": "failed", "error": type(exc).__name__}), flush=True)
-        code = 2
-    result = max(result, code)
-raise SystemExit(result)
+from pathlib import Path
+from scripts.check_information import run_daily_checks
+raise SystemExit(run_daily_checks([
+    "--database", os.environ["CLIMATE_REGISTRY_WRITER_DB"],
+    "--backup-dir", os.environ["CLIMATE_REGISTRY_BACKUP_DIR"], "--refresh-chat",
+    "--data-root", os.getenv("CLIMATE_WEB_LISTENING_DATA_DIR", "/pipeline/web-listening"),
+], result_dir=Path("/pipeline")))
 ' "${1:-}" < "${CLIMATE_WIKI_ENV_FILE:-$HOME/climate_monitor_wiki/.env}"

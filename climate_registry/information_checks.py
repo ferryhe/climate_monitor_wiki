@@ -74,10 +74,11 @@ def _writer(database: Path) -> Iterator[sqlite3.Connection]:
 
 
 def prepare_database(database: Path, backup_dir: Path) -> None:
+    from .contract import SCHEMA_VERSION
     if not database.is_file():
         raise ValueError("Registry database does not exist")
     with _writer(database) as connection:
-        if connection.execute("PRAGMA user_version").fetchone()[0] < 17:
+        if connection.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
             backup_dir.mkdir(parents=True, exist_ok=True)
             _backup_connection(connection, backup_dir / _backup_name(database))
             apply_migrations(connection)
@@ -404,6 +405,8 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
         connection.execute(f"UPDATE {prefix}_check_runs SET status='running',completed_at=NULL WHERE run_id=?", (run_id,))
         done = {tuple(row) for row in connection.execute(f"SELECT occurrence_id,source_url FROM {prefix}_check_attempts WHERE run_id=?", (run_id,))}
     count = 0
+    if progress:
+        progress({"run_id": run_id, "kind": kind, "status": "pending", "item_count": len(targets), "completed_count": len(done)})
     for target in targets:
         if (target["occurrence_id"], target["source_url"]) in done:
             continue
@@ -426,6 +429,47 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
                     target["source_revision_sha256"], packet["checked_at"], packet["access_status"],
                     packet["verification_status"], _json(packet), _sha(packet)))
             connection.execute(f"UPDATE {prefix}_check_runs SET completed_count=(SELECT count(*) FROM {prefix}_check_attempts WHERE run_id=?) WHERE run_id=?", (run_id, run_id))
+            if packet["verification_status"] == "verified" and not packet.get("enrichment_error"):
+                from .acquisition_review import record_knowledge
+                table = "pdf_intake_article_occurrences" if kind == "articles" else "pdf_intake_calendar_items"
+                identity_column = "article_id" if kind == "articles" else "event_id"
+                identity = connection.execute(f"SELECT {identity_column} FROM {table} WHERE occurrence_id=?",
+                    (target["occurrence_id"],)).fetchone()[0]
+                original_fields = ({key: target["fields"].get(key) for key in ("title", "anchor_text", "summary", "publication_date")}
+                    if kind == "articles" else {key: target["fields"].get(key) for key in MEETING_FIELDS})
+                baseline = connection.execute("SELECT 1 FROM knowledge_versions WHERE entity_kind=? AND entity_id=?",
+                    ("article" if kind == "articles" else "meeting", identity)).fetchone()
+                if baseline is None:
+                    imported = (connection.execute("SELECT imported_at FROM pdf_intake_articles WHERE article_id=?", (identity,)).fetchone()
+                        if kind == "articles" else connection.execute("SELECT d.imported_at FROM pdf_intake_calendar_items c "
+                            "JOIN pdf_intake_documents d ON d.document_sha256=c.source_document_sha256 WHERE c.occurrence_id=?",
+                            (target["occurrence_id"],)).fetchone())
+                    from .acquisition_review import timestamp
+                    try:
+                        imported_at = imported[0] if imported else None
+                        timestamp(imported_at or "")
+                    except (ValueError, TypeError):
+                        imported_at = None
+                    record_knowledge(connection, kind="article" if kind == "articles" else "meeting", entity_id=identity,
+                        source_kind="pdf", source_ref=target["occurrence_id"], fields=original_fields,
+                        evidence={"source_revision_sha256": target["source_revision_sha256"]},
+                        recorded_at=packet["checked_at"], first_ingested_at=imported_at,
+                        time_basis=("historical_pdf_article_imported_at" if kind == "articles" else "historical_pdf_document_imported_at")
+                            if imported_at else "legacy_time_unknown")
+                if kind == "articles":
+                    fields = {key: target["fields"].get(key) for key in ("title", "anchor_text", "summary", "publication_date")}
+                    fields["summary"] = (packet.get("verified_information") or {}).get("summary") or fields["summary"]
+                else:
+                    normalized = pdf_meeting_fields(packet["website_candidate"])
+                    # Extraction has no PDF provenance fields. Keep them exactly as
+                    # the source observation, as the collected public meeting does.
+                    for key in ("raw_date", "source_urls", "relevance_reason"):
+                        normalized[key] = target["fields"].get(key)
+                    fields = {key: normalized.get(key) for key in MEETING_FIELDS}
+                record_knowledge(connection, kind="article" if kind == "articles" else "meeting", entity_id=identity,
+                    source_kind="information_check", source_ref=target["occurrence_id"], fields=fields,
+                    evidence={"run_id": run_id, "packet_sha256": _sha(packet), "source_url": target["source_url"]},
+                    recorded_at=packet["checked_at"], time_basis="transaction")
         count += 1
         if progress:
             progress({"run_id": run_id, "occurrence_id": target["occurrence_id"], "source_url": target["source_url"],
