@@ -720,40 +720,160 @@ def test_daily_wrapper_keeps_admitted_occurrence_after_slow_first_phase(tmp_path
 
 
 def test_first_ingestion_in_window_survives_current_update_after_cutoff(tmp_path, monkeypatch):
-    import test_issue113_range_reports as ranges
+    from reportlab.pdfgen.canvas import Canvas
+    from test_information_checks import _record
+    from climate_monitor.pdf_intake import import_pdf_reports
+    from climate_monitor.meetings import EXTRACTION_FIELDS
+    from climate_monitor.meeting_fields import MEETING_FIELDS
+    from climate_registry import pdf_intake, information_checks as checks, pdf_pipeline
+    from climate_registry.acquisition_review import knowledge_fields
+    from climate_registry.pdf_pipeline import PdfIntakePipeline, enqueue_pdf_batch, load_active_projection
+    from climate_registry.range_reports import load_active_range_overlay
     from climate_registry.read_api import RegistryReader
-    monkeypatch.setattr(ranges,"NOW","2026-10-11T12:00:00Z")
-    writer = ranges._database(tmp_path,fetched_at="2026-10-11T12:00:00Z")
-    with sqlite3.connect(writer) as db:
-        for stamp, summary, kind in (("2026-10-11T12:00:00Z","Original PDF summary","pdf"),
-            ("2026-10-12T09:00:00Z","Current verified flood losses and capital assessment.","information_check")):
-            record_knowledge(db,kind="article",entity_id="pdf-a",source_kind=kind,source_ref="pdf-occ-a",
-                fields={"anchor_text":"PDF A","summary":summary,"publication_date":"2026-09-20"},
-                evidence={"supported_summary":summary},recorded_at=stamp)
-    public = tmp_path/"public.sqlite3"
-    with sqlite3.connect(public) as db:apply_migrations(db)
-    root = tmp_path/"artifacts"
-    kwargs = dict(pdf_reader=RegistryReader(writer,repository_root=tmp_path/"application"),
-        manifest={"web_items":[],"pdf_occurrence_ids":["pdf-occ-a"],"pdf_calendar_occurrence_ids":[]})
-    reader = RegistryReader(public,repository_root=tmp_path/"application")
-    state = report_review.freeze_biweekly(reader,root,occurrence="2026-10-12",**kwargs)
-    assert state["status"] == "pending_review"
-    frozen = root/"reports/2026-10-12"
-    snapshot = json.loads((frozen/"snapshot.json").read_text())
-    assert len(snapshot["material_versions"]) == 1
-    material = snapshot["material_versions"][0]
-    assert material["selection_reason"] == "first_ingested"
-    assert material["original_period_time"] == "2026-10-11T12:00:00Z"
-    assert material["first_ingested_at"] == "2026-10-11T12:00:00Z"
-    assert material["substantive_updated_at"] == "2026-10-12T09:00:00Z"
-    assert "Current verified flood losses" in snapshot["articles"][0]["summary"]
-    assert snapshot["articles"][0]["publication_date"] == "2026-09-20"
-    native = tmp_path/"hermes.db";_native(native,"cron_t5_current",state["packet"])
-    at = datetime(2026,10,12,12,10,tzinfo=timezone.utc)
-    claim = report_review.claim_report(root,"2026-10-12",session_id="cron_t5_current",execution_id="current",
-        hermes_database=native,reviewer="native-reviewer",now=at)
-    report_review.submit_report_review(root,"2026-10-12",claim["token"],status="pass",reason="Current version actually inspected",now=at)
-    assert report_review.freeze_biweekly(reader,root,occurrence="2026-10-26",**kwargs)["status"] == "no_eligible_information"
+    from scripts.generate_range_report import main
+
+    # A real import qualifies before midnight; supported T1 changes occur at NY 05:00.
+    clock = [datetime(2026, 10, 11, 12, tzinfo=timezone.utc)]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0].astimezone(tz) if tz else clock[0].replace(tzinfo=None)
+    monkeypatch.setattr(pdf_intake, "datetime", Clock)
+    monkeypatch.setattr(pdf_pipeline, "_now", lambda: clock[0].isoformat())
+    monkeypatch.setattr(checks, "_now", lambda: clock[0].isoformat())
+    monkeypatch.setattr(report_review, "datetime", Clock)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    source = tmp_path / "source.pdf"
+    pdf = Canvas(str(source))
+    for lines in (("Climate Risk Intelligence Report Edition 9", "REPORTING PERIOD 1–2 September 2026",
+            "DATE OF RUN 3 September 2026", "42 organisations monitored"),
+        ("UPDATES", "Climate publication", "IN WINDOW 2 SEP 2026 REPORT", "Independent publication summary."),
+        ("Key Dates", "DATE(S) EVENT HOST RELEVANCE", "20–23 October 2026", "EVENT",
+            "Climate risk conference", "A conference relevant to insurers.")):
+        for index, line in enumerate(lines):
+            pdf.drawString(50, 760 - index * 20, line)
+        if lines[0] == "UPDATES":
+            pdf.linkURL("https://example.org/climate-publication", (48, 738, 220, 754), relative=0)
+        elif lines[0] == "Key Dates":
+            pdf.linkURL("https://example.org/climate-risk-conference/", (48, 676, 220, 694), relative=0)
+        pdf.showPage()
+    pdf.save()
+    bundle = import_pdf_reports([source])
+    assert len(bundle["articles"]) == len(bundle["calendar_items"]) == 1
+    writer, public = tmp_path / "writer.sqlite3", tmp_path / "public.sqlite3"
+    for database in (writer, public):
+        with sqlite3.connect(database) as db:
+            apply_migrations(db)
+    queue, runtime = tmp_path / "queue", tmp_path / "runtime"
+    queue.mkdir()
+    batch = enqueue_pdf_batch(queue, bundle, repository_root=tmp_path / "application")
+    def reload_chat(generation):
+        pending = json.loads((queue / "pending.json").read_text())
+        assert pending["generation_id"] == generation
+        atomic_write_json(queue / "active.json", pending)
+    pipeline = PdfIntakePipeline(queue, writer, tmp_path / "backups", runtime, reload_chat,
+        repository_root=tmp_path / "application")
+    assert pipeline.process(batch["batch_id"])["chat_ready"]
+    original_generation, original_metadata = load_active_projection(runtime, queue / "active.json")
+    original_snapshot = Path(original_metadata["pdf_registry_snapshot"]).read_bytes()
+
+    article_body = ("Climate publication. New supported flood insurance loss estimates require stronger capital buffers. "
+        "Independent publication summary. Published 2 September 2026.")
+    meeting_body = ("Example Institute hosts Climate risk conference on 20–23 October 2026. "
+        "09:00–10:30 GMT+8 at Singapore.")
+    def verifier(kind, fields, body):
+        result = {"comparisons": {key: {"status": "supported"} for key in fields}}
+        if kind == "meetings":
+            candidate = {key: None for key in EXTRACTION_FIELDS}
+            candidate.update(name="Climate risk conference", event_type="conference", organizer="Example Institute",
+                status="scheduled", date_precision="day", start_date="2026-10-20", end_date="2026-10-23",
+                raw_time_text="09:00–10:30", timezone="GMT+8", location="Singapore", date_evidence=body)
+            result["website_candidate"] = candidate
+        return result
+    clock[0] = datetime(2026, 10, 12, 9, tzinfo=timezone.utc)
+    runs = [checks.run_checks(writer, kind=kind, backup_dir=tmp_path / "backups",
+        fetcher=lambda identity, url, body=body: _record(identity, url, body), verifier=verifier)
+        for kind, body in (("articles", article_body), ("meetings", meeting_body))]
+    assert all(run["status"] == "complete" for run in runs)
+    reader = RegistryReader(public, repository_root=tmp_path / "application")
+    def freeze(root, occurrence="2026-10-12"):
+        web, pdf, manifest = load_active_range_overlay(runtime, queue, repository_root=tmp_path / "application")
+        return report_review.freeze_biweekly(reader, root, occurrence=occurrence,
+            web_reader=web, pdf_reader=pdf, manifest=manifest)
+    # Checks alone cannot expose the new version before the writer activates it.
+    assert freeze(tmp_path / "before-activation")["status"] == "pending_review"
+    before = json.loads((tmp_path / "before-activation/reports/2026-10-12/snapshot.json").read_text())
+    original_article = (before["articles"] + before["pdf_source_updates"])[0]
+    assert original_article["summary"] == json.loads(original_article["material_versions"][0]["fields_json"])["summary"]
+    assert "New supported flood" not in original_article["summary"]
+    assert before["pdf_calendar"]["records"][0].get("location") is None
+    for run in runs:
+        assert pipeline.refresh_checks(run["run_id"])["status"] == "chat_ready"
+    assert Path(original_metadata["pdf_registry_snapshot"]).read_bytes() == original_snapshot
+    active_generation, metadata = load_active_projection(runtime, queue / "active.json")
+    assert active_generation != original_generation
+    with sqlite3.connect(metadata["pdf_registry_snapshot"]) as db:
+        db.row_factory = sqlite3.Row
+        current = {row["source_ref"]: dict(row) for row in db.execute("SELECT * FROM knowledge_versions ORDER BY rowid")}
+    clock[0] = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+    root = tmp_path / "artifacts"
+    assert main(["--database", str(public), "--artifact-root", str(root), "--biweekly-date", "2026-10-12",
+        "--runtime-dir", str(runtime), "--queue-dir", str(queue)]) == 0
+    frozen = root / "reports/2026-10-12"
+    state = json.loads((frozen / "state.json").read_text())
+    snapshot = json.loads((frozen / "snapshot.json").read_text())
+    revision = frozen / "revisions/0001"
+    rendered = json.loads((revision / "report-source.json").read_text())
+    text = " ".join((revision / "full-text.txt").read_text().split())
+    assert state["status"] == "pending_review" and len(snapshot["material_versions"]) == 2
+    for material in snapshot["material_versions"]:
+        actual = current[material["source_ref"]]
+        assert material["knowledge_id"] == actual["knowledge_id"]
+        assert material["material_sha256"] == digest(knowledge_fields(json.loads(actual["fields_json"])))
+        assert material["selection_reason"] == "first_ingested"
+        assert material["original_period_time"] == material["first_ingested_at"] == "2026-10-11T12:00:00+00:00"
+        assert material["substantive_updated_at"] == "2026-10-12T09:00:00+00:00"
+    article = (snapshot["articles"] + snapshot["pdf_source_updates"])[0]
+    material = next(v for v in snapshot["material_versions"] if v["entity_kind"] == "article")
+    fields = json.loads(material["fields_json"])
+    assert article["summary"] == fields["summary"] and article["summary"] != original_article["summary"]
+    assert article["title"] == (fields.get("title") or fields["anchor_text"]) == "Climate publication"
+    assert article["publication_date"] == fields["publication_date"] == "2026-09-02"
+    assert article["material_versions"][0]["knowledge_id"] == material["knowledge_id"]
+    update = next(item for item in rendered["updates"] if item["article_id"] == material["entity_id"])
+    assert update["title"] == article["title"] and update["publication_date"] == article["publication_date"]
+    assert article["summary"] in "\n".join(update["paragraphs"])
+    assert "New supported flood insurance loss estimates" in article["summary"]
+    assert " ".join(article["summary"].split()) in text and article["title"] in text
+    calendar = snapshot["pdf_calendar"]["records"][0]
+    meeting = next(v for v in snapshot["material_versions"] if v["entity_kind"] == "meeting")
+    meeting_fields = json.loads(meeting["fields_json"])
+    assert calendar["pdf_event_id"] == meeting["entity_id"] and calendar["occurrence_id"] == meeting["source_ref"]
+    assert {key: calendar.get(key) for key in MEETING_FIELDS} == meeting_fields
+    assert all(value in text for value in ("Climate risk conference", "Example Institute", "Singapore", "GMT+8"))
+    assert any("Singapore" in str(value) for value in rendered["key_dates"] + rendered["date_notes"])
+    assert rendered["key_dates"][0][:3] == ["20–23 October 2026\n09:00–10:30\nGMT+8",
+        meeting_fields["name"], meeting_fields["organizer"]]
+
+    native = tmp_path / "hermes.db"
+    _native(native, "cron_t5_current", state["packet"])
+    at = datetime(2026, 10, 12, 12, 10, tzinfo=timezone.utc)
+    claim = report_review.claim_report(root, "2026-10-12", session_id="cron_t5_current", execution_id="current",
+        hermes_database=native, reviewer="native-reviewer", now=at)
+    reviewed = report_review.submit_report_review(root, "2026-10-12", claim["token"], status="pass",
+        reason="Current activated version actually inspected", now=at)
+    archive = json.loads((frozen / "archive.json").read_text())
+    assert {value[2] for value in archive["material_versions"]} == {v["material_sha256"] for v in snapshot["material_versions"]}
+
+    # A later activated check snapshot cannot rewrite this occurrence or reselect it.
+    frozen_bytes = {path: path.read_bytes() for path in (frozen / "snapshot.json", revision / "report-source.json", revision / "report.pdf")}
+    clock[0] = datetime(2026, 10, 13, 9, tzinfo=timezone.utc)
+    repeated = checks.run_checks(writer, kind="articles", backup_dir=tmp_path / "backups",
+        fetcher=lambda identity, url: _record(identity, url, article_body), verifier=verifier)
+    assert repeated["status"] == "complete" and pipeline.refresh_checks(repeated["run_id"])["status"] == "chat_ready"
+    assert freeze(root) == reviewed
+    assert all(path.read_bytes() == content for path, content in frozen_bytes.items())
+    assert freeze(root, "2026-10-26")["status"] == "no_eligible_information"
 
 
 @pytest.mark.parametrize("imported_at,new_location", [
