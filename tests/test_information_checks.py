@@ -278,11 +278,14 @@ def test_verified_reschedule_keeps_native_identity_across_all_readers(tmp_path, 
     assert len(model.key_dates) == 1 and model.key_dates[0][0] == item["raw_date"]
     assert model.key_dates[0][4].count("PDF import") == 1
     html = render_range_report_html(snapshot)
-    assert html.count("<strong>World Climate Summit 2027") == 1
+    assert html.count("World Climate Summit 2027") == 1
+    assert f'href="{url}"' in html
     chat = render_range_report_chat(snapshot, web_url="/report", pdf_url="/report/pdf")
     assert sum(item["name"] in line for line in chat.splitlines() if line.startswith("| ")) == 1
     text = "".join("".join(page.extract_text().split()) for page in PdfReader(ensure_range_report_pdf(snapshot, tmp_path / "reports")).pages)
-    assert text.count("".join(item["name"].split())) == 1
+    assert "".join(item["name"].split()) in text
+    annotations = [ref.get_object() for page in PdfReader(ensure_range_report_pdf(snapshot, tmp_path / "reports")).pages for ref in page.get("/Annots", [])]
+    assert sum(annotation.get("/A", {}).get("/URI") == url for annotation in annotations) == 1
     assert imported == source_copy
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT packet_json FROM meeting_check_attempts").fetchone()[0] == packet_before

@@ -219,6 +219,9 @@ def calendar_details(item: dict[str, Any]) -> tuple[str, ...]:
         details.append("Online event: " + str(online_url))
     if item.get("deadline_type"):
         details.append("Deadline type: " + str(item["deadline_type"]))
+    source_urls = list(dict.fromkeys(source_urls))[1:]
+    if source_urls:
+        details.append("Additional sources: " + ", ".join(source_urls))
     if item.get("summary") and item.get("calendar_field_basis") != "pdf_table_cells":
         details.append("Verbatim context: " + str(item["summary"]))
     return tuple(details)
@@ -242,9 +245,13 @@ def _key_date_rows(item: dict[str, Any], run_date: str | None = None) -> tuple[t
     if deadline:
         # The meeting contract verifies deadline_date independently of event precision.
         deadline = _date(deadline)
+        deadline_type = item.get("deadline_type")
+        name = item.get("name") or "Key date"
+        if deadline_type:
+            name = f"Deadline: {deadline_type} — {name}"
         rows.append(_key_date(dict(item, start_date=deadline, end_date=deadline,
             date_precision="day", raw_date=item.get("raw_date") if pure_deadline else None, raw_time_text=None,
-            name=item.get("name") or "Key date"), run_date))
+            name=name), run_date))
     return tuple(rows)
 
 

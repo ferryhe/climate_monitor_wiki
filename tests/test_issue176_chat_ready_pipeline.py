@@ -477,6 +477,10 @@ def test_active_pdf_only_article_excludes_unactivated_core_content_from_wiki_and
     article = snapshot["articles"][0]
     assert article["title"] == expected_title
     assert article["content_version_id"] is None and article["content"] is None
+    from climate_delivery.templates.adapters import adapt_range_report
+    update_model = adapt_range_report(snapshot).updates[0]
+    assert any(citation.label == "approved-confirmed.pdf, page 2" for citation in update_model.citations)
+    assert any(citation.url == "https://example.org/climate-study" for citation in update_model.citations)
     html = render_range_report_html(snapshot)
     pdf_text = "\n".join(
         page.extract_text() or ""
@@ -492,7 +496,7 @@ def test_active_pdf_only_article_excludes_unactivated_core_content_from_wiki_and
             "Approved PDF evidence for transition stress tests. "
             "Published 14 September 2026."
         ) in normalized
-        assert "approved-confirmed.pdf, page 2" in normalized
+        assert "approved-confirmed.pdf, page 2" not in normalized
 
 
 def test_active_untitled_pdf_source_ignores_failed_aggregate_title(tmp_path):
@@ -568,11 +572,16 @@ def test_active_untitled_pdf_source_ignores_failed_aggregate_title(tmp_path):
     )
     update = snapshot["pdf_source_updates"][0]
     assert update["observation_id"] == approved_id
-    assert update["title"] == approved_url
+    assert update["title"] == "Climate transition study"
+    assert update["title"] != "UNACTIVATED AGGREGATE PDF TITLE"
+    from climate_delivery.templates.adapters import adapt_range_report
+    update_model = adapt_range_report(snapshot).updates[-1]
+    assert ("File", "approved-untitled.pdf, page 2") in update_model.metadata
+    assert any(key == "SHA-256" for key, _ in update_model.metadata)
     html = render_range_report_html(snapshot)
     assert "UNACTIVATED AGGREGATE PDF TITLE" not in html
     assert "Approved PDF source evidence for regional stress tests" in html
-    assert "approved-untitled.pdf" in html
+    assert update["title"] in html and approved_url in html
 
 
 def test_pdf_failures_remain_in_history_after_retry_and_success(tmp_path):

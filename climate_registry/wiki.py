@@ -14,6 +14,7 @@ from typing import Any, Callable
 from .persistent import _file_sha256, _read_only_connection, _validate_database
 from .capture import article_body_markdown, article_preview
 from .read_api import RegistryReader
+from .information_checks import deduplicate_pdf_occurrences
 
 
 OccurrenceFilter = Callable[[dict], bool]
@@ -49,11 +50,19 @@ def _pdf_heading(occurrence: dict) -> str:
     return f"PDF report observation: {occurrence.get('occurrence_id') or 'unknown'}"
 
 
+def _verified_information_blocks(occurrence: dict) -> list[str]:
+    information = occurrence.get("verified_information")
+    return ["", "### Verified information", "", information["summary"],
+        "", "Categories: " + ", ".join(information["categories"]),
+        "Keywords: " + ", ".join(information["keywords"]),
+        f"Website evidence: {information['source_url']}; checked {information['generated_at']}"] if information else []
+
+
 def _render_registry_article(article: dict) -> str | None:
     content = article.get("available_content") or article.get("content", {})
     report_summary = article.get("report_summary")
     appearances = article.get("appearances", [])
-    pdf_occurrences = article.get("pdf_occurrences", [])
+    pdf_occurrences = deduplicate_pdf_occurrences(article.get("pdf_occurrences", []))
     acquisition_observations = article.get("acquisition_observations", [])
     date_observations = article.get("date_observations", [])
     current_version_has_appearance = any(
@@ -177,6 +186,7 @@ def _render_registry_article(article: dict) -> str | None:
                     _citation(occurrence),
                 ]
             )
+            blocks.extend(_verified_information_blocks(occurrence))
     for observation in acquisition_observations:
         observation_blocks = [
             "",
@@ -233,7 +243,7 @@ def _render_registry_source_observations(items: list[dict]) -> str | None:
     ]
     kept = 0
     for item in items:
-        for occurrence in item.get("occurrences", []):
+        for occurrence in deduplicate_pdf_occurrences(item.get("occurrences", [])):
             if not occurrence.get("summary"):
                 continue
             kept += 1
@@ -248,6 +258,7 @@ def _render_registry_source_observations(items: list[dict]) -> str | None:
                     _citation(occurrence),
                 ]
             )
+            blocks.extend(_verified_information_blocks(occurrence))
     return "\n".join([*blocks, ""]) if kept else None
 
 

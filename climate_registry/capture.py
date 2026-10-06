@@ -417,7 +417,8 @@ def deterministic_enrichment(markdown: str) -> dict[str, object]:
     if body is None:
         raise FetchFailure("insufficient_content", "no reliable article body was extracted")
     if body == markdown or _PAGE_MARKDOWN.search(body):
-        visible = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", body)
+        visible = re.sub(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)|!\[[^\]]*\]\([^)]*\)", "", body)
+        visible = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", visible)
     else:
         visible = _plain_markdown(body)
     visible = re.sub(r"(?mi)^#{1,6}\s+page\s+\d+\s*$", "", visible)

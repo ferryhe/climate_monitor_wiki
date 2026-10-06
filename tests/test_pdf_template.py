@@ -233,8 +233,10 @@ def test_calendar_urls_and_verbatim_context_survive_both_outputs(tmp_path, route
         render_pdf(summary, path)
     _, text = text_of(path)
     html = range_reports.render_range_report_html(snapshot)
-    for value in [*record["source_urls"], record["summary"], "Verbatim context:", "PDF import"]:
+    for value in [record["source_urls"][1], record["summary"], "Verbatim context:", "PDF import"]:
         assert "".join(value.split()) in "".join(text.split()) and value in html
+    annotations = [ref.get_object() for page in PdfReader(path).pages for ref in page.get("/Annots", [])]
+    assert any(annotation.get("/A", {}).get("/URI") == record["source_urls"][0] for annotation in annotations)
     assert "calendar.pdf" not in text and "calendar.pdf" not in html
     assert (snapshot, summary) == original
 
@@ -283,13 +285,17 @@ def test_key_dates_preserve_real_meeting_query_fields_and_sources(tmp_path):
     assert model.key_dates[0][2:4] == (record["organizer"], record["relevance_reason"])
     path = tmp_path / "real-meeting.pdf"
     range_reports.render_range_report_pdf(snapshot, path)
-    _, text = text_of(path)
+    reader, text = text_of(path)
     compact_text = "".join(text.split())
     html = range_reports.render_range_report_html(snapshot)
     for value in [record["organizer"], record["relevance_reason"], record["start_date"],
-                  record["end_date"], record["raw_time_text"],
-                  *[source["source_url"] for source in record["sources"]]]:
+                  record["end_date"], record["raw_time_text"]]:
         assert value in html and "".join(value.split()) in compact_text
+    annotations = [ref.get_object() for page in reader.pages for ref in page.get("/Annots", [])]
+    linked_urls = {annotation.get("/A", {}).get("/URI") for annotation in annotations}
+    for source in record["sources"]:
+        assert source["source_url"] in html
+        assert source["source_url"] in linked_urls or source["source_url"] in text
     assert "(current)" in model.key_dates[0][0]
     assert snapshot == original
 
@@ -344,6 +350,7 @@ def test_key_dates_preserve_real_independent_deadline(tmp_path, route, standalon
     else:
         assert len(model.key_dates) == 2
         event = model.key_dates[0]
+        assert event[1] == record["name"]
         assert "2027-06-10" in event[0] and "2027-06-12" in event[0] and "(future)" in event[0]
     path = tmp_path / f"deadline-{route}.pdf"
     if route == "range":
@@ -352,10 +359,15 @@ def test_key_dates_preserve_real_independent_deadline(tmp_path, route, standalon
         render_pdf(summary, path)
     _, text = text_of(path)
     html = range_reports.render_range_report_html(snapshot)
+    annotations = [ref.get_object() for page in PdfReader(path).pages for ref in page.get("/Annots", [])]
+    linked_urls = {annotation.get("/A", {}).get("/URI") for annotation in annotations}
     for row in model.key_dates:
-        for value in row:
+        for value in row[:4]:
             assert "".join(value.split()) in "".join(text.split())
             assert value in html
+        for source_url in row[4].splitlines():
+            assert source_url in html
+            assert source_url in linked_urls or source_url in text
     assert (snapshot, summary) == original
 
 
@@ -425,7 +437,8 @@ def test_merged_collected_meeting_preserves_original_pdf_date_text_and_snapshot(
     assert len(report.key_dates) == 1 and report.key_dates[0][0] == original["raw_date"]
     assert report.key_dates[0][4].count("PDF import") == 1
     page = range_reports.render_range_report_html(snapshot)
-    assert page.count("<strong>Climate conference</strong>") == 1
+    assert page.count("Climate conference") == 1
+    assert 'href="https://example.test/event"' in page
     calendar = page.split('<h2 id="key-dates">', 1)[1].split('<h2 id="updates">', 1)[0]
     assert original["raw_date"] in calendar and calendar.count("PDF import") == 1
     assert snapshot == frozen

@@ -549,6 +549,18 @@ The public contract is GET-only:
 - `/api/registry/articles/{article_id}` provides metadata, source links,
   appearances, fetch status, and permitted enrichment/content.
 
+The website requests `include_pdf=true` for Historical Reports and Article
+Database. Historical Reports includes one entry per imported PDF hash with its
+report date and import source. PDF detail exposes retained report metadata,
+executive summary, article observations, calendar rows and extracted page text;
+`/api/registry/pdf-intake/reports/{sha256}/pdf` downloads the original retained
+bytes. Runtime PDFs must be in the active manifest to appear or be downloaded.
+Article Database combines Registry and PDF entries before filtering/pagination,
+keeping one canonical URL with provenance in each row. Its left list omits
+summaries; full article details retain them. Duplicate PDF passages from the
+same file hash, page, canonical URL and normalized text merge their provenance
+and check results for display without deleting the stored source/audit rows.
+
 Article Detail enforces `display_policy`. Enrichment summary, categories,
 keywords, language, and generator provenance remain display metadata for all
 policies. `metadata_only` exposes no stored body or excerpt.

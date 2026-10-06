@@ -107,7 +107,6 @@ const state = {
     loaded: false,
     available: false,
     mode: "reports",
-    articleSource: "registry",
     reportPage: 1,
     articlePage: 1,
     meetingPage: 1,
@@ -183,6 +182,7 @@ const els = {
   registrySnapshotNotes: document.getElementById("registrySnapshotNotes"),
   registryReportArticlesTitle: document.getElementById("registryReportArticlesTitle"),
   registryReportArticles: document.getElementById("registryReportArticles"),
+  registryImportedReport: document.getElementById("registryImportedReport"),
   reportsPrevious: document.getElementById("reportsPrevious"),
   reportsNext: document.getElementById("reportsNext"),
   reportsPage: document.getElementById("reportsPage"),
@@ -205,8 +205,6 @@ const els = {
   registryContentTitle: document.getElementById("registryContentTitle"),
   registryMarkdown: document.getElementById("registryMarkdown"),
   registryModeButtons: Array.from(document.querySelectorAll("[data-registry-mode]")),
-  registryArticleSourceButtons: Array.from(document.querySelectorAll("[data-article-source]")),
-  registryArticleSourceHint: document.getElementById("registryArticleSourceHint"),
   answerModeButtons: Array.from(document.querySelectorAll("[data-answer-mode]")),
   graphModeButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   workspaceTabs: Array.from(document.querySelectorAll(".tabbar__tab")),
@@ -1647,6 +1645,7 @@ function appendInformationCheck(container, item) {
       block.append(registryElement("dt", "", field.replaceAll("_", " ")), registryElement("dd", "", text));
     });
     if (check.error) block.append(registryElement("dt", "", "Check result"), registryElement("dd", "", check.error));
+    if (check.enrichment_error) block.append(registryElement("dt", "", "Enrichment result"), registryElement("dd", "", check.enrichment_error));
     details.append(block);
   });
   container.append(details);
@@ -1747,7 +1746,7 @@ async function loadRegistryPublishers() {
   const allPublishers = registryElement("option", "", "All publishers");
   allPublishers.value = "";
   try {
-    const payload = await registryFetch("/api/registry/publishers");
+    const payload = await registryFetch("/api/registry/publishers?include_pdf=true");
     const options = (payload.items || []).map((publisher) => {
       const option = registryElement("option", "", publisher.label || publisher.hostname);
       option.value = publisher.hostname;
@@ -1787,7 +1786,7 @@ async function loadRegistry() {
 async function loadRegistryOnce() {
   renderRegistryNotice(els.registryReports, "Checking the historical archive…");
   try {
-    const status = await registryFetch("/api/registry/status");
+    const status = await registryFetch("/api/registry/status?include_pdf=true");
     state.registry.loaded = true;
     state.registry.available = Boolean(status.available);
     if (!status.available) {
@@ -1816,7 +1815,7 @@ async function loadRegistryReports() {
   renderRegistryNotice(els.registryReports, "Loading reports…");
   try {
     const payload = await registryFetch(
-      `/api/registry/reports?page=${state.registry.reportPage}&page_size=12`,
+      `/api/registry/reports?include_pdf=true&page=${state.registry.reportPage}&page_size=12`,
     );
     state.registry.reportPagination = payload.pagination;
     els.registryReports.replaceChildren();
@@ -1826,12 +1825,14 @@ async function loadRegistryReports() {
     payload.items.forEach((report) => {
       const button = registryElement("button", "registry-card");
       button.type = "button";
-      button.dataset.reportDate = report.report_date;
+      if (report.source_kind === "pdf") button.dataset.pdfReportId = report.report_id;
+      else button.dataset.reportDate = report.report_date;
       const heading = registryElement("strong", "registry-card__title", report.report_title);
       const metadata = registryElement(
         "span",
         "registry-card__meta",
-        `${report.report_date} · ${report.article_count} articles · ${report.monitoring_status.replaceAll("_", " ")}`,
+        [report.report_date || "Report date unavailable", report.source_label || "Monitoring report",
+          report.source_kind === "pdf" ? report.filename : "", `${report.article_count} articles`].filter(Boolean).join(" · "),
       );
       button.append(heading, metadata);
       els.registryReports.append(button);
@@ -1844,6 +1845,8 @@ async function loadRegistryReports() {
 }
 
 function clearHistoricalReportContent() {
+  els.registryImportedReport.hidden = true;
+  els.registryImportedReport.replaceChildren();
   els.registryReportPdf.hidden = true;
   els.registryReportPdf.removeAttribute("href");
   els.registryReportPdf.removeAttribute("download");
@@ -2024,16 +2027,13 @@ async function loadRegistryArticles() {
   const params = new URLSearchParams({
     page: String(state.registry.articlePage),
     page_size: "20",
+    include_pdf: "true",
   });
   if (els.registrySearch.value.trim()) params.set("query", els.registrySearch.value.trim());
   const publisher = els.registryPublisherCustom?.value.trim() || els.registryPublisherFilter.value;
   if (publisher) params.set("source", publisher);
   try {
-    const pdfSource = state.registry.articleSource === "pdf";
-    const endpoint = pdfSource
-      ? "/api/registry/pdf-intake/articles"
-      : "/api/registry/articles";
-    const payload = await registryFetch(`${endpoint}?${params.toString()}`);
+    const payload = await registryFetch(`/api/registry/articles?${params.toString()}`);
     if (requestSequence !== state.registry.articleRequestSequence) {
       return;
     }
@@ -2042,30 +2042,25 @@ async function loadRegistryArticles() {
     if (!payload.items.length) {
       renderRegistryNotice(
         els.registryArticles,
-        pdfSource ? "No PDF imports match these filters." : "No articles match these filters.",
+        "No articles match these filters.",
       );
     }
     payload.items.forEach((article) => {
       const button = registryElement("button", "registry-card");
       button.type = "button";
       button.dataset.articleId = article.article_id;
+      const pdfSource = article.source_kind === "pdf";
       button.dataset.articleSource = pdfSource ? "pdf" : "registry";
-      const summaryPresentation = registrySummaryPresentation(article);
       button.append(
         registryElement("strong", "registry-card__title", article.title || article.canonical_url),
         registryElement(
           "span",
           "registry-card__meta",
           pdfSource
-            ? `${article.publisher} · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · last seen ${article.last_seen || "—"}`
-            : `${article.publisher} · last seen ${article.last_seen}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
+            ? `${article.publisher} · PDF import · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · last seen ${article.last_seen || "—"}`
+            : `${article.publisher} · ${article.source_label || "Registry"} · last seen ${article.last_seen}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
         ),
       );
-      if (summaryPresentation.text) {
-        button.append(
-          registryElement("span", "registry-card__summary", summaryPresentation.text),
-        );
-      }
       els.registryArticles.append(button);
     });
     updateRegistryPagination("articles", payload.pagination);
@@ -2078,36 +2073,95 @@ async function loadRegistryArticles() {
   }
 }
 
-function setRegistryArticleSource(source) {
-  const nextSource = source === "pdf" ? "pdf" : "registry";
-  if (state.registry.articleSource !== nextSource) {
-    state.registry.articleDetailRequestSequence += 1;
-    els.registryArticleDetail.setAttribute("aria-busy", "false");
-    els.registryArticleTitle.textContent = "Select an article";
-    els.registryArticleMeta.replaceChildren();
-    els.registryEnrichment.replaceChildren();
-    els.registryEnrichment.hidden = true;
-    els.registryAppearances.replaceChildren();
-    els.registryAppearancesSection.hidden = true;
-    els.registryContentSection.hidden = true;
-    els.registryMarkdown.textContent = "";
-    els.registryOriginalLink.hidden = true;
-    els.registryOriginalLink.removeAttribute("href");
-  }
-  state.registry.articleSource = nextSource;
-  state.registry.articlePage = 1;
-  state.registry.articlePagination = null;
-  els.registryArticleSourceButtons.forEach((button) => {
-    const active = button.dataset.articleSource === state.registry.articleSource;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
-  els.registryArticleSourceHint.textContent = state.registry.articleSource === "pdf"
-    ? "One entry per canonical URL. URLs already in Registry articles appear with their PDF history in the article detail."
-    : "PDF links that match a Registry article are shown in that article’s detail.";
-  updateRegistryPagination("articles", null);
-  if (state.registry.available) {
-    void loadRegistryArticles();
+function appendVerifiedInformation(container, information) {
+  if (!information) return;
+  const block = registryElement("section", "registry-detail-section");
+  block.append(registryElement("h4", "", "Verified information"));
+  if (information.summary) block.append(registryElement("p", "", information.summary));
+  appendRegistryTags(block, "Categories", information.categories || []);
+  appendRegistryTags(block, "Keywords", information.keywords || []);
+  block.append(registryElement("p", "muted", `From checked website content · ${information.generated_at || ""}`));
+  container.append(block);
+}
+
+async function loadImportedRegistryReport(documentId) {
+  const requestToken = ++state.registry.reportRequestSequence;
+  state.registry.selectedReportDate = documentId;
+  const isCurrent = () => requestToken === state.registry.reportRequestSequence;
+  clearHistoricalReportContent();
+  els.registryReportDetail.setAttribute("aria-busy", "true");
+  els.registryReportTitle.textContent = "Loading imported report…";
+  els.registryReportMeta.textContent = "Loading PDF details…";
+  try {
+    const report = await registryFetch(`/api/registry/pdf-intake/reports/${encodeURIComponent(documentId)}`);
+    if (!isCurrent()) return;
+    els.registryReportTitle.textContent = report.report_title;
+    els.registryReportMeta.textContent = [report.report_date || "Report date unavailable", "PDF import", report.filename].join(" · ");
+    const details = els.registryImportedReport;
+    const metadata = registryElement("dl", "detail-meta");
+    const fields = {"Report date": report.report_date, "Sources": report.source_filenames?.join(", "),
+      "Edition": report.edition, "Reporting period": report.reporting_period,
+      "Period start": report.period_start, "Period end": report.period_end, "Pages": report.page_count,
+      "PDF created": report.pdf_created_at, "PDF modified": report.pdf_modified_at, "Imported": report.imported_at};
+    Object.entries(fields).forEach(([label, value]) => {
+      if (value != null && value !== "") metadata.append(registryMetric(label, value));
+    });
+    Object.entries(report.pdf_metadata || {}).forEach(([label, value]) => metadata.append(registryMetric(label.replace(/^\//, ""), value)));
+    details.append(metadata);
+    (report.executive_summary || []).forEach((summary) => {
+      details.append(registryElement("h4", "", "Executive Summary"), registryElement("p", "", summary));
+    });
+    if (report.articles?.length) details.append(registryElement("h4", "", "Articles"));
+    (report.articles || []).forEach((article) => {
+      const button = registryElement("button", "registry-article-link", article.title || article.canonical_url);
+      button.type = "button";
+      button.dataset.articleId = article.article_id;
+      button.dataset.articleSource = "pdf";
+      details.append(button);
+      appendRegistryPdfOccurrences(details, article.occurrences);
+    });
+    if (report.calendar_items?.length) details.append(registryElement("h4", "", "Meetings & Key Dates"));
+    (report.calendar_items || []).forEach((item) => {
+      const block = registryElement("section", "registry-detail-section");
+      block.append(registryElement("h4", "", item.name || "Calendar item"));
+      const values = registryElement("dl", "detail-meta");
+      ["kind", "event_type", "raw_date", "date_precision", "start_date", "end_date", "date_evidence",
+        "organizer", "publisher", "location", "raw_time_text", "event_timezone", "status", "deadline_type",
+        "deadline_date", "deadline_evidence", "relevance", "page"].forEach((key) => {
+        if (item[key]) values.append(registryMetric(key.replaceAll("_", " "), item[key]));
+      });
+      block.append(values);
+      [...new Set([...(item.source_urls || []), item.online_url])].forEach((url) => {
+        const safe = safeSourceUrl(url);
+        if (!safe) return;
+        const link = registryElement("a", "registry-source-link", url);
+        link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
+        block.append(link);
+      });
+      appendInformationCheck(block, item);
+      details.append(block);
+    });
+    (report.pages || []).forEach((page) => {
+      if (!page.text) return;
+      const section = registryElement("details", "registry-detail-section");
+      section.append(registryElement("summary", "", `Extracted text · page ${page.page}`), registryElement("pre", "md-preview", page.text));
+      details.append(section);
+    });
+    details.hidden = false;
+    const download = report.report_pdf;
+    if (download?.download_url === `/api/registry/pdf-intake/reports/${documentId}/pdf` && download.filename) {
+      els.registryReportPdf.href = download.download_url;
+      els.registryReportPdf.download = download.filename;
+      els.registryReportPdf.hidden = false;
+    }
+  } catch (error) {
+    if (isCurrent()) {
+      clearHistoricalReportContent();
+      els.registryReportTitle.textContent = "Report unavailable";
+      els.registryReportMeta.textContent = registryErrorMessage(error);
+    }
+  } finally {
+    if (isCurrent()) els.registryReportDetail.setAttribute("aria-busy", "false");
   }
 }
 
@@ -2132,6 +2186,7 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."),
     );
     appendInformationCheck(item, occurrence);
+    appendVerifiedInformation(item, occurrence.verified_information);
     const sourceUrl = safeSourceUrl(occurrence.raw_url);
     if (sourceUrl) {
       const link = registryElement("a", "registry-source-link", "Open source link");
@@ -2327,10 +2382,6 @@ function attachEvents() {
     button.addEventListener("click", () => setRegistryMode(button.dataset.registryMode));
   });
 
-  els.registryArticleSourceButtons.forEach((button) => {
-    button.addEventListener("click", () => setRegistryArticleSource(button.dataset.articleSource));
-  });
-
   if (els.registrySearchForm) {
     els.registrySearchForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -2457,6 +2508,11 @@ function attachEvents() {
       return;
     }
 
+    const pdfReportCard = target.closest("[data-pdf-report-id]");
+    if (pdfReportCard) {
+      void loadImportedRegistryReport(pdfReportCard.dataset.pdfReportId);
+      return;
+    }
     const reportCard = target.closest("[data-report-date]");
     if (reportCard) {
       openHistoricalReport(reportCard.dataset.reportDate);
@@ -2467,9 +2523,6 @@ function attachEvents() {
     if (articleCard) {
       setRegistryMode("articles");
       const articleSource = articleCard.dataset.articleSource || "registry";
-      if (state.registry.articleSource !== articleSource) {
-        setRegistryArticleSource(articleSource);
-      }
       void loadRegistryArticle(articleCard.dataset.articleId, articleSource);
       return;
     }

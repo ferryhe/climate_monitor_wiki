@@ -24,7 +24,8 @@ stored summaries and bodies appear once in the numbered updates. The HTML
 report retains its stored executive-summary mapping. Weekly executive prose,
 monitoring notes and highlight summaries remain source supplied.
 
-Updates retain title, publisher, topic, full body and caveats. Publisher names
+Updates retain title, publisher, topic, full body and caveats. Verified categories
+and keywords are labelled in the update details. Publisher names
 are normalized from configured and explicitly mapped official source URLs or
 exact known aliases; a known URL owner takes precedence over an inherited report
 heading. Unknown publisher names remain unchanged, and titles are never used to
@@ -66,7 +67,7 @@ Unavailable acquisition or calendar data is never presented as quiet.
 
 ## Versions and archives
 
-The default is iaa-csc v8, renderer reportlab-2. Calendar clocks, timezones and
+The default is iaa-csc v9, renderer reportlab-2. Calendar clocks, timezones and
 venues appear only when supplied by the source. Cache identity also includes
 ReportLab's version. A new template receives a new cache path. Existing PDFs
 are never overwritten, including prior shared templates and range-report-v1/v2.
