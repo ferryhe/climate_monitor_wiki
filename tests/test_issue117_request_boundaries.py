@@ -3057,6 +3057,10 @@ def test_execute_rejects_mode_mismatch_and_legacy_binding_defaults_to_report(
     import scripts.run_agent_acquisition as runner
 
     task_binding, path, _, _ = _frozen_report_resume(tmp_path)
+    from climate_registry.persistent import initialize_registry
+    database=Path(task_binding["registry_database"])
+    initialize_registry(database)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     task_binding["execution_mode"] = "report"
     path.write_text(json.dumps(task_binding), encoding="utf-8")
     with pytest.raises(ValueError, match="execution mode differs from the frozen binding"):
@@ -6244,6 +6248,7 @@ def test_lower_fetch_override_is_frozen(tmp_path):
     definition['parameters']['budgets']['fetch_attempts'] = 1
     definition['runtime'].update(run_root=str(tmp_path), registry_database=str(tmp_path/'registry.db'))
     initialize_registry(tmp_path/'registry.db')
+    __import__('os').environ['CLIMATE_REGISTRY_DB'] = str(tmp_path/'registry.db')
     value = build_task_binding(definition, task_version=1, run_id='small', attempt=1)
     assert value['budgets']['fetch_attempts'] == 1
     assert value['governed_gateway']['budget_limit'] == 1

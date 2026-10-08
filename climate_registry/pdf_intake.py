@@ -7,7 +7,6 @@ import binascii
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import tempfile
 from collections import defaultdict
@@ -23,6 +22,7 @@ from .persistent import (
     _file_sha256,
     _fsync_parent,
     _read_only_connection,
+    _preserve_database_metadata,
     _sqlite_sidecars,
     _validate_database,
 )
@@ -124,6 +124,7 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
 
     now = datetime.now(timezone.utc).isoformat()
     with _exclusive_database_lock(database):
+        live_metadata = database.stat()
         if sidecars := _sqlite_sidecars(database):
             raise RegistryInputError(
                 "registry has active SQLite sidecar files; reconcile before PDF import: "
@@ -133,6 +134,8 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
         source = _read_only_connection(database)
         try:
             _validate_database(source)
+            from .publication import require_publication_migration
+            require_publication_migration(source)
             backup_dir.mkdir(parents=True, exist_ok=True)
             backup = backup_dir / _backup_name(database)
             if backup.exists():
@@ -156,7 +159,6 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                 backup_connection.close()
             if os.name == "posix":
                 backup.chmod(0o600)
-                shutil.copymode(database, candidate)
             _fsync_parent(backup)
 
             connection = sqlite3.connect(candidate)
@@ -311,6 +313,8 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                                 (json.dumps(classification, ensure_ascii=False, sort_keys=True),
                                  occurrence_id),
                             )
+                    from .publication import stage_entities
+                    stage_entities(connection)
                     connection.commit()
                 except Exception:
                     connection.rollback()
@@ -322,6 +326,7 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
 
             if _sqlite_sidecars(database) or _file_sha256(database) != fingerprint:
                 raise RegistryLockError("live Registry changed while PDF intake was prepared")
+            _preserve_database_metadata(candidate, live_metadata)
             os.replace(candidate, database)
             _fsync_parent(database)
             return {"status": "updated", "schema_version": LATEST_SCHEMA_VERSION,

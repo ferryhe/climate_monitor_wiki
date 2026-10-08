@@ -120,6 +120,8 @@ def run(binding: dict) -> dict:
     if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != binding["prompt_sha256"]:
         raise ValueError("meeting worker prompt hash mismatch")
     _linked_acquisition(binding)
+    from climate_registry.publication import resolve_database
+    resolve_database(frozen=binding["registry_database"])
     return process_batch(
         binding["registry_database"], binding["acquisition_batch_id"],
         prompt_text=prompt, prompt_version=binding["prompt_version"],

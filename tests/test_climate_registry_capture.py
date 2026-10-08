@@ -931,6 +931,45 @@ def test_live_fingerprint_race_aborts_atomic_install(tmp_path):
     assert database.with_name(f"{database.name}.lock").is_file()
 
 
+def test_network_capture_allows_pdf_replacement_and_preserves_both_writes(tmp_path):
+    from climate_monitor.pdf_intake import import_pdf_reports
+    from climate_registry.pdf_intake import persist_pdf_intake
+    database = _registry(tmp_path)
+    pdf = tmp_path / "parallel.pdf"
+    page = canvas.Canvas(str(pdf))
+    page.drawString(50,760,"Climate Risk Outlook");page.showPage()
+    page.drawString(50,760,"UPDATES");page.drawString(50,740,"Insurance transition evidence")
+    page.drawString(50,720,"REPORT COVERAGE");page.drawString(50,700,"Preserved parallel PDF observation.")
+    page.linkURL("https://pdf.example/parallel",(48,738,360,754),relative=0);page.showPage();page.save()
+    bundle = import_pdf_reports([pdf])
+    assert bundle["articles"]
+    class ConcurrentTransport(FakeTransport):
+        def request(self,*args,**kwargs):
+            persist_pdf_intake(database,tmp_path/"pdf-backups",bundle)
+            return super().request(*args,**kwargs)
+    result = _run(database,tmp_path,ConcurrentTransport(_response()))
+    assert result["status"] == "updated"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM pdf_intake_documents").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM article_content_versions").fetchone()[0] == 1
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_network_capture_rejects_changed_article_binding(tmp_path):
+    database = _registry(tmp_path)
+    class ConcurrentTransport(FakeTransport):
+        def request(self,*args,**kwargs):
+            with capture._exclusive_database_lock(database):
+                with sqlite3.connect(database) as connection:
+                    connection.execute("UPDATE articles SET canonical_url='https://example.com/new'")
+            return super().request(*args,**kwargs)
+    with pytest.raises(RegistryLockError,match="article changed"):
+        _run(database,tmp_path,ConcurrentTransport(_response()))
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT canonical_url FROM articles").fetchone()[0] == "https://example.com/new"
+        assert connection.execute("SELECT count(*) FROM article_content_versions").fetchone()[0] == 0
+
+
 def test_max_body_and_timeout_failures_have_stable_codes():
     with pytest.raises(registry_fetch.FetchFailure) as error:
         registry_fetch.fetch_document(

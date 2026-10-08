@@ -36,6 +36,9 @@ def _store(tmp_path: Path) -> TaskDefinitionStore:
 def _definition(tmp_path: Path) -> dict:
     from climate_monitor.management import default_task_definition
 
+    from climate_registry.persistent import initialize_registry
+    initialize_registry(tmp_path / "registry.sqlite3")
+    os.environ["CLIMATE_REGISTRY_DB"] = str(tmp_path / "registry.sqlite3")
     value = default_task_definition()
     value["parameters"].update(
         report_date="2026-09-07",
@@ -202,15 +205,15 @@ def _controlled_site_result(tmp_path: Path, source: dict, *, candidates: list[di
             "manifest": manifest, "outcome": outcome, "candidates": candidates}
 
 
-def test_runtime_paths_and_source_inventory_are_frozen_and_safe(tmp_path):
+def test_runtime_paths_and_source_inventory_are_frozen_and_safe(tmp_path, monkeypatch):
     definition = _definition(tmp_path)
     definition["parameters"]["source_keys"] = ["not-a-real-source"]
     with pytest.raises(ValueError, match="source inventory"):
         build_task_binding(definition, task_version=1, run_id="safe-run", attempt=1)
 
     definition = _definition(tmp_path)
-    definition["runtime"]["registry_database"] = "relative.sqlite3"
-    with pytest.raises(ValueError, match="absolute canonical regular file"):
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", "relative.sqlite3")
+    with pytest.raises(ValueError, match="absolute existing database"):
         build_task_binding(definition, task_version=1, run_id="safe-run", attempt=1)
 
     definition = _definition(tmp_path)
@@ -307,8 +310,9 @@ def test_meeting_auto_launch_is_disabled_or_failure_isolated(tmp_path, monkeypat
     assert runner._launch_meeting_worker(path, {"meeting": {"enabled": False}}) == {
         "status": "disabled"
     }
+    _definition(tmp_path)
     binding = {
-        "run_id": "run", "acquisition_batch_id": "batch", "registry_database": str(tmp_path / "db"),
+        "run_id": "run", "acquisition_batch_id": "batch", "registry_database": str(tmp_path / "registry.sqlite3"),
         "task_version": 3,
         "meeting": {
             "enabled": True, "prompt_version": "v1", "prompt_sha256": "a" * 64,

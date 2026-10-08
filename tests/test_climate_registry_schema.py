@@ -145,10 +145,10 @@ def test_v9_contract_rejects_unversioned_v10_trigger():
 def test_migrations_are_idempotent_and_enable_foreign_keys():
     connection = sqlite3.connect(":memory:")
 
-    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    assert apply_migrations(connection) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
     assert apply_migrations(connection) == []
     assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
-    assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (22,)
     tables = {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -167,6 +167,95 @@ def test_migrations_are_idempotent_and_enable_foreign_keys():
         "discoveries",
         "report_appearances",
     } <= tables
+
+
+def test_v20_allows_manual_enrichment_and_preserves_existing_enrichments():
+    connection = sqlite3.connect(":memory:")
+    apply_migrations(connection, target_version=19)
+    _insert_article(connection)
+    connection.execute(
+        """INSERT INTO article_versions(
+               version_id, article_id, observed_title, canonical_title, observed_summary,
+               content_fingerprint, content_basis, first_seen, last_seen
+           ) VALUES ('av', 'a', 'Title', 'Title', 'Observed summary', 'fp',
+                     'report-title-summary', '2026-01-01', '2026-01-01')"""
+    )
+    connection.execute("UPDATE articles SET current_version_id='av' WHERE article_id='a'")
+    connection.execute(
+        """INSERT INTO article_content_versions(
+               content_version_id, article_id, content_sha256, markdown_content,
+               markdown_sha256, content_type, source_bytes, extraction_method,
+               extraction_version, first_fetched_at
+           ) VALUES ('cv', 'a', ?, '# Body', ?, 'text/markdown', 6, 'test', 'v1',
+                     '2026-01-02T00:00:00Z')""",
+        ("a" * 64, "b" * 64),
+    )
+    connection.execute(
+        """INSERT INTO article_enrichments(
+               enrichment_id, content_version_id, status, summary, categories_json,
+               keywords_json, language, generator_kind, generator_name,
+               generator_version, generated_at
+           ) VALUES ('old', 'cv', 'complete', 'Summary', '[]', '[]', 'en',
+                     'deterministic', 'rules', 'v1', '2026-01-03T00:00:00Z')"""
+    )
+    connection.commit()
+
+    assert apply_migrations(connection, target_version=20) == [20]
+    assert validate_registry_contract(connection) == 20
+    assert connection.execute(
+        "SELECT generator_kind, summary FROM article_enrichments WHERE enrichment_id='old'"
+    ).fetchone() == ("deterministic", "Summary")
+    connection.execute(
+        """INSERT INTO article_enrichments(
+               enrichment_id, article_id, article_version_id, content_version_id,
+               status, summary, categories_json, keywords_json, language, generator_kind,
+               generator_name, generator_version, generated_at
+           ) VALUES ('manual-version', 'a', 'av', NULL, 'complete', 'Manual summary',
+                     '[\"risk\"]', '[\"flood\"]', 'en', 'manual', 'human-review',
+                     'manual-v1', '2026-01-04T00:00:00Z')"""
+    )
+    assert connection.execute(
+        "SELECT article_id, article_version_id, content_version_id, generator_kind FROM article_enrichments WHERE enrichment_id='manual-version'"
+    ).fetchone() == ("a", "av", None, "manual")
+    connection.execute(
+        """INSERT INTO article_enrichments(
+               enrichment_id, content_version_id, status, summary, categories_json,
+               keywords_json, language, generator_kind, generator_name,
+               generator_version, generated_at
+           ) VALUES ('manual', 'cv', 'complete', 'Reviewed summary', '[\"risk\"]',
+                     '[\"flood\"]', 'en', 'manual', 'editor', '2026-10-07',
+                     '2026-10-07T00:00:00Z')"""
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        connection.execute(
+            """INSERT INTO article_enrichments(
+                   enrichment_id, content_version_id, status, summary, categories_json,
+                   keywords_json, language, generator_kind, generator_name,
+                   generator_version, generated_at
+               ) VALUES ('bad', 'cv', 'complete', 'Summary', '[]', '[]', 'en',
+                         'unknown', 'editor', 'v1', '2026-10-07T00:00:00Z')"""
+        )
+    connection.execute(
+        "INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen) "
+        "VALUES ('b', 'https://example.com/b', 's', '2026-01-01', '2026-01-01')"
+    )
+    connection.execute(
+        """INSERT INTO article_versions(
+               version_id, article_id, observed_title, canonical_title, observed_summary,
+               content_fingerprint, content_basis, first_seen, last_seen
+           ) VALUES ('bv', 'b', 'Title B', 'Title B', 'Summary B', 'fp-b',
+                     'report-title-summary', '2026-01-01', '2026-01-01')"""
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="belongs to another article"):
+        connection.execute(
+            """INSERT INTO article_enrichments(
+                   enrichment_id, article_id, article_version_id, status, summary,
+                   categories_json, keywords_json, language, generator_kind,
+                   generator_name, generator_version, generated_at
+               ) VALUES ('wrong-owner', 'a', 'bv', 'complete', 'Summary',
+                         '[]', '[]', 'en', 'manual', 'editor', 'v1',
+                         '2026-10-07T00:00:00Z')"""
+        )
 
 
 def test_schema_v17_remains_readable_and_v18_date_evidence_is_append_only():
@@ -219,8 +308,8 @@ def test_schema_v13_migrates_pdf_sources_without_rewriting_evidence():
     )
     connection.commit()
 
-    assert apply_migrations(connection) == [14, 15, 16, 17, 18, 19]
-    assert validate_registry_contract(connection) == 19
+    assert apply_migrations(connection) == [14, 15, 16, 17, 18, 19, 20, 21, 22]
+    assert validate_registry_contract(connection) == 22
     assert connection.execute(
         "SELECT source_path, filename, observed_at FROM pdf_intake_document_sources"
     ).fetchone() == ("C:/input/report.pdf", "report.pdf", "2026-09-01T00:00:00Z")
@@ -361,9 +450,9 @@ def test_v2_to_v3_preserves_existing_rows_and_defaults_to_summary_excerpt():
         for table in ("sources", "articles", "article_versions", "reports", "discoveries")
     }
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
 
-    assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (22,)
     assert connection.execute(
         "SELECT current_content_version_id, display_policy FROM articles WHERE article_id = 'a'"
     ).fetchone() == (None, "summary_excerpt")
@@ -449,7 +538,7 @@ def test_v2_to_v3_preserves_the_historical_audit_baseline_counts():
         for table in counts_before
     } == counts_before
 
-    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    assert apply_migrations(connection) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
 
     assert {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

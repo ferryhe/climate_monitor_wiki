@@ -92,12 +92,12 @@ def test_docker_build_context_includes_registry_runtime_dependencies():
     assert "!monitoring/taxonomies/**" in dockerignore_entries
 
 
-def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only_bind():
+def test_registry_compose_override_uses_one_selected_external_directory():
     override = (ROOT / "docker-compose.registry.yml").read_text(encoding="utf-8")
-    assert "CLIMATE_REGISTRY_DB: /registry/article-registry.sqlite3" in override
+    assert "CLIMATE_REGISTRY_DB: ${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}" in override
     assert "${CLIMATE_REGISTRY_HOST_DIR:?" in override
     assert "target: /registry" in override
-    assert "read_only: true" in override
+    assert "read_only: false" in override
     assert "create_host_path: false" in override
     assert "/app/data/registry" not in override
     assert "./" not in override
@@ -112,26 +112,28 @@ def test_registry_compose_override_uses_external_fixed_path_and_strict_read_only
         RegistryReader(ROOT / "data" / "registry" / "article-registry.sqlite3", repository_root=ROOT)
 
 
-def test_registry_import_overlay_keeps_site_read_only_and_adds_one_writer():
+def test_registry_import_overlay_routes_existing_writers_to_the_same_database():
     override = yaml.safe_load((ROOT / "docker-compose.registry-import.yml").read_text(encoding="utf-8"))
     site = override["services"]["wiki"]
     assert site["environment"] == {
+        "CLIMATE_REGISTRY_DB": "${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}",
         "CLIMATE_PDF_INTAKE_QUEUE_DIR": "/pdf-intake-queue",
         "CLIMATE_PDF_RUNTIME_WIKI_DIR": "/runtime/wiki",
     }
     assert {mount["target"]: mount["read_only"] for mount in site["volumes"]} == {
+        "/registry": False,
         "/pdf-intake-queue": False,
         "/runtime/wiki": True,
     }
     writer = override["services"]["pdf-intake-writer"]
     assert writer["environment"]["CLIMATE_PDF_INTAKE_WRITER"] == "1"
-    assert writer["environment"]["CLIMATE_REGISTRY_WRITER_DB"] == (
-        "/pipeline/climate_registry.sqlite3"
-    )
+    assert writer["environment"]["CLIMATE_REGISTRY_DB"] == site["environment"]["CLIMATE_REGISTRY_DB"]
+    assert "CLIMATE_REGISTRY_WRITER_DB" not in writer["environment"]
     assert writer["environment"]["CLIMATE_REGISTRY_BACKUP_DIR"] == (
         "/pipeline/pdf-intake-backups"
     )
     assert {mount["target"]: mount["read_only"] for mount in writer["volumes"]} == {
+        "/registry": False,
         "/pipeline": False,
         "/pdf-intake-queue": False,
         "/runtime/wiki": False,
@@ -139,7 +141,7 @@ def test_registry_import_overlay_keeps_site_read_only_and_adds_one_writer():
     pipeline = next(mount for mount in writer["volumes"] if mount["target"] == "/pipeline")
     assert pipeline["type"] == "volume" and pipeline["source"] == "climate_runtime"
     with pytest.raises(ValueError):
-        PurePosixPath(writer["environment"]["CLIMATE_REGISTRY_WRITER_DB"]).relative_to(
+        PurePosixPath("/registry/article-registry.sqlite3").relative_to(
             PurePosixPath("/app")
         )
     base = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -164,7 +166,7 @@ def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
     assert declared["type"] == "bind"
     assert declared["source"].startswith("${CLIMATE_REGISTRY_HOST_DIR:?")
     assert declared["target"] == "/registry"
-    assert declared["read_only"] is True
+    assert declared["read_only"] is False
     assert declared["bind"] == {"create_host_path": False}
 
     docker = shutil.which("docker")
@@ -199,7 +201,7 @@ def test_compose_renders_registry_bind_without_creating_a_host_path(tmp_path):
     registry = next(item for item in mounts if item["target"] == "/registry")
     assert registry["type"] == "bind"
     assert registry["source"] == str(tmp_path.resolve())
-    assert registry["read_only"] is True
+    assert registry.get("read_only",False) is False
 
 
 def test_unconfigured_status_is_503_with_safe_reason_and_core_app_stays_healthy(monkeypatch):
@@ -449,6 +451,19 @@ def test_registry_host_preflight_accepts_valid_v3_without_writing(tmp_path):
     assert result == {"available": True, "schema_version": 3}
     assert database.read_bytes() == before
     assert not any(Path(f"{database}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
+
+
+@pytest.mark.parametrize("selector",[None,"","   ","/registry/article-registry.sqlite3"," /registry/custom.sqlite3 "])
+def test_preflight_default_empty_blank_and_custom_selector_preserve_database(tmp_path,monkeypatch,selector):
+    host_dir=tmp_path/"external";database=_database(host_dir,version=21)
+    if selector is None:monkeypatch.delenv("CLIMATE_REGISTRY_DB",raising=False)
+    else:monkeypatch.setenv("CLIMATE_REGISTRY_DB",selector)
+    if selector and selector.strip().endswith("custom.sqlite3"):
+        custom=database.with_name("custom.sqlite3");database.rename(custom);database=custom
+    before=database.read_bytes();metadata=database.stat()
+    assert validate_registry_host_directory(host_dir,repository_root=ROOT)=={"available":True,"schema_version":21}
+    assert database.read_bytes()==before and database.stat().st_ino==metadata.st_ino
+    assert not any(Path(str(database)+suffix).exists() for suffix in ("-wal","-shm","-journal"))
 
 
 def test_database_symlink_detection_is_unit_testable_without_platform_support(tmp_path):

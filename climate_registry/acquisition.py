@@ -29,7 +29,7 @@ from .errors import RegistryInputError
 
 BATCH_SCHEMA_VERSION = "pre-report-acquisition-batch.v1"
 # Minimum Registry schema for acquisition writes; later additive migrations remain compatible.
-ACQUISITION_WRITER_SCHEMA_VERSION = 12
+ACQUISITION_WRITER_SCHEMA_VERSION = 22
 _SHA256_LENGTH = 64
 
 
@@ -198,8 +198,7 @@ def _open_database(
     if acquisition_writer and version < ACQUISITION_WRITER_SCHEMA_VERSION:
         connection.close()
         raise RegistryInputError(
-            f"acquisition writes require registry schema {ACQUISITION_WRITER_SCHEMA_VERSION} or later; "
-            f"found schema {version}; migrate the registry"
+            "Registry writes require schema 22; run migrate-publication --apply before writing"
         )
     return connection
 
@@ -593,7 +592,15 @@ def store_acquisition_batch(database: str | Path, payload: Mapping[str, Any]) ->
     from .persistent import _exclusive_database_lock
 
     with _exclusive_database_lock(path):
-        return _store_acquisition_batch_locked(path, payload)
+        result = _store_acquisition_batch_locked(path, payload)
+        from .publication import stage_entities
+        connection = _open_database(path, acquisition_writer=True)
+        try:
+            with connection:
+                stage_entities(connection)
+        finally:
+            connection.close()
+        return result
 
 
 def validate_acquisition_records(
@@ -1228,17 +1235,19 @@ def freeze_acquisition_for_report(
         "resolved_by_fetch_id": item["resolved_by_fetch_id"],
     } for item in loaded["items"]]
     dispositions.sort(key=lambda row: (row["canonical_url"], row["requested_url"]))
-    if not incomplete or mark_partial_frozen:
-        connection = _open_database(database, acquisition_writer=True)
-        try:
-            with connection:
-                connection.execute(
-                    "UPDATE acquisition_batches SET frozen_at = ? "
-                    "WHERE batch_id = ? AND frozen_at IS NULL",
-                    (datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), batch_id),
-                )
-        finally:
-            connection.close()
+    if (not incomplete or mark_partial_frozen) and loaded["frozen_at"] is None:
+        from .persistent import _exclusive_database_lock
+        with _exclusive_database_lock(Path(database)):
+            connection = _open_database(database, acquisition_writer=True)
+            try:
+                with connection:
+                    connection.execute(
+                        "UPDATE acquisition_batches SET frozen_at = ? "
+                        "WHERE batch_id = ? AND frozen_at IS NULL",
+                        (datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), batch_id),
+                    )
+            finally:
+                connection.close()
     return {
         "schema_version": "article-evidence.v1", "report_date": report_date,
         "generated_at": loaded["completed_at"] or loaded["started_at"],

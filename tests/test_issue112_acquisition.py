@@ -937,7 +937,7 @@ def test_acquisition_writer_rejects_schema_v9_with_actionable_error(tmp_path):
 
     with pytest.raises(
         RegistryInputError,
-        match="acquisition writes require registry schema 12 or later; found schema 9; migrate the registry",
+        match="Registry writes require schema 22; run migrate-publication --apply",
     ):
         store_acquisition_batch(database.resolve(), _batch([_item()]))
 
@@ -945,7 +945,7 @@ def test_acquisition_writer_rejects_schema_v9_with_actionable_error(tmp_path):
 def test_acquisition_writer_accepts_additive_schema_v13(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (22,)
 
     store_acquisition_batch(database, _batch([_item()]))
 

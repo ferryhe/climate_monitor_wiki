@@ -1,11 +1,11 @@
 services:
   wiki:
     environment:
-      CLIMATE_REGISTRY_DB: /registry/article-registry.sqlite3
+      CLIMATE_REGISTRY_DB: ${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}
     volumes:
       - type: bind
         source: ${CLIMATE_REGISTRY_HOST_DIR:?set CLIMATE_REGISTRY_HOST_DIR to the external registry directory}
         target: /registry
-        read_only: true
+        read_only: false
         bind:
           create_host_path: false

@@ -345,6 +345,7 @@ def test_managed_binding_freezes_scopes_and_runtime_policy(tmp_path, monkeypatch
         run_root=str(tmp_path), registry_database=str(tmp_path / "registry.db")
     )
     initialize_registry(tmp_path / "registry.db")
+    __import__("os").environ["CLIMATE_REGISTRY_DB"] = str(tmp_path / "registry.db")
     binding = build_task_binding(definition, task_version=1, run_id="frozen", attempt=1)
     records = binding["site_scope_inventory"]["records"]
     observed = {}

@@ -17,9 +17,12 @@ report from the frozen run evidence; it does not require another acquisition.
 
 ## Independent acquisition, review and reporting
 
-The current target has T1–T10 plus the independent PDF writer. T2 stores five-site
+The current target has T1–T10 plus the existing independent PDF writer, all using
+one external `CLIMATE_REGISTRY_DB`. Acquisition writes pending candidates; T1/T10
+improvement/native evidence precedes automatic exact-hash final checks. T2 stores five-site
 candidates and source outcomes; T10 owns native review, governed recovery and
-per-item activation. T3 is independent weekly search with a real query ledger.
+per-item final checks/publication. T3 is independent weekly search with a real query ledger
+and the same review gate; its old existing_validated activation bypass is removed.
 T1 maintains imported article/calendar information; it cannot approve a report.
 T4 reads activated Registry projections only, freezes the New York 14-calendar-day
 window by first ingestion/material update, and renders immutable revisions. T5
@@ -32,7 +35,11 @@ and review gates around the existing managed runner and sole activation writer.
 `climate_delivery/report_review.py` reuses the range adapter/shared renderer and
 retained per-recipient delivery. `scripts/review_pipeline.py` is the native cron
 queue CLI; it does not start a substitute agent. Schema 19 adds append-only
-knowledge versions through the existing migration/backup/restore contract.
+knowledge versions; schema 20 adds honest manual enrichments; schema 21 stores
+immutable full candidate snapshots, review receipts and one published pointer/
+visibility flag per canonical entity. `climate_registry/publication.py` supplies
+the common read-only public projection. T5 still reviews generated report PDFs,
+not intake candidates. Schema 22 adds real core/native source FKs to the existing T1 attempts. New automatic candidates require exact terminal T1 evidence before the independent T10 full-snapshot review; terminal partial evidence remains visible to that review. No additional review service or cron is required.
 
 Business state lives outside Git: run `acquisition-review/`, per-occurrence
 `reports/DATE/snapshot.json`, immutable `revisions/NNNN/{report-source.json,

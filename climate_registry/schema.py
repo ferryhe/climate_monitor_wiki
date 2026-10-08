@@ -1321,6 +1321,177 @@ MIGRATIONS += ((19, "material_knowledge_versions", """
     END;
 """),)
 
+MIGRATIONS += ((20, "manual_article_enrichments", """
+    CREATE TABLE article_enrichments_v20 (
+        enrichment_id TEXT PRIMARY KEY,
+        article_id TEXT REFERENCES articles(article_id),
+        content_version_id TEXT REFERENCES article_content_versions(content_version_id),
+        article_version_id TEXT REFERENCES article_versions(version_id),
+        status TEXT NOT NULL CHECK (status IN ('complete', 'failed')),
+        summary TEXT,
+        categories_json TEXT,
+        keywords_json TEXT,
+        language TEXT,
+        generator_kind TEXT NOT NULL CHECK (
+            generator_kind IN ('deterministic', 'model', 'manual')
+        ),
+        generator_name TEXT NOT NULL,
+        generator_version TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        error_code TEXT,
+        error_message TEXT,
+        CHECK (
+            (content_version_id IS NOT NULL AND article_version_id IS NULL)
+            OR
+            (content_version_id IS NULL AND article_id IS NOT NULL
+             AND article_version_id IS NOT NULL AND generator_kind = 'manual')
+        ),
+        CHECK (
+            (status = 'complete'
+                AND summary IS NOT NULL
+                AND categories_json IS NOT NULL
+                AND keywords_json IS NOT NULL
+                AND language IS NOT NULL
+                AND length(trim(summary)) > 0
+                AND length(trim(categories_json)) > 0
+                AND length(trim(keywords_json)) > 0
+                AND length(trim(language)) > 0
+                AND error_code IS NULL
+                AND error_message IS NULL)
+            OR
+            (status = 'failed'
+                AND summary IS NULL
+                AND categories_json IS NULL
+                AND keywords_json IS NULL
+                AND language IS NULL
+                AND error_code IS NOT NULL
+                AND length(trim(error_code)) > 0)
+        )
+    );
+
+    INSERT INTO article_enrichments_v20 (
+        enrichment_id, article_id, content_version_id, article_version_id, status,
+        summary, categories_json, keywords_json, language, generator_kind,
+        generator_name, generator_version, generated_at, error_code, error_message
+    )
+    SELECT enrichment_id, NULL, content_version_id, NULL, status, summary,
+           categories_json, keywords_json, language, generator_kind, generator_name,
+           generator_version, generated_at, error_code, error_message
+    FROM article_enrichments;
+
+    DROP TABLE article_enrichments;
+    ALTER TABLE article_enrichments_v20 RENAME TO article_enrichments;
+
+    CREATE INDEX idx_enrichments_content_generated
+        ON article_enrichments(content_version_id, generated_at DESC);
+    CREATE INDEX idx_enrichments_article_version_generated
+        ON article_enrichments(article_id, article_version_id, generated_at DESC);
+
+    CREATE TRIGGER article_enrichments_are_append_only_update
+    BEFORE UPDATE ON article_enrichments BEGIN
+        SELECT RAISE(ABORT, 'article enrichments are append-only');
+    END;
+    CREATE TRIGGER article_enrichments_are_append_only_delete
+    BEFORE DELETE ON article_enrichments BEGIN
+        SELECT RAISE(ABORT, 'article enrichments are append-only');
+    END;
+    CREATE TRIGGER article_enrichments_validate_article_insert
+    BEFORE INSERT ON article_enrichments
+    WHEN (NEW.content_version_id IS NOT NULL AND NEW.article_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM article_content_versions
+              WHERE content_version_id=NEW.content_version_id AND article_id=NEW.article_id
+          ))
+      OR (NEW.content_version_id IS NULL AND NOT EXISTS (
+              SELECT 1 FROM article_versions
+              WHERE version_id=NEW.article_version_id AND article_id=NEW.article_id
+          ))
+    BEGIN
+        SELECT RAISE(ABORT, 'article enrichment version belongs to another article');
+    END;
+"""),)
+
+
+MIGRATIONS += ((21, "reviewed_public_versions", """
+    CREATE TABLE registry_candidates (
+        candidate_sha256 TEXT PRIMARY KEY,
+        entity_kind TEXT NOT NULL CHECK(entity_kind IN ('article','pdf_article','meeting','pdf_meeting')),
+        entity_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+        created_at TEXT NOT NULL,
+        basis TEXT NOT NULL
+    );
+    CREATE INDEX idx_registry_candidates_entity ON registry_candidates(entity_kind,entity_id,created_at);
+    CREATE TABLE registry_reviews (
+        review_id TEXT PRIMARY KEY,
+        candidate_sha256 TEXT NOT NULL REFERENCES registry_candidates(candidate_sha256),
+        status TEXT NOT NULL CHECK(status IN ('pass','needs_correction','rejected','accepted_legacy')),
+        reviewed_at TEXT NOT NULL,
+        receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json))
+    );
+    CREATE TABLE registry_publication (
+        entity_kind TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        is_visible INTEGER NOT NULL DEFAULT 1 CHECK(is_visible IN (0,1)),
+        published_candidate_sha256 TEXT REFERENCES registry_candidates(candidate_sha256),
+        latest_candidate_sha256 TEXT NOT NULL REFERENCES registry_candidates(candidate_sha256),
+        PRIMARY KEY(entity_kind,entity_id)
+    );
+    CREATE TRIGGER registry_candidates_immutable_update BEFORE UPDATE ON registry_candidates BEGIN
+        SELECT RAISE(ABORT, 'registry candidates are immutable');
+    END;
+    CREATE TRIGGER registry_candidates_immutable_delete BEFORE DELETE ON registry_candidates BEGIN
+        SELECT RAISE(ABORT, 'registry candidates are immutable');
+    END;
+    CREATE TRIGGER registry_reviews_immutable_update BEFORE UPDATE ON registry_reviews BEGIN
+        SELECT RAISE(ABORT, 'registry reviews are immutable');
+    END;
+    CREATE TRIGGER registry_reviews_immutable_delete BEFORE DELETE ON registry_reviews BEGIN
+        SELECT RAISE(ABORT, 'registry reviews are immutable');
+    END;
+    CREATE TRIGGER registry_publication_requires_approval_insert BEFORE INSERT ON registry_publication
+    WHEN NEW.published_candidate_sha256 IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM registry_reviews r JOIN registry_candidates c ON c.candidate_sha256=r.candidate_sha256
+        WHERE r.candidate_sha256=NEW.published_candidate_sha256 AND r.status IN ('pass','accepted_legacy')
+            AND c.entity_kind=NEW.entity_kind AND c.entity_id=NEW.entity_id) BEGIN
+        SELECT RAISE(ABORT, 'published candidate requires approval');
+    END;
+    CREATE TRIGGER registry_publication_requires_approval_update BEFORE UPDATE ON registry_publication
+    WHEN NEW.published_candidate_sha256 IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM registry_reviews r JOIN registry_candidates c ON c.candidate_sha256=r.candidate_sha256
+        WHERE r.candidate_sha256=NEW.published_candidate_sha256 AND r.status IN ('pass','accepted_legacy')
+            AND c.entity_kind=NEW.entity_kind AND c.entity_id=NEW.entity_id) BEGIN
+        SELECT RAISE(ABORT, 'published candidate requires approval');
+    END;
+"""),)
+
+
+
+def _native_information_attempts(kind,source_table,column,target_table,target_key):
+    # Keep all original PDF rows/packets and add a mutually exclusive real source FK.
+    sql = _INFORMATION_CHECK_SQL.format(kind=kind,source_table=source_table)
+    attempts = sql[sql.index("CREATE TABLE "+kind+"_check_attempts"):sql.index("CREATE TRIGGER "+kind+"_check_inputs")]
+    attempts = attempts.replace("occurrence_id TEXT NOT NULL REFERENCES", "occurrence_id TEXT REFERENCES")
+    attempts = attempts.replace("    UNIQUE (run_id, occurrence_id, source_url)",
+        f"    {column} TEXT REFERENCES {target_table}({target_key}),\n"
+        f"    CHECK ((occurrence_id IS NOT NULL) + ({column} IS NOT NULL) = 1),\n"
+        f"    UNIQUE (run_id, {column}, source_url),\n"
+        "    UNIQUE (run_id, occurrence_id, source_url)")
+    old = "attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256"
+    return f"""
+        DROP TRIGGER {kind}_check_attempts_immutable_update;
+        DROP TRIGGER {kind}_check_attempts_immutable_delete;
+        DROP INDEX idx_{kind}_checks_occurrence;
+        ALTER TABLE {kind}_check_attempts RENAME TO {kind}_check_attempts_pdf_history;
+        {attempts}
+        INSERT INTO {kind}_check_attempts(rowid,{old}) SELECT rowid,{old} FROM {kind}_check_attempts_pdf_history ORDER BY rowid;
+        DROP TABLE {kind}_check_attempts_pdf_history;
+    """
+
+MIGRATIONS += ((22,"source_bound_information_attempts",
+    _native_information_attempts("article","pdf_intake_article_occurrences","core_article_id","articles","article_id")
+    + _native_information_attempts("meeting","pdf_intake_calendar_items","event_source_id","climate_event_sources","event_source_id")),)
+
 
 def _preflight_migration(connection: sqlite3.Connection, version: int) -> None:
     if version != 6:

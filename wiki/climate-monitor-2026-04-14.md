@@ -1,11 +1,6 @@
-# Climate Monitor - 2026-04-14
+# Climate Monitor 2026-04-14
 
-**Report Date:** 2026-04-14
-Source: [[sources/climate-monitor-2026-04-14]]
-
-## Summary
-
-Website Updates with NEW Content: 0 orgs, 0 items Research (≤30 days old, not yet reported): 2 items Sites Monitored: 14 high-priority + 5 rotating normal-priority
-
-## Tags
-#climate-monitor #weekly-report #2026-04-14
+## Climate Disclosure Standards Board: Anticipated Financial Impacts — Climate Disclosures Working Group 2026
+White paper: Identifying and quantifying anticipated financial impacts of climate-related risks and opportunities By the Climate Disclosures Working Group of the New Zealand Society of Actuaries March 2026 White paper: Identifying and quantifying anticipated financial impacts of climate-related risks and opportunities. Climate Disclosures Working Group 2026 2 Contents Section 1: Introduction . .
+Source report: climate-monitor-2026-04-14.md; SHA-256: d42ffc0237762a7f5161f158c3164a7ffffc20733853e11cb294d6e35a13db47
+https://actuaries.org.nz/content/uploads/2026/04/CLIMATE-DISCLOSURES-Working-Group-2026-Anticipated-Financial-Impacts.pdf

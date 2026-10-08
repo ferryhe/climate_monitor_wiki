@@ -18,6 +18,7 @@ from climate_delivery.io import atomic_write_json, exclusive_lock
 from .pdf_intake import _existing_occurrence_ids, persist_pdf_intake
 from .persistent import _file_sha256, _read_only_connection, _validate_database
 from .wiki import render_runtime_registry, snapshot_registry
+from .publication import public_revision, canonical_entity
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -25,6 +26,20 @@ _RFC3339_TIMESTAMP = re.compile(
     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)\Z"
 )
 PROJECTION_MANIFEST_SCHEMA = "climate-intake-projection.v1"
+
+
+def _pending_pdf_entities(connection, document_sha256):
+    identities = [("pdf_article", row[0]) for row in connection.execute(
+        "SELECT article_id FROM pdf_intake_article_occurrences WHERE source_document_sha256=?", (document_sha256,))]
+    identities.extend(("pdf_meeting", row[0]) for row in connection.execute(
+        "SELECT event_id FROM pdf_intake_calendar_items WHERE source_document_sha256=?", (document_sha256,)))
+    pending = set()
+    for kind, identity in identities:
+        kind, identity = canonical_entity(connection, kind, identity)
+        state = connection.execute("SELECT published_candidate_sha256,latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", (kind, identity)).fetchone()
+        if state is None or state[0] != state[1]:
+            pending.add((kind, identity))
+    return pending
 
 
 def _now() -> str:
@@ -142,11 +157,24 @@ def list_pdf_batches(queue_dir: Path) -> dict[str, Any]:
     }
 
 
+def _validate_pdf_binding(status, database=None):
+    binding = status.get("registry_database")
+    if not binding:
+        if not status.get("imported") and status.get("stage") == "queued" and status.get("attempts", 0) == 0:
+            return
+        raise ValueError("historical started PDF batch has no frozen Registry binding; preserve its audit and create a new task")
+    from .publication import resolve_database
+    resolve_database(database or binding, frozen=binding)
+    if os.getenv("CLIMATE_REGISTRY_DB", "").strip():
+        resolve_database(frozen=binding)
+
+
 def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
     with exclusive_lock(queue_dir, "intake-writer"):
         status = read_pdf_batch(queue_dir, batch_id)
         if status.get("chat_ready") or status.get("stage") != "failed":
             return status
+        _validate_pdf_binding(status)
         if status.get("error"):
             failure = {
                 "at": status.get("updated_at"),
@@ -470,7 +498,7 @@ class PdfIntakePipeline:
         try:
             render_runtime_registry(
                 staging,
-                web_database=web_snapshot,
+                web_database=snapshot if public_revision(snapshot) is not None else web_snapshot,
                 pdf_database=snapshot,
                 manifest={
                     "web_items": web_items,
@@ -503,6 +531,7 @@ class PdfIntakePipeline:
         status = read_pdf_batch(self.queue_dir, batch_id)
         if status.get("chat_ready"):
             return status
+        _validate_pdf_binding(status, self.database)
         attempt = int(status.get("attempts", 0)) + 1
         status = self._save(
             batch_id,
@@ -511,6 +540,7 @@ class PdfIntakePipeline:
             error=None,
             chat_ready=False,
             attempts=attempt,
+            registry_database=str(self.database.resolve()),
         )
         try:
             bundle = json.loads(
@@ -535,10 +565,22 @@ class PdfIntakePipeline:
                     occurrence["management_batch_id"] = batch_id
             if not status.get("imported"):
                 persist_pdf_intake(self.database, self.backup_dir, bundle)
-            status = self._save(batch_id, status, stage="imported", imported=True)
+            status = self._save(batch_id, status, stage="imported", imported=True,
+                registry_database=str(self.database.resolve()))
             occurrence_ids = _stored_bundle_occurrence_ids(self.database, bundle)
             calendar_ids = _stored_calendar_ids(self.database, bundle)
 
+            from .publication import public_revision, prepare_review
+            if public_revision(self.database) is not None:
+                with sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro", uri=True) as connection:
+                    pending_ids = _pending_pdf_entities(connection, document_sha256)
+                if pending_ids:
+                    review_dir = os.getenv("CLIMATE_ACQUISITION_RUN_DIR", "").strip()
+                    review_root = Path(review_dir) / "registry-review" if review_dir else None
+                    if review_root:
+                        prepare_review(self.database, review_root)
+                    return self._save(batch_id, status, stage="pending_review", indexed=False, chat_ready=False,
+                        pending_review_count=len(pending_ids), review_root=str(review_root) if review_root else None)
             generation = None
             source_registry_sha256 = _file_sha256(self.database)
             if status.get("indexed") and status.get(
@@ -727,7 +769,7 @@ class PdfIntakePipeline:
             )
 
     def refresh_checks(self, run_id: str) -> dict[str, Any]:
-        """Publish only already activated observations with their new check results."""
+        """Refresh the existing writer after exact Registry approval."""
         with exclusive_lock(self.queue_dir, "intake-writer"):
             prior_generation, metadata = self._active_projection()
             if prior_generation is None or metadata is None:
@@ -742,7 +784,7 @@ class PdfIntakePipeline:
             web_items = list((manifest or {}).get("web_items", []))
             web_snapshot = _active_registry_snapshot(self.runtime_wiki_dir, metadata, "web", required=bool(web_items))
             generation.mkdir()
-            render_runtime_registry(generation, web_database=web_snapshot, pdf_database=snapshot,
+            render_runtime_registry(generation, web_database=snapshot if public_revision(snapshot) is not None else web_snapshot, pdf_database=snapshot,
                 manifest={"web_items": web_items, "pdf_occurrence_ids": sorted(pdf_ids),
                     "pdf_calendar_occurrence_ids": sorted(calendar_ids)})
             manifest_sha = _write_projection_manifest(generation, generation_id, web_items=web_items,
@@ -763,15 +805,38 @@ class PdfIntakePipeline:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if status.get("stage") in resumable:
+            if status.get("stage") in resumable or status.get("stage") == "pending_review":
+                _validate_pdf_binding(status, self.database)
+            ready_review = False
+            if status.get("stage") == "pending_review":
+                with sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro", uri=True) as connection:
+                    ready_review = not _pending_pdf_entities(connection, status["document_sha256"])
+            if status.get("stage") in resumable or ready_review:
                 candidates.append({**status, "projection_kind": "pdf"})
         for status_path in sorted((self.queue_dir / "web").glob("*/status.json")):
+            ready_review = False
             try:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
             retry_requested = (status_path.parent / "retry.json").is_file()
-            if status.get("stage") in resumable or (
+            request = None
+            if status.get("stage") in resumable or status.get("stage") == "pending_review" or (status.get("stage") == "failed" and retry_requested):
+                from .web_ingest_pipeline import read_web_activation_request, preflight_web_activation
+                preflight_web_activation(self.queue_dir, status["batch_id"], self.database)
+                try:
+                    request = read_web_activation_request(self.queue_dir, status["batch_id"])
+                except (ValueError, RuntimeError, OSError, sqlite3.Error):
+                    pass  # Preserve ordinary invalid-request handling at dispatch.
+            if status.get("stage") == "pending_review":
+                try:
+                    if request is None:
+                        request=read_web_activation_request(self.queue_dir,status["batch_id"])
+                    with sqlite3.connect(f"{self.database.as_uri()}?mode=ro",uri=True) as connection:
+                        ready_review=all(connection.execute("SELECT 1 FROM registry_publication WHERE entity_kind='article' AND entity_id=? AND published_candidate_sha256 IS NOT NULL AND published_candidate_sha256=latest_candidate_sha256", (item["article_id"],)).fetchone() for item in request["web_items"])
+                except (ValueError,RuntimeError,OSError,sqlite3.Error):
+                    ready_review=False
+            if status.get("stage") in resumable or ready_review or (
                 status.get("stage") == "failed" and retry_requested
             ):
                 candidates.append({
@@ -785,8 +850,9 @@ class PdfIntakePipeline:
         )
         batch_id = str(status.get("batch_id", ""))
         if status["projection_kind"] == "web":
-            from .web_ingest_pipeline import WebIngestPipeline, read_web_activation_request
+            from .web_ingest_pipeline import WebIngestPipeline, read_web_activation_request, preflight_web_activation
 
+            preflight_web_activation(self.queue_dir, batch_id, self.database)
             try:
                 request = read_web_activation_request(self.queue_dir, batch_id)
             except Exception as exc:
@@ -801,7 +867,7 @@ class PdfIntakePipeline:
                 return persisted
             return WebIngestPipeline(
                 self.queue_dir,
-                Path(request["registry_snapshot_path"]),
+                self.database,
                 self.runtime_wiki_dir,
                 self.reload_chat,
                 repository_root=self.repository_root,

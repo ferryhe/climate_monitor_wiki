@@ -335,7 +335,12 @@ def _active_pdf_date_fallback_article_ids(
     return linked_articles - unactivated_articles
 
 
-def _range_source(
+def _range_source(reader, start_date, end_date, **filters):
+    with reader.public_snapshot():
+        return _range_source_read(reader,start_date,end_date,**filters)
+
+
+def _range_source_read(
     reader: RegistryReader,
     start_date: str,
     end_date: str,
@@ -354,11 +359,17 @@ def _range_source(
     pdf_publication_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
     collection_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
     information_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    report_dates: dict[str, list[dict[str, Any]]] = defaultdict(list)
     selected_fetch_ids: set[str] = set()
     all_identities: set[str] = set()
     pdf_observations: list[dict[str, Any]] = []
 
     with reader.connect() as connection:
+        manual_enrichments = connection.execute("PRAGMA user_version").fetchone()[0] >= 20
+        public_details = {}
+        article_version_projection = (
+            "article_version_id" if manual_enrichments else "NULL AS article_version_id"
+        )
         for row in connection.execute(
             """SELECT a.article_id, a.canonical_url, a.current_version_id,
                       a.current_content_version_id, a.display_policy,
@@ -373,6 +384,8 @@ def _range_source(
             if acquisition_item_ids is None:
                 all_identities.add(row["article_id"])
             article_rows[row["article_id"]] = dict(row)
+        if reader.public and connection.execute("PRAGMA user_version").fetchone()[0]>=21:
+            public_details = {identity:reader.article(identity) for identity in article_rows}
         acquisition_rows = connection.execute(
             """
             SELECT i.acquisition_item_id, i.article_id, i.raw_url, i.source_name, i.title,
@@ -450,11 +463,14 @@ def _range_source(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_date_observations'"
         ).fetchone() is not None
         if has_date_observations:
-            for row in connection.execute(
+            date_rows = (dict(item,article_id=identity,canonical_url=detail["canonical_url"],
+                observation_kind=item["kind"],evidence_json=json.dumps(item["evidence"]))
+                for identity,detail in public_details.items() for item in detail.get("date_observations",[])) if public_details else connection.execute(
                 """SELECT observation_id, article_id, canonical_url, observation_kind,
                           observed_at, evidence_json
                    FROM article_date_observations ORDER BY article_id, observed_at, observation_id"""
-            ):
+            )
+            for row in date_rows:
                 if row["article_id"] not in article_rows:
                     continue
                 if article_rows[row["article_id"]]["canonical_url"] != row["canonical_url"]:
@@ -466,10 +482,16 @@ def _range_source(
                     "evidence": evidence,
                 }
                 if row["observation_kind"] == "collection":
-                    collected_at, collected_date = _collection_timestamp(row["observed_at"])
-                    observation.update(date=collected_date, collected_at=collected_at,
-                                       basis="web_listening_snapshot")
-                    collection_dates[row["article_id"]].append(observation)
+                    from .article_dates import report_observation_date
+                    report_day = report_observation_date(row["observed_at"], evidence)
+                    if report_day:
+                        observation.update(date=report_day, basis="daily_or_weekly_report_date")
+                        report_dates[row["article_id"]].append(observation)
+                    else:
+                        collected_at, collected_date = _collection_timestamp(row["observed_at"])
+                        observation.update(date=collected_date, collected_at=collected_at,
+                                           basis="web_listening_snapshot")
+                        collection_dates[row["article_id"]].append(observation)
                 elif row["observation_kind"] == "page_information":
                     publication_date = _day_precision_publication_date(row["observed_at"])
                     if publication_date is None:
@@ -478,6 +500,35 @@ def _range_source(
                     information_dates[row["article_id"]].append(observation)
                 else:
                     raise RegistryContractError("invalid Registry article date observation kind")
+
+        # Render stores the approved DTO, without private capture/check rows.
+        # Fill only public evidence absent from SQL; never invent source facts.
+        for identity,detail in public_details.items():
+            known={item["observation_id"] for item in observations[identity]}
+            for item in detail.get("acquisition_observations",[]):
+                key=item["acquisition_item_id"]
+                if key in known or item.get("processing_status","complete")!="complete" or item.get("selection_status","selected")!="selected":
+                    continue
+                if acquisition_item_ids is not None and key not in acquisition_item_ids:
+                    continue
+                observations[identity].append({"kind":"registry_acquisition","observation_id":key,
+                    "url":item["raw_url"],"title":item.get("title"),"summary":item.get("summary"),
+                    "observed_at":item.get("discovered_at"),"content_version_id":item.get("content_version_id"),
+                    "publication_date":item.get("publication_date"),"publication_date_evidence":item.get("publication_date_evidence"),
+                    "source_name":item.get("source_name"),"origins":item.get("origins",[])})
+                if item.get("collected_at"):
+                    stamp,day=_collection_timestamp(item["collected_at"])
+                    collection_dates[identity].append({"date":day,"collected_at":stamp,"observation_id":key,"basis":"registry_fetch","evidence":{"requested_url":item["raw_url"]}})
+                published=_day_precision_publication_date(item.get("publication_date"))
+                if published and item.get("publication_date_evidence"):
+                    evidence={"date":published,"observation_id":key,"evidence":item["publication_date_evidence"]}
+                    publication_dates[identity].append(evidence);evidenced_dates[identity].append(evidence)
+            if not collection_dates[identity] and detail.get("collected_at"):
+                stamp,day=_collection_timestamp(detail["collected_at"])
+                available=detail.get("available_content") or {}
+                collection_dates[identity].append({"date":day,"collected_at":stamp,
+                    "observation_id":available.get("fetch_id") or available.get("content_version_id") or identity,"basis":"approved_public_content",
+                    "evidence":{"source_url":detail["canonical_url"]}})
 
         has_pdf = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'"
@@ -570,6 +621,30 @@ def _range_source(
             if not formal_link:
                 continue
             observations[article_id].append(observation)
+        if reader.static_snapshot is not None:
+            for article in reader.pdf_articles_all(include_linked=True):
+                for item in article["occurrences"]:
+                    if pdf_occurrence_ids is not None and item["occurrence_id"] not in pdf_occurrence_ids:
+                        continue
+                    evidence_text=item.get("publication_date_evidence")
+                    evidence={"kind":"pdf_text","text":evidence_text,"document_sha256":item["source_document_sha256"],"page":item["page"]} if isinstance(evidence_text,str) and evidence_text.strip() else None
+                    observation={"kind":"registry_pdf","observation_id":item["occurrence_id"],"pdf_article_id":article["article_id"],
+                        "core_article_id":article.get("core_article_id"),"confirmation_basis":article.get("confirmation_basis"),
+                        "document_sha256":item["source_document_sha256"],"content_sha256":item.get("content_sha256"),
+                        "batch_id":item.get("management_batch_id"),"filename":item.get("source_filename") or item.get("source_document"),
+                        "period_start":item.get("period_start"),"period_end":item.get("period_end"),"page":item["page"],
+                        "url":item.get("raw_url") or article["canonical_url"],"title":item.get("anchor_text") or article["title"],
+                        "summary":item.get("summary"),"observed_at":item.get("imported_at"),"publication_date":item.get("publication_date"),
+                        "publication_date_evidence":evidence,"source_observations":[],"report_fields":item.get("report_fields"),
+                        "pdf_classification":article.get("type_safe_classification") or {},"structured_report":item.get("structured_report",False)}
+                    pdf_observations.append(observation)
+                    identity=observation["core_article_id"]
+                    if observation["confirmation_basis"]=="exact_url_eligible_detail" and identity in article_rows:
+                        observations[identity].append(observation)
+                        published=_day_precision_publication_date(observation["publication_date"])
+                        if published and evidence:
+                            value={"date":published,"observation_id":item["occurrence_id"],"basis":"pdf_stated_publication_date","evidence":evidence}
+                            pdf_publication_dates[identity].append(value);evidenced_dates[identity].append(value)
         for article_id, values in (additional_evidenced_dates or {}).items():
             if article_id in article_rows:
                 for item in values:
@@ -577,30 +652,32 @@ def _range_source(
                     target = (
                         collection_dates[article_id] if basis == "collection_time"
                         else information_dates[article_id] if basis == "information_date"
+                        else report_dates[article_id] if basis == "report_date"
                         else pdf_publication_dates[article_id] if basis == "pdf_stated_date"
                         else publication_dates[article_id]
                     )
                     identity = (item["date"], item["observation_id"])
                     if not any((existing["date"], existing["observation_id"]) == identity for existing in target):
                         target.append(item)
-                    if basis not in {"collection_time", "information_date"}:
+                    if basis not in {"collection_time", "information_date", "report_date"}:
                         evidenced_dates[article_id].append(item)
         selected_dates: dict[str, tuple[str, dict[str, Any]]] = {}
         for article_id in article_rows:
             if acquisition_item_ids is not None and not observations[article_id]:
                 continue
             collection_values = collection_dates[article_id]
+            precise_publication_dates = publication_dates[article_id] or (
+                pdf_publication_dates[article_id] if pdf_date_fallback_article_ids is None
+                or article_id in pdf_date_fallback_article_ids else [])
             candidates = (collection_values or information_dates[article_id]
-                          or publication_dates[article_id]
-                          or (pdf_publication_dates[article_id]
-                              if pdf_date_fallback_article_ids is None
-                              or article_id in pdf_date_fallback_article_ids else []))
+                          or precise_publication_dates or report_dates[article_id])
             in_range = [item for item in candidates
                         if start <= date.fromisoformat(item["date"]) <= end]
             if not in_range:
                 continue
             basis = ("collection_time" if collection_values else
-                     "information_date" if information_dates[article_id] else "publication_date")
+                     "information_date" if information_dates[article_id] else
+                     "publication_date" if precise_publication_dates else "report_date")
             selected = max(
                 in_range,
                 key=lambda item: (item.get("collected_at") or item["date"], item["observation_id"]),
@@ -667,19 +744,36 @@ def _range_source(
                 enrichment = connection.execute(
                     """SELECT enrichment_id, summary, categories_json, keywords_json,
                               language, generator_kind, generator_name, generator_version,
-                              generated_at
+                              generated_at, """ + article_version_projection + """
                        FROM article_enrichments
                        WHERE content_version_id=? AND status='complete'
                        ORDER BY generated_at DESC, enrichment_id DESC LIMIT 1""",
                     (version_id,),
+                ).fetchone()
+            elif base.get("current_version_id") and manual_enrichments:
+                enrichment = connection.execute(
+                    """SELECT enrichment_id, summary, categories_json, keywords_json,
+                              language, generator_kind, generator_name, generator_version,
+                              generated_at, article_version_id
+                       FROM article_enrichments
+                       WHERE content_version_id IS NULL AND article_id=?
+                         AND article_version_id=? AND status='complete'
+                       ORDER BY generated_at DESC, enrichment_id DESC LIMIT 1""",
+                    (article_id, base["current_version_id"]),
                 ).fetchone()
             if enrichment:
                 summary = enrichment["summary"]
                 categories = _json_list(enrichment["categories_json"], "enrichment categories")
                 keywords = _json_list(enrichment["keywords_json"], "enrichment keywords")
                 semantic_provenance = {
-                    "basis": "article_enrichment", "enrichment_id": enrichment["enrichment_id"],
+                    "basis": (
+                        "manual_enrichment"
+                        if enrichment["generator_kind"] == "manual"
+                        else "article_enrichment"
+                    ),
+                    "enrichment_id": enrichment["enrichment_id"],
                     "content_version_id": version_id,
+                    "article_version_id": enrichment["article_version_id"],
                     "generator": {
                         "kind": enrichment["generator_kind"], "name": enrichment["generator_name"],
                         "version": enrichment["generator_version"], "generated_at": enrichment["generated_at"],
@@ -768,6 +862,38 @@ def _range_source(
                 if key not in seen_citations:
                     citations.append(citation)
                     seen_citations.add(key)
+            from .publication import snapshot_metadata, approved_display
+            approved = snapshot_metadata(connection, "article", article_id)
+            if approved:
+                display = approved_display(approved)
+                if approved.get("sources"):
+                    base["publisher"] = approved["sources"][0]["display_name"]
+                title, summary = display.get("title", title), display.get("summary", summary)
+                categories, keywords = display.get("categories", categories), display.get("keywords", keywords)
+                if display:
+                    semantic_provenance = {"basis": display.get("summary_provenance"),
+                        "generator": display.get("supplement_generator"),
+                        "field_sources": display.get("supplement_provenance", {}).get("field_sources")}
+            detail=public_details.get(article_id)
+            if detail:
+                title=detail.get("title") or detail["canonical_url"]
+                summary=detail.get("summary") if detail.get("summary") is not None else detail.get("report_summary")
+                categories,keywords=detail.get("categories",[]),detail.get("keywords",[])
+                base["publisher"]=detail.get("publisher")
+                available=detail.get("available_content") or {}
+                content_text=available.get("markdown") or available.get("supporting_excerpt")
+                version_id=available.get("content_version_id") or version_id
+                content=connection.execute("SELECT content_version_id,content_sha256,extraction_method,extraction_version FROM article_content_versions WHERE article_id=? AND content_version_id=?",(article_id,version_id)).fetchone() if version_id else None
+                if content is None and version_id:
+                    metadata=detail.get("content") or {}
+                    if metadata.get("content_version_id")!=version_id:
+                        metadata=available
+                    content={key:metadata.get(key) for key in ("content_sha256","extraction_method","extraction_version")}
+                title_provenance={"basis":"approved_public_version","candidate_sha256":detail["published_candidate_sha256"]}
+                semantic_provenance={**title_provenance,"summary_basis":detail.get("summary_provenance") or ("source_report" if detail.get("report_summary") else None),
+                    "metadata_provenance":detail.get("metadata_provenance")}
+                if not citations:
+                    citations=[{"kind":"url","url":detail["canonical_url"]}]
             articles.append({
                 "article_id": article_id,
                 "canonical_url": base["canonical_url"],
@@ -804,6 +930,11 @@ def _range_source(
                         "all": sorted(collection_dates[article_id],
                                       key=lambda item: (item["collected_at"], item["observation_id"])),
                     },
+                    **({"report_date": {
+                        "selected": selected_date if basis == "report_date" else None,
+                        "all": sorted(report_dates[article_id],
+                                      key=lambda item: (item["date"], item["observation_id"])),
+                    }} if report_dates[article_id] else {}),
                     "date_basis": basis,
                     "title": title_provenance,
                     "summary": semantic_provenance,
@@ -883,7 +1014,7 @@ def _range_source(
     unknown_date_ids = sorted(
         article_id for article_id in all_identities
         if not (collection_dates[article_id] or information_dates[article_id]
-                or publication_dates[article_id] or evidenced_dates[article_id])
+                or publication_dates[article_id] or evidenced_dates[article_id] or report_dates[article_id])
     )
     return {
         "articles": articles,
@@ -897,7 +1028,9 @@ def _range_source(
 
 
 def _meeting_status(coverage: dict[str, Any], records: list[Any]) -> str:
-    if coverage.get("status") in {"succeeded", "succeeded_empty", "complete"}:
+    if coverage.get("status") in {"succeeded", "succeeded_empty", "complete", "approved_git_snapshot"} or (
+        coverage.get("status") == "processed" and coverage.get("records_scope") == "approved_versions"
+    ):
         return "included" if records else "empty"
     if coverage.get("status") == "partial":
         return "partial"
@@ -922,12 +1055,20 @@ def _meeting_payload(
 ) -> dict[str, Any]:
     if snapshot_id is None:
         try:
-            queried = query_events(reader.database, base_date=base_date, timezone_name=TIMEZONE, include_deadlines=True)
-        except (OSError, ValueError, sqlite3.Error) as exc:
+            if reader.static_snapshot is not None:
+                public_meetings = reader.meetings(base_date=base_date, page_size=1)
+                queried={"schema_version":"climate-meeting-query.v1","base_date":base_date,"timezone":TIMEZONE,
+                    "filters":_default_meeting_query_filters(),"coverage":public_meetings["coverage"],
+                    "records":[item for item in reader.meetings_all(base_date=base_date) if item.get("origin")=="web_collection"]}
+            else:
+                with reader.connect() as connection:
+                    queried = query_events(reader.database, base_date=base_date, timezone_name=TIMEZONE, include_deadlines=True,
+                        **({"registry_connection": connection,"coverage_connection":getattr(reader,"_snapshot_source_connection",connection)} if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else {}))
+        except (OSError, RegistryError, ValueError, sqlite3.Error) as exc:
             frozen_query = {
                 "schema_version": "climate-meeting-query.v1", "base_date": base_date,
                 "timezone": TIMEZONE, "filters": _default_meeting_query_filters(),
-                "coverage": {"status": "unavailable", "error": type(exc).__name__}, "records": [],
+                "coverage": {"status": "unavailable", "error": type(exc.__cause__ or exc).__name__}, "records": [],
             }
             query_id, query_sha256 = _query_identity(frozen_query)
             return {
@@ -956,10 +1097,18 @@ def _meeting_payload(
         }
     try:
         snapshot = load_meeting_snapshot(reader.database, snapshot_id)
-    except (KeyError, OSError, ValueError):
+    except (KeyError, OSError, RegistryError, ValueError):
         return {"status": "unavailable", "snapshot_id": snapshot_id, "snapshot_sha256": None, "records": []}
     coverage = snapshot.get("coverage") or {}
     records = snapshot.get("records") or []
+    with reader.connect() as connection:
+        if reader.public and connection.execute("PRAGMA user_version").fetchone()[0]>=21:
+            current=query_events(reader.database,base_date=snapshot["base_date"],timezone_name=snapshot["timezone"],
+                registry_connection=connection,**snapshot["query"])["records"]
+            approved={_digest(item) for item in current}
+            selected=[item for item in records if _digest(item) in approved]
+            coverage={**coverage,"excluded_unapproved_count":len(records)-len(selected)}
+            records=selected
     return {
         "status": "failed" if coverage.get("status") in {"failed", "partial"} else _meeting_status(coverage, records), "source": "snapshot",
         "snapshot_id": snapshot["snapshot_id"],
@@ -1266,6 +1415,10 @@ def freeze_range_report(
     pdf_overlay_reader: RegistryReader | None = None,
     overlay_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    with reader.connect() as connection:
+        if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+            overlay_reader = pdf_overlay_reader = None
+            overlay_manifest = None
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     if start > end or (end - start).days + 1 > MAX_RANGE_DAYS:
         raise RangeReportError("invalid report date range")
@@ -1292,6 +1445,8 @@ def freeze_range_report(
                 observation = item["provenance"]["collection_time"]["selected"]
             elif basis == "information_date":
                 observation = item["provenance"]["information_date"]["selected"]
+            elif basis == "report_date":
+                observation = item["provenance"]["report_date"]["selected"]
             else:
                 matching_dates = [
                     value for value in item["provenance"]["publication_date"]["all_in_range"]
@@ -1341,6 +1496,7 @@ def freeze_range_report(
             source_dir=reader.source_dir,
             metadata_dir=reader.metadata_dir,
         )
+        snapshot_reader.static_snapshot=reader.static_snapshot
         public_source = _range_source(snapshot_reader, start_date, end_date)
         public_dates = selected_dates(public_source)
         web_selection_dates = dict(public_dates)
@@ -1520,7 +1676,7 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         basis = article.get("date_basis")
         collected_at = article.get("collected_at")
         if not legacy:
-            if basis not in {"collection_time", "information_date", "publication_date"}:
+            if basis not in {"collection_time", "information_date", "publication_date", "report_date"}:
                 raise RangeReportError("invalid range report schema")
             if (
                 publication_date is not None
@@ -1543,6 +1699,18 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
                 raise RangeReportError("invalid range report schema")
             if basis == "publication_date" and (published is None or published != range_date):
                 raise RangeReportError("invalid range report schema")
+            if basis == "report_date":
+                provenance = article.get("provenance")
+                report_provenance = provenance.get("report_date") if isinstance(provenance, dict) else None
+                selected_report = report_provenance.get("selected") if isinstance(report_provenance, dict) else None
+                report_evidence = selected_report.get("evidence") if isinstance(selected_report, dict) else None
+                if (not isinstance(selected_report, dict) or not isinstance(report_evidence, dict)
+                        or selected_report.get("date") != range_date_raw
+                        or selected_report.get("basis") != "daily_or_weekly_report_date"
+                        or selected_report.get("collected_at") is not None
+                        or report_evidence.get("date_basis") != "daily_or_weekly_report_date"
+                        or report_evidence.get("report_date") != range_date_raw):
+                    raise RangeReportError("invalid range report schema")
         if (
             not isinstance(article_id, str)
             or not article_id
@@ -1836,6 +2004,8 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
                     other_dates.append(f"Publication date: {item['publication_date']}")
                 if item.get("information_date") and item.get("date_basis") != "information_date":
                     other_dates.append(f"Information date: {item['information_date']}")
+                if item.get("date_basis") == "report_date" and item.get("material_versions"):
+                    other_dates.append(f"Report date: {item['range_date']} (article publication date unconfirmed)")
                 other_dates_html = "<br>".join(esc(value) for value in other_dates)
                 date_details = f"<strong>Date used for range:</strong> {esc(date_label)}<br>"
                 if other_dates_html:
@@ -1848,6 +2018,8 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
                 ])
                 for _key, value in _date_basis(item.get("provenance", {}).get("publication_date")):
                     blocks.append(f"<p><strong>Publication date provenance:</strong> {esc(value)}</p>")
+                for _key, value in _date_basis(item.get("provenance", {}).get("report_date")):
+                    blocks.append(f"<p><strong>Report date provenance:</strong> {esc(value)}</p>")
                 content_sha = item.get("provenance", {}).get("content_version", {}).get("content_sha256")
                 if content_sha:
                     blocks.append(f"<p><strong>Content SHA-256:</strong> <code>{esc(content_sha)}</code></p>")
@@ -1948,6 +2120,8 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
                 date_label = "**Information date:** " + (update.information_date or "Not recorded")
             elif update.date_basis == "publication_date":
                 date_label = "**Publication date:** " + (update.publication_date or "Not recorded")
+            elif update.date_basis == "report_date":
+                date_label = "**Report date:** " + (update.report_date or "Not recorded")
             else:
                 date_label = "**Publication date:** " + (update.publication_date or "Unconfirmed")
             lines += [f"#### {number}. {title}",

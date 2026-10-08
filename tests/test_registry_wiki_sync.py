@@ -3,6 +3,10 @@ import json
 import sqlite3
 import sys
 import types
+import subprocess
+from pathlib import Path
+
+import pytest
 from datetime import date
 
 from climate_registry.schema import apply_migrations
@@ -20,7 +24,7 @@ def _sha(value: str) -> str:
 
 def _registry(path):
     with sqlite3.connect(path) as connection:
-        apply_migrations(connection)
+        apply_migrations(connection,target_version=20)
         connection.execute(
             "INSERT INTO sources VALUES ('example', 'example.org', 'Example', '2026-09-28', '2026-09-28')"
         )
@@ -48,7 +52,11 @@ def _registry(path):
         )
         connection.execute("UPDATE articles SET current_content_version_id='content-v1' WHERE article_id='article-confirmed'")
         connection.execute(
-            """INSERT INTO article_enrichments VALUES ('enrichment-v1', 'content-v1', 'complete', 'Confirmed semantic summary.',
+            """INSERT INTO article_enrichments(
+                   enrichment_id, content_version_id, status, summary, categories_json,
+                   keywords_json, language, generator_kind, generator_name,
+                   generator_version, generated_at, error_code, error_message
+               ) VALUES ('enrichment-v1', 'content-v1', 'complete', 'Confirmed semantic summary.',
                '[\"Climate\"]', '[\"glacier pricing\"]', 'en', 'deterministic', 'rules', '1', '2026-09-28T00:00:00Z', NULL, NULL)"""
         )
         connection.execute(
@@ -195,7 +203,7 @@ def test_registry_article_version_summary_is_retained_when_appearance_is_annotat
 def test_registry_sync_generates_summary_only_article_without_appearance(tmp_path):
     database = tmp_path / 'registry.sqlite3'
     with sqlite3.connect(database) as connection:
-        apply_migrations(connection)
+        apply_migrations(connection,target_version=20)
         connection.execute("INSERT INTO sources VALUES ('example', 'example.org', 'Example', '2026-09-28', '2026-09-28')")
         connection.execute(
             "INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen, current_version_id, document_kind, publication_eligible, current_content_version_id, display_policy) VALUES ('article-summary-only', 'https://example.org/summary-only', 'example', '2026-09-28', '2026-09-28', 'report-version-only', 'article', 1, NULL, 'metadata_only')"
@@ -299,6 +307,27 @@ def test_registry_sync_generates_confirmed_and_source_only_pages(tmp_path):
     assert 'Registry content version: content-v2' in article.read_text(encoding='utf-8')
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM article_content_versions WHERE article_id='article-confirmed'").fetchone()[0] == 2
+
+
+def test_registry_sync_keeps_manual_enrichment_provenance(tmp_path):
+    database = tmp_path / "registry.sqlite3"
+    wiki = tmp_path / "wiki"
+    _registry(database)
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO article_enrichments(
+                   enrichment_id, content_version_id, status, summary, categories_json,
+                   keywords_json, language, generator_kind, generator_name,
+                   generator_version, generated_at
+               ) VALUES ('manual-v1', 'content-v1', 'complete', 'Human-checked summary.',
+                         '[\"Climate\"]', '[\"glacier pricing\"]', 'en', 'manual',
+                         'human-review', 'manual-v1', '2026-09-29T00:00:00Z')"""
+        )
+
+    sync_registry_wiki(database, wiki)
+    page = (wiki / "article-article-confirmed.md").read_text(encoding="utf-8")
+    assert "Provenance: manual_enrichment" in page
 
 
 def test_registry_sync_removes_only_generated_articles_absent_from_projection(tmp_path):
@@ -430,9 +459,11 @@ def test_registry_only_sync_reloads_and_chats_without_report_dates(tmp_path, mon
     assert any(item['path'] == 'wiki/registry-source-observations.md' for item in unconfirmed['sources'])
 
 
-def test_acquisition_projection_syncs_newest_body_and_all_origins_without_weekly_report(tmp_path, monkeypatch):
-    database = tmp_path / 'registry.sqlite3'
-    initialize_registry(database)
+def test_legacy_acquisition_projection_syncs_newest_body_and_all_origins_without_weekly_report(tmp_path, monkeypatch):
+    database = tmp_path / 'current-fixture.sqlite3'
+    # Build facts through the supported current writer, without approving them.
+    with sqlite3.connect(database) as connection:
+        apply_migrations(connection,target_version=22)
     url = 'https://example.org/acquired'
     first_body = '# Acquisition v1\n\nInitial glacier pricing evidence.'
     second_body = '# Acquisition v2\n\nNewer glacier pricing evidence.'
@@ -445,9 +476,9 @@ def test_acquisition_projection_syncs_newest_body_and_all_origins_without_weekly
         _acquisition_item(url, first_body, kind='site', ref='site:example'),
         _acquisition_item(url, first_body, kind='search', ref='search-result-1', search_ref='search-1'),
     ], batch_id='acquisition-v1', report_date='2026-09-28', searches=[search]))
-    reader = RegistryReader(database, repository_root=tmp_path / 'app')
-    article_id = reader.articles(page_size=10)['items'][0]['article_id']
+    assert RegistryReader(database, repository_root=tmp_path / 'app').articles()['items'] == []
     with sqlite3.connect(database) as connection:
+        article_id = connection.execute('SELECT article_id FROM articles WHERE canonical_url=?', (url,)).fetchone()[0]
         first_version_id = connection.execute(
             'SELECT content_version_id FROM article_content_versions WHERE article_id=?', (article_id,)
         ).fetchone()[0]
@@ -456,13 +487,32 @@ def test_acquisition_projection_syncs_newest_body_and_all_origins_without_weekly
             (first_version_id, article_id),
         )
         connection.execute(
-            "INSERT INTO article_enrichments VALUES (?, ?, 'complete', ?, '[]', '[]', 'en', 'deterministic', 'test', '1', '2026-09-28T09:00:00Z', NULL, NULL)",
+            "INSERT INTO article_enrichments(enrichment_id,content_version_id,status,summary,categories_json,keywords_json,language,generator_kind,generator_name,generator_version,generated_at,error_code,error_message) VALUES (?, ?, 'complete', ?, '[]', '[]', 'en', 'deterministic', 'test', '1', '2026-09-28T09:00:00Z', NULL, NULL)",
             ('summary-v1', first_version_id, 'Summary from body version one.'),
         )
     store_acquisition_batch(database, _acquisition_batch([
         _acquisition_item(url, second_body, kind='site', ref='site:example-v2', discovered_at='2026-09-29T08:00:00Z'),
     ], batch_id='acquisition-v2', report_date='2026-09-29', searches=[]))
 
+    # This case tests the retained historical readonly projection, not a schema20 writer.
+    # Seed its existing SQL facts from the current writer's compatible business rows.
+    historical = tmp_path / 'historical-schema20.sqlite3'
+    with sqlite3.connect(historical) as connection:
+        apply_migrations(connection, target_version=20)
+        connection.execute('ATTACH DATABASE ? AS fixture', (str(database),))
+        tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='schema_migrations'")]
+        for table in tables:
+            columns = [row[1] for row in connection.execute('PRAGMA table_info(' + table + ')')]
+            names = ','.join(columns)
+            selected = ','.join('NULL' if table == 'articles' and name in {'current_version_id', 'current_content_version_id'} else name for name in columns)
+            connection.execute('INSERT INTO ' + table + '(' + names + ') SELECT ' + selected + ' FROM fixture.' + table)
+        connection.execute('UPDATE articles SET current_version_id=(SELECT current_version_id FROM fixture.articles WHERE fixture.articles.article_id=articles.article_id), current_content_version_id=(SELECT current_content_version_id FROM fixture.articles WHERE fixture.articles.article_id=articles.article_id)')
+        assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
+        assert connection.execute('PRAGMA user_version').fetchone()[0] == 20
+    assert RegistryReader(database, repository_root=tmp_path / 'app').articles()['items'] == []
+    database = historical
+    before = database.read_bytes()
+    reader = RegistryReader(database, repository_root=tmp_path / 'app')
     detail = reader.article(article_id)
     with sqlite3.connect(database) as connection:
         assert connection.execute('SELECT current_content_version_id FROM articles WHERE article_id=?', (article_id,)).fetchone() == (first_version_id,)
@@ -500,3 +550,87 @@ def test_acquisition_projection_syncs_newest_body_and_all_origins_without_weekly
     assert client.post('/api/reload', headers={'x-reload-token': 'test-token'}).status_code == 200
     response = client.post('/api/chat', json={'message': 'newer glacier pricing evidence', 'answerMode': 'brief'}).json()
     assert any(item['path'] == f'wiki/article-{article_id}.md' for item in response['sources'])
+
+    assert database.read_bytes() == before  # Historical reading/rendering/reload never writes this DB.
+
+
+
+def _env_public_registry(tmp_path):
+    from climate_registry.audit import build_audit_registry
+    from climate_registry.persistent import update_registry
+    sources=tmp_path/'sources';sources.mkdir()
+    def report(day,title,url):
+        path=sources/f'climate-monitor-{day}.md'
+        path.write_text(f'# Weekly Climate & Actuarial Monitor\n**Report Date:** {day}\n'
+            '## Executive Summary\n- Sites checked: **1**, succeeded: **1**, failed: **0**\n'
+            '- RAW EXECUTIVE MUST NOT REGENERATE\n## Pillar A — Changes\n'
+            f'- **{title}** (web)\n  - {title} summary.\n  🔗 {url}\n'
+            f'## Pillar B — Intelligence\n## Original Links\n- {url}\n',encoding='utf-8')
+    report('2026-09-07','Approved existing article','https://example.org/approved')
+    database=tmp_path/'registry.sqlite3'
+    build_audit_registry(sources,database,tmp_path/'audit')
+    report('2026-09-14','Pending new article','https://example.org/pending')
+    update_registry(sources,database,tmp_path/'backups')
+    with sqlite3.connect(database) as db:
+        identities=dict(db.execute('SELECT canonical_url,article_id FROM articles'))
+    return sources,database,identities
+
+
+def test_env_only_sync_library_and_actual_cli_preserve_approved_hidden_pending_and_restore(tmp_path,monkeypatch):
+    from climate_registry.publication import set_visibility
+    sources,database,identities=_env_public_registry(tmp_path)
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(database))
+    source_bytes={p.name:p.read_bytes() for p in sources.iterdir()}
+    identity=identities['https://example.org/approved'];pending=identities['https://example.org/pending']
+    wiki=tmp_path/'wiki';cli_wiki=tmp_path/'cli-wiki'
+    script=Path(__file__).resolve().parents[1]/'scripts/sync_source_wiki.py'
+    for visible in (True,False,True):
+        set_visibility(database,'article',identity,visible)
+        before=database.read_bytes();inode=database.stat().st_ino
+        sync_source_wiki(source_dir=sources,wiki_dir=wiki,cadence='weekly')
+        run=subprocess.run([sys.executable,str(script),'--source-dir',str(sources),'--wiki-dir',str(cli_wiki),'--cadence','weekly'],capture_output=True,text=True)
+        assert run.returncode==0,run.stderr
+        for folder in (wiki,cli_wiki):
+            payload=json.loads((folder/'public-registry.json').read_text())
+            assert {item['article_id'] for item in payload['articles']}==({identity} if visible else set())
+            assert (folder/f'article-{identity}.md').exists()==visible
+            assert not (folder/f'article-{pending}.md').exists()
+            assert not (folder/'climate-monitor-2026-09-14.md').exists()
+            assert all('RAW EXECUTIVE MUST NOT REGENERATE' not in p.read_text() for p in folder.glob('*.md'))
+        assert database.read_bytes()==before and database.stat().st_ino==inode
+    assert source_bytes=={p.name:p.read_bytes() for p in sources.iterdir()}
+
+
+@pytest.mark.parametrize('invalid',['missing','corrupt','unsupported'])
+def test_invalid_env_sync_fails_before_library_or_cli_wiki_changes(tmp_path,monkeypatch,invalid):
+    from climate_registry.read_api import RegistryError
+    sources,database,_identities=_env_public_registry(tmp_path)
+    bad=tmp_path/'invalid.sqlite3'
+    if invalid=='corrupt':bad.write_bytes(b'not a SQLite database')
+    elif invalid=='unsupported':
+        with sqlite3.connect(bad) as db:db.execute('PRAGMA user_version=99')
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(bad))
+    wiki=tmp_path/'wiki';wiki.mkdir();(wiki/'index.md').write_text('Previous approved output\n')
+    before={p.name:p.read_bytes() for p in wiki.iterdir()};source_bytes={p.name:p.read_bytes() for p in sources.iterdir()}
+    with pytest.raises((ValueError,RegistryError)):
+        sync_source_wiki(source_dir=sources,wiki_dir=wiki,cadence='weekly')
+    script=Path(__file__).resolve().parents[1]/'scripts/sync_source_wiki.py'
+    run=subprocess.run([sys.executable,str(script),'--source-dir',str(sources),'--wiki-dir',str(wiki),'--cadence','weekly'],capture_output=True,text=True)
+    assert run.returncode!=0
+    assert before=={p.name:p.read_bytes() for p in wiki.iterdir()}
+    assert source_bytes=={p.name:p.read_bytes() for p in sources.iterdir()}
+
+
+def test_explicit_relative_copy_sync_overrides_invalid_env_and_empty_config_keeps_static(tmp_path,monkeypatch):
+    sources,database,identities=_env_public_registry(tmp_path)
+    monkeypatch.chdir(tmp_path);monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(tmp_path/'missing.sqlite3'))
+    sync_source_wiki(source_dir=sources,wiki_dir=tmp_path/'explicit',cadence='weekly',registry_database=Path(database.name))
+    payload=json.loads((tmp_path/'explicit/public-registry.json').read_text())
+    assert {item['article_id'] for item in payload['articles']}=={identities['https://example.org/approved']}
+    for index,value in enumerate((None,'','  ')):
+        if value is None:monkeypatch.delenv('CLIMATE_REGISTRY_DB',raising=False)
+        else:monkeypatch.setenv('CLIMATE_REGISTRY_DB',value)
+        wiki=tmp_path/f'static-{index}'
+        sync_source_wiki(source_dir=sources,wiki_dir=wiki,cadence='weekly')
+        assert 'RAW EXECUTIVE MUST NOT REGENERATE' in (wiki/'climate-monitor-2026-09-07.md').read_text()
+        assert not (wiki/'public-registry.json').exists()

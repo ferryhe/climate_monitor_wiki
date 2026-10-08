@@ -76,17 +76,32 @@ def _read_status(queue_dir: Path, batch_id: str) -> dict[str, Any] | None:
     return value
 
 
-def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any]:
+def _read_web_request(queue_dir: Path, batch_id: str) -> dict[str, Any]:
     job = _job_dir(queue_dir, batch_id)
     try:
         request = json.loads((job / "request.json").read_text(encoding="utf-8"))
-        snapshot = (job / request["registry_snapshot"]).resolve()
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise RuntimeError("web activation request is invalid") from exc
     if (
-        request.get("schema_version") not in {WEB_ACTIVATION_REQUEST_SCHEMA, REVIEW_REQUEST_SCHEMA}
+        not isinstance(request, dict)
+        or request.get("schema_version") not in {WEB_ACTIVATION_REQUEST_SCHEMA, REVIEW_REQUEST_SCHEMA}
         or request.get("batch_id") != batch_id
-        or request.get("registry_snapshot") != "registry.sqlite3"
+    ):
+        raise RuntimeError("web activation request is invalid")
+    return request
+
+
+def preflight_web_activation(queue_dir: Path, batch_id: str, database: Path) -> None:
+    """Check the immutable binding even when the optional snapshot is unavailable."""
+    validate_web_binding(_read_web_request(queue_dir, batch_id), database)
+
+
+def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any]:
+    job = _job_dir(queue_dir, batch_id)
+    request = _read_web_request(queue_dir, batch_id)
+    snapshot = (job / "registry.sqlite3").resolve()
+    if (
+        request.get("registry_snapshot") != "registry.sqlite3"
         or snapshot.parent != job.resolve()
         or not snapshot.is_file()
         or not isinstance(request.get("registry_sha256"), str)
@@ -114,7 +129,14 @@ def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any
         for item in expected:
             review = item.get("review", {})
             raw = loaded[item["acquisition_item_id"]]
-            expected_sha = digest([raw, review["display"]]) if review.get("display") else digest(raw)
+            registry_sha = review.get("registry_candidate_sha256")
+            expected_sha = digest([raw, registry_sha]) if registry_sha else digest([raw, review["display"]]) if review.get("display") else digest(raw)
+            if registry_sha:
+                from .read_api import RegistryReader
+                with RegistryReader(snapshot,repository_root=Path(__file__).resolve().parents[1],public=False).connect() as db:
+                    state=db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id=?", (raw["article_id"],)).fetchone()
+                    if not state or state[0] != registry_sha:
+                        raise RuntimeError("activation Registry version is not approved")
             if review.get("status") != "pass" or review.get("raw_candidate_sha256") != digest(raw) or review.get("candidate_sha256") != expected_sha or not review.get("inspection_sha256"):
                 raise RuntimeError("activation approval does not match the exact candidate")
     if not _web_items_match(
@@ -123,6 +145,17 @@ def read_web_activation_request(queue_dir: Path, batch_id: str) -> dict[str, Any
         raise RuntimeError("web activation request differs from its Registry snapshot")
     request["registry_snapshot_path"] = str(snapshot)
     return request
+
+
+def validate_web_binding(request, database=None):
+    """Check the frozen current Registry before any activation state changes."""
+    from .publication import resolve_database
+    binding = request.get("source_registry_database")
+    if not binding:
+        raise ValueError("historical web activation has no frozen Registry binding; preserve its audit and create a new task")
+    resolve_database(database or binding, frozen=binding)
+    if os.getenv("CLIMATE_REGISTRY_DB", "").strip():
+        resolve_database(frozen=binding)
 
 
 def enqueue_web_activation(
@@ -138,6 +171,8 @@ def enqueue_web_activation(
     database = _external(database, repository_root)
     if not queue.is_dir() or not re.fullmatch(r"[0-9a-f]{64}", frozen_payload_sha256):
         raise ValueError("web activation queue or frozen payload digest is invalid")
+    if (_job_dir(queue, batch_id) / "request.json").exists() or _status_path(queue, batch_id).exists():
+        preflight_web_activation(queue, batch_id, database)
     items = [_manifest_item(item) for item in _batch_items(database, batch_id)]
     job = _job_dir(queue, batch_id)
     job.mkdir(parents=True, exist_ok=True)
@@ -183,6 +218,7 @@ def enqueue_web_activation(
             "frozen_payload_sha256": frozen_payload_sha256,
             "registry_snapshot": "registry.sqlite3",
             "registry_sha256": _file_sha256(snapshot),
+            "source_registry_database": str(database),
             "web_items": items,
             "created_at": _now(),
         }
@@ -299,8 +335,10 @@ def _batch_items(database: Path, batch_id: str, *, require_frozen: bool = True) 
         ).fetchone()
         if batch is None or (require_frozen and not batch["frozen_at"]):
             raise RuntimeError("web acquisition batch is not frozen")
+        published_schema = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+        date_clause = "" if published_schema else "AND i.publication_date IS NOT NULL AND i.publication_date_evidence_json IS NOT NULL"
         rows = connection.execute(
-            """
+            f"""
             SELECT i.acquisition_item_id, i.batch_id, i.article_id, i.content_version_id,
                    i.publication_date, i.publication_date_evidence_json, i.raw_url,
                    i.title, i.summary, i.discovered_at, i.source_name,
@@ -314,8 +352,7 @@ def _batch_items(database: Path, batch_id: str, *, require_frozen: bool = True) 
               ON c.article_id=i.article_id AND c.content_version_id=i.content_version_id
             WHERE i.batch_id=? AND i.selection_status='selected'
               AND i.processing_status='complete' AND i.material_status='full_content'
-              AND i.date_status='eligible' AND i.publication_date IS NOT NULL
-              AND i.publication_date_evidence_json IS NOT NULL
+              AND i.date_status='eligible' {date_clause}
             ORDER BY i.ordinal
             """,
             (batch_id,),
@@ -326,8 +363,8 @@ def _batch_items(database: Path, batch_id: str, *, require_frozen: bool = True) 
     if not items:
         raise RuntimeError("frozen web acquisition batch has no indexable items")
     for item in items:
-        evidence = json.loads(item.pop("publication_date_evidence_json"))
-        if not isinstance(evidence, dict) or not evidence:
+        evidence = json.loads(item.pop("publication_date_evidence_json") or "{}")
+        if not isinstance(evidence, dict) or (not evidence and not published_schema):
             raise RuntimeError("web acquisition item lacks publication-date evidence")
         item["publication_date_evidence"] = evidence
     return items
@@ -397,12 +434,19 @@ class WebIngestPipeline:
         }
         if status["chat_ready"]:
             return status
+        preflight_web_activation(self.queue_dir, batch_id, self.database)
+        request = None
+        request_error = None
+        if (_job_dir(self.queue_dir, batch_id) / "request.json").is_file():
+            try:
+                request = read_web_activation_request(self.queue_dir, batch_id)
+            except Exception as exc:
+                request_error = exc
         status = self._save(status, stage="processing", attempts=int(status["attempts"]) + 1, error=None)
         (_job_dir(self.queue_dir, batch_id) / "retry.json").unlink(missing_ok=True)
         try:
-            request = None
-            if (_job_dir(self.queue_dir, batch_id) / "request.json").is_file():
-                request = read_web_activation_request(self.queue_dir, batch_id)
+            if request_error is not None:
+                raise request_error
             source_batch = request.get("source_batch_id", batch_id) if request else batch_id
             new_items = _batch_items(self.database, source_batch,
                 require_frozen=not request or request["schema_version"] == WEB_ACTIVATION_REQUEST_SCHEMA)
@@ -413,11 +457,22 @@ class WebIngestPipeline:
                         for item in new_items if item["acquisition_item_id"] in selected]
                 if (
                     Path(request["registry_snapshot_path"]) != self.database
+                    and Path(request.get("source_registry_database", "")) != self.database
                     or not _web_items_match(
                         request["web_items"], [_manifest_item(item) for item in new_items]
                     )
                 ):
                     raise RuntimeError("web activation writer input differs from its request")
+            from .publication import public_revision, prepare_review
+            if public_revision(self.database) is not None:
+                with sqlite3.connect(f"{self.database.as_uri()}?mode=ro",uri=True) as connection:
+                    pending = [item["article_id"] for item in new_items if not connection.execute(
+                        "SELECT 1 FROM registry_publication WHERE entity_kind='article' AND entity_id=? AND published_candidate_sha256 IS NOT NULL AND published_candidate_sha256=latest_candidate_sha256", (item["article_id"],)).fetchone()]
+                if pending:
+                    review_dir=os.getenv("CLIMATE_ACQUISITION_RUN_DIR", "").strip()
+                    if review_dir:
+                        prepare_review(self.database,Path(review_dir)/"registry-review")
+                    return self._save(status,stage="pending_review",indexed=False,chat_ready=False,pending_review_count=len(set(pending)),error=None)
             active_generation, active = load_active_projection(
                 self.runtime_wiki_dir, self.queue_dir / "active.json"
             )
@@ -438,7 +493,8 @@ class WebIngestPipeline:
             )
             selected_database = None
             resolved_items = None
-            for candidate in (self.database, active_web_snapshot):
+            candidates = (self.database,) if public_revision(self.database) is not None else (self.database, active_web_snapshot)
+            for candidate in candidates:
                 if candidate is None or candidate == selected_database:
                     continue
                 try:

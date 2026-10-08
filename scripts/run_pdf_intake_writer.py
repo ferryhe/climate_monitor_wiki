@@ -36,9 +36,11 @@ def _reload_chat(expected_generation_id: str) -> None:
 
 
 def _pipeline() -> PdfIntakePipeline:
+    from climate_registry.publication import resolve_database
+    database = resolve_database()
     return PdfIntakePipeline(
         queue_dir=Path(_required("CLIMATE_PDF_INTAKE_QUEUE_DIR")),
-        database=Path(_required("CLIMATE_REGISTRY_WRITER_DB")),
+        database=database,
         backup_dir=Path(_required("CLIMATE_REGISTRY_BACKUP_DIR")),
         runtime_wiki_dir=Path(_required("CLIMATE_PDF_RUNTIME_WIKI_DIR")),
         reload_chat=_reload_chat,
@@ -57,8 +59,7 @@ def main() -> int:
             print(f"{result['batch_id']} {result['stage']}", flush=True)
         if args.once:
             return 0 if result is None or result.get("chat_ready") else 1
-        if result is None:
-            time.sleep(max(args.poll_seconds, 0.1))
+        time.sleep(max(args.poll_seconds, 0.1))
 
 
 if __name__ == "__main__":

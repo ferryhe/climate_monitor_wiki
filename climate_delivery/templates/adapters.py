@@ -58,6 +58,10 @@ def _paragraphs(*values: str | None) -> tuple[str, ...]:
     return tuple(part for value in values if value for part in value.split("\n\n") if part.strip())
 
 
+def _material_summary_paragraphs(item):
+    return tuple("Source verification summary: "+value["summary"] for value in item.get("selected_material_summaries",[]))
+
+
 def _date_basis(value: Any) -> tuple[tuple[str, str], ...]:
     if not value:
         return ()
@@ -82,6 +86,8 @@ def _range_date_label(item: dict[str, Any]) -> str:
         return f"information date {item.get('information_date') or item.get('range_date') or 'not recorded'}"
     if basis == "publication_date":
         return f"publication date {item.get('publication_date') or item.get('range_date') or 'not recorded'}"
+    if basis == "report_date":
+        return f"report date {item.get('range_date') or 'not recorded'} (article publication date unconfirmed)"
     return f"publication date {item.get('publication_date') or 'not recorded'}"
 
 
@@ -91,11 +97,11 @@ def _range_selection_summary(articles: list[dict[str, Any]], start: str, end: st
     if not any(item.get("date_basis") for item in articles):
         return f"{len(articles)} evidenced Registry article(s) were published from {start} through {end}."
     counts = {basis: sum(item.get("date_basis") == basis for item in articles)
-              for basis in ("collection_time", "information_date", "publication_date")}
+              for basis in ("collection_time", "information_date", "publication_date", "report_date")}
     details = []
     for basis, label in (("collection_time", "collection time"),
                          ("information_date", "page information date"),
-                         ("publication_date", "publication date")):
+                         ("publication_date", "publication date"), ("report_date", "report date")):
         if counts[basis]:
             details.append(f"{counts[basis]} by {label}")
     return f"{len(articles)} evidenced Registry article(s) were selected for {start} through {end} ({'; '.join(details)})."
@@ -299,6 +305,9 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
     for item in snapshot["articles"]:
         basis = item.get("date_basis")
         date_metadata = (("Date basis", _range_date_label(item)),)
+        if basis == "report_date":
+            date_metadata += (("Report date", item["range_date"]),
+                              ("Article publication date", "Unconfirmed"))
         if item.get("publication_date") and basis != "publication_date":
             date_metadata += (("Publication date", item["publication_date"]),)
         if item.get("information_date") and basis != "information_date":
@@ -308,12 +317,13 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         updates.append(Update(_title(item["title"]), institution,
             ", ".join(item.get("categories", [])) or "Topic not recorded", _title(item["article_id"]),
             item.get("content_version_id"), _date(item["publication_date"]) if item.get("publication_date") else None, None,
-            _paragraphs(item.get("summary"), item.get("content")) + _caveats(item),
+            _paragraphs(item.get("summary"), item.get("content")) + _material_summary_paragraphs(item) + _caveats(item),
             date_metadata + tuple((label, ", ".join(item[field])) for label, field in (("Categories", "categories"), ("Keywords", "keywords")) if item.get(field)),
             citations,
             content_sha256=item.get("provenance", {}).get("content_version", {}).get("content_sha256"),
             imported_from_pdf=any(c.get("kind") in {"pdf", "pdf_page"} for c in item["citations"]),
-            date_basis=basis, information_date=item.get("information_date"), collected_at=item.get("collected_at")))
+            date_basis=basis, information_date=item.get("information_date"), collected_at=item.get("collected_at"),
+            report_date=item.get("range_date") if basis == "report_date" else None))
     for item in snapshot.get("pdf_source_updates", []):
         coverage = (_date(item["coverage_period"]["start"]), _date(item["coverage_period"]["end"]))
         if coverage[0] > coverage[1]:
@@ -326,7 +336,7 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         updates.append(Update(_title(item["title"]), institution, item.get("topic") or "PDF Source Updates",
             item.get("core_article_id") or item["pdf_article_id"], None,
             _date(item["publication_date"]) if item.get("publication_date") else None, coverage,
-            _paragraphs(item.get("summary")) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])) +
+            _paragraphs(item.get("summary")) + _material_summary_paragraphs(item) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])) +
             ((("PDF article ID", item["pdf_article_id"]),) if item.get("core_article_id") else ()), _citations(citations),
             content_sha256=item.get("content_sha256"),
             article_id_label="Core article ID" if item.get("core_article_id") else "PDF article ID",

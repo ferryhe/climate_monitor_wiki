@@ -68,9 +68,11 @@ mode from this document; check the sanitized `/api/config` response.
 A weekly climate-risk / actuarial monitoring pipeline that publishes an
 interlinked wiki plus a retrieval-augmented chat UI over the reports.
 
-Flow: monitor job writes a dated markdown report → ingest into `sources/` →
-generate `wiki/` pages + index → FastAPI serves the wiki and a RAG chat
-endpoint → Caddy fronts it over HTTPS.
+Flow: website acquisition, weekly search and PDF intake → one external business
+Registry (`CLIMATE_REGISTRY_DB`) → pending candidates → existing T1/T10 improvement
+and real native review → final automatic exact-snapshot checks → approved public
+versions for API, Wiki, RAG Chat, new reports and the existing publisher. Sources
+and archived reports retain immutable history. See [the current architecture](docs/article-first-architecture.md).
 
 | Path | Role |
 |---|---|
@@ -78,12 +80,12 @@ endpoint → Caddy fronts it over HTTPS.
 | `climate_monitor/weekly_monitor/` | Versioned prompt loading and v1/v2 request/response validation |
 | `monitoring/` | Source/run config, editable discovery/relevance prompts, pinned taxonomy |
 | `agentic_wiki/` | RAG retrieval and answer synthesis (`wiki_agent.py` is the core) |
-| `climate_registry/` | Historical Registry, DB-first enrichment, weekly candidate sync and exact restore |
+| `climate_registry/` | Canonical article facts, immutable candidates/reviews, public versions, DB-first enrichment and exact restore |
 | `climate_delivery/` | 09:00 summary/PDF/manifest production and retained email delivery |
 | `api_server.py` | FastAPI: `/api/chat`, `/api/config`, `/api/reload` |
 | `scripts/` | Operational entrypoints (see below) |
 | `showcase/` | Frontend (vanilla JS, no build step) |
-| `sources/` | Raw ingested reports — **the source of truth** |
+| `sources/` | Immutable report archives and citation evidence; current article/publication facts live in the external Registry |
 | `wiki/` | Generated pages — derived, safe to regenerate |
 | `Dockerfile`, `Caddyfile`, `docker-compose.yml` | Deployment stack (repo root) |
 
@@ -136,8 +138,8 @@ Read `docs/weekly-cadence.md` before touching cadence logic.
 
 ## Non-negotiables
 
-1. **Never fabricate report content.** Every wiki claim traces to a file in
-   `sources/`. If a date has no report, it has no page — do not invent one, and
+1. **Never fabricate report content.** Every Wiki claim traces to approved
+   Registry content and its retained website/search/PDF or source-report evidence. If a date has no report, it has no page — do not invent one, and
    do not synthesize a placeholder that reads like content.
 2. **`sources/` is append-mostly.** Deleting or rewriting a source silently
    changes history and breaks citations. Regenerating `wiki/` is fine.
@@ -220,6 +222,13 @@ The production checkout must remain clean and track `origin/main`. Weekly
 generation never commits there. The publication path is: Hermes generates a
 report → the publisher rebuilds in a temporary clone → rolling PR → human merge
 → a separate server deployment updates and reloads the service.
+
+The existing wiki acquisition service and PDF intake writer mount the same
+explicitly provisioned external Registry directory read/write. Short writes share
+`<db>.lock`; API connections remain read-only. Runtime storage holds queues and
+state, not a second business writer database. `is_visible` and the exact approved
+version govern all current public consumers. Render serves the exported approved
+Git JSON/Wiki snapshot without a production database.
 
 See `docs/deployment.md`.
 

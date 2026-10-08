@@ -14,7 +14,47 @@ from climate_monitor.meeting_fields import merge_meeting_observations
 from climate_registry.information_checks import check_targets, evaluate, latest_checks, run_checks
 from climate_registry.information_checks import merge_checked_observation
 from climate_registry.read_api import RegistryReader
-from climate_registry.schema import apply_migrations
+from climate_registry.schema import apply_migrations as _apply_migrations
+
+
+# These historical T1 reader/overlay regressions use schema20. Current T1 results
+# remain pending in schema21; native review is covered in test_registry_publication.
+def apply_migrations(connection, *, target_version=None):
+    return _apply_migrations(connection,target_version=20 if target_version is None else target_version)
+
+
+def legacy_schema_writer(connection):
+    """This test-only writer targets schema20 and cannot exercise current writes."""
+    assert connection.execute("PRAGMA user_version").fetchone()[0] <= 20
+
+
+def legacy_pdf_binding(status, database=None):
+    """Historical Runtime/Public tests bind the writer, independently of Public RO."""
+    from climate_registry.publication import resolve_database
+    binding=status.get("registry_database")
+    if not binding:
+        if status.get("imported"):raise ValueError("historical imported PDF batch has no frozen Registry binding")
+        return
+    selected=resolve_database(database or binding,frozen=binding)
+    connection=sqlite3.connect(f"{selected.as_uri()}?mode=ro",uri=True)
+    try:assert connection.execute("PRAGMA user_version").fetchone()[0]<=20
+    finally:connection.close()
+
+
+@pytest.fixture(autouse=True)
+def legacy_check_writer_contract(monkeypatch):
+    import climate_registry.information_checks as checks
+    import climate_registry.pdf_intake as storage
+    import climate_monitor.meetings as meetings
+    import climate_registry.publication as publication
+    import climate_registry.pdf_pipeline as pipeline
+    monkeypatch.setattr(pipeline,"_validate_pdf_binding",legacy_pdf_binding)
+    monkeypatch.setattr(publication,"require_publication_migration",legacy_schema_writer)
+    monkeypatch.setattr(checks,"apply_migrations",apply_migrations)
+    monkeypatch.setattr(storage,"apply_migrations",apply_migrations)
+    monkeypatch.setattr(storage,"LATEST_SCHEMA_VERSION",20)
+    monkeypatch.setattr(meetings,"SCHEMA_VERSION",20)
+
 
 
 def _database(tmp_path):
@@ -230,7 +270,14 @@ def test_verified_reschedule_keeps_native_identity_across_all_readers(tmp_path, 
         f"Example confirms World Climate Summit 2027 is rescheduled for July 1–2, 2027. Register at {url}."]
     native_dir = tmp_path / "native"
     native_dir.mkdir()
-    native = native_database(native_dir, bodies)
+    # Build the native half with the same historical contract.
+    import test_issue136_meetings as native_fixture
+    original_migrations=native_fixture.apply_migrations
+    native_fixture.apply_migrations=apply_migrations
+    try:
+        native = native_database(native_dir, bodies)
+    finally:
+        native_fixture.apply_migrations=original_migrations
     def candidate(body):
         moved = "rescheduled" in body
         return _candidate(start_date="2027-07-01" if moved else "2027-06-10",

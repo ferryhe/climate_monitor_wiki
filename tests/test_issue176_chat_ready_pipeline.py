@@ -37,8 +37,26 @@ from climate_registry.range_reports import (
     render_range_report_html,
 )
 from climate_registry.read_api import RegistryReader
-from climate_registry.schema import apply_migrations
+from climate_registry.schema import apply_migrations as _apply_migrations
 from climate_registry.wiki import sync_registry_wiki
+
+
+# Supported historical activation/overlay contracts use their actual schema20.
+# Current v21 pending/native-review/publication behavior is exercised separately.
+def apply_migrations(connection, *, target_version=None):
+    return _apply_migrations(connection,target_version=20 if target_version is None else target_version)
+
+
+@pytest.fixture(autouse=True)
+def legacy_pdf_writer_contract(monkeypatch):
+    import climate_registry.pdf_intake as storage
+    import climate_registry.publication as publication
+    from test_information_checks import legacy_schema_writer,legacy_pdf_binding
+    import climate_registry.pdf_pipeline as pipeline
+    monkeypatch.setattr(pipeline,"_validate_pdf_binding",legacy_pdf_binding)
+    monkeypatch.setattr(publication,"require_publication_migration",legacy_schema_writer)
+    monkeypatch.setattr(storage,"apply_migrations",apply_migrations)
+    monkeypatch.setattr(storage,"LATEST_SCHEMA_VERSION",20)
 
 
 def _pdf_bytes(summary: str = "New PDF evidence says transition planning needs regional stress tests.") -> bytes:

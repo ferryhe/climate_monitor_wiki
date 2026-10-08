@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -11,6 +12,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from climate_registry.publication import resolve_database
 
 from climate_registry.wiki import (
     _citation,
@@ -258,11 +261,44 @@ def sync_source_wiki(
 ) -> SyncResult:
     if cadence not in {"daily", "weekly"}:
         raise ValueError(f"unsupported cadence: {cadence!r} (expected daily or weekly)")
+    configured_registry = registry_database or os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+    if configured_registry:
+        from climate_registry.read_api import RegistryReader
+        registry_database = resolve_database(
+            Path(registry_database).expanduser().resolve() if registry_database is not None else None
+        )
+        with RegistryReader(registry_database, repository_root=REPO_ROOT, public=False).connect():
+            pass
     wiki_dir.mkdir(parents=True, exist_ok=True)
     source_dates = _discover_daily_dates(source_dir)
     existing_daily_dates = _discover_daily_dates(wiki_dir)
     known_dates = source_dates | existing_daily_dates
-    registry_states = sync_registry_wiki(registry_database, wiki_dir) if registry_database else {}
+    registry_states = {}
+    public_projection = False
+    if registry_database:
+        from climate_registry.read_api import RegistryReader
+        reader=RegistryReader(registry_database,repository_root=Path(__file__).resolve().parents[1])
+        with reader.public_snapshot():
+            with reader.connect() as connection:
+                public_projection=connection.execute("PRAGMA user_version").fetchone()[0]>=21
+            if public_projection:
+                from climate_registry.publication import export_public_snapshot
+                from climate_registry.wiki import _registry_pages_read
+                registry_states=_registry_pages_read(registry_database,wiki_dir,reader=reader)
+                artifact=wiki_dir/"public-registry.json"
+                before=artifact.read_bytes() if artifact.exists() else None
+                export_public_snapshot(registry_database,artifact,reader=reader,source_dir=source_dir)
+                payload=json.loads(artifact.read_text(encoding="utf-8"))
+                for name,markdown in payload["wiki_pages"].items():
+                    if name.startswith("climate-monitor-"):
+                        registry_states[name]=_write_if_changed(wiki_dir/name,markdown)
+                for page in wiki_dir.iterdir():
+                    if page.is_file() and (DAILY_FILE_RE.fullmatch(page.name) or page.name=="registry-meetings.md") and page.name not in payload["wiki_pages"]:
+                        page.unlink()
+                        registry_states[page.name]="deleted"
+                registry_states[artifact.name]="unchanged" if before==artifact.read_bytes() else "updated" if before is not None else "created"
+            else:
+                registry_states=sync_registry_wiki(registry_database,wiki_dir)
     if not known_dates and not registry_states:
         raise RuntimeError(
             "No climate-monitor report files were found in sources/ or wiki/."
@@ -283,7 +319,8 @@ def sync_source_wiki(
         if not known_dates:
             raise RuntimeError("No climate-monitor source files were found in sources/.")
 
-    daily_days = _iter_report_dates(known_dates, cadence) if known_dates else []
+    daily_days = (sorted(_daily_date_from_name(name) for name in payload["wiki_pages"] if DAILY_FILE_RE.fullmatch(name))
+        if public_projection else _iter_report_dates(known_dates, cadence) if known_dates else [])
     topic_pages = _read_topic_pages(wiki_dir)
     index_tail = _preserved_index_tail(wiki_dir / "index.md")
 
@@ -302,7 +339,7 @@ def sync_source_wiki(
         else:
             unchanged_pages.append(name)
 
-    for day in daily_days:
+    for day in ([] if public_projection else daily_days):
         source_path = source_dir / f"climate-monitor-{day}.md"
         has_source = source_path.exists()
         summary = ""
@@ -335,6 +372,8 @@ def sync_source_wiki(
         index_tail=index_tail,
         cadence=cadence,
     )
+    if public_projection:
+        index_content=payload["wiki_pages"]["index.md"]
     index_state = _write_if_changed(wiki_dir / "index.md", index_content)
     if index_state == "created":
         created_pages.append("index.md")
@@ -380,12 +419,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    registry_database = args.registry_database
+    if registry_database is None and os.getenv("CLIMATE_REGISTRY_DB", "").strip():
+        registry_database = resolve_database()
     result = sync_source_wiki(
         source_dir=args.source_dir,
         wiki_dir=args.wiki_dir,
         cadence=args.cadence,
         prune_sourceless=not args.keep_sourceless,
-        registry_database=args.registry_database,
+        registry_database=registry_database,
     )
     print(
         "Synced wiki:",

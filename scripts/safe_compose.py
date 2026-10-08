@@ -9,7 +9,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import Any
 
@@ -258,7 +258,11 @@ def _validate_final_model(model: Mapping[str, Any]) -> None:
             mount = matches[0]
             writable = mount.get("read_only") is not True
             writable_allowed = (
-                (target == "/pdf-intake-queue" and queue_enabled)
+                (target == "/registry" and (service_name == "wiki" or is_writer)
+                    and isinstance(environment, Mapping)
+                    and PurePosixPath(str(environment.get("CLIMATE_REGISTRY_DB", ""))).parent == PurePosixPath("/registry")
+                    and mount.get("bind", {}).get("create_host_path") is False)
+                or (target == "/pdf-intake-queue" and queue_enabled)
                 or (is_writer and target == "/runtime/wiki")
             )
             if mount.get("type") != "bind" or (writable and not writable_allowed):

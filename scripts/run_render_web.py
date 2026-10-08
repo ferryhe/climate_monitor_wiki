@@ -29,11 +29,15 @@ def main() -> None:
         workspace_path = Path(workspace)
         database = workspace_path / "article-registry.sqlite3"
         build_audit_registry(source_dir, database, workspace_path / "audit")
+        from climate_registry.publication import install_git_snapshot
+        install_git_snapshot(database, ROOT / "wiki")
         os.environ["CLIMATE_REGISTRY_DB"] = str(database)
+        os.environ["CLIMATE_REGISTRY_STATIC_SNAPSHOT"] = "1"
         try:
             _run_app()
         finally:
             os.environ.pop("CLIMATE_REGISTRY_DB", None)
+            os.environ.pop("CLIMATE_REGISTRY_STATIC_SNAPSHOT", None)
 
 
 if __name__ == "__main__":

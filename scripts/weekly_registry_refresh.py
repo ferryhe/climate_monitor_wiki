@@ -347,7 +347,7 @@ def _verify_sha_binding(
     expected = sync_result["report_sha256"]
     try:
         database_before = _stream_sha256(args.database)
-        reader = RegistryReader(args.database, repository_root=ROOT)
+        reader = RegistryReader(args.database, repository_root=ROOT, public=False)
         identity = reader.report_identity(args.date)
         report_payload = reader.report(args.date)
         registry_article_ids = [

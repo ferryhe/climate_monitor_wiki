@@ -367,6 +367,9 @@ def render_report(report: Report, output: str | Path) -> None:
                     labels.append("Publication date: " + update.publication_date)
             elif update.date_basis == "publication_date":
                 labels = ["Publication date: " + (update.publication_date or "Not recorded")]
+            elif update.date_basis == "report_date":
+                labels = ["Report date: " + (update.report_date or "Not recorded"),
+                          "Article publication date unconfirmed"]
             else:
                 labels = [update.publication_date or "Article publication date unconfirmed"]
             labels.append(update.topic)

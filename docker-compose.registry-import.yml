@@ -1,9 +1,16 @@
 services:
   wiki:
     environment:
+      CLIMATE_REGISTRY_DB: ${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}
       CLIMATE_PDF_INTAKE_QUEUE_DIR: /pdf-intake-queue
       CLIMATE_PDF_RUNTIME_WIKI_DIR: /runtime/wiki
     volumes:
+      - type: bind
+        source: ${CLIMATE_REGISTRY_HOST_DIR:?set CLIMATE_REGISTRY_HOST_DIR to the external registry directory}
+        target: /registry
+        read_only: false
+        bind:
+          create_host_path: false
       - type: bind
         source: ${CLIMATE_PDF_QUEUE_HOST_DIR:?set CLIMATE_PDF_QUEUE_HOST_DIR to an external queue directory}
         target: /pdf-intake-queue
@@ -30,12 +37,19 @@ services:
       CLIMATE_PDF_INTAKE_QUEUE_DIR: /pdf-intake-queue
       CLIMATE_PDF_RUNTIME_WIKI_DIR: /runtime/wiki
       CLIMATE_PDF_RELOAD_URL: http://wiki:8501/api/reload
-      CLIMATE_REGISTRY_WRITER_DB: /pipeline/climate_registry.sqlite3
+      CLIMATE_REGISTRY_DB: ${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}
       CLIMATE_REGISTRY_BACKUP_DIR: /pipeline/pdf-intake-backups
+      CLIMATE_ACQUISITION_RUN_DIR: /pipeline/acquisition-runs
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       CLIMATE_WEB_LISTENING_DATA_DIR: /pipeline/web-listening
       RELOAD_TOKEN: ${RELOAD_TOKEN:?RELOAD_TOKEN is required for PDF intake}
     volumes:
+      - type: bind
+        source: ${CLIMATE_REGISTRY_HOST_DIR:?set CLIMATE_REGISTRY_HOST_DIR to the external registry directory}
+        target: /registry
+        read_only: false
+        bind:
+          create_host_path: false
       - type: volume
         source: climate_runtime
         target: /pipeline

@@ -93,6 +93,16 @@ def _write_retained_artifacts(output: Path) -> dict[str, tuple[dict, bytes]]:
     return expected
 
 
+def _approve_fixture(database: Path, metadata_dir: Path | None = None, source_dir: Path | None = None) -> None:
+    """This fixture represents an explicitly accepted public snapshot."""
+    from climate_registry.publication import enabled, stage_entities, _approve
+    with sqlite3.connect(database) as connection:
+        if enabled(connection):
+            annotations = load_article_annotations(metadata_dir) if metadata_dir else {}
+            for sha in stage_entities(connection, annotations=annotations,source_dir=source_dir):
+                _approve(connection, sha, {"basis": "accepted_test_fixture"}, status="accepted_legacy")
+
+
 def _registry(tmp_path: Path, *, target_version: int | None = None) -> Path:
     database = tmp_path / "article-registry.sqlite3"
     connection = sqlite3.connect(database)
@@ -248,12 +258,13 @@ def _registry(tmp_path: Path, *, target_version: int | None = None) -> Path:
                 (f"content-{suffix}", f"article-{suffix}"),
             )
     connection.close()
+    _approve_fixture(database)
     return database
 
 
 @pytest.fixture()
-def registry_client(tmp_path, monkeypatch):
-    database = _registry(tmp_path)
+def registry_client(tmp_path, monkeypatch, request):
+    database = _registry(tmp_path,target_version=getattr(request,"param",None))
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     return TestClient(app), database
 
@@ -347,6 +358,31 @@ def _insert_pdf_intake_records(database: Path) -> None:
     )
     connection.commit()
     connection.close()
+    _approve_fixture(database)
+
+
+def test_nested_public_connections_restore_outer_archive_connection(registry_client):
+    _, database = registry_client
+    _insert_pdf_intake_records(database)
+    reader = RegistryReader(database, repository_root=ROOT)
+    before = database.read_bytes()
+    with reader.connect() as outer:
+        original = reader._snapshot_source_connection
+        assert original is not outer
+        with reader.connect() as inner:
+            assert inner is not outer
+            assert reader._snapshot_source_connection is not original
+        assert reader._snapshot_source_connection is original
+        with pytest.raises(RuntimeError, match="controlled inner failure"):
+            with reader.connect():
+                raise RuntimeError("controlled inner failure")
+        assert reader._snapshot_source_connection is original
+        assert original.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone()[0] == 2
+        assert reader.pdf_report("f" * 64)["filename"] == "report.pdf"
+        assert reader._snapshot_source_connection is original
+        assert outer.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone()[0] == 2
+    assert not hasattr(reader, "_snapshot_source_connection")
+    assert database.read_bytes() == before
 
 
 def test_status_is_safe_when_registry_is_missing_invalid_or_inside_repo(tmp_path, monkeypatch):
@@ -382,7 +418,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert status.status_code == 200
     assert status.json() == {
         "available": True,
-        "schema_version": 19,
+        "schema_version": 22,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -456,6 +492,7 @@ def test_current_four_historical_report_details_are_api_readable(
         ).hexdigest()
 
 
+@pytest.mark.parametrize("registry_client",[20],indirect=True)
 def test_publishers_are_bounded_deterministic_read_only_choices(registry_client):
     client, _ = registry_client
     response = client.get("/api/registry/publishers")
@@ -472,6 +509,7 @@ def test_publishers_are_bounded_deterministic_read_only_choices(registry_client)
     }
 
 
+@pytest.mark.parametrize("registry_client",[20],indirect=True)
 def test_publisher_label_keeps_state_government_context(registry_client):
     client, database = registry_client
     connection = sqlite3.connect(database)
@@ -493,6 +531,7 @@ def test_publisher_label_keeps_state_government_context(registry_client):
     assert {item["hostname"]: item["label"] for item in items}["insurance.ca.gov"] == "CA insurance"
 
 
+@pytest.mark.parametrize("registry_client",[20],indirect=True)
 def test_publisher_choices_are_capped(registry_client):
     client, database = registry_client
     connection = sqlite3.connect(database)
@@ -580,6 +619,7 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
             """
         )
     connection.close()
+    _approve_fixture(database,source_dir=source_dir)
     monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
 
     report = client.get("/api/registry/reports/2026-08-10").json()
@@ -728,6 +768,7 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
             "UPDATE articles SET current_content_version_id = NULL WHERE article_id = 'article-meta'"
         )
     connection.close()
+    _approve_fixture(database,metadata_dir,source_dir)
     monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
     monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", metadata_dir)
 
@@ -767,6 +808,7 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
     (metadata_dir / "articles-001-003.json").write_text(
         json.dumps(payload), encoding="utf-8"
     )
+    _approve_fixture(database,metadata_dir,source_dir)
     article = client.get("/api/registry/articles/article-meta").json()
     assert article["summary_provenance"] == "official_replacement_annotation"
     assert article["metadata_provenance"] == {
@@ -824,6 +866,7 @@ def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
             """
         )
     connection.close()
+    _approve_fixture(database, metadata_dir)
     monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", metadata_dir)
 
     with caplog.at_level(logging.DEBUG, logger="climate_registry.read_api"):
@@ -866,6 +909,8 @@ def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
         "2026-08-10",
         "2026-08-03",
     ]
+
+
     assert [item["pillar"] for item in detail["appearances"]] == ["A", "A"]
     assert "content_enrichment_id" not in report_article
     assert "content_enrichment_id" not in detail
@@ -885,11 +930,44 @@ def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
         assert secret not in rendered_logs
 
 
+def test_manual_enrichment_can_attach_to_an_article_version_without_body(registry_client):
+    client, database = registry_client
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE articles SET current_content_version_id = NULL WHERE article_id = 'article-meta'"
+        )
+        connection.execute(
+            """INSERT INTO article_enrichments(
+                   enrichment_id, article_id, article_version_id, status, summary,
+                   categories_json, keywords_json, language, generator_kind,
+                   generator_name, generator_version, generated_at
+               ) VALUES ('manual-meta', 'article-meta', 'version-meta', 'complete',
+                         'Human-reviewed summary.', '[\"policy-regulation\"]',
+                         '[\"disclosure\"]', 'en', 'manual', 'human-review',
+                         'manual-v1', '2026-10-07T12:00:00Z')"""
+        )
+
+    _approve_fixture(database)
+    detail = client.get("/api/registry/articles/article-meta").json()
+    report = client.get("/api/registry/reports/2026-08-10").json()
+    report_article = next(item for item in report["articles"] if item["article_id"] == "article-meta")
+
+    assert detail["summary"] == "Human-reviewed summary."
+    assert detail["summary_provenance"] == "manual_enrichment"
+    assert detail["enrichment"]["article_version_id"] == "version-meta"
+    assert detail["enrichment"]["content_version_id"] is None
+    assert detail["enrichment"]["generator"]["kind"] == "manual"
+    assert detail["categories"] == ["policy-regulation"]
+    assert report_article["summary"] == "Human-reviewed summary."
+    assert report_article["summary_provenance"] == "manual_enrichment"
+
+
 def test_bundled_161_annotations_preserve_existing_report_api_payloads(tmp_path):
     root = Path(__file__).resolve().parents[1]
     database = tmp_path / "historical-registry.sqlite3"
     build_audit_registry(root / "sources", database, tmp_path / "audit")
     annotations = load_article_annotations(root / "article_metadata")
+    _approve_fixture(database,root/"article_metadata",root/"sources")
     reader = RegistryReader(
         database,
         repository_root=root,
@@ -978,7 +1056,8 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert detail.status_code == 200
     assert detail.json()["type_safe_classification"] == {"provider": "typesafe", "label": "article"}
     assert detail.json()["occurrences"][0]["raw_url"].endswith("utm_source=pdf")
-    assert detail.json()["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert "source_observations" not in detail.json()["occurrences"][0]
+    assert "C:/input/report.pdf" not in detail.text
     assert client.get("/api/registry/articles/article-full").json()["pdf_occurrences"][0]["occurrence_id"] == "pdf-occurrence-core"
 
     calendar = client.get(
@@ -988,7 +1067,11 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert calendar.json()["items"][0]["kind"] == "publication"
     assert calendar.json()["items"][0]["source_kind"] == "pdf"
     assert calendar.json()["items"][0]["source_filename"] == "report.pdf"
-    assert calendar.json()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert "source_observations" not in calendar.json()["items"][0]
+    assert "C:/input/report.pdf" not in calendar.text
+    raw = RegistryReader(database, repository_root=ROOT, public=False)
+    assert raw.pdf_article("pdf-article-unique")["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert raw.pdf_calendar_items()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
 def test_pdf_read_paths_remain_available_for_supported_v12_registry(tmp_path, monkeypatch):
@@ -1020,9 +1103,14 @@ def test_pdf_read_api_uses_legacy_source_columns_on_v13_registry(tmp_path, monke
     calendar = client.get("/api/registry/pdf-intake/calendar")
 
     assert detail.status_code == 200
-    assert detail.json()["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert "source_observations" not in detail.json()["occurrences"][0]
+    assert "C:/input/report.pdf" not in detail.text
     assert calendar.status_code == 200
-    assert calendar.json()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert "source_observations" not in calendar.json()["items"][0]
+    assert "C:/input/report.pdf" not in calendar.text
+    raw = RegistryReader(database, repository_root=ROOT, public=False)
+    assert raw.pdf_article("pdf-article-unique")["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
+    assert raw.pdf_calendar_items()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
 def test_pillar_and_report_date_must_match_the_same_appearance(registry_client):
@@ -1034,6 +1122,7 @@ def test_pillar_and_report_date_must_match_the_same_appearance(registry_client):
     connection.execute("UPDATE discoveries SET pillar = 'B' WHERE discovery_id = 'discovery-new-1'")
     connection.commit()
     connection.close()
+    _approve_fixture(database)
 
     wrong_week = client.get(
         "/api/registry/articles",
@@ -1138,6 +1227,7 @@ def test_article_detail_exposes_collection_and_page_information_dates(registry_c
             ),
         )
 
+    _approve_fixture(database)
     collected = client.get("/api/registry/articles/article-full").json()
     assert collected["collected_at"] == "2026-08-13T12:00:00Z"
     assert collected["information_date"] is None
@@ -1167,7 +1257,8 @@ def test_invalid_enrichment_json_fails_closed_to_empty_lists(registry_client):
 
 
 def test_reader_is_immutable_read_only_and_observes_atomic_replacement(tmp_path):
-    database = _registry(tmp_path)
+    # Raw historical contract: current published versions retain their frozen report dependencies.
+    database = _registry(tmp_path,target_version=20)
     before = hashlib.sha256(database.read_bytes()).hexdigest()
     reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
 

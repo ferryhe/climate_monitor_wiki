@@ -121,6 +121,18 @@ def _parser() -> argparse.ArgumentParser:
 
     init = subcommands.add_parser("init")
     init.add_argument("--database", required=True, type=Path)
+    migrate = subcommands.add_parser("migrate-publication")
+    migrate.add_argument("--database", type=Path)
+    migrate.add_argument("--backup-dir", required=True, type=Path)
+    migrate.add_argument("--apply", action="store_true")
+    visibility = subcommands.add_parser("set-visibility")
+    visibility.add_argument("--database", type=Path)
+    visibility.add_argument("--kind", required=True, choices=["article", "pdf_article", "meeting", "pdf_meeting"])
+    visibility.add_argument("--id", required=True)
+    visibility.add_argument("--is-visible", required=True, choices=["true", "false"])
+    export = subcommands.add_parser("export-public-snapshot")
+    export.add_argument("--database", type=Path)
+    export.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -157,7 +169,17 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command == "audit-history":
+        if args.command == "migrate-publication":
+            from .publication import migrate_publication
+            result = migrate_publication(args.database, args.backup_dir, apply=args.apply)
+        elif args.command == "set-visibility":
+            from .publication import set_visibility
+            set_visibility(args.database, args.kind, args.id, args.is_visible == "true")
+            result = {"status": "updated", "is_visible": args.is_visible == "true"}
+        elif args.command == "export-public-snapshot":
+            from .publication import export_public_snapshot
+            result = export_public_snapshot(args.database, args.output)
+        elif args.command == "audit-history":
             result = build_audit_registry(args.source_dir, args.database, args.output_dir)
         elif args.command == "plan-update":
             result = plan_registry_update(

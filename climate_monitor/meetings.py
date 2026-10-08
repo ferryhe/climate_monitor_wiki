@@ -110,6 +110,20 @@ def _open(database: str | Path, *, write: bool = False) -> sqlite3.Connection:
     return connection
 
 
+
+@contextmanager
+def _registry_writer(database):
+    from climate_registry.persistent import _exclusive_database_lock
+    from climate_registry.publication import stage_entities
+    with _exclusive_database_lock(Path(database)):
+        connection = _open(database, write=True)
+        try:
+            with connection:
+                yield connection
+                stage_entities(connection)
+        finally:
+            connection.close()
+
 def _partial_date(value: Any, precision: str, field: str) -> str | None:
     if value is None:
         return None
@@ -1057,6 +1071,23 @@ def _ambiguous_identity(left: Mapping[str, Any], right: Mapping[str, Any]) -> bo
     )
 
 
+def _record_event_material(connection, event, state, source, version, recorded_at):
+    from climate_registry.acquisition_review import record_knowledge, timestamp
+    from .meeting_fields import MEETING_FIELDS
+    try:
+        timestamp(event["created_at"])
+        first=event["created_at"]
+    except (ValueError,TypeError):
+        first=None
+    fields={key:state.get(key) for key in MEETING_FIELDS if key not in {"raw_date","source_urls"}}
+    record_knowledge(connection,kind="meeting",entity_id=event["event_id"],
+        source_kind=source["discovery_kind"] or "site",source_ref=source["event_source_id"],fields=fields,
+        evidence={"event_version":version,"event_version_sha256":_digest(state),
+            **{key:source[key] for key in ("event_source_id","meeting_run_id","content_version_id","content_sha256","candidate_sha256","source_url")}},
+        recorded_at=recorded_at,first_ingested_at=first,
+        time_basis="historical_native_event_created_at" if first else "legacy_time_unknown")
+
+
 def _refresh_event_states(
     connection: sqlite3.Connection, run_id: str, observed_at: str,
 ) -> None:
@@ -1092,20 +1123,38 @@ def _refresh_event_states(
         recorded = connection.execute(
             "SELECT 1 FROM climate_event_versions WHERE event_id=? LIMIT 1", (event_id,),
         ).fetchone()
-        if recorded is not None and previous == state:
-            continue
-        version = 1 if recorded is None else int(row["record_version"]) + 1
-        connection.execute(
-            """UPDATE climate_events SET record_version=?, name=?, event_type=?, organizer=?, status=?,
-               date_precision=?, start_date=?, end_date=?, raw_time_text=?, event_timezone=?, location=?,
-               online_url=?, deadline_type=?, deadline_date=?, relevance_reason=?, needs_confirmation=?,
-               source_count=?, updated_at=? WHERE event_id=?""",
-            (version, *(state[key] for key in _EVENT_STATE_KEYS), observed_at, event_id),
-        )
-        connection.execute(
-            "INSERT INTO climate_event_versions VALUES (?,?,?,?,?,?)",
-            (event_id, version, _canonical(state), _digest(state), run_id, observed_at),
-        )
+        changed=recorded is None or previous!=state
+        version = 1 if recorded is None else int(row["record_version"])+int(changed)
+        sources=list(connection.execute("""SELECT s.*,ai.discovery_kind FROM climate_event_sources s
+            LEFT JOIN meeting_run_items ri ON ri.meeting_run_id=s.meeting_run_id
+                AND ri.article_id=s.article_id AND ri.content_version_id=s.content_version_id
+            LEFT JOIN acquisition_items ai ON ai.acquisition_item_id=ri.acquisition_item_id
+            WHERE s.event_id=? ORDER BY s.observed_at,s.event_source_id""",(event_id,)))
+        current_sources=[source for source in sources if source["meeting_run_id"]==run_id]
+        if current_sources and recorded is not None and not connection.execute("SELECT 1 FROM knowledge_versions WHERE entity_kind='meeting' AND entity_id=?",(event_id,)).fetchone():
+            prior=next((source for source in reversed(sources) if source["meeting_run_id"]!=run_id),None)
+            if prior is not None:
+                from climate_registry.acquisition_review import timestamp
+                try:
+                    timestamp(row["updated_at"])
+                    old_at=row["updated_at"]
+                except (ValueError,TypeError):
+                    old_at=observed_at
+                _record_event_material(connection,row,previous,prior,int(row["record_version"]),old_at)
+        if changed:
+            connection.execute(
+                """UPDATE climate_events SET record_version=?, name=?, event_type=?, organizer=?, status=?,
+                   date_precision=?, start_date=?, end_date=?, raw_time_text=?, event_timezone=?, location=?,
+                   online_url=?, deadline_type=?, deadline_date=?, relevance_reason=?, needs_confirmation=?,
+                   source_count=?, updated_at=? WHERE event_id=?""",
+                (version, *(state[key] for key in _EVENT_STATE_KEYS), observed_at, event_id),
+            )
+            connection.execute(
+                "INSERT INTO climate_event_versions VALUES (?,?,?,?,?,?)",
+                (event_id, version, _canonical(state), _digest(state), run_id, observed_at),
+            )
+        for source in current_sources:
+            _record_event_material(connection,row,state,source,version,observed_at)
 
 
 def _store_candidate(
@@ -1287,7 +1336,14 @@ def _process_batch(
         raise ValueError("prompt version/text are required")
     if type(task_version) is not int or task_version < 1:
         raise ValueError("task_version must be a positive integer")
-    connection = _open(database, write=True)
+    from climate_registry.persistent import _exclusive_database_lock
+    database_lock = _exclusive_database_lock(Path(database))
+    database_lock.__enter__()
+    try:
+        connection = _open(database, write=True)
+    except BaseException:
+        database_lock.__exit__(None,None,None)
+        raise
     stamp = _now(now)
     try:
         batch = connection.execute("SELECT batch_id FROM acquisition_batches WHERE batch_id=?", (batch_id,)).fetchone()
@@ -1447,6 +1503,9 @@ def _process_batch(
             )
             connection.commit()
             return _run_result(connection, run_id)
+        connection.close()
+        database_lock.__exit__(None, None, None)
+        database_lock = None
         for item in items:
             if item["acquisition_item_id"] in prior_success or item not in available:
                 continue
@@ -1460,7 +1519,7 @@ def _process_batch(
                     "prompt": prompt_text,
                 }
                 candidates = validate_extraction(extractor(request), body=item["markdown_content"])
-                with connection:
+                with _registry_writer(database) as connection:
                     historical_sources = [dict(row) for row in connection.execute(
                         """SELECT event_id, content_version_id, candidate_json, interpretation_seq
                            FROM climate_event_sources"""
@@ -1477,12 +1536,15 @@ def _process_batch(
                         (len(candidates), _now(), run_id, item["acquisition_item_id"]),
                     )
             except Exception as exc:
-                with connection:
+                with _registry_writer(database) as connection:
                     connection.execute(
                         """UPDATE meeting_run_items SET status='failed', error_message=?, processed_at=?
                            WHERE meeting_run_id=? AND acquisition_item_id=?""",
                         (f"{type(exc).__name__}: {str(exc)[:800]}", _now(), run_id, item["acquisition_item_id"]),
                     )
+        database_lock = _exclusive_database_lock(Path(database))
+        database_lock.__enter__()
+        connection = _open(database, write=True)
         counts = connection.execute(
             """SELECT count(*) AS total,
                sum(status='succeeded') AS succeeded, sum(status='failed') AS failed,
@@ -1506,6 +1568,8 @@ def _process_batch(
         return _run_result(connection, run_id)
     finally:
         connection.close()
+        if database_lock is not None:
+            database_lock.__exit__(None, None, None)
 
 
 def _run_result(connection: sqlite3.Connection, run_id: str, *, reused: bool = False) -> dict[str, Any]:
@@ -1561,8 +1625,8 @@ def _public_run(connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, A
     return value
 
 
-def meeting_status(database: str | Path, *, batch_id: str | None = None) -> dict[str, Any]:
-    connection = _open(database)
+def meeting_status(database: str | Path, *, batch_id: str | None = None, registry_connection: sqlite3.Connection | None = None) -> dict[str, Any]:
+    connection = registry_connection or _open(database)
     try:
         where, parameters = ("WHERE batch_id=?", (batch_id,)) if batch_id else ("", ())
         raw_rows = list(connection.execute(
@@ -1580,7 +1644,8 @@ def meeting_status(database: str | Path, *, batch_id: str | None = None) -> dict
         )
         return {"status": aggregate, "batches": list(latest.values()), "runs": rows}
     finally:
-        connection.close()
+        if registry_connection is None:
+            connection.close()
 
 
 def meeting_retry_run(database: str | Path, *, batch_id: str) -> dict[str, Any] | None:
@@ -1599,11 +1664,11 @@ def meeting_retry_run(database: str | Path, *, batch_id: str) -> dict[str, Any] 
 
 def _meeting_coverage(
     database: str | Path, *, meeting_enabled: bool | None, target_batch_id: str | None,
-    task_version: int | None, returned_record_count: int,
+    task_version: int | None, returned_record_count: int, registry_connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     if meeting_enabled is None:
-        return meeting_status(database)
-    status = meeting_status(database, batch_id=target_batch_id) if target_batch_id else {
+        return meeting_status(database, registry_connection=registry_connection)
+    status = meeting_status(database, batch_id=target_batch_id, registry_connection=registry_connection) if target_batch_id else {
         "status": "not_processed", "batches": [], "runs": [],
     }
     latest = status["batches"][0] if status["batches"] else None
@@ -1683,6 +1748,8 @@ def query_events(
     meeting_enabled: bool | None = None,
     target_batch_id: str | None = None,
     task_version: int | None = None,
+    registry_connection: sqlite3.Connection | None = None,
+    coverage_connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Query event intervals and, when requested, deadline dates with inclusive overlap."""
     try:
@@ -1697,7 +1764,7 @@ def query_events(
     requested_types = set(event_types or EVENT_TYPES)
     if not requested_types <= EVENT_TYPES:
         raise ValueError("event_types contains an unsupported value")
-    connection = _open(database)
+    connection = registry_connection or _open(database)
     try:
         result = []
         for row in connection.execute("SELECT * FROM climate_events"):
@@ -1788,16 +1855,21 @@ def query_events(
             "include_deadlines": include_deadlines, "include_cancelled": include_cancelled,
             "include_retrospective": include_retrospective,
         }
+        coverage = _meeting_coverage(database, meeting_enabled=meeting_enabled, target_batch_id=target_batch_id,
+            task_version=task_version, returned_record_count=len(result),
+            registry_connection=(coverage_connection or registry_connection))
+        if registry_connection is not None:
+            state = coverage.get("status")
+            coverage = {"status": "processed" if state in {"complete", "succeeded", "succeeded_empty", "not_processed"} else state,
+                "records_scope": "approved_versions", "returned_record_count": len(result)}
         return {
             "schema_version": "climate-meeting-query.v1", "base_date": base.isoformat(),
             "timezone": timezone_name, "filters": filters, "records": result,
-            "coverage": _meeting_coverage(
-                database, meeting_enabled=meeting_enabled, target_batch_id=target_batch_id,
-                task_version=task_version, returned_record_count=len(result),
-            ),
+            "coverage": coverage,
         }
     finally:
-        connection.close()
+        if registry_connection is None:
+            connection.close()
 
 
 def freeze_snapshot(database: str | Path, **query: Any) -> dict[str, Any]:
@@ -1811,8 +1883,7 @@ def freeze_snapshot(database: str | Path, **query: Any) -> dict[str, Any]:
     }
     digest = _digest(payload)
     snapshot_id = "meeting-snapshot-" + digest[:24]
-    connection = _open(database, write=True)
-    try:
+    with _registry_writer(database) as connection:
         created_at = _now()
         with connection:
             connection.execute(
@@ -1823,8 +1894,6 @@ def freeze_snapshot(database: str | Path, **query: Any) -> dict[str, Any]:
             )
         row = connection.execute("SELECT * FROM meeting_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone()
         return {**payload, "snapshot_id": snapshot_id, "snapshot_sha256": digest, "created_at": row["created_at"]}
-    finally:
-        connection.close()
 
 
 def load_snapshot(database: str | Path, snapshot_id: str) -> dict[str, Any]:

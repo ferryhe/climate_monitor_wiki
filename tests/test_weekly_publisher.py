@@ -569,6 +569,7 @@ def test_publisher_accepts_acquisition_only_registry_article_and_syncs_with_regi
                     source_dir=Path(args[args.index("--source-dir") + 1]),
                     wiki_dir=Path(args[args.index("--wiki-dir") + 1]),
                     cadence="weekly",
+                    registry_database=Path(args[args.index("--registry-database") + 1]),
                 )
                 return subprocess.CompletedProcess(args, 0, "", "")
             return super().__call__(args, cwd=cwd, check=check, env=env)
@@ -645,6 +646,7 @@ def test_publisher_accepts_confirmed_pdf_only_registry_article_and_syncs_with_re
                     source_dir=Path(args[args.index("--source-dir") + 1]),
                     wiki_dir=Path(args[args.index("--wiki-dir") + 1]),
                     cadence="weekly",
+                    registry_database=Path(args[args.index("--registry-database") + 1]),
                 )
                 return subprocess.CompletedProcess(args, 0, "", "")
             return super().__call__(args, cwd=cwd, check=check, env=env)
@@ -892,14 +894,14 @@ def test_weekly_wrapper_passes_only_explicit_nonempty_registry_database():
         encoding="utf-8"
     )
 
-    assert 'if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]' in script
-    assert 'ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")' in script
+    assert 'if [[ -n "${CLIMATE_REGISTRY_DB:-}" ]]' in script
+    assert 'ARGS+=(--registry-database "$CLIMATE_REGISTRY_DB")' in script
     assert '${REPORT_DIR:-${CLIMATE_REPORTS_DIR:-' in script
     assert "web_listening/data/reports" in script
     assert 'ARGS+=(--allow-offcycle)' in script
     assert 'ARGS+=(--date "$CLIMATE_PUBLISH_REPORT_DATE")' in script
     assert "source .env" not in script
-    assert "CLIMATE_REGISTRY_DB" not in script
+    assert "CLIMATE_PUBLISH_REGISTRY_DB" not in script
 
 
 def test_first_publish_creates_fixed_branch_and_pr_without_touching_production(
@@ -2130,6 +2132,82 @@ def test_allowlist_rejects_source_overwrite_and_unrelated_wiki():
         )
 
 
+def _approved_history_registry(tmp_path,production):
+    from climate_registry.persistent import initialize_registry,update_registry
+    from climate_registry.publication import stage_entities,_approve,stage_snapshot,snapshot_entity
+    database=tmp_path/"approved-history.sqlite3"
+    initialize_registry(database)
+    update_registry(production/"sources",database,tmp_path/"registry-backups")
+    with sqlite3.connect(database) as db:
+        identity=db.execute("SELECT article_id FROM articles WHERE canonical_url='https://example.com/reports/2026-08-03'").fetchone()[0]
+        for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit published history fixture"}, status="accepted_legacy")
+        snapshot=snapshot_entity(db,"article",identity)
+        snapshot["derived_display"]={"summary":"Approved improved summary"}
+        sha=stage_snapshot(db,snapshot)
+        _approve(db,sha,{"basis":"explicit approved improvement fixture"}, status="accepted_legacy")
+    return database,identity
+
+
+@pytest.mark.parametrize("use_env",[False,True])
+def test_isolated_publisher_republishes_approved_old_date_hide_and_restore_without_new_sources(local_remote,tmp_path,monkeypatch,use_env):
+    from climate_registry.publication import set_visibility
+    remote,production=local_remote
+    seed=tmp_path/"seed"
+    _report(seed/"sources/climate-monitor-2026-08-10.md","2026-08-10")
+    sync_source_wiki(source_dir=seed/"sources",wiki_dir=seed/"wiki",cadence="weekly")
+    _git(seed,"add","sources","wiki");_git(seed,"commit","-m","existing current report fixture")
+    _git(seed,"push",str(remote),"main");_git(production,"pull","--ff-only")
+    database,identity=_approved_history_registry(tmp_path,production)
+    if use_env:monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
+    reports=tmp_path/"reports";reports.mkdir()
+    shutil.copyfile(production/"sources/climate-monitor-2026-08-10.md",reports/"climate-monitor-2026-08-10.md")
+    before_head=_git(production,"rev-parse","HEAD")
+    before_source=(production/"sources/climate-monitor-2026-08-03.md").read_bytes()
+    runner=FakeGhRunner()
+    def publish():
+        return publisher.publish(production_repo=production,report_dir=reports,today=date(2026,8,10),
+            runner=runner,verifier=lambda _checkout,_runner:None,registry_database=None if use_env else database)
+    improved=publish()
+    assert improved.status=="published" and improved.reports==()
+    assert "Approved improved summary" in _git(remote,"show",f"{publisher.BRANCH}:wiki/climate-monitor-2026-08-03.md")
+    set_visibility(database,"article",identity,False)
+    hidden=publish()
+    assert hidden.status=="published" and hidden.reports==()
+    assert subprocess.run(["git","cat-file","-e",f"{publisher.BRANCH}:wiki/climate-monitor-2026-08-03.md"],cwd=remote,capture_output=True).returncode!=0
+    artifact=json.loads(_git(remote,"show",f"{publisher.BRANCH}:wiki/public-registry.json"))
+    assert identity not in {item["article_id"] for item in artifact["articles"]}
+    set_visibility(database,"article",identity,True)
+    restored=publish()
+    assert restored.status=="published" and restored.reports==()
+    assert "Approved improved summary" in _git(remote,"show",f"{publisher.BRANCH}:wiki/climate-monitor-2026-08-03.md")
+    assert publish().status=="unchanged"
+    assert _git(remote,"rev-parse","main")==before_head==_git(production,"rev-parse","HEAD")
+    assert (production/"sources/climate-monitor-2026-08-03.md").read_bytes()==before_source
+    assert _git(production,"status","--porcelain")=="" and _candidate_refs(remote)==[]
+
+
+@pytest.mark.parametrize("tamper",["dated","source","unrelated_date"])
+def test_registry_publisher_rejects_changes_not_proven_by_its_frozen_artifact(local_remote,tmp_path,tamper):
+    remote,production=local_remote
+    database,_identity=_approved_history_registry(tmp_path,production)
+    reports=tmp_path/"reports";reports.mkdir()
+    before=_git(remote,"rev-parse","main")
+    class TamperRunner(FakeGhRunner):
+        def __call__(self,args,*,cwd,check=True,env=None):
+            result=super().__call__(args,cwd=cwd,check=check,env=env)
+            if args[:2]==[sys.executable,"scripts/sync_source_wiki.py"]:
+                path=("sources/climate-monitor-2026-08-03.md" if tamper=="source" else
+                    "wiki/climate-monitor-2026-08-10.md" if tamper=="unrelated_date" else "wiki/climate-monitor-2026-08-03.md")
+                target=cwd/path
+                target.write_text((target.read_text(encoding="utf-8") if target.is_file() else "")+"\nUnapproved text.\n",encoding="utf-8",newline="\n")
+            return result
+    with pytest.raises(publisher.PublishError,match="artifact|approved Registry"):
+        publisher.publish(production_repo=production,report_dir=reports,today=date(2026,8,10),
+            runner=TamperRunner(),verifier=lambda _checkout,_runner:None,registry_database=database)
+    assert _git(remote,"rev-parse","main")==before and _remote_ref_missing(remote,publisher.BRANCH)
+    assert _git(production,"status","--porcelain")=="" and _candidate_refs(remote)==[]
+
+
 def test_allowlist_permits_only_generated_registry_wiki_paths():
     publisher.validate_allowlist([
         ("A", "wiki/article-article-confirmed.md"),
@@ -2154,3 +2232,66 @@ def test_allowlist_rejects_unsupported_git_statuses(status):
 def test_remote_url_with_embedded_password_is_rejected():
     with pytest.raises(publisher.PublishError, match="credential helper"):
         publisher._validate_remote_url("https://user:secret@example.test/repo.git")
+
+
+
+@pytest.mark.parametrize('configured',[None,'','  ','valid'])
+def test_publisher_main_selects_current_env_without_optional_flag(tmp_path,monkeypatch,configured):
+    from climate_registry.persistent import initialize_registry
+    database=tmp_path/'registry.sqlite3';initialize_registry(database)
+    if configured is None:monkeypatch.delenv('CLIMATE_REGISTRY_DB',raising=False)
+    else:monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(database) if configured=='valid' else configured)
+    observed=[]
+    monkeypatch.setattr(publisher,'publish',lambda **kwargs:observed.append(kwargs['registry_database']) or publisher.PublishResult(status='no-op',base_sha='a'*40))
+    monkeypatch.setattr(publisher,'_append_publisher_result',lambda *args,**kwargs:{})
+    monkeypatch.setattr(sys,'argv',['publisher','--ledger-dir',str(tmp_path/'ledger')])
+    before=database.read_bytes()
+    assert publisher.main()==0 and observed==[database if configured=='valid' else None]
+    assert database.read_bytes()==before  # Argument selection only; no Git publication is represented.
+
+
+@pytest.mark.parametrize('invalid',['missing','corrupt','unsupported'])
+def test_invalid_env_publisher_fails_before_any_git_or_projection_effects(tmp_path,monkeypatch,invalid):
+    database=tmp_path/'invalid.sqlite3'
+    if invalid=='corrupt':database.write_bytes(b'not a SQLite database')
+    elif invalid=='unsupported':
+        with sqlite3.connect(database) as db:db.execute('PRAGMA user_version=99')
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(database))
+    calls=[]
+    def runner(*args,**kwargs):calls.append((args,kwargs));raise AssertionError('No Git command is permitted')
+    before={p.name:p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    with pytest.raises(publisher.PublishError,match='registry selection'):
+        publisher.publish(production_repo=tmp_path/'production',report_dir=tmp_path/'reports',runner=runner)
+    assert calls==[] and not (tmp_path/'production').exists()
+    assert before=={p.name:p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+
+
+def test_explicit_relative_publisher_copy_overrides_invalid_env(local_remote,tmp_path,monkeypatch):
+    remote,production=local_remote
+    database,_identity=_approved_history_registry(tmp_path,production)
+    reports=tmp_path/'reports';reports.mkdir()
+    shutil.copyfile(production/'sources/climate-monitor-2026-08-03.md',reports/'climate-monitor-2026-08-03.md')
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(tmp_path/'missing.sqlite3'));monkeypatch.chdir(tmp_path)
+    result=publisher.publish(production_repo=production,report_dir=reports,today=date(2026,8,3),
+        runner=FakeGhRunner(),verifier=lambda *_args:None,registry_database=Path(database.name))
+    assert result.status=='published'
+    assert 'Approved improved summary' in _git(remote,'show',f'{publisher.BRANCH}:wiki/climate-monitor-2026-08-03.md')
+    assert _git(production,'status','--porcelain')=='' and _candidate_refs(remote)==[]
+
+
+def test_ingest_existing_source_rebuild_uses_canonical_env(tmp_path,monkeypatch):
+    from functools import partial
+    from climate_registry.audit import build_audit_registry
+    from climate_registry.publication import set_visibility
+    app=tmp_path/'app';sources=app/'sources';wiki=app/'wiki'
+    report=_report(sources/'climate-monitor-2026-09-07.md','2026-09-07','RAW executive remains an immutable archive.')
+    database=tmp_path/'registry.sqlite3';build_audit_registry(sources,database,tmp_path/'audit')
+    with sqlite3.connect(database) as db:identity=db.execute('SELECT article_id FROM articles').fetchone()[0]
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(database));set_visibility(database,'article',identity,False)
+    monkeypatch.setattr(ingest,'REPO_ROOT',app)
+    monkeypatch.setattr(ingest,'sync_source_wiki',partial(sync_source_wiki,source_dir=sources,wiki_dir=wiki))
+    monkeypatch.setattr(sys,'argv',['ingest','--report-dir',str(sources),'--date','2026-09-07'])
+    before=report.read_bytes();db_before=database.read_bytes()
+    assert ingest.main()==0
+    assert json.loads((wiki/'public-registry.json').read_text())['articles']==[]
+    assert not (wiki/report.name).exists() and report.read_bytes()==before and database.read_bytes()==db_before

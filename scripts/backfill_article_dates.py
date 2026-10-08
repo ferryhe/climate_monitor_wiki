@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from climate_registry.article_dates import import_observations
+from climate_registry.errors import RegistryError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = json.loads(Path(args.observations).read_text(encoding="utf-8"))
         result = import_observations(args.database, payload, write=args.write)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RegistryError, sqlite3.Error) as exc:
         print(f"article date backfill failed: {exc}", file=sys.stderr)
         return 2
     print(json.dumps({"mode": "write" if args.write else "dry_run", **result}, sort_keys=True))

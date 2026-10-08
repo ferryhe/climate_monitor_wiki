@@ -46,6 +46,7 @@ def safe_managed_interpreter(tmp_path_factory):
 def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch, safe_managed_interpreter):
     """Managed starts must never snapshot a test runner's real credentials."""
     from climate_monitor.hermes_identity import BASE_ENV, CREDENTIAL_ENV
+    monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
 
     for key in BASE_ENV | CREDENTIAL_ENV:
         if key not in {'PATH', 'HOME', 'LANG', 'LC_ALL'}:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create one frozen date-range report from Public and active Runtime Registry data."""
+"""Create a frozen report from the selected Registry public view."""
 
 from __future__ import annotations
 
@@ -51,7 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         )) else None,
     )
     args = parser.parse_args(argv)
-    if (args.runtime_dir is None) != (args.queue_dir is None):
+    reader = RegistryReader(args.database, repository_root=ROOT)
+    with reader.connect() as connection:
+        unified = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+    if not unified and (args.runtime_dir is None) != (args.queue_dir is None):
         parser.error("--runtime-dir and --queue-dir must be configured together")
     if args.scheduled_biweekly:
         from climate_monitor.schedule import pipeline_due, ET
@@ -66,11 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.biweekly_date and not (args.start_date and args.end_date):
         parser.error("provide --biweekly-date or both --start-date and --end-date")
 
-    reader = RegistryReader(args.database, repository_root=ROOT)
-    overlay_reader, pdf_overlay_reader, manifest = load_active_range_overlay(
-        args.runtime_dir,
-        args.queue_dir,
-        repository_root=ROOT,
+    overlay_reader, pdf_overlay_reader, manifest = (
+        (None, None, None) if unified else load_active_range_overlay(
+            args.runtime_dir,
+            args.queue_dir,
+            repository_root=ROOT,
+        )
     )
     if args.biweekly_date:
         from climate_delivery.report_review import freeze_biweekly

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -46,6 +47,7 @@ from climate_registry.selection import (  # noqa: E402
     parse_strict_weekly_report,
     plan_selection,
 )
+from climate_registry.publication import resolve_database
 from climate_registry.wiki import snapshot_registry  # noqa: E402
 
 DEFAULT_REPORT_DIR = Path(
@@ -296,7 +298,8 @@ def _changed_paths(
 
 
 def validate_allowlist(
-    changes: list[tuple[str, str]], imported_dates: set[str] | None = None
+    changes: list[tuple[str, str]], imported_dates: set[str] | None = None,
+    *, registry_page_changes: set[tuple[str,str]] | None = None,
 ) -> None:
     expected_sources = (
         {f"sources/climate-monitor-{day}.md" for day in imported_dates}
@@ -304,10 +307,12 @@ def validate_allowlist(
         else None
     )
     for status, path in changes:
+        if (status,path) in (registry_page_changes or set()) and re.fullmatch(r"wiki/climate-monitor-\d{4}-\d{2}-\d{2}\.md",path) and status in {"A","M","D"}:
+            continue
         registry_article = re.fullmatch(r"wiki/article-[A-Za-z0-9_-]+\.md", path)
         if registry_article and status in {"A", "M", "D"}:
             continue
-        if path == "wiki/registry-source-observations.md" and status in {"A", "M", "D"}:
+        if path in {"wiki/registry-source-observations.md","wiki/registry-meetings.md","wiki/public-registry.json"} and status in {"A", "M", "D"}:
             continue
         if status.startswith("D") or status.startswith("R"):
             raise PublishError(f"deletion/rename is not allowed: {status} {path}")
@@ -328,6 +333,32 @@ def validate_allowlist(
         if path == "wiki/index.md":
             continue
         raise PublishError(f"change outside weekly-report allowlist: {status} {path}")
+
+
+def _public_artifact_pages(payload):
+    from climate_registry.acquisition_review import digest
+    value=dict(payload)
+    sha=value.pop("artifact_sha256",None)
+    pages=value.get("wiki_pages")
+    if value.get("schema_version")!="climate-public-snapshot.v1" or digest(value)!=sha or not isinstance(pages,dict) or any(not isinstance(text,str) for text in pages.values()):
+        raise PublishError("public Registry artifact identity differs")
+    return pages
+
+
+def _registry_page_changes(changes, pages, read_page):
+    """Prove only exact dated derivations; immutable sources use their own gate."""
+    proven=set()
+    for status,path in changes:
+        if not re.fullmatch(r"wiki/climate-monitor-\d{4}-\d{2}-\d{2}\.md",path):
+            continue
+        name=Path(path).name
+        if status=="D" and name not in pages and read_page(path) is None:
+            proven.add((status,path))
+        elif status in {"A","M"} and name in pages and read_page(path)==pages[name]:
+            proven.add((status,path))
+        else:
+            raise PublishError(f"dated Wiki differs from approved Registry artifact: {path}")
+    return proven
 
 
 def validate_remote_branch(
@@ -408,6 +439,7 @@ def _stage_and_validate(
     *,
     base_sha: str,
     imported_dates: set[str],
+    registry_pages: dict[str,str] | None = None,
 ) -> list[tuple[str, str]]:
     runner(["git", "add", "--", "sources", "wiki"], cwd=checkout)
     unstaged = runner(["git", "diff", "--quiet"], cwd=checkout, check=False)
@@ -421,7 +453,9 @@ def _stage_and_validate(
         paths = ", ".join(path for path in untracked.split("\0") if path)
         raise PublishError(f"unexpected untracked paths: {paths}")
     changes = _changed_paths(runner, checkout, base_sha, cached=True)
-    validate_allowlist(changes, imported_dates)
+    proven=_registry_page_changes(changes,registry_pages,
+        lambda path:(checkout/path).read_text(encoding="utf-8") if (checkout/path).is_file() else None) if registry_pages is not None else None
+    validate_allowlist(changes, imported_dates,registry_page_changes=proven)
     runner(["git", "diff", "--cached", "--check"], cwd=checkout)
     return changes
 
@@ -859,6 +893,15 @@ def _publish_attempt(
         runner(["git", "fetch", "origin", BASE_BRANCH], cwd=checkout)
         base_sha = _output(runner, ["git", "rev-parse", "origin/main"], checkout)
         runner(["git", "reset", "--hard", base_sha], cwd=checkout)
+        public_registry=False
+        if registry_snapshot is not None:
+            with closing(sqlite3.connect(f"{registry_snapshot.as_uri()}?mode=ro",uri=True)) as connection:
+                public_registry=connection.execute("PRAGMA user_version").fetchone()[0]>=21
+            if public_registry:
+                try:
+                    load_registry_selection_snapshot(registry_snapshot,checkout/"sources")
+                except (RegistryInputError,RegistryBuildError) as exc:
+                    raise PublishError("registry selection baseline is invalid") from exc
 
         remote_branch_sha = _remote_branch_sha(runner, checkout)
         if remote_branch_sha:
@@ -866,7 +909,21 @@ def _publish_attempt(
             remote_changes = _changed_paths(
                 runner, checkout, "origin/main...refs/publisher/existing"
             )
-            validate_allowlist(remote_changes)
+            registry_deletions=None
+            deletions=[(status,path) for status,path in remote_changes if status=="D" and re.fullmatch(r"wiki/climate-monitor-\d{4}-\d{2}-\d{2}\.md",path)]
+            if public_registry and deletions:
+                artifact=runner(["git","show","refs/publisher/existing:wiki/public-registry.json"],cwd=checkout,check=False)
+                if artifact.returncode:
+                    raise PublishError("rolling dated deletion lacks its public Registry artifact")
+                try:
+                    pages=_public_artifact_pages(json.loads(artifact.stdout))
+                except (ValueError,TypeError) as exc:
+                    raise PublishError("rolling public Registry artifact is invalid") from exc
+                def remote_page(path):
+                    blob=runner(["git","show","refs/publisher/existing:"+path],cwd=checkout,check=False)
+                    return blob.stdout if blob.returncode==0 else None
+                registry_deletions=_registry_page_changes(deletions,pages,remote_page)
+            validate_allowlist(remote_changes,registry_page_changes=registry_deletions)
             validate_remote_branch(
                 runner,
                 checkout,
@@ -915,11 +972,22 @@ def _publish_attempt(
             sync_command.extend(("--registry-database", str(registry_snapshot)))
         runner(sync_command, cwd=checkout)
         verifier(checkout, runner)
+        registry_pages=None
+        if public_registry:
+            from climate_registry.publication import export_public_snapshot
+            expected=Path(tmp)/"expected-public-registry.json"
+            export_public_snapshot(registry_snapshot,expected,source_dir=checkout/"sources")
+            payload=json.loads(expected.read_text(encoding="utf-8"))
+            artifact=checkout/"wiki/public-registry.json"
+            if not artifact.is_file() or json.loads(artifact.read_text(encoding="utf-8"))!=payload:
+                raise PublishError("generated public Registry artifact differs from frozen database")
+            registry_pages=_public_artifact_pages(payload)
         changes = _stage_and_validate(
             runner,
             checkout,
             base_sha=base_sha,
             imported_dates=set(imported),
+            registry_pages=registry_pages,
         )
         if changes:
             known_dates = [
@@ -1029,6 +1097,17 @@ def publish(
     registry_database: Path | None = None,
     allow_offcycle: bool = False,
 ) -> PublishResult:
+    configured_registry = registry_database or os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+    if configured_registry:
+        from climate_registry.read_api import RegistryReader, RegistryError
+        try:
+            registry_database = resolve_database(
+                Path(registry_database).expanduser().resolve() if registry_database is not None else None
+            )
+            with RegistryReader(registry_database, repository_root=REPO_ROOT, public=False).connect():
+                pass
+        except (ValueError, RegistryBuildError, RegistryInputError, RegistryError) as exc:
+            raise PublishError("registry selection baseline is invalid") from exc
     production_repo = production_repo.resolve()
     before_head = _output(runner, ["git", "rev-parse", "HEAD"], production_repo)
     before_status = _output(runner, ["git", "status", "--porcelain"], production_repo)
@@ -1179,11 +1258,14 @@ def main() -> int:
         else _current_monday(run_today).isoformat()
     )
     try:
+        registry_database = args.registry_database
+        if registry_database is None and os.getenv("CLIMATE_REGISTRY_DB", "").strip():
+            registry_database = resolve_database()
         result = publish(
             production_repo=args.production_repo,
             report_dir=args.report_dir,
             today=run_today,
-            registry_database=args.registry_database,
+            registry_database=registry_database,
             allow_offcycle=args.allow_offcycle,
         )
     except Exception as exc:

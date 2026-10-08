@@ -26,6 +26,7 @@ class Update:
     date_basis: str | None = None
     information_date: str | None = None
     collected_at: str | None = None
+    report_date: str | None = None
 
 
 @dataclass(frozen=True)

@@ -76,6 +76,45 @@ def _material_versions(reader, allowed_refs=None):
                     "evidence_json": json.dumps({"document_sha256": row["document_sha256"], "page": row["page"], "imported_at": row["imported_at"]}),
                     "first_ingested_at": row["imported_at"], "substantive_updated_at": None,
                     "recorded_at": row["imported_at"], "time_basis": row["basis"]})
+        # Accepted historical native events may predate the knowledge ledger.
+        # Their persisted event/version times remain evidence, never migration time.
+        if reader.public and connection.execute("PRAGMA user_version").fetchone()[0]>=21:
+            from climate_monitor.meeting_fields import MEETING_FIELDS
+            semantic=lambda row:{key:row.get(key) for key in MEETING_FIELDS if key not in {"raw_date","source_urls"}}
+            for row in connection.execute("""SELECT s.*,e.created_at,e.record_version,ai.discovery_kind FROM climate_event_sources s
+                JOIN climate_events e ON e.event_id=s.event_id
+                LEFT JOIN meeting_run_items ri ON ri.meeting_run_id=s.meeting_run_id AND ri.article_id=s.article_id AND ri.content_version_id=s.content_version_id
+                LEFT JOIN acquisition_items ai ON ai.acquisition_item_id=ri.acquisition_item_id"""):
+                if row["event_source_id"] in known or allowed_refs is not None and row["event_source_id"] not in allowed_refs:
+                    continue
+                first,changed,recorded=None,None,None
+                try:
+                    timestamp(row["created_at"])
+                    first=row["created_at"]
+                except (ValueError,TypeError):
+                    pass
+                previous=None
+                versions=list(connection.execute("SELECT * FROM climate_event_versions WHERE event_id=? ORDER BY record_version",(row["event_id"],)))
+                for version in versions:
+                    fields=semantic(json.loads(version["state_json"]))
+                    try:
+                        timestamp(version["recorded_at"])
+                        recorded=version["recorded_at"]
+                    except (ValueError,TypeError):
+                        recorded=None
+                    if previous is not None and fields!=previous:
+                        changed=recorded
+                    previous=fields
+                if not versions or not (first or changed):
+                    continue
+                material=digest(knowledge_fields(fields))
+                result.append({"knowledge_id":digest(["meeting",row["event_id"],row["event_source_id"],material,changed or first]),
+                    "entity_kind":"meeting","entity_id":row["event_id"],"source_kind":row["discovery_kind"] or "site","source_ref":row["event_source_id"],
+                    "material_sha256":material,"fields_json":json.dumps(fields),"evidence_json":json.dumps({
+                        "event_version":row["record_version"],"event_version_sha256":versions[-1]["state_sha256"],
+                        **{key:row[key] for key in ("event_source_id","meeting_run_id","content_version_id","content_sha256","candidate_sha256","source_url")}}),
+                    "first_ingested_at":first,"substantive_updated_at":changed,"recorded_at":recorded or changed or first,
+                    "time_basis":"historical_native_event_created_at" if first else "legacy_time_unknown"})
     latest = {}
     for row in result:
         latest[(row["entity_kind"], row["entity_id"], row["source_ref"])] = row
@@ -83,6 +122,20 @@ def _material_versions(reader, allowed_refs=None):
 
 
 def freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf_reader=None,
+    manifest=None, generated_at=None):
+    # Existing frozen reports remain readable without reopening their old Registry.
+    state_path=_root(root,occurrence)/"state.json"
+    if state_path.exists():
+        return json.loads(state_path.read_text())
+    with reader.public_snapshot():
+        with reader.connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0]>=21:
+                web_reader=pdf_reader=None
+                manifest=None
+        return _freeze_biweekly(reader,root,occurrence=occurrence,web_reader=web_reader,pdf_reader=pdf_reader,manifest=manifest,generated_at=generated_at)
+
+
+def _freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf_reader=None,
     manifest=None, generated_at=None):
     """Read-only knowledge selection. Report state alone is written here."""
     day = date.fromisoformat(occurrence)
@@ -97,12 +150,26 @@ def freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf
         web_ids = {item["acquisition_item_id"] for item in manifest["web_items"]}
         pdf_ids = set(manifest["pdf_occurrence_ids"])
         calendar_ids = set(manifest.get("pdf_calendar_occurrence_ids", []))
+        meeting = _meeting_payload(reader, None, base_date=day.isoformat())
         with reader.connect() as connection:
-            public_refs = {row[0] for row in connection.execute("""SELECT i.acquisition_item_id FROM acquisition_items i
-                JOIN articles a ON a.article_id=i.article_id WHERE a.current_content_version_id=i.content_version_id""")}
+            public_projection=reader.public and connection.execute("PRAGMA user_version").fetchone()[0]>=21
+            if public_projection:
+                # Approved acquisition bodies can precede the legacy current pointer.
+                public_refs=set()
+                for (identity,) in connection.execute("SELECT article_id FROM articles"):
+                    detail=reader.article(identity)
+                    content=detail.get("available_content") or detail.get("content") or {}
+                    version=content.get("content_version_id")
+                    if version:
+                        public_refs.update(row[0] for row in connection.execute("""SELECT acquisition_item_id FROM acquisition_items
+                            WHERE article_id=? AND content_version_id=?""",(identity,version)))
+            else:
+                public_refs = {row[0] for row in connection.execute("""SELECT i.acquisition_item_id FROM acquisition_items i
+                    JOIN articles a ON a.article_id=i.article_id WHERE a.current_content_version_id=i.content_version_id""")}
             if reader._has_pdf_intake(connection):
                 public_refs |= {row[0] for row in connection.execute("SELECT occurrence_id FROM pdf_intake_article_occurrences")}
                 public_refs |= {row[0] for row in connection.execute("SELECT occurrence_id FROM pdf_intake_calendar_items")}
+            public_refs |= {item["event_source_id"] for event in meeting["records"] for item in event.get("sources",[]) if item.get("is_current")}
         versions = _material_versions(reader, public_refs)
         source = _range_source(reader, "0001-01-01", "9999-12-31", acquisition_item_ids=public_refs)
         if web_reader:
@@ -129,6 +196,15 @@ def freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf
                 v["substantive_updated_at"] or v["first_ingested_at"]) for v in snapshot.get("material_versions", []))
         approved = {item["acquisition_item_id"]: item["review"] for item in manifest["web_items"]
             if item.get("review", {}).get("status") == "pass"}
+        with reader.connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0]>=21:
+                approvals={(row[0],row[1]):row[2] for row in connection.execute("SELECT * FROM approved_public_reviews")}
+                approved={}
+                for row in connection.execute("SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata"):
+                    at=approvals.get((row[0],row[1]))
+                    if at:
+                        for value in json.loads(row[2])["tables"].get("knowledge_versions",[]):
+                            approved[value["source_ref"]]={"status":"pass","approved_at":at}
         eligible = {}
         known_refs = {value["source_ref"] for value in versions}
         gaps = [{"source_ref": ref, "reason": "legacy_ingestion_time_unknown"}
@@ -169,8 +245,40 @@ def freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf
             return [eligible[ref] for ref in dict.fromkeys(refs) if ref in eligible]
         def material_item(item, material):
             result = {**item, "material_versions": material}
-            # Freeze the selected PDF information itself, including T1's verified
-            # summary, rather than an older core-article enrichment projection.
+            if public_projection:
+                from climate_registry.publication import snapshot_metadata
+                kind,identity=("article",item["article_id"]) if item.get("article_id") else ("pdf_article",item["pdf_article_id"])
+                detail=reader.article(identity) if kind=="article" else reader.pdf_article(identity)
+                occurrences={value["occurrence_id"]:value for value in detail.get("pdf_occurrences" if kind=="article" else "occurrences",[])}
+                with reader.connect() as connection:
+                    snapshot=snapshot_metadata(connection,kind,identity)
+                selected_summaries=[]
+                for version in material:
+                    if version["source_kind"]!="information_check" or snapshot is None:
+                        continue
+                    occurrence=occurrences.get(version["source_ref"],{})
+                    information=occurrence.get("verified_information") or {}
+                    fields=json.loads(version["fields_json"])
+                    evidence=json.loads(version["evidence_json"])
+                    check=next((row for row in snapshot["tables"].get("article_check_attempts",[]) if
+                        row["occurrence_id"]==version["source_ref"] and row["run_id"]==evidence.get("run_id") and
+                        row["packet_sha256"]==evidence.get("packet_sha256") and row["verification_status"]=="verified"),None)
+                    if not check or not information.get("summary") or knowledge_fields({"summary":information["summary"]})["summary"]!=fields.get("summary"):
+                        continue
+                    packet=json.loads(check["packet_json"])
+                    if digest(packet)!=check["packet_sha256"] or packet.get("verified_information")!=information or check["source_url"]!=evidence.get("source_url"):
+                        continue
+                    selected_summaries.append({"summary":information["summary"],"provenance":{
+                        "basis":"approved_source_verification","candidate_sha256":digest(snapshot),
+                        "occurrence_id":version["source_ref"],"dto_field":("pdf_occurrences" if kind=="article" else "occurrences")+"[occurrence_id="+version["source_ref"]+"].verified_information.summary",
+                        "source_url":information["source_url"],"body_sha256":information["body_sha256"],"generated_at":information["generated_at"],
+                        "knowledge_id":version["knowledge_id"],"material_sha256":version["material_sha256"],
+                        "original_period_time":version["original_period_time"],"run_id":check["run_id"],"packet_sha256":check["packet_sha256"]}})
+                if selected_summaries:
+                    result["selected_material_summaries"]=selected_summaries
+                return result
+            # Historical schemas used the selected PDF summary as their primary.
+            # Schema21 keeps canonical display and selected-source text distinct.
             summaries = [json.loads(version["fields_json"]).get("summary") for version in material
                 if version["source_kind"] in {"pdf", "information_check"}]
             summaries = list(dict.fromkeys(value for value in summaries if value))
@@ -183,15 +291,26 @@ def freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf
             if material:
                 articles.append(material_item(item, material))
         pdf_updates = [material_item(item, selected(item)) for item in source["pdf_source_updates"] if selected(item)]
-        meeting = _meeting_payload(reader, None, base_date=day.isoformat())
         # Calendar is information, not a way to refill the report with unchanged meetings.
-        meeting["records"] = [item for item in meeting["records"] if item.get("event_id") in
-            {value["entity_id"] for value in eligible.values() if value["entity_kind"] == "meeting"}]
+        meeting_records=[]
+        for item in meeting["records"]:
+            refs={source["event_source_id"] for source in item.get("sources",[]) if source.get("is_current")}
+            material=[value for ref,value in eligible.items() if ref in refs and value["entity_kind"]=="meeting" and value["entity_id"]==item["event_id"]]
+            if material:
+                record={**item,"material_versions":material}
+                if public_projection:
+                    from climate_registry.publication import snapshot_metadata
+                    with reader.connect() as connection:
+                        approved=snapshot_metadata(connection,"meeting",item["event_id"])
+                    record["material_provenance"]={"basis":"approved_public_version","candidate_sha256":digest(approved)}
+                meeting_records.append(record)
+        meeting["records"]=meeting_records
         calendar = _pdf_calendar_payload(reader, base_date=day.isoformat(), overlay_reader=pdf_reader,
             activated_pdf_occurrence_ids=pdf_ids if pdf_reader else None,
             activated_calendar_ids=calendar_ids if pdf_reader else None)
         calendar["records"] = [item for item in calendar["records"] if item.get("occurrence_id") in eligible]
         represented_refs = {value["source_ref"] for article in articles + pdf_updates for value in article["material_versions"]}
+        represented_refs |= {value["source_ref"] for item in meeting["records"] for value in item["material_versions"]}
         represented_refs |= {item["occurrence_id"] for item in calendar["records"]}
         snapshot = {"schema_version": "climate-biweekly-report.v1", "occurrence": occurrence,
             "date_range": {"start": (day - timedelta(days=14)).isoformat(), "end": (day - timedelta(days=1)).isoformat(), "inclusive": True},
@@ -203,7 +322,7 @@ def freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pdf
             "unknown_publication_date_article_ids": source["unknown_publication_date_article_ids"],
             "meeting": meeting, "pdf_calendar": calendar, "coverage_gaps": gaps,
             "material_versions": [value for ref, value in eligible.items() if ref in represented_refs], "active_manifest": manifest,
-            "registry_sha256": {"public": file_sha(reader.database),
+            "registry_sha256": {"public": hashlib.sha256((getattr(reader,"_snapshot_source_connection",None) or reader._snapshot_connection).serialize()).hexdigest(),
                 "web": file_sha(web_reader.database) if web_reader else None,
                 "pdf": file_sha(pdf_reader.database) if pdf_reader else None}, "created_at": generated.isoformat()}
         snapshot["snapshot_sha256"] = digest(snapshot)
