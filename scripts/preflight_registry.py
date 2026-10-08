@@ -63,7 +63,8 @@ def validate_registry_host_directory(
     else:
         raise PreflightError("host directory must be outside the repository")
 
-    database = directory / DATABASE_NAME
+    database_name = Path(os.getenv("CLIMATE_REGISTRY_DB", "").strip() or DATABASE_NAME).name
+    database = directory / database_name
     if database_is_symlink(database):
         raise PreflightError("registry database must not be a symbolic link")
     if not database.is_file():
@@ -72,7 +73,7 @@ def validate_registry_host_directory(
         raise PreflightError("registry database has SQLite sidecar files")
 
     try:
-        reader = RegistryReader(database, repository_root=root)
+        reader = RegistryReader(database, repository_root=root, public=False)
         with reader.connect() as connection:
             schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
             quick = connection.execute("PRAGMA quick_check").fetchone()[0]

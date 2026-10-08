@@ -31,7 +31,7 @@ from .annotations import (
     annotation_catalog_fingerprint,
     load_article_annotations_catalog,
 )
-from .capture import MAX_BATCH, capture_enrich_registry
+from .capture import MAX_BATCH, capture_enrich_registry, _prefetch_articles
 from .classification import classify_document
 from .errors import RegistryBuildError, RegistryInputError, RegistryLockError
 from .fallback import FallbackDecision, resolution_id, select_fallback_bundle
@@ -1166,8 +1166,16 @@ def _validate_candidate(candidate: Path, preflight: _Preflight) -> None:
                 raise WeeklyValidationError(
                     "weekly registry validation failed: target article membership is invalid"
                 )
+            manual_enrichments = connection.execute("PRAGMA user_version").fetchone()[0] >= 20
+            manual_match = (
+                " OR (candidate_e.content_version_id IS NULL "
+                "AND candidate_e.article_id = a.article_id "
+                "AND candidate_e.article_version_id = ra.version_id)"
+                if manual_enrichments
+                else ""
+            )
             detail_rows = connection.execute(
-                """
+                f"""
                 SELECT a.article_id, a.canonical_url, a.current_content_version_id,
                        s.hostname, s.display_name,
                        e.status, e.summary, e.categories_json, e.keywords_json,
@@ -1187,9 +1195,12 @@ def _validate_candidate(candidate: Path, preflight: _Preflight) -> None:
                 LEFT JOIN article_enrichments e ON e.enrichment_id = (
                     SELECT candidate_e.enrichment_id
                     FROM article_enrichments candidate_e
-                    WHERE candidate_e.content_version_id = a.current_content_version_id
+                    WHERE ((candidate_e.content_version_id = a.current_content_version_id
+                            AND a.current_content_version_id IS NOT NULL)
+                       {manual_match})
                       AND candidate_e.status = 'complete'
-                    ORDER BY candidate_e.generated_at DESC, candidate_e.enrichment_id DESC
+                    ORDER BY (candidate_e.content_version_id IS NOT NULL) DESC,
+                             candidate_e.generated_at DESC, candidate_e.enrichment_id DESC
                     LIMIT 1
                 )
                 WHERE r.report_date = ? AND a.publication_eligible = 1
@@ -1600,6 +1611,21 @@ def weekly_sync(
             after_sha256=initial.live_sha256,
         )
 
+    prepared = {}
+    if initial.missing_enrichment_ids:
+        # Network work uses a disposable plan. The write below starts from the
+        # current live DB, so PDF/meeting/acquisition writes during HTTP survive.
+        with tempfile.TemporaryDirectory(prefix=f".{initial.database.name}.fetch-",dir=initial.database.parent) as workspace:
+            scratch_plan=Path(workspace)
+            fetch_plan=scratch_plan/"registry.sqlite3"
+            with _exclusive_database_lock(initial.database):
+                _copy_exact(initial.database,fetch_plan)
+            update_registry(initial.source_dir,fetch_plan,scratch_plan/"backups",allow_offcycle=initial.allow_offcycle)
+            for offset in range(0,len(initial.missing_enrichment_ids),MAX_BATCH):
+                prepared.update(_prefetch_articles(fetch_plan,
+                    article_ids=initial.missing_enrichment_ids[offset:offset+MAX_BATCH],refresh=True,
+                    resolver=resolver,transport=transport,timeout=timeout))
+
     with _exclusive_database_lock(initial.database):
         locked = _preflight(
             target_date=target_date,
@@ -1618,9 +1644,9 @@ def weekly_sync(
             metadata_fingerprint=initial.metadata_fingerprint,
         )
         if (
-            locked.live_sha256 != initial.live_sha256
-            or locked.report.sha256 != initial.report.sha256
+            locked.report.sha256 != initial.report.sha256
             or locked.update_plan != initial.update_plan
+            or locked.missing_enrichment_ids != initial.missing_enrichment_ids
         ):
             raise RegistryLockError(
                 "weekly registry inputs changed before candidate creation"
@@ -1717,6 +1743,7 @@ def weekly_sync(
                             transport=capture_transport,
                             clock=lambda: capture_now,
                             timeout=timeout,
+                            _prefetched=prepared,
                         )
                     except (
                         RegistryInputError,
@@ -1816,6 +1843,9 @@ def weekly_sync(
                 raise WeeklyValidationError(
                     "weekly registry validation failed: candidate has SQLite sidecars"
                 )
+            from .publication import stage_entities
+            with sqlite3.connect(candidate) as connection:
+                stage_entities(connection)
             _validate_candidate(candidate, locked)
             candidate_identity = _candidate_identity(candidate)
             _revalidate_upstream(locked, clock=clock, git_runner=git_runner)

@@ -297,43 +297,49 @@ until every gate below passes.
    Keep the old image and paired scheduler configuration until candidate checks
    and separately authorized deployment pass.
 
-2. **Registry schema — both databases.** Compare the schema the new image requires
-   (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`) with
-   `PRAGMA user_version` of **each** database in the table below. Both files must be
-   at the required schema before the write side runs, and each needs its own
-   invocation — the commands in [article-registry.md](article-registry.md) take an
-   explicit database:
+2. **Registry schema — one business database.** Compare the schema the new image
+   requires (`climate_registry.acquisition.ACQUISITION_WRITER_SCHEMA_VERSION`)
+   with `PRAGMA user_version` of the existing external database selected by
+   `CLIMATE_REGISTRY_DB`. Website acquisition, search, PDF intake and T1/T10 all
+   write that file. The runtime volume holds queues, task state and artifacts;
+   its legacy SQLite file is historical state, not another migration target or
+   business writer.
 
    ```bash
-   # substitute this host's own paths first
-   : "${CLIMATE_REGISTRY_HOST_DIR:?export CLIMATE_REGISTRY_HOST_DIR first}"
-   CLIMATE_WIKI_HOME="${CLIMATE_WIKI_HOME:-$(pwd -P)}"
-   CLIMATE_REGISTRY_DB="$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
+   # In this host CLI process, use the real existing host database path.
+   # Container processes use the mounted path to the same physical file.
+   : "${CLIMATE_REGISTRY_DB:?set the existing host database path first}"
    CLIMATE_BACKUP_DIR="/path/to/backup"   # outside the source tree
 
-   # read-only: reports pending migrations, new reports and conflicts
-   .venv/bin/python -m climate_registry plan-update \
-     --source-dir "$CLIMATE_WIKI_HOME/sources" --database "$CLIMATE_REGISTRY_DB"
+   # read-only: preview the one-time publication migration and staged data
+   .venv/bin/python -m climate_registry migrate-publication \
+     --database "$CLIMATE_REGISTRY_DB" --backup-dir "$CLIMATE_BACKUP_DIR"
 
-   # the mutation, per database
-   .venv/bin/python -m climate_registry update \
-     --source-dir "$CLIMATE_WIKI_HOME/sources" --database "$CLIMATE_REGISTRY_DB" \
-     --backup-dir "$CLIMATE_BACKUP_DIR"
+   # migrate/materialize with a backup and the shared database lock
+   .venv/bin/python -m climate_registry migrate-publication \
+     --database "$CLIMATE_REGISTRY_DB" --backup-dir "$CLIMATE_BACKUP_DIR" --apply
    ```
 
    Gates around it:
-   - writers quiesced (no producer container, no slot mid-run): `update` takes an
-     exclusive lock and stops on active `-wal`, `-shm` or rollback-journal sidecars —
-     reconcile those first, never delete them to get past the check;
-   - a verified private full-database backup with its sidecars, exact path/role
-     identity and hashes, taken before the migration;
-   - read the plan before applying it: `update` imports reports as well as migrating
-     schema, `--source-dir` must be the report history of *that* database, and a
-     conflict aborts the update rather than resolving itself;
-   - after `update`, read back `PRAGMA user_version` and `PRAGMA integrity_check` for
-     the migrated file, and re-run `plan-update`: it must report no pending migration
-     and no new reports. That no-op is the cheap proof the migration converged, and
-     it holds for a second database only when that database was migrated too.
+   - writers quiesced (no producer container or slot mid-run); reconcile active
+     `-wal`, `-shm` or rollback-journal sidecars before migration, never delete
+     them to get past the check;
+   - a verified private full-database backup, exact path/role identity and hashes;
+   - read the preview before applying it. This entrypoint preserves accepted
+     legacy public versions and applies the explicitly approved historical
+     supplements; new automated candidates still require their exact review;
+   - freeze the original public baseline with this explicit schema22 migration
+     before appending any later audit/check/knowledge delta from a retired
+     Runtime database. Reconcile that delta as pending candidates with its
+     original source hashes/times; do not append it to schema19 and implicitly
+     accept it as legacy publication. Keep old task bindings as read-only audit;
+     missing or mismatched bindings require a new operation, never rebinding;
+   - schema21→22 is a storage-only upgrade: preserve its existing approved and
+     pending snapshots, receipts and visibility; it grants no new approvals.
+   - after applying, read back `PRAGMA user_version` and
+     `PRAGMA integrity_check`, then repeat the command: it must add no legacy
+     approvals or manual rows. Existing `plan-update`/`update` remain the report
+     history import tools for this same database, not the publication bootstrap.
 3. **Inference identity.** A new binding strips the task definition's
    `provider`/`model`, so those fields are not what the run uses; an already-frozen
    binding keeps the `provider`/`model` it recorded, and the acquisition path resolves
@@ -353,13 +359,13 @@ until every gate below passes.
    [biweekly-et-deployment.md](biweekly-et-deployment.md); never downgrade the schema
    or restore rows selectively to avoid that decision.
 
-The two Registry databases are separate files with different roles, and both must be
-at the required schema before the write side runs:
+The business Registry and runtime state have different roles. Only the business
+database is selected by `CLIMATE_REGISTRY_DB` and migrated to the writer schema:
 
 | Database | Host path | In-container path | Writer |
 | --- | --- | --- | --- |
-| Public/site Registry | the directory named by `CLIMATE_REGISTRY_HOST_DIR` (required, no default — see `docker-compose.registry.yml`) | `/registry/article-registry.sqlite3` (read-only bind) | site reads; the `registry` slot |
-| Runtime Registry | the existing `climate_runtime` Compose volume (`docker volume inspect` for the host path) | producer: `/app/output/climate_registry.sqlite3`; intake writer: `/pipeline/climate_registry.sqlite3` (same volume file) | acquisition producer and the single Web/PDF intake writer |
+| Business Registry | host `CLIMATE_REGISTRY_DB`, an existing file under the external `CLIMATE_REGISTRY_HOST_DIR` mount | `${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}` in both existing services | Wiki acquisition, PDF intake and T1/T10; public API uses read-only connections |
+| Runtime state | existing `climate_runtime` volume | `/app/output` and `/pipeline` | task bindings, queues and artifacts; no separate Registry DB |
 
 Deployment-specific values — host paths, hostnames and credentials — belong to the
 host and to the untracked `.env`, not to tracked documentation: new and edited content
@@ -516,26 +522,27 @@ clean no-op.
 Legacy reports also reject exact normalized-title duplicates. When a report has
 a verified SHA-bound semantic sidecar, the Publisher uses canonical URL identity
 and permits distinct URLs with the same title. Current Registry migrations target
-v6; supported older read contracts are not silently migrated by publication.
+v22; supported older read contracts are not silently migrated by publication.
 
-Registry-backed history checks are opt-in and use a separate host-process
-variable (not the web container variable):
+Registry-backed publication uses the same `CLIMATE_REGISTRY_DB` selection.
+A host process uses the real host path to the same physical database; the
+container uses its mounted path:
 
 ```bash
-export CLIMATE_PUBLISH_REGISTRY_DB=/external/path/article-registry.sqlite3
+export CLIMATE_REGISTRY_DB=/external/path/article-registry.sqlite3
 bash scripts/weekly_wiki_refresh.sh
 ```
 
 The wrapper passes `--registry-database` only when that value is non-empty. It
-does not source `.env`, guess or print the path, or use `CLIMATE_REGISTRY_DB`.
+does not source `.env`, guess or print the path, or reload the application.
 The configured database must satisfy an exact supported schema contract
-(v3, v4, v5 or v6) and be an immutable, sidecar-free snapshot
+(including v22) and be an immutable, sidecar-free snapshot
 whose report filename/SHA identities exactly match `origin/main`'s `sources/`.
 It is opened with SQLite read-only URI and `query_only`; a missing, corrupt,
 wrong-schema, contract-broken, or out-of-sync snapshot stops publication before
 copy, commit, push, or PR mutation.
 
-This application release does not set that host variable or edit the Hermes
+This application release does not set the host environment or edit the Hermes
 prompt. Server integration remains a separate owner-approved change. The
 intended operational order is: read the current Registry while selecting and
 publishing candidates, merge/deploy the accepted report, then run the existing
@@ -553,16 +560,10 @@ Flow: **Hermes generate → rolling PR → human merge → server deploy**. See
 
 ## Optional read-only Article Registry
 
-The base Compose file remains valid without a Registry. In that state the app,
-Chat, and Wiki start normally; `/api/registry/status` returns HTTP 503 with
-`{"available":false,"reason":"not_configured"}` and the Archive shows a clear
-unavailable state.
-
-Registry adoption uses the separate `docker-compose.registry.yml` override.
-It mounts one operator-managed directory read-only at `/registry` (outside the
-application root `/app`) and
-sets the fixed in-container database path. The host directory is configuration,
-not repository content:
+The Compose application writer requires an existing external Registry directory.
+The optional registry override uses the same selector and mount. A directly launched
+static Render process can still rebuild its temporary read API from committed
+sources and the approved Git public display snapshot, without a production DB.
 
 For every optional bind override in this section, use
 `python -m scripts.safe_compose` for the supported container-creating `up` and
@@ -576,9 +577,11 @@ every final `/registry`, `/runtime/wiki`, `/pdf-intake-queue`,
 `/delivery-output`, `/update-status`, and `/job-status` mount that appears in
 that resolved model. Each must be one unique bind from an absolute, existing
 ordinary directory and is read-only by default. A service may write the queue
-only when it explicitly selects `/pdf-intake-queue`; `/registry` and
-`/runtime/wiki` may be writable only on the dedicated `pdf-intake-writer`. The
-site Registry and runtime Wiki mounts remain read-only. The source and every
+only when it explicitly selects `/pdf-intake-queue`. `/runtime/wiki` may be
+writable only on the existing `pdf-intake-writer`. The shared `/registry` parent
+directory may be writable on the actual Wiki acquisition service and that writer, only with
+a database path inside `/registry`, an external whole-directory bind, and
+`create_host_path: false`. API connections remain read-only. The source and every
 existing parent are checked
 with no-follow metadata; symlinks and Windows reparse points or junctions are
 rejected. Errors do not print the source path or environment value.
@@ -608,27 +611,68 @@ docker compose -f docker-compose.yml config --quiet
 
 ### Explicit management PDF imports
 
-`docker-compose.registry.yml` keeps the Public Registry read-only. To enable the
-authenticated `/manage/pdf-import` flow, add `docker-compose.registry-import.yml`.
-Each import accepts exactly one PDF. The site keeps `/registry` and `/runtime/wiki`
-read-only and writes import requests to the durable queue. The existing
-`pdf-intake-writer` consumes both Web activation and PDF intake requests and owns
-the writable Runtime Registry and Wiki projection.
+`docker-compose.registry-import.yml` enables authenticated PDF intake using the
+existing `pdf-intake-writer`. Both existing writers use `CLIMATE_REGISTRY_DB` and
+mount the whole external Registry parent read/write, allowing SQLite journals,
+shared `<db>.lock` and atomic replacement. Public API connections use `mode=ro`
+and `query_only`; the API does not become a business writer.
 
-The writer mounts the existing `climate_runtime` volume at `/pipeline`, with
-`CLIMATE_REGISTRY_WRITER_DB=/pipeline/climate_registry.sqlite3` and private backups
-under `/pipeline/pdf-intake-backups`. This is the same Runtime database file used
-by the acquisition producer at `/app/output/climate_registry.sqlite3`; `/pipeline`
-is outside `/app` and satisfies the existing external-path checks. The writer
-must not have a writable Public `/registry` bind. The application Compose wrapper
-rejects that old shared-Public configuration.
+`climate_runtime` stores queues, task bindings, temporary generations and backups.
+It does not contain a separately routed business database. The configured
+container filename is selected once by `CLIMATE_REGISTRY_DB`; host CLI operations
+use the same file under `CLIMATE_REGISTRY_HOST_DIR` with explicit `--database`.
+T1/T10 improve and review pending items. Final automatic checks publish immutable
+exact snapshots. Pending updates preserve old published versions. The existing
+writer activates approved Wiki generations; no new writer or cron is required.
 
-The writer reuses the existing persistence, lock, batch status and retry flow.
-It builds a fresh generation from the approved manifest and hash-checked Web/PDF
-snapshots, then calls `/api/reload`. A batch is `chat_ready` only after that reload
-reports the requested generation active. A failed reload leaves the previous
-active projection available; imported pending records stay in Runtime and cannot
-enter Public range reports or the publisher.
+#### Single Registry publication migration
+
+Before enabling any writer on schema 19, rehearse and run the one-time migration:
+
+```bash
+python -m climate_registry migrate-publication --database /external/copied-registry.sqlite3 --backup-dir /external/backups
+python -m climate_registry migrate-publication --database /external/copied-registry.sqlite3 --backup-dir /external/backups --apply
+```
+
+The default is dry-run. Apply holds the shared lock, creates an exact backup,
+accepts the existing published baseline with an explicit legacy basis, materializes
+only flagged approved manual rows and applies owner-approved historical supplement
+snapshots without inventing a native Agent PASS. Repeating apply reports zero new
+legacy/manual changes. Original content and knowledge timestamps remain unchanged.
+New automated changes still require real native review evidence.
+
+Historical T1 runs without a frozen `registry_database` remain audit records.
+Start a new check with the existing `scripts/check_information.py` command and
+the current `--database`/`--backup-dir`; omit `--resume`, `--retry` and
+`--scheduled`. Existing frozen runs may continue only with their original database.
+
+A started PDF task without a database binding cannot be rebound, including an
+interrupted first import whose status still says `processing` or `failed` with
+`imported=false`. Only a never-started queued task may select the current database.
+Quiesce the
+existing intake API/writer and preserve a backup of its old queue. Configure both
+existing processes with the same new, empty `CLIMATE_PDF_INTAKE_QUEUE_DIR`, keeping
+`CLIMATE_REGISTRY_DB` on the selected business
+database, then submit the original PDF as a new task. Reuploading into the old
+queue can return the same hash-based batch and does not reset its binding. Keep
+the old queue for read-only audit; do not edit its status or review files.
+Historical Web activation requests without `source_registry_database` also remain
+read-only audit, even when their frozen snapshot uses an older schema. Keep their
+queue and start a new acquisition task against the selected Registry; do not
+resume the old activation or add a guessed binding to its request.
+For the existing Compose import stack, select a new empty host queue directory
+with `CLIMATE_PDF_QUEUE_HOST_DIR`; both existing containers keep their
+`CLIMATE_PDF_INTAKE_QUEUE_DIR=/pdf-intake-queue` mount path.
+
+```bash
+python -m climate_registry set-visibility --database /external/registry.sqlite3 --kind article --id ARTICLE_ID --is-visible false
+python -m climate_registry export-public-snapshot --database /external/registry.sqlite3 --output /checkout/wiki/public-registry.json
+```
+
+The export contains approved public DTOs/Wiki only. Commit no SQLite database,
+private candidate, review transcript, credential or raw debug metadata. Render
+imports this Git snapshot through its existing temporary Registry startup path;
+production continues reading the external live database.
 
 Create `CLIMATE_PDF_QUEUE_HOST_DIR` and `CLIMATE_RUNTIME_WIKI_HOST_DIR` as empty
 directories outside the checkout before starting Compose. Keep `RELOAD_TOKEN`
@@ -650,27 +694,21 @@ application-container address.
 The management page shows the durable `imported`, `indexed`, and `chat_ready`
 states. A failed indexing or reload step leaves the imported Registry row and
 queued bundle intact; use **Retry processing** without uploading the PDF again.
-The Runtime overlay contains only the approved manifest's Web and PDF identities,
-using their pinned snapshots. Same-name generated Registry pages combine Public
-history with activated intake evidence in both Chat and HTTP; ordinary Runtime
-pages retain overlay precedence, and pages absent from the overlay fall back to
-Public Wiki history. A new generation does not inherit unrelated pages from the
-previous one. Public PDF articles, citations and calendar records remain readable
-when Runtime has no active generation; the Runtime allowlist does not restrict
-Public history.
+Schema 21 reads one approved Registry projection for API, Wiki and Chat. Pending
+items report `pending_review`, and a successful reload alone is not publication.
+The old Runtime/Public manifest merging rules are compatibility for schema 20
+and earlier. Current consumers do not use an old Runtime snapshot to republish
+hidden or pending data.
 
-Before enabling the revised import configuration, back up both Registry roles,
-the queue, active metadata and referenced snapshots, and verify the Runtime file
-meets the current writer schema. An existing shared-Public import deployment is
-not migrated by this configuration change. Review its retained import states and
-approved manifests before preparing the Public candidate and Runtime data;
-preserve legitimate published history and private evidence. Do not clear either
-database or discard queued batches to obtain a clean cutover. This repository
-change does not perform a production migration or install jobs.
+Back up the one external business database, queue, active metadata and referenced
+snapshots before enabling current schema 22. Run the migration above and retain its
+receipt. Historical task database paths remain audit records; a mismatched
+configured database blocks resume. Preserve queued evidence and immutable source
+archives. This repository change installs no jobs and does not deploy code.
 
 Before enabling it, prepare `article-registry.sqlite3` outside the checkout.
 It must be a complete main database satisfying an exact supported schema contract
-(v3, v4, v5 or v6), with no dependency on WAL, SHM,
+(v3–v22), with no dependency on WAL, SHM,
 or rollback-journal sidecars. Perform the publisher/copyright review first and
 set articles without public full-text rights to `metadata_only` in the offline
 candidate database. The deterministic preflight rejects relative, missing, or
@@ -686,14 +724,13 @@ chmod 0750 "$CLIMATE_REGISTRY_HOST_DIR"
 chmod 0640 "$CLIMATE_REGISTRY_HOST_DIR/article-registry.sqlite3"
 ```
 
-Expected results are the actual supported snapshot version (3, 4, 5 or 6;
-new migrated candidates use 6), `ok` from both checks, no rows from
+Expected results are the actual supported snapshot version (3–22;
+new migrated databases use 21), `ok` from both checks, no rows from
 `foreign_key_check`, and no sidecar files. Keep the host directory and file
 owner-writable by the approved standalone update/capture operator; align the
 group/read bits with the container's read identity and do not make them public.
-The directory read-only bind is the web application's enforced boundary; the
-API additionally uses fresh short-lived SQLite `mode=ro&immutable=1`
-connections with `query_only` and never migrates, repairs, or writes the
+The application writers share the external directory and database lock. The
+API uses fresh short-lived SQLite `mode=ro` connections with `query_only` and never migrates, repairs, or writes the
 Registry.
 
 Before building, retain the currently deployed app image under a unique rollback
@@ -723,7 +760,7 @@ Status contract:
 
 | Condition | HTTP | Safe reason |
 |---|---:|---|
-| Valid exact schema v3/v4/v5/v6, including an empty Registry | 200 | `available: true` and actual version |
+| Valid exact schema v3–v22, including an empty Registry | 200 | `available: true` and actual version |
 | No Registry configured | 503 | `not_configured` |
 | Missing, unreadable, or corrupt main database | 503 | `database_unavailable` |
 | Path inside the checkout or not absolute | 503 | `invalid_location` |
@@ -732,7 +769,11 @@ Status contract:
 Responses never contain host paths, SQL, or exception text. `/api/health`, the
 home page, and offline Chat remain available when Registry status is 503.
 
-Rollback is app-only. Retag the saved image as the Compose image and recreate
+Rollback is app-only only when the saved image supports the database's actual
+schema. After a schema migration, an incompatible image requires the image and
+whole-database backup pair described above; decide how to preserve any new writes
+before restoring that pair. Do not downgrade the schema or selectively repair rows.
+For a compatible image, retag the saved image as the Compose image and recreate
 only `wiki`; omit the Registry override if the rollback version predates this
 wiring:
 
@@ -745,7 +786,7 @@ docker compose restart caddy
 # For a pre-Registry image, use only: docker compose up -d --no-build --no-deps --force-recreate wiki
 ```
 
-Do not delete or modify the external database during application rollback. This
+For this compatible app-only rollback, do not delete or modify the external database. This
 wiring adds no Hermes job and does not schedule `update` or `capture-enrich`;
 those remain explicit, separately reviewed server operations.
 

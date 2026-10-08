@@ -7,6 +7,21 @@ Retain T1 article and meeting information checks daily at 05:00 ET
 and [independent task cutover](#independent-task-cutover) below for the current
 schedule and deployment gates.
 
+## Current single Registry routing
+
+Schema 21 uses one external business database selected by `CLIMATE_REGISTRY_DB`.
+The existing wiki acquisition service and PDF intake writer mount the same
+external directory; their short writes share `<db>.lock`. Runtime storage holds
+queues and task state. API connections stay read-only. No separate writer DB,
+new service, or additional review cron is required.
+
+All three intake sources create pending exact candidates. Existing T1/T10
+improve and review their real evidence; final automatic checks publish only the
+same reviewed snapshot SHA. T5 remains downstream report-PDF review. Current
+API/Wiki/Chat/new reports/publisher use the same approved projection and canonical
+`is_visible` flag. Existing approved versions remain available during improvement.
+See [migration and mount commands](deployment.md#single-registry-publication-migration).
+
 ## Historical four-slot profile (compatibility only)
 
 The four-slot schedule and procedures below are retained only for historical

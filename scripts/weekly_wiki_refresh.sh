@@ -16,8 +16,8 @@ ARGS=(
   --report-dir "$REPORT_DIR"
   --ledger-dir "$LEDGER_DIR"
 )
-if [[ -n "${CLIMATE_PUBLISH_REGISTRY_DB:-}" ]]; then
-  ARGS+=(--registry-database "$CLIMATE_PUBLISH_REGISTRY_DB")
+if [[ -n "${CLIMATE_REGISTRY_DB:-}" ]]; then
+  ARGS+=(--registry-database "$CLIMATE_REGISTRY_DB")
 fi
 if [[ "${CLIMATE_PUBLISH_ALLOW_OFFCYCLE:-0}" == "1" ]]; then
   ARGS+=(--allow-offcycle)

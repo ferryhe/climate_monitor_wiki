@@ -10,14 +10,17 @@ reviewed publication and deployment.
 ## Boundaries
 
 `climate_registry.contract` validates exact read contracts for supported schemas
-3 through 18 and reports the actual version. Current writes target schema 18.
+3 through 22 and reports the actual version. Current writes target schema 22.
 Schema v4 introduced validated fallback resolutions; v5 added article semantic
 storage, v6 added its report binding and relational constraints, and v7 added
 durable pre-report acquisition batches. Migration v8 adds
 `acquisition_items.resolved_by_fetch_id` plus the trigger and index that ensure a
 failed fetch observation can be resolved only by a successful fetch for the same
-article. Acquisition writers require schema 12 or later; older databases must be
-migrated before writing. Migration v17 adds independent information checks;
+article. Current acquisition writers require schema 22; older business databases
+must first be explicitly migrated with `migrate-publication --apply`.
+Schema 22 extends those same information-check attempts with real core-article and native event-source foreign keys. A 21→22 upgrade preserves all existing publication snapshots, receipts, visibility and pointers without restaging or approving them.
+
+Migration v17 adds independent information checks;
 migration v18 adds append-only article date observations. Earlier supported snapshots remain
 read-only compatibility inputs; readers never migrate them implicitly.
 
@@ -189,9 +192,9 @@ files are not revalidated, preserving clean no-op publication.
 When the Publisher process is explicitly given `--registry-database`, it also
 requires the database to match the temporary clone's `sources/` exactly and
 rejects historical URLs. `scripts/weekly_wiki_refresh.sh` passes this option
-only when the separate `CLIMATE_PUBLISH_REGISTRY_DB` environment variable is
-non-empty. It never reads `.env`, guesses a host path, or reuses the web
-container's `CLIMATE_REGISTRY_DB` name.
+when `CLIMATE_REGISTRY_DB` is non-empty. The host wrapper uses the real host
+path to the same physical database selected by the container mount. It never
+reads `.env`, guesses or prints a host path, or reloads the application.
 
 This creates a deliberate pre-read/post-write sequence:
 
@@ -365,7 +368,9 @@ is when the evidence was imported.
 Range reports select each canonical article once. They use an in-range
 collection time when any reliable collection record exists. If no collection
 time exists, they use an evidenced page information date, then an existing
-publication date. A known collection time outside the range cannot be bypassed
+publication date. An explicitly sourced daily or weekly report date is the last
+fallback; it keeps day precision and does not establish a collection instant or
+article publication date. A known collection time outside the range cannot be bypassed
 with a publication date. Reports label the date basis and show the publication,
 information, and collection dates separately. Articles with no reliable date
 are excluded and counted. A PDF occurrence with its own stated date continues
@@ -375,8 +380,13 @@ article was collected outside the requested range.
 The importer defaults to read-only validation. It requires an absolute path to
 a migrated Registry and an observations JSON file using
 `article-date-observations.v1`; `--write` appends validated records and repeated
-imports are idempotent. Collection observations require an RFC 3339 timestamp
-with its original timezone. Page information observations use exact
+imports are idempotent. Dry runs support schema18–21; writes require explicit
+schema22 explicit migration, use the shared database lock, and stage a pending
+candidate while preserving the approved version and visibility. Collection
+observations require an RFC 3339 timestamp with its original timezone. The one
+day-precision exception must match `evidence.date_basis=daily_or_weekly_report_date`
+and `evidence.report_date=observed_at` exactly. This report observation does not
+block a more precise page information date. Page information observations use exact
 `YYYY-MM-DD` precision. Each row includes `article_id`, exact `canonical_url`,
 `observation_kind`, `observed_at`, and evidence identifying its original
 source, database, table, record ID, URL, and match basis.
@@ -592,3 +602,9 @@ The latest SSH inventory still has legacy Step jobs; use
 [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md#verification-and-cutover) for
 current deployment, full-chain, unique-schedule and normal-run completion gates.
 The completed August Publisher ledger repair remains historical evidence.
+
+### Information improvement before final review
+
+New automatic PDF, website/search and native meeting candidates wait for the existing T1 information checker before T10. T1 freezes the real source, body/version identity and database path. Each candidate must have a matching terminal attempt in a completed `complete` or `partial` run. A terminal source failure remains honest evidence for T10; it is not fabricated fetch success. Missing, pending, running, unrelated or stale results cannot grant final approval. T10 still reads and reviews the complete exact candidate snapshot independently.
+
+`check_information.py --refresh-chat` prepares the existing final-review queue after T1. Completed original acquisition packets may be re-prepared from their unchanged frozen binding and SHA-verified acquisition payload after their native owner finishes; prior packets, claims and receipts remain audit history. Historical T1 runs lacking source/version binding remain read-only audit and require a new run.

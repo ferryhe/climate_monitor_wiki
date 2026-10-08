@@ -9,9 +9,12 @@ Use injected current session identity, exact token and immutable packet.
 
 Review every source outcome, real artifact/attempt/tool provenance and candidate
 body. Read full evidence with native `read_file`, following actual numbered-line
-coverage and byte-budget next_offset. For candidates check complete body, title,
-publisher/date evidence, faithful summary, climate AND actuarial/insurance
-relevance, deduplication, coverage and source identity.
+coverage and byte-budget next_offset. For candidates check the available evidence, title, publisher/date basis, faithful
+summary, climate AND actuarial/insurance relevance, deduplication, coverage and
+source identity. Missing body or classification is not a reason to invent it.
+Observed report/PDF summaries remain clearly attributed; unknown dates retain
+their actual source/report date basis. A governed website success still requires
+its existing complete capture and date eligibility contract.
 
 Submit external JSON with `items` keyed by acquisition_item_id, each containing
 exact candidate_sha256, status (`pass`, `needs_correction`, `rejected`) and reason.
@@ -50,3 +53,25 @@ new results or actionable blockers; unchanged/empty work remains silent.
 When a readable_text companion is supplied, read that exact frozen file. Its JSON
 fragments concatenate losslessly to the original full text and avoid native
 long-line clipping; all numbered lines still require actual complete coverage.
+
+## One Registry and exact automatic publication
+
+Website rotation, weekly search and PDF intake all write pending candidates to
+`CLIMATE_REGISTRY_DB`. T1 improves article/meeting facts; this existing T10 native
+context reviews their exact evidence. There is no additional review service or
+cron. T5 reviews generated report PDFs downstream, not intake PDFs.
+
+When peek selects `target=registry-review`, claim and submit with the same
+acquisition commands. Read each `snapshot_path` or supplied `snapshot_view.path`
+in full. The snapshot includes exact body, enrichment, source identity, dates,
+categories and metadata. Submit conclusions keyed by candidate SHA, each with
+`candidate_sha256`, `status` and `reason`. The automatic final checks verify the
+native session/read evidence and recheck the current candidate SHA under the
+shared database lock before changing its public pointer. No generated receipt
+can stand in for an actual native review.
+
+Every item is independent. A changed or failed item stays pending while other
+approved items can publish. An existing approved version remains readable during
+later improvement. `is_visible=false` excludes that canonical identity across
+all public consumers. The existing writer regenerates the same approved
+projection after publication; historical sources and archived reports are fixed.

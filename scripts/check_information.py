@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
     parser.add_argument("--result", type=Path, help="Save machine-readable run summary")
     parser.add_argument("--scheduled", action="store_true", help="Guard the 05:00 New York occurrence and resume its saved work")
     parser.add_argument("--occurrence", help=argparse.SUPPRESS)
-    parser.add_argument("--refresh-chat", action="store_true", help="Publish the updated active PDF snapshot and reload Chat")
+    parser.add_argument("--refresh-chat", action="store_true", help="Queue improved candidates for the existing T10 review")
     parser.add_argument("--queue-dir", type=Path, default=os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR"))
     parser.add_argument("--runtime-wiki-dir", type=Path, default=os.getenv("CLIMATE_PDF_RUNTIME_WIKI_DIR"))
     args = parser.parse_args(argv)
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
         with transaction_lock(args.result.parent, "daily-check-" + args.kind):
             previous = json.loads(args.result.read_text()) if args.result.exists() else {}
             if previous.get("occurrence") == occurrence:
-                if previous.get("status") == "complete" and (not args.refresh_chat or previous.get("projection", {}).get("status") == "chat_ready"):
+                if previous.get("status") == "complete" and (not args.refresh_chat or previous.get("projection", {}).get("status") in {"chat_ready", "pending_review"}):
                     print(json.dumps({"status": "already_complete", "kind": args.kind, "occurrence": occurrence}))
                     return 0
                 continuation = ["--resume", previous["run_id"]] if previous.get("status") in {"pending", "complete"} else ["--retry", previous["run_id"]]
@@ -98,17 +98,10 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
     if args.result:
         atomic_write_json(args.result, result)
     if args.refresh_chat:
-        from climate_registry.pdf_pipeline import PdfIntakePipeline
-        from scripts.run_pdf_intake_writer import _reload_chat
-        pipeline = PdfIntakePipeline(args.queue_dir, args.database, args.backup_dir,
-            args.runtime_wiki_dir, _reload_chat)
-        try:
-            result["projection"] = pipeline.refresh_checks(result["run_id"])
-        except Exception as exc:
-            result["projection"] = {"status": "failed", "error": type(exc).__name__}
-            if args.result:
-                atomic_write_json(args.result, result)
-            raise
+        from climate_registry.publication import prepare_review, resolve_database
+        review_root = Path(os.environ["CLIMATE_ACQUISITION_RUN_DIR"]) / "registry-review"
+        packet = prepare_review(resolve_database(args.database), review_root)
+        result["projection"] = {"status": "pending_review", "root": str(review_root), "candidate_count": len(packet["candidates"])}
     if args.result:
         atomic_write_json(args.result, result)
     print(json.dumps(result, ensure_ascii=False), flush=True)

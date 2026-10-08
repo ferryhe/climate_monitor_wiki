@@ -76,21 +76,25 @@ weekly report. The existing `scripts/run_pdf_intake_writer.py` consumes both web
 activation and PDF intake requests. It remains the only runtime writer, with the
 same `intake-writer` lock, activation handshake, status and retry rules.
 
-The runtime generation is rebuilt from its validated manifest and pinned web/PDF
-snapshots. Same-name generated Registry pages combine Public history with the
-activated intake projection in both Chat and `/wiki`; other same-name runtime
-pages keep normal overlay precedence, and missing pages use Public history.
-Runtime configuration does not promote the Writer DB into the Public Registry.
-Existing PDF-named configuration fields remain compatible.
+`CLIMATE_REGISTRY_DB` is the sole business database selector. `runtime.registry_database`
+is retained only in historical task/binding audit files. New starts resolve the
+environment; resume rejects a different configured database and retains the original
+binding. New editable task definitions contain `runtime.run_root` only.
 
-The writer service uses the existing environment: `CLIMATE_REGISTRY_WRITER_DB`,
-`CLIMATE_REGISTRY_BACKUP_DIR`, `CLIMATE_PDF_INTAKE_QUEUE_DIR`,
-`CLIMATE_PDF_RUNTIME_WIKI_DIR`, `CLIMATE_PDF_RELOAD_URL` and `RELOAD_TOKEN`.
-Keep the token in environment configuration. In the optional import Compose
-configuration, the writer uses the existing `climate_runtime` volume and private
-Runtime Registry; it must not writable-mount the Public Registry host directory.
-The site and publisher read Public history independently of Runtime activation.
-See [the import deployment recipe](docs/deployment.md#explicit-management-pdf-imports).
+The existing Wiki service and PDF writer mount the same external parent directory
+read/write. API connections remain read-only. Runtime volumes store queues, task
+state and generated files, not a second business database. Both Compose services
+use `${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}`; the file must be
+inside `/registry` and the host directory must already exist.
+
+Website, search and PDF writes enter pending candidates. Existing T1 improves
+information; existing T10 reads the complete exact candidate snapshot with native
+tools. Final code checks bind the real receipt to the exact snapshot and publish
+only unchanged approved items. T1 `--refresh-chat` queues `registry-review` for
+T10; it cannot approve new data directly. The previous published version remains
+available during corrections. `is_visible` applies across all sources and current
+API/Wiki/Chat/report/publisher consumers. T5 remains downstream report-PDF review.
+
 For one queued job:
 
 ```bash

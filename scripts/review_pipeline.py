@@ -32,7 +32,32 @@ def pending(kind: str, root: Path):
             claim = json.loads(claim_path.read_text())
             if not claim.get("released_at") and not acquisition.owner_finished(claim):
                 continue  # Native owner completion, not elapsed time, permits reconciliation.
+        if kind == "acquisition":
+            from climate_registry.publication import resolve_database, require_review_information
+            import sqlite3
+            with sqlite3.connect(f"{resolve_database(frozen=state['packet']['registry_database']).as_uri()}?mode=ro",uri=True) as connection:
+                try:
+                    require_review_information(connection,state["packet"])
+                except ValueError:
+                    continue
         return path.parent, state
+    if kind == "acquisition":
+        packet_path = root / "registry-review" / "packet.json"
+        if packet_path.is_file():
+            packet = json.loads(packet_path.read_text())
+            from climate_registry.publication import resolve_database
+            from climate_registry.publication import information_ready, _information_groups
+            import sqlite3
+            with sqlite3.connect(f"{resolve_database(frozen=packet['registry_database']).as_uri()}?mode=ro", uri=True) as connection:
+                groups = _information_groups(connection)
+                pending_hashes = {row[0] for row in connection.execute("""SELECT c.candidate_sha256,c.snapshot_json FROM registry_publication p
+                    JOIN registry_candidates c ON c.candidate_sha256=p.latest_candidate_sha256
+                    WHERE p.published_candidate_sha256 IS NOT p.latest_candidate_sha256""")
+                    if information_ready(connection,json.loads(row[1]),information_groups=groups)}
+            if any(item["candidate_sha256"] in pending_hashes for item in packet["candidates"]):
+                claim_path = packet_path.parent / "claim.json"
+                if not claim_path.exists() or (claim := json.loads(claim_path.read_text())).get("released_at") or acquisition.owner_finished(claim):
+                    return packet_path.parent, {"packet": {**packet, "run_id": "registry-review"}}
     return None
 
 
@@ -76,7 +101,9 @@ def main(argv=None):
                     "text": (packet.get("readable_text") or {}).get("path") or str((revision_root / packet["text_path"]).resolve()),
                     "pages": [str((revision_root / page["path"]).resolve()) for page in packet["pages"]]}
             else:
-                resolved = {"candidate_bodies": [(c.get("readable_text") or {}).get("path") or str((target_root / c["body_path"]).resolve()) for c in packet["candidates"]]}
+                resolved = {"registry_snapshots": [c.get("registry_snapshot_path") or c.get("snapshot_path") for c in packet["candidates"] if c.get("registry_snapshot_path") or c.get("snapshot_path")]}
+                if packet["schema_version"] != "registry-final-review.v1":
+                    resolved["candidate_bodies"] = [(c.get("readable_text") or {}).get("path") or str((target_root / c["body_path"]).resolve()) for c in packet["candidates"]]
         print(json.dumps({"wakeAgent": bool(selected), "kind": args.kind,
             **({"target": selected[1].get("occurrence") or selected[1]["packet"]["run_id"],
                 "packet": selected[1]["packet"], "resolved_paths": resolved} if selected else {})}, sort_keys=True))
@@ -96,6 +123,9 @@ def main(argv=None):
     if not args.target:
         parser.error("a precise --target is required")
     acquisition_root = root / args.target / "acquisition-review"
+    registry_review = args.kind == "acquisition" and args.target == "registry-review"
+    if registry_review:
+        acquisition_root = root / "registry-review"
     if args.command == "regenerate":
         if args.kind != "report" or not args.reason:
             parser.error("report regeneration requires an explicit repair reason")
@@ -105,14 +135,22 @@ def main(argv=None):
             parser.error("native session/execution/reviewer/database identity is required")
         context = dict(session_id=args.session_id, execution_id=args.execution_id, reviewer=args.reviewer,
             hermes_database=args.hermes_database, timeout_seconds=args.timeout_seconds)
-        result = (acquisition.claim_acquisition(acquisition_root, **context) if args.kind == "acquisition"
+        if registry_review:
+            packet = json.loads((acquisition_root / "packet.json").read_text())
+            result = acquisition.claim_review(acquisition_root, packet, **context)
+        else:
+            result = (acquisition.claim_acquisition(acquisition_root, **context) if args.kind == "acquisition"
             else reports.claim_report(root, args.target, **context))
     elif args.command == "submit":
         if not args.result or not args.token:
             parser.error("--result and --token are required")
         value = json.loads(args.result.read_text())
-        result = (acquisition.review_acquisition(acquisition_root, args.token, value)
-            if args.kind == "acquisition" else reports.submit_report_review(root, args.target, args.token, **value))
+        if registry_review:
+            from climate_registry.publication import review_candidates
+            result = review_candidates(acquisition_root, args.token, value)
+        else:
+            result = (acquisition.review_acquisition(acquisition_root, args.token, value)
+                if args.kind == "acquisition" else reports.submit_report_review(root, args.target, args.token, **value))
     elif args.command == "correct":
         if args.kind != "acquisition" or not args.result:
             parser.error("candidate corrections require acquisition --result")
@@ -126,12 +164,18 @@ def main(argv=None):
     elif args.command == "activate":
         if args.kind != "acquisition" or not args.queue_dir:
             parser.error("activation requires the acquisition writer queue")
-        database = args.database or Path(json.loads((acquisition_root / "state.json").read_text())["packet"]["registry_database"])
-        result = acquisition.activate_approved(acquisition_root, queue_dir=args.queue_dir,
-            database=database, repository_root=ROOT)
+        if registry_review:
+            from climate_registry.publication import review_activation_status
+            result = review_activation_status(acquisition_root, database=args.database)
+        else:
+            database = args.database or Path(json.loads((acquisition_root / "state.json").read_text())["packet"]["registry_database"])
+            result = acquisition.activate_approved(acquisition_root, queue_dir=args.queue_dir,
+                database=database, repository_root=ROOT)
     else:
         result = reports.send_approved(root, args.target, no_send=not args.send, config_path=args.config)
     print(json.dumps(result, sort_keys=True))
+    if registry_review and args.command == "activate":
+        return int(result["approved_count"] == 0)
     return 0
 
 

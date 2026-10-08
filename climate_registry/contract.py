@@ -53,7 +53,8 @@ REQUIRED_TABLE_COLUMNS = {
         "content_version_id",
     },
     "article_enrichments": {
-        "enrichment_id", "content_version_id", "status", "summary", "categories_json",
+        "enrichment_id", "article_id", "content_version_id", "article_version_id",
+        "status", "summary", "categories_json",
         "keywords_json", "language", "generator_kind", "generator_name", "generator_version",
         "generated_at", "error_code", "error_message",
     },
@@ -186,10 +187,18 @@ REQUIRED_TABLE_COLUMNS["knowledge_versions"] = {
 }
 V19_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+REQUIRED_TABLE_COLUMNS.update({
+    "registry_candidates": {"candidate_sha256", "entity_kind", "entity_id", "snapshot_json", "created_at", "basis"},
+    "registry_reviews": {"review_id", "candidate_sha256", "status", "reviewed_at", "receipt_json"},
+    "registry_publication": {"entity_kind", "entity_id", "is_visible", "published_candidate_sha256", "latest_candidate_sha256"},
+})
+V21_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 21:
+        return V21_TABLES
     if version >= 19:
         return V19_TABLES
     if version >= 18:
@@ -213,6 +222,10 @@ def _required_tables(version: int) -> frozenset[str]:
 
 def _required_columns(table: str, version: int) -> set[str]:
     columns = set(REQUIRED_TABLE_COLUMNS[table])
+    if version >= 22 and table in {"article_check_attempts","meeting_check_attempts"}:
+        columns.add("core_article_id" if table=="article_check_attempts" else "event_source_id")
+    if table == "article_enrichments" and version < 20:
+        columns -= {"article_id", "article_version_id"}
     if table == "pdf_intake_articles" and version < 16:
         columns -= {"core_article_id", "confirmation_basis"}
     elif table == "pdf_intake_documents" and version < 14:
@@ -228,6 +241,11 @@ def _required_columns(table: str, version: int) -> set[str]:
     return columns
 
 REQUIRED_FOREIGN_KEYS = {
+    "registry_reviews": {("registry_candidates", ("candidate_sha256",), ("candidate_sha256",))},
+    "registry_publication": {
+        ("registry_candidates", ("published_candidate_sha256",), ("candidate_sha256",)),
+        ("registry_candidates", ("latest_candidate_sha256",), ("candidate_sha256",)),
+    },
     "articles": {
         ("sources", ("source_id",), ("source_id",)),
         ("article_versions", ("current_version_id",), ("version_id",)),
@@ -265,6 +283,8 @@ REQUIRED_FOREIGN_KEYS = {
     },
     "article_enrichments": {
         ("article_content_versions", ("content_version_id",), ("content_version_id",)),
+        ("articles", ("article_id",), ("article_id",)),
+        ("article_versions", ("article_version_id",), ("version_id",)),
     },
     "article_capture_resolutions": {
         ("reports", ("report_id",), ("report_id",)),
@@ -338,6 +358,7 @@ REQUIRED_TRIGGERS = frozenset(
         "article_fetches_are_append_only_delete",
         "article_enrichments_are_append_only_update",
         "article_enrichments_are_append_only_delete",
+        "article_enrichments_validate_article_insert",
         "article_capture_resolutions_reject_replace",
         "article_capture_resolutions_validate_insert",
         "article_capture_resolutions_are_append_only_update",
@@ -379,6 +400,7 @@ REQUIRED_INDEXES = frozenset(
         "idx_article_fetches_content_version",
         "idx_content_versions_article_fetched",
         "idx_enrichments_content_generated",
+        "idx_enrichments_article_version_generated",
         "idx_capture_resolutions_report_article",
         "idx_capture_resolutions_fetch",
         "idx_reports_id_sha256",
@@ -508,6 +530,12 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version >= 21:
+        names |= {"registry_candidates_immutable_update", "registry_candidates_immutable_delete",
+            "registry_reviews_immutable_update", "registry_reviews_immutable_delete",
+            "registry_publication_requires_approval_insert", "registry_publication_requires_approval_update"}
+    if version < 20:
+        names -= {"article_enrichments_validate_article_insert"}
     if version >= 19:
         names |= {"knowledge_versions_append_only_update", "knowledge_versions_append_only_delete"}
     if version < 18:
@@ -561,6 +589,10 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version >= 21:
+        names |= {"idx_registry_candidates_entity"}
+    if version < 20:
+        names -= {"idx_enrichments_article_version_generated"}
     if version >= 19:
         names |= {"idx_knowledge_entity"}
     if version < 18:
@@ -591,6 +623,13 @@ def _required_foreign_keys(
     table: str, version: int
 ) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
     keys = set(REQUIRED_FOREIGN_KEYS.get(table, set()))
+    if version >= 22 and table in {"article_check_attempts","meeting_check_attempts"}:
+        keys.add(("articles",("core_article_id",),("article_id",)) if table=="article_check_attempts" else ("climate_event_sources",("event_source_id",),("event_source_id",)))
+    if table == "article_enrichments" and version < 20:
+        keys -= {
+            ("articles", ("article_id",), ("article_id",)),
+            ("article_versions", ("article_version_id",), ("version_id",)),
+        }
     if table == "article_semantics" and version < 6:
         keys.clear()
     if table == "acquisition_items" and version < 8:

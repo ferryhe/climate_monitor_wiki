@@ -33,7 +33,7 @@ from climate_registry.range_reports import (
     render_range_report_html,
 )
 from climate_registry.read_api import RegistryReader
-from climate_registry.schema import apply_migrations
+from climate_registry.schema import apply_migrations as _apply_migrations
 from climate_registry.web_ingest_pipeline import (
     _active_pdf_snapshot,
     enqueue_web_activation,
@@ -41,6 +41,24 @@ from climate_registry.web_ingest_pipeline import (
     wait_web_activation,
 )
 from climate_registry.wiki import render_runtime_registry
+
+
+# These regressions retain the supported pre-publication Runtime/Public manifest
+# contract. The current single-Registry native review path has separate v21 tests.
+def apply_migrations(connection, **kwargs):
+    return _apply_migrations(connection, target_version=20, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def legacy_pdf_writer_contract(monkeypatch):
+    import climate_registry.pdf_intake as storage
+    import climate_registry.publication as publication
+    from test_information_checks import legacy_schema_writer,legacy_pdf_binding
+    import climate_registry.pdf_pipeline as pipeline
+    monkeypatch.setattr(pipeline,"_validate_pdf_binding",legacy_pdf_binding)
+    monkeypatch.setattr(publication,"require_publication_migration",legacy_schema_writer)
+    monkeypatch.setattr(storage, "apply_migrations", apply_migrations)
+    monkeypatch.setattr(storage, "LATEST_SCHEMA_VERSION", 20)
 
 
 NOW = "2026-10-02T12:00:00Z"
@@ -251,7 +269,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     })
     queued = enqueue_pdf_batch(queue, bundle, repository_root=repository)
     pdf_ready = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue), repository_root=repository,
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue), repository_root=repository,
     ).process(queued["batch_id"])
     assert pdf_ready["chat_ready"] is True, pdf_ready["error"]
     legacy_generation, legacy_active = load_active_projection(runtime, queue / "active.json")
@@ -264,7 +282,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     (queue / "active.json").write_text(json.dumps(legacy_active), encoding="utf-8")
 
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime,
+        queue, runtime_db, tmp_path / "backups", runtime,
         _ack(queue, raise_after_commit=True), repository_root=repository,
     )
     queued_web = enqueue_web_activation(
@@ -290,7 +308,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
         raise RuntimeError("reload unavailable")
 
     failed_writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime,
+        queue, runtime_db, tmp_path / "backups", runtime,
         fail_reload, repository_root=repository,
     )
     assert failed_writer.process_next()["stage"] == "failed"
@@ -352,7 +370,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     later = enqueue_pdf_batch(queue, later_bundle, repository_root=repository)
     assert later["batch_id"] != queued["batch_id"]
     assert PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue), repository_root=repository,
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue), repository_root=repository,
     ).process(later["batch_id"])["chat_ready"] is True
     generation, metadata = load_active_projection(runtime, queue / "active.json")
     manifest = load_projection_manifest(generation, metadata)
@@ -417,7 +435,7 @@ def test_web_activation_reads_legacy_six_field_request_and_projection(tmp_path):
     assert request_path.read_bytes() == legacy_request_bytes
 
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue),
         repository_root=repository,
     )
     assert writer.process_next()["chat_ready"] is True
@@ -473,7 +491,11 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
     )
     with sqlite3.connect(writer_db) as connection:
         connection.execute(
-            """INSERT INTO article_enrichments VALUES
+            """INSERT INTO article_enrichments(
+                   enrichment_id, content_version_id, status, summary, categories_json,
+                   keywords_json, language, generator_kind, generator_name,
+                   generator_version, generated_at, error_code, error_message
+               ) VALUES
                ('approved-web-enrichment', 'content-pinned', 'complete', ?, ?, ?,
                 'en', 'deterministic', 'fixture', 'semantic-v3', ?, NULL, NULL)""",
             (
@@ -636,13 +658,7 @@ def test_failed_pdf_then_web_activation_then_pdf_retry_merges_both(tmp_path):
     runtime_db = tmp_path / "runtime" / "registry.sqlite3"
     runtime_db.parent.mkdir()
     _seed_web(runtime_db)
-    writer_db = tmp_path / "writer" / "registry.sqlite3"
-    writer_db.parent.mkdir()
-    connection = sqlite3.connect(writer_db)
-    try:
-        apply_migrations(connection)
-    finally:
-        connection.close()
+    writer_db = runtime_db  # Both continuations use the same bound business Registry.
 
     pdf_path = tmp_path / "retry.pdf"
     _pdf(pdf_path)
@@ -741,7 +757,7 @@ def test_invalid_web_request_does_not_starve_later_writer_jobs(tmp_path):
     with sqlite3.connect(public_db) as connection:
         apply_migrations(connection)
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue),
         repository_root=repository,
     )
 
@@ -784,7 +800,7 @@ def test_delayed_web_retry_uses_one_snapshot_for_active_union(tmp_path):
         raise RuntimeError("reload unavailable")
 
     failed_writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, fail_reload,
+        queue, runtime_db, tmp_path / "backups", runtime, fail_reload,
         repository_root=repository,
     )
     assert failed_writer.process_next()["stage"] == "failed"
@@ -800,7 +816,7 @@ def test_delayed_web_retry_uses_one_snapshot_for_active_union(tmp_path):
         frozen_payload_sha256="e" * 64, repository_root=repository,
     )
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue),
         repository_root=repository,
     )
     assert writer.process_next()["chat_ready"] is True
@@ -852,7 +868,7 @@ def test_web_page_keeps_latest_observation_across_unrelated_activation(tmp_path)
     finally:
         connection.close()
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue),
         repository_root=repository,
     )
 
@@ -938,7 +954,7 @@ def test_empty_activated_title_falls_back_to_canonical_url_not_unactivated_title
         frozen_payload_sha256="e" * 64, repository_root=repository,
     )
     ready = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, _ack(queue),
+        queue, runtime_db, tmp_path / "backups", runtime, _ack(queue),
         repository_root=repository,
     ).process_next()
     assert ready["chat_ready"] is True
@@ -1026,7 +1042,7 @@ def test_active_web_page_merges_same_named_public_history_for_chat_and_wiki(monk
         api_server.responder.client = None
 
     writer = PdfIntakePipeline(
-        queue, public_db, tmp_path / "backups", runtime, reload_chat,
+        queue, runtime_db, tmp_path / "backups", runtime, reload_chat,
         repository_root=repository,
     )
     enqueue_web_activation(

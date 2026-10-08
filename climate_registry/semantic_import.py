@@ -488,6 +488,9 @@ def _apply_candidate(
                 raise RegistryInputError(
                     "semantic import written count does not match verified sidecar count"
                 )
+            from .publication import stage_entities
+            with connection:
+                stage_entities(connection)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -521,6 +524,12 @@ def _apply(
 
     with _exclusive_database_lock(database):
         _assert_safe_database(database)
+        connection = _open_read_only_database(database)
+        try:
+            from .publication import require_publication_migration
+            require_publication_migration(connection)
+        finally:
+            connection.close()
         try:
             live_sha = _file_sha256(database)
         except OSError as exc:

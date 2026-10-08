@@ -93,17 +93,33 @@ def _render_registry_article(article: dict) -> str | None:
     ]
     if article.get("collected_at"):
         blocks.append(f"Collected at: {article['collected_at']}")
+    elif article.get("information_date"):
+        blocks.append(f"Information date: {article['information_date']}")
+    elif article.get("publication_date"):
+        blocks.append(f"Publication date: {article['publication_date']}")
+    elif article.get("report_date"):
+        blocks.append(f"Report date: {article['report_date']} (article publication date unconfirmed)")
     if date_observations:
         blocks.extend(["", "## Date observations", ""])
         for observation in date_observations:
             evidence = observation["evidence"]
-            label = ("Collection time" if observation["kind"] == "collection"
-                     else "Page information date")
-            detail = (
-                f"{label}: {observation['observed_at']}; source record: "
-                f"{evidence['source_system']}.{evidence['table']} {evidence['record_id']}; "
-                f"match: {evidence['match_basis']}"
-            )
+            label = ("Report observation date" if evidence.get("date_basis")=="daily_or_weekly_report_date" else
+                     "Collection time" if observation["kind"] == "collection" else "Page information date")
+            detail = f"{label}: {observation['observed_at']}"
+            if all(evidence.get(key) for key in ("source_system","table","record_id")):
+                detail += f"; source record: {evidence['source_system']}.{evidence['table']} {evidence['record_id']}"
+            elif evidence.get("report_filename") or evidence.get("report_date"):
+                detail += "; source report: " + str(evidence.get("report_filename") or evidence["report_date"])
+            elif evidence.get("acquisition_item_id"):
+                detail += "; acquisition record: " + str(evidence["acquisition_item_id"])
+            else:
+                detail += "; source observation: " + str(observation.get("observation_id") or "not supplied")
+            if evidence.get("date_basis"):
+                detail += "; date basis: " + str(evidence["date_basis"])
+            if evidence.get("note"):
+                detail += "; " + str(evidence["note"])
+            if evidence.get("match_basis"):
+                detail += f"; match: {evidence['match_basis']}"
             if evidence.get("date_kind"):
                 detail += f"; page date kind: {evidence['date_kind']}"
             if evidence.get("source_url"):
@@ -274,6 +290,9 @@ def _pinned_web_article(
 ) -> dict[str, Any]:
     article_id = identities[0]["article_id"]
     article = reader.article(article_id)
+    with reader.connect() as connection:
+        if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+            return article
     expected = {item["acquisition_item_id"]: item for item in identities}
     observations = [
         item
@@ -346,11 +365,17 @@ def _pinned_web_article(
         available_content=pinned_content,
     )
     if enrichment is not None:
+        provenance = (
+            "manual_enrichment"
+            if enrichment["generator_kind"] == "manual"
+            else "content_enrichment"
+        )
         article.update(
             summary=enrichment["summary"],
-            summary_provenance="content_enrichment",
+            summary_provenance=provenance,
             categories=_json_strings(enrichment["categories_json"]),
             keywords=_json_strings(enrichment["keywords_json"]),
+            metadata_provenance={"categories": provenance, "keywords": provenance},
             enrichment={
                 "summary": enrichment["summary"],
                 "categories": _json_strings(enrichment["categories_json"]),
@@ -398,6 +423,12 @@ def render_runtime_registry(
 ) -> dict[str, str]:
     """Render only identities pinned by one validated active intake manifest."""
     wiki_dir.mkdir(parents=True, exist_ok=True)
+    canonical = web_database or pdf_database
+    if canonical is not None:
+        with RegistryReader(canonical, repository_root=Path(__file__).resolve().parents[1]).connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                _registry_pages(canonical, wiki_dir)
+                return {path.name: path.read_text(encoding="utf-8") for path in wiki_dir.glob("*.md")}
     articles: dict[str, dict[str, Any]] = {}
     web_items = list(manifest.get("web_items", []))
     by_article: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -523,14 +554,16 @@ def _filtered(items: list[dict], occurrence_filter: OccurrenceFilter | None) -> 
     return items if occurrence_filter is None else [item for item in items if occurrence_filter(item)]
 
 
-def _registry_pages(
+def _registry_pages_read(
     database: Path,
     wiki_dir: Path,
     *,
     occurrence_filter: OccurrenceFilter | None = None,
+    reader: RegistryReader | None = None,
 ) -> dict[str, str]:
-    reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
+    reader = reader or RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
     pages: dict[str, str] = {}
+    article_details = {}
     page = 1
     while True:
         payload = reader.articles(page=page, page_size=100)
@@ -538,11 +571,15 @@ def _registry_pages(
             if item["document_kind"] != "article" or not item["publication_eligible"]:
                 continue
             article = reader.article(item["article_id"])
+            article_details[item["article_id"]] = article
             article["pdf_occurrences"] = _filtered(
                 article.get("pdf_occurrences", []), occurrence_filter
             )
             rendered = _render_registry_article(article)
             if rendered:
+                observed_date = (article.get("collected_at") or article.get("information_date") or article.get("publication_date") or article.get("report_date") or article.get("last_seen") or "")[:10]
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", observed_date):
+                    rendered += "\nUpdated (source observation): " + observed_date + "\n"
                 pages[f"article-{article['article_id']}.md"] = rendered
         if page >= payload["pagination"]["pages"]:
             break
@@ -561,7 +598,42 @@ def _registry_pages(
     rendered = _render_registry_source_observations(pdf_items)
     if rendered:
         pages["registry-source-observations.md"] = rendered
-    states = {name: _write_if_changed(wiki_dir / name, content) for name, content in pages.items()}
+    with reader.connect() as connection:
+        if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+            meetings = reader.meetings_all(base_date="1900-01-01")
+            blocks = ["# Meetings and key dates", ""]
+            for item in meetings:
+                if item.get("origin")=="pdf_import":
+                    blocks += ["## " + str(item.get("name") or "Key date"), str(item.get("raw_date") or "Date not provided"),
+                        item.get("summary") or "", _citation(item), "Provenance: PDF observed record; " + item.get("verification_status", "unchecked"), ""]
+                else:
+                    blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
+                        item.get("relevance_reason") or "", "Status: " + str(item.get("status") or "Unknown")]
+                    blocks += [label + ": " + str(item[field]) for field, label in (
+                        ("end_date", "End date"), ("deadline_date", "Deadline"), ("deadline_type", "Deadline type"),
+                        ("organizer", "Host"), ("location", "Location"), ("timezone", "Timezone"),
+                        ("online_url", "Online URL")) if item.get(field)]
+                    for source in item.get("sources", []):
+                        url = source.get("source_url")
+                        if url:
+                            blocks.append("Source: [" + url + "](" + url + ")")
+                    for observation in item.get("pdf_observations",[]):
+                        blocks += ["PDF observation: " + str(observation.get("summary") or ""), _citation(observation)]
+                    blocks.append("")
+            if meetings:
+                pages["registry-meetings.md"] = "\n".join(blocks).rstrip("\n") + "\n"
+            by_date = defaultdict(list)
+            for row in connection.execute("""SELECT r.report_date,r.filename,r.report_sha256,ra.article_id,av.observed_title,av.observed_summary,a.canonical_url
+                FROM report_appearances ra JOIN reports r ON r.report_id=ra.report_id JOIN articles a ON a.article_id=ra.article_id
+                JOIN article_versions av ON av.version_id=ra.version_id WHERE a.publication_eligible=1 ORDER BY r.report_date,ra.ordinal"""):
+                detail=article_details.get(row["article_id"]) or reader.article(row["article_id"])
+                summary=detail.get("summary") if detail.get("summary") is not None else detail.get("report_summary")
+                by_date[row["report_date"]] += ["## " + str(detail.get("title") or detail["canonical_url"]), summary or "",
+                    "Source report: " + row["filename"] + "; SHA-256: " + row["report_sha256"], row["canonical_url"], ""]
+            for report_date, content in by_date.items():
+                pages["climate-monitor-" + report_date + ".md"] = ("# Climate Monitor " + report_date + "\n\n" + "\n".join(content)).rstrip("\n") + "\n"
+    states = {name: _write_if_changed(wiki_dir / name, content) for name, content in pages.items()
+        if not name.startswith("climate-monitor-") or not (wiki_dir / name).exists()}
     for existing in wiki_dir.glob("article-*.md"):
         if (
             re.fullmatch(r"article-[A-Za-z0-9_-]+\.md", existing.name)
@@ -575,6 +647,11 @@ def _registry_pages(
         states[source_only.name] = "deleted"
     return states
 
+
+
+def _registry_pages(database, wiki_dir, *, occurrence_filter=None):
+    with RegistryReader(database, repository_root=Path(__file__).resolve().parents[1]).public_snapshot() as reader:
+        return _registry_pages_read(database, wiki_dir, occurrence_filter=occurrence_filter, reader=reader)
 
 def sync_registry_wiki(
     database: Path,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import sqlite3
 import stat
 import tempfile
@@ -203,14 +202,16 @@ def _exclusive_database_lock(database: Path) -> Iterator[None]:
             or bool(getattr(path_metadata, "st_file_attributes", 0) & reparse)
         ):
             raise OSError("lock path is unsafe")
-        descriptor = os.open(
-            lock_path,
-            os.O_CREAT
+        flags = (os.O_CREAT
             | os.O_RDWR
             | getattr(os, "O_BINARY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
+            | getattr(os, "O_NOFOLLOW", 0))
+        created = False
+        try:
+            descriptor = os.open(lock_path, flags | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            descriptor = os.open(lock_path, flags, 0o600)
         metadata = os.fstat(descriptor)
         opened_path_metadata = os.stat(lock_path, follow_symlinks=False)
         if (
@@ -224,6 +225,9 @@ def _exclusive_database_lock(database: Path) -> Iterator[None]:
         if os.name == "posix":
             import fcntl
 
+            if created and database.is_file():
+                owner = database.stat()
+                os.fchown(descriptor, owner.st_uid, owner.st_gid)
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif os.name == "nt":
             import msvcrt
@@ -326,6 +330,13 @@ def _fsync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
+def _preserve_database_metadata(candidate: Path, metadata: os.stat_result) -> None:
+    """Keep the shared live file's owner and permissions before replacement."""
+    if os.name == "posix":
+        os.chown(candidate, metadata.st_uid, metadata.st_gid)
+        os.chmod(candidate, stat.S_IMODE(metadata.st_mode))
+
+
 def update_registry(
     source_dir: Path,
     database: Path,
@@ -345,10 +356,18 @@ def update_registry(
         raise RegistryInputError(f"backup directory path is not a directory: {backup_dir}")
 
     with _exclusive_database_lock(database):
+        live_metadata = database.stat()
         sidecars = _sqlite_sidecars(database)
         if sidecars:
             names = ", ".join(path.name for path in sidecars)
             raise RegistryInputError(f"registry has active SQLite sidecar files; reconcile before update: {names}")
+        connection = _read_only_connection(database)
+        try:
+            _validate_database(connection)
+            from .publication import require_publication_migration
+            require_publication_migration(connection)
+        finally:
+            connection.close()
         live_fingerprint = _file_sha256(database)
         plan = plan_registry_update(
             source_dir, database, allow_offcycle=allow_offcycle
@@ -398,7 +417,6 @@ def update_registry(
                 backup_connection.close()
             if os.name == "posix":
                 backup_path.chmod(0o600)
-                shutil.copymode(database, candidate)
             _fsync_parent(backup_path)
 
             connection = sqlite3.connect(candidate)
@@ -409,6 +427,9 @@ def update_registry(
                     refresh_article_policy(connection)
                     for item in plan["new_reports"]:
                         _insert_report(connection, reports_by_date[item["date"]])
+                    from .publication import stage_entities
+                    with connection:
+                        stage_entities(connection)
                     connection.commit()
                 except Exception:
                     connection.rollback()
@@ -421,6 +442,7 @@ def update_registry(
 
             if _sqlite_sidecars(database) or _file_sha256(database) != live_fingerprint:
                 raise RegistryLockError("live registry changed while the candidate update was being prepared")
+            _preserve_database_metadata(candidate, live_metadata)
             os.replace(candidate, database)
             _fsync_parent(database)
             return {

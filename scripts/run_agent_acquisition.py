@@ -3085,6 +3085,8 @@ def _launch_meeting_worker(binding_path: Path, binding: Mapping[str, Any]) -> di
     meeting = binding.get("meeting")
     if not isinstance(meeting, Mapping) or meeting.get("enabled") is not True:
         return {"status": "disabled"}
+    from climate_registry.publication import resolve_database
+    resolve_database(frozen=binding["registry_database"])
     meeting_attempt = time.time_ns()
     path = binding_path.parent / f"meeting-auto-{meeting_attempt}.json"
     result_path = path.with_name(path.stem + "-result.json")
@@ -4086,7 +4088,11 @@ def execute(binding_path: Path, *, ingest_only: bool = False) -> int:
     requested_mode = "ingest_only" if ingest_only else "report"
     if binding_mode != requested_mode:
         raise ValueError("execution mode differs from the frozen binding")
+    from climate_registry.publication import resolve_database
+    resolve_database(frozen=binding["registry_database"])
     from climate_monitor.hermes_identity import load_snapshot
+    from climate_registry.acquisition import _open_database
+    _open_database(binding["registry_database"], acquisition_writer=True).close()
     load_snapshot(resolved.parent, binding.get("hermes_snapshot"))
     with _exclusive_lock(ManagementService._state_lock_path(binding)) as descriptor:
         return _execute_locked(

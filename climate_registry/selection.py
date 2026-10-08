@@ -494,6 +494,12 @@ def load_registry_selection_snapshot(database: Path, source_dir: Path) -> Regist
                 raise RegistryInputError(
                     "registry article graph and source history are not synchronized"
                 )
+            from .publication import public_connection
+            projection = public_connection(connection)
+            if projection is not connection:
+                connection.close()
+                connection = projection
+            urls = frozenset(row[0] for row in connection.execute("SELECT canonical_url FROM articles"))
         except SchemaContractError as exc:
             raise RegistryInputError("registry schema contract is invalid") from exc
         except (RegistryInputError, RegistryBuildError):

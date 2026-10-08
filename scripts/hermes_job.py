@@ -527,6 +527,7 @@ def record_registry_pending(day, status_dir, result_code):
 
 def _validate_managed_recovery_binding(service, definition, binding, run_id, day):
     from climate_monitor.management import managed_report_inputs
+    from climate_registry.publication import resolve_database
 
     if (binding.get('run_id') != run_id
             or binding.get('trigger') != 'scheduled'):
@@ -534,7 +535,7 @@ def _validate_managed_recovery_binding(service, definition, binding, run_id, day
     if binding.get('report_date') != day:
         raise Blocked('managed_recovery_report_date_mismatch')
     if (binding.get('task_id') != definition.get('task_id')
-            or binding.get('definition', {}).get('runtime') != definition.get('runtime')):
+            or binding.get('definition', {}).get('runtime', {}).get('run_root') != definition.get('runtime', {}).get('run_root')):
         raise Blocked('managed_recovery_task_runtime_mismatch')
     expected_paths = managed_report_inputs(binding['definition'], run_id)
     if (binding.get('report_inputs') != expected_paths
@@ -543,7 +544,7 @@ def _validate_managed_recovery_binding(service, definition, binding, run_id, day
             or Path(binding.get('frozen_report_input', '')).resolve()
             != (service.runtime_root / run_id / 'frozen-report-input.json').resolve()
             or Path(binding.get('registry_database', '')).resolve()
-            != Path(definition['runtime']['registry_database']).resolve()):
+            != resolve_database()):
         raise Blocked('managed_recovery_bound_path_mismatch')
     return expected_paths
 

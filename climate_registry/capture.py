@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import tempfile
 import uuid
@@ -25,6 +24,7 @@ from .fetch import (
     DEFAULT_MAX_REDIRECTS,
     DEFAULT_TIMEOUT,
     FetchFailure,
+    FetchResponse,
     PinnedTransport,
     Resolver,
     Transport,
@@ -37,6 +37,7 @@ from .persistent import (
     _exclusive_database_lock,
     _file_sha256,
     _fsync_parent,
+    _preserve_database_metadata,
     _sqlite_sidecars,
     _validate_database,
 )
@@ -649,23 +650,21 @@ def _capture_one(
     connection: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    resolver: Resolver,
-    transport: Transport,
+    prepared: tuple[str, dict[str, str], str | None, FetchResponse | FetchFailure],
     clock: Callable[[], str],
     id_factory: Callable[[str], str],
-    timeout: float,
     max_bytes: int,
-    max_redirects: int,
 ) -> dict[str, str]:
     article_id = row["article_id"]
     requested_url = row["canonical_url"]
     fetched_at = clock()
     headers, previous_version = _conditional_headers(connection, article_id)
+    if prepared[:3] != (requested_url, headers, previous_version):
+        raise RegistryLockError("article changed while capture was fetched")
     try:
-        response = fetch_document(
-            requested_url, headers=headers, resolver=resolver, transport=transport,
-            timeout=timeout, max_bytes=max_bytes, max_redirects=max_redirects,
-        )
+        response = prepared[3]
+        if isinstance(response, FetchFailure):
+            raise response
         raw_content_type = response.headers.get("content-type", "")
         content_type = (
             _content_type_parts(raw_content_type)[0] if raw_content_type else None
@@ -800,6 +799,31 @@ def _capture_one(
         return {"article_id": article_id, "status": "failed", "error_code": failure.code}
 
 
+def _prefetch_articles(database, *, article_ids=(), limit=None, refresh=False,
+    resolver=_default_resolver, transport=None, timeout=DEFAULT_TIMEOUT,
+    max_bytes=DEFAULT_MAX_BYTES, max_redirects=DEFAULT_MAX_REDIRECTS):
+    """Read conditional bindings briefly, then fetch without holding the DB lock."""
+    with _exclusive_database_lock(database):
+        if _sqlite_sidecars(database):
+            raise RegistryInputError("registry has active SQLite sidecar files; reconcile before capture")
+        with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
+            if _validate_database(connection) != LATEST_SCHEMA_VERSION:
+                raise RegistryInputError(f"capture requires the current schema version {LATEST_SCHEMA_VERSION}")
+            selected = _select_articles(connection, article_ids, refresh=refresh, limit=limit)
+            bindings = [(row["article_id"], row["canonical_url"], *_conditional_headers(connection,row["article_id"])) for row in selected]
+        connection.close()
+    prepared = {}
+    transport = transport or PinnedTransport()
+    for identity, url, headers, previous in bindings:
+        try:
+            response = fetch_document(url,headers=headers,resolver=resolver,transport=transport,
+                timeout=timeout,max_bytes=max_bytes,max_redirects=max_redirects)
+        except FetchFailure as exc:
+            response = exc
+        prepared[identity] = (url,headers,previous,response)
+    return prepared
+
+
 def capture_enrich_registry(
     database: Path,
     backup_dir: Path,
@@ -814,6 +838,7 @@ def capture_enrich_registry(
     timeout: float = DEFAULT_TIMEOUT,
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    _prefetched: dict | None = None,
 ) -> dict[str, object]:
     """Capture eligible registry articles into an atomically installed candidate DB."""
 
@@ -832,8 +857,13 @@ def capture_enrich_registry(
     if timeout <= 0 or max_bytes < 1 or not 0 <= max_redirects <= 10:
         raise RegistryInputError("network limits are invalid")
     transport = transport or PinnedTransport()
+    before_fetch = _file_sha256(database)
+    prepared = _prefetched if _prefetched is not None else _prefetch_articles(database,
+        article_ids=article_ids,limit=limit,refresh=refresh,resolver=resolver,transport=transport,
+        timeout=timeout,max_bytes=max_bytes,max_redirects=max_redirects)
 
     with _exclusive_database_lock(database):
+        live_metadata = database.stat()
         sidecars = _sqlite_sidecars(database)
         if sidecars:
             raise RegistryInputError("registry has active SQLite sidecar files; reconcile before capture")
@@ -845,7 +875,14 @@ def capture_enrich_registry(
                 raise RegistryInputError(
                     f"capture requires the current schema version {LATEST_SCHEMA_VERSION}"
                 )
-            selected = _select_articles(source_connection, article_ids, refresh=refresh, limit=limit)
+            selected = _select_articles(source_connection,article_ids or tuple(prepared),refresh=True,limit=None) if prepared else []
+            if not article_ids:
+                order={identity:index for index,identity in enumerate(prepared)}
+                selected.sort(key=lambda row:order[row["article_id"]])
+            if _file_sha256(database) != before_fetch:
+                size = source_connection.execute("PRAGMA page_size").fetchone()[0] * source_connection.execute("PRAGMA page_count").fetchone()[0]
+                if database.stat().st_size != size:
+                    raise RegistryLockError("live registry changed with invalid file bytes during capture")
         finally:
             source_connection.close()
         if not selected:
@@ -880,7 +917,6 @@ def capture_enrich_registry(
                 source_connection.close()
             if os.name == "posix":
                 backup_path.chmod(0o600)
-                shutil.copymode(database, candidate)
             _fsync_parent(backup_path)
             backup_connection = sqlite3.connect(f"{backup_path.as_uri()}?mode=ro", uri=True)
             try:
@@ -897,11 +933,13 @@ def capture_enrich_registry(
                     with connection:
                         results.append(
                             _capture_one(
-                                connection, row, resolver=resolver, transport=transport, clock=clock,
-                                id_factory=id_factory, timeout=timeout, max_bytes=max_bytes,
-                                max_redirects=max_redirects,
+                                connection, row, prepared=prepared[row["article_id"]], clock=clock,
+                                id_factory=id_factory, max_bytes=max_bytes,
                             )
                         )
+                from .publication import stage_entities
+                with connection:
+                    stage_entities(connection)
                 connection.execute("PRAGMA optimize")
                 connection.row_factory = None
                 _validate_database(connection)
@@ -912,6 +950,7 @@ def capture_enrich_registry(
                 raise RegistryBuildError("capture candidate retained SQLite sidecar files")
             if _sqlite_sidecars(database) or _file_sha256(database) != live_fingerprint:
                 raise RegistryLockError("live registry changed while capture candidate was prepared")
+            _preserve_database_metadata(candidate, live_metadata)
             os.replace(candidate, database)
             _fsync_parent(database)
             counts = dict(Counter(result["status"] for result in results))

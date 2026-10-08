@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from pathlib import Path
+import re
 
 import anyio
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
@@ -392,12 +393,12 @@ def test_past_week_report_summary_covers_requested_window_offline():
     # rather than on retrieval. The contract is: every report that EXISTS in the
     # requested window is covered, and the window's latest report is included.
     corpus_dates = {
-        document.date
+        match.group(1)
         for document in (
             *responder_instance.kb.documents,
             *getattr(responder_instance.kb, "source_documents", ()),
         )
-        if getattr(document, "date", None)
+        if (match:=re.fullmatch(r"climate-monitor-(\d{4}-\d{2}-\d{2})\.md",document.file))
     }
     expected_dates = {
         (window_start + timedelta(days=offset)).isoformat() for offset in range(7)
@@ -435,12 +436,12 @@ def test_past_two_weeks_summary_parses_weeks_and_scopes_sources_offline():
 
     source_dates = {source["date"] for source in result["sources"]}
     corpus_dates = {
-        document.date
+        match.group(1)
         for document in (
             *responder_instance.kb.documents,
             *getattr(responder_instance.kb, "source_documents", ()),
         )
-        if getattr(document, "date", None)
+        if (match:=re.fullmatch(r"climate-monitor-(\d{4}-\d{2}-\d{2})\.md",document.file))
     }
     expected_dates = window_dates & corpus_dates
     assert expected_dates, "no reports in the requested window to cover"
@@ -457,12 +458,12 @@ def test_four_week_executive_summary_counts_reports_not_calendar_days():
         (window_start + timedelta(days=offset)).isoformat() for offset in range(28)
     }
     corpus_dates = {
-        document.date
+        match.group(1)
         for document in (
             *responder_instance.kb.documents,
             *responder_instance.kb.source_documents,
         )
-        if document.date in window_dates
+        if (match:=re.fullmatch(r"climate-monitor-(\d{4}-\d{2}-\d{2})\.md",document.file)) and match.group(1) in window_dates
     }
 
     result = responder_instance.answer(

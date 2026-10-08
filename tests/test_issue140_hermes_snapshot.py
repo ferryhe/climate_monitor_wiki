@@ -1323,6 +1323,9 @@ def test_review3_meeting_binding_link(tmp_path, runtime, monkeypatch, tamper):
     ref = h.create_snapshot(run)
     acquisition = {'run_id': 'run', 'acquisition_batch_id': 'batch', 'task_version': 1,
                    'registry_database': str(tmp_path / 'registry'), 'hermes_snapshot': ref}
+    from climate_registry.persistent import initialize_registry
+    initialize_registry(tmp_path / 'registry')
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(tmp_path / 'registry'))
     path = run / 'attempt-1.json'; path.write_text(json.dumps(acquisition))
     binding = {'schema_version': 'climate-meeting-worker-binding.v1', 'acquisition_binding_path': str(path),
                'acquisition_run_id': 'run', 'acquisition_batch_id': 'batch', 'task_version': 1,
@@ -1465,6 +1468,9 @@ def test_review3_meeting_link_rechecked_before_each_inference(tmp_path, runtime,
     ref = h.create_snapshot(run)
     acquisition = {'run_id': 'run', 'acquisition_batch_id': 'batch', 'task_version': 1,
                    'registry_database': str(tmp_path / 'registry'), 'hermes_snapshot': ref}
+    from climate_registry.persistent import initialize_registry
+    initialize_registry(tmp_path / 'registry')
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(tmp_path / 'registry'))
     path = run / 'attempt-1.json'; path.write_text(json.dumps(acquisition))
     binding = {'schema_version': 'climate-meeting-worker-binding.v1', 'acquisition_binding_path': str(path),
                'acquisition_run_id': 'run', 'acquisition_batch_id': 'batch', 'task_version': 1,

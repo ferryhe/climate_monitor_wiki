@@ -316,6 +316,9 @@ def test_recovery_binding_rejects_manual_wrong_date_and_changed_paths(
     run_id = 'scheduled-run'
     run_root = tmp_path / 'runs'
     database = tmp_path / 'registry.sqlite3'
+    from climate_registry.persistent import initialize_registry
+    initialize_registry(database)
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(database))
     definition = {
         'task_id': 'weekly-climate-monitor-acquisition',
         'runtime': {'run_root': str(run_root), 'registry_database': str(database)},

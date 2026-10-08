@@ -67,7 +67,7 @@ def test_calendar_geometry_recovers_full_cells_for_new_and_existing_imports(tmp_
             (old["event_id"], old["occurrence_id"], digest, old["name"], old["raw_date"],
              old["start_date"], old["end_date"], old["summary"], old["content_sha256"], json.dumps(old)))
     before = database.read_bytes()
-    item = RegistryReader(database, repository_root=tmp_path / "application").pdf_calendar_items()["items"][0]
+    item = RegistryReader(database, public=False, repository_root=tmp_path / "application").pdf_calendar_items()["items"][0]
     assert item["name"] == recovered["name"] and item["publisher"] == recovered["publisher"]
     assert item["relevance"] == recovered["relevance"] and item["raw_text"] == old["raw_text"]
     assert database.read_bytes() == before
@@ -137,7 +137,7 @@ def test_full_calendar_read_recovers_only_allow_listed_pdfs_once(tmp_path, monke
         return original(raw_pdf, items)
 
     monkeypatch.setattr(pdf_intake, "recover_calendar_fields", count_recovery)
-    reader = RegistryReader(database, repository_root=tmp_path / "application")
+    reader = RegistryReader(database, public=False, repository_root=tmp_path / "application")
     selected = reader.pdf_calendar_items_all(allowed_occurrence_ids={occurrence_ids[1]})
     assert len(selected) == 1 and selected[0]["occurrence_id"] == occurrence_ids[1]
     assert len(calls) == 1 and calls[0][1] == (occurrence_ids[1],)

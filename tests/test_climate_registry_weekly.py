@@ -745,9 +745,12 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
     assert not list(weekly_fixture.database.parent.glob("*.weekly-candidate"))
 
 
-def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
+def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(weekly_fixture):
     connection = sqlite3.connect(weekly_fixture.database)
     with connection:
+        connection.execute("DROP TABLE registry_publication")
+        connection.execute("DROP TABLE registry_reviews")
+        connection.execute("DROP TABLE registry_candidates")
         connection.execute("DROP TABLE knowledge_versions")
         connection.execute("DROP TABLE article_check_attempts")
         connection.execute("DROP TABLE article_check_runs")
@@ -778,21 +781,103 @@ def test_live_v3_remains_readable_until_candidate_v4_promotion(weekly_fixture):
         )
         connection.execute("DROP INDEX IF EXISTS idx_reports_id_sha256")
         connection.execute("DELETE FROM schema_migrations WHERE version > 3")
+        connection.execute(
+            """CREATE TEMP TABLE article_enrichments_v3 AS
+               SELECT enrichment_id, content_version_id, status, summary, categories_json,
+                      keywords_json, language, generator_kind, generator_name,
+                      generator_version, generated_at, error_code, error_message
+               FROM article_enrichments"""
+        )
+        connection.execute("DROP TABLE article_enrichments")
+        connection.execute(
+            """CREATE TABLE article_enrichments (
+                enrichment_id TEXT PRIMARY KEY,
+                content_version_id TEXT NOT NULL REFERENCES article_content_versions(content_version_id),
+                status TEXT NOT NULL CHECK (status IN ('complete', 'failed')),
+                summary TEXT,
+                categories_json TEXT,
+                keywords_json TEXT,
+                language TEXT,
+                generator_kind TEXT NOT NULL CHECK (generator_kind IN ('deterministic', 'model')),
+                generator_name TEXT NOT NULL,
+                generator_version TEXT NOT NULL,
+                generated_at TEXT NOT NULL,
+                error_code TEXT,
+                error_message TEXT,
+                CHECK (
+                    (status = 'complete' AND summary IS NOT NULL AND categories_json IS NOT NULL
+                     AND keywords_json IS NOT NULL AND language IS NOT NULL
+                     AND length(trim(summary)) > 0 AND length(trim(categories_json)) > 0
+                     AND length(trim(keywords_json)) > 0 AND length(trim(language)) > 0
+                     AND error_code IS NULL AND error_message IS NULL)
+                    OR
+                    (status = 'failed' AND summary IS NULL AND categories_json IS NULL
+                     AND keywords_json IS NULL AND language IS NULL
+                     AND error_code IS NOT NULL AND length(trim(error_code)) > 0)
+                )
+            )"""
+        )
+        connection.execute(
+            """INSERT INTO article_enrichments
+               SELECT * FROM article_enrichments_v3"""
+        )
+        connection.execute("DROP TABLE article_enrichments_v3")
+        connection.execute(
+            "CREATE INDEX idx_enrichments_content_generated "
+            "ON article_enrichments(content_version_id, generated_at DESC)"
+        )
+        connection.execute(
+            """CREATE TRIGGER article_enrichments_are_append_only_update
+               BEFORE UPDATE ON article_enrichments BEGIN
+                   SELECT RAISE(ABORT, 'article enrichments are append-only');
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER article_enrichments_are_append_only_delete
+               BEFORE DELETE ON article_enrichments BEGIN
+                   SELECT RAISE(ABORT, 'article enrichments are append-only');
+               END"""
+        )
         connection.execute("PRAGMA user_version = 3")
     connection.close()
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
     ).status()["schema_version"] == 3
 
+    from climate_registry.errors import RegistryInputError
+    from climate_registry.publication import migrate_publication
+    before = weekly_fixture.database.read_bytes()
+    legacy_ids = [item["article_id"] for item in api_server.RegistryReader(
+        weekly_fixture.database, repository_root=weekly_fixture.repository
+    ).articles()["items"]]
+    with pytest.raises(RegistryInputError, match="migrate-publication"):
+        weekly.weekly_sync(**weekly_fixture.arguments())
+    assert weekly_fixture.database.read_bytes() == before
+    assert api_server.RegistryReader(
+        weekly_fixture.database, repository_root=weekly_fixture.repository
+    ).status()["schema_version"] == 3
+    migrated = migrate_publication(
+        weekly_fixture.database, weekly_fixture.database.parent / "migration-backups", apply=True
+    )
+    migration_backup = Path(migrated["backup"])
+    assert migration_backup.read_bytes() == before
+    assert api_server.RegistryReader(
+        migration_backup, repository_root=weekly_fixture.repository
+    ).status()["schema_version"] == 3
+    assert [item["article_id"] for item in api_server.RegistryReader(
+        weekly_fixture.database, repository_root=weekly_fixture.repository
+    ).articles()["items"]] == legacy_ids
+    migrated_bytes = weekly_fixture.database.read_bytes()
     result = weekly.weekly_sync(**weekly_fixture.arguments())
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 19
+    ).status()["schema_version"] == 22
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 3
+    ).status()["schema_version"] == 22
+    assert backup.read_bytes() == migrated_bytes
 
 
 def test_expected_dry_run_sha_blocks_changed_identity_before_writes(weekly_fixture):
@@ -913,6 +998,15 @@ def test_dry_and_formal_no_op_still_validate_exact_live_membership(
     ]
 
 
+def _approve_weekly_fixture(database,source_dir,metadata_dir):
+    """Explicit fixture review follows capture; weekly capture itself stays pending."""
+    from climate_registry.annotations import load_article_annotations
+    from climate_registry.publication import stage_entities,_approve
+    with sqlite3.connect(database) as connection:
+        for sha in stage_entities(connection,annotations=load_article_annotations(metadata_dir),source_dir=source_dir):
+            _approve(connection,sha,{"basis":"explicit captured weekly fixture approval"},status="accepted_legacy")
+
+
 def test_full_monday_sync_reload_and_read_only_api_contract(
     weekly_fixture, monkeypatch
 ):
@@ -961,6 +1055,8 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
 
     empty_metadata = weekly_fixture.repository / "article_metadata"
     empty_metadata.mkdir()
+    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,empty_metadata)
+    before_api = weekly_fixture.database.read_bytes()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(weekly_fixture.database))
     monkeypatch.setenv(
         "CLIMATE_DELIVERY_OUTPUT_DIR", str(weekly_fixture.artifact_root)
@@ -1002,13 +1098,17 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
     assert payload["original_url"] == "https://example.com/target"
     assert payload["appearances"][0]["report_date"] == TARGET
     assert payload["appearances"][0]["pillar"] == "A"
-    assert payload["latest_fetch"]["fetch_status"] == "success"
+    assert "latest_fetch" not in payload
+    from climate_registry.read_api import RegistryReader
+    raw = RegistryReader(weekly_fixture.database,repository_root=weekly_fixture.repository,public=False)
+    assert raw.article(article_id)["latest_fetch"]["fetch_status"] == "success"
     assert payload["enrichment"]["generator"]["name"] == "climate-registry-rules"
     assert payload["source_annotation"] is None
 
     pdf = client.get(report_payload["report_pdf"]["download_url"])
     assert pdf.status_code == 200
     assert pdf.content.startswith(b"%PDF-")
+    assert weekly_fixture.database.read_bytes() == before_api
 
 
 def test_sha_binding_rejects_noncanonical_registry_filename_before_read(
@@ -1622,6 +1722,7 @@ def test_twenty_five_article_coverage_promotes_only_when_fully_resolved(
         "partial_with_validated_fallback" if fallback_count else "ok"
     )
 
+    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,metadata_dir)
     reader = api_server.RegistryReader(
         weekly_fixture.database,
         repository_root=weekly_fixture.repository,
@@ -1739,6 +1840,29 @@ def test_upstream_is_revalidated_after_network_before_backup_and_promotion(
     assert weekly_fixture.database.read_bytes() == before
     assert not weekly_fixture.backup_dir.exists()
     assert weekly_fixture.lock_file.is_file()
+
+
+def test_weekly_network_allows_parallel_pdf_replacement_without_lost_writes(weekly_fixture,tmp_path):
+    from climate_monitor.pdf_intake import import_pdf_reports
+    from climate_registry.pdf_intake import persist_pdf_intake
+    from reportlab.pdfgen.canvas import Canvas
+    pdf=tmp_path/"parallel.pdf";page=Canvas(str(pdf))
+    page.drawString(50,760,"Climate Risk Outlook");page.showPage()
+    page.drawString(50,760,"UPDATES");page.drawString(50,740,"Insurance transition evidence")
+    page.drawString(50,720,"REPORT COVERAGE");page.drawString(50,700,"Preserved parallel PDF observation.")
+    page.linkURL("https://pdf.example/parallel",(48,738,360,754),relative=0);page.showPage();page.save()
+    bundle=import_pdf_reports([pdf]);assert bundle["articles"]
+    class ConcurrentTransport(FakeTransport):
+        def request(self,*args,**kwargs):
+            persist_pdf_intake(weekly_fixture.database,tmp_path/"pdf-backups",bundle)
+            return super().request(*args,**kwargs)
+    result=weekly.weekly_sync(**weekly_fixture.arguments(transport=ConcurrentTransport()))
+    assert result["status"]=="ok" and result["promotion"]=="performed"
+    with sqlite3.connect(weekly_fixture.database) as connection:
+        assert connection.execute("SELECT count(*) FROM pdf_intake_documents").fetchone()[0]==1
+        assert connection.execute("SELECT count(*) FROM reports WHERE report_date=?",(TARGET,)).fetchone()[0]==1
+        assert connection.execute("SELECT count(*) FROM article_content_versions").fetchone()[0]==1
+        assert connection.execute("PRAGMA foreign_key_check").fetchall()==[]
 
 
 def test_external_annotation_catalog_change_blocks_before_backup(

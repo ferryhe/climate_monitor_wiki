@@ -224,6 +224,14 @@ def acquisition_state(root: Path):
 
 def claim_review(root: Path, packet: dict, *, session_id: str, execution_id: str,
     hermes_database: Path, reviewer: str, timeout_seconds=4500, now=None):
+    if packet.get("registry_database"):
+        from .publication import resolve_database
+        database = resolve_database(frozen=packet["registry_database"])
+        if packet.get("schema_version") in {"registry-final-review.v1","climate-acquisition-review.v1"}:
+            from .publication import require_review_information
+            import sqlite3
+            with sqlite3.connect(f"{database.as_uri()}?mode=ro",uri=True) as connection:
+                require_review_information(connection,packet)
     session, _ = native_events(hermes_database, session_id)
     if not execution_id or not reviewer or timeout_seconds < 1:
         raise ValueError("native execution identity and positive timeout are required")
@@ -271,12 +279,23 @@ def validate_claim(root, packet, token, *, now=None, recovery_receipt=None):
 def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *, error=None):
     from .acquisition import load_acquisition_batch
     from .errors import RegistryInputError
+    from .publication import resolve_database
+    database = resolve_database(frozen=binding["registry_database"])
     root = Path(binding_path).parent / "acquisition-review"
     with exclusive_lock(root, "review"):
         try:
-            loaded = load_acquisition_batch(binding["registry_database"], binding["acquisition_batch_id"])
+            loaded = load_acquisition_batch(database, binding["acquisition_batch_id"])
         except (KeyError, RegistryInputError, sqlite3.Error, OSError):
             loaded = {"items": [], "searches": []}
+        registry_candidates = {}
+        from .information_checks import _writer
+        from .publication import enabled, stage_entities
+        with _writer(database) as connection:
+            if enabled(connection):
+                stage_entities(connection)
+                registry_candidates = {row[0]: (row[1], row[2]) for row in connection.execute("""SELECT p.entity_id,c.candidate_sha256,c.snapshot_json
+                    FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.latest_candidate_sha256
+                    WHERE p.entity_kind='article'""")}
         candidates = []
         for item in loaded["items"]:
             if item["selection_status"] == "selected":
@@ -285,6 +304,14 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
                 atomic_write_bytes(body_path, (item.get("markdown_content") or "").encode())
                 candidates.append({"identity": item, "candidate_sha256": digest(item), "body_path": str(body_path.relative_to(root)),
                     "readable_text": freeze_readable(body_path.with_suffix(".readable.json"), item.get("markdown_content") or "")})
+                if item["article_id"] in registry_candidates:
+                    sha, encoded = registry_candidates[item["article_id"]]
+                    registry_path = root / "evidence" / (sha + ".registry.json")
+                    atomic_write_json(registry_path, json.loads(encoded))
+                    text = registry_path.read_text(encoding="utf-8")
+                    candidates[-1].update(registry_candidate_sha256=sha, registry_snapshot_path=str(registry_path.resolve()),
+                        registry_readable_text=freeze_readable(registry_path.with_suffix(".readable.json"), text),
+                        candidate_sha256=digest([item, sha]))
         packet = {"schema_version": "climate-acquisition-review.v1", "run_id": binding["run_id"],
             "registry_database": binding["registry_database"],
             "batch_id": binding["acquisition_batch_id"], "attempt": binding["attempt"],
@@ -308,8 +335,12 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
             packet["parent_context"] = state["packet"]["parent_context"]
         for candidate in candidates:
             old = previous_candidates.get(candidate["identity"]["acquisition_item_id"])
-            if old and digest(old["identity"]) == candidate["candidate_sha256"] and old.get("display"):
-                candidate.update(display=old["display"], revision=old["revision"], corrected_at=old.get("corrected_at"), candidate_sha256=old["candidate_sha256"])
+            if old and digest(old["identity"]) == digest(candidate["identity"]) and old.get("display"):
+                snapshot = json.loads(Path(candidate["registry_snapshot_path"]).read_text()) if candidate.get("registry_snapshot_path") else {}
+                if old.get("registry_candidate_sha256") == candidate.get("registry_candidate_sha256"):
+                    candidate.update(display=old["display"],revision=old["revision"],corrected_at=old.get("corrected_at"),candidate_sha256=old["candidate_sha256"])
+                elif snapshot.get("derived_display")==old["display"]:
+                    candidate.update(display=old["display"],revision=old["revision"],corrected_at=old.get("corrected_at"))
         revision = digest(packet)
         atomic_write_json(root / "packets" / (revision + ".json"), packet)
         current_sources = {row["source"]: digest(row) for row in packet["source_outcomes"]}
@@ -323,6 +354,53 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
         return state
 
 
+
+def refresh_acquisition_reviews(database: Path, runs_root: Path):
+    """Re-freeze completed original source packets after T1; retain every receipt."""
+    from .publication import resolve_database, require_review_information
+    from .acquisition import load_acquisition_batch
+    for state_path in sorted(Path(runs_root).glob("*/acquisition-review/state.json")):
+        state = json.loads(state_path.read_text())
+        packet = state["packet"]
+        if Path(packet["registry_database"]).resolve()!=database:
+            continue
+        resolve_database(frozen=packet["registry_database"])
+        root = state_path.parent
+        claim_path = root / "claim.json"
+        if claim_path.exists():
+            claim = json.loads(claim_path.read_text())
+            if not claim.get("released_at") and not owner_finished(claim):
+                continue
+        binding_path = root.parent / f"attempt-{packet['attempt']}.json"
+        if not binding_path.exists():
+            binding_path = root.parent / "binding.json"
+        payload_path = root.parent / f"attempt-{packet['attempt']}-acquisition.json"
+        if not binding_path.is_file() or not payload_path.is_file():
+            continue  # Unbound historical packets remain audit-only.
+        binding = json.loads(binding_path.read_text())
+        if digest(binding)!=packet["binding_sha256"]:
+            raise ValueError("source review binding changed")
+        attempt = json.loads(Path(packet["attempt_result_path"]).read_text())
+        runtime_path = root.parent / "runtime.json"
+        runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
+        if (attempt.get("run_id")!=packet["run_id"] or attempt.get("attempt")!=packet["attempt"]
+                or not attempt.get("finished_at") or runtime.get("state") in {"running","launching"}):
+            continue
+        payload = json.loads(payload_path.read_text())
+        loaded = load_acquisition_batch(database,packet["batch_id"])
+        if digest(payload)!=loaded["payload_sha256"]:
+            raise ValueError("source review payload changed")
+        with sqlite3.connect(f"{database.as_uri()}?mode=ro",uri=True) as connection:
+            current = dict(connection.execute("SELECT entity_id,latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article'"))
+            refreshed = {**packet,"candidates":[{**item,"registry_candidate_sha256":current.get(item["identity"]["article_id"])} for item in packet["candidates"]]}
+            try:
+                require_review_information(connection,refreshed)
+            except ValueError:
+                continue
+        if any(old.get("registry_candidate_sha256")!=new.get("registry_candidate_sha256") for old,new in zip(packet["candidates"],refreshed["candidates"])):
+            queue_acquisition_review(binding_path,binding,payload,error=packet.get("error"))
+
+
 def correct_candidate(root: Path, item_id: str, changes: dict, *, reason: str):
     """A display correction retains raw acquisition evidence and sibling approvals."""
     root = Path(root)
@@ -330,13 +408,36 @@ def correct_candidate(root: Path, item_id: str, changes: dict, *, reason: str):
         raise ValueError("only nonempty derived title/summary corrections are supported")
     with exclusive_lock(root, "review"):
         state = json.loads((root / "state.json").read_text())
+        from .publication import resolve_database
+        database = resolve_database(frozen=state["packet"]["registry_database"])
         candidate = next((c for c in state["packet"]["candidates"] if c["identity"]["acquisition_item_id"] == item_id), None)
         if not candidate:
             raise ValueError("candidate is not in this review packet")
         candidate["display"] = {**candidate.get("display", {}), **changes}
         candidate["revision"] = candidate.get("revision", 1) + 1
         candidate["corrected_at"] = now_stamp()
-        candidate["candidate_sha256"] = digest([candidate["identity"], candidate["display"]])
+        if candidate.get("registry_candidate_sha256"):
+            from .publication import snapshot_entity, stage_snapshot
+            from .information_checks import _writer
+            with _writer(database) as connection:
+                item = candidate["identity"]
+                fields = {field: item.get(field) for field in ("title", "summary", "publication_date")}
+                fields["content"] = item.get("markdown_content") or ""
+                fields.update(candidate["display"])
+                record_knowledge(connection, kind="article", entity_id=item["article_id"], source_kind=item["discovery_kind"],
+                    source_ref=item_id, fields=fields, evidence={"correction_reason": reason, "content_sha256": item["content_sha256"]},
+                    recorded_at=candidate["corrected_at"])
+                snapshot = snapshot_entity(connection, "article", item["article_id"])
+                snapshot["derived_display"] = candidate["display"]
+                sha = stage_snapshot(connection, snapshot)
+            registry_path = root / "evidence" / (sha + ".registry.json")
+            atomic_write_json(registry_path, snapshot)
+            text = registry_path.read_text(encoding="utf-8")
+            candidate.update(registry_candidate_sha256=sha, registry_snapshot_path=str(registry_path.resolve()),
+                registry_readable_text=freeze_readable(registry_path.with_suffix(".readable.json"), text))
+            candidate["candidate_sha256"] = digest([candidate["identity"], sha])
+        else:
+            candidate["candidate_sha256"] = digest([candidate["identity"], candidate["display"]])
         state["item_reviews"].pop(item_id, None)
         state["history"].append({"status": "candidate_corrected", "item_id": item_id, "reason": reason,
             "revision": candidate["revision"], "candidate_sha256": candidate["candidate_sha256"]})
@@ -355,6 +456,8 @@ def review_acquisition(root: Path, token: str, conclusions: dict, *, now=None):
     with exclusive_lock(root, "review"):
         state = json.loads((root / "state.json").read_text())
         packet = state["packet"]
+        from .publication import resolve_database
+        database = resolve_database(frozen=packet["registry_database"])
         claim, events = validate_claim(root, packet, token, now=now)
         inspections, proposal_evidence = [], []
         reviews = conclusions.get("items", {})
@@ -370,13 +473,29 @@ def review_acquisition(root: Path, token: str, conclusions: dict, *, now=None):
                 raise ValueError("review reason is required")
             if review["status"] == "pass":
                 if not (item["processing_status"] == "complete" and item["fetch_status"] == "success"
-                    and item["content_version_id"] and item["publication_date_evidence"] and item["date_status"] == "eligible"):
+                    and item["content_version_id"] and item["date_status"] == "eligible"):
                     raise ValueError("failed/incomplete candidate cannot pass")
                 inspected = read_verified_text(events, root / candidate["body_path"], item["markdown_content"], candidate.get("readable_text"))
+                if candidate.get("registry_candidate_sha256"):
+                    path = Path(candidate["registry_snapshot_path"])
+                    text = path.read_text(encoding="utf-8")
+                    if digest(json.loads(text)) != candidate["registry_candidate_sha256"]:
+                        raise ValueError("Registry candidate snapshot changed")
+                    registry_inspected = read_verified_text(events, path, text, candidate.get("registry_readable_text"))
+                    from .information_checks import _writer
+                    from .publication import _approve, stage_entities, resolve_database
+                    with _writer(database) as connection:
+                        stage_entities(connection)
+                        receipt = {"claim": claim, "conclusion": review, "inspection": registry_inspected, "events_sha256": digest(events)}
+                        try:
+                            _approve(connection, candidate["registry_candidate_sha256"], receipt)
+                        except ValueError as exc:
+                            _approve(connection, candidate["registry_candidate_sha256"], {**receipt, "final_check_error": str(exc)}, status="needs_correction")
+                            review = {**review, "status": "needs_correction", "reason": str(exc)}
                 inspections.append({"acquisition_item_id": key, "candidate_sha256": candidate["candidate_sha256"], "event": inspected})
                 review = {**review, "inspection_sha256": digest(inspected)}
             state["item_reviews"][key] = {**review, "approved_at": (now or datetime.now(timezone.utc)).isoformat(),
-                "raw_candidate_sha256": digest(item), "display": candidate.get("display", {}),
+                "raw_candidate_sha256": digest(item), "registry_candidate_sha256": candidate.get("registry_candidate_sha256"), "display": candidate.get("display", {}),
                 "candidate_revision": candidate.get("revision", 1),
                 "corrected_at": candidate.get("corrected_at"),
                 "reviewer": claim["reviewer"], "session_id": claim["session_id"], "run_id": packet["run_id"],
@@ -453,6 +572,8 @@ def recover_acquisition(root: Path, token: str, service, *, now=None):
     root = Path(root)
     with exclusive_lock(root, "review"):
         state = json.loads((root / "state.json").read_text())
+        from .publication import resolve_database
+        resolve_database(frozen=state["packet"]["registry_database"])
         receipt = next((value for value in reversed(state["history"])
             if value.get("claim", {}).get("token") == token), None) if state["status"] in {"pending_review", "reviewing", "reviewed_partial"} else None
         claim, events = validate_claim(root, state["packet"], token, now=now, recovery_receipt=receipt)
@@ -497,7 +618,7 @@ def recover_acquisition(root: Path, token: str, service, *, now=None):
 def activate_approved(root: Path, *, queue_dir: Path, database: Path, repository_root: Path):
     """Queue only current approved candidates; the existing sole writer activates."""
     from .acquisition import load_acquisition_batch
-    from .web_ingest_pipeline import _batch_items, _manifest_item, _job_dir, _status_path, read_web_activation_request, REVIEW_REQUEST_SCHEMA
+    from .web_ingest_pipeline import _batch_items, _manifest_item, _job_dir, _status_path, read_web_activation_request, preflight_web_activation, REVIEW_REQUEST_SCHEMA
     from .pdf_pipeline import _snapshot_registry, _external
     root = Path(root)
     queue_dir = _external(queue_dir, repository_root)
@@ -505,6 +626,9 @@ def activate_approved(root: Path, *, queue_dir: Path, database: Path, repository
     with exclusive_lock(root, "review"):
         state = json.loads((root / "state.json").read_text())
         packet = state["packet"]
+        from .publication import resolve_database
+        if database != resolve_database(frozen=packet["registry_database"]):
+            raise ValueError("activation database differs from the frozen task binding")
         loaded = {item["acquisition_item_id"]: item for item in load_acquisition_batch(database, packet["batch_id"])["items"]}
         approvals = {key: value for key, value in state["item_reviews"].items() if value["status"] == "pass"}
         if not approvals:
@@ -512,7 +636,11 @@ def activate_approved(root: Path, *, queue_dir: Path, database: Path, repository
         for key, review in approvals.items():
             if key not in loaded or digest(loaded[key]) != review["raw_candidate_sha256"]:
                 raise ValueError("changed candidate must be independently reviewed again")
-        if any(review.get("display") for review in approvals.values()):
+        request_id = "review-" + digest([packet["batch_id"], approvals])[:32]
+        job = _job_dir(queue_dir, request_id)
+        if (job / "request.json").exists() or _status_path(queue_dir, request_id).exists():
+            preflight_web_activation(queue_dir, request_id, database)
+        if any(review.get("display") for review in approvals.values()) and not any(c.get("registry_candidate_sha256") for c in packet["candidates"]):
             from .persistent import _exclusive_database_lock
             from .acquisition import _open_database
             with _exclusive_database_lock(database):
@@ -531,9 +659,9 @@ def activate_approved(root: Path, *, queue_dir: Path, database: Path, repository
                                     recorded_at=review["corrected_at"])
                 finally:
                     connection.close()
-        request_id = "review-" + digest([packet["batch_id"], approvals])[:32]
-        job = _job_dir(queue_dir, request_id)
         with exclusive_lock(queue_dir, request_id):
+            if (job / "request.json").exists():
+                preflight_web_activation(queue_dir, request_id, database)
             if not (job / "request.json").exists():
                 job.mkdir(parents=True, exist_ok=True)
                 snapshot = job / "registry.sqlite3"
@@ -545,7 +673,7 @@ def activate_approved(root: Path, *, queue_dir: Path, database: Path, repository
                     raise ValueError("approved subset lacks indexable evidence")
                 request = {"schema_version": REVIEW_REQUEST_SCHEMA, "batch_id": request_id,
                     "source_batch_id": packet["batch_id"], "frozen_payload_sha256": state["packet_sha256"],
-                    "registry_snapshot": "registry.sqlite3", "registry_sha256": snapshot_sha,
+                    "registry_snapshot": "registry.sqlite3", "registry_sha256": snapshot_sha, "source_registry_database": str(database.resolve()),
                     "web_items": items, "created_at": now_stamp()}
                 atomic_write_json(job / "request.json", request)
                 atomic_write_json(_status_path(queue_dir, request_id), {"batch_id": request_id,

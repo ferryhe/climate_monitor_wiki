@@ -782,49 +782,66 @@ class WikiKnowledgeBase:
         self._load()
 
     def _load(self) -> None:
-        if not self.wiki_dir.exists():
-            raise FileNotFoundError(f"Wiki directory not found: {self.wiki_dir}")
-
-        wiki_docs, wiki_chunks = self._load_directory(
-            self.wiki_dir, "wiki", path_root="wiki"
-        )
-        if self.wiki_overlay_dir is not None:
-            overlay_docs, _ = self._load_directory(
-                self.wiki_overlay_dir, "wiki", path_root="wiki"
+        configured_registry = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+        pages, self.public_registry_revision = None, None
+        self.public_registry_unavailable = False
+        if configured_registry:
+            from climate_registry.publication import public_wiki_snapshot
+            from climate_registry.read_api import RegistryContractError, RegistryUnavailableError
+            try:
+                pages, self.public_registry_revision = public_wiki_snapshot(configured_registry, wiki_dir=self.wiki_dir)
+            except (RegistryContractError, RegistryUnavailableError, OSError, ValueError):
+                # A configured but unavailable Registry must not expose disk/source history.
+                pages = {}
+                self.public_registry_unavailable = True
+        if pages is None:
+            if not self.wiki_dir.exists():
+                raise FileNotFoundError(f"Wiki directory not found: {self.wiki_dir}")
+            wiki_docs, wiki_chunks = self._load_directory(
+                self.wiki_dir, "wiki", path_root="wiki"
             )
-            overlay_paths = {doc.path for doc in overlay_docs}
-            base_by_path = {doc.path: doc for doc in wiki_docs}
-            merged_overlay_docs = []
-            for overlay_doc in overlay_docs:
-                base_doc = base_by_path.get(overlay_doc.path)
-                merged = (
-                    merge_registry_runtime_markdown(
-                        overlay_doc.file, base_doc.markdown, overlay_doc.markdown
-                    )
-                    if base_doc is not None
-                    else None
+            if self.wiki_overlay_dir is not None:
+                overlay_docs, _ = self._load_directory(
+                    self.wiki_overlay_dir, "wiki", path_root="wiki"
                 )
-                merged_overlay_docs.append(
-                    self._document_from_markdown(
-                        self.wiki_overlay_dir / overlay_doc.file,
-                        merged,
-                        "wiki",
-                        path_root="wiki",
+                overlay_paths = {doc.path for doc in overlay_docs}
+                base_by_path = {doc.path: doc for doc in wiki_docs}
+                merged_overlay_docs = []
+                for overlay_doc in overlay_docs:
+                    base_doc = base_by_path.get(overlay_doc.path)
+                    merged = (
+                        merge_registry_runtime_markdown(
+                            overlay_doc.file, base_doc.markdown, overlay_doc.markdown
+                        )
+                        if base_doc is not None
+                        else None
                     )
-                    if merged is not None
-                    else overlay_doc
-                )
-            wiki_docs = [
-                doc for doc in wiki_docs if doc.path not in overlay_paths
-            ] + merged_overlay_docs
-            wiki_chunks = [
-                chunk for chunk in wiki_chunks if chunk.path not in overlay_paths
-            ] + [
-                chunk
-                for doc in merged_overlay_docs
-                for chunk in self._chunk_document(doc)
-            ]
-        source_docs, source_chunks = self._load_directory(self.source_dir, "source")
+                    merged_overlay_docs.append(
+                        self._document_from_markdown(
+                            self.wiki_overlay_dir / overlay_doc.file,
+                            merged,
+                            "wiki",
+                            path_root="wiki",
+                        )
+                        if merged is not None
+                        else overlay_doc
+                    )
+                wiki_docs = [
+                    doc for doc in wiki_docs if doc.path not in overlay_paths
+                ] + merged_overlay_docs
+                wiki_chunks = [
+                    chunk for chunk in wiki_chunks if chunk.path not in overlay_paths
+                ] + [
+                    chunk
+                    for doc in merged_overlay_docs
+                    for chunk in self._chunk_document(doc)
+                ]
+            source_docs, source_chunks = self._load_directory(self.source_dir, "source")
+        else:
+            wiki_docs = [self._document_from_markdown(self.wiki_dir / name, markdown, "wiki", path_root="wiki")
+                for name, markdown in sorted(pages.items())]
+            wiki_chunks = [chunk for doc in wiki_docs for chunk in self._chunk_document(doc)]
+            source_docs, source_chunks = [], []
 
         registry_markdown = deduplicate_registry_pdf_markdown({
             doc.file: doc.markdown for doc in wiki_docs if is_registry_runtime_path(doc.file)})
@@ -1488,6 +1505,17 @@ class AgenticWikiResponder:
             raise ValueError(f"Unsupported answer mode: {answer_mode}")
 
         planned_queries = self._plan_queries(question, history or [], language, answer_mode)
+        configured_registry = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+        if configured_registry:
+            from climate_registry.publication import public_revision
+            from climate_registry.read_api import RegistryContractError, RegistryUnavailableError
+            try:
+                revision = public_revision(configured_registry)
+            except (RegistryContractError, RegistryUnavailableError, OSError, ValueError):
+                self.kb.reload()
+            else:
+                if revision != self.kb.public_registry_revision or self.kb.public_registry_unavailable:
+                    self.kb.reload()
         requested_dates = _requested_dates(question, self.kb.latest_date)
         report_dates = self.kb.reports_in_window(requested_dates)
         hits: list[SearchHit] = []

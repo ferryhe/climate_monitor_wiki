@@ -232,12 +232,8 @@ def frozen_site_skill_hints(binding: Mapping[str, Any]) -> dict[str, str]:
 
 def default_task_definition() -> dict[str, Any]:
     from climate_monitor.config import load_sources
-    from climate_registry.persistent import initialize_registry
-
     root = Path(__file__).resolve().parents[1]
-    database = root / "output" / "climate_registry.sqlite3"
     run_root = root / "output" / "acquisition-runs"
-    initialize_registry(database)
     run_root.mkdir(parents=True, exist_ok=True)
 
     prompts = {
@@ -266,7 +262,6 @@ def default_task_definition() -> dict[str, Any]:
             "model": "gpt-5.6-luna",
         },
         "runtime": {
-            "registry_database": str(database),
             "run_root": str(run_root),
         },
         "taxonomy": {
@@ -364,24 +359,10 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("provider and model must both be absent or non-empty strings")
     provider, model = params.get("provider", "").strip(), params.get("model", "").strip()
     runtime = value.get("runtime")
-    if not isinstance(runtime, Mapping) or set(runtime) != {"registry_database", "run_root"}:
-        raise ValueError("runtime must contain only registry_database and run_root")
+    if not isinstance(runtime, Mapping) or set(runtime) not in ({"run_root"}, {"registry_database", "run_root"}):
+        raise ValueError("runtime must contain run_root; historical registry_database is audit only")
     if not all(str(runtime.get(key, "")).strip() for key in runtime):
         raise ValueError("runtime paths are required")
-    database = _canonical_regular_file(runtime["registry_database"], "registry database")
-    try:
-        connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
-        try:
-            schema_version = validate_registry_contract(connection)
-        finally:
-            connection.close()
-    except (sqlite3.Error, RegistryInputError) as exc:
-        raise ValueError(f"registry database contract is invalid: {exc}") from exc
-    if schema_version < ACQUISITION_WRITER_SCHEMA_VERSION:
-        raise ValueError(
-            f"registry database must use schema {ACQUISITION_WRITER_SCHEMA_VERSION} or later; "
-            f"found {schema_version}"
-        )
     run_root = _canonical_directory(runtime["run_root"], "run root")
     taxonomy = value.get("taxonomy")
     taxonomy_fields = {"schema_version", "path", "version"}
@@ -462,7 +443,7 @@ def validate_task_definition(value: Mapping[str, Any]) -> dict[str, Any]:
             **({"provider": provider} if "provider" in params else {}),
             **({"model": model} if "model" in params else {}),
         },
-        "runtime": {"registry_database": str(database), "run_root": str(run_root)},
+        "runtime": {"run_root": str(run_root)},
         "taxonomy": {key: str(taxonomy[key]).strip() for key in ("schema_version", "path", "version")},
         "prompts": normalized_prompts,
         "meeting": normalized_meeting,
@@ -771,6 +752,17 @@ def build_task_binding(
         raw_definition["parameters"].pop(key, None)
         normalized["parameters"].pop(key, None)
     execution_definition = raw_definition if definition_sha256 is not None else normalized
+    from climate_registry.publication import resolve_database
+    configured_database = _canonical_regular_file(resolve_database(), "registry database")
+    connection = sqlite3.connect(f"{configured_database.as_uri()}?mode=ro", uri=True)
+    try:
+        schema_version = validate_registry_contract(connection)
+    except (sqlite3.Error,RegistryInputError) as exc:
+        raise ValueError(f"registry database contract is invalid: {exc}") from exc
+    finally:
+        connection.close()
+    if schema_version < ACQUISITION_WRITER_SCHEMA_VERSION:
+        raise ValueError(f"registry database must use schema {ACQUISITION_WRITER_SCHEMA_VERSION} or later; found {schema_version}; run migrate-publication --apply")
     view = definition_view(normalized, version=task_version)
     parameters = normalized["parameters"]
     frozen_at = created_at or _utc_now()
@@ -834,7 +826,8 @@ def build_task_binding(
         "acquisition_lineage_id": f"acq-{run_id}",
         "acquisition_batch_id": f"acq-{run_id}-attempt-{attempt}",
         "checkpoint_dir": str(run_root / run_id / "checkpoint"),
-        "registry_database": normalized["runtime"]["registry_database"],
+        "registry_database": str(configured_database),
+        "registry_routing": "environment",
         "frozen_report_input": str(run_root / run_id / "frozen-report-input.json"),
         "report_inputs": managed_report_inputs(normalized, run_id),
         "definition": execution_definition,
@@ -993,6 +986,8 @@ class ManagementService:
     def start_meetings(self, run_id: str, *, retry_failed: bool = False) -> dict[str, Any]:
         """Start meeting extraction for an already stored acquisition batch."""
         acquisition = self.binding(run_id)
+        from climate_registry.publication import resolve_database
+        resolve_database(frozen=acquisition["registry_database"])
         meeting = acquisition.get("meeting") or {"enabled": False}
         if not retry_failed and not meeting["enabled"]:
             raise RuntimeError("meeting module is disabled in the frozen acquisition task version")
@@ -1121,7 +1116,8 @@ class ManagementService:
         from climate_monitor.meetings import meeting_status
 
         loaded = self.store.load()
-        database = loaded["definition"]["runtime"]["registry_database"]
+        from climate_registry.publication import resolve_database
+        database = str(resolve_database())
         context = {
             "meeting_enabled": loaded["definition"]["meeting"]["enabled"],
             "target_batch_id": None,
@@ -1198,7 +1194,7 @@ class ManagementService:
         binding["execution_mode"] = execution_mode
         if acquisition_kind != "report":
             binding.update(acquisition_kind=acquisition_kind,
-                activation_policy="acquisition_review" if acquisition_kind == "website_rotation" else "existing_validated",
+                activation_policy="acquisition_review",
                 rotation=rotation, task_definition_sha256=loaded["hashes"]["definition_sha256"])
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
@@ -1371,6 +1367,10 @@ class ManagementService:
             if not original_path.exists():
                 raise KeyError(f"run {run_id} not found")
             original = json.loads(original_path.read_text(encoding="utf-8"))
+            from climate_registry.publication import resolve_database
+            resolve_database(frozen=original["registry_database"])
+            from climate_registry.acquisition import _open_database
+            _open_database(original["registry_database"], acquisition_writer=True).close()
             from climate_monitor.hermes_identity import load_snapshot
             load_snapshot(self._run_dir(run_id), original.get("hermes_snapshot"))
             current = self.binding(run_id)

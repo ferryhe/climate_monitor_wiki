@@ -2,6 +2,7 @@
 import hashlib
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,12 +19,53 @@ from climate_delivery.io import atomic_write_json
 from climate_delivery.templates.adapters import adapt_range_report
 from dataclasses import asdict
 from climate_monitor import schedule
+from test_issue113_range_reports import _approve_public_fixture
+
+
+@pytest.fixture(autouse=True)
+def historical_activation_contract(request,monkeypatch):
+    # These cases exercise frozen schema20 two-database activation history.
+    # Current canonical v21 review/publishing has separate direct regressions.
+    if request.node.originalname not in {
+        "test_first_ingestion_in_window_survives_current_update_after_cutoff",
+        "test_unchanged_meeting_preserves_pdf_provenance_and_true_import",
+    }:return
+    from climate_registry.schema import apply_migrations as real
+    import climate_registry.pdf_intake as storage
+    import climate_registry.information_checks as checks
+    import climate_registry.persistent as persistent
+    import climate_monitor.meetings as meetings
+    import climate_registry.publication as publication
+    from test_information_checks import legacy_schema_writer,legacy_pdf_binding
+    import climate_registry.pdf_pipeline as pipeline
+    monkeypatch.setattr(pipeline,"_validate_pdf_binding",legacy_pdf_binding)
+    monkeypatch.setattr(publication,"require_publication_migration",legacy_schema_writer)
+    def migrate(connection,*,target_version=None):
+        return real(connection,target_version=20 if target_version is None else target_version)
+    monkeypatch.setattr(sys.modules[__name__],"apply_migrations",migrate)
+    monkeypatch.setattr(storage,"apply_migrations",migrate)
+    monkeypatch.setattr(storage,"LATEST_SCHEMA_VERSION",20)
+    monkeypatch.setattr(checks,"apply_migrations",migrate)
+    monkeypatch.setattr(persistent,"apply_migrations",migrate)
+    monkeypatch.setattr(meetings,"SCHEMA_VERSION",20)
+
+
+
+def _queue_after_actual_information(binding_path,binding,payload,**kwargs):
+    # Real terminal T1 attempts precede the existing native T10 fixture review.
+    from test_registry_publication import _complete_fixture_information
+    from climate_registry.acquisition_review import queue_acquisition_review
+    from climate_registry.acquisition import load_acquisition_batch
+    loaded=load_acquisition_batch(binding["registry_database"],binding["acquisition_batch_id"])
+    ids={item["article_id"] for item in loaded["items"] if item["selection_status"]=="selected"}
+    _complete_fixture_information(Path(binding["registry_database"]),entity_ids=ids)
+    return queue_acquisition_review(binding_path,binding,payload,**kwargs)
 
 
 def test_transaction_times_ignore_retries_and_check_metadata():
     db = sqlite3.connect(":memory:")
     apply_migrations(db)
-    assert validate_registry_contract(db) == 19
+    assert validate_registry_contract(db) == 22
     for ref, when, text in (("first", "2026-09-29T02:00:00Z", "same"),
                            ("retry", "2026-10-02T02:00:00Z", "same"),
                            ("check", "2026-10-04T02:00:00Z", "changed")):
@@ -66,11 +108,12 @@ def _native(path, session, packet=None):
 def _report(tmp_path):
     from test_issue113_range_reports import _database
     from climate_registry.read_api import RegistryReader
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=22)
     with sqlite3.connect(database) as db:
         record_knowledge(db, kind="article", entity_id="article-a", source_kind="site", source_ref="a-1",
             fields={"title": "old original", "publication_date": "2020-01-01"}, evidence={"content_version_id": "content-article-a"},
             recorded_at="2026-09-30T12:00:00Z")
+    _approve_public_fixture(database)
     reader = RegistryReader(database, repository_root=tmp_path / "application")
     from climate_registry.web_ingest_pipeline import _batch_items, _manifest_item
     manifest = {"web_items": [_manifest_item(i) for i in _batch_items(database, "batch") if i["acquisition_item_id"] == "a-1"],
@@ -165,13 +208,13 @@ def test_public_detail_and_list_pin_old_active_version(tmp_path, monkeypatch):
     from climate_registry.read_api import RegistryReader
     from climate_registry.web_ingest_pipeline import _batch_items, _manifest_item
     import api_server
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=20)
     identity = next(_manifest_item(i) for i in _batch_items(database, "batch") if i["acquisition_item_id"] == "a-1")
     _pending_version(database)
     reader = RegistryReader(database, repository_root=tmp_path / "application")
     public_path = tmp_path / "public"
     public_path.mkdir()
-    public = RegistryReader(_database(public_path), repository_root=tmp_path / "application")
+    public = RegistryReader(_database(public_path,target_version=20), repository_root=tmp_path / "application")
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (reader, None, {"web_items": [identity], "pdf_occurrence_ids": []}))
     monkeypatch.setattr(api_server, "_registry_reader", lambda: public)
     monkeypatch.setattr(api_server, "registry_pdf_articles", lambda **kw: {"items": [], "pagination": {"page": 1, "page_size": 100, "total": 0, "pages": 0}})
@@ -184,17 +227,18 @@ def test_public_detail_and_list_pin_old_active_version(tmp_path, monkeypatch):
     assert api_server.registry_articles(include_pdf=True, query="PendingTitle")["items"] == []
 
 
-def test_t10_partial_approval_correction_and_writer_request(tmp_path):
+def test_t10_partial_approval_correction_and_writer_request(tmp_path,monkeypatch):
     from test_issue113_range_reports import _database
     from climate_registry import acquisition_review as review
     from climate_registry.web_ingest_pipeline import read_web_activation_request
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=22)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     run = tmp_path / "run"
     run.mkdir()
     binding = {"registry_database": str(database), "run_id": "run", "acquisition_batch_id": "batch",
         "attempt": 1, "task_version": 3, "source_keys": ["example"]}
     atomic_write_json(run / "attempt-1-result.json", {"run_id": "run", "attempt": 1, "finished_at": "2026-10-06T12:00:00Z"})
-    state = review.queue_acquisition_review(run / "binding.json", binding, {"source_outcomes": []})
+    state = _queue_after_actual_information(run / "binding.json", binding, {"source_outcomes": []})
     native = tmp_path / "hermes.db"
     _native(native, "cron_t10_first")
     with sqlite3.connect(native) as db:
@@ -203,6 +247,11 @@ def test_t10_partial_approval_correction_and_writer_request(tmp_path):
             db.execute("INSERT INTO messages(session_id,role,tool_calls) VALUES('cron_t10_first','assistant',?)", (json.dumps([{
                 "id": key, "function": {"name": "read_file", "arguments": json.dumps({"path": str((run / "acquisition-review" / candidate["body_path"]).resolve())})}}]),))
             db.execute("INSERT INTO messages(session_id,role,tool_call_id,tool_name,content) VALUES('cron_t10_first','tool',?,'read_file',?)", (key, candidate["identity"]["markdown_content"]))
+            if candidate.get("registry_snapshot_path"):
+                path=Path(candidate["registry_snapshot_path"])
+                call=key+"-registry"
+                db.execute("INSERT INTO messages(session_id,role,tool_calls) VALUES('cron_t10_first','assistant',?)", (json.dumps([{"id":call,"function":{"name":"read_file","arguments":json.dumps({"path":str(path)})}}]),))
+                db.execute("INSERT INTO messages(session_id,role,tool_call_id,tool_name,content) VALUES('cron_t10_first','tool',?,'read_file',?)",(call,path.read_text(encoding="utf-8")))
     at = datetime(2026, 10, 6, 12, 10, tzinfo=timezone.utc)
     claim = review.claim_acquisition(run / "acquisition-review", session_id="cron_t10_first", execution_id="first",
         hermes_database=native, reviewer="reviewer", now=at)
@@ -220,13 +269,38 @@ def test_t10_partial_approval_correction_and_writer_request(tmp_path):
     from climate_registry.pdf_pipeline import load_active_projection, load_projection_manifest
     from test_issue181_ingest_only import _ack
     runtime = tmp_path / "runtime"
-    failed = WebIngestPipeline(queue, Path(request["registry_snapshot_path"]), runtime,
+    failed = WebIngestPipeline(queue, database, runtime,
         lambda _: (_ for _ in ()).throw(RuntimeError("reload unavailable")), repository_root=tmp_path / "application").process(request["batch_id"])
     assert failed["stage"] == "failed" and failed["indexed"]
     # Preserve the same immutable request and retry activation without reacquisition.
     retried = review.activate_approved(run / "acquisition-review", queue_dir=queue, database=database, repository_root=tmp_path / "application")
     assert retried["registry_sha256"] == request["registry_sha256"]
-    ready = WebIngestPipeline(queue, Path(request["registry_snapshot_path"]), runtime, _ack(queue),
+    # A real approved activation retry must check its saved binding before an
+    # unavailable snapshot can consume that retry or overwrite review history.
+    request_path = next((queue / "web").glob("*/request.json"))
+    snapshot_path = request_path.parent / "registry.sqlite3"
+    saved_request, saved_snapshot = request_path.read_bytes(), snapshot_path.read_bytes()
+    other = tmp_path / "other.sqlite3"
+    other.write_bytes(database.read_bytes())
+    for artifact in ("missing", "corrupt"):
+        if artifact == "missing": snapshot_path.unlink()
+        else: snapshot_path.write_bytes(b"unavailable historical snapshot")
+        for has_binding in (True, False):
+            stored = json.loads(saved_request)
+            if not has_binding: stored.pop("source_registry_database")
+            atomic_write_json(request_path, stored)
+            for selected in (database, other):
+                monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(selected))
+                if has_binding and selected == database: continue
+                files = lambda: {str(p): p.read_bytes() for directory in (run, queue, runtime) for p in directory.rglob("*") if p.is_file()}
+                before, old_bytes, new_bytes = files(), database.read_bytes(), other.read_bytes()
+                with pytest.raises(ValueError, match="frozen task binding" if selected == other else "no frozen Registry binding"):
+                    review.activate_approved(run / "acquisition-review", queue_dir=queue, database=database, repository_root=tmp_path / "application")
+                assert files() == before and database.read_bytes() == old_bytes and other.read_bytes() == new_bytes
+        request_path.write_bytes(saved_request)
+        snapshot_path.write_bytes(saved_snapshot)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    ready = WebIngestPipeline(queue, database, runtime, _ack(queue),
         repository_root=tmp_path / "application").process(request["batch_id"])
     assert ready["chat_ready"], ready["error"]
     revised = review.correct_candidate(run / "acquisition-review", "a-1", {"summary": "Derived correction"}, reason="Actual evidence correction")
@@ -234,7 +308,7 @@ def test_t10_partial_approval_correction_and_writer_request(tmp_path):
     request2 = review.activate_approved(run / "acquisition-review", queue_dir=queue, database=database, repository_root=tmp_path / "application")
     assert {i["acquisition_item_id"] for i in request2["web_items"]} == {"b-1"}
     assert request2["batch_id"] != request["batch_id"]
-    ready = WebIngestPipeline(queue, Path(request2["registry_snapshot_path"]), runtime, _ack(queue),
+    ready = WebIngestPipeline(queue, database, runtime, _ack(queue),
         repository_root=tmp_path / "application").process(request2["batch_id"])
     assert ready["chat_ready"], ready["error"]
     generation, metadata = load_active_projection(runtime, queue / "active.json")
@@ -325,15 +399,16 @@ def test_report_freeze_is_immutable_and_substantive_update_is_selected(tmp_path)
     assert (root / "reports" / "2026-10-12" / "snapshot.json").read_bytes() == before
     # This still-unarchived source was eligible in the previous period. Its new
     # supported change is selected in its real period, never assigned a fake date.
+    _approve_public_fixture(database)
     newer = report_review.freeze_biweekly(reader, root, occurrence="2026-10-26")
     assert newer["status"] == "pending_review"
     snapshot = json.loads((root / "reports" / "2026-10-26" / "snapshot.json").read_text())
     assert any(v["selection_reason"] == "substantive_update" for v in snapshot["material_versions"])
 
 
-def test_late_review_preserves_real_ingestion_and_original_publication(tmp_path):
+def test_late_review_preserves_real_ingestion_and_original_publication(tmp_path,monkeypatch):
     from test_issue113_range_reports import _database
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=22)
     from climate_registry.read_api import RegistryReader
     from climate_registry.web_ingest_pipeline import _batch_items, _manifest_item
     database = tmp_path / "registry.sqlite3"
@@ -344,6 +419,11 @@ def test_late_review_preserves_real_ingestion_and_original_publication(tmp_path)
         record_knowledge(db, kind="article", entity_id=raw["article_id"], source_kind="site", source_ref="a-1",
             fields={"title":raw["title"],"summary":raw["summary"],"publication_date":raw["publication_date"],"content":raw["markdown_content"]},
             evidence={"content_version_id":raw["content_version_id"]},recorded_at="2026-09-30T12:00:00Z")
+    from climate_registry import publication
+    from test_registry_publication import _approve_native_packet
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
+    monkeypatch.setattr(publication,"now_stamp",lambda:"2026-10-20T12:00:00Z")
+    _approve_native_packet(database,tmp_path/"final-review",tmp_path/"native-final.db","cron_late_review")
     item["review"] = {"status":"pass","approved_at": "2026-10-20T12:00:00Z"}
     state = report_review.freeze_biweekly(reader, tmp_path / "artifacts", occurrence="2026-10-26",
         web_reader=reader, manifest={"web_items": [item], "pdf_occurrence_ids": [], "pdf_calendar_occurrence_ids": []},
@@ -360,11 +440,12 @@ def test_late_review_preserves_real_ingestion_and_original_publication(tmp_path)
 def test_new_york_window_includes_start_excludes_end_and_has_dst_calendar_days(tmp_path):
     from test_issue113_range_reports import _database
     from climate_registry.read_api import RegistryReader
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=22)
     for entity, ref, at in (("article-a", "a-1", "2026-10-26T04:00:00Z"), ("article-b", "b-1", "2026-11-09T05:00:00Z")):
         with sqlite3.connect(database) as db:
             record_knowledge(db, kind="article", entity_id=entity, source_kind="site", source_ref=ref,
                 fields={"summary": entity}, evidence={}, recorded_at=at)
+    _approve_public_fixture(database)
     root = tmp_path / "artifacts"
     reader = RegistryReader(database, repository_root=tmp_path / "application")
     report_review.freeze_biweekly(reader, root, occurrence="2026-11-09")
@@ -376,6 +457,32 @@ def test_new_york_window_includes_start_excludes_end_and_has_dst_calendar_days(t
     empty = report_review.freeze_biweekly(reader, root, occurrence="2026-12-07")
     assert empty["status"] == "no_eligible_information" and empty["revision"] == 0
     assert not (root / "reports" / "2026-12-07" / "revisions").exists()
+
+
+def test_metadata_only_material_uses_all_approved_sources_for_selected_body(tmp_path,monkeypatch):
+    from test_issue113_range_reports import _database
+    from test_registry_publication import _approve_native_packet
+    from climate_registry.read_api import RegistryReader
+    database=_database(tmp_path,target_version=22)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE articles SET display_policy='metadata_only' WHERE article_id='article-a'")
+        record_knowledge(db,kind="article",entity_id="article-a",source_kind="site",source_ref="a-1",
+            fields={"summary":"Supported metadata-only information"},evidence={"content_version_id":"content-article-a"},
+            recorded_at="2026-09-30T12:00:00Z")
+    _approve_native_packet(database,tmp_path/"review",tmp_path/"native.db","cron_metadata_material")
+    reader=RegistryReader(database,repository_root=tmp_path/"application")
+    detail=reader.article("article-a")
+    assert detail["available_content"]["acquisition_item_id"]=="a-2"
+    assert "markdown" not in detail["available_content"] and "supporting_excerpt" not in detail["available_content"]
+    state=report_review.freeze_biweekly(reader,tmp_path/"artifacts",occurrence="2026-10-12",generated_at=datetime(2026,10,12,12,tzinfo=timezone.utc))
+    assert state["status"]=="pending_review"
+    snapshot=json.loads((tmp_path/"artifacts/reports/2026-10-12/snapshot.json").read_text())
+    assert {item["source_ref"] for item in snapshot["material_versions"] if item["source_kind"]=="site"}=={"a-1"}
+    article=snapshot["articles"][0]
+    assert article["summary"]==detail["summary"] and article["content"] is None
+    assert article["content_version_id"]==detail["available_content"]["content_version_id"]=="content-article-a"
+    assert article["publication_date"]=="2026-09-20"
 
 
 def test_code_blocker_and_invalid_display_cannot_release_or_send(tmp_path):
@@ -481,10 +588,11 @@ def test_weekly_search_does_not_run_rotation_reader(monkeypatch):
     assert website["status"] == "not_configured"  # Never pretend absence means no new data.
 
 
-def test_t10_recovery_reuses_binding_and_refusal_cannot_create_a_new_run(tmp_path):
+def test_t10_recovery_reuses_binding_and_refusal_cannot_create_a_new_run(tmp_path,monkeypatch):
     from test_issue113_range_reports import _database
     from climate_registry import acquisition_review as review
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=22)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     run = tmp_path / "run"
     run.mkdir()
     binding = {"registry_database": str(database), "run_id": "run", "acquisition_batch_id": "batch",
@@ -494,7 +602,7 @@ def test_t10_recovery_reuses_binding_and_refusal_cannot_create_a_new_run(tmp_pat
     native = tmp_path / "hermes.db"
     _native(native, "cron_t10_recovery")
     at = datetime(2026, 10, 6, 12, 10, tzinfo=timezone.utc)
-    state = review.queue_acquisition_review(run / "binding.json", binding, {"source_outcomes": [
+    state = _queue_after_actual_information(run / "binding.json", binding, {"source_outcomes": [
         {"source": "example", "status": "failed", "coverage_status": "rejected", "failure_reason": "access refused"}]})
     claim = review.claim_acquisition(root, session_id="cron_t10_recovery", execution_id="recovery", hermes_database=native, reviewer="reviewer", now=at)
     calls = []
@@ -517,14 +625,14 @@ def test_t10_recovery_reuses_binding_and_refusal_cannot_create_a_new_run(tmp_pat
 def test_v18_pdf_known_commit_survives_migration_without_fabricating_unknown_time(tmp_path):
     from test_issue113_range_reports import _database
     from climate_registry.read_api import RegistryReader
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=20)
     with sqlite3.connect(database) as db:
         db.execute("DROP TABLE knowledge_versions")
-        db.execute("DELETE FROM schema_migrations WHERE version=19")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (19, 20)")
         db.execute("PRAGMA user_version=18")
         db.execute("UPDATE pdf_intake_articles SET imported_at='unknown' WHERE article_id='pdf-month'")
         db.commit()
-        assert apply_migrations(db) == [19]
+        assert apply_migrations(db,target_version=20) == [19, 20]
     before = database.read_bytes()
     state = report_review.freeze_biweekly(RegistryReader(database, repository_root=tmp_path / "application"),
         tmp_path / "artifacts", occurrence="2026-10-12")
@@ -544,9 +652,18 @@ def test_unchanged_legacy_web_regrab_keeps_unknown_time_until_supported_change(t
     database = tmp_path / "registry.sqlite3"
     with sqlite3.connect(database) as db:
         apply_migrations(db, target_version=18)
-    store_acquisition_batch(database, _batch([_item()], batch_id="legacy"))
-    with sqlite3.connect(database) as db:
-        assert apply_migrations(db) == [19]
+    # Historical SQL facts use the schema18 columns, not a new writer bypass.
+    seed=tmp_path/"fixture-current.sqlite3"
+    with sqlite3.connect(seed) as db:apply_migrations(db)
+    store_acquisition_batch(seed,_batch([_item()],batch_id="legacy"))
+    with sqlite3.connect(seed) as source, sqlite3.connect(database) as legacy:
+        for (table,) in legacy.execute("SELECT name FROM sqlite_master WHERE type='table' AND name!='schema_migrations'").fetchall():
+            columns=[row[1] for row in legacy.execute(f"PRAGMA table_info({table})")]
+            rows=source.execute(f"SELECT {','.join(columns)} FROM {table}").fetchall()
+            legacy.executemany(f"INSERT INTO {table}({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",rows)
+        assert legacy.execute("PRAGMA foreign_key_check").fetchall()==[]
+    from climate_registry.publication import migrate_publication
+    migrate_publication(database,tmp_path/"backups",apply=True)
     store_acquisition_batch(database, _batch([_item()], batch_id="unchanged"))
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT DISTINCT first_ingested_at,substantive_updated_at FROM knowledge_versions").fetchall() == [(None, None)]
@@ -556,18 +673,37 @@ def test_unchanged_legacy_web_regrab_keeps_unknown_time_until_supported_change(t
         assert first is None and datetime.fromisoformat(updated.replace("Z", "+00:00")).tzinfo is not None
 
 
-def test_information_check_prepares_v18_with_exact_backup_before_v19(tmp_path):
-    from climate_registry.information_checks import prepare_database
+def test_information_check_requires_explicit_v18_migration_with_exact_backup(tmp_path):
+    from climate_registry.information_checks import prepare_database,run_checks
+    from climate_registry.errors import RegistryInputError
+    from climate_registry.publication import migrate_publication
     database = tmp_path / "registry.sqlite3"
     with sqlite3.connect(database) as db:
         apply_migrations(db, target_version=18)
+    db.close()
+    before = database.read_bytes()
     backups = tmp_path / "backups"
-    prepare_database(database, backups)
+    calls = []
+    def unexpected(*args, **kwargs):
+        calls.append((args, kwargs))
+        pytest.fail("old-schema T1 reached fetch/model before explicit migration")
+    with pytest.raises(RegistryInputError, match="migrate-publication"):
+        run_checks(database, kind="articles", backup_dir=backups, fetcher=unexpected, verifier=unexpected)
+    assert database.read_bytes() == before and not backups.exists() and not calls
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db) == 19
+        assert validate_registry_contract(db) == 18
+        assert db.execute("SELECT count(*) FROM article_check_runs").fetchone()[0] == 0
+    db.close()
+    migrated = migrate_publication(database, backups, apply=True)
+    assert migrated["accepted_legacy"] == 0
+    result = run_checks(database, kind="articles", backup_dir=backups, fetcher=unexpected, verifier=unexpected)
+    assert result["status"] == "complete" and result["item_count"] == 0 and not calls
+    with sqlite3.connect(database) as db:
+        assert validate_registry_contract(db) == 22
         assert db.execute("SELECT count(*) FROM knowledge_versions").fetchone()[0] == 0
     saved = list(backups.glob("*.bak"))
     assert len(saved) == 1
+    assert saved[0].read_bytes() == before and str(saved[0]) == migrated["backup"]
     with sqlite3.connect(saved[0]) as backup:
         assert validate_registry_contract(backup) == 18
     prepare_database(database, backups)
@@ -623,11 +759,12 @@ def test_linked_pdf_material_freeze_preserves_entity_and_document_provenance(tmp
     assert database.read_bytes() == before
 
 
-def test_verified_pdf_material_is_rendered_and_only_current_version_archived(tmp_path, monkeypatch):
+@pytest.mark.parametrize("primary_change",["baseline","derived","model","pending_pdf"])
+def test_verified_pdf_material_is_rendered_and_only_current_version_archived(tmp_path, monkeypatch,primary_change):
     from test_issue113_range_reports import _database
     from climate_registry.read_api import RegistryReader
     from climate_registry import information_checks
-    database = _database(tmp_path)
+    database = _database(tmp_path,target_version=22)
     with sqlite3.connect(database) as db:
         row = db.execute("SELECT * FROM pdf_intake_article_occurrences WHERE occurrence_id='pdf-occ-a'").fetchone()
         occurrence = json.loads(row[-1]);occurrence.update(occurrence_id="pdf-check-a",source_document_sha256=row[2],page=7,
@@ -643,19 +780,51 @@ def test_verified_pdf_material_is_rendered_and_only_current_version_archived(tmp
     checked = information_checks.run_checks(database,kind="articles",backup_dir=tmp_path/"backups",
         occurrence_ids={"pdf-check-a"},fetcher=fetcher,verifier=verifier)
     assert checked["status"] == "complete"
+    from test_registry_publication import _approve_native_packet
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
+    _approve_native_packet(database,tmp_path/"final-review",tmp_path/"native-final.db","cron_verified_pdf")
+    if primary_change=="derived":
+        from climate_registry.publication import snapshot_entity,stage_snapshot,_approve
+        with sqlite3.connect(database) as db:
+            current=snapshot_entity(db,"article","article-a")
+            current["derived_display"]={"summary":"Native approved corrected summary"}
+            sha=stage_snapshot(db,current);_approve(db,sha,{"basis":"explicit approved canonical correction fixture"}, status="accepted_legacy")
+    elif primary_change=="model":
+        with sqlite3.connect(database) as db:
+            db.execute("INSERT INTO article_enrichments(enrichment_id,content_version_id,status,summary,categories_json,keywords_json,language,generator_kind,generator_name,generator_version,generated_at) VALUES('new-model','content-article-a','complete','Approved new canonical model summary','[]','[]','en','model','model-fixture','v2','2026-10-04T12:00:00Z')")
+        _approve_native_packet(database,tmp_path/"model-review",tmp_path/"native-model.db","cron_verified_model")
     reader = RegistryReader(database,repository_root=tmp_path/"application")
     summary = next(o for o in reader.pdf_article("pdf-a")["occurrences"] if o["occurrence_id"] == "pdf-check-a")["verified_information"]["summary"]
     assert "Flood insurance losses" in summary
+    canonical=reader.article("article-a")
+    if primary_change=="derived":assert canonical["summary"]=="Native approved corrected summary"
+    if primary_change=="model":assert canonical["summary"]=="Approved new canonical model summary"
     with sqlite3.connect(database) as db:
         material = dict(zip([d[0] for d in db.execute("SELECT * FROM knowledge_versions LIMIT 0").description],
             db.execute("SELECT * FROM knowledge_versions WHERE source_ref='pdf-check-a' ORDER BY rowid DESC LIMIT 1").fetchone()))
         baseline_hash = db.execute("SELECT material_sha256 FROM knowledge_versions WHERE source_ref='pdf-check-a' ORDER BY rowid LIMIT 1").fetchone()[0]
+    if primary_change=="pending_pdf":
+        monkeypatch.setattr(information_checks,"_now",lambda:"2026-10-05T12:00:00Z")
+        body="# PDF A\nPending newer unapproved source verification summary. Published 20 September 2026."
+        information_checks.run_checks(database,kind="articles",backup_dir=tmp_path/"backups",occurrence_ids={"pdf-check-a"},fetcher=fetcher,verifier=verifier)
     state = report_review.freeze_biweekly(reader,tmp_path/"artifacts",occurrence="2026-10-12")
     frozen = tmp_path/"artifacts/reports/2026-10-12"
     snapshot = json.loads((frozen/"snapshot.json").read_text())
     article = next(a for a in snapshot["articles"] if a["article_id"] == "article-a")
-    assert summary in article["summary"]
-    assert "Summary for Registry-only" not in article["summary"]
+    assert article["summary"]==canonical["summary"]
+    selected=next(value for value in article["selected_material_summaries"] if value["provenance"]["occurrence_id"]=="pdf-check-a")
+    assert selected["summary"]==summary
+    provenance=selected["provenance"]
+    assert provenance["basis"]=="approved_source_verification"
+    assert provenance["candidate_sha256"]==canonical["published_candidate_sha256"]
+    assert provenance["dto_field"]=="pdf_occurrences[occurrence_id=pdf-check-a].verified_information.summary"
+    information=next(value for value in canonical["pdf_occurrences"] if value["occurrence_id"]=="pdf-check-a")["verified_information"]
+    for field in ("source_url","body_sha256","generated_at"):assert provenance[field]==information[field]
+    assert provenance["knowledge_id"]==material["knowledge_id"] and provenance["material_sha256"]==material["material_sha256"]
+    evidence=json.loads(material["evidence_json"])
+    assert provenance["packet_sha256"]==evidence["packet_sha256"] and provenance["run_id"]==evidence["run_id"]
+    assert provenance["original_period_time"]=="2026-10-02T12:00:00Z"
+    assert "Pending newer unapproved" not in json.dumps(snapshot)
     source = json.loads((frozen/"revisions/0001/report-source.json").read_text())
     assert summary in "\n".join(p for u in source["updates"] for p in u["paragraphs"])
     assert "Flood insurance losses" in (frozen/"revisions/0001/full-text.txt").read_text()
@@ -686,13 +855,16 @@ def test_daily_wrapper_keeps_admitted_occurrence_after_slow_first_phase(tmp_path
         status = article_status if len(calls) == 1 else "complete"
         return {"run_id":kwargs["kind"]+"-run","status":status,"item_count":1,"completed_count":1}
     monkeypatch.setattr(check_information,"run_checks",run)
-    monkeypatch.setattr(pdf_pipeline,"PdfIntakePipeline",lambda *args:SimpleNamespace(refresh_checks=lambda run:{"status":"chat_ready"}))
+    from climate_registry import publication
+    monkeypatch.setattr(publication,"resolve_database",lambda database:database)
+    monkeypatch.setattr(publication,"prepare_review",lambda database,root:{"candidates":[]})
+    monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR",str(tmp_path/"runs"))
     real_main = check_information.main
     def local_main(argv, **kwargs):
         argv = [str(tmp_path / Path(a).name) if a.startswith("/pipeline/") else a for a in argv]
         return real_main(argv, **kwargs)
     monkeypatch.setattr(check_information,"main",local_main)
-    for name in ("CLIMATE_REGISTRY_WRITER_DB","CLIMATE_REGISTRY_BACKUP_DIR","CLIMATE_PDF_INTAKE_QUEUE_DIR",
+    for name in ("CLIMATE_REGISTRY_DB","CLIMATE_REGISTRY_BACKUP_DIR","CLIMATE_PDF_INTAKE_QUEUE_DIR",
                  "CLIMATE_PDF_RUNTIME_WIKI_DIR","CLIMATE_PDF_RELOAD_URL","RELOAD_TOKEN"):
         monkeypatch.setenv(name,str(tmp_path/name))
     script = (Path(__file__).resolve().parents[1]/"scripts/hermes_job_information_check.sh").read_text()
@@ -955,7 +1127,7 @@ def test_t10_successful_scan_recovers_real_article_gap_with_original_contract(tm
     budget = RequestBudget(ledger_path(binding),binding)
     budget.claim("http",item["url"]); budget.finish()
     budget_before = ledger_path(binding).read_bytes()
-    root = run/"acquisition-review"; review.queue_acquisition_review(run/"binding.json",binding,payload)
+    root = run/"acquisition-review"; _queue_after_actual_information(run/"binding.json",binding,payload)
     native = tmp_path/"hermes.db"; _native(native,"cron_t10_article_gap")
     at = datetime(2026,10,6,12,10,tzinfo=timezone.utc)
     claim = review.claim_acquisition(root,session_id="cron_t10_article_gap",execution_id="gap",hermes_database=native,reviewer="native",now=at)
@@ -1065,10 +1237,13 @@ def test_submitted_t10_recovery_stays_reachable_without_releasing_policy_guards(
     atomic_write_json(run/"runtime.json",{"state":"completed","attempt":1})
     budget=RequestBudget(ledger_path(binding),binding);budget.claim("http","https://example.org/article");budget.finish()
     original_ledger=ledger_path(binding).read_bytes()
-    state=review.queue_acquisition_review(run/"binding.json",binding,payload);root=run/"acquisition-review"
+    state=_queue_after_actual_information(run/"binding.json",binding,payload);root=run/"acquisition-review"
     native=tmp_path/"hermes.db";session="cron_t10_submitted";_native(native,session)
     candidate=state["packet"]["candidates"][0];key=candidate["identity"]["acquisition_item_id"]
     _native_read(native,session,root/candidate["body_path"],candidate["identity"]["markdown_content"],"read-pass")
+    if candidate.get("registry_snapshot_path"):
+        full=Path(candidate["registry_snapshot_path"])
+        _native_read(native,session,full,full.read_text(encoding="utf-8"),"read-registry")
     at=datetime(2026,10,6,10,5,tzinfo=timezone.utc)
     claim=review.claim_acquisition(root,session_id=session,execution_id="submit",hermes_database=native,reviewer="native",now=at)
     result=review.review_acquisition(root,claim["token"],{
@@ -1104,10 +1279,242 @@ def test_submitted_t10_recovery_stays_reachable_without_releasing_policy_guards(
     atomic_write_json(run/"attempt-2-result.json",{"run_id":binding["run_id"],"attempt":2,"finished_at":"2026-10-06T10:10:00Z",
         "exit_code":0,"retryable":False,"execution_complete":True,"outcome":"acquisition_pending_review"})
     atomic_write_json(run/"runtime.json",{"state":"completed","attempt":2})
-    queued=review.queue_acquisition_review(run/"attempt-2.json",resumed,payload)
+    queued=_queue_after_actual_information(run/"attempt-2.json",resumed,payload)
     assert queued["item_reviews"][key]==original_pass
     assert queued["packet"]["attempt"]==2 and queued["sources"]=={}
     assert pending("acquisition",tmp_path/"runs")[0]==root
+
+
+@pytest.mark.parametrize("frozen",[False,True])
+@pytest.mark.parametrize("prior_body",[False,True])
+def test_new_approved_web_body_enters_biweekly_before_and_after_activation(tmp_path,monkeypatch,frozen,prior_body):
+    from test_issue112_acquisition import _database,_batch,_item
+    from test_issue181_ingest_only import _ack
+    from climate_registry.acquisition import store_acquisition_batch,freeze_acquisition_for_report,PublicationDatePolicy
+    from climate_registry import acquisition_review as review,publication
+    from climate_registry.web_ingest_pipeline import WebIngestPipeline
+    from climate_registry.read_api import RegistryReader
+    database=_database(tmp_path)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
+    if prior_body:
+        monkeypatch.setattr(review,"now_stamp",lambda:"2026-09-01T12:00:00Z")
+        old=_item(body="# Older unreviewed body\n\nHistorical pending source.",discovery_kind="site",discovery_ref="site:old",discovery_search_ref=None)
+        old["discovered_at"]=old["evidence"]["fetched_at"]=old["evidence"]["attempts"][0]["attempted_at"]="2026-09-01T12:00:00Z"
+        old_payload=_batch([old],batch_id="old-body",report_date="2026-09-01",searches=[],
+            policy=PublicationDatePolicy.resolve(None,anchor_date=datetime(2026,9,1).date(),frozen_at="2026-09-01T12:00:00Z").to_dict(),
+            search_decision={"status":"no_search","reason":"website only"})
+        old_payload["started_at"]=old_payload["completed_at"]="2026-09-01T12:00:00Z"
+        store_acquisition_batch(database,old_payload)
+    monkeypatch.setattr(review,"now_stamp",lambda:"2026-09-30T12:00:00Z")
+    item=_item(body="# Approved climate evidence\n\nOriginal approved body.",
+        discovery_kind="site",discovery_ref="site:article",discovery_search_ref=None)
+    item["discovered_at"]=item["evidence"]["fetched_at"]=item["evidence"]["attempts"][0]["attempted_at"]="2026-09-30T12:00:00Z"
+    payload=_batch([item],batch_id="first-body",report_date="2026-09-30",searches=[],
+        policy=PublicationDatePolicy.resolve(None,anchor_date=datetime(2026,9,30).date(),frozen_at="2026-09-30T12:00:00Z").to_dict(),
+        search_decision={"status":"no_search","reason":"website only"})
+    payload["started_at"]=payload["completed_at"]="2026-09-30T12:00:00Z"
+    store_acquisition_batch(database,payload)
+    if frozen:
+        freeze_acquisition_for_report(database,"first-body",report_date="2026-09-30")
+    reader=RegistryReader(database,repository_root=tmp_path/"application")
+    generated=datetime(2026,10,12,12,tzinfo=timezone.utc)
+    assert report_review.freeze_biweekly(reader,tmp_path/"unapproved-reports",occurrence="2026-10-12",generated_at=generated)["status"]=="no_eligible_information"
+    run=tmp_path/"runs/first-body"
+    binding={"run_id":"first-body","registry_database":str(database),"acquisition_batch_id":"first-body",
+        "attempt":1,"task_version":3,"source_keys":["Example Institute"]}
+    atomic_write_json(run/"attempt-1-result.json",{"run_id":"first-body","attempt":1,"finished_at":"2026-09-30T12:05:00Z"})
+    state=_queue_after_actual_information(run/"binding.json",binding,payload)
+    root=run/"acquisition-review";candidate=state["packet"]["candidates"][0]
+    identity=candidate["identity"];native=tmp_path/"hermes.db"
+    _native(native,"cron_t10_first_body")
+    _native_read(native,"cron_t10_first_body",root/candidate["body_path"],identity["markdown_content"],"body")
+    path=Path(candidate["registry_snapshot_path"])
+    _native_read(native,"cron_t10_first_body",path,path.read_text(encoding="utf-8"),"snapshot")
+    at=datetime(2026,10,10,12,tzinfo=timezone.utc)
+    monkeypatch.setattr(review,"now_stamp",lambda:"2026-10-10T12:00:00Z")
+    monkeypatch.setattr(publication,"now_stamp",lambda:"2026-10-10T12:00:00Z")
+    claim=review.claim_acquisition(root,session_id="cron_t10_first_body",execution_id="first",hermes_database=native,reviewer="native-fixture",now=at)
+    review.review_acquisition(root,claim["token"],{"items":{identity["acquisition_item_id"]:{"candidate_sha256":candidate["candidate_sha256"],"status":"pass","reason":"Exact body and full snapshot read"}}},now=at)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT current_content_version_id FROM articles").fetchone()[0] is None
+    assert reader.article(identity["article_id"])["published_candidate_sha256"]==candidate["registry_candidate_sha256"]
+    def frozen_report(directory):
+        state=report_review.freeze_biweekly(reader,directory,occurrence="2026-10-12",generated_at=generated)
+        assert state["status"]=="pending_review"
+        snapshot=json.loads((directory/"reports/2026-10-12/snapshot.json").read_text())
+        assert len(snapshot["articles"])==len(snapshot["material_versions"])==1
+        article=snapshot["articles"][0];material=snapshot["material_versions"][0]
+        assert article["publication_date"]=="2026-09-01"
+        assert article["content_version_id"]==identity["content_version_id"]
+        assert "Original approved body" in article["content"]
+        assert "Pending replacement" not in article["content"] and "Older unreviewed body" not in article["content"]
+        assert article["provenance"]["title"]["candidate_sha256"]==candidate["registry_candidate_sha256"]
+        assert material["entity_id"]==identity["article_id"] and material["source_ref"]==identity["acquisition_item_id"]
+        assert material["first_ingested_at"]==("2026-09-01T12:00:00Z" if prior_body else "2026-09-30T12:00:00Z")
+        assert material["substantive_updated_at"]==("2026-09-30T12:00:00Z" if prior_body else None)
+        assert material["original_period_time"]=="2026-09-30T12:00:00Z"
+        assert material["material_sha256"]==digest(json.loads(material["fields_json"]))
+        assert json.loads(material["evidence_json"])["content_version_id"]==identity["content_version_id"]
+        assert json.loads(material["evidence_json"])["content_sha256"]==identity["content_sha256"]
+        return state
+    reports=tmp_path/"approved-reports";original=frozen_report(reports)
+    original_bytes=(reports/"reports/2026-10-12/snapshot.json").read_bytes()
+    queue=tmp_path/"queue";queue.mkdir()
+    request=review.activate_approved(root,queue_dir=queue,database=database,repository_root=tmp_path/"application")
+    assert WebIngestPipeline(queue,database,tmp_path/"runtime",_ack(queue),repository_root=tmp_path/"application").process(request["batch_id"])["chat_ready"]
+    frozen_report(tmp_path/"activated-reports")
+    monkeypatch.setattr(review,"now_stamp",lambda:"2026-10-11T12:00:00Z")
+    update=_item(body="# Pending replacement\n\nUnreviewed body.",discovery_kind="site",discovery_ref="site:updated",discovery_search_ref=None)
+    update["discovered_at"]=update["evidence"]["fetched_at"]=update["evidence"]["attempts"][0]["attempted_at"]="2026-10-11T12:00:00Z"
+    pending=_batch([update],batch_id="pending-body",report_date="2026-10-11",searches=[],
+        policy=PublicationDatePolicy.resolve(None,anchor_date=datetime(2026,10,11).date(),frozen_at="2026-10-11T12:00:00Z").to_dict(),
+        search_decision={"status":"no_search","reason":"website only"})
+    pending["started_at"]=pending["completed_at"]="2026-10-11T12:00:00Z"
+    store_acquisition_batch(database,pending)
+    frozen_report(tmp_path/"pending-reports")
+    assert report_review.freeze_biweekly(reader,reports,occurrence="2026-11-09",generated_at=datetime(2026,11,9,12,tzinfo=timezone.utc))["status"]=="no_eligible_information"
+    publication.set_visibility(database,"article",identity["article_id"],False)
+    assert report_review.freeze_biweekly(reader,tmp_path/"hidden-reports",occurrence="2026-10-12",generated_at=generated)["status"]=="no_eligible_information"
+    assert report_review.freeze_biweekly(reader,reports,occurrence="2026-10-12",generated_at=generated)==original
+    assert (reports/"reports/2026-10-12/snapshot.json").read_bytes()==original_bytes
+
+
+def _native_meeting_material_fixture(tmp_path,monkeypatch,*,partial=False):
+    from test_issue136_meetings import _database,_candidate
+    from test_registry_publication import _approve_native_packet
+    from climate_monitor import meetings
+    from climate_registry import publication
+    body="World Climate Summit 2027 meets June 10–12, 2027 in New York. Registration deadline May 1, 2027. Register https://example.com/register. Climate risk agenda. Detailed actuarial climate risk agenda."
+    database=_database(tmp_path,[body,body] if partial else [body])
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
+    clock=["2026-09-30T12:00:00Z"]
+    monkeypatch.setattr(meetings,"_now",lambda now=None:clock[0])
+    def process(version,reason="Climate risk agenda"):
+        def extract(request):
+            if partial and request["content_version_id"]=="content-2":raise RuntimeError("temporary extraction failure")
+            return {"events":[_candidate(relevance_reason=reason)]}
+        return meetings.process_batch(database,"batch",prompt_text="extract actual source "+version,prompt_version=version,provider="test",model="test",extractor=extract)
+    def approve(label,at):
+        monkeypatch.setattr(publication,"now_stamp",lambda:at)
+        _approve_native_packet(database,tmp_path/(label+"-review"),tmp_path/(label+"-native.db"),"cron_"+label)
+        with sqlite3.connect(database) as db:
+            return db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='meeting'").fetchone()[0]
+    return database,clock,process,approve
+
+
+@pytest.mark.parametrize("partial",[False,True])
+@pytest.mark.parametrize("late",[False,True])
+def test_approved_native_meeting_material_enters_frozen_ledger_and_does_not_repeat(tmp_path,monkeypatch,partial,late):
+    from climate_registry.read_api import RegistryReader
+    from climate_registry.publication import set_visibility
+    database,clock,process,approve=_native_meeting_material_fixture(tmp_path,monkeypatch,partial=partial)
+    assert process("v1")["status"]==("partial" if partial else "succeeded")
+    reader=RegistryReader(database,repository_root=tmp_path/"application")
+    generated=datetime(2026,10,12,12,tzinfo=timezone.utc)
+    assert report_review.freeze_biweekly(reader,tmp_path/"pending",occurrence="2026-10-12",generated_at=generated)["status"]=="no_eligible_information"
+    sha=approve("meeting_first","2026-10-20T12:00:00Z" if late else "2026-10-10T12:00:00Z")
+    occurrence="2026-10-26" if late else "2026-10-12"
+    generated=datetime(2026,10,26 if late else 12,12,tzinfo=timezone.utc)
+    artifacts=tmp_path/"artifacts"
+    state=report_review.freeze_biweekly(reader,artifacts,occurrence=occurrence,generated_at=generated)
+    assert state["status"]=="pending_review"
+    path=artifacts/"reports"/occurrence/"snapshot.json";before=path.read_bytes();snapshot=json.loads(before)
+    assert len(snapshot["meeting"]["records"])==len(snapshot["material_versions"])==1
+    record=snapshot["meeting"]["records"][0];material=snapshot["material_versions"][0]
+    assert record["material_versions"]==snapshot["material_versions"]
+    assert record["material_provenance"]=={"basis":"approved_public_version","candidate_sha256":sha}
+    assert record["start_date"]=="2027-06-10" and record["end_date"]=="2027-06-12"
+    assert snapshot["meeting"]["coverage"]["status"]==("partial" if partial else "processed")
+    assert snapshot["meeting"]["status"]==("partial" if partial else "included")
+    assert material["first_ingested_at"]==material["original_period_time"]=="2026-09-30T12:00:00Z"
+    assert material["substantive_updated_at"] is None
+    assert material["selection_reason"]==("late_review_carryforward" if late else "first_ingested")
+    source=next(source for source in record["sources"] if source["event_source_id"]==material["source_ref"])
+    evidence=json.loads(material["evidence_json"])
+    assert source["is_current"] and material["entity_id"]==record["event_id"]
+    assert evidence["content_version_id"]==source["content_version_id"] and evidence["content_sha256"]==source["content_sha256"]
+    assert evidence["source_url"]==source["source_url"] and evidence["event_source_id"]==material["source_ref"]
+    assert material["material_sha256"]==digest(json.loads(material["fields_json"]))
+    with sqlite3.connect(database) as db:
+        assert evidence["event_version_sha256"]==db.execute("SELECT state_sha256 FROM climate_event_versions WHERE event_id=? AND record_version=?",(record["event_id"],evidence["event_version"])).fetchone()[0]
+    clock[0]="2026-10-27T12:00:00Z"
+    process("same-fields")
+    approve("meeting_same","2026-10-28T12:00:00Z")
+    assert report_review.freeze_biweekly(reader,artifacts,occurrence="2026-11-09",generated_at=datetime(2026,11,9,12,tzinfo=timezone.utc))["status"]=="no_eligible_information"
+    set_visibility(database,"meeting",record["event_id"],False)
+    assert report_review.freeze_biweekly(reader,tmp_path/"hidden",occurrence=occurrence,generated_at=generated)["status"]=="no_eligible_information"
+    assert report_review.freeze_biweekly(reader,artifacts,occurrence=occurrence)==state and path.read_bytes()==before
+
+
+def test_native_meeting_substantive_change_waits_for_exact_approval_and_keeps_first_time(tmp_path,monkeypatch):
+    from climate_registry.read_api import RegistryReader
+    database,clock,process,approve=_native_meeting_material_fixture(tmp_path,monkeypatch)
+    process("v1");old_sha=approve("meeting_original","2026-10-10T12:00:00Z")
+    reader=RegistryReader(database,repository_root=tmp_path/"application");artifacts=tmp_path/"artifacts"
+    report_review.freeze_biweekly(reader,artifacts,occurrence="2026-10-12",generated_at=datetime(2026,10,12,12,tzinfo=timezone.utc))
+    old=json.loads((artifacts/"reports/2026-10-12/snapshot.json").read_text())
+    clock[0]="2026-10-13T12:00:00Z"
+    process("improved","Detailed actuarial climate risk agenda")
+    assert reader.meetings(base_date="2026-10-26")["items"][0]["relevance_reason"]=="Climate risk agenda"
+    pending=tmp_path/"pending-artifacts"
+    atomic_write_json(pending/"reports/2026-10-12/snapshot.json",old)
+    assert report_review.freeze_biweekly(reader,pending,occurrence="2026-10-26",generated_at=datetime(2026,10,26,12,tzinfo=timezone.utc))["status"]=="no_eligible_information"
+    new_sha=approve("meeting_improved","2026-10-20T12:00:00Z");assert new_sha!=old_sha
+    assert report_review.freeze_biweekly(reader,artifacts,occurrence="2026-10-26",generated_at=datetime(2026,10,26,12,tzinfo=timezone.utc))["status"]=="pending_review"
+    snapshot=json.loads((artifacts/"reports/2026-10-26/snapshot.json").read_text())
+    assert len(snapshot["material_versions"])==1
+    material=snapshot["material_versions"][0];record=snapshot["meeting"]["records"][0]
+    assert material["first_ingested_at"]=="2026-09-30T12:00:00Z" and material["substantive_updated_at"]==material["original_period_time"]=="2026-10-13T12:00:00Z"
+    assert material["selection_reason"]=="substantive_update"
+    assert record["relevance_reason"]=="Detailed actuarial climate risk agenda" and record["material_provenance"]["candidate_sha256"]==new_sha
+    assert report_review.freeze_biweekly(reader,artifacts,occurrence="2026-11-09",generated_at=datetime(2026,11,9,12,tzinfo=timezone.utc))["status"]=="no_eligible_information"
+
+
+@pytest.mark.parametrize("known",[False,True])
+def test_legacy_native_meeting_original_time_is_read_only_and_survives_new_improvement(tmp_path,monkeypatch,known):
+    from test_issue136_meetings import _candidate
+    from test_registry_publication import _approve_native_packet
+    from climate_monitor import meetings
+    from climate_registry import publication
+    from climate_registry.read_api import RegistryReader
+    original,clock,process,_=_native_meeting_material_fixture(tmp_path,monkeypatch)
+    process("original")
+    # Recreate a real pre-ledger archive, not a legacy business-writer bypass.
+    legacy=tmp_path/"legacy.sqlite3"
+    with sqlite3.connect(original) as source,sqlite3.connect(legacy) as target:
+        apply_migrations(target,target_version=20)
+        target.execute("PRAGMA defer_foreign_keys=ON")
+        pointers=source.execute("SELECT current_version_id,current_content_version_id,article_id FROM articles").fetchall()
+        tables=[row[0] for row in target.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'") if row[0] not in {"schema_migrations","knowledge_versions"}]
+        for table in tables:
+            columns=[row[1] for row in target.execute(f"PRAGMA table_info({table})")]
+            rows=source.execute(f"SELECT {','.join(columns)} FROM {table}").fetchall()
+            if table=="articles":
+                rows=[tuple(None if column in {"current_version_id","current_content_version_id"} else value for column,value in zip(columns,row)) for row in rows]
+            if not known and table in {"climate_events","climate_event_sources","climate_event_versions"}:
+                rows=[tuple("2026-09-30" if column in {"created_at","updated_at","observed_at","recorded_at"} else value for column,value in zip(columns,row)) for row in rows]
+            target.executemany(f"INSERT INTO {table}({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",rows)
+        target.executemany("UPDATE articles SET current_version_id=?,current_content_version_id=? WHERE article_id=?",pointers)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(legacy))
+    publication.migrate_publication(legacy,tmp_path/"backups",apply=True)
+    reader=RegistryReader(legacy,repository_root=tmp_path/"application")
+    before=legacy.read_bytes()
+    state=report_review.freeze_biweekly(reader,tmp_path/"legacy-reports",occurrence="2026-10-12",generated_at=datetime(2026,10,12,12,tzinfo=timezone.utc))
+    assert state["status"]==("pending_review" if known else "no_eligible_information")
+    assert legacy.read_bytes()==before
+    clock[0]="2026-10-13T12:00:00Z"
+    result=meetings.process_batch(legacy,"batch",prompt_text="improve supported facts",prompt_version="improved",provider="test",model="test",
+        extractor=lambda request:{"events":[_candidate(relevance_reason="Detailed actuarial climate risk agenda")]})
+    assert result["status"]=="succeeded"
+    monkeypatch.setattr(publication,"now_stamp",lambda:"2026-10-20T12:00:00Z")
+    _approve_native_packet(legacy,tmp_path/"improved-review",tmp_path/"improved-native.db","cron_legacy_meeting_improved")
+    assert report_review.freeze_biweekly(reader,tmp_path/"improved-reports",occurrence="2026-10-26",generated_at=datetime(2026,10,26,12,tzinfo=timezone.utc))["status"]=="pending_review"
+    snapshot=json.loads((tmp_path/"improved-reports/reports/2026-10-26/snapshot.json").read_text())
+    assert len(snapshot["material_versions"])==1
+    material=snapshot["material_versions"][0]
+    assert material["first_ingested_at"]==("2026-09-30T12:00:00Z" if known else None)
+    assert material["substantive_updated_at"]==material["original_period_time"]=="2026-10-13T12:00:00Z"
+    assert material["time_basis"]==("historical_native_event_created_at" if known else "legacy_time_unknown")
 
 
 def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(tmp_path,monkeypatch):
@@ -1120,6 +1527,7 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
     from climate_registry.pdf_pipeline import load_active_projection,load_projection_manifest
     from climate_registry.read_api import RegistryReader
     writer_root=tmp_path/"writer";writer_root.mkdir();database=_database(writer_root)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     monkeypatch.setattr(review,"now_stamp",lambda:"2026-09-30T12:00:00Z")
     payload=_batch([_item(source="wmo",discovery_kind="site",discovery_ref="site:article",discovery_search_ref=None)],
         batch_id="delayed",report_date="2026-09-30",policy=PublicationDatePolicy.resolve(None,anchor_date=datetime(2026,9,30).date(),frozen_at="2026-09-30T12:00:00Z").to_dict(),searches=[],search_decision={"status":"no_search","reason":"website only"})
@@ -1127,12 +1535,22 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
     run=tmp_path/"runs/delayed";binding={"run_id":"delayed","registry_database":str(database),"acquisition_batch_id":"delayed",
         "attempt":1,"task_version":3,"source_keys":["wmo"]}
     atomic_write_json(run/"attempt-1-result.json",{"run_id":"delayed","attempt":1,"finished_at":"2026-09-30T12:05:00Z"})
-    state=review.queue_acquisition_review(run/"binding.json",binding,payload);root=run/"acquisition-review"
+    state=_queue_after_actual_information(run/"binding.json",binding,payload);root=run/"acquisition-review"
     candidate=state["packet"]["candidates"][0];key=candidate["identity"]["acquisition_item_id"]
     native=tmp_path/"hermes.db";_native(native,"cron_t10_before_cutoff")
     _native_read(native,"cron_t10_before_cutoff",root/candidate["body_path"],candidate["identity"]["markdown_content"],"approved-body")
+    if candidate.get("registry_snapshot_path"):
+        path=Path(candidate["registry_snapshot_path"])
+        _native_read(native,"cron_t10_before_cutoff",path,path.read_text(encoding="utf-8"),"approved-registry")
     public=tmp_path/"public.sqlite3"
-    with sqlite3.connect(public) as db:apply_migrations(db)
+    # Retain the historical read-only activation contract. Current v21 reports
+    # read the canonical approved database directly, regardless of writer reload.
+    with sqlite3.connect(public) as db:
+        apply_migrations(db,target_version=20)
+        assert validate_registry_contract(db)==20
+    with sqlite3.connect(database) as db:
+        assert validate_registry_contract(db)==22
+    public_before=public.read_bytes()
     reader=RegistryReader(public,repository_root=tmp_path/"application");artifacts=tmp_path/"artifacts"
     inactive={"web_items":[],"pdf_occurrence_ids":[],"pdf_calendar_occurrence_ids":[]}
     # Pending/unapproved material does not enter a report.
@@ -1143,11 +1561,13 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
     monkeypatch.setattr(review,"now_stamp",lambda:"2026-10-10T12:00:00Z")
     claim=review.claim_acquisition(root,session_id="cron_t10_before_cutoff",execution_id="early",hermes_database=native,reviewer="native",now=at)
     approved=review.review_acquisition(root,claim["token"],{"items":{key:{"candidate_sha256":candidate["candidate_sha256"],"status":"pass","reason":"Full candidate verified"}}},now=at)
+    canonical=RegistryReader(database,repository_root=tmp_path/"application")
+    assert canonical.article(candidate["identity"]["article_id"])["published_candidate_sha256"]==candidate["registry_candidate_sha256"]
     queue=tmp_path/"queue";queue.mkdir()
     request=review.activate_approved(root,queue_dir=queue,database=database,repository_root=tmp_path/"application")
     runtime=tmp_path/"runtime"
     monkeypatch.setattr("climate_registry.web_ingest_pipeline._now",lambda:"2026-10-11T12:00:00Z")
-    fail=WebIngestPipeline(queue,Path(request["registry_snapshot_path"]),runtime,
+    fail=WebIngestPipeline(queue,database,runtime,
         lambda _:(_ for _ in ()).throw(RuntimeError("reload unavailable")),repository_root=tmp_path/"application").process(request["batch_id"])
     assert fail["stage"]=="failed" and fail["indexed"] and not fail["chat_ready"]
     assert load_active_projection(runtime,queue/"active.json")[0] is None
@@ -1158,7 +1578,7 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
     retried=review.activate_approved(root,queue_dir=queue,database=database,repository_root=tmp_path/"application")
     assert retried["batch_id"]==request["batch_id"] and retried["registry_sha256"]==request["registry_sha256"]
     monkeypatch.setattr("climate_registry.web_ingest_pipeline._now",lambda:"2026-10-20T12:00:00Z")
-    ready=WebIngestPipeline(queue,Path(request["registry_snapshot_path"]),runtime,_ack(queue),repository_root=tmp_path/"application").process(request["batch_id"])
+    ready=WebIngestPipeline(queue,database,runtime,_ack(queue),repository_root=tmp_path/"application").process(request["batch_id"])
     assert ready["chat_ready"]
     generation,metadata=load_active_projection(runtime,queue/"active.json");manifest=load_projection_manifest(generation,metadata)
     active_reader=RegistryReader(Path(metadata["web_registry_snapshot"]),repository_root=tmp_path/"application")
@@ -1197,6 +1617,7 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
             fields=json.loads(material["fields_json"]),evidence={"retry":"check only"},recorded_at="2026-10-30T12:00:00Z")
         assert db.execute("SELECT count(*) FROM knowledge_versions").fetchone()[0]==prior
     assert report_review.freeze_biweekly(reader,artifacts,occurrence="2026-11-23",web_reader=active_reader,manifest=manifest,generated_at=datetime(2026,11,23,12,tzinfo=timezone.utc))["status"]=="no_eligible_information"
+    assert public.read_bytes()==public_before
 
 
 @pytest.mark.parametrize("claim_status", ["owned", "released", "expired"])

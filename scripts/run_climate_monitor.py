@@ -114,6 +114,11 @@ def _load_task_binding_with_taxonomy(
     except ValueError as exc:
         raise SystemExit(f"task binding repository commit is invalid: {exc}") from exc
     definition = binding.get("definition") or {}
+    from climate_registry.publication import resolve_database
+    try:
+        configured_database = resolve_database(frozen=binding["registry_database"])
+    except (ValueError, OSError) as exc:
+        raise SystemExit("configured Registry differs from immutable task binding") from exc
     parameters = definition.get("parameters") or {}
     prompts = definition.get("prompts") or {}
     expected_prompt_hashes = {name: _text_sha(prompts[name]["text"]) for name in PROMPT_NAMES}
@@ -124,7 +129,7 @@ def _load_task_binding_with_taxonomy(
         raise SystemExit("task binding source inventory hash mismatch")
     effective = {
         "task_id": definition.get("task_id"), "parameters": parameters,
-        "runtime": definition.get("runtime"), "taxonomy": definition.get("taxonomy"),
+        "runtime": ({"run_root": definition["runtime"]["run_root"]} if binding.get("registry_routing") == "environment" else definition.get("runtime")), "taxonomy": definition.get("taxonomy"),
         "taxonomy_sha256": taxonomy.sha256,
         "prompt_versions": expected_prompt_versions, "prompt_hashes": expected_prompt_hashes,
     }
@@ -134,7 +139,7 @@ def _load_task_binding_with_taxonomy(
         "effective_sha256": _sha(effective),
         "provider": parameters.get("provider"), "model": parameters.get("model"),
         "budgets": parameters.get("budgets"), "source_keys": parameters.get("source_keys"),
-        "registry_database": (definition.get("runtime") or {}).get("registry_database"),
+        "registry_database": str(configured_database) if binding.get("registry_routing") == "environment" else (definition.get("runtime") or {}).get("registry_database"),
     }
     expected_checkpoint = Path(definition["runtime"]["run_root"]) / binding["run_id"] / "checkpoint"
     expected_lineage_id = f"acq-{binding['run_id']}"
@@ -984,6 +989,9 @@ def _run_prepare(args, parser) -> int:
         if supplied_commit and supplied_commit != task_binding["repository_commit_sha"]:
             raise SystemExit("--repository-commit-sha differs from the immutable task binding")
         args.repository_commit_sha = task_binding["repository_commit_sha"]
+    if args.registry_database:
+        from climate_registry.acquisition import _open_database
+        _open_database(args.registry_database, acquisition_writer=True).close()
     outcome_path = Path(args.acquisition_batch).resolve()
     manifest_path = Path(args.web_listening_manifest).resolve()
     pillar_b_path = Path(args.pillar_b_artifact).resolve()

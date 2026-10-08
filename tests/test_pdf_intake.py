@@ -555,7 +555,7 @@ def test_cli_writes_and_persists_bundle_idempotently(tmp_path, monkeypatch):
     assert bundle["documents"][0]["source"]["filename"] == "source.pdf"
     import sqlite3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (22,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (0,)
@@ -588,7 +588,7 @@ def test_cli_rejects_output_aliases_before_overwriting_pdf_or_registry(tmp_path,
         assert source.read_bytes() == original_pdf
         import sqlite3
         with sqlite3.connect(database) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+            assert connection.execute("PRAGMA user_version").fetchone() == (22,)
     assert not backup_dir.exists()
 
 
@@ -669,7 +669,7 @@ def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_sta
     connection.close()
 
     persist_pdf_intake(database, tmp_path / "backups", bundle)
-    reader = RegistryReader(database, repository_root=tmp_path / "app")
+    reader = RegistryReader(database, public=False, repository_root=tmp_path / "app")
     core = reader.articles(page_size=10)["items"]
     assert {item["article_id"] for item in core} == {"core-first", "core-news"}
     assert {item["article_id"]: item["pdf_occurrence_count"] for item in core} == {
@@ -759,7 +759,7 @@ def test_pdf_reimport_with_landing_page_label_does_not_confirm_an_unclassified_o
         assert connection.execute("SELECT core_article_id FROM pdf_intake_articles WHERE article_id=?", (article["article_id"],)).fetchone() == (None,)
     connection.close()
     from climate_registry.read_api import RegistryReader
-    reader = RegistryReader(database, repository_root=tmp_path / "app")
+    reader = RegistryReader(database, public=False, repository_root=tmp_path / "app")
     assert "pdf_occurrences" not in reader.article("core")
     assert article["article_id"] in {item["article_id"] for item in reader.pdf_articles()["items"]}
 
@@ -795,7 +795,7 @@ def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
           json.dumps({"occurrence_id": "occ-home"}))),
     )
     connection.commit()
-    assert apply_migrations(connection) == [16, 17, 18, 19]
+    assert apply_migrations(connection) == [16, 17, 18, 19, 20, 21, 22]
     assert connection.execute(
         "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-exact'"
     ).fetchone() == ("core", "exact_url_eligible_detail")
@@ -804,10 +804,10 @@ def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
     ).fetchone() == (None,)
     connection.close()
     from climate_registry.read_api import RegistryReader
-    detail = RegistryReader(database, repository_root=tmp_path / "app").article("core")
+    detail = RegistryReader(database, public=False, repository_root=tmp_path / "app").article("core")
     assert detail["pdf_occurrences"][0]["occurrence_id"] == "occ-exact"
     assert {item["article_id"] for item in RegistryReader(
-        database, repository_root=tmp_path / "app"
+        database, public=False, repository_root=tmp_path / "app"
     ).pdf_articles()["items"]} == {"pdf-home"}
 
 
@@ -858,7 +858,7 @@ def test_registry_backfills_classification_and_tracks_duplicate_pdf_sources(tmp_
     from climate_registry.read_api import RegistryReader
 
     calendar = RegistryReader(
-        database, repository_root=tmp_path / "app-root",
+        database, public=False, repository_root=tmp_path / "app-root",
     ).pdf_calendar_items()["items"][0]
     assert {item["filename"] for item in calendar["source_observations"]} == {
         "first.pdf", "second.pdf", "third.pdf",
@@ -929,10 +929,17 @@ def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_pat
 
     from climate_registry.pdf_intake import persist_pdf_intake
 
+    before = database.read_bytes()
+    from climate_registry.errors import RegistryInputError
+    with pytest.raises(RegistryInputError, match="migrate-publication"):
+        persist_pdf_intake(database, tmp_path / "backups", bundle)
+    assert database.read_bytes() == before
+    from climate_registry.publication import migrate_publication
+    migrate_publication(database, tmp_path / "migration-backups", apply=True)
     persist_pdf_intake(database, tmp_path / "backups", bundle)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (22,)
         original_pdf, created_at, modified_at, raw_metadata = connection.execute(
             """SELECT original_pdf, pdf_created_at, pdf_modified_at, pdf_metadata_json
                FROM pdf_intake_documents"""

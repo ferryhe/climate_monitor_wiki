@@ -2268,10 +2268,16 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
     if (article.latest_fetch?.fetch_status) {
       metrics.push(registryMetric("Latest fetch", article.latest_fetch.fetch_status));
     }
-    if (article.collected_at || article.content?.collected_at || article.content?.fetched_at) {
-      metrics.push(registryMetric("Collected at", article.collected_at || article.content?.collected_at || article.content.fetched_at));
+    const collectedAt = article.collected_at || article.content?.collected_at ||
+      (!article.date_basis ? article.content?.fetched_at : null);
+    if (collectedAt) {
+      metrics.push(registryMetric("Collected at", collectedAt));
     } else if (article.information_date) {
       metrics.push(registryMetric("Information date", article.information_date));
+    } else if (article.publication_date) {
+      metrics.push(registryMetric("Publication date", article.publication_date));
+    } else if (article.report_date) {
+      metrics.push(registryMetric("Report date (publication unconfirmed)", article.report_date));
     } else {
       metrics.push(registryMetric("Date basis", "Unconfirmed"));
     }

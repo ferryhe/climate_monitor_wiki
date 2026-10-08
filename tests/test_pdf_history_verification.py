@@ -22,6 +22,30 @@ from test_issue170_pdf_import import _client
 from test_information_checks import _database, _record, _judgment
 
 
+# The old runtime-overlay history contract is retained for schema20 archives.
+@pytest.fixture(autouse=True)
+def legacy_pdf_history_contract(monkeypatch):
+    from climate_registry.schema import apply_migrations as real_migrations
+    import climate_registry.persistent as persistent
+    import climate_registry.pdf_intake as storage
+    import climate_registry.information_checks as checks
+    import climate_monitor.meetings as meetings
+    import climate_registry.publication as publication
+    from test_information_checks import legacy_schema_writer,legacy_pdf_binding
+    import climate_registry.pdf_pipeline as pipeline
+    monkeypatch.setattr(pipeline,"_validate_pdf_binding",legacy_pdf_binding)
+    monkeypatch.setattr(publication,"require_publication_migration",legacy_schema_writer)
+    import test_issue170_pdf_import as api_fixture
+    def migrate(connection, *, target_version=None):
+        return real_migrations(connection,target_version=20 if target_version is None else target_version)
+    monkeypatch.setattr(api_fixture,"apply_migrations",migrate)
+    monkeypatch.setattr(persistent,"apply_migrations",migrate)
+    monkeypatch.setattr(storage,"apply_migrations",migrate)
+    monkeypatch.setattr(storage,"LATEST_SCHEMA_VERSION",20)
+    monkeypatch.setattr(checks,"apply_migrations",migrate)
+    monkeypatch.setattr(meetings,"SCHEMA_VERSION",20)
+
+
 def test_imported_pdf_history_retains_structure_original_download_and_one_copy(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     path = tmp_path / "report.pdf"
@@ -312,8 +336,8 @@ def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, 
         "CHECK_TEST_PACKET": str(packet), "CLIMATE_WIKI_ENV_FILE": str(configuration)}, capture_output=True, text=True)
     assert result.returncode == 0 and packet.exists() is runs
     if runs:
-        for name in ("CLIMATE_REGISTRY_WRITER_DB", "CLIMATE_REGISTRY_BACKUP_DIR", "CLIMATE_PDF_INTAKE_QUEUE_DIR",
-            "CLIMATE_PDF_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RELOAD_URL", "RELOAD_TOKEN"):
+        for name in ("CLIMATE_REGISTRY_DB", "CLIMATE_REGISTRY_BACKUP_DIR", "CLIMATE_PDF_INTAKE_QUEUE_DIR",
+            "CLIMATE_PDF_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RELOAD_URL", "CLIMATE_ACQUISITION_RUN_DIR", "RELOAD_TOKEN"):
             monkeypatch.setenv(name, "configured")
         monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
         monkeypatch.setattr(sys, "stdin", StringIO(configuration.read_text()))

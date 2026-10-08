@@ -4,15 +4,21 @@ A structured, interlinked knowledge base on climate risk, natural catastrophe in
 
 **Current target:** independent PDF intake, daily five-site rotation and weekly
 search feed activated knowledge; biweekly PDF generation, native Hermes review
-and delayed exact-file delivery are separate tasks. Website candidates require
-T10 approval before activation. The target is ten cron jobs plus the existing
+and delayed exact-file delivery are separate tasks. Website, search and PDF candidates use the same Registry. T1/T10 improve and
+review exact candidate snapshots; automatic final checks publish only unchanged
+approved versions. `is_visible` controls their shared public projection. The target is ten cron jobs plus the existing
 PDF writer. See [the current deployment contract](docs/biweekly-et-deployment.md).
 Repo tests, native identity preflight, isolated real-site rehearsal and production
 cycle evidence are separate gates; this description does not claim a cutover.
 
+**Observed production baseline, 2026-10-08:** the public Registry is schema 19
+and the legacy separate Runtime routing is still deployed. The schema 22
+migration and single-Registry cutover are pending; follow the
+[deployment runbook](docs/deployment.md).
+
 **Historical audit, 2026-09-08:** the URL-by-URL monitor and editable discovery/relevance
-prompts are implemented and tested in the SSH sandbox. Production still uses
-the legacy Step jobs; the four-slot deployment below has not been switched on.
+prompts were implemented and tested in the SSH sandbox. At that audit, production
+used the legacy Step jobs; the four-slot deployment below had not been switched on.
 Issue #87 was closed by the owner; its closure is not deployment evidence.
 Pillar B now validates dated search evidence, and the monitor wrapper records
 the report identity required by email. A complete run over the configured sites
@@ -48,18 +54,19 @@ The active note chosen in the web Obsidian tab or the Obsidian plugin is sent as
 Chat now also exposes three answer modes:
 
 - `Brief`: faster, tighter synthesis
-- `Detailed`: richer answers that pull more aggressively from `sources/` raw reports
+- `Detailed`: richer answers with more supporting passages from the same public corpus
 - `Report`: a theme-clustered, date-coverage-aware report mode tuned for prompts such as `Summarize the past 4 weeks`
 
 ## Runtime
 
 - `api_server.py` serves the Codespaces demo and the `/api/*` API routes.
-- `agentic_wiki/` loads public Wiki, raw reports and the activated runtime overlay.
-  Same-name generated Registry pages retain Public history and activated intake
-  evidence before retrieval and cited answer synthesis.
+- `agentic_wiki/` retrieves the shared approved Wiki projection for current
+  Registry deployments. Raw reports and old runtime overlays remain legacy
+  compatibility inputs; they cannot republish hidden or pending current items.
 - `climate_registry/` owns article identity and evidence, intake activation,
   shared Wiki rendering, frozen range reports, historical enrichment and exact
-  restore. Its Public and Runtime deployment roles remain separate.
+  restore. `CLIMATE_REGISTRY_DB` selects one external business database; runtime
+  storage retains queues, task state and derived artifacts.
 - `climate_delivery/` owns shared rendering, immutable report revisions, native
   review receipts and exact approved-file delivery. The historical weekly
   summary/PDF/manifest contract remains readable.
@@ -121,10 +128,11 @@ curl -s http://localhost:8501/api/chat \
 
 ## When Sources Update
 
-If `sources/` changes, do the following:
+`sources/` preserves published report history and citation evidence. Add new
+reports without rewriting existing archive bytes. For a local rebuild:
 
-1. Add or update the raw file in `sources/`.
-2. Regenerate the weekly report pages and `wiki/index.md`:
+1. Add the new report to `sources/`.
+2. Regenerate the current weekly pages and `wiki/index.md`:
 
 ```bash
 REPORT_DATE="<new Monday, YYYY-MM-DD>"
@@ -134,7 +142,14 @@ python scripts/reload_and_smoke_test.py --date "$REPORT_DATE"
 
 3. Confirm the reload and smoke test succeed for that same `REPORT_DATE`.
 
-The detailed step-by-step workflow lives in [docs/source-update-sop.md](docs/source-update-sop.md).
+With `CLIMATE_REGISTRY_DB` configured, sync reads its approved public projection;
+`--registry-database` can select an existing external rehearsal copy. New pending
+items remain hidden until T1 improvement and T10 review complete. Without either
+selector, the legacy sources-only rebuild remains available. Production Git
+publication uses the isolated publisher, followed by review/merge and a separate
+deployment; rebuilding or reloading is not an approval or cutover. See
+[the source-update SOP](docs/source-update-sop.md) and
+[deployment](docs/deployment.md).
 
 ## Importing PDF reports
 
@@ -151,13 +166,16 @@ bundle, create a pre-import backup and pass `--apply`:
 python -m climate_monitor.pdf_intake \
   --input docs/input \
   --output output/pdf-intake.json \
-  --registry-db /path/to/existing/climate_registry.sqlite3 \
+  --registry-db "$CLIMATE_REGISTRY_DB" \
   --backup-dir output/registry-backups \
   --apply
 ```
 
-Replace the example Registry path with the existing database file. `--apply` is
-required for any CLI file or database write. The adapter records the PDF hash,
+Set `CLIMATE_REGISTRY_DB` to the existing external business database first;
+current writes require the explicit schema 22 migration in the
+[deployment runbook](docs/deployment.md). `--apply` is required for any CLI file
+or database write. New automated records remain candidates until T1/T10 review.
+The adapter records the PDF hash,
 extracted page text, links, dates, summaries and TypeSafe classification
 suggestions in PDF-specific Registry tables. Re-imports deduplicate the same
 PDF and article/calendar occurrences. `TYPESAFE_API_KEY` is optional; without
@@ -184,14 +202,14 @@ Titles are metadata: different URLs with the same title remain separate articles
 | Report/state transaction | `climate_monitor/orchestrator.py`, `seen_state.py` | Finalize the validated Markdown, sidecar, candidate evidence and URL history |
 | Delivery | `climate_delivery/` | Reuse the executive narrative, render PDF/manifest and perform retained email delivery |
 | Publication | `scripts/publish_weekly_reports.py` | Regenerate wiki in an isolated clone and update the rolling content PR |
-| Registry and knowledge | `climate_registry/`, `agentic_wiki/`, `api_server.py` | Pre-report article storage, shared Wiki/runtime projection, historical reports, retrieval and post-deploy report association |
+| Registry and knowledge | `climate_registry/`, `agentic_wiki/`, `api_server.py` | Pre-report article storage, shared approved projection, immutable report archives, retrieval and post-deploy report association |
 
 ### New flow
 
 The article-first flow is documented in
 [Article-first architecture](docs/article-first-architecture.md). Registry
 acquisition writes happen before report authoring. A report is one output of
-the article library; runtime knowledge indexing does not require a new report
+the article library; approved knowledge indexing does not require a new report
 or a GitHub merge. The scheduler and deployment edges below require separate
 live verification.
 
@@ -200,16 +218,17 @@ flowchart LR
     A["web_listening sites"] --> R
     B["Hermes search + governed extraction"] --> R
     P["Management PDF import"] --> R
-    R["Registry<br/>canonical article + immutable evidence + all origins"] --> K
-    K["Pinned intake manifest + snapshots<br/>existing writer / shared Wiki rendering"] --> C["Wiki + RAG + Chat"]
-    R --> Q["Frozen date-range report"]
+    R["One CLIMATE_REGISTRY_DB<br/>pending candidates + immutable evidence"] --> I["Existing T1/T10<br/>information improvement + native review"]
+    I --> K["Automatic exact snapshot checks<br/>published version + is_visible"]
+    K --> C["Same public projection<br/>API + Wiki + RAG + Chat"]
+    K --> Q["Frozen date-range report"]
     C --> Q
     Q --> F["HTML/PDF<br/>existing versioned renderer"]
     R --> M["Existing serial monitor<br/>article summaries + executive"]
     M --> S["sources/<br/>report + semantic sidecar"]
     S --> E["climate_delivery<br/>PDF/manifest + retained email"]
     S --> G["Isolated publisher<br/>rolling content PR"]
-    R -->|Public Registry snapshot| G
+    K -->|Approved public snapshot| G
     G --> D["Human review + merge + deploy"]
     D --> V["Registry report association<br/>exact identity and coverage gates"]
     H["Management parameters/prompts + Hermes"] -. "independent jobs" .-> K
@@ -217,13 +236,13 @@ flowchart LR
     H -.-> Q
 ```
 
-Registry stores article identity and provenance. `sources/` remains the
-append-mostly report archive. Runtime intake generations are rebuilt from their
-validated manifests and pinned snapshots, using the existing single writer.
-Same-name runtime pages take precedence; missing pages fall back to public Wiki
-history. The Public Registry remains the publisher input; runtime intake does
-not promote its database into it. Range reports reuse the same frozen inputs
-and renderer from Chat or the independent CLI.
+`CLIMATE_REGISTRY_DB` selects the only business database. Existing acquisition,
+PDF intake, T1 and T10 write there; queues and task files stay on runtime storage.
+Public API connections are read-only. All current consumers read immutable
+approved versions through the same projection. A later pending update preserves
+the old public version. `is_visible=false` removes the canonical article across
+all its sources. Archived reports and `sources/` remain immutable.
+
 The future IAA CSC template module is tracked in [#189](https://github.com/ferryhe/climate_monitor_wiki/issues/189)
 and follows the user's `docs/input` samples; this change keeps current PDF formats.
 
@@ -275,11 +294,13 @@ If you deploy it as a Render web service, the relevant settings are:
 - Start Command: `python -m scripts.run_render_web`
 - Health Check Path: `/api/health`
 
-The Render start command builds an ephemeral SQLite Registry from the tracked
-`sources/` history before starting the API. This keeps Historical Reports usable
-on Render's free, ephemeral filesystem. The Registry is rebuilt after each
-restart or deploy; if `CLIMATE_REGISTRY_DB` is explicitly configured, that
-external database is used instead and the bootstrap is skipped.
+The Render start command builds a temporary Registry for the immutable tracked
+report history, then installs `wiki/public-registry.json` as the current approved
+public snapshot, retaining committed Wiki bodies. If that artifact is absent,
+the legacy sources/Wiki bootstrap remains available. This local Registry is
+rebuilt on restart or deploy; no production database is committed to Git. If
+`CLIMATE_REGISTRY_DB` is configured, the external database is used and bootstrap
+is skipped.
 
 The Blueprint also sets:
 
@@ -341,7 +362,7 @@ node --check showcase/app.js
 Coverage today focuses on:
 
 - wiki indexing and chunking
-- raw `sources/` ingestion into retrieval
+- approved current projection retrieval and legacy sources-only compatibility
 - `contextPath` ranking behavior
 - `brief` vs `detailed` answer-mode behavior
 - rolling date-window summary coverage such as `past 7 days`
@@ -356,10 +377,10 @@ Manual QA notes live in [docs/testing.md](docs/testing.md). UI surface details l
 
 ```text
 .
-├── sources/           # Canonical daily/weekly reports; append-mostly source of truth
-├── wiki/              # Derived report pages, topics, and Obsidian vault content
+├── sources/           # Immutable daily/weekly report archive and citation evidence
+├── wiki/              # Approved public Git snapshot, derived pages, topics, and vault content
 ├── showcase/          # Three-tab static operator workspace
-├── agentic_wiki/      # Mixed-corpus retrieval over wiki + raw sources
+├── agentic_wiki/      # Approved Wiki retrieval with legacy read compatibility
 ├── climate_registry/  # Article storage, intake, Wiki projection, range snapshots and restore
 ├── climate_delivery/  # Summary/PDF/manifest and retained email delivery
 ├── scripts/           # Monitor, publisher, reload, Registry and QA entrypoints
@@ -441,23 +462,25 @@ frozen report input ──► existing monitor authoring/checkpoint/publish gate
 An authenticated operator can choose **Start ingest-only run** in `/manage`
 (the equivalent API request is `POST /api/manage/runs` with
 `{"mode":"ingest_only"}`). It uses the normal governed acquisition and frozen
-batch, then indexes and activates Wiki/Chat without creating a weekly report,
-PDF, email, or rolling PR. The default manual request and every scheduled start
+batch to write pending candidates to the same Registry. T1 improvement and T10
+review must complete before the approved projection is indexed and available in
+Wiki/Chat. This mode creates no weekly report, PDF, email, or rolling PR.
+The default manual request and every scheduled start
 remain report mode; the delivery times and deployment boundary do not change.
-The wiki-side producer writes an immutable request and validated SQLite snapshot
-to the shared intake queue; the existing `pdf-intake-writer` remains the sole
-owner of the writable runtime Wiki mount and handles both activation job types.
+The wiki-side producer retains its immutable request and validated snapshot in
+the shared intake queue. The existing `pdf-intake-writer` handles both PDF and
+web activation and still owns the writable runtime Wiki mount; that mount is
+derived output, not a second business database.
 
-Progress records `acquisition_complete`, `indexed`, and `chat_ready` separately.
+Progress keeps `pending_review`, `acquisition_complete`, `indexed`, and
+`chat_ready` distinct. Intake completion alone does not make a candidate public.
 If indexing or Chat activation fails, **Resume frozen run** retries post-processing
-from the saved batch without fetching it again. Range reports use the activated
-`climate-intake-projection.v1` allowlist and hash-validated, read-only Runtime
-snapshot, preserving each article ID, pinned content-version ID, publication
-date, and its evidence. Invalid manifests, snapshots, or reload acknowledgements
-fail closed and leave the prior active projection available. The Runtime database
-itself is not exposed or promoted into the Public Registry; see
-[docs/deployment.md](docs/deployment.md#explicit-management-pdf-imports) for the
-separate Registry roles and activation boundary.
+from the saved batch without fetching it again. Current range reports and the
+publisher use the shared approved Registry projection. Legacy active manifests
+remain readable for historical contracts. The Render entrypoint imports the
+committed `wiki/public-registry.json` public display snapshot into its existing
+temporary Registry, retaining approved Git Wiki bodies without a production DB.
+See [deployment](docs/deployment.md#explicit-management-pdf-imports).
 
 There is no separate console queue, search wrapper, second executor, or report/publish
 bypass. Concurrent start/resume requests for the shared

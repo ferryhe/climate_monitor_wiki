@@ -46,10 +46,11 @@ def _database(
     include_article_a_acquisitions: bool = True,
     fetched_at: str = NOW,
     pdf_period: tuple[str | None, str | None] = (None, None),
+    target_version: int = 20,
 ) -> Path:
     database = tmp_path / "registry.sqlite3"
     connection = sqlite3.connect(database)
-    apply_migrations(connection)
+    apply_migrations(connection,target_version=target_version)
     connection.execute(
         "INSERT INTO sources VALUES ('source', 'example.org', 'Example Institute', ?, ?)",
         (NOW, NOW),
@@ -87,7 +88,11 @@ def _database(
             (version_id, content_id, article_id),
         )
         connection.execute(
-            """INSERT INTO article_enrichments VALUES
+            """INSERT INTO article_enrichments(
+                   enrichment_id, content_version_id, status, summary, categories_json,
+                   keywords_json, language, generator_kind, generator_name,
+                   generator_version, generated_at, error_code, error_message
+               ) VALUES
                (?, ?, 'complete', ?, ?, ?, 'en', 'deterministic', 'fixture', 'semantic-v3',
                 ?, NULL, NULL)""",
             ("enrichment-" + article_id, content_id, f"Summary for {title} — café μ",
@@ -227,7 +232,18 @@ def _database(
     )
     connection.commit()
     connection.close()
+    _approve_public_fixture(database)
     return database
+
+
+def _approve_public_fixture(database: Path) -> None:
+    """Range/report fixtures are explicitly accepted historical public records."""
+    from climate_registry.publication import stage_entities, _approve
+    with sqlite3.connect(database) as connection:
+        if connection.execute("PRAGMA user_version").fetchone()[0] < 21:
+            return
+        for sha in stage_entities(connection, annotations={}):
+            _approve(connection, sha, {"basis":"accepted report fixture"}, status="accepted_legacy")
 
 
 def _reader(database: Path, tmp_path: Path) -> RegistryReader:
@@ -266,6 +282,7 @@ def _insert_pdf_calendar(
                 _sha(name), json.dumps(item),
             ),
         )
+    _approve_public_fixture(database)
     return occurrence_id
 
 
@@ -319,7 +336,7 @@ def _insert_meeting_check(
             (run_id, check_sha({}), checked_at, checked_at),
         )
         connection.execute(
-            """INSERT INTO meeting_check_attempts VALUES
+            """INSERT INTO meeting_check_attempts(attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256) VALUES
                (?, ?, ?, ?, ?, ?, 'accessible', ?, ?, ?)""",
             (attempt_id, run_id, occurrence_id, source_url, source_revision("meetings", item),
              checked_at, verification_status, packet_json, check_sha(packet)),
@@ -460,6 +477,35 @@ def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     )
 
 
+def test_range_report_uses_manual_article_version_enrichment_without_current_body(tmp_path):
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE articles SET current_content_version_id=NULL WHERE article_id='article-a'"
+        )
+        connection.execute(
+            """INSERT INTO article_enrichments(
+                   enrichment_id, article_id, article_version_id, status, summary,
+                   categories_json, keywords_json, language, generator_kind,
+                   generator_name, generator_version, generated_at
+               ) VALUES ('manual-article-a', 'article-a', 'version-article-a', 'complete',
+                         'Human-reviewed range summary.', '[\"Physical risk\"]',
+                         '[\"pricing\"]', 'en', 'manual', 'human-review',
+                         'manual-v1', ?)""",
+            (NOW,),
+        )
+
+    snapshot = freeze_range_report(
+        _reader(database, tmp_path), tmp_path / "range-output",
+        start_date="2026-09-17", end_date="2026-09-30",
+    )
+    article = next(item for item in snapshot["articles"] if item["article_id"] == "article-a")
+    assert article["summary"] == "Human-reviewed range summary."
+    assert article["content_version_id"] is None
+    assert article["provenance"]["summary"]["basis"] == "manual_enrichment"
+    assert article["provenance"]["summary"]["article_version_id"] == "version-article-a"
+
+
 def test_range_report_cli_reuses_chat_snapshot_and_renderer(tmp_path, capsys, monkeypatch):
     for name in (
         "CLIMATE_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RUNTIME_WIKI_DIR",
@@ -489,6 +535,165 @@ def test_range_report_cli_reuses_chat_snapshot_and_renderer(tmp_path, capsys, mo
     assert first["snapshot_sha256"] == expected["snapshot_sha256"]
     assert first["renderer"] == RENDERER_VERSION
     assert Path(first["pdf_path"]).read_bytes().startswith(b"%PDF")
+
+
+
+def _t4_legacy_projection(tmp_path, database, state):
+    """Use the intake writer's real immutable manifest/pointer format."""
+    from climate_registry.pdf_pipeline import _write_projection_manifest
+    runtime, queue = tmp_path / "runtime", tmp_path / "queue"
+    generation = runtime / "generations" / "previous-generation"
+    generation.mkdir(parents=True)
+    queue.mkdir()
+    snapshot = runtime / "registry-snapshots" / "previous-generation.sqlite3"
+    snapshot.parent.mkdir()
+    payload = database.read_bytes()
+    if state == "healthy":
+        snapshot.write_bytes(payload)
+    elif state == "corrupt":
+        snapshot.write_bytes(b"corrupt previous Registry")
+    manifest_sha = _write_projection_manifest(
+        generation, generation.name, web_items=[], pdf_occurrence_ids={"pdf-occ-a"},
+    )
+    (queue / "active.json").write_text(json.dumps({
+        "generation_id": generation.name, "path": str(generation),
+        "registry_sha256": "a" * 64, "manifest_sha256": manifest_sha,
+        "pdf_registry_snapshot": str(snapshot),
+        "pdf_registry_sha256": hashlib.sha256(payload).hexdigest(),
+    }), encoding="utf-8")
+    return runtime, queue
+
+
+def _t4_arguments(database, artifacts, branch):
+    arguments = ["--database", str(database), "--artifact-root", str(artifacts)]
+    if branch == "range":
+        return arguments + ["--start-date", "2026-09-20", "--end-date", "2026-09-30"]
+    if branch == "biweekly":
+        return arguments + ["--biweekly-date", "2026-10-12"]
+    return arguments + ["--scheduled-biweekly"]
+
+
+@pytest.mark.parametrize("branch", ["range", "biweekly", "scheduled"])
+@pytest.mark.parametrize("overlay", ["unconfigured", "missing", "corrupt", "healthy",
+    "runtime_cli", "queue_cli", "runtime_env", "queue_env", "pdf_runtime_env", "pdf_queue_env"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_t4_current_registry_ignores_unused_legacy_projection(
+    tmp_path, monkeypatch, capsys, branch, overlay, empty,
+):
+    import datetime as clock_module
+    from climate_monitor.schedule import pipeline_due
+    for name in (
+        "CLIMATE_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RUNTIME_WIKI_DIR",
+        "CLIMATE_INTAKE_QUEUE_DIR", "CLIMATE_PDF_INTAKE_QUEUE_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    current = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current.astimezone(tz) if tz else current.replace(tzinfo=None)
+    monkeypatch.setattr(clock_module, "datetime", Clock)
+    assert pipeline_due("T4", current)  # Exercise the actual scheduled due branch.
+    if empty:
+        database = tmp_path / "registry.sqlite3"
+        with sqlite3.connect(database) as connection:
+            apply_migrations(connection)
+    else:
+        database = _database(tmp_path, target_version=21)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    original = database.read_bytes(), database.stat().st_ino
+    arguments = _t4_arguments(database, tmp_path / "artifacts", branch)
+    assert generate_range_report_main(arguments) == 0
+    expected = json.loads(capsys.readouterr().out)
+    single = overlay.endswith("_cli") or overlay.endswith("_env")
+    if single:
+        key = "queue" if "queue" in overlay else "runtime"
+        retired = tmp_path / "retired"
+        if overlay.endswith("_cli"):
+            arguments += ["--" + key + "-dir",str(retired)]
+        else:
+            name = ("CLIMATE_PDF_INTAKE_QUEUE_DIR" if key == "queue" else "CLIMATE_PDF_RUNTIME_WIKI_DIR") if overlay.startswith("pdf_") else ("CLIMATE_INTAKE_QUEUE_DIR" if key == "queue" else "CLIMATE_RUNTIME_WIKI_DIR")
+            monkeypatch.setenv(name,str(retired))
+    elif overlay != "unconfigured":
+        legacy = tmp_path / "legacy.sqlite3"
+        with sqlite3.connect(legacy) as connection:
+            apply_migrations(connection, target_version=20)
+        runtime, queue = _t4_legacy_projection(tmp_path, legacy, overlay)
+        arguments += ["--runtime-dir", str(runtime), "--queue-dir", str(queue)]
+        # Snapshot + active request remain immutable, even when unusable.
+        saved = {p: p.read_bytes() for base in (runtime, queue) for p in base.rglob("*") if p.is_file()}
+    assert generate_range_report_main(arguments) == 0
+    assert json.loads(capsys.readouterr().out) == expected
+    if overlay != "unconfigured" and not single:
+        assert all(p.read_bytes() == content for p, content in saved.items())
+    elif single:
+        assert not retired.exists()
+    assert (database.read_bytes(), database.stat().st_ino) == original
+    if branch == "range":
+        snapshot = load_range_report(tmp_path / "artifacts", expected["snapshot_id"])
+        assert Path(expected["pdf_path"]).read_bytes().startswith(b"%PDF")
+    elif empty:
+        assert expected["status"] == "no_eligible_information"
+    else:
+        assert expected["status"] == "pending_review"
+        snapshot = json.loads((tmp_path / "artifacts/reports/2026-10-12/snapshot.json").read_text())
+    if not empty:
+        article = next(item for item in snapshot["articles"] if item["article_id"] == "article-a")
+        assert article["summary"] == _reader(database, tmp_path).article("article-a")["summary"]
+        assert "Long persisted climate evidence" in article["content"]
+        assert article["publication_date"] == "2026-09-20"
+    elif branch == "range":
+        assert snapshot["articles"] == []
+
+
+@pytest.mark.parametrize("branch", ["range", "biweekly"])
+@pytest.mark.parametrize("overlay", ["missing", "corrupt", "healthy"])
+def test_t4_legacy_registry_retains_strict_overlay_contract(tmp_path, monkeypatch, branch, overlay):
+    from climate_registry.read_api import RegistryContractError
+    database = _database(tmp_path)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    runtime, queue = _t4_legacy_projection(tmp_path, database, overlay)
+    original = database.read_bytes(), database.stat().st_ino
+    arguments = _t4_arguments(database, tmp_path / "artifacts", branch)
+    arguments += ["--runtime-dir", str(runtime), "--queue-dir", str(queue)]
+    if overlay == "healthy":
+        assert generate_range_report_main(arguments) == 0
+    else:
+        with pytest.raises(RegistryContractError, match="active intake Registry projection is invalid"):
+            generate_range_report_main(arguments)
+        assert not (tmp_path / "artifacts").exists()
+    assert (database.read_bytes(), database.stat().st_ino) == original
+
+
+@pytest.mark.parametrize("state", ["missing", "corrupt", "unsupported"])
+@pytest.mark.parametrize("branch", ["range", "biweekly", "scheduled"])
+def test_t4_current_database_errors_never_fall_back_to_healthy_overlay(
+    tmp_path, monkeypatch, state, branch,
+):
+    import datetime as clock_module
+    from climate_registry.read_api import RegistryError
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+            return current.astimezone(tz) if tz else current.replace(tzinfo=None)
+    monkeypatch.setattr(clock_module, "datetime", Clock)
+    legacy = _database(tmp_path)
+    runtime, queue = _t4_legacy_projection(tmp_path, legacy, "healthy")
+    database = tmp_path / "selected.sqlite3"
+    if state == "corrupt":
+        database.write_bytes(b"not a SQLite Registry")
+    elif state == "unsupported":
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA user_version=999")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    saved = database.read_bytes() if database.exists() else None
+    arguments = _t4_arguments(database, tmp_path / "artifacts", branch)
+    arguments += ["--runtime-dir", str(runtime), "--queue-dir", str(queue)]
+    with pytest.raises(RegistryError):
+        generate_range_report_main(arguments)
+    assert (database.read_bytes() if database.exists() else None) == saved
+    assert not (tmp_path / "artifacts").exists()
 
 
 def test_active_web_identity_survives_linked_pdf_overlay_merge(tmp_path):
@@ -769,8 +974,7 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     assert shared_item["access_status"] == "accessible"
     assert shared_item["collection_status"] == "collected"
     assert shared_item["checked_at"] == NOW
-    assert {check["attempt_id"] for check in shared_item["checks"]} == {"fixture-attempt"}
-    assert "runtime-copy.pdf" in {source["filename"] for source in shared_item["source_observations"]}
+    assert "checks" not in shared_item and "source_observations" not in shared_item
 
     meetings = api_server.registry_meetings(base_date="2026-09-30")
     assert meetings["pagination"]["total"] == 3
@@ -787,10 +991,7 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     assert verified_shared["access_status"] == "accessible"
     assert verified_shared["collection_status"] == "collected"
     assert verified_shared["checked_at"] == NOW
-    assert {check["attempt_id"] for check in verified_shared["checks"]} == {"fixture-attempt"}
-    assert {source["filename"] for source in verified_shared["source_observations"]} >= {
-        "report.pdf", "runtime-copy.pdf",
-    }
+    assert "checks" not in verified_shared and "source_observations" not in verified_shared
 
     report = freeze_range_report(
         public_reader, tmp_path / f"range-merge-{checked_copy}",
@@ -812,6 +1013,7 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     assert range_shared["start_date"] == "2026-10-10"
     assert range_shared["end_date"] == "2026-10-11"
     assert range_shared["checked_at"] == NOW
+    assert {check["attempt_id"] for check in range_shared["checks"]} == {"fixture-attempt"}
     assert {source["filename"] for source in range_shared["source_observations"]} >= {
         "report.pdf", "runtime-copy.pdf",
     }
@@ -867,8 +1069,7 @@ def test_pdf_rechecks_select_latest_source_in_api_and_range(tmp_path, monkeypatc
     assert api_item["start_date"] == "2026-10-20"
     assert api_item["collected_candidate"]["start_date"] == "2026-10-20"
     assert api_item["checked_at"] == "2026-10-05T10:00:00Z"
-    assert {check["attempt_id"] for check in api_item["checks"]} == {"older-attempt", "newer-attempt"}
-    assert {check["source_url"] for check in api_item["checks"]} == {source_url}
+    assert "checks" not in api_item and "source_observations" not in api_item
 
     report = freeze_range_report(
         public_reader, tmp_path / f"range-recheck-{newer_copy}",
@@ -885,6 +1086,7 @@ def test_pdf_rechecks_select_latest_source_in_api_and_range(tmp_path, monkeypatc
     assert range_item["canonical_event_id"] == "event-rechecked"
     assert range_item["checked_at"] == "2026-10-05T10:00:00Z"
     assert {check["attempt_id"] for check in range_item["checks"]} == {"older-attempt", "newer-attempt"}
+    assert {check["source_url"] for check in range_item["checks"]} == {source_url}
 
 
 @pytest.mark.parametrize("checked_copy", ["public", "runtime"])
@@ -1216,6 +1418,134 @@ def test_page_information_date_is_used_only_when_collection_is_absent(tmp_path):
     assert article["range_date"] == article["information_date"] == "2026-09-18"
     assert article["publication_date"] is None
     assert article["collected_at"] is None
+
+
+
+def _report_day_observation(database, identity="article-month", observed="2026-09-18", *, evidence=None):
+    value = evidence if evidence is not None else {
+        "date_basis": "daily_or_weekly_report_date", "report_date": observed,
+        "cadence": "legacy-daily", "report_filename": f"climate-monitor-{observed}.md",
+        "note": "This is the monitoring report date, not the article publication date.",
+    }
+    with sqlite3.connect(database) as connection:
+        url = connection.execute("SELECT canonical_url FROM articles WHERE article_id=?", (identity,)).fetchone()[0]
+        connection.execute("""INSERT INTO article_date_observations VALUES
+            (?, ?, ?, 'collection', ?, 'legacy_report', 'legacy-report', 'legacy-report-row',
+             'report-observation', ?, '2026-10-01T00:00:00Z')""",
+            ("report-day-" + identity, identity, url, observed, json.dumps(value)))
+    _approve_public_fixture(database)
+    return value
+
+
+def test_report_day_fallback_keeps_original_precision_and_unknown_publication(tmp_path):
+    database = _database(tmp_path, target_version=21)
+    evidence = _report_day_observation(database)
+    reader = _reader(database, tmp_path)
+    original = database.read_bytes(), database.stat().st_ino
+    root = tmp_path / "report-day"
+    snapshot = freeze_range_report(reader, root, start_date="2026-09-18", end_date="2026-09-18")
+    article = next(item for item in snapshot["articles"] if item["article_id"] == "article-month")
+    assert article["date_basis"] == "report_date"
+    assert article["range_date"] == "2026-09-18"
+    assert article["collected_at"] is article["publication_date"] is article["information_date"] is None
+    observation = article["provenance"]["report_date"]["selected"]
+    assert observation["evidence"] == evidence
+    assert observation["date"] == "2026-09-18"
+    assert observation["basis"] == "daily_or_weekly_report_date"
+    assert "collected_at" not in observation
+    assert article["provenance"]["collection_time"]["selected"] is None
+    assert article["provenance"]["collection_time"]["all"] == []
+    assert article["provenance"]["publication_date"]["selected"] is None
+    assert "article-month" in snapshot["unknown_publication_date_article_ids"]
+    assert "article-month" not in snapshot["date_unknown_article_ids"]
+    assert load_range_report(root, snapshot["snapshot_id"])["articles"] == snapshot["articles"]
+    html = render_range_report_html(snapshot)
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(ensure_range_report_pdf(snapshot, root)).pages)
+    from climate_registry.range_reports import render_range_report_chat
+    markdown = render_range_report_chat(snapshot, web_url="https://example.org/report", pdf_url="https://example.org/report.pdf")
+    for output in (html, pdf_text, markdown):
+        assert "2026-09-18" in output
+        assert "report date" in output.lower()
+    assert "article publication date unconfirmed" in html.lower()
+    assert "article publication date unconfirmed" in pdf_text.lower()
+    assert "**Report date:** 2026-09-18" in markdown
+    assert "**Collected at:**" not in markdown and "**Publication date:**" not in markdown
+    assert "daily_or_weekly_report_date" in html
+    assert "2026-09-18T00:00" not in html + markdown + pdf_text
+    assert (database.read_bytes(), database.stat().st_ino) == original
+
+
+@pytest.mark.parametrize("priority", ["collection", "page_information", "publication"])
+def test_report_day_is_only_a_fallback_for_more_precise_approved_evidence(tmp_path, priority):
+    database = _database(tmp_path, target_version=21)
+    identity = "article-a" if priority == "collection" else "article-month"
+    _report_day_observation(database, identity)
+    if priority == "publication":
+        # A body-less publisher observation has a real fetch record and publication proof.
+        with sqlite3.connect(database) as connection:
+            connection.execute("""INSERT INTO article_fetches(
+                fetch_id, article_id, requested_url, final_url, fetched_at, fetch_status, http_status, error_code)
+                VALUES ('fetch-month-publication', 'article-month', 'https://example.org/month',
+                        'https://example.org/month', ?, 'failed', 403, 'publisher_forbidden')""", (NOW,))
+            connection.execute("""INSERT INTO acquisition_items(
+                acquisition_item_id,batch_id,ordinal,article_id,raw_url,source_name,title,summary,
+                discovered_at,discovery_kind,discovery_ref,origins_json,publication_date,
+                publication_date_evidence_json,date_status,selection_status,selection_reason,
+                update_status,material_status,fetch_id,attempts_json,processing_status)
+                VALUES ('month-publication','batch',5,'article-month','https://example.org/month',
+                        'Example Institute','Month precision article','Observed publisher summary',
+                        ?,'site','publisher-observation','[]','2026-09-20',
+                        '{"kind":"publisher","text":"Published 20 September 2026"}',
+                        'eligible','selected','relevant','baseline','snippet','fetch-month-publication',
+                        '[]','complete')""", (NOW,))
+    elif priority == "page_information":
+        with sqlite3.connect(database) as connection:
+            connection.execute("""INSERT INTO article_date_observations VALUES
+                ('information-month', 'article-month', 'https://example.org/month', 'page_information',
+                 '2026-09-20', 'original_website', 'review.json', 'original_page_dates',
+                 'page-check-month', '{"date_kind":"updated"}', '2026-10-01T00:00:00Z')""")
+    _approve_public_fixture(database)
+    reader = _reader(database, tmp_path)
+    before = database.read_bytes()
+    snapshot = freeze_range_report(reader, tmp_path / "priority", start_date="2026-09-18", end_date="2026-09-30")
+    article = next(item for item in snapshot["articles"] if item["article_id"] == identity)
+    assert article["date_basis"] == {"collection":"collection_time", "page_information":"information_date", "publication":"publication_date"}[priority]
+    assert article["range_date"] == ("2026-09-30" if priority == "collection" else "2026-09-20")
+    assert article["provenance"]["report_date"]["selected"] is None
+    assert article["provenance"]["report_date"]["all"][0]["date"] == "2026-09-18"
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize("observed,evidence", [
+    ("2026-09-18", {"date_basis":"daily_or_weekly_report_date", "report_date":"2026-09-19"}),
+    ("2026-09-18", {"date_basis":"web_listening_snapshot", "report_date":"2026-09-18"}),
+    ("2026-02-30", {"date_basis":"daily_or_weekly_report_date", "report_date":"2026-02-30"}),
+    ("2026-09-18T12:00:00", {"date_basis":"daily_or_weekly_report_date", "report_date":"2026-09-18"}),
+])
+def test_ambiguous_report_days_and_naive_instants_still_fail_closed(tmp_path, observed, evidence):
+    from climate_registry.read_api import RegistryContractError
+    database = _database(tmp_path, target_version=21)
+    _report_day_observation(database, observed=observed, evidence=evidence)
+    before = database.read_bytes()
+    with pytest.raises(RegistryContractError):
+        freeze_range_report(_reader(database, tmp_path), tmp_path / "invalid-day",
+            start_date="2026-09-01", end_date="2026-09-30")
+    assert database.read_bytes() == before
+
+
+def test_report_day_does_not_fabricate_biweekly_material_ingestion_time(tmp_path):
+    from climate_delivery.report_review import freeze_biweekly
+    database = _database(tmp_path, target_version=21)
+    _report_day_observation(database, observed="2026-09-01")
+    before = database.read_bytes()
+    reader = _reader(database, tmp_path)
+    # This report day is in the window, but actual persisted knowledge arrived Sep 30.
+    state = freeze_biweekly(reader, tmp_path / "biweekly", occurrence="2026-09-14",
+        generated_at=datetime(2026, 9, 14, 12, tzinfo=timezone.utc))
+    assert state["status"] == "no_eligible_information"
+    snapshot = json.loads((tmp_path / "biweekly/reports/2026-09-14/snapshot.json").read_text())
+    assert snapshot["articles"] == [] and snapshot["material_versions"] == []
+    assert database.read_bytes() == before
 
 
 def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_path):
@@ -1965,3 +2295,24 @@ def test_short_and_long_pdf_fixtures_have_toc_bookmarks_pages_unicode_and_citati
     assert snapshot["snapshot_id"] not in text
     from climate_delivery.templates.adapters import adapt_range_report
     assert adapt_range_report(snapshot).input_id == snapshot["snapshot_id"]
+
+
+@pytest.mark.parametrize("branch", ["range","biweekly","scheduled"])
+@pytest.mark.parametrize("single", ["runtime","queue"])
+def test_t4_legacy_keeps_pair_validation_for_single_retired_configuration(tmp_path,monkeypatch,branch,single,capsys):
+    import datetime as clock_module
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):
+            now=datetime(2026,10,12,12,tzinfo=timezone.utc)
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+    monkeypatch.setattr(clock_module,"datetime",Clock)
+    for name in ("CLIMATE_RUNTIME_WIKI_DIR","CLIMATE_PDF_RUNTIME_WIKI_DIR","CLIMATE_INTAKE_QUEUE_DIR","CLIMATE_PDF_INTAKE_QUEUE_DIR"):
+        monkeypatch.delenv(name,raising=False)
+    database=_database(tmp_path)
+    before=database.read_bytes()
+    with pytest.raises(SystemExit) as raised:
+        generate_range_report_main(_t4_arguments(database,tmp_path/"artifacts",branch)+["--"+single+"-dir",str(tmp_path/"retired")])
+    assert raised.value.code == 2
+    assert "configured together" in capsys.readouterr().err
+    assert database.read_bytes() == before and not (tmp_path/"artifacts").exists()

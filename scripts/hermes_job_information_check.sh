@@ -14,8 +14,8 @@ from dotenv import dotenv_values
 configuration = dotenv_values(stream=StringIO(sys.stdin.read()), interpolate=False)
 os.environ["TYPESAFE_API_KEY"] = configuration.get("TYPESAFE_API_KEY") or ""
 
-required = ("TYPESAFE_API_KEY", "CLIMATE_REGISTRY_WRITER_DB", "CLIMATE_REGISTRY_BACKUP_DIR",
-    "CLIMATE_PDF_INTAKE_QUEUE_DIR", "CLIMATE_PDF_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RELOAD_URL", "RELOAD_TOKEN")
+required = ("TYPESAFE_API_KEY", "CLIMATE_REGISTRY_DB", "CLIMATE_REGISTRY_BACKUP_DIR",
+    "CLIMATE_PDF_INTAKE_QUEUE_DIR", "CLIMATE_PDF_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RELOAD_URL", "CLIMATE_ACQUISITION_RUN_DIR", "RELOAD_TOKEN")
 missing = [name for name in required if not os.getenv(name, "").strip()]
 if missing:
     print(json.dumps({"status": "not_configured", "missing": missing}), flush=True)
@@ -31,7 +31,7 @@ if sys.argv[1] == "--preflight":
 from pathlib import Path
 from scripts.check_information import run_daily_checks
 raise SystemExit(run_daily_checks([
-    "--database", os.environ["CLIMATE_REGISTRY_WRITER_DB"],
+    "--database", os.environ["CLIMATE_REGISTRY_DB"],
     "--backup-dir", os.environ["CLIMATE_REGISTRY_BACKUP_DIR"], "--refresh-chat",
     "--data-root", os.getenv("CLIMATE_WEB_LISTENING_DATA_DIR", "/pipeline/web-listening"),
 ], result_dir=Path("/pipeline")))

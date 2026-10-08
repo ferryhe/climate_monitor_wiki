@@ -271,6 +271,7 @@ def test_manual_retry_reuses_persisted_failed_identity_after_active_disable(tmp_
     meeting_root = tmp_path / 'meeting-db'
     meeting_root.mkdir()
     binding['registry_database'] = str(_database(meeting_root, ['Climate meeting evidence']))
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',binding['registry_database'])
     binding['acquisition_batch_id'] = 'batch'
     if override:
         binding['meeting'].update(provider='openai-codex', model='legacy-model')
@@ -457,7 +458,7 @@ def test_identity_pair_manual_projection_rejects_partial_frozen_or_persisted_ide
     else:
         frozen.pop(missing)
     monkeypatch.setattr(service, 'binding', lambda run_id: {
-        'registry_database': 'unused.sqlite3', 'acquisition_batch_id': 'batch',
+        'registry_database': str(tmp_path / 'registry.sqlite3'), 'acquisition_batch_id': 'batch',
         'task_version': 1, 'meeting': frozen,
     })
     monkeypatch.setattr(management, 'load_acquisition_batch', lambda *a: {})
@@ -479,7 +480,8 @@ def test_identity_pair_automatic_projection_rejects_partial_frozen_identity(tmp_
               'prompt_sha256': hashlib.sha256(b'prompt').hexdigest(),
               'provider': 'legacy-provider', 'model': 'legacy-model'}
     frozen.pop(missing)
-    binding = {'run_id': 'run', 'acquisition_batch_id': 'batch', 'registry_database': 'unused.sqlite3',
+    _definition(tmp_path)  # A real selected external Registry precedes identity validation.
+    binding = {'run_id': 'run', 'acquisition_batch_id': 'batch', 'registry_database': str(tmp_path / 'registry.sqlite3'),
                'task_version': 1, 'meeting': frozen}
     monkeypatch.setattr(meetings, 'active_meeting_run', lambda *a: None)
     launched = []
