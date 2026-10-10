@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from functools import lru_cache
 
 from .schema import MIGRATIONS, apply_migrations
 
@@ -447,6 +448,19 @@ def _normalize_sql(sql: str) -> str:
 
 def _expected_object_sql(
     kind: str, names: frozenset[str], *, version: int
+) -> dict[str, str]:
+    # This computation only depends on static migration SQL (never changes at
+    # runtime) plus the (kind, names, version) arguments, so its result is
+    # pure and safe to memoize. Without this cache, every registry read
+    # request re-scans the full concatenated migration history with several
+    # regex passes per validated table/trigger/index -- measured at ~0.6s of
+    # the ~2s "Checking the historical archive..." homepage load.
+    return _expected_object_sql_cached(kind, names, version)
+
+
+@lru_cache(maxsize=None)
+def _expected_object_sql_cached(
+    kind: str, names: frozenset[str], version: int
 ) -> dict[str, str]:
     migration_sql = "\n".join(
         migration[2] for migration in MIGRATIONS if migration[0] <= version
