@@ -511,6 +511,8 @@ def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
             title = linked_title or row[2]
             date_fields = _parse_calendar_date(raw_date)
             source_urls = list(dict.fromkeys(link["url"] for link in page_links))
+            explicit_location = _explicit_calendar_location(row_text)
+            explicit_online_url = _explicit_calendar_online_url(row_text)
             identity_urls = sorted({canonical_url(url) or url for url in source_urls})
             item_hash = _sha256(f"{document['source']['sha256']}\n{page['page']}\n{ordinal}\n{row_text}")
             summary = "\n".join(row[2:]).strip()
@@ -538,6 +540,8 @@ def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
                 "raw_text": row_text,
                 "page": page["page"],
                 "source_urls": source_urls,
+                "location": explicit_location,
+                "online_url": explicit_online_url,
                 "source_links": [{"url": link["url"], "rect": link.get("rect", [])} for link in page_links],
                 "source_document_sha256": document["source"]["sha256"],
                 "content_sha256": _sha256(row_text),
@@ -563,8 +567,9 @@ def _calendar_table_rows(raw_pdf: bytes, pages: tuple[int, ...]) -> tuple[dict[s
                     if columns is None:
                         continue
                     top, bottom = row.bbox[1], row.bbox[3]
-                    cells = [_compact(page.crop((cell[0] + 1, top + .3, cell[2] - .3, bottom - .3))
-                        .extract_text(x_tolerance=2, y_tolerance=2) or "") for cell in columns]
+                    raw_cells = [page.crop((cell[0] + 1, top + .3, cell[2] - .3, bottom - .3))
+                        .extract_text(x_tolerance=2, y_tolerance=2) or "" for cell in columns]
+                    cells = [_compact(value) for value in raw_cells]
                     match = re.fullmatch(r"(.+?)\s+(EVENT|DEADLINE|LAUNCH|PUBLICATION|WATCH|WEBINAR)", cells[0], re.I)
                     if match is None:
                         continue
@@ -573,7 +578,11 @@ def _calendar_table_rows(raw_pdf: bytes, pages: tuple[int, ...]) -> tuple[dict[s
                         and link["top"] < bottom and link["bottom"] > top
                         and link["x0"] < columns[1][2] and link["x1"] > columns[1][0]))
                     rows.append({"page": number, "raw_date": match[1], "kind": match[2].lower(),
-                        "name": cells[1], "publisher": cells[2], "relevance": cells[3], "source_urls": urls})
+                        "name": _calendar_event_title(raw_cells[1], cells[1]),
+                        "publisher": cells[2], "relevance": cells[3],
+                        "location": _explicit_calendar_location(raw_cells[1], multiline=True),
+                        "online_url": _explicit_calendar_online_url(raw_cells[1], multiline=True),
+                        "source_urls": urls})
     return tuple(rows)
 
 
@@ -593,13 +602,98 @@ def recover_calendar_fields(raw_pdf: bytes, items: list[dict[str, Any]]) -> list
         matches = [row for row in rows if row["page"] == item["page"]
             and row["kind"] == item["kind"] and normalize(row["raw_date"]) == normalize(item["raw_date"])
             and all(normalize(row[key]) in text for key in ("name", "publisher", "relevance"))]
+        if len(matches) > 1:
+            # Legacy raw text preserves the event cell, including labeled fields.
+            # Use that bounded cell evidence to disambiguate otherwise identical rows;
+            # if it cannot identify exactly one row, leave the item untouched.
+            matches = [row for row in matches if any(
+                normalize(value) in text
+                for value in (row["location"], row["online_url"])
+                if value
+            ) and all(
+                normalize(value) in text
+                for value in (row["location"], row["online_url"])
+                if value
+            )]
         if len(matches) == 1:
             row = matches[0]
             item = dict(item, name=row["name"], publisher=row["publisher"], relevance=row["relevance"],
                 source_urls=row["source_urls"] or item["source_urls"],
                 calendar_field_basis="pdf_table_cells")
+            item["location"] = row["location"]
+            item["online_url"] = row["online_url"]
         result.append(item)
     return result
+
+
+def _calendar_event_title(value: str, fallback: str) -> str:
+    """Keep event-title lines while excluding explicitly labeled cell fields."""
+    lines = value.splitlines()
+    field_line = re.compile(
+        r"\s*(?:location|venue|address|online|meeting|registration)\s*(?:link|url)?\s*:", re.I
+    )
+    first_field = next((index for index, line in enumerate(lines) if field_line.match(line)), None)
+    if first_field is None:
+        return fallback
+    title = _compact(" ".join(lines[:first_field]))
+    return title or fallback
+
+
+def _explicit_calendar_location(value: str, *, multiline: bool = False) -> str | None:
+    lines = value.splitlines()
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"\s*(?:location|venue|address)\s*:\s*(.*?)\s*", line, re.I)
+        if match:
+            first = match.group(1).strip()
+            if not first and not multiline:
+                return None
+            continuation = []
+            if multiline:
+                for next_line in lines[index + 1:]:
+                    if not next_line.strip():
+                        if continuation:
+                            break
+                        continue
+                    if re.match(
+                        r"\s*(?:location|venue|address|online|meeting|registration)\s*(?:link|url)?\s*:",
+                        next_line, re.I,
+                    ):
+                        break
+                    continuation.append(next_line.strip())
+            location = "\n".join([part for part in (first, *continuation) if part])
+            return location or None
+    for line in lines:
+        match = re.fullmatch(r"\s*(online|virtual|hybrid)(?:\s+(?:meeting|event))?\s*", line, re.I)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _explicit_calendar_online_url(value: str, *, multiline: bool = False) -> str | None:
+    lines = value.splitlines()
+    label = re.compile(r"\s*(?:online|meeting|registration)\s*(?:link|url)\s*:\s*(.*?)\s*$", re.I)
+    next_field = re.compile(
+        r"\s*(?:location|venue|address|online|meeting|registration)\s*(?:link|url)?\s*:", re.I
+    )
+    for index, line in enumerate(lines):
+        match = label.fullmatch(line)
+        if not match:
+            continue
+        parts = [match.group(1).strip()] if match.group(1).strip() else []
+        if multiline:
+            for next_line in lines[index + 1:]:
+                if not next_line.strip():
+                    if parts:
+                        break
+                    continue
+                if next_field.match(next_line):
+                    break
+                parts.append(next_line.strip())
+        candidate = "".join("".join(parts).split())
+        url = re.match(r"https?://\S+", candidate)
+        if url:
+            return url.group(0).rstrip(".,)")
+    return None
 
 
 def _read_pdf(path: Path) -> dict[str, Any]:

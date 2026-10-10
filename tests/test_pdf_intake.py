@@ -18,6 +18,7 @@ from climate_monitor.pdf_intake import (
     _is_calendar_date_line,
     _parse_calendar_date,
     _reported_publication_date,
+    recover_calendar_fields,
     _typesafe_classify,
     _input_pdfs,
     import_pdf_reports,
@@ -192,6 +193,197 @@ def test_pdf_adapter_preserves_provenance_links_text_and_calendar_dates(tmp_path
     assert bundle["articles"] == []  # Calendar observations belong only to meetings.
     assert event["source_urls"] == ["https://example.org/climate-risk-conference/"]
     assert event["content_sha256"]
+
+
+def test_calendar_location_requires_explicit_row_text_and_stays_with_its_occurrence():
+    document = {
+        "source": {"sha256": "a" * 64},
+        "pages": [{"page": 11, "links": [
+            {"anchor_text": "Climate Conference", "url": "https://example.org/shared", "rect": []},
+            {"anchor_text": "Climate Conference", "url": "https://example.org/shared", "rect": []},
+        ], "text": "\n".join((
+            "Key Dates", "DATE(S) EVENT HOST RELEVANCE",
+            "27 Oct 2026", "EVENT", "Climate Conference", "Location: Paris, France", "Host A", "Relevance A",
+            "28 Oct 2026", "EVENT", "Climate Conference", "Location: London", "Host B", "Relevance B",
+            "29 Oct 2026", "EVENT", "Online", "Host C", "Relevance C",
+            "30 Oct 2026", "EVENT", "Climate Webinar", "Online link: https://example.org/room", "Host D", "Relevance D",
+        ))}],
+    }
+
+    items = _extract_calendar_items(document)
+
+    assert [item["location"] for item in items] == ["Paris, France", "London", "Online", None]
+    assert [item["online_url"] for item in items] == [None, None, None, "https://example.org/room"]
+    assert len({item["occurrence_id"] for item in items}) == 4
+    assert items[0]["source_urls"] == items[1]["source_urls"] == ["https://example.org/shared"]
+    assert all(item["page"] == 11 and item["source_document_sha256"] == "a" * 64 for item in items)
+
+
+@pytest.mark.parametrize(("event_cell", "stored_event_text", "expected_location", "expected_url"), [
+    ("Climate Conference\nAddress: Conference Centre\n12 Main Street, Paris\nFrance\nOnline link: https://example.org/events/climate-\nconference-2026/registration",
+     "Climate Conference\nAddress: Conference Centre\n12 Main Street, Paris\nFrance\nOnline link: https://example.org/events/climate-\nconference-2026/registration",
+     "Conference Centre\n12 Main Street, Paris\nFrance",
+     "https://example.org/events/climate-conference-2026/registration"),
+    ("Climate Conference\nLocation:\nRoom 4, North Wing\n12 Main Street, Paris",
+     "Climate Conference\nLocation:\nRoom 4, North Wing\n12 Main Street, Paris",
+     "Room 4, North Wing\n12 Main Street, Paris", None),
+    ("Climate Conference\nLocation:", "Climate Conference\nLocation:", None, None),
+    ("Climate Conference\nAddress: Paris", "Different Conference", None, None),
+])
+def test_legacy_calendar_recovery_uses_bounded_raw_event_cell(
+    monkeypatch, event_cell, stored_event_text, expected_location, expected_url,
+):
+    raw_pdf = b"legacy calendar fixture"
+    bounds = [(0, 0, 100, 10), (100, 0, 250, 10), (250, 0, 320, 10), (320, 0, 400, 10)]
+    values = ["27 Oct 2026 EVENT", "Climate Conference", "Host A", "Relevance A"]
+
+    class Row:
+        cells = bounds
+        bbox = (0, 10, 400, 20)
+
+    class Table:
+        rows = [Row(), Row()]
+
+        @staticmethod
+        def extract():
+            return [["DATE(S)", "EVENT", "HOST", "RELEVANCE"], values]
+
+    class Page:
+        hyperlinks = []
+
+        @staticmethod
+        def find_tables():
+            return [Table()]
+
+        @staticmethod
+        def crop(box):
+            column = next(index for index, cell in enumerate(bounds) if cell[0] <= box[0] < cell[2])
+            text = event_cell if column == 1 else values[column]
+            return SimpleNamespace(extract_text=lambda **_kwargs: text)
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setitem(sys.modules, "pdfplumber", SimpleNamespace(open=lambda _raw: Pdf()))
+    from climate_monitor.pdf_intake import _calendar_table_rows
+    _calendar_table_rows.cache_clear()
+    item = {
+        "occurrence_id": "legacy-occurrence", "event_id": "legacy-event",
+        "source_document_sha256": hashlib.sha256(raw_pdf).hexdigest(), "page": 1,
+        "kind": "event", "raw_date": "27 Oct 2026",
+        "source_urls": [],
+        "raw_text": f"27 Oct 2026\nEVENT\n{stored_event_text}\nHost A\nRelevance A",
+    }
+
+    recovered = recover_calendar_fields(raw_pdf, [item])[0]
+
+    assert recovered.get("location") == expected_location
+    assert recovered.get("online_url") == expected_url
+    if stored_event_text.startswith("Climate Conference"):
+        assert recovered["name"] == "Climate Conference"
+    assert recovered["page"] == 1
+    assert recovered["source_document_sha256"] == hashlib.sha256(raw_pdf).hexdigest()
+
+
+def test_legacy_calendar_recovery_disambiguates_same_title_rows_by_cell_evidence(monkeypatch):
+    raw_pdf = b"duplicate calendar rows"
+    bounds = [(0, 0, 100, 10), (100, 0, 250, 10), (250, 0, 320, 10), (320, 0, 400, 10)]
+    values = [
+        ["27 Oct 2026 EVENT", "Climate Conference", "Host A", "Relevance A"],
+        ["27 Oct 2026 EVENT", "Climate Conference", "Host A", "Relevance A"],
+    ]
+    event_cells = [
+        "Climate Conference\nAddress: Conference Centre\n12 Main Street, Paris\nFrance",
+        "Climate Conference\nAddress: Conference Centre\n88 River Road, London\nUK",
+    ]
+
+    class Row:
+        def __init__(self, index):
+            self.cells = bounds
+            self.bbox = (0, 10 + index * 20, 400, 30 + index * 20)
+
+    class Table:
+        rows = [Row(0), Row(0), Row(1)]
+
+        @staticmethod
+        def extract():
+            return [["DATE(S)", "EVENT", "HOST", "RELEVANCE"], *values]
+
+    class Page:
+        hyperlinks = []
+
+        @staticmethod
+        def find_tables():
+            return [Table()]
+
+        @staticmethod
+        def crop(box):
+            index = 0 if box[1] < 30 else 1
+            column = next(col for col, cell in enumerate(bounds) if cell[0] <= box[0] < cell[2])
+            text = event_cells[index] if column == 1 else values[index][column]
+            return SimpleNamespace(extract_text=lambda **_kwargs: text)
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setitem(sys.modules, "pdfplumber", SimpleNamespace(open=lambda _raw: Pdf()))
+    from climate_monitor.pdf_intake import _calendar_table_rows
+    _calendar_table_rows.cache_clear()
+    digest = hashlib.sha256(raw_pdf).hexdigest()
+    items = [
+        {
+            "occurrence_id": f"occurrence-{index}", "event_id": "same-event-id",
+            "source_document_sha256": digest, "page": 1, "kind": "event",
+            "raw_date": "27 Oct 2026", "source_urls": ["https://example.org/shared"],
+            "raw_text": f"27 Oct 2026\nEVENT\n{event_cells[index]}\nHost A\nRelevance A",
+        }
+        for index in range(2)
+    ]
+
+    recovered = recover_calendar_fields(raw_pdf, items)
+
+    assert [item["location"] for item in recovered] == [
+        "Conference Centre\n12 Main Street, Paris\nFrance",
+        "Conference Centre\n88 River Road, London\nUK",
+    ]
+    assert [item["occurrence_id"] for item in recovered] == ["occurrence-0", "occurrence-1"]
+    assert [item["event_id"] for item in recovered] == ["same-event-id", "same-event-id"]
+    assert all(item["source_document_sha256"] == digest and item["page"] == 1 for item in recovered)
+
+
+def test_collected_pdf_location_keeps_source_url_of_matching_verified_candidate():
+    from climate_monitor.meeting_fields import collected_pdf_meeting
+
+    candidate = {"name": "Climate Conference", "location": "Paris", "timezone": None}
+    item = {
+        "event_id": "pdf-event", "canonical_event_id": "web-event", "location": "London",
+        "source_document_sha256": "a" * 64, "page": 3, "verification_status": "verified",
+        "collected_candidate": candidate,
+        "checks": [
+            {"source_url": "https://example.org/old", "verification_status": "partial",
+             "website_candidate": {"name": "Climate Conference", "location": "Rome", "timezone": None}},
+            {"source_url": "https://example.org/current", "verification_status": "verified",
+             "website_candidate": candidate},
+        ],
+    }
+
+    collected = collected_pdf_meeting(item)
+
+    assert collected["location"] == "Paris"
+    assert collected["collected_candidate_source_url"] == "https://example.org/current"
+    assert collected["pdf_observations"][0]["location"] == "London"
 
 
 def test_article_context_is_bounded_to_its_record_and_keeps_publication_date(tmp_path, monkeypatch):

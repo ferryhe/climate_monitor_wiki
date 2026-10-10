@@ -1687,6 +1687,36 @@ function meetingInstitution(item) {
   return values.find((value) => typeof value === "string" && value.trim())?.trim() || "Institution not specified";
 }
 
+function meetingLocationSummary(item) {
+  const location = item.collected_candidate?.location || item.location || item.pdf_observations?.find((row) => row.location)?.location;
+  return typeof location === "string" && location.trim()
+    ? (location.length > 56 ? `${location.slice(0, 55).trimEnd()}…` : location)
+    : "Location not provided";
+}
+
+function appendMeetingLocations(container, item) {
+  const pdfRows = item.pdf_observations || ((item.source_kind === "pdf" || item.origin === "pdf_import") ? [item] : []);
+  const locations = pdfRows.map((row) => ({
+    source: `PDF${row.source_filename ? ` · ${row.source_filename}` : ""}${row.page ? ` · page ${row.page}` : ""}`,
+    value: row.location || "Location not provided",
+  }));
+  const webLocation = item.collected_candidate?.location || (item.origin === "web_collection" ? item.location : null);
+  if (webLocation) {
+    const candidate = item.collected_candidate;
+    const sourceCheck = candidate
+      ? item.checks?.find((check) => check.verification_status === "verified"
+        && JSON.stringify(check.website_candidate) === JSON.stringify(candidate))
+      : item.checks?.find((check) => check.verification_status === "verified" && check.source_url);
+    const sourceUrl = item.collected_candidate_source_url || sourceCheck?.source_url || (!candidate ? item.source_urls?.[0] : "");
+    locations.push({ source: `Website${sourceUrl ? ` · ${sourceUrl}` : ""}`, value: webLocation });
+  }
+  if (!locations.length && item.location) locations.push({ source: "Source", value: item.location });
+  if (!locations.length) locations.push({ source: item.origin === "web_collection" ? "Website" : "PDF", value: "Location not provided" });
+  locations.forEach(({ source, value }) => {
+    container.append(registryElement("dt", "", "Location"), registryElement("dd", "meeting-entry__location", `${value}\n${source}`));
+  });
+}
+
 async function loadRegistryMeetings() {
   const sequence = ++state.registry.meetingRequestSequence;
   renderRegistryNotice(els.registryMeetings, "Loading meetings…");
@@ -1716,17 +1746,19 @@ async function loadRegistryMeetings() {
         const card = registryElement("details", "meeting-entry");
         const summary = registryElement("summary", "meeting-entry__summary");
         summary.append(registryElement("span", "meeting-entry__name", item.name),
-          registryElement("span", "meeting-entry__institution", meetingInstitution(item)));
+          registryElement("span", "meeting-entry__institution", meetingInstitution(item)),
+          registryElement("span", "meeting-entry__location-short", meetingLocationSummary(item)));
         card.append(summary);
         const body = registryElement("div", "meeting-entry__body");
         const fields = registryElement("dl", "detail-meta");
         const values = { "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
           "Time": item.raw_time_text, "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
-          "Location": item.location, "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
+          "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
           "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
         Object.entries(values).forEach(([label, value]) => {
           if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));
         });
+        appendMeetingLocations(fields, item);
         body.append(fields);
         const urls = [...new Set([...(item.source_urls || []), ...(item.sources || []).map((source) => source.source_url), item.online_url])];
         urls.forEach((url) => {
