@@ -23,10 +23,48 @@ function showMeetingError(error) { $('#meeting-progress').textContent = JSON.str
 async function selectRun(id) { try { selectedRun = id; document.querySelectorAll('.run').forEach(button => button.classList.toggle('active', button.dataset.id === id)); const [value, meetings] = await Promise.all([api(`/api/manage/runs/${encodeURIComponent(id)}/progress`), api(`/api/manage/runs/${encodeURIComponent(id)}/meetings`)]); $('#run-detail').textContent = (value.stage === 'completed_with_gaps' ? 'Acquisition completed with gaps. Report and publication remain blocked.\n\n' : '') + JSON.stringify({...value, items: undefined}, null, 2); $('#meeting-progress').textContent = JSON.stringify(meetings, null, 2); $('#resume').disabled = false; $('#start-meetings').disabled = false; $('#retry-meetings').disabled = false; const items = clear($('#items')); if (!value.items.length) items.append(document.createTextNode('No stored items yet.')); for (const item of value.items) { const button = text('button', `${item.organization || 'unknown'} · ${item.title || item.url}\n${item.status || 'unknown'} · ${item.eligibility || 'unknown date eligibility'}`, 'item'); button.onclick = async () => { $('#item-detail').textContent = JSON.stringify(await api(`/api/manage/runs/${encodeURIComponent(id)}/items/${encodeURIComponent(item.item_id)}`), null, 2); }; items.append(button); } } catch (error) { for (const id of ['start-meetings', 'retry-meetings']) $('#' + id).disabled = true; showMeetingError(error); } }
 async function processMeetings(retryFailed) { try { await api(`/api/manage/runs/${encodeURIComponent(selectedRun)}/meetings`, {method: 'POST', body: JSON.stringify({retry_failed: retryFailed})}); await selectRun(selectedRun); } catch (error) { showMeetingError(error); } }
 async function queryMeetings() { const form = new FormData($('#meeting-filters')), query = new URLSearchParams(); for (const name of ['organizer', 'event_types', 'start_date', 'end_date', 'base_date', 'timezone_name']) if (form.get(name)) query.set(name, form.get(name)); for (const name of ['include_unknown', 'include_deadlines', 'include_cancelled', 'include_retrospective']) query.set(name, String(form.has(name))); $('#meeting-list').textContent = JSON.stringify(await api('/api/manage/meetings?' + query), null, 2); }
+async function refreshChatTokens() {
+  const rows = await api('/api/manage/chat-tokens');
+  const list = clear($('#chat-token-list'));
+  for (const item of rows) {
+    const row = document.createElement('tr');
+    for (const value of [item.label, formatET(item.created_at), item.status]) row.append(text('td', value));
+    const action = document.createElement('td');
+    if (item.status === 'active') {
+      const button = text('button', 'Revoke');
+      button.type = 'button';
+      button.onclick = async () => {
+        try {
+          await api(`/api/manage/chat-tokens/${encodeURIComponent(item.id)}`, {method: 'DELETE'});
+          $('#chat-token-secret').textContent = '';
+          await refreshChatTokens();
+        } catch (error) { $('#chat-token-message').textContent = error.message; }
+      };
+      action.append(button);
+    }
+    row.append(action);
+    list.append(row);
+  }
+}
+$('#create-chat-token').onsubmit = async event => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button');
+  button.disabled = true;
+  $('#chat-token-secret').textContent = '';
+  try {
+    const item = await api('/api/manage/chat-tokens', {method: 'POST', body: JSON.stringify({label: $('#chat-token-label').value.trim()})});
+    $('#chat-token-secret').textContent = item.token;
+    $('#chat-token-message').textContent = 'Copy this token now. Its secret will not be shown again.';
+    $('#chat-token-label').value = '';
+    await refreshChatTokens();
+  } catch (error) { $('#chat-token-message').textContent = error.message; }
+  finally { button.disabled = false; }
+};
+$('#refresh-chat-tokens').onclick = () => refreshChatTokens().catch(error => $('#chat-token-message').textContent = error.message);
 const tabs = [...document.querySelectorAll('[role="tab"][data-tab]')];
 function tabFromLocation() { if (location.pathname === '/manage/pdf-import') return 'pdf-import'; const requested = new URLSearchParams(location.search).get('tab'); return tabs.some(tab => tab.dataset.tab === requested && requested !== 'pdf-import') ? requested : 'configuration'; }
 function tabPath(name) { return name === 'pdf-import' ? '/manage/pdf-import' : name === 'configuration' ? '/manage' : `/manage?tab=${name}`; }
-function selectTab(name, push = false) { const selected = tabs.find(tab => tab.dataset.tab === name) || tabs[0]; tabs.forEach(tab => { const active = tab === selected; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; }); document.querySelectorAll('[role="tabpanel"]').forEach(panel => { panel.hidden = panel.id !== selected.getAttribute('aria-controls'); }); const path = tabPath(selected.dataset.tab); if (push && location.pathname + location.search !== path) history.pushState(null, '', path); if (selected.dataset.tab === 'runs') runs().catch(error => $('#message').textContent = error.message); if (selected.dataset.tab === 'meetings') queryMeetings().catch(error => $('#message').textContent = error.message); if (selected.dataset.tab === 'pdf-import') window.refreshPdfImportOverview?.(); }
+function selectTab(name, push = false) { const selected = tabs.find(tab => tab.dataset.tab === name) || tabs[0]; tabs.forEach(tab => { const active = tab === selected; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; }); document.querySelectorAll('[role="tabpanel"]').forEach(panel => { panel.hidden = panel.id !== selected.getAttribute('aria-controls'); }); const path = tabPath(selected.dataset.tab); if (push && location.pathname + location.search !== path) history.pushState(null, '', path); if (selected.dataset.tab === 'runs') runs().catch(error => $('#message').textContent = error.message); if (selected.dataset.tab === 'meetings') queryMeetings().catch(error => $('#message').textContent = error.message); if (selected.dataset.tab === 'chat-tokens') refreshChatTokens().catch(error => $('#chat-token-message').textContent = error.message); if (selected.dataset.tab === 'pdf-import') window.refreshPdfImportOverview?.(); }
 tabs.forEach((tab, index) => { tab.onclick = () => selectTab(tab.dataset.tab, true); tab.onkeydown = event => { const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null; if (next === null) return; event.preventDefault(); tabs[next].focus(); selectTab(tabs[next].dataset.tab, true); }; });
 window.addEventListener('popstate', () => selectTab(tabFromLocation()));
 selectTab(tabFromLocation());

@@ -7,6 +7,15 @@ import pytest
 from fixture_modes import remove_shared_write
 
 
+@pytest.fixture(autouse=True)
+def isolated_chat_allowance(tmp_path, monkeypatch):
+    """API tests represent independent networks unless a test shares its store."""
+    import sys
+    monkeypatch.setenv("CLIMATE_CHAT_ACCESS_DB", str(tmp_path / "chat-access.sqlite3"))
+    if "api_server" in sys.modules:
+        monkeypatch.setattr(sys.modules["api_server"], "chat_access_store", None)
+
+
 def _partition_collected_items(items, shard_count):
     files = defaultdict(list)
     positions = {id(item): position for position, item in enumerate(items)}

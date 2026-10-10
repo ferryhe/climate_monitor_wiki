@@ -24,6 +24,29 @@ app container. A host-side report ingest is visible after `POST /api/reload`;
 article annotations are read per Registry request. Neither content-only change
 requires an image rebuild.
 
+Chat allows five completed questions per public client IP per New York calendar
+day. Its SQLite database at `/app/output/chat-access.sqlite3` uses the existing
+`climate_runtime` volume; retain it across restarts. The Chat tokens tab in the
+authenticated console creates labelled tokens, displays each secret once, and
+revokes access. Tokens and browser Chat sessions are stored as SHA-256 verifiers
+of random secrets. A token grants Chat access only; direct API clients can send
+it as `Authorization: Bearer <token>`.
+
+Run exactly one Uvicorn process against this database, as the declared stack
+does. It reserves slots atomically, charges only completed responses, and clears
+abandoned in-flight reservations when that process initializes after a restart.
+Do not add Uvicorn workers or replicas sharing this store without replacing that
+startup recovery with process-aware reservation ownership. Day boundaries and
+the next reset use `America/New_York`, including DST transitions.
+
+The dedicated Compose network uses the three-octet
+`CLIMATE_PROXY_NETWORK_PREFIX` setting. Caddy takes suffix `.3`, the private app
+takes `.2`, and the subnet is `.0/29`. Uvicorn's `FORWARDED_ALLOW_IPS` trusts only
+Caddy, whose default reverse proxy replaces untrusted incoming forwarded
+headers. Keep app port 8501 unpublished. If the subnet conflicts with a host
+network, change the prefix setting; it updates both addresses, the subnet, and
+proxy trust together. Never widen proxy trust to `*`.
+
 ## Governed acquisition runtime
 
 The application image contains one `web-listening` distribution pinned to

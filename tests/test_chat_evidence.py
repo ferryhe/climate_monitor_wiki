@@ -1687,7 +1687,8 @@ def test_matched_seven_starters_and_pdf_boundary(monkeypatch):
     assert fallback == list(PROMPT_STARTERS)
     calls = []
     monkeypatch.setattr(api_server.responder, "answer", lambda question, **kwargs: calls.append(question) or {"text": "ordinary answer", "sources": []})
-    client = TestClient(api_server.app)
+    token = api_server._chat_access().create_token("Prompt routing fixture")["token"]
+    client = TestClient(api_server.app, headers={"Authorization": "Bearer " + token})
     for item in PROMPT_STARTERS[1:]:
         assert client.post("/api/chat", json={"message": item["prompt"]}).json()["text"] == "ordinary answer"
     assert len(calls) == 6

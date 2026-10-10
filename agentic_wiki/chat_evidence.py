@@ -289,6 +289,7 @@ class ChatEvidence:
             "web": turn.web, "sources": turn.sources,
             "source_order": turn.source_order, "source_focus": turn.source_focus})
         return {"text": text, "sources": turn.sources, "context": token,
+            **({"generation_failed": True} if turn.generation_failed else {}),
             "needs_clarification": turn.clarification, "answer_mode": answer_mode, "language": language,
             "model": self.model if turn.model_used else "offline-extractive",
             "agent_mode": self.provider if turn.model_used else "offline", "capabilities": self.capabilities(),
@@ -323,6 +324,7 @@ class EvidenceTurn:
         self.research_plan = self.research_finish = None
         self.research_validation, self.research_attempt = None, []
         self.model_loop = False
+        self.generation_failed = False
         self.recent_scanned = False
         self.final_checked = False
         self.seen = set()
@@ -1583,6 +1585,7 @@ class EvidenceTurn:
         except Exception as exc:
             self.notes.append(f"Model unavailable ({type(exc).__name__}); returning the confirmed evidence extract.")
         self.notes.append("Manual verification: open the official source URL, check the requested facts, and ask again with its exact URL, object name or a quoted passage.")
+        self.generation_failed = True
         return None
 
     def final_feedback(self, draft):

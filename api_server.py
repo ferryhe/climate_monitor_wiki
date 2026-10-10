@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import tempfile
 import threading
 from pathlib import Path
@@ -47,6 +48,7 @@ from climate_monitor.run_ledger import (
     RunLedgerReader,
 )
 from climate_monitor.management import ManagementService
+from climate_monitor.chat_access import CHAT_COOKIE, INVALID_TOKEN, ChatAccessStore
 from climate_monitor.console_auth import (
     ConsoleUser,
     auth_router,
@@ -267,6 +269,79 @@ RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
 management_service: ManagementService | None = None
 ConsolePrincipal = Annotated[ConsoleUser, Depends(current_console_user)]
 OptionalConsolePrincipal = Annotated[ConsoleUser | None, Depends(optional_console_user)]
+chat_access_store: ChatAccessStore | None = None
+_CHAT_ACCESS_LOCK = threading.Lock()
+
+
+def _chat_access() -> ChatAccessStore:
+    global chat_access_store
+    with _CHAT_ACCESS_LOCK:
+        if chat_access_store is None:
+            path = Path(os.getenv("CLIMATE_CHAT_ACCESS_DB", str(ROOT / "output" / "chat-access.sqlite3")))
+            chat_access_store = ChatAccessStore(path)
+        return chat_access_store
+
+
+def _chat_credentials(request: Request) -> dict:
+    authorization = request.headers.get("authorization", "")
+    token = authorization[7:] if authorization.lower().startswith("bearer ") else None
+    return {"session": request.cookies.get(CHAT_COOKIE), "token": token}
+
+
+def _chat_store_call(operation):
+    try:
+        return operation(_chat_access())
+    except PermissionError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=503, detail="Chat access is unavailable. Please retry.") from exc
+
+
+class ChatTokenInput(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+
+
+class ChatTokenLabel(BaseModel):
+    label: str = Field(min_length=1, max_length=120)
+
+
+@app.get("/api/chat/access")
+def chat_access_status(request: Request) -> dict:
+    credentials = _chat_credentials(request)
+    status = _chat_store_call(lambda store: store.status(get_remote_address(request), **credentials))
+    status["invalid_token"] = bool(any(credentials.values()) and not status["access_enabled"])
+    return status
+
+
+@app.post("/api/chat/access")
+def enable_chat_access(payload: ChatTokenInput, request: Request, response: Response) -> dict:
+    try:
+        session = _chat_store_call(lambda store: store.enable(payload.token))
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=INVALID_TOKEN) from exc
+    response.set_cookie(CHAT_COOKIE, session, max_age=365 * 24 * 3600, httponly=True,
+                        secure=request.url.scheme == "https", samesite="strict", path="/api/chat")
+    return _chat_store_call(lambda store: store.status(get_remote_address(request), session=session))
+
+
+@app.get("/api/manage/chat-tokens")
+def console_chat_tokens(user: ConsolePrincipal) -> list[dict]:
+    return _chat_store_call(lambda store: store.list_tokens())
+
+
+@app.post("/api/manage/chat-tokens")
+def console_create_chat_token(payload: ChatTokenLabel, user: ConsolePrincipal) -> dict:
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="A token label is required.")
+    return _chat_store_call(lambda store: store.create_token(label))
+
+
+@app.delete("/api/manage/chat-tokens/{token_id}")
+def console_revoke_chat_token(token_id: str, user: ConsolePrincipal) -> dict:
+    if not _chat_store_call(lambda store: store.revoke_token(token_id)):
+        raise HTTPException(status_code=404, detail="Access token not found.")
+    return {"status": "revoked"}
 
 
 def _management_service() -> ManagementService:
@@ -1035,8 +1110,7 @@ def reload_wiki(
         return payload
 
 
-@app.post("/api/chat")
-def chat(request: ChatRequest) -> dict:
+def _chat_input(request: ChatRequest) -> tuple[list[dict], str]:
     # Enforce message count limit
     if len(request.messages) > MAX_MESSAGES:
         raise HTTPException(
@@ -1054,6 +1128,31 @@ def chat(request: ChatRequest) -> dict:
     if not question:
         raise HTTPException(status_code=400, detail="A user message is required.")
 
+    return messages, question
+
+
+@app.post("/api/chat")
+def chat(request: ChatRequest, client_request: Request) -> dict:
+    messages, question = _chat_input(request)
+    ip = get_remote_address(client_request)
+    credentials = _chat_credentials(client_request)
+    try:
+        reservation = _chat_store_call(lambda store: store.reserve(ip, **credentials))
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=INVALID_TOKEN) from exc
+    except OverflowError as exc:
+        status = _chat_store_call(lambda store: store.status(ip))
+        raise HTTPException(status_code=429, detail={"code": "chat_quota_exhausted", **status}) from exc
+    completed = False
+    try:
+        result = _chat_answer(request, messages, question)
+        completed = not result.pop("generation_failed", False)
+        return result
+    finally:
+        _chat_store_call(lambda store: store.finish(reservation, completed=completed))
+
+
+def _chat_answer(request: ChatRequest, messages: list[dict], question: str) -> dict:
     history = [item for item in messages if item.get("role") in {"user", "assistant"}]
     if history and history[-1].get("role") == "user" and history[-1].get("content") == question:
         history = history[:-1]

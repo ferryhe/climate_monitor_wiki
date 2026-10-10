@@ -125,6 +125,7 @@ const state = {
   answerMode: "detailed",
   activeContextPath: null,
   isSending: false,
+  chatAccess: null,
   activeView: "chatView",
   markdownByPath: {},
   markdownRequests: {},
@@ -157,6 +158,11 @@ const els = {
   form: document.getElementById("chatForm"),
   input: document.getElementById("messageInput"),
   send: document.getElementById("sendButton"),
+  chatAllowance: document.getElementById("chatAllowance"),
+  chatAccessMessage: document.getElementById("chatAccessMessage"),
+  chatTokenForm: document.getElementById("chatTokenForm"),
+  chatToken: document.getElementById("chatToken"),
+  retryChatQuestion: document.getElementById("retryChatQuestion"),
   clearChat: document.getElementById("clearChatButton"),
   clearContext: document.getElementById("clearContextButton"),
   jumpToReports: document.getElementById("jumpToReportsButton"),
@@ -830,7 +836,7 @@ function loadThread() {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      state.messages = parsed.filter((item) => item && item.role && item.content !== undefined);
+      state.messages = parsed.filter((item) => item && item.role && item.content !== undefined && !item.pending);
     }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
@@ -845,6 +851,8 @@ function clearThread() {
   state.messages = [];
   localStorage.removeItem(STORAGE_KEY);
   renderMessages();
+  setSending(state.isSending);
+  if (els.retryChatQuestion) els.retryChatQuestion.hidden = true;
 }
 
 function stopGraphAnimation() {
@@ -1041,43 +1049,117 @@ function renderMessages() {
 function setSending(value) {
   state.isSending = value;
   if (els.send) {
-    els.send.disabled = value;
+    els.send.disabled = value || Boolean(blockedChatMessage());
   }
   if (els.form) {
     els.form.setAttribute("aria-busy", String(value));
   }
+  if (els.retryChatQuestion) els.retryChatQuestion.disabled = value;
 }
 
-async function sendMessage(message) {
+function blockedChatMessage() {
+  return state.messages.findLast((item) => item.role === "user" && item.blockedRequest);
+}
+
+function renderChatAccess(status, notice = "") {
+  state.chatAccess = status;
+  const reset = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "long" }).format(new Date(status.reset_at));
+  if (els.chatAllowance) els.chatAllowance.textContent = `Free questions today: ${status.remaining} of 5 remaining. Resets ${reset} (New York).`;
+  if (els.chatAccessMessage) els.chatAccessMessage.textContent = notice || (status.invalid_token
+    ? "This token is invalid or has been revoked."
+    : status.access_enabled ? "Access enabled. You can continue asking questions."
+    : status.remaining === 0 ? `You've used today's 5 free questions for this network. Enter an access token to continue, or return after ${reset}.` : "");
+  if (els.chatTokenForm) els.chatTokenForm.hidden = status.access_enabled && !status.invalid_token;
+  if (els.retryChatQuestion) els.retryChatQuestion.hidden = !blockedChatMessage() || status.invalid_token || (!status.access_enabled && status.remaining === 0);
+}
+
+async function refreshChatAccess() {
+  try {
+    const response = await fetch("/api/chat/access", { cache: "no-store" });
+    if (response.ok) renderChatAccess(await response.json());
+  } catch {
+    if (els.chatAllowance) els.chatAllowance.textContent = "Free question allowance is unavailable. Please retry.";
+  }
+}
+
+async function continueWithToken(event) {
+  event.preventDefault();
+  if (state.isSending) return;
+  const button = els.chatTokenForm.querySelector("button");
+  button.disabled = true;
+  try {
+    const token = els.chatToken.value.trim();
+    if (!token) throw new Error("This token is invalid or has been revoked.");
+    const response = await fetch("/api/chat/access", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!response.ok) {
+      const payload = await response.json();
+      const invalidToken = response.status === 401 || (response.status === 422 && Array.isArray(payload.detail) && payload.detail.some((error) => error.loc?.includes("token")));
+      throw new Error(invalidToken ? "This token is invalid or has been revoked." : (typeof payload.detail === "string" ? payload.detail : "Access could not be enabled. Please retry."));
+    }
+    renderChatAccess(await response.json(), "Access enabled. You can continue asking questions.");
+    els.chatToken.value = "";
+    const blocked = blockedChatMessage();
+    if (blocked) await sendMessage(blocked.content, blocked.blockedRequest);
+  } catch (error) {
+    els.chatAccessMessage.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function sendMessage(message, retryRequest = null) {
   setSending(true);
-  appendMessage("user", message);
+  if (!retryRequest) appendMessage("user", message);
+  const userMessage = state.messages.findLast((item) => item.role === "user");
+  const requestBody = retryRequest || {
+    messages: state.messages.filter((item) => !item.pending).map(messageToApi),
+    contextPath: state.activeContextPath,
+    language: "en",
+    answerMode: state.answerMode,
+  };
   appendMessage("assistant", "", { pending: true });
 
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: state.messages.filter((item) => !item.pending).map(messageToApi),
-        contextPath: state.activeContextPath,
-        language: "en",
-        answerMode: state.answerMode,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
+      if (response.status === 429 || response.status === 401) {
+        const payload = await response.json();
+        if (response.status === 401 || payload.detail?.code === "chat_quota_exhausted") {
+          userMessage.blockedRequest = requestBody;
+          state.messages = state.messages.filter((item) => !item.pending);
+          saveThread();
+          renderMessages();
+          if (response.status === 429) renderChatAccess(payload.detail);
+          else {
+            els.chatAccessMessage.textContent = "This token is invalid or has been revoked.";
+            els.chatTokenForm.hidden = false;
+          }
+          return;
+        }
+      }
       const detail = await response.text();
       throw new Error(detail || `HTTP ${response.status}`);
     }
 
     const payload = await response.json();
+    delete userMessage.blockedRequest;
     replacePendingAssistant(payload.text, payload.sources || [], payload.range_report || null, payload.context || null);
     setConnectionStatus(payload.agent_mode, payload.model);
     setAnswerMode(payload.answer_mode || state.answerMode);
   } catch (error) {
+    delete userMessage.blockedRequest;
     replacePendingAssistant(`Request failed: ${error.message}`);
   } finally {
     setSending(false);
+    void refreshChatAccess();
     if (els.input) {
       els.input.focus();
     }
@@ -2737,10 +2819,17 @@ function attachEvents() {
       if (!message || state.isSending) {
         return;
       }
+      if (blockedChatMessage()) return;
       els.input.value = "";
       sendMessage(message);
     });
   }
+
+  els.chatTokenForm?.addEventListener("submit", continueWithToken);
+  els.retryChatQuestion?.addEventListener("click", () => {
+    const blocked = blockedChatMessage();
+    if (blocked && !state.isSending) sendMessage(blocked.content, blocked.blockedRequest);
+  });
 
   els.registryModeButtons.forEach((button) => {
     button.addEventListener("click", () => setRegistryMode(button.dataset.registryMode));
@@ -2944,6 +3033,8 @@ function attachEvents() {
 
 async function main() {
   loadThread();
+  void refreshChatAccess();
+  setSending(false);
   fetch("/api/manage/session", { credentials: "same-origin" })
     .then((response) => (response.ok ? response.json() : { authenticated: false }))
     .then(({ authenticated }) => {
