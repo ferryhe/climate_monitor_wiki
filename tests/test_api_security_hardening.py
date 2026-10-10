@@ -9,6 +9,7 @@ import importlib
 import os
 
 import api_server
+import dotenv
 from api_server import MAX_MESSAGE_LENGTH, MAX_MESSAGES, MAX_REQUEST_BYTES, app
 from fastapi.testclient import TestClient
 
@@ -27,7 +28,7 @@ def reloaded_api_server(monkeypatch, enable_docs, tmp_path):
     restore the original module dictionary so its app and responder stay intact.
     """
     module_state = api_server.__dict__.copy()
-    original = {key: os.environ.get(key) for key in ("ENABLE_DOCS", "WIKI_DIR", "SOURCE_DIR")}
+    original = os.environ.copy()
     wiki_dir = tmp_path / "wiki"
     source_dir = tmp_path / "sources"
     wiki_dir.mkdir(parents=True)
@@ -41,11 +42,8 @@ def reloaded_api_server(monkeypatch, enable_docs, tmp_path):
     try:
         yield importlib.reload(api_server)
     finally:
-        for key, value in original.items():
-            if value is None:
-                monkeypatch.delenv(key, raising=False)
-            else:
-                monkeypatch.setenv(key, value)
+        os.environ.clear()
+        os.environ.update(original)
         api_server.__dict__.clear()
         api_server.__dict__.update(module_state)
 
@@ -106,12 +104,20 @@ def test_docs_tests_restore_module_state(monkeypatch, tmp_path):
     ENABLE_DOCS deleted, leaving docs permanently disabled in-process even when
     the pre-test environment had them enabled.
     """
-    original = {key: os.environ.get(key) for key in ("ENABLE_DOCS", "WIKI_DIR", "SOURCE_DIR")}
+    marker = "CLIMATE_TEST_DOTENV_MARKER"
+    original = os.environ.copy()
     original_app = api_server.app
     original_responder = api_server.responder
+    monkeypatch.setattr(
+        dotenv,
+        "load_dotenv",
+        lambda *_args, **_kwargs: os.environ.__setitem__(marker, "loaded"),
+    )
     try:
         for index, pre_state in enumerate((None, "1")):
             with reloaded_api_server(monkeypatch, pre_state, tmp_path / f"pre-{index}") as fresh:
+                outer_environment = os.environ.copy()
+                assert os.environ[marker] == "loaded"
                 expected = _docs_enabled_in_env()
                 assert fresh._ENABLE_DOCS is expected
 
@@ -129,20 +135,16 @@ def test_docs_tests_restore_module_state(monkeypatch, tmp_path):
                 )
                 assert api_server.app is fresh.app
                 assert api_server.responder is fresh.responder
+                assert os.environ == outer_environment
     finally:
-        # This test must honour the very invariant it asserts: restore the
-        # ORIGINAL environment value before restoring the original module state.
-        for key, value in original.items():
-            if value is None:
-                monkeypatch.delenv(key, raising=False)
-            else:
-                monkeypatch.setenv(key, value)
+        os.environ.clear()
+        os.environ.update(original)
         # The outer context restores the complete module snapshot without loading
         # the production corpus again.
 
     assert api_server.app is original_app
     assert api_server.responder is original_responder
-    assert {key: os.environ.get(key) for key in original} == original
+    assert os.environ == original
 
 
 def test_chat_message_content_is_required():
