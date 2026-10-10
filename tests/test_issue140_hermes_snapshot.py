@@ -1612,6 +1612,7 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(checkout / name, target)
     if protocol == 'v3_body':
+        monkeypatch.delenv('CLIMATE_WEB_LISTENING_DATA_DIR', raising=False)
         # An offline reader source fixture is frozen before publication, rather
         # than monkeypatching a live handler after the binding exists.
         import ast

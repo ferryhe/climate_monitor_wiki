@@ -139,6 +139,10 @@ class ClimateAgentView extends ItemView {
         text: source.heading || source.path,
       });
       button.addEventListener("click", async () => {
+        if (source.url && /^https?:\/\//.test(source.url) && !source.path) {
+          window.open(source.url, "_blank", "noopener");
+          return;
+        }
         const path = source.path || "";
         const file = this.app.vault.getAbstractFileByPath(path);
         if (!file) {
@@ -163,9 +167,9 @@ class ClimateAgentView extends ItemView {
         this.modeSelect.value = this.answerMode;
       }
       this.statusEl.setText(
-        payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "Offline demo",
+        ["openai", "anthropic"].includes(payload.agent_mode) ? `AI: ${payload.model}` : "Source-only mode",
       );
-      this.statusEl.toggleClass("is-offline", payload.agent_mode !== "openai");
+      this.statusEl.toggleClass("is-offline", !["openai", "anthropic"].includes(payload.agent_mode));
     } catch (error) {
       this.statusEl.setText("API offline");
       this.statusEl.addClass("is-offline");
@@ -184,7 +188,8 @@ class ClimateAgentView extends ItemView {
           .filter((message) => message.content !== "Searching wiki...")
           .map((message) => ({
             role: message.role,
-            content: message.content,
+            content: message.role === "assistant" ? message.content.slice(0, 8000) : message.content,
+            context: message.context || null,
           })),
         contextPath: this.getActiveContextPath(),
         language: "en",
@@ -193,6 +198,8 @@ class ClimateAgentView extends ItemView {
       this.messages[this.messages.length - 1] = {
         role: "assistant",
         content: payload.text,
+        context: payload.context || null,
+        sources: payload.sources || [],
       };
       this.answerMode = payload.answer_mode || this.answerMode;
       if (this.modeSelect) {
@@ -201,9 +208,9 @@ class ClimateAgentView extends ItemView {
       this.renderMessages();
       this.renderSources(payload.sources || []);
       this.statusEl.setText(
-        payload.agent_mode === "openai" ? `OpenAI: ${payload.model}` : "Offline demo",
+        ["openai", "anthropic"].includes(payload.agent_mode) ? `AI: ${payload.model}` : "Source-only mode",
       );
-      this.statusEl.toggleClass("is-offline", payload.agent_mode !== "openai");
+      this.statusEl.toggleClass("is-offline", !["openai", "anthropic"].includes(payload.agent_mode));
     } catch (error) {
       this.messages[this.messages.length - 1] = {
         role: "assistant",

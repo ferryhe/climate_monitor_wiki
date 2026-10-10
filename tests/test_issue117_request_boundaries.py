@@ -36,6 +36,22 @@ def budget(tmp_path, **kwargs):
     return RequestBudget(tmp_path / "request-budget.json", binding(tmp_path, **kwargs))
 
 
+def _activate_frozen_attempt(monkeypatch, environment, home):
+    """Match the launcher context for Hermes dispatch inside this test process."""
+    import importlib.util
+    import sys
+
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    name = "climate_monitor.hermes_attempt_policy"
+    spec = importlib.util.spec_from_file_location(
+        name, home.parent / "acquisition/climate_monitor/hermes_attempt_policy.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, name, module)
+
+
 def _tagged_search_result(*, web=None, success=True, error=None):
     result = {"success": success, "data": {"web": web or []}}
     if error is not None:
@@ -3382,7 +3398,6 @@ def test_receipt_is_hash_verified_and_shared_across_attempts(tmp_path):
 
 
 def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch, safe_managed_interpreter):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     hooks = pytest.importorskip("agent.shell_hooks")
     import shlex
     import sys
@@ -3390,6 +3405,8 @@ def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch, safe_manag
     from climate_monitor.hermes_acquisition_hooks import install_hooks
     b = binding(tmp_path, fetch=1)
     path = tmp_path / "attempt-1.json"
+    from climate_monitor.hermes_identity import create_snapshot
+    b["hermes_snapshot"] = create_snapshot(path.parent, source=f"climate-acquisition-{b['run_id']}")
     path.write_text(json.dumps(b))
     ledger = budget(tmp_path, fetch=1)
     # Use the actual installed Python runtime, with a CLI-shaped entrypoint.
@@ -3397,6 +3414,8 @@ def test_pinned_shell_hook_runs_before_handler(tmp_path, monkeypatch, safe_manag
     executable.write_text(f"#!{safe_managed_interpreter}\n")
     executable.chmod(0o700)
     env, home = install_hooks([str(executable)], path, b, {"PATH": __import__('os').environ['PATH']})
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     config = json.loads((home / "config.yaml").read_text())
     spec = next(s for s in hooks.iter_configured_hooks(config) if s.event == "pre_tool_call")
     invoked = []
@@ -3476,7 +3495,10 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
     )
 
     task_binding = _v3_binding(tmp_path)
-    path = tmp_path / "attempt-1.json"
+    path = Path(task_binding["checkpoint_dir"]).parent / "attempt-1.json"
+    path.parent.mkdir(parents=True, mode=0o700)
+    from climate_monitor.hermes_identity import create_snapshot
+    task_binding["hermes_snapshot"] = create_snapshot(path.parent, source=f"climate-acquisition-{task_binding['run_id']}")
     path.write_text(json.dumps(task_binding))
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
@@ -3489,7 +3511,7 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
         {"PATH": __import__("os").environ["PATH"]},
     )
     config = json.loads((home / "config.yaml").read_text())
-    assert config["plugins"] == {"enabled": [SEARCH_IDENTITY_PLUGIN_ID]}
+    assert config["plugins"] == {"enabled": ["climate-frozen-identity", SEARCH_IDENTITY_PLUGIN_ID]}
     assert config["mcp_servers"] == {}
     assert config["tools"] == {"tool_search": {"enabled": "off"}}
     source = (home / "plugins" / SEARCH_IDENTITY_PLUGIN_ID / "__init__.py").read_text()
@@ -3498,7 +3520,7 @@ def test_v3_attempt_plugin_registers_exact_candidate_tool_contract(
     assert "climate_stage_candidate" in source
     assert "climate_finalize_candidate" in source
     assert "terminal" not in source and "execute_code" not in source
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    _activate_frozen_attempt(monkeypatch, _environment, home)
     monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
     plugins._plugin_manager = plugins.PluginManager()
     plugins.discover_plugins()
@@ -3621,6 +3643,8 @@ def test_pinned_hermes_second_provider_request_contains_completed_search_id(
 
     b = new_protocol_binding(tmp_path)
     path = tmp_path / "attempt-1.json"
+    from climate_monitor.hermes_identity import create_snapshot
+    b["hermes_snapshot"] = create_snapshot(path.parent, source=f"climate-acquisition-{b['run_id']}")
     path.write_text(json.dumps(b))
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
@@ -3631,7 +3655,7 @@ def test_pinned_hermes_second_provider_request_contains_completed_search_id(
     environment, home = install_hooks(
         [str(executable)], path, b, {"PATH": __import__("os").environ["PATH"]},
     )
-    monkeypatch.setenv("HERMES_HOME", environment["HERMES_HOME"])
+    _activate_frozen_attempt(monkeypatch, environment, home)
     monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
     plugins._plugin_manager = plugins.PluginManager()
     plugins.discover_plugins()
@@ -3724,7 +3748,13 @@ def test_pinned_hermes_v3_tool_loop_exposes_handles_and_dispatches_receipts(
     from climate_monitor.request_budget import RequestBudget, ledger_path
 
     task_binding = _v3_binding(tmp_path)
-    path = tmp_path / "attempt-1.json"
+    path = Path(task_binding["checkpoint_dir"]).parent / "attempt-1.json"
+    path.parent.mkdir(parents=True, mode=0o700)
+    reader_root = path.parent / "managed/web-listening-runtime"
+    reader_root.mkdir(parents=True, mode=0o700)
+    monkeypatch.setenv("CLIMATE_WEB_LISTENING_DATA_DIR", str(reader_root))
+    from climate_monitor.hermes_identity import create_snapshot
+    task_binding["hermes_snapshot"] = create_snapshot(path.parent, source=f"climate-acquisition-{task_binding['run_id']}")
     path.write_text(json.dumps(task_binding))
     executable = tmp_path / "hermes"
     executable.write_text(f"#!{safe_managed_interpreter}\n")
@@ -3736,7 +3766,7 @@ def test_pinned_hermes_v3_tool_loop_exposes_handles_and_dispatches_receipts(
         [str(executable)], path, task_binding,
         {"PATH": __import__("os").environ["PATH"]},
     )
-    monkeypatch.setenv("HERMES_HOME", environment["HERMES_HOME"])
+    _activate_frozen_attempt(monkeypatch, environment, _home)
     monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
     plugins._plugin_manager = plugins.PluginManager()
     plugins.discover_plugins()
@@ -4631,6 +4661,7 @@ def _managed_attempt(
     from test_issue94_management_console import _store, _definition
     from climate_monitor.management import ManagementService
 
+    monkeypatch.delenv("CLIMATE_WEB_LISTENING_DATA_DIR", raising=False)
     monkeypatch.setenv("CLIMATE_MANAGED_STATE_DIR", str(tmp_path / "managed-state"))
     monkeypatch.setenv("CLIMATE_MANAGED_SOURCE_DIR", str(tmp_path / "managed-sources"))
     monkeypatch.setenv("CLIMATE_MANAGED_WIKI_DIR", str(tmp_path / "managed-wiki"))

@@ -2,35 +2,47 @@ const STORAGE_KEY = "climate-monitor-agent-thread";
 
 const DEFAULT_PROMPT_STARTERS = [
   {
-    label: "Last 4 weeks",
-    prompt: "Summarize the past 4 weeks by theme and identify material changes across the weekly reports.",
-    answer_mode: "executive",
-    description: "Compares the recent weekly reports, organized around recurring themes and material shifts.",
+    "label": "Generate PDF",
+    "prompt": "Generate a monitoring PDF report for the last 14 days.",
+    "answer_mode": "executive",
+    "description": "Creates an on-demand PDF with its actual date basis and citations; it does not approve a formal report or send email."
   },
   {
-    label: "Last 12 weeks",
-    prompt: "Give me an executive report for the past 12 weeks. Highlight trends, turning points, and evidence gaps.",
-    answer_mode: "executive",
-    description: "Uses roughly a quarter of weekly reports to separate persistent trends from one-off signals.",
+    "label": "Key dates & opportunities",
+    "prompt": "Summarize upcoming dates that matter to the climate committee, including consultation and submission deadlines, conferences, and expert reviews. Highlight newly added opportunities to review, respond, or attend, with dates, organizers, participation details, and sources.",
+    "answer_mode": "detailed",
+    "description": "Shows sourced dates and participation facts together, with missing fields and coverage gaps."
   },
   {
-    label: "Insurer implications",
-    prompt: "Across the past 4 weeks, what developments matter most for insurers and actuaries? Cite the weekly reports.",
-    answer_mode: "detailed",
-    description: "Focuses the recent evidence on pricing, reserving, capital, supervision, and protection gaps.",
+    "label": "New reports & articles",
+    "prompt": "Summarize climate- and insurance-related reports and articles added or materially updated in the last 14 days. Explain the key findings and relevance to the climate committee, and cite sources.",
+    "answer_mode": "detailed",
+    "description": "Separates publication dates from approved added and material-update times."
   },
   {
-    label: "Pricing explainer",
-    prompt: "Why do secondary perils matter for insurance pricing? Cite the strongest evidence.",
-    answer_mode: "detailed",
-    description: "Evidence-heavy explanation grounded in the source reports and linked wiki notes.",
+    "label": "Insurance implications",
+    "prompt": "Which recent developments matter most for insurance pricing, reserving, and capital? Explain why and cite sources.",
+    "answer_mode": "detailed",
+    "description": "Connects cited evidence to pricing, reserving and capital."
   },
   {
-    label: "Latest report",
-    prompt: "Summarize the latest Climate Monitor report in five bullets and include the report date.",
-    answer_mode: "brief",
-    description: "Fast snapshot grounded only in the newest available weekly report.",
+    "label": "Regulation & disclosure",
+    "prompt": "What are the latest developments in climate regulation, supervision, and disclosure relevant to insurers?",
+    "answer_mode": "detailed",
+    "description": "Reviews regulation, supervision and disclosure with source evidence."
   },
+  {
+    "label": "Physical risks",
+    "prompt": "What does the available evidence say about changing climate hazards and their implications for insurance losses?",
+    "answer_mode": "detailed",
+    "description": "Explains climate hazards and insurance loss evidence."
+  },
+  {
+    "label": "Transition risks",
+    "prompt": "What recent developments in the energy transition could affect insurers and actuaries?",
+    "answer_mode": "detailed",
+    "description": "Reviews energy transition evidence for insurers and actuaries."
+  }
 ];
 
 const GRAPH_COLORS = {
@@ -597,8 +609,8 @@ function setConnectionStatus(agentMode, model) {
   if (!els.status) {
     return;
   }
-  els.status.textContent = agentMode === "openai" ? `AI synthesis · ${model}` : "Source-only mode";
-  els.status.classList.toggle("status-pill--offline", agentMode !== "openai");
+  els.status.textContent = ["openai", "anthropic"].includes(agentMode) ? `AI synthesis · ${model}` : "Source-only mode";
+  els.status.classList.toggle("status-pill--offline", !["openai", "anthropic"].includes(agentMode));
 }
 
 function setAnswerMode(mode) {
@@ -693,7 +705,7 @@ function setWorkspaceView(viewId) {
 
 function messageToApi(item) {
   // The API bounds history messages to 8000 characters; keep the full report in the UI.
-  return { role: item.role, content: item.role === "assistant" ? item.content.slice(0, 8000) : item.content };
+  return { role: item.role, content: item.role === "assistant" ? item.content.slice(0, 8000) : item.content, context: item.context || null };
 }
 
 function appendMessage(role, content, options = {}) {
@@ -707,13 +719,14 @@ function appendMessage(role, content, options = {}) {
   renderMessages();
 }
 
-function replacePendingAssistant(content, sources = [], rangeReport = null) {
+function replacePendingAssistant(content, sources = [], rangeReport = null, context = null) {
   for (let index = state.messages.length - 1; index >= 0; index -= 1) {
     const message = state.messages[index];
     if (message.role === "assistant" && message.pending) {
       message.content = content;
       message.sources = sources;
       message.rangeReport = rangeReport;
+      message.context = context;
       message.pending = false;
       saveThread();
       renderMessages();
@@ -721,7 +734,7 @@ function replacePendingAssistant(content, sources = [], rangeReport = null) {
     }
   }
 
-  state.messages.push({ role: "assistant", content, sources, rangeReport, pending: false });
+  state.messages.push({ role: "assistant", content, sources, rangeReport, context, pending: false });
   saveThread();
   renderMessages();
 }
@@ -737,7 +750,7 @@ function renderSourceCards(sources) {
         ${sources
           .map(
             (source) => `
-              <button class="source-card" type="button" data-path="${escapeHtml(source.path || "")}">
+              <button class="source-card" type="button" data-path="${escapeHtml(source.path || "")}" data-url="${escapeHtml(safeSourceUrl(source.url))}">
                 <div class="source-card__title">
                   <span class="source-card__index">[${source.index}]</span>
                   <span class="source-card__heading">${escapeHtml(source.title || source.path || "Source")}</span>
@@ -877,7 +890,7 @@ async function sendMessage(message) {
     }
 
     const payload = await response.json();
-    replacePendingAssistant(payload.text, payload.sources || [], payload.range_report || null);
+    replacePendingAssistant(payload.text, payload.sources || [], payload.range_report || null, payload.context || null);
     setConnectionStatus(payload.agent_mode, payload.model);
     setAnswerMode(payload.answer_mode || state.answerMode);
   } catch (error) {
@@ -1674,6 +1687,36 @@ function meetingInstitution(item) {
   return values.find((value) => typeof value === "string" && value.trim())?.trim() || "Institution not specified";
 }
 
+function meetingLocationSummary(item) {
+  const location = item.collected_candidate?.location || item.location || item.pdf_observations?.find((row) => row.location)?.location;
+  return typeof location === "string" && location.trim()
+    ? (location.length > 56 ? `${location.slice(0, 55).trimEnd()}…` : location)
+    : "Location not provided";
+}
+
+function appendMeetingLocations(container, item) {
+  const pdfRows = item.pdf_observations || ((item.source_kind === "pdf" || item.origin === "pdf_import") ? [item] : []);
+  const locations = pdfRows.map((row) => ({
+    source: `PDF${row.source_filename ? ` · ${row.source_filename}` : ""}${row.page ? ` · page ${row.page}` : ""}`,
+    value: row.location || "Location not provided",
+  }));
+  const webLocation = item.collected_candidate?.location || (item.origin === "web_collection" ? item.location : null);
+  if (webLocation) {
+    const candidate = item.collected_candidate;
+    const sourceCheck = candidate
+      ? item.checks?.find((check) => check.verification_status === "verified"
+        && JSON.stringify(check.website_candidate) === JSON.stringify(candidate))
+      : item.checks?.find((check) => check.verification_status === "verified" && check.source_url);
+    const sourceUrl = item.collected_candidate_source_url || sourceCheck?.source_url || (!candidate ? item.source_urls?.[0] : "");
+    locations.push({ source: `Website${sourceUrl ? ` · ${sourceUrl}` : ""}`, value: webLocation });
+  }
+  if (!locations.length && item.location) locations.push({ source: "Source", value: item.location });
+  if (!locations.length) locations.push({ source: item.origin === "web_collection" ? "Website" : "PDF", value: "Location not provided" });
+  locations.forEach(({ source, value }) => {
+    container.append(registryElement("dt", "", "Location"), registryElement("dd", "meeting-entry__location", `${value}\n${source}`));
+  });
+}
+
 async function loadRegistryMeetings() {
   const sequence = ++state.registry.meetingRequestSequence;
   renderRegistryNotice(els.registryMeetings, "Loading meetings…");
@@ -1703,17 +1746,19 @@ async function loadRegistryMeetings() {
         const card = registryElement("details", "meeting-entry");
         const summary = registryElement("summary", "meeting-entry__summary");
         summary.append(registryElement("span", "meeting-entry__name", item.name),
-          registryElement("span", "meeting-entry__institution", meetingInstitution(item)));
+          registryElement("span", "meeting-entry__institution", meetingInstitution(item)),
+          registryElement("span", "meeting-entry__location-short", meetingLocationSummary(item)));
         card.append(summary);
         const body = registryElement("div", "meeting-entry__body");
         const fields = registryElement("dl", "detail-meta");
         const values = { "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
           "Time": item.raw_time_text, "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
-          "Location": item.location, "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
+          "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
           "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
         Object.entries(values).forEach(([label, value]) => {
           if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));
         });
+        appendMeetingLocations(fields, item);
         body.append(fields);
         const urls = [...new Set([...(item.source_urls || []), ...(item.sources || []).map((source) => source.source_url), item.online_url])];
         urls.forEach((url) => {
@@ -2569,11 +2614,14 @@ function attachEvents() {
     }
 
     const sourceCard = target.closest(".source-card");
-    if (sourceCard && sourceCard.dataset.path) {
-      if (sourceCard.dataset.path.startsWith("wiki/")) {
+    if (sourceCard) {
+      if (sourceCard.dataset.path?.startsWith("wiki/")) {
         setActiveContext(sourceCard.dataset.path, { switchView: "obsidianView" });
-      } else {
+      } else if (sourceCard.dataset.path) {
         window.open(`/${sourceCard.dataset.path}`, "_blank", "noopener");
+      } else {
+        const url = safeSourceUrl(sourceCard.dataset.url);
+        if (url) window.open(url, "_blank", "noopener");
       }
       return;
     }

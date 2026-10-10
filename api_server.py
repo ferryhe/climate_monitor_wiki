@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -86,6 +87,7 @@ from climate_registry.range_reports import (
     ensure_range_report_pdf,
     freeze_range_report,
     is_report_clarification,
+    is_report_date_correction,
     load_range_report,
     load_active_range_overlay,
     render_range_report_html,
@@ -287,6 +289,7 @@ class ChatMessage(BaseModel):
     # maximum length is added here; do not give this a default, which would
     # silently accept message objects with no content at all.
     content: str = Field(max_length=MAX_MESSAGE_LENGTH)
+    context: str | None = Field(default=None, max_length=96)
 
 
 class ChatRequest(BaseModel):
@@ -459,6 +462,26 @@ def _pdf_registry_view() -> tuple[RegistryReader, set[str] | None, set[str] | No
         from climate_registry.pdf_pipeline import _active_calendar_ids
         calendar_ids = _active_calendar_ids(pdf_reader.database, manifest, article_ids)
     return pdf_reader, article_ids, calendar_ids
+
+
+def _effective_meetings(reader: RegistryReader, *, page: int = 1, page_size: int = 100,
+    base_date: str | None = None, query: str = "", verification_status: str = "",
+    timezone_name: str = "UTC", include_unknown: bool = False) -> dict:
+    if reader.database is None:
+        items = []  # The verified Git export already carries its effective public meeting view.
+    else:
+        pdf_reader, _, calendar_ids = _pdf_registry_view()
+        items = [] if calendar_ids is None else pdf_reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids)
+    payload = reader.meetings(page=page, page_size=page_size, query=query,
+        verification_status=verification_status, base_date=base_date,
+        additional_calendar_items=items, timezone_name=timezone_name, include_unknown=include_unknown)
+    return {**payload, "items": [_calendar_dto(item) for item in payload["items"]]}
+
+
+responder.chat_evidence.reader_factory = lambda: (_registry_reader() if os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+    else RegistryReader.from_public_export(ROOT))
+responder.chat_evidence.meeting_view = lambda reader, **kwargs: _effective_meetings(
+    reader, timezone_name="America/New_York", include_unknown=True, **kwargs)
 
 
 def _merge_pdf_article_payloads(
@@ -902,15 +925,8 @@ def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
             raise RegistryQueryError("invalid meeting filter")
         if base_date:
             validate_report_date(base_date)
-        reader, _, calendar_ids = _pdf_registry_view()
-        items = (
-            [] if calendar_ids is None
-            else reader.pdf_calendar_items_all(allowed_occurrence_ids=calendar_ids)
-        )
-        return _registry_reader().meetings(
-            page=parsed_page, page_size=parsed_size,
-            query=query, verification_status=verification_status, base_date=base_date,
-            additional_calendar_items=items)
+        return _effective_meetings(_registry_reader(), page=parsed_page, page_size=parsed_size,
+            query=query, verification_status=verification_status, base_date=base_date)
     def public_payload():
         payload = query_meetings()
         return {**payload, "items": [_calendar_dto(item) for item in payload["items"]]}
@@ -1059,12 +1075,29 @@ def chat(request: ChatRequest) -> dict:
         ):
             pending_index -= 2
             pending_question = history[pending_index].get("content", "").strip()
+    # Ordinary date/content questions must never create an on-demand artifact.
+    intent_question = re.sub(r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:please\s+)?", "", question, flags=re.I)
+    explicit_pdf = bool(re.search(r"(?<![a-z])pdf(?![a-z])", question, re.I) and re.match(
+        r"\s*(?:(?:i\s+(?:need|want)\s+(?:you\s+)?to|i['’]d\s+like\s+(?:you\s+)?to|let['’]s)\s+)?"
+        r"(generate|create|make|build|produce|prepare|download|give)\b|"
+        r"\s*(?:(?:i|we)\s+)?(need|want)\s+(?:(?:a|an|the|new|climate)\s+)*pdf\b|"
+        r"\s*(生成|创建|下载)", intent_question, re.I))
+    if re.search(r"\b(do not|don['’]t|never|avoid|without|not)\b.{0,40}\b(generate|create|make|build|produce|prepare|download|need|want|give)\b|不要.{0,20}(生成|创建|下载)", question, re.I):
+        explicit_pdf = False
+    if re.search(r"[—–;,.-]\s*(?:(?:actually|but)\s*[, ]*)?(?:please\s+)?(?:don['’]t|do not)"
+        r"(?:\s+(?:do\s+)?(?:it|that|this))?\s*[.!?]*\s*$", question, re.I):
+        explicit_pdf = False
+    if re.match(r"\s*(what|how|why|explain|summarize|should|whether|if|unless)\b|"
+        r"\s*(tell|show)\s+me\s+(how|why|what|whether)\b|"
+        r"\s*(can|could|may|must|would|will)\s+(i|we)\b|"
+        r"\s*(is|would)\s+it\b|\s*(do|does)\s+(i|we)\s+need\b", intent_question, re.I):
+        explicit_pdf = False
     report_route = (
         resolve_report_followup(question, pending_question)
-        if pending_question
-        else resolve_report_route(question)
+        if pending_question and (explicit_pdf or is_report_date_correction(question))
+        else resolve_report_route("Generate a PDF report. " + question) if explicit_pdf else None
     )
-    if report_route.action == "clarify":
+    if report_route is not None and report_route.action == "clarify":
         return {
             "text": report_route.clarification,
             "sources": [],
@@ -1074,11 +1107,17 @@ def chat(request: ChatRequest) -> dict:
             "language": request.language,
             "answer_mode": request.answer_mode,
         }
-    if report_route.action == "generate":
+    if report_route is not None and report_route.action == "generate":
         try:
             overlay_reader, pdf_overlay_reader, overlay_manifest = _range_report_overlay()
+            try:
+                report_reader = _registry_reader()
+            except RegistryUnavailableError:
+                if os.getenv("CLIMATE_REGISTRY_DB", "").strip():
+                    raise
+                report_reader = RegistryReader.from_public_export(ROOT)
             snapshot = freeze_range_report(
-                _registry_reader(),
+                report_reader,
                 RANGE_REPORT_DIR,
                 start_date=report_route.start_date,
                 end_date=report_route.end_date,
@@ -1130,12 +1169,15 @@ def chat(request: ChatRequest) -> dict:
         }
 
     try:
+        context = next((item.get("context") for item in reversed(history)
+            if item.get("role") == "assistant" and item.get("context")), None)
         return responder.answer(
             question,
             history=history,
             context_path=request.context_path,
             language=request.language,
             answer_mode=request.answer_mode,
+            **({"context": context} if context else {}),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

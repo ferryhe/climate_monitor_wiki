@@ -42,6 +42,41 @@ assert.equal(tabs[1]['aria-selected'], 'true');
 assert.equal(tabs[0]['aria-selected'], 'false');
 assert.deepEqual(calls, ['/api/registry/meetings?page=1&page_size=20']);
 assert.match(els.registryMeetingCounts.textContent, /As of 2026-10-04 \(UTC\)/);
+
+const created = [];
+const document = { createElement(tag) {
+  const element = { tag, children: [], append(...items) { this.children.push(...items); } };
+  created.push(element);
+  return element;
+} };
+context.document = document;
+for (const name of ['registryElement', 'meetingLocationSummary', 'appendMeetingLocations', 'appendInformationCheck']) {
+  const fn = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
+  assert.ok(fn, name);
+  vm.runInContext(fn, context);
+}
+const websiteCandidate = { location: 'Website location', name: 'Climate Conference', start_date: '2026-10-27' };
+const conflict = { location: 'Website location', verification_status: 'verified', source_kind: 'pdf',
+  collected_candidate: websiteCandidate,
+  checks: [
+    { source_url: 'https://example.org/old', verification_status: 'partial', website_candidate: { location: 'Stale' } },
+    { source_url: 'https://example.org/current', verification_status: 'verified', website_candidate: websiteCandidate },
+  ],
+  pdf_observations: [{ location: 'PDF location', source_filename: 'events.pdf', page: 7 }] };
+assert.equal(context.meetingLocationSummary(conflict), 'Website location');
+assert.equal(context.meetingLocationSummary({ name: 'Conference in Hong Kong' }), 'Location not provided');
+const details = { children: [], append(...items) { this.children.push(...items); } };
+context.appendMeetingLocations(details, conflict);
+assert.deepEqual(details.children.filter((element) => element.tag === 'dd').map((element) => element.textContent),
+  ['PDF location\nPDF · events.pdf · page 7', 'Website location\nWebsite · https://example.org/current']);
+const checkDetails = { children: [], append(...items) { this.children.push(...items); } };
+context.appendInformationCheck(checkDetails, conflict);
+assert.match(checkDetails.children[0].textContent, /Verified \/ collected/);
+assert.equal(conflict.verification_status, 'verified');
+const publishedDetails = { children: [], append(...items) { this.children.push(...items); } };
+context.appendMeetingLocations(publishedDetails, { ...conflict, checks: [],
+  collected_candidate_source_url: 'https://example.org/current' });
+assert.match(publishedDetails.children.at(-1).textContent, /Website · https:\/\/example\.org\/current/);
 context.setWorkspaceView('chatView');
 assert.equal(els.meetingsView.hidden, true);
 assert.equal(els.chatView.hidden, false);
