@@ -661,6 +661,59 @@ def test_quality_discovery_description_uses_subject_not_audience(tmp_path, monke
     assert result["agent_mode"] == "openai" and len(requests) == 4
 
 
+@pytest.mark.parametrize("question", [
+    "What climate and insurance content was recently added?",
+    "What recently added climate and insurance content is available?",
+    "What content was recently added?",
+    "What content was recently updated?",
+    "What recently updated climate insurance content is available?",
+    "最近新增了哪些气候保险内容？",
+    "最近更新了哪些气候保险内容？",
+])
+def test_offline_recent_content_uses_approved_knowledge_chronology(tmp_path, question):
+    from datetime import timedelta
+    from contextlib import nullcontext
+
+    chat = owner(tmp_path)
+    ingested = datetime.now(timezone.utc) - timedelta(hours=1)
+    updated_query = bool(re.search(r"recently updated|最近更新", question, re.I))
+    class Reader:
+        calls = []
+        def public_snapshot(self): return nullcontext()
+        def knowledge_chronology(self):
+            self.calls.append("knowledge_chronology")
+            return {"article:actual": {"first_ingested_at": "2024-01-01T12:00:00Z" if updated_query else ingested.isoformat(),
+                "substantive_updated_at": ingested.isoformat() if updated_query else None,
+                "knowledge_id": "approved-knowledge-version"}}
+        def articles(self, **kwargs):
+            self.calls.append("articles")
+            return {"items": [{"article_id": "actual", "title": "Climate insurance update",
+                "summary": "Approved climate risk findings", "published_candidate_sha256": "approved-article-version"}],
+                "pagination": {"pages": 1}}
+        def pdf_articles_all(self): return []
+        def article(self, article_id):
+            self.calls.append("article")
+            assert article_id == "actual"
+            return {"article_id": "actual", "title": "Climate insurance update", "summary": "Approved climate risk findings",
+                "publisher": "Approved source", "publication_date": "2026-08-01", "categories": ["climate risk"],
+                "published_candidate_sha256": "approved-article-version", "canonical_url": "https://example.org/climate"}
+
+    chat.reader_factory = Reader
+    result = chat.answer(question)
+    generic = chat.answer("What recent climate insurance developments matter?")
+
+    assert Reader.calls == ["knowledge_chronology", "articles", "article"]
+    assert len(result["sources"]) == 1 and result["sources"][0]["evidence_id"] == "actual"
+    assert result["sources"][0]["version"] == "approved-article-version"
+    if updated_query:
+        assert "Material update: " + ingested.isoformat() in result["text"]
+    else:
+        assert "First added: " + ingested.isoformat() in result["text"]
+    assert "[1]" in result["text"]
+    assert not any(source["evidence_id"].endswith(":wiki:1") for source in result["sources"])
+    assert any(source["evidence_id"].endswith(":wiki:1") for source in generic["sources"])
+
+
 def test_quality_wiki_excerpt_keeps_findings_not_technical_provenance(tmp_path):
     chat = owner(tmp_path)
     document = tmp_path / "wiki" / "article-report.md"
@@ -733,7 +786,7 @@ def test_quality_recent_window_uses_question_and_only_relevant_compact_candidate
     assert [row["source"]["evidence_id"] for row in result] == ["energy"]
     assert len(result[0]["preview"]) < 1500 and not turn.sources
     assert any("2026-09-26" in note for note in turn.notes) and not any("2026-09-25" in note for note in turn.notes)
-    assert any("10 scanned articles have unknown" in note for note in turn.notes)
+    assert any("10 scanned article/PDF record rows have unknown" in note and "not a unique-article count" in note for note in turn.notes)
 
 
 def test_quality_model_evidence_omits_duplicate_body_and_snippet(tmp_path):
@@ -1789,6 +1842,34 @@ def test_new_york_calendar_window_dst_and_future():
     assert start.date().isoformat() == "2026-10-25" and end == now
 
 
+def test_chinese_unspaced_explicit_recent_window_selects_only_requested_month(tmp_path):
+    from contextlib import nullcontext
+
+    chat = owner(tmp_path)
+    class Reader:
+        def public_snapshot(self): return nullcontext()
+        def knowledge_chronology(self):
+            return {"article:september": {"first_ingested_at": "2026-09-15T12:00:00Z"},
+                "article:october": {"first_ingested_at": "2026-10-10T12:40:00Z"}}
+        def articles(self, **kwargs):
+            return {"items": [{"article_id": key, "title": "Climate insurance " + key,
+                "summary": "Climate insurance findings"} for key in ("september", "october")],
+                "pagination": {"pages": 1}}
+        def pdf_articles_all(self): return []
+        def article(self, key):
+            return {"article_id": key, "title": "Climate insurance " + key, "summary": "Climate insurance findings",
+                "publication_date": "2024-01-01", "published_candidate_sha256": "approved-" + key,
+                "canonical_url": "https://example.org/" + key}
+
+    chat.reader_factory = Reader
+    turn = EvidenceTurn(chat, "最近新增的气候保险文章从2026-09-01到2026-09-30有哪些？", None, [])
+    turn.now = datetime(2026, 10, 10, 13, 40, tzinfo=timezone.utc)
+    turn.initial(None)
+
+    assert [source["evidence_id"] for source in turn.sources] == ["september"]
+    assert any("2026-09-01T00:00:00-04:00" in note and "2026-09-30T23:59:59.999999-04:00" in note for note in turn.notes)
+
+
 @pytest.mark.usefixtures("mock_reader_policy")
 def test_actual_url_body_reused_and_failure_is_honest(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
@@ -1940,6 +2021,144 @@ def test_meeting_type_and_location_filters_are_useful_offline(tmp_path):
     answer = chat.answer("Upcoming conferences in Paris")
     assert "Conference in Paris" in answer["text"] and "Conference in New York" not in answer["text"]
     assert "IPCC expert review" not in answer["text"]
+
+
+def test_meeting_filters_are_conjunctive_and_disclose_unknown_coverage(tmp_path):
+    paris = {**meeting("offline-paris", "Paris conference", "Paris"), "event_type": "conference",
+        "organizer": "OECD", "event_timezone": "Europe/Paris", "online_url": None}
+    virtual = {**meeting("online-ny", "Virtual conference", "Virtual"), "event_type": "conference",
+        "organizer": "IPCC", "event_timezone": "America/New_York", "online_url": "https://example.org/join"}
+    onsite_registration = {**meeting("onsite-registration", "Onsite conference", "Paris conference venue"),
+        "event_type": "conference", "event_timezone": "Europe/Paris", "online_url": "https://example.org/register"}
+    online_no_link = {**meeting("online-no-link", "No-link virtual meeting", "Online"),
+        "event_type": "conference", "event_timezone": "Europe/Paris", "online_url": None}
+    unknown = {**meeting("unknown", "Unspecified conference", None), "event_type": "conference",
+        "organizer": None, "event_timezone": None, "online_url": None}
+    chat = owner(tmp_path)
+    chat.reader_factory = lambda: MeetingsReader([paris, virtual, onsite_registration, online_no_link, unknown])
+
+    mismatch = EvidenceTurn(chat, "List upcoming conferences organized by IPCC in Paris", None, [])
+    assert mismatch.search_knowledge(mismatch.question, target="meetings") == []
+    scope = next(note for note in mismatch.notes if note.startswith("Meeting query scope:"))
+    assert '"organizer": ["IPCC"]' in scope and '"location": ["Paris"]' in scope
+    assert any("Location filter coverage: 1 meetings" in note for note in mismatch.notes)
+
+    absent = EvidenceTurn(chat, "List upcoming conferences organized by IPCC in Berlin", None, [])
+    assert absent.search_knowledge(absent.question, target="meetings") == []
+    scope = next(note for note in absent.notes if note.startswith("Meeting query scope:"))
+    assert '"organizer": ["IPCC"]' in scope and '"location": ["Berlin"]' in scope
+
+    online = EvidenceTurn(chat, "List upcoming online conferences", None, [])
+    online_results = online.search_knowledge(online.question, target="meetings")
+    assert [row["source"]["evidence_id"] for row in online_results] == ["online-ny", "online-no-link"]
+    assert all(row["source"]["evidence_id"] != "onsite-registration" for row in online_results)
+    assert any("Online-only filter coverage: 1 meetings" in note for note in online.notes)
+
+    zone = EvidenceTurn(chat, "List upcoming conferences whose event timezone is America/New_York", None, [])
+    assert [row["source"]["evidence_id"] for row in zone.search_knowledge(zone.question, target="meetings")] == ["online-ny"]
+    assert any("Event-timezone filter coverage: 1 meetings" in note for note in zone.notes)
+
+    online_zone = EvidenceTurn(chat, "List upcoming online meetings in America/New_York", None, [])
+    assert [row["source"]["evidence_id"] for row in online_zone.search_knowledge(online_zone.question, target="meetings")] == ["online-ny"]
+    scope = next(note for note in online_zone.notes if note.startswith("Meeting query scope:"))
+    assert '"event_timezone": ["America/New_York"]' in scope
+    assert '"location"' not in scope
+
+
+@pytest.mark.parametrize("question,field,value,event_date", [
+    ("List conferences organized by IAIS from 2026-11-01 to 2026-11-30", "organizer", "IAIS", "2026-11-12"),
+    ("List conferences from 2026-11-01 to 2026-11-30 organized by IAIS", "organizer", "IAIS", "2026-11-12"),
+    ("List conferences in Paris from 2027-06-01 to 2027-06-30", "location", "Paris", "2027-06-10"),
+    ("List conferences from 2027-06-01 to 2027-06-30 in Paris", "location", "Paris", "2027-06-10"),
+    ("List conferences organized by IAIS 从2026-11-01到2026-11-30", "organizer", "IAIS", "2026-11-12"),
+])
+def test_meeting_date_ranges_remain_separate_from_explicit_filters(tmp_path, question, field, value, event_date):
+    item = {**meeting("range-match", "IAIS Annual Conference", "Paris"), "organizer": "IAIS",
+        "event_type": "conference", "start_date": event_date, "end_date": event_date, "date_precision": "day"}
+    chat = owner(tmp_path)
+    chat.reader_factory = lambda: MeetingsReader([item])
+    turn = EvidenceTurn(chat, question, None, [])
+    assert [row["source"]["evidence_id"] for row in turn.search_knowledge(question, target="meetings")] == ["range-match"]
+    scope = next(note for note in turn.notes if note.startswith("Meeting query scope:"))
+    assert f'"{field}": ["{value}"]' in scope
+    assert '"event_or_deadline_window"' in scope
+
+
+@pytest.mark.parametrize("raw_time_text", ["09:00–10:00 EDT", "09:00–10:00 UTC-04:00"])
+def test_upcoming_meeting_uses_known_same_day_end_time_and_query_instant(tmp_path, raw_time_text):
+    item = {**meeting("morning", "Morning conference", "Virtual"), "event_type": "conference",
+        "start_date": "2026-10-10", "end_date": "2026-10-10", "date_precision": "day",
+        "raw_time_text": raw_time_text, "event_timezone": "America/New_York", "online_url": "https://example.org/join"}
+    chat = owner(tmp_path)
+    chat.reader_factory = lambda: MeetingsReader([item])
+
+    before = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    before.now = datetime(2026, 10, 10, 13, 0, tzinfo=timezone.utc)  # 09:00 EDT
+    assert [row["source"]["evidence_id"] for row in before.search_knowledge(before.question, target="meetings")] == ["morning"]
+
+    after = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    after.now = datetime(2026, 10, 10, 14, 0, tzinfo=timezone.utc)  # 10:00 EDT
+    assert after.search_knowledge(after.question, target="meetings") == []
+    assert any("Excluded 1 meeting(s)" in note and "end time" in note for note in after.notes)
+
+    item["event_timezone"] = None
+    unknown = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    unknown.now = after.now
+    assert [row["source"]["evidence_id"] for row in unknown.search_knowledge(unknown.question, target="meetings")] == ["morning"]
+    assert any("timing is uncertain" in note for note in unknown.notes)
+
+    item["start_date"] = "2026-10-09"  # A multi-day meeting still ends today.
+    item["event_timezone"] = "America/New_York"
+    multi_day = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    multi_day.now = after.now
+    assert [row["source"]["evidence_id"] for row in multi_day.search_knowledge(multi_day.question, target="meetings")] == []
+    assert any("Excluded 1 meeting(s)" in note for note in multi_day.notes)
+
+    item["event_timezone"] = None
+    uncertain = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    uncertain.now = after.now
+    assert [row["source"]["evidence_id"] for row in uncertain.search_knowledge(uncertain.question, target="meetings")] == ["morning"]
+    assert any("timing is uncertain" in note for note in uncertain.notes)
+
+
+def test_upcoming_meeting_parses_pm_end_time(tmp_path):
+    from agentic_wiki.chat_evidence import meeting_end
+
+    item = {**meeting("evening", "Evening conference", "Virtual"), "event_type": "conference",
+        "start_date": "2026-10-10", "end_date": "2026-10-10", "date_precision": "day",
+        "raw_time_text": "09:00-10:00 PM", "event_timezone": "America/New_York"}
+    assert meeting_end(item).isoformat() == "2026-10-10T22:00:00-04:00"
+    chat = owner(tmp_path)
+    chat.reader_factory = lambda: MeetingsReader([item])
+    before = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    before.now = datetime(2026, 10, 10, 14, tzinfo=timezone.utc)
+    assert [row["source"]["evidence_id"] for row in before.search_knowledge(before.question, target="meetings")] == ["evening"]
+    after = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    after.now = datetime(2026, 10, 11, 2, tzinfo=timezone.utc)
+    assert after.search_knowledge(after.question, target="meetings") == []
+
+
+def test_upcoming_keeps_western_event_running_after_new_york_midnight(tmp_path):
+    item = {**meeting("la", "Los Angeles conference", "Los Angeles"), "event_type": "conference",
+        "start_date": "2026-10-10", "end_date": "2026-10-10", "date_precision": "day",
+        "raw_time_text": "21:00–23:00 PDT", "event_timezone": "America/Los_Angeles"}
+    class DateFilteredReader(MeetingsReader):
+        def meetings(self, **kwargs):
+            self.base_date = kwargs["base_date"]
+            items = [row for row in self.records if row.get("end_date", "9999") >= self.base_date]
+            return {"items": copy.deepcopy(items), "pagination": {"pages": 1}, "coverage": {"status": "partial"}}
+
+    reader = DateFilteredReader([item])
+    chat = owner(tmp_path)
+    chat.reader_factory = lambda: reader
+    turn = EvidenceTurn(chat, "List upcoming conferences", None, [])
+    turn.now = datetime(2026, 10, 11, 4, 30, tzinfo=timezone.utc)  # October 10, 21:30 PDT.
+    result = turn.search_knowledge(turn.question, target="meetings")
+
+    assert reader.base_date == "2026-10-10"
+    assert [row["source"]["evidence_id"] for row in result] == ["la"]
+    assert "Opportunity timing: ended" not in result[0]["text"]
+    assert '"business_date_lower": "2026-10-10"' in next(note for note in turn.notes if note.startswith("Meeting query scope:"))
 
 
 def test_anthropic_native_tool_results_and_provider_preference(tmp_path, monkeypatch):
