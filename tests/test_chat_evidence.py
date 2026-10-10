@@ -18,6 +18,15 @@ from climate_registry.publication import _approve, export_public_snapshot, stage
 from test_registry_publication import _database, _reader
 
 
+@pytest.fixture
+def mock_reader_policy(monkeypatch):
+    """Pair controlled fetch results with a policy seam; no live policy claim."""
+    from agentic_wiki import chat_evidence
+    class ValidationError(ValueError):
+        pass
+    monkeypatch.setattr(chat_evidence, "_load_url_policy", lambda: (lambda url: url, ValidationError))
+
+
 def owner(tmp_path):
     wiki = tmp_path / "wiki"
     wiki.mkdir()
@@ -475,6 +484,7 @@ def test_research_state_requires_read_ids_and_preserves_real_chronology_gap(tmp_
     assert switched.research_plan is None
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_research_state_current_excerpt_requires_body_but_failed_target_allows_gap(tmp_path, monkeypatch):
     chat = owner(tmp_path); chat.responder.client = object()
     turn = EvidenceTurn(chat, "What is current regulation?", None, [])
@@ -525,6 +535,7 @@ def test_research_state_last_tool_cannot_upgrade_unread_candidate(tmp_path):
         {"id": "facts", "status": "gap", "evidence_ids": [], "gap": "Tool allowance exhausted before reading relevant evidence."}]})["status"] == "finish_accepted"
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_research_state_current_read_replaces_same_id_retained_body(tmp_path, monkeypatch):
     chat = owner(tmp_path); chat.responder.client = object()
     turn = EvidenceTurn(chat, "Check current registration", None, []); turn.runtime_dir = tmp_path
@@ -747,6 +758,7 @@ def test_quality_final_answer_uses_only_cited_verification_and_no_raw_notes(tmp_
     assert "participation" not in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_quality_page_relevance_precedes_clipping_and_reserves_other_reads(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -855,6 +867,7 @@ def test_quality_candidate_preview_counts_toward_shared_evidence_budget(tmp_path
     assert result["evidence"][0]["truncated"] and "partial" in result["coverage_note"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 def test_quality_first_draft_checks_original_topic_window_and_unread_citations(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -960,6 +973,7 @@ def test_quality_tool_cap_requests_direct_supported_synthesis(tmp_path, monkeypa
     assert "Climate disclosure" not in result["text"] and "No energy-transition findings" in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 def test_quality_failed_primary_body_can_reformulate_search_for_another_readable_source(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -994,6 +1008,7 @@ def test_quality_failed_primary_body_can_reformulate_search_for_another_readable
     assert "[1]" in result["text"] and len(result["sources"]) == 1
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("fresh", [False, True])
 def test_identity_verification_reuses_body_unless_current_status_requested(tmp_path, monkeypatch, provider, fresh):
@@ -1025,6 +1040,7 @@ def test_identity_verification_reuses_body_unless_current_status_requested(tmp_p
     assert result["sources"] and result["sources"][0]["evidence_id"] == evidence_id
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 def test_assessment_cycle_start_is_not_report_publication(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -1048,6 +1064,7 @@ def test_assessment_cycle_start_is_not_report_publication(tmp_path, monkeypatch,
     assert result["sources"][0]["url"] == url and "[1]" in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("absent", ["does not specify", "does not state"])
 def test_missing_publication_wording_keeps_publisher_verification(tmp_path, monkeypatch, provider, absent):
@@ -1153,6 +1170,7 @@ def identity_model(chat):
     return requests
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("focused", [False, True])
 def test_online_agent_selects_topic_and_iterates_after_page_body(tmp_path, monkeypatch, provider, focused):
@@ -1229,6 +1247,7 @@ def test_online_agent_decides_ambiguity_and_budget_gap(tmp_path, monkeypatch, pr
     assert len(requests) == 3 and "Manual verification" in gap["text"] and not gap["sources"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 def test_clarification_terminates_provider_and_same_batch_tools(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -1262,6 +1281,7 @@ def test_explicit_knowledge_tool_category_and_invalid_category(tmp_path):
     assert turn.execute("search_knowledge", {"query": "insurance", "target": "private_db"})["status"] == "invalid"
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("question", ["What is its registration deadline?", "Which questions concern insurers?",
     "Read source 1", "Tell me more about the second article above"])
 def test_source_only_never_consumes_prior_context_or_history(tmp_path, monkeypatch, question):
@@ -1391,6 +1411,7 @@ def test_review19_source_only_unknown_participation_has_named_verification_step(
     assert "organizer" in result["text"] and "Alpha conference" in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_review19_source_only_truncated_page_has_verification_step(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -1575,6 +1596,7 @@ def test_pdf_observation_deadline_matches_explicit_business_window(tmp_path, eve
     assert not outside["sources"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("count", [1, 2])
 def test_natural_insurer_question_reuses_retained_consultation_body(tmp_path, monkeypatch, count):
     from climate_monitor import article_content_adapter
@@ -1767,6 +1789,7 @@ def test_new_york_calendar_window_dst_and_future():
     assert start.date().isoformat() == "2026-10-25" and end == now
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_actual_url_body_reused_and_failure_is_honest(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -1848,6 +1871,7 @@ def test_client_context_api_roundtrip_and_legacy_payload(monkeypatch):
     assert seen[-1]["context"] == "opaque-server-token"
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_search_reads_candidates_and_does_not_cite_snippets(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2015,6 +2039,7 @@ def test_native_claude_sdk_environment_and_messages_contract(tmp_path, monkeypat
     sdk.close()
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_anthropic_search_candidates_use_same_governed_reader(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2064,6 +2089,7 @@ def test_existing_chat_api_is_english_only(language):
     assert response.status_code == 422
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_generic_search_then_open_url_is_not_a_previous_citation_request(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2123,6 +2149,7 @@ def test_generic_search_then_open_url_is_not_a_previous_citation_request(tmp_pat
 
 
 def test_tracking_urls_and_invalid_paths_preserve_reader_budget(tmp_path, monkeypatch):
+    pytest.importorskip("web_listening.request.scope", reason="Real governed URL policy requires the Python >=3.12 reader dependency")
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
     sent = []
@@ -2148,6 +2175,7 @@ def test_tracking_urls_and_invalid_paths_preserve_reader_budget(tmp_path, monkey
         assert turn.reads == 2  # Functional parameters are retained and real failures spend budget.
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_automatic_corpus_retrieval_reserves_space_for_real_url_body(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     from agentic_wiki.chat_evidence import MAX_TEXT
@@ -2169,6 +2197,7 @@ def test_automatic_corpus_retrieval_reserves_space_for_real_url_body(tmp_path, m
     assert "Verified page-only eligibility fact" in turn.evidence[-1]["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_captured_real_responses_sources_regresses_empty_search_parser(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     fixture = json.loads(Path("tests/fixtures/chat_search_action_sources.json").read_text())
@@ -2216,6 +2245,7 @@ def test_future_meeting_business_window_keeps_knowledge_time_separate(tmp_path):
         window("new articles from 2027-06-01 to 2027-06-30", datetime(2026, 10, 8, tzinfo=timezone.utc))
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_explicit_url_wins_over_previous_meeting_reference(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2266,6 +2296,7 @@ def test_real_summary_citations_do_not_override_visible_meeting_bullets(tmp_path
     assert chat.frames.get(second["context"])["ordered"] == fixture["expected_visible_ids"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 def test_page_tool_text_shared_budget_across_model_messages(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -2297,6 +2328,7 @@ def test_page_tool_text_shared_budget_across_model_messages(tmp_path, monkeypatc
     assert "partial" in result["text"].lower() or "incomplete" in result["text"].lower()
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_offline_deadline_followup_requires_current_explicit_source(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2321,6 +2353,7 @@ def test_offline_deadline_followup_requires_current_explicit_source(tmp_path, mo
     assert evidence_trace(detail)[0]["tool"] == "search_knowledge"
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("question", ["What is the consultation deadline?", "What are the registration deadlines?", "When is the registration deadline in 2027?"])
 def test_single_current_page_fact_followup_without_pronoun_and_topic_switch(tmp_path, monkeypatch, question):
     from climate_monitor import article_content_adapter
@@ -2432,6 +2465,7 @@ def test_upcoming_event_past_sole_registration_deadline_is_expired(tmp_path):
     assert "registration: unknown [timing unknown" in unknown and "[expired" not in unknown
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("truncated", [False, True])
 def test_url_only_overview_receives_retained_body_and_reading_limit(tmp_path, monkeypatch, provider, truncated):
@@ -2474,6 +2508,7 @@ def test_url_only_overview_receives_retained_body_and_reading_limit(tmp_path, mo
         assert later in evidence and "Reading window limitation" not in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("truncated", [False, True])
 def test_offline_url_only_overview_is_short_and_preserves_retained_body(tmp_path, monkeypatch, truncated):
     from agentic_wiki.chat_evidence import MAX_TEXT
@@ -2537,6 +2572,7 @@ def test_date_numbers_do_not_replace_focused_meeting_identity(tmp_path, question
     assert not detail["needs_clarification"] and detail["sources"][0]["evidence_id"] == "two"
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("question", ["Is it still open now?", "Is it open?"])
 def test_current_open_status_requires_a_fresh_governed_read(tmp_path, monkeypatch, question):
     from climate_monitor import article_content_adapter
@@ -2605,6 +2641,7 @@ def test_added_range_filters_approved_chronology_not_future_event_dates(tmp_path
     assert [row["evidence_id"] for row in business.sources] == ["one", "older", "unknown"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_explicit_new_url_becomes_current_pronoun_target(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2800,6 +2837,7 @@ def seven_relevant_paragraphs():
     return body
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_relevant_seventh_url_passage_uses_remaining_evidence_room(tmp_path, monkeypatch):
     from climate_monitor import article_content_adapter
     chat = owner(tmp_path)
@@ -2813,6 +2851,7 @@ def test_relevant_seventh_url_passage_uses_remaining_evidence_room(tmp_path, mon
     assert next(iter(chat.frames.get(result["context"])["web"].values()))["body"] == body
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 def test_cached_url_excerpt_omission_has_honest_metadata_and_note(tmp_path, monkeypatch):
     from agentic_wiki.chat_evidence import MAX_TEXT
     from climate_monitor import article_content_adapter
@@ -2911,6 +2950,7 @@ def test_source_only_legacy_history_does_not_supply_meeting_identity(tmp_path, c
     assert "Manual verification" in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("count", [1, 2])
 def test_page_reference_reuses_body_and_clarifies_multiple_pages(tmp_path, monkeypatch, count):
     from climate_monitor import article_content_adapter
@@ -2954,6 +2994,7 @@ def test_explicit_month_period_requests_date_endpoints_not_default_window(tmp_pa
     assert start.date().isoformat() == "2026-07-09" and end == now
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("outcome", ["ok", "failed", "missing_url"])
 @pytest.mark.parametrize("focused", [False, True])
 def test_registry_current_registration_status_uses_fresh_reader_or_explicit_gap(tmp_path, monkeypatch, outcome, focused):
@@ -2986,6 +3027,7 @@ def test_registry_current_registration_status_uses_fresh_reader_or_explicit_gap(
         assert all(source["heading"] != "web" for source in result["sources"])
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("readable", [True, False])
 @pytest.mark.parametrize("blocked_first", [False, True])
@@ -3079,6 +3121,7 @@ def test_unique_meeting_deadline_search_reads_official_body_before_generic_sourc
         assert not web and "unknown" in result["text"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_captured_official_search_without_text_citations_keeps_structured_candidates(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -3162,6 +3205,7 @@ def test_links_reserve_finish_only_selected_targets_not_every_observed_link(tmp_
     assert [row["target"] for row in pending["pending"] if "target" in row] == ["https://example.org/primary"]
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("phase", ["no_plan", "pending", "search", "reader"])
 def test_links_reserve_final_is_one_request_after_research_time(tmp_path, monkeypatch, provider, phase):
@@ -3280,6 +3324,7 @@ def test_native_finish_enough_evidence_still_gets_one_check_before_answer(tmp_pa
     assert len(checks)==1
 
 
+@pytest.mark.usefixtures("mock_reader_policy")
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 def test_native_finish_gap_check_continues_real_search_read_and_new_finish(tmp_path, monkeypatch, provider):
     from climate_monitor import article_content_adapter
@@ -3353,3 +3398,52 @@ def test_native_wrapped_real_openai2_tokens_keep_fixed_registered_indices(tmp_pa
     for key in ids:turn.add({"evidence_id":key,"title":key},kind="wiki",text="Registered retained evidence.")
     raw="First cite[[cite:event-cf76e68c09bc6448b0a936bc]]. Fifth cite[[cite:chat-cabb520f692a7a2920f7e924]]. Third cite[[cite:event-fac277962acf96bea74ba384]]. Fourth cite[[cite:article-3d6956d25e27ad6a96a428b7]]."
     assert turn.final_text(raw)=="First [1]. Fifth [5]. Third [3]. Fourth [4]."
+
+
+@pytest.fixture
+def reader_dependency_missing(monkeypatch):
+    import builtins
+    original = builtins.__import__
+    def missing(name, *args, **kwargs):
+        if name.startswith("web_listening"):
+            raise ModuleNotFoundError("No module named 'web_listening'")
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", missing)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("through_tool", [False, True])
+def test_missing_reader_policy_is_unavailable_without_fetch_or_cached_evidence(tmp_path, monkeypatch, reader_dependency_missing, cached, through_tool):
+    from climate_monitor import article_content_adapter
+    chat = owner(tmp_path)
+    turn = EvidenceTurn(chat, "Read https://example.org/page", None, [])
+    url = "https://example.org/page"
+    if cached:
+        turn.web[url] = {"evidence_id": "chat-cached", "body": "Old retained page body."}
+    prior_web = copy.deepcopy(turn.web)
+    monkeypatch.setattr(article_content_adapter, "fetch_article_content", lambda *a, **kw: pytest.fail("Unavailable policy must not fetch"))
+    result = turn.execute("read_url", {"url": url}) if through_tool else turn.read_url(url)
+    assert result["status"] == "unavailable" and result["reason"] == article_content_adapter.UNAVAILABLE_REASON
+    assert result["requested_url"] == result["reader_url"] == url
+    assert turn.web == prior_web and not turn.sources and not turn.evidence and turn.reads == 0
+    if through_tool:
+        assert turn.trace[-1]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_missing_reader_policy_result_reaches_provider_honestly(tmp_path, monkeypatch, reader_dependency_missing, provider):
+    from climate_monitor import article_content_adapter
+    chat = owner(tmp_path)
+    url = "https://example.org/page"
+    monkeypatch.setattr(article_content_adapter, "fetch_article_content", lambda *a, **kw: pytest.fail("Unavailable policy must not fetch"))
+    def script(index, request):
+        if index == 0:
+            return [("read_url", {"url": url})]
+        payload = json.dumps(request)
+        assert article_content_adapter.UNAVAILABLE_REASON in payload and 'unavailable' in payload
+        return "The governed reader is unavailable; this page could not be read. Open the official page manually to verify the requested facts."
+    scripted_provider(chat, monkeypatch, provider, script)
+    result = chat.answer("Check the supplied page evidence")
+    assert result["agent_mode"] == provider and not result["sources"] and "could not be read" in result["text"]
+    assert any(row["tool"] == "read_url" and row["status"] == "unavailable" for row in evidence_trace(result))
+    assert not chat.frames.get(result["context"])["web"]

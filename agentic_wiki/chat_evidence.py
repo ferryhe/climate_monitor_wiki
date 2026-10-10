@@ -38,6 +38,12 @@ FINAL_RESERVE_SECONDS = 20
 MAX_MODELS = 14
 
 
+def _load_url_policy():
+    from web_listening.request.model import RequestValidationError
+    from web_listening.request.scope import canonicalize_url
+    return canonicalize_url, RequestValidationError
+
+
 class ResponseFrames:
     # shortcut: single-process TTL cache; use shared runtime storage for multiple replicas.
     def __init__(self):
@@ -1005,8 +1011,12 @@ class EvidenceTurn:
         if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password or len(url) > 2048:
             return {"status": "invalid", "reason": "A public HTTP(S) URL is required."}
         url = reader_url(url)
-        from web_listening.request.model import RequestValidationError
-        from web_listening.request.scope import canonicalize_url
+        try:
+            canonicalize_url, RequestValidationError = _load_url_policy()
+        except ImportError:
+            from climate_monitor.article_content_adapter import UNAVAILABLE_REASON
+            return {"status": "unavailable", "reason": UNAVAILABLE_REASON,
+                "requested_url": requested_url, "reader_url": url}
         try:
             url = canonicalize_url(url)
         except RequestValidationError as exc:
