@@ -740,6 +740,84 @@ class WikiDocument:
     corpus: CorpusType
 
 
+def _catalog_date(value: str) -> date | None:
+    quarter = re.fullmatch(r"(\d{4})-Q([1-4])", value)
+    if quarter:
+        return date(int(quarter.group(1)), 3 * (int(quarter.group(2)) - 1) + 1, 1)
+    parts = value.split("-")
+    if not 1 <= len(parts) <= 3 or any(not part.isdigit() for part in parts):
+        return None
+    try:
+        return date(
+            int(parts[0]),
+            int(parts[1]) if len(parts) > 1 else 1,
+            int(parts[2]) if len(parts) > 2 else 1,
+        )
+    except ValueError:
+        return None
+
+
+def _document_catalog_presentation(doc: WikiDocument) -> dict[str, str | None]:
+    heading = re.search(r"(?m)^#\s+(.+?)\s*$", doc.markdown)
+    display_title = heading.group(1).strip() if heading else doc.title
+    candidates: list[tuple[date, int, str, str]] = []
+    # shortcut: accept explicit year/month/day and ISO quarter precision only.
+    date_pattern = r"(\d{4}-Q[1-4]|\d{4}(?:-\d{2}(?:-\d{2})?)?)"
+    basis_priority = {"publication_date": 3, "report_date": 2, "topic_update_date": 1, "page_update_date": 0}
+
+    def add(value: str, basis: str) -> None:
+        parsed = _catalog_date(value)
+        if parsed is not None:
+            candidates.append((parsed, basis_priority[basis], value, basis))
+
+    if doc.type == "daily":
+        if _catalog_date(doc.date) is not None:
+            add(doc.date, "report_date")
+    else:
+        for basis, label in (
+            ("publication_date", "Publication date"),
+            ("report_date", "Report date"),
+            ("topic_update_date", "Topic update date"),
+        ):
+            pattern = re.compile(
+                rf"(?im)^\s*(?:[-*]\s*)?(?:#{{1,6}}\s*)?(?:\*\*)?{label}:\s*"
+                rf"(?:\*\*)?{date_pattern}(?![\w-])"
+            )
+            for match in pattern.finditer(doc.markdown):
+                add(match.group(1), basis)
+        report_observation = re.compile(
+            rf"(?im)^\s*-\s*Report observation date:\s*{date_pattern}"
+            rf"(?![\w-])(?P<rest>[^\n]*)"
+        )
+        for match in report_observation.finditer(doc.markdown):
+            if re.search(
+                r"\bdate basis:\s*daily_or_weekly_report_date\b",
+                match.group("rest"),
+                re.IGNORECASE,
+            ):
+                add(match.group(1), "report_date")
+        page_information = re.compile(
+            rf"(?im)^\s*-\s*Page information date:\s*{date_pattern}"
+            rf"(?![\w-])(?P<rest>[^\n]*)"
+        )
+        page_kind_basis = {"published": "publication_date", "updated": "page_update_date"}
+        for match in page_information.finditer(doc.markdown):
+            kind = re.search(
+                r"\bpage date kind:\s*(published|updated)\b",
+                match.group("rest"),
+                re.IGNORECASE,
+            )
+            if kind:
+                add(match.group(1), page_kind_basis[kind.group(1).lower()])
+
+    selected = max(candidates, default=None)
+    return {
+        "display_title": display_title,
+        "display_date": selected[2] if selected else None,
+        "display_date_basis": selected[3] if selected else None,
+    }
+
+
 @dataclass
 class WikiChunk:
     id: str
@@ -1247,6 +1325,7 @@ class WikiKnowledgeBase:
         return [
             {
                 "title": doc.title,
+                **_document_catalog_presentation(doc),
                 "path": doc.path,
                 "file": doc.file,
                 "type": doc.type,

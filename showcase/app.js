@@ -427,6 +427,17 @@ function deriveStatus(doc, markdown) {
   return /no climate monitor report|no report/i.test(markdown) ? "No report" : "Reported";
 }
 
+function displayDateSortKey(value) {
+  const quarter = /^(\d{4})-Q([1-4])$/.exec(value);
+  if (quarter) {
+    const month = String((Number(quarter[2]) - 1) * 3 + 1).padStart(2, "0");
+    return `${quarter[1]}-${month}-01`;
+  }
+  if (/^\d{4}$/.test(value)) return `${value}-01-01`;
+  if (/^\d{4}-\d{2}$/.test(value)) return `${value}-01`;
+  return value;
+}
+
 function buildWorkspaceData(documents) {
   const byTitle = new Map(documents.map((doc) => [doc.title, doc]));
   const inCount = new Map(documents.map((doc) => [doc.path, 0]));
@@ -450,11 +461,18 @@ function buildWorkspaceData(documents) {
   const rows = documents
     .map((doc) => ({
       ...doc,
+      displayTitle: doc.display_title || doc.title,
+      displayDate: doc.display_date || "",
+      displayDateBasis: doc.display_date_basis || "",
       outlinks: outCount.get(doc.path) || 0,
       inlinks: inCount.get(doc.path) || 0,
       status: doc.status || (doc.type === "daily" ? "Loading..." : "-"),
     }))
-    .sort((left, right) => left.title.localeCompare(right.title));
+    .sort((left, right) => {
+      if (!left.displayDate) return right.displayDate ? 1 : 0;
+      if (!right.displayDate) return -1;
+      return displayDateSortKey(right.displayDate).localeCompare(displayDateSortKey(left.displayDate));
+    });
 
   return { rows, edges };
 }
@@ -472,7 +490,7 @@ function buildNoteGraph(rows, edges) {
     nodes: rows.map((row) => ({
       id: row.path,
       refPath: row.path,
-      label: row.title,
+      label: row.displayTitle,
       kind: "note",
       type: row.type,
     })),
@@ -495,7 +513,7 @@ function buildKeywordGraph(rows) {
   const nodes = connectedRows.map((row) => ({
     id: row.path,
     refPath: row.path,
-    label: row.title,
+    label: row.displayTitle,
     kind: "note",
     type: row.type,
   }));
@@ -534,7 +552,11 @@ function buildKeywordGraph(rows) {
 
 function normalizeGraphData(mode, graph) {
   const copy = GRAPH_COPY[mode] || GRAPH_COPY.notes;
-  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const rowByPath = new Map(state.rows.map((row) => [row.path, row]));
+  const nodes = (Array.isArray(graph?.nodes) ? graph.nodes : []).map((node) => {
+    const row = node.kind === "keyword" ? null : rowByPath.get(node.refPath || node.id);
+    return row ? { ...node, label: row.displayTitle } : node;
+  });
   const links = Array.isArray(graph?.links) ? graph.links : [];
   const hasKeywords = nodes.some((node) => node.kind === "keyword");
   return {
@@ -923,9 +945,9 @@ function renderChatContext() {
   }
 
   const contextKind = doc.type === "daily" ? "report" : "note";
-  els.activeContextBadge.textContent = `Focused ${contextKind}: ${doc.title}`;
+  els.activeContextBadge.textContent = `Focused ${contextKind}: ${doc.displayTitle}`;
   els.activeContextBadge.hidden = false;
-  els.activeContext.textContent = `${doc.title} is the focused ${contextKind} prioritized during chat retrieval.`;
+  els.activeContext.textContent = `${doc.displayTitle} is the focused ${contextKind} prioritized during chat retrieval.`;
   els.activeContext.hidden = false;
   if (els.clearContext) {
     els.clearContext.disabled = false;
@@ -979,9 +1001,9 @@ function renderRows() {
               : "";
       return `
         <tr class="${selectedClass}" data-path="${escapeHtml(row.path)}">
-          <td>${escapeHtml(row.title)}</td>
+          <td>${escapeHtml(row.displayTitle)}</td>
           <td>${escapeHtml(row.type)}</td>
-          <td>${escapeHtml(row.date || "-")}</td>
+          <td>${escapeHtml(displayDateLabel(row))}</td>
           <td>${row.words}</td>
           <td>${row.outlinks}</td>
           <td>${row.inlinks}</td>
@@ -1003,7 +1025,7 @@ function applyTableFilter(query = "") {
   state.filteredRows = state.rows.filter((row) => {
     const concepts = (row.concepts || []).map((concept) => concept.label).join(" ");
     const haystack = normalizeSearchText(
-      `${row.title} ${row.type} ${row.date} ${row.status} ${row.path} ${concepts}`,
+      `${row.displayTitle} ${row.type} ${displayDateLabel(row)} ${row.status} ${row.path} ${concepts}`,
     );
     return !needle || haystack.includes(needle);
   });
@@ -1011,6 +1033,17 @@ function applyTableFilter(query = "") {
     state.filteredRows = [...state.rows];
   }
   renderRows();
+}
+
+function displayDateLabel(row) {
+  if (!row.displayDate) return "Unknown";
+  const basis = {
+    publication_date: "publication date",
+    report_date: "report date",
+    topic_update_date: "topic update date",
+    page_update_date: "last updated date",
+  }[row.displayDateBasis] || "date basis unknown";
+  return `${row.displayDate} (${basis})`;
 }
 
 function renderDetail(path) {
@@ -1030,9 +1063,9 @@ function renderDetail(path) {
     return;
   }
 
-  els.detailTitle.textContent = row.title;
+  els.detailTitle.textContent = row.displayTitle;
   els.detailType.textContent = row.type;
-  els.detailDate.textContent = row.date || "-";
+  els.detailDate.textContent = displayDateLabel(row);
   els.detailWords.textContent = String(row.words);
   els.detailOutlinks.textContent = String(row.outlinks);
   els.detailInlinks.textContent = String(row.inlinks);
