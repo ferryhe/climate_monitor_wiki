@@ -62,8 +62,13 @@ def collected_pdf_meeting(item: dict[str, Any]) -> dict[str, Any]:
     candidate = item.get("collected_candidate")
     if not candidate or item.get("verification_status") != "verified":
         return item
+    source_url = next((
+        check.get("source_url") for check in item.get("checks", [])
+        if check.get("verification_status") == "verified" and check.get("website_candidate") == candidate
+    ), None)
     return {**item, **candidate, "event_id": item["canonical_event_id"], "pdf_event_id": item["event_id"],
         "event_timezone": candidate.get("timezone"), "pdf_observations": [dict(item)],
+        "collected_candidate_source_url": source_url,
         "relevance_reason": item.get("relevance_reason"), "website_relevance_reason": candidate.get("relevance_reason")}
 
 

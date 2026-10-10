@@ -301,6 +301,8 @@ def _insert_pdf_intake_records(database: Path) -> None:
         "date_precision": "day",
         "summary": "Publication date listed in the source PDF.",
         "source_urls": ["https://example.com/report"],
+        "location": "Paris, France",
+        "online_url": "https://example.com/meeting-room",
     }
     connection = sqlite3.connect(database)
     connection.execute(
@@ -1067,6 +1069,10 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert calendar.json()["items"][0]["kind"] == "publication"
     assert calendar.json()["items"][0]["source_kind"] == "pdf"
     assert calendar.json()["items"][0]["source_filename"] == "report.pdf"
+    assert calendar.json()["items"][0]["location"] == "Paris, France"
+    assert calendar.json()["items"][0]["online_url"] == "https://example.com/meeting-room"
+    assert calendar.json()["items"][0]["page"] == 4
+    assert calendar.json()["items"][0]["source_document_sha256"] == "f" * 64
     assert "source_observations" not in calendar.json()["items"][0]
     assert "C:/input/report.pdf" not in calendar.text
     raw = RegistryReader(database, repository_root=ROOT, public=False)

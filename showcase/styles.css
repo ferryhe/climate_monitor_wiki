@@ -1143,6 +1143,20 @@ a {
   overflow-wrap: anywhere;
 }
 
+.meeting-entry__location-short {
+  flex: 0 1 24%;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-entry__location {
+  white-space: pre-line;
+}
+
 .meeting-entry[open] > .meeting-entry__summary {
   border-bottom: 1px solid var(--line);
 }
@@ -1684,6 +1698,11 @@ tbody tr.is-selected {
   .meeting-entry__institution {
     max-width: 100%;
     text-align: left;
+  }
+
+  .meeting-entry__location-short {
+    max-width: calc(100% - 2em);
+    white-space: normal;
   }
 
   .registry-snapshot-metrics {
