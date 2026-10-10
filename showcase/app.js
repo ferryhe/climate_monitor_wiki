@@ -64,17 +64,29 @@ const GRAPH_COPY = {
     `,
   },
   keywords: {
-    title: "Keyword Map",
+    title: "Concept Map",
     hint:
-      "Keyword mode connects notes to source-backed concepts. Click a note to inspect it, or click a keyword to filter the Dataview table.",
+      "Edges connect a note to each detected concept it contains. Concept size shows the number of linked notes. Click a note to set it as the active chat context, or click a concept to filter the Page Index.",
     legendHtml: `
       <span><i class="dot dot-daily"></i>Daily</span>
       <span><i class="dot dot-topic"></i>Topic</span>
       <span><i class="dot dot-index"></i>Index</span>
-      <span><i class="dot dot-keyword"></i>Keyword</span>
+      <span><i class="dot dot-keyword"></i>Concept</span>
     `,
   },
 };
+
+const HIDDEN_GRAPH_CONCEPTS = new Set([
+  "date observations",
+  "article semantic summary",
+  "report observation",
+  "verified article content",
+  "registry article-version summary",
+  "acquisition observation",
+  "pdf report observation",
+  "registry source observations",
+  "original links",
+]);
 
 const ANSWER_MODE_COPY = {
   brief: {
@@ -481,6 +493,10 @@ function keywordNodeId(label) {
   return `keyword:${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
 
+function isDisplayableGraphConcept(label) {
+  return !HIDDEN_GRAPH_CONCEPTS.has(label.toLowerCase()) && !/^Article Article [a-f0-9]{24}$/i.test(label);
+}
+
 function buildNoteGraph(rows, edges) {
   return {
     mode: "notes",
@@ -502,10 +518,11 @@ function buildKeywordGraph(rows) {
   const docKeywords = new Map(
     rows.map((row) => [row.path, (row.concepts || []).map((concept) => concept.label)]),
   );
-  const keywordEntries = (state.concepts || [])
+  const concepts = (state.concepts || []).filter((concept) => isDisplayableGraphConcept(concept.label));
+  const keywordEntries = concepts
     .filter((concept) => concept.document_count >= 2)
     .slice(0, 18);
-  const fallbackEntries = (state.concepts || []).slice(0, 12);
+  const fallbackEntries = concepts.slice(0, 12);
   const selectedEntries = keywordEntries.length ? keywordEntries : fallbackEntries;
   const selectedKeywords = new Set(selectedEntries.map((concept) => concept.label));
   const connectedRows = rows.filter((row) => (docKeywords.get(row.path) || []).some((label) => selectedKeywords.has(label)));
@@ -553,11 +570,43 @@ function buildKeywordGraph(rows) {
 function normalizeGraphData(mode, graph) {
   const copy = GRAPH_COPY[mode] || GRAPH_COPY.notes;
   const rowByPath = new Map(state.rows.map((row) => [row.path, row]));
-  const nodes = (Array.isArray(graph?.nodes) ? graph.nodes : []).map((node) => {
-    const row = node.kind === "keyword" ? null : rowByPath.get(node.refPath || node.id);
-    return row ? { ...node, label: row.displayTitle } : node;
-  });
-  const links = Array.isArray(graph?.links) ? graph.links : [];
+  const sourceNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const hiddenConceptIds = new Set(
+    mode === "keywords"
+      ? sourceNodes
+          .filter((node) => node.kind === "keyword" && !isDisplayableGraphConcept(node.label))
+          .map((node) => node.id)
+      : [],
+  );
+  const links = (Array.isArray(graph?.links) ? graph.links : []).filter(
+    (edge) => !hiddenConceptIds.has(edge.source) && !hiddenConceptIds.has(edge.target),
+  );
+  const visibleConceptIds = new Set(
+    sourceNodes
+      .filter((node) => node.kind === "keyword" && !hiddenConceptIds.has(node.id))
+      .map((node) => node.id),
+  );
+  const linkedNoteIds = new Set(
+    mode === "keywords"
+      ? links.flatMap((edge) =>
+          visibleConceptIds.has(edge.source)
+            ? [edge.target]
+            : visibleConceptIds.has(edge.target)
+              ? [edge.source]
+              : [],
+        )
+      : [],
+  );
+  const nodes = sourceNodes
+    .filter(
+      (node) =>
+        !hiddenConceptIds.has(node.id) &&
+        (mode !== "keywords" || node.kind === "keyword" || linkedNoteIds.has(node.id)),
+    )
+    .map((node) => {
+      const row = node.kind === "keyword" ? null : rowByPath.get(node.refPath || node.id);
+      return row ? { ...node, label: row.displayTitle } : node;
+    });
   const hasKeywords = nodes.some((node) => node.kind === "keyword");
   return {
     mode,
@@ -1208,7 +1257,7 @@ function renderGraph(graphData) {
 
   const nodeEls = nodes.map((node) => {
     const group = document.createElementNS(NS, "g");
-    group.setAttribute("class", `graph-node graph-node--${node.kind || "note"}`);
+    group.setAttribute("class", `graph-node graph-node--${node.kind || "note"} graph-node--${graphData.mode}`);
     group.setAttribute("role", "button");
     group.setAttribute("tabindex", "0");
     group.setAttribute(
