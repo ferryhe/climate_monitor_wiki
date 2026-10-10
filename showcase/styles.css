@@ -1011,6 +1011,17 @@ a {
   font-size: 11px;
 }
 
+.graph-node--keywords.graph-node--note text {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.graph-node--keywords.graph-node--note:hover text,
+.graph-node--keywords.graph-node--note:focus-visible text,
+.graph-node--keywords.graph-node--note.is-active text {
+  opacity: 1;
+}
+
 .hint {
   margin: 12px 0 0;
   color: var(--muted);
