@@ -15,12 +15,13 @@ from datetime import datetime, time as day_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ZONE = ZoneInfo("America/New_York")
 URLS = re.compile(r"https?://[^\s<>\]\)]+")
+ISO_DATES = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 MEETINGS = re.compile(r"\b(meetings?|conferences?|deadlines?|consultations?|expert.review|opportunit\w*|upcoming|agenda)\b", re.I)
-RECENT = re.compile(r"\b(new|added|materially updated|newly|recent)\b.*\b(reports?|articles?|publications?)\b|\b(reports?|articles?)\b.*\b(added|materially updated)\b", re.I)
+RECENT = re.compile(r"\b(new|added|materially updated|newly|recent(?:ly)?(?:\s+updated)?)\b.*\b(reports?|articles?|publications?|content)\b|\b(reports?|articles?|content)\b.*\b(added|materially updated|recently updated)\b|最近.{0,12}(?:新增|更新).{0,12}(?:内容|文章|报告)|(?:内容|文章|报告).{0,12}(?:新增|更新)", re.I)
 KNOWLEDGE_CHANGE = re.compile(r"\b(added|ingested|updated)\b|\bmaterial(?:ly)?[-\s]+updates?\b", re.I)
 REFERENCES = re.compile(r"\b(its?|that|this|second|first|third|above|previous|former|latter)\b", re.I)
 REFRESH = re.compile(r"\b(verify|reverify|recheck|current status|latest agenda|check again|up.to.date|still|currently|now|today)\b|\b(is|are)\b.{0,30}\b(open|closed|available)\b", re.I)
@@ -73,7 +74,7 @@ class ResponseFrames:
 def window(question, now, *, knowledge_time=True):
     """Knowledge observations end at as-of; explicit event dates can be future."""
     local = now.astimezone(ZONE)
-    dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", question)
+    dates = ISO_DATES.findall(question)
     period = re.search(r"\b(last|past)\s+\d+\s+(months?|quarters?|years?)\b", question, re.I)
     if period and len(dates) != 2:
         raise ValueError(f"Please provide explicit start and end dates for '{period[0]}'; calendar-month periods need date endpoints.")
@@ -101,6 +102,47 @@ def timestamp(value):
 
 def identity(item):
     return item.get("canonical_event_id") or item.get("event_id") or item.get("occurrence_id")
+
+
+def meeting_end(item):
+    """Return a known event end instant from approved fields."""
+    from datetime import date
+
+    if not item.get("end_date") or item.get("date_precision", "day") != "day":
+        return None
+    zone_name = item.get("event_timezone")
+    time_range = re.search(r"(?<!\d)(\d{1,2}):([0-5]\d)\s*(am|pm)?\s*(?:-|–|—|to)\s*(\d{1,2}):([0-5]\d)\s*(am|pm)?(?!\d)",
+        str(item.get("raw_time_text") or ""), re.I)
+    if not zone_name or not time_range:
+        return None
+    try:
+        zone = ZoneInfo(zone_name)
+        event_date = date.fromisoformat(item["end_date"])
+        hour, minute = map(int, time_range.groups()[3:5])
+        meridiem = (time_range[6] or time_range[3] or "").lower()
+        if meridiem:
+            if hour > 12:
+                return None
+            hour = hour % 12 + (12 if meridiem == "pm" else 0)
+        local = datetime.combine(event_date, day_time(hour, minute), zone)
+        utc = local.astimezone(timezone.utc)
+        if utc.astimezone(zone).replace(tzinfo=None) != local.replace(tzinfo=None):
+            return None
+        if local.replace(tzinfo=None).replace(tzinfo=zone, fold=0).utcoffset() != local.replace(tzinfo=None).replace(tzinfo=zone, fold=1).utcoffset():
+            return None
+        return local
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def online_format(item):
+    """Use approved format/location fields; a registration URL is not a format."""
+    for observation in [item, *(item.get("pdf_observations") or [])]:
+        if re.search(r"\b(?:online|virtual)\b", str(observation.get("location") or ""), re.I):
+            return True
+        if str(observation.get("event_type") or "").casefold() == "webinar":
+            return True
+    return False
 
 
 def source_urls(item):
@@ -534,10 +576,16 @@ class EvidenceTurn:
         times = [timestamp(chronology.get(key)) for key in ("first_ingested_at", "substantive_updated_at")]
         recent = any(at and start <= at <= end for at in times)
         status = str(item.get("status") or "unknown")
+        end_at = meeting_end(item)
+        ended_today = bool(end_at and end_at.astimezone(timezone.utc) <= self.now.astimezone(timezone.utc))
         try:
-            ended = _date_bounds(item.get("end_date") or "", item.get("date_precision") or "day", end=True) < as_of
+            ended = ended_today if end_at else _date_bounds(item.get("end_date") or "", item.get("date_precision") or "day", end=True) < as_of
         except ValueError:
             ended = False
+        if item.get("end_date") == as_of.isoformat():
+            text += "\nEvent timing: " + ("ended at " + end_at.isoformat() if ended_today else
+                "ends at " + end_at.isoformat() if end_at else
+                "same-day end time or event timezone is unknown; cannot establish whether it has ended")
         closed = status in {"cancelled", "closed", "retrospective"}
         text += "\nOpportunity timing: " + ("ended; not a current participation opportunity" if ended else
             "closed/cancelled; not a current participation opportunity" if closed else
@@ -553,7 +601,7 @@ class EvidenceTurn:
         result = []
         if target == "meetings" or (target == "auto" and MEETINGS.search(query)):
             try:
-                explicit = len(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", query)) == 2
+                explicit = len(ISO_DATES.findall(query)) == 2
                 knowledge_range = bool(explicit or re.search(r"\b(last|past)\s+\d+\s+(days?|weeks?)\b", query, re.I)) and bool(
                     KNOWLEDGE_CHANGE.search(query))
                 try:
@@ -563,41 +611,95 @@ class EvidenceTurn:
                         self.clarification = True
                     self.notes.append(str(exc))
                     return result
-                lower = "1900-01-01" if knowledge_range else start.date().isoformat() if explicit else self.now.astimezone(ZONE).date().isoformat()
+                upcoming = bool(re.search(r"\bupcoming\b", query, re.I))
+                today = self.now.astimezone(ZONE).date()
+                lower = "1900-01-01" if knowledge_range else start.date().isoformat() if explicit else (
+                    (today - timedelta(days=1)).isoformat() if upcoming else today.isoformat())
                 scope = {"business_date_lower": lower}
                 items, chronology = self.meetings(lower)
-                named = [item for item in items if item.get("name") and item["name"].casefold() in query.casefold()]
+                all_items = items
+                explicit_filters = {}
+                for field, pattern in (("organizer", r"\borganized\s+by\s+(.+?)(?=\s+(?:in|at|whose|with|online|from|between)\b|\s+从|[?.!,;]|$)"),
+                    ("location", r"\b(?:located\s+in|in|at)\s+(.+?)(?=\s+(?:organized\s+by|whose|with|online|event\s+timezone|from|between)\b|\s+从|[?.!,;]|$)")):
+                    match = re.search(pattern, query, re.I)
+                    if match:
+                        value = match[1].strip()
+                        if field == "location":
+                            try:
+                                ZoneInfo(value)
+                            except (ZoneInfoNotFoundError, ValueError, TypeError):
+                                pass
+                            else:
+                                continue
+                        if field == "location" and re.match(r"(?:(?:the\s+)?(?:last|past|next)\b|\d{4}-\d{2}-\d{2}\b|\d+\s+(?:days?|weeks?|months?)\b)", value, re.I):
+                            continue
+                        explicit_filters[field] = value
+                named = [item for item in all_items if item.get("name") and item["name"].casefold() in query.casefold()]
                 if named:
                     items = named
                     scope["name"] = list(dict.fromkeys(item["name"] for item in named))
-                else:
-                    wanted = [kind for kind, pattern in (("registration", r"\bregistration\b"),
-                        ("consultation", r"\bconsultation\w*\b"), ("expert_review", r"\bexpert.review\w*\b"),
-                        ("conference", r"\bconferences?\b")) if re.search(pattern, query, re.I)]
-                    if wanted:
-                        scope["type"] = wanted
-                        items = [item for item in items if any(kind in " ".join(str(observation.get(field) or "")
-                            for observation in [item, *(item.get("pdf_observations") or [])]
-                            for field in ("event_type", "deadline_type", "name")).casefold().replace("expert review", "expert_review") for kind in wanted)]
-                    for field in ("organizer", "location"):
-                        matched = {item.get(field) for item in items if item.get(field) and str(item[field]).casefold() in query.casefold()}
-                        if matched:
-                            scope[field] = sorted(str(value) for value in matched)
-                            items = [item for item in items if item.get(field) in matched]
-                    if not self.source_only:
-                        from .wiki_agent import _tokens
-                        terms = set(_tokens(query)) - {"list", "summarize", "upcoming", "recent", "new", "newly", "added", "updated", "last", "past", "days", "weeks", "months", "dates", "date", "meetings", "meeting", "events", "event", "conference", "conferences", "consultation", "consultations", "submission", "deadlines", "deadline", "registration", "expert", "review", "reviews", "opportunities"}
-                        terms -= set(_tokens(" ".join(str(value) for key in ("organizer", "location") for value in scope.get(key, []))))
-                        terms = {term for term in terms if not term.isdigit()}
-                        if terms:
-                            scope["topic_terms"] = sorted(terms)
-                            ranked = []
-                            for item in items:
-                                words = set(_tokens(" ".join(str(item.get(field) or "") for field in ("name", "summary", "relevance_reason", "raw_text"))))
-                                score = len(terms & words)
-                                if score:
-                                    ranked.append((score, item))
-                            items = [item for score, item in sorted(ranked, key=lambda row: -row[0])]
+                wanted = [kind for kind, pattern in (("registration", r"\bregistration\b"),
+                    ("consultation", r"\bconsultation\w*\b"), ("expert_review", r"\bexpert.review\w*\b"),
+                    ("conference", r"\bconferences?\b")) if re.search(pattern, query, re.I)]
+                if wanted:
+                    scope["type"] = wanted
+                    items = [item for item in items if any(kind in " ".join(str(observation.get(field) or "")
+                        for observation in [item, *(item.get("pdf_observations") or [])]
+                        for field in ("event_type", "deadline_type", "name")).casefold().replace("expert review", "expert_review") for kind in wanted)]
+                for field in ("organizer", "location"):
+                    matched = {explicit_filters[field]} if field in explicit_filters else {
+                        item.get(field) for item in all_items if item.get(field) and str(item[field]).casefold() in query.casefold()
+                        and not (field == "location" and re.search(r"\b(?:online|virtual)\b", query, re.I)
+                            and re.search(r"\b(?:online|virtual)\b", str(item[field]), re.I))}
+                    if matched:
+                        scope[field] = sorted(str(value) for value in matched)
+                        normalized = {str(value).casefold() for value in matched}
+                        items = [item for item in items if any(value in str(item.get(field) or "").casefold() for value in normalized)]
+                online_only = bool(re.search(r"\b(?:online|virtual)(?:[-\s]+only)?\s+(?:meetings?|conferences?|events?)\b", query, re.I))
+                if online_only:
+                    scope["online_only"] = True
+                    unknown = sum(not item.get("location") and str(item.get("event_type") or "").casefold() != "webinar" for item in all_items)
+                    if unknown:
+                        self.notes.append(f"Online-only filter coverage: {unknown} meetings have no approved event format/location recorded; they are excluded.")
+                    items = [item for item in items if online_format(item)]
+                timezones = set(re.findall(r"(?<![\w])([A-Za-z_+-]+(?:/[A-Za-z0-9_+-]+)+)(?![\w])", query))
+                if timezones:
+                    scope["event_timezone"] = sorted(timezones)
+                    unknown = sum(not item.get("event_timezone") for item in all_items)
+                    if unknown:
+                        self.notes.append(f"Event-timezone filter coverage: {unknown} meetings have no approved event timezone recorded; they are excluded.")
+                    items = [item for item in items if str(item.get("event_timezone") or "").casefold() in {zone.casefold() for zone in timezones}]
+                for field in ("organizer", "location"):
+                    if field in scope:
+                        unknown = sum(not item.get(field) for item in all_items)
+                        if unknown:
+                            self.notes.append(f"{field.capitalize()} filter coverage: {unknown} meetings have no approved {field} recorded; they are excluded.")
+                if not self.source_only:
+                    from .wiki_agent import _tokens
+                    terms = set(_tokens(query)) - {"list", "summarize", "upcoming", "recent", "new", "newly", "added", "updated", "last", "past", "days", "weeks", "months", "dates", "date", "meetings", "meeting", "events", "event", "conference", "conferences", "consultation", "consultations", "submission", "deadlines", "deadline", "registration", "expert", "review", "reviews", "opportunities", "online", "virtual", "timezone", "time", "zone", "whose", "organized"}
+                    terms -= set(_tokens(" ".join(str(value) for key in ("organizer", "location") for value in scope.get(key, []))))
+                    terms -= set(_tokens(" ".join(timezones)))
+                    terms = {term for term in terms if not term.isdigit()}
+                    if terms:
+                        scope["topic_terms"] = sorted(terms)
+                        ranked = []
+                        for item in items:
+                            words = set(_tokens(" ".join(str(item.get(field) or "") for field in ("name", "summary", "relevance_reason", "raw_text"))))
+                            score = len(terms & words)
+                            if score:
+                                ranked.append((score, item))
+                        items = [item for score, item in sorted(ranked, key=lambda row: -row[0])]
+                if upcoming:
+                    ended = [item for item in items if (
+                        (end_at := meeting_end(item)) and end_at.astimezone(timezone.utc) <= self.now.astimezone(timezone.utc)
+                        or not end_at and item.get("end_date") and item["end_date"] < today.isoformat())]
+                    if ended:
+                        ended_ids = {identity(item) for item in ended}
+                        items = [item for item in items if identity(item) not in ended_ids]
+                        self.notes.append(f"Excluded {len(ended)} meeting(s) whose approved end time is before the query instant or whose older end date cannot establish an upcoming event.")
+                    uncertain = [item for item in items if item.get("end_date") and item["end_date"] <= today.isoformat() and not meeting_end(item)]
+                    if uncertain:
+                        self.notes.append(f"Upcoming timing is uncertain for {len(uncertain)} meeting(s) because approved exact end time or event timezone is missing.")
                 if knowledge_range:
                     scope["knowledge_window"] = {"start": start.isoformat(), "end": end.isoformat()}
                     selected, unknown = [], 0
@@ -695,7 +797,7 @@ class EvidenceTurn:
                     except Exception as exc:
                         self.notes.append(f"PDF article data unavailable ({type(exc).__name__}); coverage is incomplete.")
                     if unknown:
-                        self.notes.append(f"{len(unknown)} scanned articles have unknown added/material-update time; last_seen, collection and publication dates are not substitutes.")
+                        self.notes.append(f"{len(unknown)} scanned article/PDF record rows have unknown added/material-update time; records can share article IDs, so this is not a unique-article count. last_seen, collection and publication dates are not substitutes.")
                     if not selected:
                         self.notes.append("No confirmed matches in this knowledge-time window. Below are approved items with unknown chronology, not confirmed recent additions.")
                     selected.sort(key=lambda pair: max((timestamp(pair[1].get(key)) or datetime.min.replace(tzinfo=timezone.utc))
@@ -703,8 +805,10 @@ class EvidenceTurn:
                     if len(selected) > 8:
                         self.notes.append(f"Showing 8 of {len(selected)} confirmed recent items; answer coverage is incomplete.")
                     from .wiki_agent import _tokens
-                    words = set(_tokens(query)) - {"summarize", "explain", "reports", "report", "articles", "article", "added", "materially", "updated", "recent", "new", "last", "days", "first", "ingested", "first-ingested", "time", "publication", "date", "committee", "findings", "relevance", "sources", "include", "separately", "this", "that", "climate"}
+                    words = set(_tokens(query)) - {"summarize", "explain", "reports", "report", "articles", "article", "content", "contents", "added", "materially", "updated", "recent", "recently", "new", "newly", "was", "last", "days", "first", "ingested", "first-ingested", "time", "publication", "date", "committee", "findings", "relevance", "sources", "include", "separately", "this", "that", "climate"}
                     words = {word for word in words if not any(character.isdigit() for character in word) and word != "were"}
+                    if not re.search(r"[a-z]{2,}", query, re.I):
+                        words = set()
                     def relevance(pair):
                         item = pair[0]
                         title = set(_tokens(item.get("title") or ""))
