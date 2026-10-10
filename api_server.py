@@ -1384,18 +1384,29 @@ def console_login_page() -> FileResponse:
     return FileResponse(MANAGE_DIR / "login.html", headers={"Cache-Control": "no-store"})
 
 
+def _manage_return_path(request: Request) -> str:
+    if request.url.path == "/manage/pdf-import":
+        return "/manage/pdf-import"
+    tab = request.query_params.get("tab")
+    return f"/manage?tab={tab}" if tab in {"runs", "meetings", "pipeline"} else "/manage"
+
+
 @app.get("/manage", response_class=HTMLResponse, include_in_schema=False)
-def console_page(user: OptionalConsolePrincipal):
+def console_page(request: Request, user: OptionalConsolePrincipal):
     if user is None:
-        return RedirectResponse("/manage/login", status_code=303)
+        return RedirectResponse(
+            f"/manage/login?next={quote(_manage_return_path(request), safe='')}", status_code=303,
+        )
     return FileResponse(MANAGE_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/manage/pdf-import", response_class=HTMLResponse, include_in_schema=False)
-def console_pdf_import_page(user: OptionalConsolePrincipal):
+def console_pdf_import_page(request: Request, user: OptionalConsolePrincipal):
     if user is None:
-        return RedirectResponse("/manage/login?next=/manage/pdf-import", status_code=303)
-    return FileResponse(MANAGE_DIR / "pdf_import.html", headers={"Cache-Control": "no-store"})
+        return RedirectResponse(
+            f"/manage/login?next={quote(_manage_return_path(request), safe='')}", status_code=303,
+        )
+    return FileResponse(MANAGE_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/manage/session", include_in_schema=False)

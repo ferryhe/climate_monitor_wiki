@@ -1177,6 +1177,116 @@ def _configure_console_auth(monkeypatch, api_server):
     api_server._LOGIN_LIMITER.reset()
 
 
+def test_pdf_import_is_a_returnable_management_tab(monkeypatch, tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
+    import api_server
+
+    store = _store(tmp_path)
+    store.save(_definition(tmp_path), actor="bootstrap")
+    monkeypatch.setattr(
+        api_server, "management_service",
+        ManagementService(store=store, runtime_root=tmp_path / "runs", launcher=lambda binding: 4321),
+    )
+    _configure_console_auth(monkeypatch, api_server)
+    client = TestClient(api_server.app, base_url="https://testserver")
+
+    for path, expected_next in (
+        ("/manage/pdf-import", "/manage/pdf-import"),
+        ("/manage?tab=runs", "/manage?tab=runs"),
+        ("/manage?tab=meetings", "/manage?tab=meetings"),
+        ("/manage?tab=pipeline", "/manage?tab=pipeline"),
+    ):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        location = urlsplit(response.headers["location"])
+        assert location.path == "/manage/login"
+        assert parse_qs(location.query)["next"] == [expected_next]
+
+    assert client.get("/hermes", follow_redirects=False).headers["location"].endswith("next=/hermes")
+    assert client.post(
+        "/api/manage/auth/login", data={"username": "operator", "password": "correct horse"},
+    ).status_code == 204
+    console = client.get("/manage").text
+    pdf_tab = client.get("/manage/pdf-import").text
+    assert pdf_tab == console
+    assert 'data-tab="pdf-import"' in console and 'id="pdf-import-panel"' in console
+    assert 'id="pdf-import"' in console and 'id="batch-list"' in console
+    assert 'role="tablist"' in console and 'aria-controls="pdf-import-panel"' in console
+    browser_code = (api_server.MANAGE_DIR / "manage.js").read_text(encoding="utf-8")
+    pdf_code = (api_server.MANAGE_DIR / "pdf_import.js").read_text(encoding="utf-8")
+    login_page = (api_server.MANAGE_DIR / "login.html").read_text(encoding="utf-8")
+    assert "ArrowRight" in browser_code and "history.pushState" in browser_code
+    assert "encodeURIComponent(location.pathname + location.search)" in browser_code
+    assert "encodeURIComponent(location.pathname + location.search)" in pdf_code
+    assert "next==='/hermes'||next==='/manage/pdf-import'" in login_page
+    assert r"/^\/manage\?tab=(runs|meetings|pipeline)$/.test(next)" in login_page
+
+
+def test_management_and_pdf_scripts_initialize_together_in_classic_script_order():
+    import api_server
+
+    html = (api_server.MANAGE_DIR / "index.html").read_text(encoding="utf-8")
+    script_names = re.findall(r'<script src="/manage/assets/([^"]+)"', html)
+    assert script_names == ["manage.js", "pdf_import.js"]
+    script_paths = [str(api_server.MANAGE_DIR / name) for name in script_names]
+
+    harness = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const [managePath, pdfPath] = process.argv.slice(1);
+const selectors = new Map();
+function element(selector) {
+  if (!selectors.has(selector)) selectors.set(selector, {
+    hidden: false, textContent: '', disabled: false, tabIndex: 0, files: [],
+    classList: {toggle() {}}, setAttribute() {}, replaceChildren() {}, append() {},
+  });
+  return selectors.get(selector);
+}
+const tabNames = ['configuration', 'runs', 'meetings', 'pipeline', 'pdf-import'];
+const tabs = tabNames.map(name => ({
+  dataset: {tab: name}, classList: {toggle() {}}, setAttribute() {},
+  getAttribute(name) { return name === 'aria-controls' ? (this.dataset.tab === 'pdf-import' ? 'pdf-import-panel' : this.dataset.tab) : null; },
+  focus() {},
+}));
+const panels = [...tabNames.slice(0, 4), 'pdf-import-panel'].map(id => ({id, hidden: false}));
+const document = {
+  addEventListener() {},
+  querySelector: element,
+  querySelectorAll(selector) {
+    if (selector === '[role="tab"][data-tab]') return tabs;
+    if (selector === '[role="tabpanel"]') return panels;
+    return [];
+  },
+};
+const window = {addEventListener() {}};
+const context = vm.createContext({
+  document, window,
+  location: {pathname: '/manage/pdf-import', search: ''},
+  history: {pushState() {}},
+  fetch() { return new Promise(() => {}); },
+  URLSearchParams, Intl, console, setTimeout,
+});
+for (const path of [managePath, pdfPath]) {
+  new vm.Script(fs.readFileSync(path, 'utf8'), {filename: path}).runInContext(context);
+}
+assert.equal(typeof element('#pdf-import').onsubmit, 'function', 'PDF upload form handler initialized');
+assert.equal(typeof element('#confirm').onclick, 'function', 'PDF confirm handler initialized');
+assert.equal(typeof element('#retry').onclick, 'function', 'PDF retry handler initialized');
+assert.equal(typeof window.refreshPdfImportOverview, 'function', 'PDF batch overview refresh exported');
+console.log('PDF_IMPORT_CONTROLS_INITIALIZED');
+"""
+    result = subprocess.run(
+        ["node", "-e", harness, *script_paths], capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, (
+        f"Node VM cross-script harness failed (exit {result.returncode}):\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "PDF_IMPORT_CONTROLS_INITIALIZED" in result.stdout
+
+
 def test_management_routes_require_server_verified_session_and_logout(monkeypatch, tmp_path):
     import api_server
 

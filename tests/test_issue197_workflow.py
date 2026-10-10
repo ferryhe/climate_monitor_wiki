@@ -1700,24 +1700,46 @@ def test_public_claim_projection_and_managed_receipts(tmp_path, monkeypatch, cla
     assert next((root / "claim-history").glob("*.json")).read_bytes() == history_bytes
 
 
-@pytest.mark.parametrize("selected", ["initial", "pipeline", "runs", "meetings", "configuration"])
+@pytest.mark.parametrize("selected", ["initial", "pipeline", "runs", "meetings", "configuration", "pdf-import"])
 def test_management_pipeline_tab_has_exclusive_visibility(selected):
     import subprocess
     root = Path(__file__).resolve().parents[1]
     program = r"""
 const vm = require('vm');
 const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-const sections = new Map([...input.html.matchAll(/<section id="([^"]+)"([^>]*)>/g)].map(m => [m[1], {id: m[1], hidden: /\bhidden\b/.test(m[2])}]));
-const buttons = [...input.html.matchAll(/<button data-tab="([^"]+)"([^>]*)>/g)].map(m => ({dataset: {tab: m[1]}, classList: {toggle() {}}, onclick: null}));
+const attribute = (attributes, name) => attributes.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`))?.[1];
+const sectionNodes = [...input.html.matchAll(/<section\b([^>]*)>/g)].map(match => {
+    const attributes = match[1];
+    return {id: attribute(attributes, 'id'), role: attribute(attributes, 'role'), hidden: /(?:^|\s)hidden(?:\s|$)/.test(attributes)};
+});
+const sections = new Map(sectionNodes.map(section => [section.id, section]));
+const panels = sectionNodes.filter(section => section.role === 'tabpanel');
+const buttons = [...input.html.matchAll(/<button\b([^>]*)>/g)].map(match => {
+    const attributes = match[1];
+    const values = new Map(['id', 'role', 'data-tab', 'aria-controls', 'aria-selected'].map(name => [name, attribute(attributes, name)]));
+    const classes = new Set((attribute(attributes, 'class') || '').split(/\s+/).filter(Boolean));
+    return {
+        dataset: {tab: values.get('data-tab')},
+        classList: {toggle(name, force) { if (force) classes.add(name); else classes.delete(name); }},
+        setAttribute(name, value) { values.set(name, value); },
+        getAttribute(name) { return values.get(name); },
+        focus() {}, onclick: null
+    };
+}).filter(button => button.dataset.tab);
 const nodes = new Map(), callbacks = [];
-const document = {querySelector(selector) { const id = selector.slice(1); if (sections.has(id)) return sections.get(id); if (!nodes.has(selector)) nodes.set(selector, {textContent: ''}); return nodes.get(selector); }, querySelectorAll(selector) { if (selector === 'nav button') return buttons; throw Error(selector); }, addEventListener(event, callback) { if (event === 'DOMContentLoaded') callbacks.push(callback); }};
-vm.runInNewContext(input.javascript, {document, Intl, Date, structuredClone, URLSearchParams, FormData: class { *[Symbol.iterator]() {} }, fetch: async () => ({status: 503, ok: false, json: async () => ({detail: 'offline test'})}), location: {}});
+const document = {querySelector(selector) { const id = selector.slice(1); if (sections.has(id)) return sections.get(id); if (!nodes.has(selector)) nodes.set(selector, {textContent: ''}); return nodes.get(selector); }, querySelectorAll(selector) { if (selector === '[role="tab"][data-tab]') return buttons; if (selector === '[role="tabpanel"]') return panels; if (selector === '.run') return []; throw Error(selector); }, addEventListener(event, callback) { if (event === 'DOMContentLoaded') callbacks.push(callback); }};
+vm.runInNewContext(input.javascript, {document, window: {addEventListener() {}}, history: {pushState() {}}, Intl, Date, structuredClone, URLSearchParams, FormData: class { *[Symbol.iterator]() {} }, fetch: async () => ({status: 503, ok: false, json: async () => ({detail: 'offline test'})}), location: {pathname: '/manage', search: ''}});
 callbacks.forEach(callback => callback());
-const observations = {initial: [...sections.values()].filter(n => !n.hidden).map(n => n.id)};
-for (const id of ['pipeline', 'runs', 'meetings', 'configuration']) { buttons.find(b => b.dataset.tab === id).onclick(); observations[id] = [...sections.values()].filter(n => !n.hidden).map(n => n.id); }
+const observe = () => ({visiblePanels: panels.filter(panel => !panel.hidden).map(panel => panel.id), selectedTabs: buttons.filter(button => button.getAttribute('aria-selected') === 'true').map(button => button.dataset.tab)});
+const observations = {initial: observe()};
+for (const id of ['pipeline', 'runs', 'meetings', 'configuration', 'pdf-import']) { buttons.find(b => b.dataset.tab === id).onclick(); observations[id] = observe(); }
 console.log(JSON.stringify(observations));
 """
     result = subprocess.run(["node", "-e", program], input=json.dumps({
         "html": (root / "management_ui/index.html").read_text(),
         "javascript": (root / "management_ui/manage.js").read_text()}), text=True, capture_output=True, check=True)
-    assert json.loads(result.stdout)[selected] == ["configuration" if selected == "initial" else selected]
+    observations = json.loads(result.stdout)[selected]
+    expected_tab = "configuration" if selected == "initial" else selected
+    expected_panel = "pdf-import-panel" if selected == "pdf-import" else expected_tab
+    assert observations["visiblePanels"] == [expected_panel]
+    assert observations["selectedTabs"] == [expected_tab]
