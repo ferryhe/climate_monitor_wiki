@@ -35,6 +35,49 @@ from scripts.generate_range_report import main as generate_range_report_main
 NOW = "2026-09-30T12:00:00Z"
 
 
+def test_approved_export_pdf_uses_same_date_projection_without_database(tmp_path, monkeypatch):
+    from climate_registry.publication import _approve, export_public_snapshot, stage_entities
+    database = _database(tmp_path, target_version=21)
+    with sqlite3.connect(database) as connection:
+        for candidate in stage_entities(connection):
+            _approve(connection, candidate, {"basis": "explicit PDF parity fixture"}, status="accepted_legacy")
+    live = _reader(database, tmp_path)
+    wiki = tmp_path / "application" / "wiki"
+    wiki.mkdir(parents=True)
+    export_public_snapshot(database, wiki / "public-registry.json")
+    exported = RegistryReader.from_public_export(wiki.parent)
+    assert exported.database is None
+    live_source = range_reports._range_source(live, "2026-09-30", "2026-09-30")
+    static_source = range_reports._range_source(exported, "2026-09-30", "2026-09-30")
+    fields = ("article_id", "canonical_url", "title", "publisher", "publication_date", "information_date",
+        "date_basis", "range_date", "collected_at", "summary", "categories", "keywords", "content", "citations")
+    assert [{key: item[key] for key in fields} for item in static_source["articles"]] == [
+        {key: item[key] for key in fields} for item in live_source["articles"]]
+    assert static_source["unknown_publication_date_article_ids"] == live_source["unknown_publication_date_article_ids"]
+    assert static_source["date_unknown_article_ids"] == live_source["date_unknown_article_ids"]
+    before = (wiki / "public-registry.json").read_bytes()
+    snapshot = freeze_range_report(exported, tmp_path / "isolated-reports", start_date="2026-09-30", end_date="2026-09-30")
+    assert snapshot["articles"] == static_source["articles"]
+    pdf = ensure_range_report_pdf(snapshot, tmp_path / "isolated-reports")
+    assert PdfReader(pdf).pages and snapshot["articles"][0]["title"] in "\n".join(page.extract_text() or "" for page in PdfReader(pdf).pages)
+    empty = freeze_range_report(exported, tmp_path / "isolated-reports", start_date="2025-01-01", end_date="2025-01-14")
+    assert not empty["articles"] and empty["date_range"]["start"] == "2025-01-01"
+    assert PdfReader(ensure_range_report_pdf(empty, tmp_path / "isolated-reports")).pages
+    assert (wiki / "public-registry.json").read_bytes() == before
+    monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
+    monkeypatch.setattr(api_server, "ROOT", wiki.parent)
+    monkeypatch.setattr(api_server, "RANGE_REPORT_DIR", tmp_path / "isolated-reports")
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    monkeypatch.setattr(api_server.responder, "answer", lambda *a, **kw: pytest.fail("PDF must use its artifact route without model calls"))
+    client = TestClient(api_server.app)
+    response = client.post("/api/chat", json={"message": "Generate a PDF report from 2026-09-30 to 2026-09-30"})
+    assert response.status_code == 200
+    assert response.json()["agent_mode"] == "offline" and response.json()["range_report"]["article_count"] == len(static_source["articles"])
+    pdf_url = response.json()["range_report"]["pdf_url"]
+    download = client.get(pdf_url)
+    assert download.status_code == 200 and PdfReader(io.BytesIO(download.content)).pages
+
+
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -2087,8 +2130,8 @@ def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
 
 
 @pytest.mark.parametrize("question", [
-    "Create a climate report from 2026-09-17 to 2026-09-30",
-    "查询2026-09-17到2026-09-30的项目和当前会议",
+    "Create a climate PDF report from 2026-09-17 to 2026-09-30",
+    "生成PDF报告，范围2026-09-17到2026-09-30，包括项目和当前会议",
 ])
 def test_chat_returns_stable_web_and_pdf_links_without_normal_responder(tmp_path, monkeypatch, question):
     database = _database(tmp_path)
@@ -2137,7 +2180,7 @@ def test_chat_resumes_pending_report_range_and_meeting_snapshot(tmp_path, monkey
     monkeypatch.setattr(api_server.responder, "answer", lambda *_a, **_kw: pytest.fail("normal responder"))
     client = TestClient(api_server.app)
 
-    first_question = f"I need a climate report using {meeting_snapshot_id}"
+    first_question = f"I need a climate PDF report using {meeting_snapshot_id}"
     first = client.post("/api/chat", json={"message": first_question})
     assert first.status_code == 200 and first.json()["needs_clarification"] is True
 
@@ -2168,14 +2211,14 @@ def test_chat_resumes_pending_report_range_and_meeting_snapshot(tmp_path, monkey
 
 @pytest.mark.parametrize(("first_question", "correction", "expected", "meeting_snapshot_id"), [
     (
-        "Create a climate report from 2026-02-30 to 2026-03-01 using "
+        "Create a climate PDF report from 2026-02-30 to 2026-03-01 using "
         "meeting-snapshot-dddddddddddddddddddddddd",
         "2026-09-17 to 2026-09-30",
         {"start": "2026-09-17", "end": "2026-09-30", "inclusive": True},
         "meeting-snapshot-dddddddddddddddddddddddd",
     ),
     (
-        "Create a climate report for 2026-09-01",
+        "Create a climate PDF report for 2026-09-01",
         "2026-09-10 to 2026-09-20",
         {"start": "2026-09-10", "end": "2026-09-20", "inclusive": True},
         None,

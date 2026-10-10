@@ -1,0 +1,96 @@
+{
+  "captured_at_utc": "2026-10-09T01:50:40.465663+00:00",
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "output": [
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2024/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/meeting-doc/ipcc-64/"
+          },
+          {
+            "type": "url",
+            "url": "https://apps.ipcc.ch/outreach/documents/731/1716802057.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/site/assets/uploads/2024/06/IPCC_Gender-workshop_SB60-_3June_final.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2025/02/03/pr11srcities/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2025/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2026/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2026/06/09/ipcc-chair-jim-skea-18th-research-dialogue/"
+          },
+          {
+            "type": "url",
+            "url": "https://apps.ipcc.ch/eventmanager/documents/97/240320260623-Doc.%209%20-%20Progress%20with%20timeline%20of%20AR7.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/topic/statement/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2024/07/24/ipcc-meets-in-bulgaria-for-ipcc-61/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/topic/unfccc/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2026/06/05/ipcc-at-sb64-unfccc/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/site/assets/uploads/2024/08/FINAL_REPT_P-60.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2025/09/17/prfod1225/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/2026/03/23/press-release-ipcc64-opening/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ipcc.ch/site/assets/uploads/2023/04/FINAL_REPT_P-57.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://apps.ipcc.ch/outreach/documents/755/1743605608.pdf"
+          }
+        ]
+      }
+    },
+    {
+      "type": "web_search_call",
+      "status": "searching",
+      "action": {
+        "type": "open_page",
+        "sources": []
+      }
+    }
+  ]
+}

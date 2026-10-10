@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import copy
+from contextlib import contextmanager, nullcontext
 import html
 import json
 import logging
@@ -233,6 +235,18 @@ def resolve_report_route(
     )
 
 
+def is_report_date_correction(message: str) -> bool:
+    """A pending PDF accepts date corrections, not a new dated content question."""
+    text = " ".join(message.split())
+    text = re.sub(r"^(?:please\s+)?(?:use|i meant|make it|change(?: the range| it)? to|the range is)\s+|^(?:请用|改为)", "", text, flags=re.I)
+    found = False
+    for pattern in (_ISO_DATE, _FOURTEEN_DAYS, _RELATIVE_DAYS, _RELATIVE_WEEKS):
+        text, count = pattern.subn(" ", text)
+        found = found or count > 0
+    text = re.sub(r"\b(?:from|to|through|until|for|instead|the|range|dates?|start|end|and)\b|从|到|至|日期|范围", "", text, flags=re.I)
+    return found and not re.sub(r"[\s,.;:–—-]+", "", text)
+
+
 def resolve_report_followup(
     message: str,
     pending_message: str,
@@ -364,142 +378,159 @@ def _range_source_read(
     all_identities: set[str] = set()
     pdf_observations: list[dict[str, Any]] = []
 
-    with reader.connect() as connection:
-        manual_enrichments = connection.execute("PRAGMA user_version").fetchone()[0] >= 20
+    static_only = reader.database is None and reader.static_snapshot is not None
+    with (nullcontext(None) if static_only else reader.connect()) as connection:
+        manual_enrichments = False
         public_details = {}
-        article_version_projection = (
-            "article_version_id" if manual_enrichments else "NULL AS article_version_id"
-        )
-        for row in connection.execute(
-            """SELECT a.article_id, a.canonical_url, a.current_version_id,
-                      a.current_content_version_id, a.display_policy,
-                      s.display_name AS publisher, av.observed_title AS current_title,
-                      av.observed_summary AS current_summary
-               FROM articles a
-               JOIN sources s ON s.source_id=a.source_id
-               LEFT JOIN article_versions av ON av.version_id=a.current_version_id
-               WHERE a.publication_eligible=1 AND a.document_kind='article'
-               ORDER BY a.article_id"""
-        ):
-            if acquisition_item_ids is None:
-                all_identities.add(row["article_id"])
-            article_rows[row["article_id"]] = dict(row)
-        if reader.public and connection.execute("PRAGMA user_version").fetchone()[0]>=21:
-            public_details = {identity:reader.article(identity) for identity in article_rows}
-        acquisition_rows = connection.execute(
-            """
-            SELECT i.acquisition_item_id, i.article_id, i.raw_url, i.source_name, i.title,
-                   i.summary, i.discovered_at, i.origins_json, i.publication_date,
-                   i.publication_date_evidence_json, i.content_version_id, i.fetch_id,
-                   i.resolved_by_fetch_id,
-                   a.canonical_url, a.current_version_id, a.current_content_version_id,
-                   a.display_policy, s.display_name AS publisher,
-                   av.observed_title AS current_title
-            FROM acquisition_items i
-            JOIN articles a ON a.article_id=i.article_id
-            JOIN sources s ON s.source_id=a.source_id
-            LEFT JOIN article_versions av ON av.version_id=a.current_version_id
-            ORDER BY i.article_id, i.discovered_at, i.acquisition_item_id
-            """
-        ).fetchall() if RegistryReader._has_acquisition_projection(connection) else []
-        for row in acquisition_rows:
-            if acquisition_item_ids is not None and row["acquisition_item_id"] not in acquisition_item_ids:
-                continue
-            selected_fetch_ids.add(row["fetch_id"])
-            if row["resolved_by_fetch_id"]:
-                selected_fetch_ids.add(row["resolved_by_fetch_id"])
-            article_id = row["article_id"]
-            all_identities.add(article_id)
-            evidence = _json_object(row["publication_date_evidence_json"], "publication evidence")
-            publication_date = _day_precision_publication_date(row["publication_date"])
-            if publication_date and evidence:
-                date_evidence = {
-                    "date": publication_date,
-                    "observation_id": row["acquisition_item_id"],
-                    "evidence": evidence,
-                }
-                evidenced_dates[article_id].append(date_evidence)
-                publication_dates[article_id].append(date_evidence)
-            if article_id not in article_rows:
-                continue
-            origins = _json_list(row["origins_json"], "acquisition origins")
-            if any(not isinstance(item, dict) for item in origins):
-                raise RegistryContractError("invalid acquisition origins")
-            observation = {
-                "kind": "registry_acquisition",
-                "observation_id": row["acquisition_item_id"],
-                "url": row["raw_url"],
-                "source_name": row["source_name"],
-                "title": row["title"],
-                "summary": row["summary"],
-                "observed_at": row["discovered_at"],
-                "publication_date": row["publication_date"],
-                "publication_date_evidence": evidence,
-                "content_version_id": row["content_version_id"],
-                "origins": origins,
-            }
-            observations[article_id].append(observation)
-
-        successful_fetches = connection.execute(
-            """SELECT fetch_id, article_id, requested_url, final_url, fetched_at
-               FROM article_fetches WHERE fetch_status='success' AND http_status BETWEEN 200 AND 299
-                 AND content_version_id IS NOT NULL ORDER BY fetched_at, fetch_id"""
-        ).fetchall()
-        for row in successful_fetches:
-            if acquisition_item_ids is not None and row["fetch_id"] not in selected_fetch_ids:
-                continue
-            if row["article_id"] not in article_rows:
-                continue
-            collected_at, collected_date = _collection_timestamp(row["fetched_at"])
-            collection_dates[row["article_id"]].append({
-                "date": collected_date,
-                "collected_at": collected_at,
-                "observation_id": row["fetch_id"],
-                "basis": "registry_fetch",
-                "evidence": {"requested_url": row["requested_url"], "final_url": row["final_url"]},
-            })
-
-        has_date_observations = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_date_observations'"
-        ).fetchone() is not None
-        if has_date_observations:
-            date_rows = (dict(item,article_id=identity,canonical_url=detail["canonical_url"],
-                observation_kind=item["kind"],evidence_json=json.dumps(item["evidence"]))
-                for identity,detail in public_details.items() for item in detail.get("date_observations",[])) if public_details else connection.execute(
-                """SELECT observation_id, article_id, canonical_url, observation_kind,
-                          observed_at, evidence_json
-                   FROM article_date_observations ORDER BY article_id, observed_at, observation_id"""
+        date_rows = []
+        if static_only:
+            public_details = {item["article_id"]: reader.article(item["article_id"])
+                for item in reader.static_snapshot.get("articles", [])}
+            for identity, detail in public_details.items():
+                article_rows[identity] = {"article_id": identity, "canonical_url": detail["canonical_url"],
+                    "current_version_id": detail.get("current_version_id"), "current_content_version_id": None,
+                    "display_policy": detail.get("display_policy"), "publisher": detail.get("publisher"),
+                    "current_title": detail.get("title"), "current_summary": detail.get("summary")}
+                all_identities.add(identity)
+            date_rows = [dict(item, article_id=identity, canonical_url=detail["canonical_url"],
+                observation_kind=item["kind"], evidence_json=json.dumps(item["evidence"]))
+                for identity, detail in public_details.items() for item in detail.get("date_observations", [])]
+        else:
+            manual_enrichments = connection.execute("PRAGMA user_version").fetchone()[0] >= 20
+            public_details = {}
+            article_version_projection = (
+                "article_version_id" if manual_enrichments else "NULL AS article_version_id"
             )
-            for row in date_rows:
+            for row in connection.execute(
+                """SELECT a.article_id, a.canonical_url, a.current_version_id,
+                          a.current_content_version_id, a.display_policy,
+                          s.display_name AS publisher, av.observed_title AS current_title,
+                          av.observed_summary AS current_summary
+                   FROM articles a
+                   JOIN sources s ON s.source_id=a.source_id
+                   LEFT JOIN article_versions av ON av.version_id=a.current_version_id
+                   WHERE a.publication_eligible=1 AND a.document_kind='article'
+                   ORDER BY a.article_id"""
+            ):
+                if acquisition_item_ids is None:
+                    all_identities.add(row["article_id"])
+                article_rows[row["article_id"]] = dict(row)
+            if reader.public and connection.execute("PRAGMA user_version").fetchone()[0]>=21:
+                public_details = {identity:reader.article(identity) for identity in article_rows}
+            acquisition_rows = connection.execute(
+                """
+                SELECT i.acquisition_item_id, i.article_id, i.raw_url, i.source_name, i.title,
+                       i.summary, i.discovered_at, i.origins_json, i.publication_date,
+                       i.publication_date_evidence_json, i.content_version_id, i.fetch_id,
+                       i.resolved_by_fetch_id,
+                       a.canonical_url, a.current_version_id, a.current_content_version_id,
+                       a.display_policy, s.display_name AS publisher,
+                       av.observed_title AS current_title
+                FROM acquisition_items i
+                JOIN articles a ON a.article_id=i.article_id
+                JOIN sources s ON s.source_id=a.source_id
+                LEFT JOIN article_versions av ON av.version_id=a.current_version_id
+                ORDER BY i.article_id, i.discovered_at, i.acquisition_item_id
+                """
+            ).fetchall() if RegistryReader._has_acquisition_projection(connection) else []
+            for row in acquisition_rows:
+                if acquisition_item_ids is not None and row["acquisition_item_id"] not in acquisition_item_ids:
+                    continue
+                selected_fetch_ids.add(row["fetch_id"])
+                if row["resolved_by_fetch_id"]:
+                    selected_fetch_ids.add(row["resolved_by_fetch_id"])
+                article_id = row["article_id"]
+                all_identities.add(article_id)
+                evidence = _json_object(row["publication_date_evidence_json"], "publication evidence")
+                publication_date = _day_precision_publication_date(row["publication_date"])
+                if publication_date and evidence:
+                    date_evidence = {
+                        "date": publication_date,
+                        "observation_id": row["acquisition_item_id"],
+                        "evidence": evidence,
+                    }
+                    evidenced_dates[article_id].append(date_evidence)
+                    publication_dates[article_id].append(date_evidence)
+                if article_id not in article_rows:
+                    continue
+                origins = _json_list(row["origins_json"], "acquisition origins")
+                if any(not isinstance(item, dict) for item in origins):
+                    raise RegistryContractError("invalid acquisition origins")
+                observation = {
+                    "kind": "registry_acquisition",
+                    "observation_id": row["acquisition_item_id"],
+                    "url": row["raw_url"],
+                    "source_name": row["source_name"],
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "observed_at": row["discovered_at"],
+                    "publication_date": row["publication_date"],
+                    "publication_date_evidence": evidence,
+                    "content_version_id": row["content_version_id"],
+                    "origins": origins,
+                }
+                observations[article_id].append(observation)
+
+            successful_fetches = connection.execute(
+                """SELECT fetch_id, article_id, requested_url, final_url, fetched_at
+                   FROM article_fetches WHERE fetch_status='success' AND http_status BETWEEN 200 AND 299
+                     AND content_version_id IS NOT NULL ORDER BY fetched_at, fetch_id"""
+            ).fetchall()
+            for row in successful_fetches:
+                if acquisition_item_ids is not None and row["fetch_id"] not in selected_fetch_ids:
+                    continue
                 if row["article_id"] not in article_rows:
                     continue
-                if article_rows[row["article_id"]]["canonical_url"] != row["canonical_url"]:
-                    raise RegistryContractError("article date observation URL differs from Registry identity")
-                evidence = _json_object(row["evidence_json"], "article date evidence")
-                observation = {
-                    "date": None,
-                    "observation_id": row["observation_id"],
-                    "evidence": evidence,
-                }
-                if row["observation_kind"] == "collection":
-                    from .article_dates import report_observation_date
-                    report_day = report_observation_date(row["observed_at"], evidence)
-                    if report_day:
-                        observation.update(date=report_day, basis="daily_or_weekly_report_date")
-                        report_dates[row["article_id"]].append(observation)
-                    else:
-                        collected_at, collected_date = _collection_timestamp(row["observed_at"])
-                        observation.update(date=collected_date, collected_at=collected_at,
-                                           basis="web_listening_snapshot")
-                        collection_dates[row["article_id"]].append(observation)
-                elif row["observation_kind"] == "page_information":
-                    publication_date = _day_precision_publication_date(row["observed_at"])
-                    if publication_date is None:
-                        raise RegistryContractError("invalid Registry page information date")
-                    observation.update(date=publication_date, basis="page_information")
-                    information_dates[row["article_id"]].append(observation)
+                collected_at, collected_date = _collection_timestamp(row["fetched_at"])
+                collection_dates[row["article_id"]].append({
+                    "date": collected_date,
+                    "collected_at": collected_at,
+                    "observation_id": row["fetch_id"],
+                    "basis": "registry_fetch",
+                    "evidence": {"requested_url": row["requested_url"], "final_url": row["final_url"]},
+                })
+
+            has_date_observations = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_date_observations'"
+            ).fetchone() is not None
+            if has_date_observations:
+                date_rows = (dict(item,article_id=identity,canonical_url=detail["canonical_url"],
+                    observation_kind=item["kind"],evidence_json=json.dumps(item["evidence"]))
+                    for identity,detail in public_details.items() for item in detail.get("date_observations",[])) if public_details else connection.execute(
+                    """SELECT observation_id, article_id, canonical_url, observation_kind,
+                              observed_at, evidence_json
+                       FROM article_date_observations ORDER BY article_id, observed_at, observation_id"""
+                )
+        for row in date_rows:
+            if row["article_id"] not in article_rows:
+                continue
+            if article_rows[row["article_id"]]["canonical_url"] != row["canonical_url"]:
+                raise RegistryContractError("article date observation URL differs from Registry identity")
+            evidence = _json_object(row["evidence_json"], "article date evidence")
+            observation = {
+                "date": None,
+                "observation_id": row["observation_id"],
+                "evidence": evidence,
+            }
+            if row["observation_kind"] == "collection":
+                from .article_dates import report_observation_date
+                report_day = report_observation_date(row["observed_at"], evidence)
+                if report_day:
+                    observation.update(date=report_day, basis="daily_or_weekly_report_date")
+                    report_dates[row["article_id"]].append(observation)
                 else:
-                    raise RegistryContractError("invalid Registry article date observation kind")
+                    collected_at, collected_date = _collection_timestamp(row["observed_at"])
+                    observation.update(date=collected_date, collected_at=collected_at,
+                                       basis="web_listening_snapshot")
+                    collection_dates[row["article_id"]].append(observation)
+            elif row["observation_kind"] == "page_information":
+                publication_date = _day_precision_publication_date(row["observed_at"])
+                if publication_date is None:
+                    raise RegistryContractError("invalid Registry page information date")
+                observation.update(date=publication_date, basis="page_information")
+                information_dates[row["article_id"]].append(observation)
+            else:
+                raise RegistryContractError("invalid Registry article date observation kind")
 
         # Render stores the approved DTO, without private capture/check rows.
         # Fill only public evidence absent from SQL; never invent source facts.
@@ -530,7 +561,7 @@ def _range_source_read(
                     "observation_id":available.get("fetch_id") or available.get("content_version_id") or identity,"basis":"approved_public_content",
                     "evidence":{"source_url":detail["canonical_url"]}})
 
-        has_pdf = connection.execute(
+        has_pdf = connection is not None and connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'"
         ).fetchone() is not None
         pdf_rows = connection.execute(
@@ -627,15 +658,15 @@ def _range_source_read(
                     if pdf_occurrence_ids is not None and item["occurrence_id"] not in pdf_occurrence_ids:
                         continue
                     evidence_text=item.get("publication_date_evidence")
-                    evidence={"kind":"pdf_text","text":evidence_text,"document_sha256":item["source_document_sha256"],"page":item["page"]} if isinstance(evidence_text,str) and evidence_text.strip() else None
+                    evidence={"kind":"pdf_text","text":evidence_text,"document_sha256":item["source_document_sha256"],"page":item.get("page")} if isinstance(evidence_text,str) and evidence_text.strip() else None
                     observation={"kind":"registry_pdf","observation_id":item["occurrence_id"],"pdf_article_id":article["article_id"],
                         "core_article_id":article.get("core_article_id"),"confirmation_basis":article.get("confirmation_basis"),
                         "document_sha256":item["source_document_sha256"],"content_sha256":item.get("content_sha256"),
                         "batch_id":item.get("management_batch_id"),"filename":item.get("source_filename") or item.get("source_document"),
-                        "period_start":item.get("period_start"),"period_end":item.get("period_end"),"page":item["page"],
-                        "url":item.get("raw_url") or article["canonical_url"],"title":item.get("anchor_text") or article["title"],
+                        "period_start":item.get("period_start"),"period_end":item.get("period_end"),"page":item.get("page"),
+                        "url":item.get("raw_url"),"title":item.get("anchor_text") or article["title"],
                         "summary":item.get("summary"),"observed_at":item.get("imported_at"),"publication_date":item.get("publication_date"),
-                        "publication_date_evidence":evidence,"source_observations":[],"report_fields":item.get("report_fields"),
+                        "publication_date_evidence":evidence,"source_observations":item.get("source_observations",[]),"report_fields":item.get("report_fields"),
                         "pdf_classification":article.get("type_safe_classification") or {},"structured_report":item.get("structured_report",False)}
                     pdf_observations.append(observation)
                     identity=observation["core_article_id"]
@@ -733,7 +764,7 @@ def _range_source_read(
                 if acquisition_item_ids is not None
                 else base.get("current_content_version_id")
             )
-            if version_id:
+            if version_id and connection is not None:
                 content = connection.execute(
                     """SELECT content_version_id, markdown_content, content_sha256,
                               extraction_method, extraction_version, first_fetched_at
@@ -750,7 +781,7 @@ def _range_source_read(
                        ORDER BY generated_at DESC, enrichment_id DESC LIMIT 1""",
                     (version_id,),
                 ).fetchone()
-            elif base.get("current_version_id") and manual_enrichments:
+            elif base.get("current_version_id") and manual_enrichments and connection is not None:
                 enrichment = connection.execute(
                     """SELECT enrichment_id, summary, categories_json, keywords_json,
                               language, generator_kind, generator_name, generator_version,
@@ -863,7 +894,7 @@ def _range_source_read(
                     citations.append(citation)
                     seen_citations.add(key)
             from .publication import snapshot_metadata, approved_display
-            approved = snapshot_metadata(connection, "article", article_id)
+            approved = snapshot_metadata(connection, "article", article_id) if connection is not None else None
             if approved:
                 display = approved_display(approved)
                 if approved.get("sources"):
@@ -883,7 +914,7 @@ def _range_source_read(
                 available=detail.get("available_content") or {}
                 content_text=available.get("markdown") or available.get("supporting_excerpt")
                 version_id=available.get("content_version_id") or version_id
-                content=connection.execute("SELECT content_version_id,content_sha256,extraction_method,extraction_version FROM article_content_versions WHERE article_id=? AND content_version_id=?",(article_id,version_id)).fetchone() if version_id else None
+                content=connection.execute("SELECT content_version_id,content_sha256,extraction_method,extraction_version FROM article_content_versions WHERE article_id=? AND content_version_id=?",(article_id,version_id)).fetchone() if version_id and connection is not None else None
                 if content is None and version_id:
                     metadata=detail.get("content") or {}
                     if metadata.get("content_version_id")!=version_id:
@@ -1134,6 +1165,8 @@ def _calendar_end_date(item: dict[str, Any]) -> date | None:
 
 
 def _pdf_calendar_available(reader: RegistryReader) -> bool:
+    if reader.database is None and reader.static_snapshot is not None:
+        return "meetings" in reader.static_snapshot
     with reader.connect() as connection:
         return connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_calendar_items'"
@@ -1206,7 +1239,8 @@ def _pdf_calendar_payload(
             ))
         if payload["status"] == "unavailable":
             return payload
-        items = (identity_reader or reader).resolve_pdf_meeting_identities(payload["records"])
+        identity_source = identity_reader or reader
+        items = payload["records"] if identity_source.database is None else identity_source.resolve_pdf_meeting_identities(payload["records"])
     except (OSError, RegistryError, ValueError, KeyError, sqlite3.Error) as exc:
         return {
             "status": "unavailable", "coverage": {"status": "unavailable", "error": type(exc).__name__},
@@ -1403,6 +1437,26 @@ def load_active_range_overlay(
     )
 
 
+@contextmanager
+def _frozen_range_reader(reader):
+    if reader.database is None and reader.static_snapshot is not None:
+        frozen = copy.copy(reader)
+        frozen.static_snapshot = copy.deepcopy(reader.static_snapshot)
+        yield frozen
+        return
+    with tempfile.TemporaryDirectory(prefix="climate-range-report-") as temporary:
+        temporary_root = Path(temporary)
+        database = temporary_root / "registry.sqlite3"
+        try:
+            snapshot_registry(reader.database, database)
+        except (RegistryBuildError, RegistryInputError, sqlite3.DatabaseError, OSError) as exc:
+            raise RegistryContractError("Registry snapshot is invalid") from exc
+        snapshot_reader = RegistryReader(database, repository_root=temporary_root / "application",
+            source_dir=reader.source_dir, metadata_dir=reader.metadata_dir)
+        snapshot_reader.static_snapshot = reader.static_snapshot
+        yield snapshot_reader
+
+
 def freeze_range_report(
     reader: RegistryReader,
     artifact_root: str | Path,
@@ -1415,10 +1469,15 @@ def freeze_range_report(
     pdf_overlay_reader: RegistryReader | None = None,
     overlay_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    with reader.connect() as connection:
-        if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-            overlay_reader = pdf_overlay_reader = None
-            overlay_manifest = None
+    if reader.database is not None:
+        with reader.connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                overlay_reader = pdf_overlay_reader = None
+                overlay_manifest = None
+    else:
+        # The export already contains the exact approved overlay; do not splice private data.
+        overlay_reader = pdf_overlay_reader = None
+        overlay_manifest = None
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     if start > end or (end - start).days + 1 > MAX_RANGE_DAYS:
         raise RangeReportError("invalid report date range")
@@ -1483,20 +1542,7 @@ def freeze_range_report(
         )
     pdf_dates = selected_dates(pdf_overlay)
 
-    with tempfile.TemporaryDirectory(prefix="climate-range-report-") as temporary:
-        temporary_root = Path(temporary)
-        database = temporary_root / "registry.sqlite3"
-        try:
-            snapshot_registry(reader.database, database)
-        except (RegistryBuildError, RegistryInputError, sqlite3.DatabaseError, OSError) as exc:
-            raise RegistryContractError("Registry snapshot is invalid") from exc
-        snapshot_reader = RegistryReader(
-            database,
-            repository_root=temporary_root / "application",
-            source_dir=reader.source_dir,
-            metadata_dir=reader.metadata_dir,
-        )
-        snapshot_reader.static_snapshot=reader.static_snapshot
+    with _frozen_range_reader(reader) as snapshot_reader:
         public_source = _range_source(snapshot_reader, start_date, end_date)
         public_dates = selected_dates(public_source)
         web_selection_dates = dict(public_dates)

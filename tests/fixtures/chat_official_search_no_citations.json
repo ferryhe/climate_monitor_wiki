@@ -1,0 +1,93 @@
+{
+  "content": [
+    {
+      "content": [
+        {
+          "type": "web_search_result",
+          "url": "https://www.gfdrr.org/en/understandingrisk",
+          "title": "Save the Date: Understanding Risk (UR) May 10-14, 2027"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://www.preventionweb.net/news/call-proposals-understanding-risk-global-forum-2026",
+          "title": "Call for proposals: Understanding Risk Global Forum 2026"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://gulfnews.com/uae/abu-dhabi-reschedules-understanding-risk-global-forum-to-may-2027-1.500549289",
+          "title": "Why Abu Dhabi just rescheduled the Understanding Risk Global Forum to May 2027"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://www.mediaoffice.abudhabi/en/security/emergencies-crises-and-disasters-management-centre-abu-dhabi-to-host-understanding-risk-global-forum-2026-advancing-global-collaboration-in-disaster-risk-reduction/",
+          "title": "Emergencies, Crises and Disasters Management Centre Abu Dhabi to host Understanding Risk Global Forum 2026, advancing global collaboration in disaster risk reduction"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://recovery.preventionweb.net/event/understanding-risk-global-forum-0",
+          "title": "Understanding Risk Global Forum"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://www.naturebasedsolutions.org/event/understanding-risk-ur-global-forum-2027",
+          "title": "Understanding Risk (UR) Global Forum 2027"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://recovery.preventionweb.net/event/understanding-risk-global-forum-2027",
+          "title": "Understanding Risk Global Forum 2027"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://www.ur26-abudhabi.com/call-for-proposals/",
+          "title": "Call for Proposals"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://www.urabudhabi.com/",
+          "title": "Understanding Risk Forum Abu Dhabi 2027"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://www.urabudhabi.com/conference-venue/",
+          "title": "UR Abu Dhabi Conference Venue Details"
+        }
+      ],
+      "type": "web_search_tool_result"
+    },
+    {
+      "content": {
+        "error_code": "max_uses_exceeded",
+        "type": "web_search_tool_result_error"
+      },
+      "type": "web_search_tool_result"
+    },
+    {
+      "text": "Candidate-only search response; no page body.",
+      "type": "text",
+      "citations": null
+    }
+  ],
+  "_fixture_source_roles": {
+    "https://gulfnews.com/uae/abu-dhabi-reschedules-understanding-risk-global-forum-to-may-2027-1.500549289": {
+      "level": "news",
+      "basis": "Controller identifies this as a news report, not an official event page"
+    },
+    "https://www.urabudhabi.com/": {
+      "level": "official_event",
+      "basis": "Controller governed untruncated canonical page read: review16-dynamic-url-followup-evidence.json"
+    },
+    "https://www.preventionweb.net/news/call-proposals-understanding-risk-global-forum-2026": {
+      "level": "news_or_repost",
+      "basis": "Controller candidate distinction; not used as primary deadline evidence"
+    },
+    "https://www.gfdrr.org/en/understandingrisk": {
+      "level": "official_organizer",
+      "basis": "Controller official-source identity; governed reader blocked robots.forbidden, no body"
+    },
+    "https://www.mediaoffice.abudhabi/en/security/emergencies-crises-and-disasters-management-centre-abu-dhabi-to-host-understanding-risk-global-forum-2026-advancing-global-collaboration-in-disaster-risk-reduction/": {
+      "level": "official_host_government_candidate",
+      "basis": "Controller source-level instruction; no worker body read"
+    }
+  }
+}

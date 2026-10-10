@@ -10,6 +10,10 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      CLIMATE_CHAT_PROVIDER: ${CLIMATE_CHAT_PROVIDER:-}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       RELOAD_TOKEN: ${RELOAD_TOKEN:-}
       HERMES_HOME: /app/output/hermes
