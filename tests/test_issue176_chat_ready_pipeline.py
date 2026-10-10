@@ -1211,9 +1211,10 @@ def test_authenticated_api_accepts_one_pdf_and_rejects_zero_or_multiple_before_p
     assert response.json()["stage"] == "queued"
     assert len(list(queue.iterdir())) == 1
 
-    html = (api_server.MANAGE_DIR / "pdf_import.html").read_text(encoding="utf-8")
+    html = (api_server.MANAGE_DIR / "index.html").read_text(encoding="utf-8")
     script = (api_server.MANAGE_DIR / "pdf_import.js").read_text(encoding="utf-8")
-    assert " multiple" not in html
+    pdf_form = html.split('id="pdf-import"', 1)[1].split("</form>", 1)[0]
+    assert " multiple" not in pdf_form
     assert "files.length !== 1" in script
     assert "error.message; setTimeout(pollBatch, 1000)" in script
 
