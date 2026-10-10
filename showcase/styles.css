@@ -1108,6 +1108,11 @@ a {
   color: var(--ink);
 }
 
+select.search-input option {
+  background: var(--bg-elevated);
+  color: var(--ink);
+}
+
 .search-input:focus,
 .registry-switch__button:focus-visible,
 .registry-card:focus-visible,

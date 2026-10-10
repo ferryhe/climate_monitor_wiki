@@ -20,39 +20,9 @@
         </div>
 
         <div class="tabbar__tabs" role="tablist">
-          <button
-            id="registryTab"
-            class="tabbar__tab is-active"
-            role="tab"
-            type="button"
-            data-view="registryView"
-            aria-controls="registryView"
-            aria-selected="true"
-          >
-            Historical Reports
-          </button>
-          <button
-            id="meetingsTab"
-            class="tabbar__tab"
-            role="tab"
-            type="button"
-            data-view="meetingsView"
-            aria-controls="meetingsView"
-            aria-selected="false"
-          >
-            Meetings
-          </button>
-          <button
-            id="chatTab"
-            class="tabbar__tab"
-            role="tab"
-            type="button"
-            data-view="chatView"
-            aria-controls="chatView"
-            aria-selected="false"
-          >
-            Chat
-          </button>
+          <button id="chatTab" class="tabbar__tab is-active" role="tab" type="button" data-view="chatView" aria-controls="chatView" aria-selected="true">Chat</button>
+          <button id="registryTab" class="tabbar__tab" role="tab" type="button" data-view="registryView" aria-controls="registryView" aria-selected="false">Historical Reports</button>
+          <button id="meetingsTab" class="tabbar__tab" role="tab" type="button" data-view="meetingsView" aria-controls="meetingsView" aria-selected="false">Dates</button>
           <button
             id="obsidianTab"
             class="tabbar__tab"
@@ -71,15 +41,14 @@
       </nav>
 
       <main class="workspace">
-        <section id="chatView" class="view-panel" role="tabpanel" aria-labelledby="chatTab" hidden>
+        <section id="chatView" class="view-panel" role="tabpanel" aria-labelledby="chatTab">
           <div class="chat-app">
             <header class="chat-hero">
               <div class="chat-hero__copy">
                 <p class="chat-hero__eyebrow">Minimal Chat Surface</p>
                 <h1>Climate Monitor Wiki Agent</h1>
                 <p class="chat-hero__subtitle">
-                  Ask grounded questions over the climate-risk wiki. The active note selected in
-                  the Obsidian workspace is prioritized during retrieval.
+                  Ask about climate risk and insurance. Answers include sources.
                 </p>
               </div>
 
@@ -172,6 +141,7 @@
           class="view-panel"
           role="tabpanel"
           aria-labelledby="registryTab"
+          hidden
         >
           <div class="registry-shell">
             <header class="registry-hero">
@@ -246,7 +216,7 @@
                     </select>
                     <label class="sr-only" for="registryPublisherCustom">Other hostname</label>
                     <input id="registryPublisherCustom" class="search-input" type="search" placeholder="Hostname not listed" autocomplete="off" hidden />
-                    <button class="ghost-button" type="submit">Apply</button>
+                    <button class="ghost-button" type="submit">Search</button>
                   </form>
                 </div>
                 <div id="registryArticles" class="registry-list" aria-live="polite"></div>
@@ -281,9 +251,7 @@
               <div>
                 <p class="panel__eyebrow">Current calendar</p>
                 <h2>Meetings &amp; Key Dates</h2>
-                <p class="registry-hero__subtitle">
-                  Future and ongoing meetings, plus upcoming deadlines. Dates use UTC.
-                </p>
+                <p class="registry-hero__subtitle">Browse upcoming meetings and key deadlines.</p>
               </div>
             </header>
             <section class="panel">
@@ -300,7 +268,7 @@
                     <option value="verified">Verified / collected</option>
                     <option value="conflict">Conflicting information</option>
                   </select>
-                  <button class="ghost-button" type="submit">Apply</button>
+                  <button class="ghost-button" type="submit">Search</button>
                 </form>
               </div>
               <p id="registryMeetingCounts" class="muted"></p>

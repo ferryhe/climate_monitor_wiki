@@ -125,7 +125,7 @@ const state = {
   answerMode: "detailed",
   activeContextPath: null,
   isSending: false,
-  activeView: "registryView",
+  activeView: "chatView",
   markdownByPath: {},
   markdownRequests: {},
   graph: null,
@@ -960,12 +960,6 @@ function renderEmptyState() {
   const shell = document.createElement("section");
   shell.className = "empty-state";
   shell.innerHTML = `
-    <p class="empty-state__lead">
-      Start with a task, not just a topic. These prompt starters switch to the best answer mode
-      automatically, so period questions open in Report while explainers stay in Detailed.
-      Switch to the Obsidian tab whenever you want to inspect the graph, Dataview table, or choose
-      the active note for retrieval.
-    </p>
     <div class="suggestions">
       ${starters.map(
         (starter) =>
@@ -1919,7 +1913,7 @@ function setRegistryMode(mode) {
   }
 }
 
-function appendInformationCheck(container, item) {
+function appendInformationCheck(container, item, concise = false) {
   const labels = { unchecked: "Pending check", accessible: "URL accessible", unavailable: "URL unavailable",
     failed: "URL check failed", partial: "Partially checked", conflict: "Conflicting information", verified: "Verified / collected" };
   container.append(registryElement("p", "registry-card__meta", [
@@ -1927,7 +1921,7 @@ function appendInformationCheck(container, item) {
     labels[item.access_status] || "URL unchecked", labels[item.verification_status] || "Pending check",
     item.checked_at ? `Checked ${item.checked_at}` : "",
   ].filter(Boolean).join(" · ")));
-  if (!item.checks?.length) return;
+  if (concise || !item.checks?.length) return;
   const details = registryElement("details", "registry-detail-section");
   details.append(registryElement("summary", "", "Field checks and evidence"));
   item.checks.forEach((check) => {
@@ -2049,7 +2043,7 @@ async function loadRegistryMeetings() {
           link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
           body.append(link);
         });
-        appendInformationCheck(body, item);
+        appendInformationCheck(body, item, true);
         card.append(body);
         entries.append(card);
       });
@@ -2728,6 +2722,9 @@ function attachEvents() {
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
   });
+  els.registryMeetingVerification?.addEventListener("change", () => {
+    state.registry.meetingPage = 1; void loadRegistryMeetings();
+  });
   [[els.meetingsPrevious, -1], [els.meetingsNext, 1]].forEach(([button, direction]) => {
     button?.addEventListener("click", () => {
       state.registry.meetingPage += direction; void loadRegistryMeetings();
@@ -2759,9 +2756,9 @@ function attachEvents() {
 
   if (els.registryPublisherFilter) {
     els.registryPublisherFilter.addEventListener("change", () => {
-      if (els.registryPublisherCustom && els.registryPublisherFilter.value) {
-        els.registryPublisherCustom.value = "";
-      }
+      if (els.registryPublisherCustom) els.registryPublisherCustom.value = "";
+      state.registry.articlePage = 1;
+      void loadRegistryArticles();
     });
   }
 
