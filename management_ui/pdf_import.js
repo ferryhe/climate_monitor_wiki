@@ -1,6 +1,6 @@
 const form = document.querySelector('#pdf-import');
-const preview = document.querySelector('#preview');
-const message = document.querySelector('#message');
+const pdfPreview = document.querySelector('#pdf-preview');
+const message = document.querySelector('#pdf-message');
 const confirm = document.querySelector('#confirm');
 const articles = document.querySelector('#articles');
 const calendar = document.querySelector('#calendar');
@@ -17,7 +17,7 @@ let batchId = '';
 
 async function intake(path, body, method = 'POST') {
   const response = await fetch(path, {method, body});
-  if (response.status === 401) { location.href = '/manage/login?next=/manage/pdf-import'; throw Error('session expired'); }
+  if (response.status === 401) { location.href = '/manage/login?next=' + encodeURIComponent(location.pathname + location.search); throw Error('session expired'); }
   const value = await response.json();
   if (!response.ok) throw Error(value.detail || response.statusText);
   return value;
@@ -83,7 +83,7 @@ async function pollBatch() {
 }
 
 function show(value) {
-  preview.textContent = JSON.stringify(value, null, 2);
+  pdfPreview.textContent = JSON.stringify(value, null, 2);
   articles.replaceChildren(...value.articles.map(entry => {
     const item = document.createElement('li');
     item.textContent = `${entry.title || 'Untitled'} · ${entry.url} · page ${entry.page}\n${entry.report_summary}`;
@@ -103,7 +103,7 @@ function show(value) {
 form.onsubmit = async event => {
   event.preventDefault();
   try { requireOneFile(); show(await intake('/api/manage/pdf-intake/preview', new FormData(form))); }
-  catch (error) { previewShas = []; previewDigest = ''; confirm.disabled = true; message.textContent = error.message; preview.textContent = ''; articles.replaceChildren(); calendar.replaceChildren(); }
+  catch (error) { previewShas = []; previewDigest = ''; confirm.disabled = true; message.textContent = error.message; pdfPreview.textContent = ''; articles.replaceChildren(); calendar.replaceChildren(); }
 };
 
 confirm.onclick = async () => {
@@ -113,7 +113,7 @@ confirm.onclick = async () => {
     const query = new URLSearchParams({confirmed: 'true', preview_digest: previewDigest});
     previewShas.forEach(sha => query.append('preview_sha', sha));
     const value = await intake('/api/manage/pdf-intake/import?' + query, payload);
-    preview.textContent = JSON.stringify(value, null, 2);
+    pdfPreview.textContent = JSON.stringify(value, null, 2);
     message.textContent = `Batch ${value.batch_id} was queued.`;
     showBatch(value);
     loadOverview();
@@ -131,4 +131,5 @@ async function retryBatch(id) {
 }
 
 retry.onclick = () => retryBatch(batchId);
+window.refreshPdfImportOverview = loadOverview;
 loadOverview();
