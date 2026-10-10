@@ -15,16 +15,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python-tests:
-    name: python-tests (${{ matrix.python-version }})
+  python-test-shards:
+    name: python-test-shards (${{ matrix.python-version }}, ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        python-version:
-          - "3.11"
-          - "3.12"
+        python-version: ["3.11", "3.12"]
+        shard: [1, 2]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,10 +53,68 @@ jobs:
           set -euo pipefail
           python -m pip check
 
-      - name: Run full test suite
+      - name: Run test shard
         run: |
           set -euo pipefail
-          python -m pytest -q --durations=30
+          mkdir -p test-results
+          python -m pytest -q --durations=30 --ci-shard=${{ matrix.shard }}/2 \
+            --junitxml=test-results/junit-${{ matrix.python-version }}-${{ matrix.shard }}.xml
+
+      - name: Summarize test timings by module
+        if: always()
+        run: |
+          python - <<'PY'
+          from collections import defaultdict
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          report = Path("test-results/junit-${{ matrix.python-version }}-${{ matrix.shard }}.xml")
+          if not report.exists():
+              print("No complete JUnit report was produced.")
+              raise SystemExit(0)
+          try:
+              timings = defaultdict(lambda: [0, 0.0])
+              total = 0
+              for case in ElementTree.parse(report).iter("testcase"):
+                  module = case.get("file") or case.get("classname", "unknown")
+                  timings[module][0] += 1
+                  timings[module][1] += float(case.get("time", 0))
+                  total += 1
+          except (ElementTree.ParseError, OSError, ValueError) as error:
+              print(f"Could not summarize JUnit report: {error}")
+              raise SystemExit(0)
+          print(f"JUnit test cases: {total}; per-module timings:")
+          for module, (count, seconds) in sorted(timings.items(), key=lambda item: -item[1][1])[:30]:
+              print(f"{seconds:8.2f}s {count:4d} tests  {module}")
+          PY
+
+      - name: Upload complete JUnit timing report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-junit-${{ matrix.python-version }}-${{ matrix.shard }}
+          path: test-results/junit-${{ matrix.python-version }}-${{ matrix.shard }}.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  python-tests:
+    name: python-tests (${{ matrix.python-version }})
+    if: always()
+    needs: python-test-shards
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Require all Python test shards to pass
+        env:
+          SHARDS_RESULT: ${{ needs.python-test-shards.result }}
+        run: |
+          if [[ "$SHARDS_RESULT" != success ]]; then
+            echo "Python test shard matrix ended with: $SHARDS_RESULT"
+            exit 1
+          fi
 
   fixtures-umask0002:
     name: fixtures-umask0002 (${{ matrix.python-version }})

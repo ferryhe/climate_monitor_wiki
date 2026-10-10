@@ -1,8 +1,43 @@
 """Shared governed Runtime fixture for tests replacing per-source acquisition."""
 
+from collections import defaultdict
+
 import pytest
 
 from fixture_modes import remove_shared_write
+
+
+def _partition_collected_items(items, shard_count):
+    files = defaultdict(list)
+    positions = {id(item): position for position, item in enumerate(items)}
+    for item in items:
+        files[str(item.path)].append(item)
+
+    shards = [[] for _ in range(shard_count)]
+    weights = [0] * shard_count
+    for path, file_items in sorted(files.items(), key=lambda entry: (-len(entry[1]), entry[0])):
+        shard = min(range(shard_count), key=lambda index: (weights[index], index))
+        shards[shard].extend(file_items)
+        weights[shard] += len(file_items)
+
+    return tuple(tuple(sorted(shard, key=lambda item: positions[id(item)])) for shard in shards)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--ci-shard",
+        choices=("1/2", "2/2"),
+        help="run one deterministic whole-file CI test shard",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    selected = config.getoption("--ci-shard")
+    if selected is None:
+        return
+    config._ci_original_items = tuple(items)
+    shard = int(selected.split("/", 1)[0]) - 1
+    items[:] = _partition_collected_items(items, 2)[shard]
 
 
 @pytest.fixture

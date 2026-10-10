@@ -9,6 +9,7 @@ import importlib
 import os
 
 import api_server
+import dotenv
 from api_server import MAX_MESSAGE_LENGTH, MAX_MESSAGES, MAX_REQUEST_BYTES, app
 from fastapi.testclient import TestClient
 
@@ -16,17 +17,24 @@ client = TestClient(app)
 
 
 @contextlib.contextmanager
-def reloaded_api_server(monkeypatch, enable_docs):
+def reloaded_api_server(monkeypatch, enable_docs, tmp_path):
     """Reload `api_server` with a specific ENABLE_DOCS value, then restore.
 
     The invariant this enforces: when the block exits, BOTH the environment and
     the imported `api_server` module reflect the state that existed before the
     block was entered. Restoring only the environment (pytest/monkeypatch does
-    that automatically) is not enough -- `api_server` caches `ENABLE_DOCS` into
-    `_ENABLE_DOCS` at import time, so the module must be reloaded *while* the
-    original environment value is in place, not after it has been deleted.
+    that automatically) is not enough because `api_server` caches `ENABLE_DOCS`
+    into `_ENABLE_DOCS` at import time. Reload against a tiny corpus, then
+    restore the original module dictionary so its app and responder stay intact.
     """
-    original = os.environ.get("ENABLE_DOCS")
+    module_state = api_server.__dict__.copy()
+    original = os.environ.copy()
+    wiki_dir = tmp_path / "wiki"
+    source_dir = tmp_path / "sources"
+    wiki_dir.mkdir(parents=True)
+    source_dir.mkdir()
+    monkeypatch.setenv("WIKI_DIR", str(wiki_dir))
+    monkeypatch.setenv("SOURCE_DIR", str(source_dir))
     if enable_docs is None:
         monkeypatch.delenv("ENABLE_DOCS", raising=False)
     else:
@@ -34,13 +42,10 @@ def reloaded_api_server(monkeypatch, enable_docs):
     try:
         yield importlib.reload(api_server)
     finally:
-        # Put the ORIGINAL environment back before the final reload so the
-        # module ends up in its pre-test configuration.
-        if original is None:
-            monkeypatch.delenv("ENABLE_DOCS", raising=False)
-        else:
-            monkeypatch.setenv("ENABLE_DOCS", original)
-        importlib.reload(api_server)
+        os.environ.clear()
+        os.environ.update(original)
+        api_server.__dict__.clear()
+        api_server.__dict__.update(module_state)
 
 
 def _docs_enabled_in_env():
@@ -75,22 +80,22 @@ def test_api_config_omits_internal_only_fields():
     assert payload["github_blob_base_url"].startswith("https://github.com/")
 
 
-def test_docs_disabled_by_default(monkeypatch):
+def test_docs_disabled_by_default(monkeypatch, tmp_path):
     # Build a fresh app with ENABLE_DOCS explicitly absent, so the result does
     # not depend on whatever the developer happens to have exported.
-    with reloaded_api_server(monkeypatch, None) as fresh:
+    with reloaded_api_server(monkeypatch, None, tmp_path) as fresh:
         fresh_client = TestClient(fresh.app)
         for path in ("/docs", "/redoc", "/openapi.json"):
             assert fresh_client.get(path).status_code == 404, path
 
 
-def test_docs_enabled_when_explicitly_opted_in(monkeypatch):
+def test_docs_enabled_when_explicitly_opted_in(monkeypatch, tmp_path):
     """Guards against the 404s above passing for an unrelated reason."""
-    with reloaded_api_server(monkeypatch, "1") as fresh:
+    with reloaded_api_server(monkeypatch, "1", tmp_path) as fresh:
         assert TestClient(fresh.app).get("/openapi.json").status_code == 200
 
 
-def test_docs_tests_restore_module_state(monkeypatch):
+def test_docs_tests_restore_module_state(monkeypatch, tmp_path):
     """Regression: the docs tests must not leak module state.
 
     After each docs test runs, the imported `api_server` module must reflect the
@@ -99,38 +104,47 @@ def test_docs_tests_restore_module_state(monkeypatch):
     ENABLE_DOCS deleted, leaving docs permanently disabled in-process even when
     the pre-test environment had them enabled.
     """
-    original = os.environ.get("ENABLE_DOCS")
+    marker = "CLIMATE_TEST_DOTENV_MARKER"
+    original = os.environ.copy()
+    original_app = api_server.app
+    original_responder = api_server.responder
+    monkeypatch.setattr(
+        dotenv,
+        "load_dotenv",
+        lambda *_args, **_kwargs: os.environ.__setitem__(marker, "loaded"),
+    )
     try:
-        for pre_state in (None, "1"):
-            if pre_state is None:
-                monkeypatch.delenv("ENABLE_DOCS", raising=False)
-            else:
-                monkeypatch.setenv("ENABLE_DOCS", pre_state)
-            importlib.reload(api_server)
-            expected = _docs_enabled_in_env()
-            assert api_server._ENABLE_DOCS is expected
+        for index, pre_state in enumerate((None, "1")):
+            with reloaded_api_server(monkeypatch, pre_state, tmp_path / f"pre-{index}") as fresh:
+                outer_environment = os.environ.copy()
+                assert os.environ[marker] == "loaded"
+                expected = _docs_enabled_in_env()
+                assert fresh._ENABLE_DOCS is expected
 
-            # Run both docs tests against this pre-state.
-            test_docs_disabled_by_default(monkeypatch)
-            assert os.environ.get("ENABLE_DOCS") == pre_state
-            assert api_server._ENABLE_DOCS is expected, (
-                "docs-disabled test leaked module state"
-            )
+                # Run both docs tests against this pre-state.
+                test_docs_disabled_by_default(monkeypatch, tmp_path / f"disabled-{index}")
+                assert os.environ.get("ENABLE_DOCS") == pre_state
+                assert api_server._ENABLE_DOCS is expected, (
+                    "docs-disabled test leaked module state"
+                )
 
-            test_docs_enabled_when_explicitly_opted_in(monkeypatch)
-            assert os.environ.get("ENABLE_DOCS") == pre_state
-            assert api_server._ENABLE_DOCS is expected, (
-                "docs-enabled test leaked module state"
-            )
+                test_docs_enabled_when_explicitly_opted_in(monkeypatch, tmp_path / f"enabled-{index}")
+                assert os.environ.get("ENABLE_DOCS") == pre_state
+                assert api_server._ENABLE_DOCS is expected, (
+                    "docs-enabled test leaked module state"
+                )
+                assert api_server.app is fresh.app
+                assert api_server.responder is fresh.responder
+                assert os.environ == outer_environment
     finally:
-        # This test must honour the very invariant it asserts: restore the
-        # ORIGINAL environment value before the final reload, so the module is
-        # not left contradicting the environment pytest restores on teardown.
-        if original is None:
-            monkeypatch.delenv("ENABLE_DOCS", raising=False)
-        else:
-            monkeypatch.setenv("ENABLE_DOCS", original)
-        importlib.reload(api_server)
+        os.environ.clear()
+        os.environ.update(original)
+        # The outer context restores the complete module snapshot without loading
+        # the production corpus again.
+
+    assert api_server.app is original_app
+    assert api_server.responder is original_responder
+    assert os.environ == original
 
 
 def test_chat_message_content_is_required():
@@ -181,15 +195,32 @@ def test_reload_rejects_wrong_token(monkeypatch):
     assert response.status_code in {401, 403}
 
 
-def test_reload_accepts_correct_token(monkeypatch):
-    monkeypatch.setattr("api_server.RELOAD_TOKEN", "correct-horse-battery-staple")
-    response = client.post(
-        "/api/reload", headers={"X-Reload-Token": "correct-horse-battery-staple"}
-    )
+def test_reload_accepts_correct_token(monkeypatch, tmp_path):
+    original_responder = api_server.responder
+    original_kb = original_responder.kb
+    wiki_dir = tmp_path / "wiki"
+    source_dir = tmp_path / "sources"
+    wiki_dir.mkdir()
+    source_dir.mkdir()
+    with monkeypatch.context() as isolated:
+        isolated.setattr("api_server.RELOAD_TOKEN", "correct-horse-battery-staple")
+        isolated.setattr(api_server, "WIKI_DIR", wiki_dir)
+        isolated.setattr(api_server, "SOURCE_DIR", source_dir)
+        isolated.setattr(
+            api_server,
+            "responder",
+            api_server.AgenticWikiResponder(wiki_dir, source_dir),
+        )
+        response = client.post(
+            "/api/reload", headers={"X-Reload-Token": "correct-horse-battery-staple"}
+        )
 
-    assert response.status_code == 200
-    # The reload response must be sanitized the same way /api/config is.
-    assert "obsidian_plugin" not in response.json()
+        assert response.status_code == 200
+        # The reload response must be sanitized the same way /api/config is.
+        assert "obsidian_plugin" not in response.json()
+
+    assert api_server.responder is original_responder
+    assert api_server.responder.kb is original_kb
 
 
 def test_reload_requires_token():
