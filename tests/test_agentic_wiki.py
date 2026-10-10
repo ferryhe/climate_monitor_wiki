@@ -235,7 +235,7 @@ def test_api_config_exposes_graph_and_dataview_fields():
     )
 
 
-def test_showcase_root_defaults_to_historical_reports_and_contains_workspaces():
+def test_showcase_root_defaults_to_chat_and_contains_workspaces():
     client = TestClient(app)
 
     response = client.get("/")
@@ -252,10 +252,16 @@ def test_showcase_root_defaults_to_historical_reports_and_contains_workspaces():
     assert 'id="answerModeHint"' in body
     assert 'id="registryPublisherCustom"' in body
     assert 'data-graph-mode="keywords"' in body
-    assert body.index('id="registryTab"') < body.index('id="chatTab"')
+    assert body.index('id="chatTab"') < body.index('id="registryTab"')
+    chat_tab_opening_tag = body[body.index('id="chatTab"') : body.index(">", body.index('id="chatTab"'))]
+    assert 'class="tabbar__tab is-active"' in chat_tab_opening_tag
+    assert 'aria-selected="true"' in chat_tab_opening_tag
+    registry_tab_opening_tag = body[body.index('id="registryTab"') : body.index(">", body.index('id="registryTab"'))]
+    assert 'aria-selected="false"' in registry_tab_opening_tag
     registry_opening_tag = body[body.index('id="registryView"') : body.index(">", body.index('id="registryView"'))]
-    assert "hidden" not in registry_opening_tag
-    assert 'id="chatView" class="view-panel" role="tabpanel" aria-labelledby="chatTab" hidden' in body
+    assert "hidden" in registry_opening_tag
+    chat_opening_tag = body[body.index('id="chatView"') : body.index(">", body.index('id="chatView"'))]
+    assert "hidden" not in chat_opening_tag
     assert body.index("Graph View") < body.index("Page Index")
     keyword_button = body.index('data-graph-mode="keywords"')
     assert 'is-active' in body[keyword_button - 120 : keyword_button]
