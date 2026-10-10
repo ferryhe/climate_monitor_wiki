@@ -5,6 +5,7 @@ import math
 import os
 import re
 import subprocess
+from collections import Counter
 from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -204,37 +205,70 @@ MONTH_NAME_TO_NUMBER = {
 CorpusType = Literal["wiki", "source"]
 AnswerMode = Literal["brief", "detailed", "executive"]
 VALID_ANSWER_MODES = {"brief", "detailed", "executive"}
+
+
+def answer_mode_instruction(answer_mode: AnswerMode) -> str:
+    if answer_mode == "detailed":
+        return (
+            "First cover all requested parts with a short direct answer, then expand with "
+            "supporting evidence, concrete figures, dates, and distinctions between the curated wiki view "
+            "and the raw source reports when useful. Prefer a few relevant findings to repetitive background; keep the answer complete within the output budget."
+        )
+    if answer_mode == "executive":
+        return (
+            "Write an executive brief for insurance and climate-risk readers. "
+            "Use the exact section headings: Executive Summary, Major Themes, Date Coverage, "
+            "Notable Signals, Report-by-Report Coverage, and Gaps and Caveats. "
+            "Use the supplied theme clusters as the primary organizing structure, and use the report-by-report notes as supporting coverage. "
+            "State which report dates are present; do not treat non-report days between weekly runs as missing reports."
+        )
+    return "Write a concise answer with a short direct answer first, then key evidence bullets only if useful."
+
+
 PROMPT_STARTERS: tuple[dict[str, str], ...] = (
     {
-        "label": "Last 4 weeks",
-        "prompt": "Summarize the past 4 weeks by theme and identify material changes across the weekly reports.",
+        "label": "Generate PDF",
+        "prompt": "Generate a monitoring PDF report for the last 14 days.",
         "answer_mode": "executive",
-        "description": "Compares the recent weekly reports, organized around recurring themes and material shifts.",
+        "description": "Creates an on-demand PDF with its actual date basis and citations; it does not approve a formal report or send email."
     },
     {
-        "label": "Last 12 weeks",
-        "prompt": "Give me an executive report for the past 12 weeks. Highlight trends, turning points, and evidence gaps.",
-        "answer_mode": "executive",
-        "description": "Uses roughly a quarter of weekly reports to separate persistent trends from one-off signals.",
-    },
-    {
-        "label": "Insurer implications",
-        "prompt": "Across the past 4 weeks, what developments matter most for insurers and actuaries? Cite the weekly reports.",
+        "label": "Key dates & opportunities",
+        "prompt": "Summarize upcoming dates that matter to the climate committee, including consultation and submission deadlines, conferences, and expert reviews. Highlight newly added opportunities to review, respond, or attend, with dates, organizers, participation details, and sources.",
         "answer_mode": "detailed",
-        "description": "Focuses the recent evidence on pricing, reserving, capital, supervision, and protection gaps.",
+        "description": "Shows sourced dates and participation facts together, with missing fields and coverage gaps."
     },
     {
-        "label": "Pricing explainer",
-        "prompt": "Why do secondary perils matter for insurance pricing? Cite the strongest evidence.",
+        "label": "New reports & articles",
+        "prompt": "Summarize climate- and insurance-related reports and articles added or materially updated in the last 14 days. Explain the key findings and relevance to the climate committee, and cite sources.",
         "answer_mode": "detailed",
-        "description": "Evidence-heavy explanation grounded in the source reports and linked wiki notes.",
+        "description": "Separates publication dates from approved added and material-update times."
     },
     {
-        "label": "Latest report",
-        "prompt": "Summarize the latest Climate Monitor report in five bullets and include the report date.",
-        "answer_mode": "brief",
-        "description": "Fast snapshot grounded only in the newest available weekly report.",
+        "label": "Insurance implications",
+        "prompt": "Which recent developments matter most for insurance pricing, reserving, and capital? Explain why and cite sources.",
+        "answer_mode": "detailed",
+        "description": "Connects cited evidence to pricing, reserving and capital."
     },
+    {
+        "label": "Regulation & disclosure",
+        "prompt": "What are the latest developments in climate regulation, supervision, and disclosure relevant to insurers?",
+        "answer_mode": "detailed",
+        "description": "Reviews regulation, supervision and disclosure with source evidence."
+    },
+    {
+        "label": "Physical risks",
+        "prompt": "What does the available evidence say about changing climate hazards and their implications for insurance losses?",
+        "answer_mode": "detailed",
+        "description": "Explains climate hazards and insurance loss evidence."
+    },
+    {
+        "label": "Transition risks",
+        "prompt": "What recent developments in the energy transition could affect insurers and actuaries?",
+        "answer_mode": "detailed",
+        "description": "Reviews energy transition evidence for insurers and actuaries."
+    }
+
 )
 
 
@@ -732,6 +766,7 @@ class SearchHit:
         url = f"{base_url}/{self.chunk.path}" if base_url else self.chunk.path
         return {
             "index": index,
+            "evidence_id": self.chunk.id,
             "title": self.chunk.title,
             "path": self.chunk.path,
             "heading": self.chunk.heading,
@@ -855,6 +890,8 @@ class WikiKnowledgeBase:
         self.source_documents = source_docs
         self.source_documents_by_title = {doc.title: doc for doc in source_docs}
         self.chunks = wiki_chunks + source_chunks
+        self.token_chunk_counts = Counter(token for chunk in self.chunks for token in set(chunk.tokens))
+        self.average_chunk_tokens = max(1, sum(len(chunk.tokens) for chunk in self.chunks) / max(1, len(self.chunks)))
         self.document_concepts, self.concepts = self._build_concept_index()
         self.graphs = self._build_graph_catalog()
         source_dates = {
@@ -1241,6 +1278,7 @@ class WikiKnowledgeBase:
         *,
         top_k: int = 6,
         context_path: str | None = None,
+        corpus: CorpusType | None = None,
     ) -> list[SearchHit]:
         expanded = _expand_query(query, self.latest_date)
         query_tokens = _tokens(expanded)
@@ -1261,6 +1299,8 @@ class WikiKnowledgeBase:
 
         scored: list[SearchHit] = []
         for chunk in self.chunks:
+            if corpus is not None and chunk.corpus != corpus:
+                continue
             chunk_set = set(chunk.tokens)
             overlap = query_set & chunk_set
             context_match = bool(context_path and chunk.path == context_path)
@@ -1283,7 +1323,9 @@ class WikiKnowledgeBase:
             score = 0.0
             reason_parts: list[str] = []
             for token in overlap:
-                token_weight = 1.0 + math.log(1 + chunk.tokens.count(token))
+                frequency = chunk.tokens.count(token) / (0.5 + 0.5 * len(chunk.tokens) / self.average_chunk_tokens)
+                token_weight = (1.0 + math.log(1 + frequency)) * math.log(
+                    1 + (len(self.chunks) - self.token_chunk_counts[token] + 0.5) / (self.token_chunk_counts[token] + 0.5))
                 if token in chunk.title.lower() or token in chunk.heading.lower():
                     token_weight += 1.8
                 score += token_weight
@@ -1331,10 +1373,10 @@ class WikiKnowledgeBase:
 
             if asks_latest and self.latest_date:
                 if self.latest_date in chunk.title:
-                    score += 6.0
+                    score += 0.6
                     reason_parts.append("latest dated report")
                 elif chunk.date == self.latest_date:
-                    score += 3.0
+                    score += 0.3
                     reason_parts.append("latest dated page")
 
             if asks_evidence and chunk.corpus == "source":
@@ -1397,9 +1439,16 @@ class AgenticWikiResponder:
             branch=self._github_default_branch()
         ) or self.base_source_url
         self.client = None
+        from .chat_evidence import ChatEvidence
+        self.chat_evidence = ChatEvidence(self)
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key and OpenAI is not None:
             self.client = OpenAI(api_key=api_key)
+        self.anthropic_client = None
+        self.anthropic_model = os.getenv("ANTHROPIC_MODEL", "").strip()
+        if os.getenv("ANTHROPIC_API_KEY", "").strip() and self.anthropic_model:
+            from anthropic import Anthropic
+            self.anthropic_client = Anthropic()
 
     @staticmethod
     def _github_default_branch() -> str:
@@ -1469,8 +1518,9 @@ class AgenticWikiResponder:
 
     def config(self) -> dict[str, Any]:
         return {
-            "agent_mode": "openai" if self.client else "offline",
-            "model": self.model if self.client else "offline-extractive",
+            "capabilities": self.chat_evidence.capabilities(),
+            "agent_mode": self.chat_evidence.provider if self.chat_evidence.client else "offline",
+            "model": self.chat_evidence.model if self.chat_evidence.client else "offline-extractive",
             "wiki": self.kb.stats(),
             "documents": self.kb.document_catalog(self.source_document_base_url),
             "concepts": self.kb.concept_catalog(),
@@ -1497,6 +1547,7 @@ class AgenticWikiResponder:
         context_path: str | None = None,
         language: str = "en",
         answer_mode: AnswerMode = "detailed",
+        context: str | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -1504,7 +1555,6 @@ class AgenticWikiResponder:
         if answer_mode not in VALID_ANSWER_MODES:
             raise ValueError(f"Unsupported answer mode: {answer_mode}")
 
-        planned_queries = self._plan_queries(question, history or [], language, answer_mode)
         configured_registry = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
         if configured_registry:
             from climate_registry.publication import public_revision
@@ -1516,6 +1566,12 @@ class AgenticWikiResponder:
             else:
                 if revision != self.kb.public_registry_revision or self.kb.public_registry_unavailable:
                     self.kb.reload()
+        from .chat_evidence import MEETINGS, RECENT, REFERENCES, URLS
+        if self.chat_evidence.client or os.getenv("CLIMATE_CHAT_PROVIDER", "").strip() or context or MEETINGS.search(question) or RECENT.search(question) or URLS.search(question) or (REFERENCES.search(question) and (history or re.search(r"\b(articles?|pages?|notes?|pdf)\b", question, re.I))):
+            return self.chat_evidence.answer(question, history=history, context=context,
+                language=language, answer_mode=answer_mode, context_path=context_path)
+
+        planned_queries = self._plan_queries(question, history or [], language, answer_mode)
         requested_dates = _requested_dates(question, self.kb.latest_date)
         report_dates = self.kb.reports_in_window(requested_dates)
         hits: list[SearchHit] = []
@@ -1625,6 +1681,9 @@ class AgenticWikiResponder:
         return {
             "text": text,
             "sources": sources,
+            "context": self.chat_evidence.frames.save({"ordered": [], "focus": None, "web": {}, "sources": sources,
+                "source_order": [{"kind": "wiki", "source": source} for source in sources], "source_focus": None}),
+            "capabilities": self.chat_evidence.capabilities(),
             "plan": {
                 "sub_queries": planned_queries,
                 "reflection": reflection,
@@ -2207,10 +2266,12 @@ class AgenticWikiResponder:
         answer_mode: AnswerMode,
     ) -> str:
         if not hits:
+            from .chat_evidence import verification_guidance
             return (
                 "I could not find enough evidence in the current Climate Monitor corpus to answer this question. "
                 "Try a more specific topic such as secondary perils, IFRS S2, IAIS, "
-                "parametric insurance, the nat-cat protection gap, or a specific report date."
+                "parametric insurance, the nat-cat protection gap, or a specific report date.\n\n"
+                + verification_guidance(question, [])
             )
 
         if self.client is None:
@@ -2226,24 +2287,7 @@ class AgenticWikiResponder:
             "Cite every material claim using bracket citations like [1] or [2]. "
             "Do not invent sources, dates, figures, or URLs."
         )
-        if answer_mode == "detailed":
-            user_instruction = (
-                "Write a genuinely detailed answer. Start with a short direct answer, then expand with "
-                "supporting evidence, concrete figures, dates, and distinctions between the curated wiki view "
-                "and the raw source reports when useful. Avoid being terse."
-            )
-        elif answer_mode == "executive":
-            user_instruction = (
-                "Write an executive brief for insurance and climate-risk readers. "
-                "Use the exact section headings: Executive Summary, Major Themes, Date Coverage, "
-                "Notable Signals, Report-by-Report Coverage, and Gaps and Caveats. "
-                "Use the supplied theme clusters as the primary organizing structure, and use the report-by-report notes as supporting coverage. "
-                "State which report dates are present; do not treat non-report days between weekly runs as missing reports."
-            )
-        else:
-            user_instruction = (
-                "Write a concise answer with a short direct answer first, then key evidence bullets only if useful."
-            )
+        user_instruction = answer_mode_instruction(answer_mode)
         if requested_dates and _asks_report_summary(question):
             user_instruction += (
                 f" This is a date-window weekly-report summary request. Cover the window from "

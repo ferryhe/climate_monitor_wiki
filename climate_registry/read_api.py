@@ -241,6 +241,25 @@ def _public_read(function):
 
 
 class RegistryReader:
+    @classmethod
+    def from_public_export(cls, repository_root: str | Path):
+        """Read a verified committed export without provisioning a business DB."""
+        from .acquisition_review import digest
+        root = Path(repository_root)
+        try:
+            artifact = json.loads((root / "wiki/public-registry.json").read_text(encoding="utf-8"))
+            sha = artifact.pop("artifact_sha256")
+            if artifact.get("schema_version") != "climate-public-snapshot.v1" or digest(artifact) != sha:
+                raise RegistryContractError("Git public snapshot identity differs")
+        except (OSError, ValueError, KeyError) as exc:
+            raise RegistryUnavailableError("approved Git export is unavailable") from exc
+        reader = cls.__new__(cls)
+        reader.database = None
+        reader.public = True
+        reader.static_snapshot = artifact
+        reader.source_dir = reader.metadata_dir = None
+        return reader
+
     def __init__(
         self,
         database: str | Path,
@@ -351,6 +370,9 @@ class RegistryReader:
 
     @contextmanager
     def public_snapshot(self):
+        if self.static_snapshot is not None:
+            yield self
+            return
         if hasattr(self, "_snapshot_connection"):
             yield self
             return
@@ -370,7 +392,7 @@ class RegistryReader:
         if hasattr(self, "_snapshot_connection"):
             yield self._snapshot_connection
             return
-        if not self.database.is_file():
+        if self.database is None or not self.database.is_file():
             raise RegistryUnavailableError("registry database is unavailable")
         try:
             connection = sqlite3.connect(
@@ -862,6 +884,15 @@ class RegistryReader:
             raise RegistryQueryError("invalid pillar")
         if report_date:
             validate_report_date(report_date)
+        if self.static_snapshot is not None:
+            items = [dict(item) for item in self.static_snapshot.get("articles", [])
+                if (not query or query.casefold() in " ".join(str(item.get(key) or "") for key in
+                    ("title", "summary", "canonical_url", "categories", "keywords")).casefold())
+                and (not source or source in {item.get("source"), item.get("publisher")})
+                and (not report_date or any(row.get("report_date") == report_date for row in item.get("appearances", [])))
+                and (not pillar or any(row.get("pillar") == pillar for row in item.get("appearances", [])))]
+            offset = (page - 1) * page_size
+            return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, len(items))}
         with self.connect() as connection:
             published = self.public and connection.execute("PRAGMA user_version").fetchone()[0] >= 21
         if published:
@@ -984,14 +1015,14 @@ class RegistryReader:
             return []
         if pdf_article_id is not None:
             rows = connection.execute(
-                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    WHERE o.article_id=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
                 (pdf_article_id,),
             ).fetchall()
         elif RegistryReader._has_pdf_article_links(connection):
             rows = connection.execute(
-                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
                    WHERE a.core_article_id=? OR (a.canonical_url=? AND ?)
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -999,7 +1030,7 @@ class RegistryReader:
             ).fetchall()
         else:
             rows = connection.execute(
-                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
                    WHERE a.canonical_url=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -1019,6 +1050,8 @@ class RegistryReader:
         for row, value in zip(rows, values):
             value["occurrence_id"] = row["occurrence_id"]
             value["source_document_sha256"] = row["source_document_sha256"]
+            for field in ("page", "raw_url", "publication_date", "content_sha256"):
+                value[field] = row[field]
             value["source_observations"] = sources[row["source_document_sha256"]]
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
             from climate_monitor.pdf_intake import report_update_fields
@@ -1250,6 +1283,21 @@ class RegistryReader:
         return result
 
     @_public_read
+    def knowledge_chronology(self) -> dict[str, dict[str, Any]]:
+        """Only the chronology frozen in the approved public projection."""
+        if self.static_snapshot is not None:
+            return dict(self.static_snapshot.get("knowledge_chronology", {}))
+        with self.connect() as connection:
+            if not self.public or connection.execute("PRAGMA user_version").fetchone()[0] < 21:
+                return {}
+            rows = connection.execute("""SELECT entity_kind,entity_id,knowledge_id,
+                material_sha256,first_ingested_at,substantive_updated_at,time_basis
+                FROM knowledge_versions ORDER BY rowid""").fetchall()
+        return {f"{row['entity_kind']}:{row['entity_id']}": {
+            key: row[key] for key in ("knowledge_id", "material_sha256", "first_ingested_at",
+                "substantive_updated_at", "time_basis")} for row in rows}
+
+    @_public_read
     def meetings_all(self, *, base_date: str):
         """Read every approved meeting within the caller's frozen public view."""
         items, page = [], 1
@@ -1264,7 +1312,8 @@ class RegistryReader:
     def meetings(self, *, page: int = 1, page_size: int = 20, query: str = "",
         verification_status: str = "", base_date: str | None = None,
         additional_calendar_items: list[dict[str, Any]] | None = None,
-        additional_events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        additional_events: list[dict[str, Any]] | None = None,
+        timezone_name: str = "UTC", include_unknown: bool = False) -> dict[str, Any]:
         """Meetings have their own reader; verified imports join collected records."""
         from climate_monitor.meetings import query_events
         from .range_reports import _calendar_end_date
@@ -1285,10 +1334,11 @@ class RegistryReader:
             if "returned_record_count" in coverage:
                 coverage["returned_record_count"] = sum(item.get("origin") == "web_collection" for item in current)
             return {"items":items[offset:offset+page_size],"pagination":_pagination(page,page_size,len(items)),"base_date":base_date,
-                "timezone":"UTC","coverage":coverage,
+                "timezone":timezone_name,"coverage":coverage,
                 "verification_counts":{status:sum(item.get("verification_status")==status for item in current) for status in ("unchecked","partial","conflict","verified")}}
         with self.connect() as connection:
-            payload = query_events(self.database, base_date=base_date, timezone_name="UTC", include_deadlines=True,
+            payload = query_events(self.database, base_date=base_date, timezone_name=timezone_name,
+                include_deadlines=True, include_unknown=include_unknown,
                 **({"registry_connection": connection, "coverage_connection": getattr(self, "_snapshot_source_connection", connection)} if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else {}))
         collected = {record["event_id"]: dict(record, origin="web_collection", collection_status="collected",
             verification_status="verified", access_status="accessible") for record in payload["records"] + (additional_events or [])}
@@ -1476,6 +1526,11 @@ class RegistryReader:
     def article(self, article_id: str) -> dict[str, Any]:
         if not article_id or len(article_id) > 128 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id):
             raise RegistryQueryError("invalid article id")
+        if self.static_snapshot is not None:
+            item = next((item for item in self.static_snapshot.get("articles", []) if item["article_id"] == article_id), None)
+            if item is None:
+                raise RegistryNotFoundError("article not found")
+            return dict(item)
         with self.connect() as connection:
             if self.public:
                 from .publication import snapshot_metadata

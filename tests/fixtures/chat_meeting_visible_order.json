@@ -1,0 +1,39 @@
+{
+  "answer": "The available meeting records are source-view entries; the approved snapshot reports **0 approved records**, so I can’t confirm any conferences from an approved meeting view. [1][2]\n\nTwo upcoming conferences in the available records are:\n\n- **Climate Change & Environment Conference 2026, Hong Kong** — **27–28 October 2026**; verification status: **partial**. [2]\n- **IAIS Annual Conference 2026, Hong Kong SAR** — **12–13 November 2026**; verification status: **partial**. [3]\n\nMeeting coverage: {\"status\": \"processed\", \"records_scope\": \"approved_versions\", \"returned_record_count\": 0, \"source\": \"approved_git_snapshot\"}",
+  "sources": [
+    {
+      "index": 1,
+      "title": "5th Annual Conference, OECD Platform on Financing SMEs for Sustainability",
+      "evidence_id": "event-cf76e68c09bc6448b0a936bc"
+    },
+    {
+      "index": 2,
+      "title": "Climate Change & Environment Conference 2026, Hong Kong",
+      "evidence_id": "event-d01c144e347592cf50d3a989"
+    },
+    {
+      "index": 3,
+      "title": "IAIS Annual Conference 2026, Hong Kong SAR",
+      "evidence_id": "event-e24327311b1be997a20ab796"
+    },
+    {
+      "index": 4,
+      "title": "2026 UN Water Conference, United Arab Emirates",
+      "evidence_id": "event-b452b5b7efee1ef1a6831754"
+    },
+    {
+      "index": 5,
+      "title": "Financial Inclusion Conference 2027",
+      "evidence_id": "event-a096cafae937d0c420fb0453"
+    },
+    {
+      "index": 6,
+      "title": "IAIS Annual Conference 2027",
+      "evidence_id": "event-fd9c9f0927afd87de2544d39"
+    }
+  ],
+  "expected_visible_ids": [
+    "event-d01c144e347592cf50d3a989",
+    "event-e24327311b1be997a20ab796"
+  ]
+}

@@ -57,6 +57,41 @@ Chat now also exposes three answer modes:
 - `Detailed`: richer answers with more supporting passages from the same public corpus
 - `Report`: a theme-clustered, date-coverage-aware report mode tuned for prompts such as `Summarize the past 4 weeks`
 
+The seven starters cover on-demand PDF, dates and opportunities, new articles,
+insurance, regulation, physical risk and transition risk. Only an explicit PDF
+creation/download request enters the existing on-demand report flow. That PDF
+shows its actual date basis and citations; it does not create a formal T4→T5→T6
+PASS, send mail or change approved report history.
+
+Dates and opportunities use the website's effective public meeting records.
+Publication dates remain separate from approved first-added/material-update
+times. Recent additions use 14 New York calendar days ending at the query's
+as-of time, or the requested range. Missing chronology, participation details
+and partial/conflicting coverage stay explicit. With no model, Chat still
+returns cited facts and extracts from the approved Registry or verified Git
+export and Wiki. It does not claim autonomous live search.
+Source-only mode answers the current question once; it does not resolve objects
+or reuse page evidence from previous messages or context. Supply the exact
+meeting/article name or URL again when asking another question.
+
+With a configured model, Chat uses Wiki for topic findings, the approved meeting
+index for events, and direct URL reads for identified current facts. Its short
+`research_state` plan opens the evidence tools; its task/evidence checklist guides
+read-only discovery, detail and URL tools using the current question and
+server-held ordered identities. It reads results and can continue until the
+requested parts have evidence or concrete gaps. Missing facts include manual
+verification steps; ambiguous objects can prompt a clarification. Both providers
+load the same [research operating manual](agentic_wiki/chat_instructions.md).
+Directed URL reads use the governed `web_listening` reader;
+search candidates become page evidence only after a successful read. Each turn
+allows at most fourteen model calls, sixteen tool calls, four URL reads, two searches,
+120 seconds including 20 seconds reserved for final synthesis, and 32,000 evidence characters. Failures return the confirmed part
+and the remaining gaps. Response context is an opaque, bounded one-hour memory
+handle; website and Obsidian echo it with the assistant message so truncated
+history preserves the original meeting order. New chats have no handle, and
+expiry/restart can require identifying or rereading a source. Web evidence stays
+in that conversation and does not write the Registry or formal sources.
+
 ## Runtime
 
 - `api_server.py` serves the Codespaces demo and the `/api/*` API routes.
@@ -77,7 +112,8 @@ Range-style weekly-report questions such as `Summarize the past 4 weeks`, `Give 
 The chatbot can run in two modes:
 
 - **OpenAI mode**: set `OPENAI_API_KEY` in your local `.env` or in your host's environment variables; answers are synthesized by `OPENAI_MODEL`.
-- **Offline demo mode**: no key required; the app still demonstrates retrieval and cited extractive answers.
+- **Claude mode**: set `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`; set `CLIMATE_CHAT_PROVIDER=anthropic` to select it when OpenAI is also configured. OpenAI remains the compatible default when its key is present. Claude uses native Messages tool use and its bounded web-search tool; OpenAI uses Chat Completions tools and Responses search. Provider/search failures are reported and return cited extracts. Capability metadata means configured, not a successful live check. SDK `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` settings remain available for compatible deployments.
+- **Source-only mode**: no key required; Chat returns approved facts and cited extracts.
 
 ## Setup
 

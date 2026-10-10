@@ -844,6 +844,7 @@ def export_public_snapshot(database, output, *, reader=None, source_dir=None):
                 # Preserve the full-source archive gate when only some observations are public.
                 pass
         value = {"schema_version": "climate-public-snapshot.v1",
+            "knowledge_chronology": reader.knowledge_chronology(),
             "articles": [_public_dto(reader.article(identity)) for identity in ids],
             "pdf_articles": [_pdf_dto(item) for item in reader.pdf_articles_all(include_linked=True)],
             "meetings": [_calendar_dto(item) for item in reader.pdf_calendar_items_all()], "meeting_records": [_calendar_dto(item) for item in reader.meetings_all(base_date="1900-01-01")],

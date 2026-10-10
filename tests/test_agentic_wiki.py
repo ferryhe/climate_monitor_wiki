@@ -21,6 +21,20 @@ def test_wiki_index_loads_documents_and_chunks():
     assert any(concept["label"] == "Parametric Insurance" for concept in kb.concept_catalog())
 
 
+def test_subject_rarity_and_chunk_length_outweigh_repeated_audience_words(tmp_path):
+    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
+    wiki.mkdir()
+    sources.mkdir()
+    for index in range(20):
+        (wiki / f"background-{index}.md").write_text("# Insurance background\n\n" + "Insurance actuaries climate risk disclosure. " * 100)
+    (sources / "climate-monitor-2026-10-08.md").write_text("# climate-monitor-2026-10-08\n\n## Executive Summary\n\n" + "Insurance actuaries climate risk disclosure. " * 100)
+    (wiki / "storage.md").write_text("# Renewable energy storage\n\nEnergy transition battery storage brings construction and fire risks.")
+    kb = WikiKnowledgeBase(wiki, sources)
+    hits = kb.search("recent energy transition insurance actuaries climate risk", top_k=3)
+    assert hits[0].chunk.path == "wiki/storage.md"
+    assert "latest dated report" in next(hit.reason for hit in kb.search("latest insurance report", top_k=30) if hit.chunk.corpus == "source")
+
+
 def test_runtime_registry_overlay_merges_public_history_and_keeps_other_precedence(tmp_path):
     base, overlay, sources = (
         tmp_path / "wiki", tmp_path / "runtime", tmp_path / "sources"
@@ -187,11 +201,13 @@ def test_api_config_exposes_graph_and_dataview_fields():
     assert payload["prompt_starters"]
     assert payload["prompt_starters"][0]["answer_mode"] == "executive"
     assert [item["label"] for item in payload["prompt_starters"]] == [
-        "Last 4 weeks",
-        "Last 12 weeks",
-        "Insurer implications",
-        "Pricing explainer",
-        "Latest report",
+        "Generate PDF",
+        "Key dates & opportunities",
+        "New reports & articles",
+        "Insurance implications",
+        "Regulation & disclosure",
+        "Physical risks",
+        "Transition risks",
     ]
     assert all("daily" not in item["description"].lower() for item in payload["prompt_starters"])
     assert payload["graphs"]["notes"]["nodes"]
@@ -265,9 +281,9 @@ def test_showcase_app_exposes_mode_aware_prompt_starters():
     assert "DEFAULT_PROMPT_STARTERS" in body
     assert "prompt_starters" in body
     assert "data-answer-mode" in body
-    assert "Summarize the past 4 weeks by theme" in body
-    assert "Summarize the latest Climate Monitor report in five bullets" in body
-    assert "Summarize the past 14 days by theme" not in body
+    assert "Generate a monitoring PDF report for the last 14 days." in body
+    assert "New reports & articles" in body
+    assert "Summarize the past 4 weeks by theme" not in body
     for starter in responder.config()["prompt_starters"]:
         for value in starter.values():
             assert value in body
