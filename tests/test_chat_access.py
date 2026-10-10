@@ -9,6 +9,35 @@ import api_server
 from climate_monitor.chat_access import CHAT_COOKIE, INVALID_TOKEN, ChatAccessStore, calendar_window
 
 
+def test_subprocess_chat_database_does_not_write_to_content_fixture(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    (tmp_path / "content.md").write_text("Original content bytes", encoding="utf-8")
+    before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    database = Path(os.environ["CLIMATE_CHAT_ACCESS_DB"])
+    assert not database.is_relative_to(tmp_path)
+    assert not database.is_relative_to(api_server.ROOT / "output")
+    script = '''from pathlib import Path
+import os
+import api_server
+from fastapi.testclient import TestClient
+api_server.responder.answer = lambda question, **kwargs: {"text": "Offline answer", "sources": []}
+client = TestClient(api_server.app)
+assert client.post("/api/chat", json={"message": "A valid question"}).status_code == 200
+assert client.get("/api/chat/access").json()["remaining"] == 4
+assert api_server._chat_access().path == Path(os.environ["CLIMATE_CHAT_ACCESS_DB"])
+'''
+    completed = subprocess.run([sys.executable, "-c", script], cwd=api_server.ROOT,
+                               env=dict(os.environ, OPENAI_API_KEY="", ANTHROPIC_API_KEY=""),
+                               capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert database.is_file()
+    assert {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_atomic_reserve_commit_release_and_restart(tmp_path):
     path = tmp_path / "access.sqlite3"
     store = ChatAccessStore(path)

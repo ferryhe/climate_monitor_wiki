@@ -8,10 +8,11 @@ from fixture_modes import remove_shared_write
 
 
 @pytest.fixture(autouse=True)
-def isolated_chat_allowance(tmp_path, monkeypatch):
-    """API tests represent independent networks unless a test shares its store."""
+def isolated_chat_allowance(tmp_path_factory, monkeypatch):
+    """Keep writable Chat state outside content fixtures audited for unchanged bytes."""
     import sys
-    monkeypatch.setenv("CLIMATE_CHAT_ACCESS_DB", str(tmp_path / "chat-access.sqlite3"))
+    state_root = tmp_path_factory.mktemp("chat-access")
+    monkeypatch.setenv("CLIMATE_CHAT_ACCESS_DB", str(state_root / "chat-access.sqlite3"))
     if "api_server" in sys.modules:
         monkeypatch.setattr(sys.modules["api_server"], "chat_access_store", None)
 
