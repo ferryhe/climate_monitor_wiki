@@ -1022,6 +1022,66 @@ a {
   opacity: 1;
 }
 
+.graph-node-label--article-keywords {
+  fill: #d9e4ef;
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.graph-node--article-keywords:hover + .graph-node-label--article-keywords,
+.graph-node--article-keywords:focus-visible + .graph-node-label--article-keywords {
+  opacity: 1;
+}
+
+.graph-edge--article-keywords {
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.graph-edge--article-keywords:focus-visible {
+  stroke: var(--accent);
+  stroke-width: 3;
+  outline: none;
+}
+
+.graph-edge-count {
+  fill: var(--ink);
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: var(--bg-panel);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.article-keyword-evidence {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.article-keyword-evidence:focus {
+  outline: 2px solid var(--accent);
+}
+
+.article-keyword-evidence h3 {
+  margin: 0 0 10px;
+}
+
+.article-keyword-evidence__list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.article-keyword-evidence__item p {
+  margin: 4px 0 0;
+}
+
 .hint {
   margin: 12px 0 0;
   color: var(--muted);

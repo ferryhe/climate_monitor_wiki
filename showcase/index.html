@@ -370,6 +370,14 @@
                     >
                       Concept Map
                     </button>
+                    <button
+                      class="mode-switch__button"
+                      type="button"
+                      data-graph-mode="article-keywords"
+                      aria-pressed="false"
+                    >
+                      Article Keywords
+                    </button>
                   </div>
                 </div>
               </div>
@@ -385,6 +393,7 @@
               <p id="graphHint" class="hint">
                 Edges connect a note to each detected concept it contains. Concept size shows the number of linked notes. Click a note to set it as the active chat context, or click a concept to filter the Page Index.
               </p>
+              <section id="articleKeywordEvidence" class="article-keyword-evidence" aria-live="polite" tabindex="-1" hidden></section>
             </section>
 
             <section class="obsidian-grid">

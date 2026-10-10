@@ -74,6 +74,11 @@ const GRAPH_COPY = {
       <span><i class="dot dot-keyword"></i>Concept</span>
     `,
   },
+  articleKeywords: {
+    title: "Article Keywords",
+    hint: "Keyword size and pair counts show how many distinct public articles contain them. Co-occurrence does not imply causality. Activate a keyword or connection to inspect supporting articles and their Registry metadata provenance.",
+    legendHtml: `<span><i class="dot dot-keyword"></i>Keyword</span>`,
+  },
 };
 
 const HIDDEN_GRAPH_CONCEPTS = new Set([
@@ -125,7 +130,8 @@ const state = {
   markdownRequests: {},
   graph: null,
   graphFrame: 0,
-  graphData: { notes: null, keywords: null },
+  graphData: { notes: null, keywords: null, articleKeywords: null },
+  articleKeywordGraphLoading: false,
   promptStarters: DEFAULT_PROMPT_STARTERS,
   registry: {
     loaded: false,
@@ -175,6 +181,7 @@ const els = {
   wikiSearch: document.getElementById("wikiSearch"),
   rows: document.getElementById("rows"),
   graphSvg: document.getElementById("graphSvg"),
+  articleKeywordEvidence: document.getElementById("articleKeywordEvidence"),
   graphTitle: document.getElementById("graphTitle"),
   graphLegend: document.getElementById("graphLegend"),
   graphHint: document.getElementById("graphHint"),
@@ -623,6 +630,16 @@ function normalizeGraphData(mode, graph) {
 }
 
 function graphDataForCurrentMode() {
+  if (state.graphMode === "article-keywords") {
+    return state.graphData.articleKeywords || {
+      mode: "article-keywords",
+      title: GRAPH_COPY.articleKeywords.title,
+      hint: "Loading effective public article keywords…",
+      emptyMessage: "Loading effective public article keywords…",
+      legendHtml: GRAPH_COPY.articleKeywords.legendHtml,
+      nodes: [], links: [], staticLayout: true,
+    };
+  }
   const precomputed = state.graphData?.[state.graphMode];
   if (precomputed) {
     return normalizeGraphData(state.graphMode, precomputed);
@@ -632,9 +649,104 @@ function graphDataForCurrentMode() {
     : buildNoteGraph(state.rows, state.edges);
 }
 
+function buildArticleKeywordGraph(articles) {
+  const byIdentity = new Map();
+  for (const article of articles) {
+    if (!article.article_id || !Array.isArray(article.keywords)) continue;
+    const identity = `${article.source_kind || "registry"}:${article.article_id}`;
+    if (byIdentity.has(identity)) continue;
+    const keywords = new Map();
+    article.keywords.forEach((value) => {
+      const label = String(value || "").trim();
+      if (label && !keywords.has(label.toLowerCase())) keywords.set(label.toLowerCase(), label);
+    });
+    byIdentity.set(identity, { ...article, keywords: [...keywords.values()] });
+  }
+  const keywordArticles = new Map();
+  const pairArticles = new Map();
+  for (const article of byIdentity.values()) {
+    const keys = article.keywords.map((label) => label.toLowerCase()).sort();
+    for (const key of keys) {
+      if (!keywordArticles.has(key)) keywordArticles.set(key, []);
+      keywordArticles.get(key).push(article);
+    }
+    for (let left = 0; left < keys.length; left += 1) {
+      for (let right = left + 1; right < keys.length; right += 1) {
+        const key = JSON.stringify([keys[left], keys[right]]);
+        if (!pairArticles.has(key)) pairArticles.set(key, []);
+        pairArticles.get(key).push(article);
+      }
+    }
+  }
+  const nodeId = (key) => `article-keyword:${encodeURIComponent(key)}`;
+  const nodes = [...keywordArticles].map(([key, supporting]) => ({
+    id: nodeId(key), label: supporting[0].keywords.find((label) => label.toLowerCase() === key),
+    kind: "keyword", type: "keyword", mode: "article-keywords", weight: supporting.length, articles: supporting,
+  }));
+  const links = [...pairArticles].map(([key, supporting]) => {
+    const [left, right] = JSON.parse(key);
+    return { source: nodeId(left), target: nodeId(right), weight: supporting.length, articles: supporting };
+  });
+  return { mode: "article-keywords", title: GRAPH_COPY.articleKeywords.title,
+    hint: GRAPH_COPY.articleKeywords.hint, legendHtml: GRAPH_COPY.articleKeywords.legendHtml,
+    nodes, links, emptyMessage: nodes.length ? "" : "No effective article keywords are available.", staticLayout: true };
+}
+
+async function loadArticleKeywordGraph() {
+  if (state.articleKeywordGraphLoading) return;
+  clearArticleKeywordEvidence();
+  state.articleKeywordGraphLoading = true;
+  const articles = [];
+  try {
+    let page = 1;
+    let total = Infinity;
+    while (articles.length < total) {
+      const payload = await registryFetch(`/api/registry/articles?include_pdf=true&page=${page}&page_size=100`);
+      total = payload.pagination.total;
+      articles.push(...payload.items);
+      page += 1;
+    }
+    const details = [];
+    for (let offset = 0; offset < articles.length; offset += 8) {
+      const batch = await Promise.all(articles.slice(offset, offset + 8).map((item) =>
+        registryFetch(`${item.source_kind === "pdf" ? "/api/registry/pdf-intake/articles" : "/api/registry/articles"}/${encodeURIComponent(item.article_id)}`)
+          .then((detail) => ({
+            ...detail,
+            source_kind: item.source_kind || "registry",
+            ...(item.source_kind === "pdf" ? {
+              metadata_provenance: { ...detail.metadata_provenance, ...(detail.manual_enrichment ? { keywords: "manual_enrichment" } : {}) },
+            } : {}),
+          }))));
+      details.push(...batch);
+    }
+    state.graphData.articleKeywords = buildArticleKeywordGraph(details);
+    clearArticleKeywordEvidence();
+    renderCurrentGraph();
+  } catch (error) {
+    clearArticleKeywordEvidence();
+    state.graphData.articleKeywords = {
+      mode: "article-keywords", title: GRAPH_COPY.articleKeywords.title,
+      hint: registryErrorMessage(error), legendHtml: GRAPH_COPY.articleKeywords.legendHtml,
+      emptyMessage: "Article keywords could not be loaded.", nodes: [], links: [], staticLayout: true,
+    };
+    renderCurrentGraph();
+  } finally {
+    state.articleKeywordGraphLoading = false;
+  }
+}
+
+function clearArticleKeywordEvidence() {
+  if (!els.articleKeywordEvidence) return;
+  els.articleKeywordEvidence.replaceChildren();
+  els.articleKeywordEvidence.hidden = true;
+}
+
 function setGraphMode(mode) {
   if (!mode) {
     return;
+  }
+  if (state.graphMode === "article-keywords" && mode !== "article-keywords") {
+    clearArticleKeywordEvidence();
   }
   state.graphMode = mode;
   els.graphModeButtons.forEach((button) => {
@@ -643,10 +755,14 @@ function setGraphMode(mode) {
     button.setAttribute("aria-pressed", String(active));
   });
   renderCurrentGraph();
+  if (mode === "article-keywords") void loadArticleKeywordGraph();
 }
 
 function getNodeRadius(node) {
   const importance = Math.max(1, Number(node.importance || node.degree || node.weight || 1));
+  if (node.type === "keyword" && node.mode === "article-keywords") {
+    return Math.min(7, 3 + Math.sqrt(importance) * 0.35);
+  }
   if (node.kind === "keyword") {
     return Math.min(22, 7 + Math.sqrt(importance) * 2.4);
   }
@@ -1177,7 +1293,7 @@ function renderGraph(graphData) {
 
   if (!graphData.nodes.length) {
     const empty = document.createElementNS(NS, "text");
-    empty.textContent = "Graph data is loading…";
+    empty.textContent = graphData.emptyMessage || "Graph data is loading…";
     empty.setAttribute("x", String(width / 2));
     empty.setAttribute("y", String(height / 2));
     empty.setAttribute("fill", "#97a3aa");
@@ -1194,7 +1310,9 @@ function renderGraph(graphData) {
     degreeById.set(edge.target, (degreeById.get(edge.target) || 0) + 1);
   });
   const importanceFor = (node) =>
-    Math.max(Number(node.weight || 0), degreeById.get(node.id) || 0, 1);
+    graphData.mode === "article-keywords"
+      ? Math.max(Number(node.weight || 0), 1)
+      : Math.max(Number(node.weight || 0), degreeById.get(node.id) || 0, 1);
   const centralRank = new Map(
     [...graphData.nodes]
       .sort((left, right) => importanceFor(right) - importanceFor(left) || left.label.localeCompare(right.label))
@@ -1212,8 +1330,13 @@ function renderGraph(graphData) {
       height / 2,
       Math.min(width, height) * 0.42,
     );
+    const articleKeywordPosition = graphData.mode === "article-keywords"
+      ? projectGridPosition(centralRank.get(node.id) || 0, graphData.nodes.length, 20, width - 20, 20, height - 20)
+      : null;
     const position =
-      graphData.mode === "keywords"
+      graphData.mode === "article-keywords"
+        ? articleKeywordPosition
+        : graphData.mode === "keywords"
         ? radialPosition
         : Number.isFinite(node.x) && Number.isFinite(node.y)
         ? { x: node.x, y: node.y }
@@ -1234,7 +1357,7 @@ function renderGraph(graphData) {
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const links = graphData.links
-    .map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target) }))
+    .map((edge) => ({ ...edge, source: byId.get(edge.source), target: byId.get(edge.target) }))
     .filter((edge) => edge.source && edge.target);
   const staticLayout = Boolean(graphData.staticLayout);
   let ticksRemaining = 0;
@@ -1244,17 +1367,41 @@ function renderGraph(graphData) {
   svg.appendChild(linkGroup);
   svg.appendChild(nodeGroup);
 
-  const lineEls = links.map(() => {
+  const lineEls = links.map((edge) => {
     const line = document.createElementNS(NS, "line");
     line.setAttribute(
       "stroke",
       graphData.mode === "keywords" ? "rgba(135, 168, 199, 0.28)" : "rgba(151, 163, 170, 0.42)",
     );
     line.setAttribute("stroke-width", "1.1");
+    if (graphData.mode === "article-keywords") {
+      line.setAttribute("class", "graph-edge graph-edge--article-keywords");
+      line.setAttribute("role", "button");
+      line.setAttribute("tabindex", "0");
+      line.setAttribute("aria-label", `${edge.source.label} and ${edge.target.label}: ${edge.weight} supporting articles`);
+      const title = document.createElementNS(NS, "title");
+      title.textContent = `${edge.weight} articles contain both ${edge.source.label} and ${edge.target.label}`;
+      line.appendChild(title);
+      const activate = () => activateArticleKeywordEvidence(`${edge.source.label} + ${edge.target.label}`, edge.articles);
+      line.addEventListener("click", activate);
+      line.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); }
+      });
+    }
     linkGroup.appendChild(line);
     return line;
   });
+  const edgeLabelEls = graphData.mode === "article-keywords" ? links.map((edge) => {
+    const label = document.createElementNS(NS, "text");
+    label.textContent = String(edge.weight);
+    label.setAttribute("class", "graph-edge-count");
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("aria-hidden", "true");
+    linkGroup.appendChild(label);
+    return label;
+  }) : [];
 
+  const nodeLabelEls = [];
   const nodeEls = nodes.map((node) => {
     const group = document.createElementNS(NS, "g");
     group.setAttribute("class", `graph-node graph-node--${node.kind || "note"} graph-node--${graphData.mode}`);
@@ -1262,7 +1409,9 @@ function renderGraph(graphData) {
     group.setAttribute("tabindex", "0");
     group.setAttribute(
       "aria-label",
-      node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`,
+      graphData.mode === "article-keywords"
+        ? `${node.label}: ${node.weight} supporting articles`
+        : node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`,
     );
 
     const circle = document.createElementNS(NS, "circle");
@@ -1272,15 +1421,25 @@ function renderGraph(graphData) {
     circle.setAttribute("stroke-width", "1");
 
     const label = document.createElementNS(NS, "text");
-    label.textContent = node.label;
+    label.textContent = graphData.mode === "article-keywords" ? `${node.label} (${node.weight})` : node.label;
     label.setAttribute("x", "10");
     label.setAttribute("y", "4");
 
     group.appendChild(circle);
-    group.appendChild(label);
     nodeGroup.appendChild(group);
+    if (graphData.mode === "article-keywords") {
+      label.setAttribute("class", "graph-node-label--article-keywords");
+      nodeGroup.appendChild(label);
+      nodeLabelEls.push(label);
+    } else {
+      group.appendChild(label);
+    }
 
     const activateNode = () => {
+      if (graphData.mode === "article-keywords") {
+        activateArticleKeywordEvidence(node.label, node.articles);
+        return;
+      }
       if (node.kind === "keyword") {
         if (els.wikiSearch) {
           els.wikiSearch.value = node.label;
@@ -1338,6 +1497,16 @@ function renderGraph(graphData) {
 
     nodes.forEach((node, index) => {
       nodeEls[index].setAttribute("transform", `translate(${node.x},${node.y})`);
+      if (nodeLabelEls[index]) {
+        nodeLabelEls[index].setAttribute("x", String(node.x + getNodeRadius(node) + 3));
+        nodeLabelEls[index].setAttribute("y", String(node.y + 4));
+      }
+    });
+    links.forEach((edge, index) => {
+      if (edgeLabelEls[index]) {
+        edgeLabelEls[index].setAttribute("x", String((edge.source.x + edge.target.x) / 2));
+        edgeLabelEls[index].setAttribute("y", String((edge.source.y + edge.target.y) / 2 - 5));
+      }
     });
   }
 
@@ -1428,6 +1597,36 @@ function renderGraph(graphData) {
     return;
   }
   startAnimation();
+}
+
+function activateArticleKeywordEvidence(label, articles) {
+  if (state.graphMode !== "article-keywords" || state.articleKeywordGraphLoading) return;
+  showArticleKeywordEvidence(label, articles);
+}
+
+function showArticleKeywordEvidence(label, articles) {
+  if (!els.articleKeywordEvidence) return;
+  const section = els.articleKeywordEvidence;
+  section.replaceChildren();
+  section.hidden = false;
+  section.append(registryElement("h3", "", `Supporting articles: ${label}`));
+  const list = registryElement("ul", "article-keyword-evidence__list");
+  [...articles].sort((a, b) => (a.title || "").localeCompare(b.title || "")).forEach((article) => {
+    const item = registryElement("li", "article-keyword-evidence__item");
+    const button = registryElement("button", "registry-article-link", article.title || article.canonical_url);
+    button.type = "button";
+    button.dataset.articleId = article.article_id;
+    button.dataset.articleSource = "registry";
+    const provenance = article.metadata_provenance?.keywords;
+    const version = article.enrichment?.content_version_id || article.content?.content_version_id;
+    const metadataRecord = article.manual_enrichment?.knowledge_id;
+    const sourceKind = article.source_kind === "pdf" ? "pdf" : "registry";
+    button.dataset.articleSource = sourceKind;
+    item.append(button, registryElement("p", "muted", `${article.publisher || article.source || "Publisher unavailable"}${provenance ? ` · ${provenance}` : ""}${version ? ` · content version ${version}` : metadataRecord ? ` · metadata record ${metadataRecord}` : ""}`));
+    list.append(item);
+  });
+  section.append(list);
+  section.focus?.();
 }
 
 async function fetchMarkdown(path) {
@@ -2689,6 +2888,7 @@ function attachEvents() {
 
     const articleCard = target.closest("[data-article-id]");
     if (articleCard) {
+      if (state.activeView !== "registryView") setWorkspaceView("registryView");
       setRegistryMode("articles");
       const articleSource = articleCard.dataset.articleSource || "registry";
       void loadRegistryArticle(articleCard.dataset.articleId, articleSource);
