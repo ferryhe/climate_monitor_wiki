@@ -7,6 +7,16 @@ import pytest
 from fixture_modes import remove_shared_write
 
 
+@pytest.fixture(autouse=True)
+def isolated_chat_allowance(tmp_path_factory, monkeypatch):
+    """Keep writable Chat state outside content fixtures audited for unchanged bytes."""
+    import sys
+    state_root = tmp_path_factory.mktemp("chat-access")
+    monkeypatch.setenv("CLIMATE_CHAT_ACCESS_DB", str(state_root / "chat-access.sqlite3"))
+    if "api_server" in sys.modules:
+        monkeypatch.setattr(sys.modules["api_server"], "chat_access_store", None)
+
+
 def _partition_collected_items(items, shard_count):
     files = defaultdict(list)
     positions = {id(item): position for position, item in enumerate(items)}

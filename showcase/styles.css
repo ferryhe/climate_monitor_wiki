@@ -1855,3 +1855,9 @@ tbody tr.is-selected {
     padding-inline: 10px;
   }
 }
+/* Chat access stays beside the composer so a blocked question remains visible. */
+.chat-access-note { font-size: .78rem; margin: .35rem 0; color: var(--muted); }
+.chat-token-form { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin: .5rem 0; font-size: .8rem; }
+.chat-token-form[hidden] { display: none; }
+.chat-token-form input { flex: 1; min-width: 8rem; padding: .4rem; }
+.chat-token-form button { padding: .4rem .6rem; }

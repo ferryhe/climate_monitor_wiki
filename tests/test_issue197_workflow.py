@@ -1700,7 +1700,7 @@ def test_public_claim_projection_and_managed_receipts(tmp_path, monkeypatch, cla
     assert next((root / "claim-history").glob("*.json")).read_bytes() == history_bytes
 
 
-@pytest.mark.parametrize("selected", ["initial", "pipeline", "runs", "meetings", "configuration", "pdf-import"])
+@pytest.mark.parametrize("selected", ["initial", "pipeline", "runs", "meetings", "configuration", "pdf-import", "chat-tokens"])
 def test_management_pipeline_tab_has_exclusive_visibility(selected):
     import subprocess
     root = Path(__file__).resolve().parents[1]
@@ -1732,7 +1732,7 @@ vm.runInNewContext(input.javascript, {document, window: {addEventListener() {}},
 callbacks.forEach(callback => callback());
 const observe = () => ({visiblePanels: panels.filter(panel => !panel.hidden).map(panel => panel.id), selectedTabs: buttons.filter(button => button.getAttribute('aria-selected') === 'true').map(button => button.dataset.tab)});
 const observations = {initial: observe()};
-for (const id of ['pipeline', 'runs', 'meetings', 'configuration', 'pdf-import']) { buttons.find(b => b.dataset.tab === id).onclick(); observations[id] = observe(); }
+for (const id of ['pipeline', 'runs', 'meetings', 'configuration', 'pdf-import', 'chat-tokens']) { buttons.find(b => b.dataset.tab === id).onclick(); observations[id] = observe(); }
 console.log(JSON.stringify(observations));
 """
     result = subprocess.run(["node", "-e", program], input=json.dumps({

@@ -45,6 +45,9 @@ services:
       CLIMATE_CONSOLE_SESSION_SECRET: ${CLIMATE_CONSOLE_SESSION_SECRET:-}
       CLIMATE_CONSOLE_SESSION_SECONDS: ${CLIMATE_CONSOLE_SESSION_SECONDS:-1800}
       CLIMATE_CONSOLE_SESSION_DB: /app/output/console-sessions.sqlite3
+      CLIMATE_CHAT_ACCESS_DB: /app/output/chat-access.sqlite3
+      # Trust only Caddy on this dedicated network, never public forwarded headers.
+      FORWARDED_ALLOW_IPS: "${CLIMATE_PROXY_NETWORK_PREFIX:-172.30.211}.3"
       CLIMATE_CONSOLE_SECURE_COOKIE: ${CLIMATE_CONSOLE_SECURE_COOKIE:-true}
     volumes:
       # Bind-mount the content so an ingest run on the host is picked up by
@@ -57,6 +60,9 @@ services:
       - web_listening_runtime:/opt/web-listening-data
     expose:
       - "8501"
+    networks:
+      default:
+        ipv4_address: ${CLIMATE_PROXY_NETWORK_PREFIX:-172.30.211}.2
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8501/api/config').read()"]
       interval: 30s
@@ -68,6 +74,9 @@ services:
     image: caddy:2-alpine
     container_name: climate-wiki-caddy
     restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: ${CLIMATE_PROXY_NETWORK_PREFIX:-172.30.211}.3
     depends_on:
       - wiki
     environment:
@@ -81,6 +90,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CLIMATE_PROXY_NETWORK_PREFIX:-172.30.211}.0/29
 
 volumes:
   caddy_data:

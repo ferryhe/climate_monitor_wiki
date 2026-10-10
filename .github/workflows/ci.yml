@@ -190,6 +190,7 @@ jobs:
           set -euo pipefail
           node --check showcase/app.js
           node --check management_ui/manage.js
+          node tests/test_chat_access_ui.mjs
 
       - name: Check pull request whitespace
         if: github.event_name == 'pull_request'

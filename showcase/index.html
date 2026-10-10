@@ -6,7 +6,7 @@
     <title>Climate Monitor Wiki Agent</title>
     <!-- Fonts are self-hosted via showcase/fonts (@font-face in styles.css);
          no external Google Fonts request on load. -->
-    <link rel="stylesheet" href="/showcase/styles.css?v=selfhost-fonts-v1" />
+    <link rel="stylesheet" href="/showcase/styles.css?v=selfhost-fonts-v1-chat-access" />
   </head>
   <body>
     <div class="app-shell">
@@ -111,6 +111,14 @@
                   </span>
                 </div>
 
+                <p id="chatAllowance" class="chat-access-note" aria-live="polite">Loading free question allowance…</p>
+                <p id="chatAccessMessage" class="chat-access-note" role="status"></p>
+                <button id="retryChatQuestion" type="button" hidden>Retry question</button>
+                <form id="chatTokenForm" class="chat-token-form">
+                  <label for="chatToken">Access token</label>
+                  <input id="chatToken" type="password" autocomplete="off" maxlength="256" required />
+                  <button type="submit">Continue with token</button>
+                </form>
                 <form id="chatForm" class="composer-card">
                   <label class="sr-only" for="messageInput">Ask a question</label>
                   <textarea
@@ -460,6 +468,6 @@ Select a note to preview its markdown source.</pre
       </main>
     </div>
 
-    <script src="/showcase/app.js?v=page-index-metadata-v1"></script>
+    <script src="/showcase/app.js?v=page-index-metadata-v1-chat-access"></script>
   </body>
 </html>
