@@ -225,7 +225,7 @@ def test_enrichment_failure_remains_visible_and_retryable(tmp_path):
     assert retry["status"] == "complete" and retry["item_count"] == 1 and retry["enrichment_failed_count"] == 0
     from climate_registry.wiki import render_runtime_registry
     page = render_runtime_registry(tmp_path / "wiki", web_database=None, pdf_database=database,
-        manifest={"web_items": [], "pdf_occurrence_ids": ["article-1"]})["registry-source-observations.md"]
+        manifest={"web_items": [], "pdf_occurrence_ids": ["article-1"]})["registry-source-observation-article-1.md"]
     assert "Verified information" in page and "Categories:" in page and "Keywords:" in page
 
 
@@ -241,7 +241,8 @@ def test_duplicate_observations_remain_checkable_and_runtime_can_refresh(tmp_pat
     assert {item["occurrence_id"] for item in named} == {"article-1", "article-copy"}
     pages = render_runtime_registry(tmp_path / "wiki", web_database=None, pdf_database=database,
         manifest={"web_items": [], "pdf_occurrence_ids": ["article-1", "article-copy"]})
-    assert pages["registry-source-observations.md"].count("Emissions decreased.") == 1
+    assert sum(page.count("Emissions decreased.") for page in pages.values()) == 1
+    assert "Emissions decreased." not in pages["registry-source-observations.md"]
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
     client = TestClient(api_server.app)
@@ -282,7 +283,7 @@ def test_duplicate_pdf_passages_merge_checks_but_keep_different_reports():
     ("article-example.md", "registry-source-observations.md")])
 def test_public_and_runtime_pdf_passage_merge_retains_verified_information(tmp_path, filename, public_filename):
     from agentic_wiki.wiki_agent import AgenticWikiResponder, merge_registry_runtime_markdown
-    from climate_registry.wiki import _render_registry_article, _render_registry_source_observations
+    from climate_registry.wiki import _render_registry_article, _registry_source_observation_pages
     original = {"occurrence_id": "public-copy", "source_document_sha256": "a" * 64, "page": 26,
         "raw_url": "https://example.org/study", "summary": "Original climate PDF passage.",
         "source_observations": [{"filename": "climate.pdf"}]}
@@ -294,7 +295,7 @@ def test_public_and_runtime_pdf_passage_merge_retains_verified_information(tmp_p
         if name.startswith("article-"):
             return _render_registry_article({"article_id": "example", "title": "Climate study",
                 "canonical_url": original["raw_url"], "pdf_occurrences": occurrences})
-        return _render_registry_source_observations([{"occurrences": occurrences}])
+        return "\n".join(_registry_source_observation_pages([{"occurrences": occurrences}]).values())
     public, runtime = render(public_filename, [original, other]), render(filename, [checked])
     merged = merge_registry_runtime_markdown(filename, public, runtime)
     assert merged.count(original["summary"]) == merged.count(other["summary"]) == 1

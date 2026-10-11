@@ -38,7 +38,7 @@ def _citation(occurrence: dict) -> str:
             if item.get("filename")
         }
     )
-    filename = ", ".join(files) or "unknown PDF"
+    filename = ", ".join(files) or occurrence.get("source_filename") or occurrence.get("source_document") or "unknown PDF"
     sha256 = occurrence.get("source_document_sha256", "unknown")
     page = occurrence.get("page", "unknown")
     url = occurrence.get("raw_url", "")
@@ -251,31 +251,42 @@ def _render_registry_article(article: dict) -> str | None:
     return "\n".join(blocks)
 
 
+def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
+    # Keep the first imported identity when later imports repeat the same passage.
+    occurrences = sorted(
+        [occurrence for item in items for occurrence in item.get("occurrences", [])
+         if occurrence.get("summary")],
+        key=lambda occurrence: (occurrence.get("imported_at") or "", occurrence["occurrence_id"]),
+    )
+    pages = {}
+    for occurrence in deduplicate_pdf_occurrences(occurrences, preserve_first_identity=True):
+        name = f"registry-source-observation-{occurrence['occurrence_id']}.md"
+        if not re.fullmatch(r"registry-source-observation-[A-Za-z0-9_-]+\.md", name):
+            raise ValueError("invalid PDF observation page identity")
+        title = (occurrence.get("report_fields") or {}).get("title") or _pinned_pdf_title(
+            [occurrence], "PDF source observation"
+        )
+        if title == occurrence.get("raw_url"):
+            filename = _citation(occurrence).split("; SHA-256:", 1)[0].removeprefix("PDF: ")
+            title = f"PDF source observation: {filename} (page {occurrence.get('page', 'unknown')})"
+        blocks = [f"# {title}", "",
+            f"## {_pdf_heading(occurrence)}", "", occurrence["summary"], "",
+            "Report-provided summary; article details are unconfirmed.", _citation(occurrence)]
+        blocks.extend(_verified_information_blocks(occurrence))
+        pages[name] = "\n".join([*blocks, ""])
+    return dict(sorted(pages.items()))
+
+
 def _render_registry_source_observations(items: list[dict]) -> str | None:
-    blocks = [
-        "# Registry report source observations",
-        "",
-        "These are report-provided summaries; article details are unconfirmed.",
-    ]
-    kept = 0
-    for item in items:
-        for occurrence in deduplicate_pdf_occurrences(item.get("occurrences", [])):
-            if not occurrence.get("summary"):
-                continue
-            kept += 1
-            blocks.extend(
-                [
-                    "",
-                    f"## {_pdf_heading(occurrence)}",
-                    "",
-                    occurrence["summary"],
-                    "",
-                    "Report-provided summary; article details are unconfirmed.",
-                    _citation(occurrence),
-                ]
-            )
-            blocks.extend(_verified_information_blocks(occurrence))
-    return "\n".join([*blocks, ""]) if kept else None
+    pages = _registry_source_observation_pages(items)
+    if not pages:
+        return None
+    blocks = ["# Registry report source observations", "",
+        "These are report-provided summaries; article details are unconfirmed.", ""]
+    for name, markdown in pages.items():
+        title = markdown.splitlines()[0].removeprefix("# ")
+        blocks.append(f"- [[{name.removesuffix('.md')}|{title}]]")
+    return "\n".join([*blocks, ""])
 
 
 def _json_strings(value: str | None) -> list[str]:
@@ -521,6 +532,7 @@ def render_runtime_registry(
         rendered = _render_registry_article(article)
         if rendered:
             pages[f"article-{article_id}.md"] = rendered
+    pages.update(_registry_source_observation_pages(source_observations))
     rendered_sources = _render_registry_source_observations(source_observations)
     if rendered_sources:
         pages["registry-source-observations.md"] = rendered_sources
@@ -595,6 +607,7 @@ def _registry_pages_read(
         if page >= payload["pagination"]["pages"]:
             break
         page += 1
+    pages.update(_registry_source_observation_pages(pdf_items))
     rendered = _render_registry_source_observations(pdf_items)
     if rendered:
         pages["registry-source-observations.md"] = rendered
@@ -634,9 +647,9 @@ def _registry_pages_read(
                 pages["climate-monitor-" + report_date + ".md"] = ("# Climate Monitor " + report_date + "\n\n" + "\n".join(content)).rstrip("\n") + "\n"
     states = {name: _write_if_changed(wiki_dir / name, content) for name, content in pages.items()
         if not name.startswith("climate-monitor-") or not (wiki_dir / name).exists()}
-    for existing in wiki_dir.glob("article-*.md"):
+    for existing in [*wiki_dir.glob("article-*.md"), *wiki_dir.glob("registry-source-observation-*.md")]:
         if (
-            re.fullmatch(r"article-[A-Za-z0-9_-]+\.md", existing.name)
+            re.fullmatch(r"(?:article|registry-source-observation)-[A-Za-z0-9_-]+\.md", existing.name)
             and existing.name not in pages
         ):
             existing.unlink()

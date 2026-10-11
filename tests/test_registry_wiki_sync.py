@@ -284,7 +284,11 @@ def test_registry_sync_generates_confirmed_and_source_only_pages(tmp_path):
     assert pdf_only.is_file() and 'PDF-only confirmed summary.' in pdf_only.read_text(encoding='utf-8')
     source_only = observations.read_text(encoding='utf-8')
     assert 'article details are unconfirmed' in source_only
-    assert 'evidence.pdf' in source_only and 'page 7' in source_only
+    observation_pages = list(wiki.glob('registry-source-observation-*.md'))
+    assert len(observation_pages) == 2
+    observation_body = '\n'.join(page.read_text(encoding='utf-8') for page in observation_pages)
+    assert 'evidence.pdf' in observation_body and 'page 7' in observation_body
+    assert '## PDF report observation:' not in source_only
     assert not (wiki / 'article-pdf-unconfirmed.md').exists()
 
     source_before = source.read_bytes()
@@ -374,7 +378,7 @@ def test_registry_pdf_occurrence_chunks_keep_distinct_headings_and_citations(tmp
     confirmed = knowledge_base.search('PDF observation confirmed article', top_k=20)
     unconfirmed = knowledge_base.search('unconfirmed PDF observatory signal', top_k=20)
     confirmed_chunks = [hit.chunk for hit in confirmed if hit.chunk.path == 'wiki/article-article-confirmed.md']
-    unconfirmed_chunks = [hit.chunk for hit in unconfirmed if hit.chunk.path == 'wiki/registry-source-observations.md']
+    unconfirmed_chunks = [hit.chunk for hit in unconfirmed if hit.chunk.path.startswith('wiki/registry-source-observation-')]
 
     assert {chunk.heading for chunk in confirmed_chunks} >= {
         'PDF report observation: occurrence-pdf-confirmed-3',
@@ -422,7 +426,7 @@ def test_registry_sync_reloads_the_same_app_and_chats_with_both_record_types(tmp
     unconfirmed = client.post('/api/chat', json={'message': 'observatory signal page 7', 'answerMode': 'brief'}).json()
     weekly = client.post('/api/chat', json={'message': 'Existing weekly query', 'answerMode': 'brief'}).json()
     assert any(item['path'] == 'wiki/article-article-confirmed.md' for item in confirmed['sources'])
-    assert any(item['path'] == 'wiki/registry-source-observations.md' for item in unconfirmed['sources'])
+    assert any(item['path'].startswith('wiki/registry-source-observation-') for item in unconfirmed['sources'])
     assert any(item['path'] == 'wiki/climate-monitor-2026-09-28.md' for item in weekly['sources'])
 
 
@@ -456,7 +460,7 @@ def test_registry_only_sync_reloads_and_chats_without_report_dates(tmp_path, mon
     confirmed = client.post('/api/chat', json={'message': 'glacier pricing', 'answerMode': 'brief'}).json()
     unconfirmed = client.post('/api/chat', json={'message': 'observatory signal', 'answerMode': 'brief'}).json()
     assert any(item['path'] == 'wiki/article-article-confirmed.md' for item in confirmed['sources'])
-    assert any(item['path'] == 'wiki/registry-source-observations.md' for item in unconfirmed['sources'])
+    assert any(item['path'].startswith('wiki/registry-source-observation-') for item in unconfirmed['sources'])
 
 
 def test_legacy_acquisition_projection_syncs_newest_body_and_all_origins_without_weekly_report(tmp_path, monkeypatch):
@@ -634,3 +638,20 @@ def test_explicit_relative_copy_sync_overrides_invalid_env_and_empty_config_keep
         sync_source_wiki(source_dir=sources,wiki_dir=wiki,cadence='weekly')
         assert 'RAW EXECUTIVE MUST NOT REGENERATE' in (wiki/'climate-monitor-2026-09-07.md').read_text()
         assert not (wiki/'public-registry.json').exists()
+
+
+
+def test_registry_sync_prunes_only_retired_generated_observation_pages(tmp_path):
+    database, wiki = tmp_path / "registry.sqlite3", tmp_path / "wiki"
+    _registry(database)
+    sync_registry_wiki(database, wiki)
+    generated = set(wiki.glob("registry-source-observation-*.md"))
+    assert generated
+    manual = wiki / "registry-source-observation-manual.notes.md"
+    manual.write_text("Manual notes.", encoding="utf-8")
+    database_before = database.read_bytes()
+    states = sync_registry_wiki(database, wiki, occurrence_filter=lambda _occurrence: False)
+    assert database.read_bytes() == database_before
+    assert all(not page.exists() and states[page.name] == "deleted" for page in generated)
+    assert manual.read_text(encoding="utf-8") == "Manual notes."
+    assert not (wiki / "registry-source-observations.md").exists()

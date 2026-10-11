@@ -27,7 +27,7 @@ MAX_EVIDENCE_CHARS_DETAILED = 18000
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.+:/-]*|[\u4e00-\u9fff]+", re.IGNORECASE)
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
-REGISTRY_RUNTIME_PATH_RE = re.compile(r"article-[A-Za-z0-9_-]+\.md")
+REGISTRY_RUNTIME_PATH_RE = re.compile(r"(?:article|registry-source-observation)-[A-Za-z0-9_-]+\.md")
 SOURCE_ITEM_RE = re.compile(r"^(?:→\s*)?\*\*(.+?)\*\*\s*$")
 DAY_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:day|days)", re.IGNORECASE)
 WEEK_RANGE_RE = re.compile(r"(?:past|last|recent)\s+(\d{1,2})\s+(?:week|weeks)", re.IGNORECASE)
@@ -1135,8 +1135,14 @@ class WikiKnowledgeBase:
         )
 
     def _chunk_document(self, doc: WikiDocument) -> list[WikiChunk]:
+        if (is_registry_runtime_path(doc.file) and doc.file.startswith("registry-source-observation")
+                and "## PDF report observation:" not in doc.markdown):
+            return []
         if "## PDF report observation:" in doc.markdown:
             sections = self._split_registry_pdf_sections(doc.markdown, doc.title)
+            if is_registry_runtime_path(doc.file) and doc.file.startswith("registry-source-observation-"):
+                heading = next(heading for heading, _lines in sections if heading.startswith("PDF report observation:"))
+                sections = [(heading, doc.markdown.splitlines())]
         else:
             sections = (
                 self._split_source_sections(doc)

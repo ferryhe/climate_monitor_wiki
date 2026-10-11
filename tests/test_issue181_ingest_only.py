@@ -350,7 +350,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     pdf_answer = responder.answer("transition scenario testing", answer_mode="brief")
     assert any(source["path"].endswith("article-web-article.md") for source in web_answer["sources"])
     assert any(
-        source["path"].endswith("registry-source-observations.md")
+        source["path"].startswith("wiki/registry-source-observation-")
         for source in pdf_answer["sources"]
     )
     legacy_overlay_report = freeze_range_report(

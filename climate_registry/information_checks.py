@@ -397,7 +397,9 @@ def merge_checked_observation(first: dict[str, Any], second: dict[str, Any]) -> 
     return merged
 
 
-def deduplicate_pdf_occurrences(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def deduplicate_pdf_occurrences(
+    items: list[dict[str, Any]], *, preserve_first_identity: bool = False
+) -> list[dict[str, Any]]:
     """Keep one display observation per exact PDF passage, retaining its checks."""
     from climate_monitor.dedupe import canonical_url
     merged = {}
@@ -405,7 +407,13 @@ def deduplicate_pdf_occurrences(items: list[dict[str, Any]]) -> list[dict[str, A
         sha = item.get("source_document_sha256")
         key = (sha, item.get("page"), canonical_url(item.get("raw_url") or ""),
             " ".join((item.get("summary") or "").split())) if sha else item["occurrence_id"]
-        merged[key] = merge_checked_observation(merged[key], item) if key in merged else item
+        if key in merged:
+            identity = merged[key]["occurrence_id"]
+            merged[key] = merge_checked_observation(merged[key], item)
+            if preserve_first_identity:
+                merged[key]["occurrence_id"] = identity
+        else:
+            merged[key] = item
     return list(merged.values())
 
 
