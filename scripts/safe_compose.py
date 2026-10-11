@@ -7,7 +7,7 @@ import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import FrameType
@@ -219,7 +219,46 @@ def _validate_source_directory(path: Path, *, target: str) -> None:
         )
 
 
-def _validate_final_model(model: Mapping[str, Any]) -> None:
+def _omitted_create_host_path(docker: str, environment: Mapping[str, str]) -> bool:
+    # Compose serializers omit false in older releases and true in newer ones.
+    # Observe this CLI rather than guessing from a missing field or version number.
+    probe = {"services": {name: {"image": "compose-bind-probe", "volumes": [{
+        "type": "bind", "source": Path.cwd().as_posix(), "target": "/probe",
+        "bind": {"create_host_path": value},
+    }]} for name, value in (("probe-false", False), ("probe-true", True))}}
+    completed = subprocess.run(
+        [docker, "compose", "--env-file", os.devnull, "-p", "compose-bind-probe",
+         "-f", "-", "config", "--format", "json"],
+        input=json.dumps(probe), env=dict(environment), check=False,
+        capture_output=True, text=True, shell=False,
+    )
+    error = "docker compose preflight failed: cannot resolve omitted bind create_host_path"
+    if completed.returncode:
+        raise ComposeBindSourceError(error, exit_code=_normalize_exit_code(completed.returncode))
+    try:
+        services = json.loads(completed.stdout)["services"]
+        bindings = []
+        for name in ("probe-false", "probe-true"):
+            mounts = services[name]["volumes"]
+            if len(mounts) != 1 or mounts[0]["type"] != "bind" or mounts[0]["target"] != "/probe":
+                raise ValueError
+            binding = mounts[0]["bind"]
+            if not isinstance(binding, dict):
+                raise ValueError
+            bindings.append(binding)
+        false_bind, true_bind = bindings
+        if false_bind == {} and set(true_bind) == {"create_host_path"} and true_bind["create_host_path"] is True:
+            return False
+        if set(false_bind) == {"create_host_path"} and false_bind["create_host_path"] is False and true_bind == {}:
+            return True
+    except (ValueError, TypeError, KeyError, IndexError):
+        pass
+    raise ComposeBindSourceError(error)
+
+
+def _validate_final_model(
+    model: Mapping[str, Any], *, omitted_create_host_path: Callable[[], bool] | None = None,
+) -> None:
     services = model.get("services")
     if not isinstance(services, Mapping):
         raise ComposeBindSourceError(
@@ -257,11 +296,19 @@ def _validate_final_model(model: Mapping[str, Any]) -> None:
                 continue
             mount = matches[0]
             writable = mount.get("read_only") is not True
+            binding = mount.get("bind")
+            registry_role = (
+                target == "/registry" and (service_name == "wiki" or is_writer)
+                and isinstance(environment, Mapping)
+                and PurePosixPath(str(environment.get("CLIMATE_REGISTRY_DB", ""))).parent == PurePosixPath("/registry")
+            )
+            create_host_path = binding.get("create_host_path") if isinstance(binding, Mapping) else None
+            if (writable and registry_role and mount.get("type") == "bind"
+                    and isinstance(binding, Mapping) and "create_host_path" not in binding
+                    and omitted_create_host_path is not None):
+                create_host_path = omitted_create_host_path()
             writable_allowed = (
-                (target == "/registry" and (service_name == "wiki" or is_writer)
-                    and isinstance(environment, Mapping)
-                    and PurePosixPath(str(environment.get("CLIMATE_REGISTRY_DB", ""))).parent == PurePosixPath("/registry")
-                    and mount.get("bind", {}).get("create_host_path") is False)
+                (registry_role and create_host_path is False)
                 or (target == "/pdf-intake-queue" and queue_enabled)
                 or (is_writer and target == "/runtime/wiki")
             )
@@ -348,7 +395,15 @@ def run_compose(
             command.index,
             environment=active_environment,
         )
-        _validate_final_model(model)
+        observed_default: bool | None = None
+
+        def omitted_create_host_path() -> bool:
+            nonlocal observed_default
+            if observed_default is None:
+                observed_default = _omitted_create_host_path(docker, active_environment)
+            return observed_default
+
+        _validate_final_model(model, omitted_create_host_path=omitted_create_host_path)
 
     return _run_actual_compose(
         [docker, "compose", *arguments],

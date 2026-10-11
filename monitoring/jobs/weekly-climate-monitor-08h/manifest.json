@@ -5,20 +5,15 @@
   "repository_owned": true,
   "runtime_owner": "Hermes",
   "not_live_scheduler_config": true,
-  "public_runtime_identity": {
-    "hermes_job_id": "f5259a8ec2d9",
-    "cron_utc": "0 8 * * 1",
-    "name": "Weekly Climate & Actuarial Monitor (IAA CSC Supras)"
-  },
   "prompt": {
     "id": "weekly_monitor",
-    "version": "v1",
-    "metadata_path": "prompts/weekly-monitor-v1.meta.json",
-    "body_path": "prompts/weekly-monitor-v1.prompt.md",
+    "version": "v2",
+    "metadata_path": "prompts/weekly-monitor-v2.meta.json",
+    "body_path": "prompts/weekly-monitor-v2.prompt.md",
     "artifact_committed": true,
-    "sha256": "53896231729799845b48e85eb5901cacce03aa26cec2199e2176dc254d5b7909",
-    "chars": 18391,
-    "lines": 306
+    "sha256": "7413d3da0790fb2005d9ec8b7f976d1cb22ddf3d65e022c18e2c275856045190",
+    "chars": 1320,
+    "lines": 21
   },
   "contracts": {
     "authoring_request_schema": "contracts/authoring-request.v1.schema.json",

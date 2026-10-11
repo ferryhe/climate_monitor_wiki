@@ -229,7 +229,8 @@ def test_weekly_driver_fails_before_artifacts_seen_state_or_sync_on_invalid_auth
     ("openai", "gpt-5-mini"),
     ("nous", "meituan/longcat-2.0:free"),
 ])
-def test_weekly_driver_json_result_records_safe_provenance(tmp_path, provider, model):
+@pytest.mark.parametrize("prompt_version", ["v1", "v2"])
+def test_weekly_driver_json_result_records_safe_provenance(tmp_path, provider, model, prompt_version):
     source_config = tmp_path / "sources.yaml"
     run_config = tmp_path / "run_config.yaml"
     manifest = tmp_path / "manifest.json"
@@ -243,6 +244,9 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path, provider, m
     item = _item()
     authoring.write_text(json.dumps(_response([item]), indent=2) + "\n", encoding="utf-8")
 
+    from climate_monitor.weekly_monitor.prompt_loader import JOB_ROOT
+    prompt = load_weekly_monitor_prompt(
+        meta_path=JOB_ROOT / "prompts" / f"weekly-monitor-{prompt_version}.meta.json")
     result = run_weekly_monitor(
         source_config_path=source_config,
         run_config_path=run_config,
@@ -256,6 +260,7 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path, provider, m
         model=model,
         temperature=0.2,
         max_output_tokens=4000,
+        loaded_prompt=prompt,
     )
     payload = json.loads(result.to_json())
     provenance = payload["provenance"]
@@ -266,8 +271,8 @@ def test_weekly_driver_json_result_records_safe_provenance(tmp_path, provider, m
     assert provenance["schema_version"] == PROVENANCE_SCHEMA_VERSION
     assert provenance["repository"]["commit_sha"] == "b" * 40
     assert provenance["prompt"]["id"] == "weekly_monitor"
-    assert provenance["prompt"]["version"] == "v1"
-    assert provenance["prompt"]["sha256"] == load_weekly_monitor_prompt().sha256
+    assert provenance["prompt"]["version"] == prompt_version
+    assert provenance["prompt"]["sha256"] == prompt.sha256
     assert provenance["driver"]["version"] == DRIVER_VERSION
     assert provenance["driver"]["contract_version"] == AUTHORING_CONTRACT_VERSION
     assert provenance["taxonomy"] == {

@@ -96,7 +96,7 @@ EXPECTED_PROMPT_BYTES = 18401
 
 
 def test_prompt_loader_returns_exact_versioned_prompt_bytes_and_stable_sha():
-    prompt = load_weekly_monitor_prompt()
+    prompt = load_weekly_monitor_prompt(meta_path=JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json")
     prompt_path = JOB_ROOT / "prompts" / "weekly-monitor-v1.prompt.md"
     meta = json.loads(
         (JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json").read_text(
@@ -127,6 +127,52 @@ def test_pinned_prompt_artifacts_are_lf_normalized():
     )
 
 
+def test_default_prompt_is_portable_v2_and_body_override_cannot_relabel_v1(tmp_path):
+    prompt = load_weekly_monitor_prompt()
+    assert prompt.version == "v2"
+    assert prompt.path.name == "weekly-monitor-v2.prompt.md"
+    from scripts.check_tracked_host_paths import find_line_findings, exemption_reason
+
+    assert not any(find_line_findings(line) for line in prompt.raw_bytes.decode().splitlines())
+    assert exemption_reason(str(prompt.path.relative_to(ROOT)).replace("\\", "/"), prompt.raw_bytes) is None
+    legacy_body = JOB_ROOT / "prompts" / "weekly-monitor-v1.prompt.md"
+    with pytest.raises(ValueError, match="SHA-256"):
+        load_weekly_monitor_prompt(path=legacy_body)
+    legacy_meta = JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json"
+    assert load_weekly_monitor_prompt(path=legacy_body, meta_path=legacy_meta).version == "v1"
+    changed = tmp_path / "changed.prompt.md"
+    changed.write_bytes(prompt.raw_bytes + b"\nChanged instructions\n")
+    with pytest.raises(ValueError, match="SHA-256"):
+        load_weekly_monitor_prompt(path=changed)
+    custom_meta = tmp_path / "custom.meta.json"
+    metadata = json.loads((JOB_ROOT / "prompts" / "weekly-monitor-v2.meta.json").read_text())
+    metadata["sha256"] = hashlib.sha256(changed.read_bytes()).hexdigest()
+    custom_meta.write_text(json.dumps(metadata))
+    custom = load_weekly_monitor_prompt(path=changed, meta_path=custom_meta)
+    assert custom.version == "v2" and custom.raw_bytes == changed.read_bytes()
+
+
+def test_unbound_v1_staging_cannot_resume_under_v2(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from scripts import run_climate_monitor as monitor
+    from climate_monitor.taxonomy import load_article_taxonomy
+
+    artifact = tmp_path / "input.json"
+    artifact.write_bytes(b"{}")
+    legacy = load_weekly_monitor_prompt(meta_path=JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json")
+    names = ("acquisition_batch", "web_listening_manifest", "pillar_b_artifact")
+    bundle = {"prompt": {"sha256": legacy.sha256}, "taxonomy": {"sha256": load_article_taxonomy().sha256},
+              "public_artifacts": {name: {"path": str(artifact), "sha256": hashlib.sha256(b"{}").hexdigest()}
+                                   for name in names}}
+    before = json.dumps(bundle, sort_keys=True)
+    monkeypatch.setattr(monitor, "_verify_staging_digest", lambda *args: None)
+    args = SimpleNamespace(no_page_titles=True, report_date="", **{name: str(artifact) for name in names})
+    with pytest.raises(SystemExit, match="prepared authoring prompt or taxonomy changed"):
+        monitor._verify_authoring_resume(args, tmp_path, bundle)
+    assert json.dumps(bundle, sort_keys=True) == before
+    assert not (tmp_path / "authoring_run.json").exists()
+
+
 def test_weekly_monitor_management_metadata_is_not_live_hermes_config():
     manifest = json.loads((JOB_ROOT / "manifest.json").read_text(encoding="utf-8"))
     driver = json.loads(
@@ -136,9 +182,12 @@ def test_weekly_monitor_management_metadata_is_not_live_hermes_config():
     assert manifest["not_live_scheduler_config"] is True
     assert manifest["runtime_owner"] == "Hermes"
     assert manifest["prompt"]["artifact_committed"] is True
-    assert manifest["prompt"]["sha256"] == EXPECTED_PROMPT_SHA256
-    assert manifest["prompt"]["chars"] == EXPECTED_PROMPT_CHARS
-    assert manifest["prompt"]["lines"] == EXPECTED_PROMPT_LINES
+    current = load_weekly_monitor_prompt()
+    assert manifest["prompt"]["version"] == current.version == "v2"
+    assert manifest["prompt"]["sha256"] == current.sha256
+    assert manifest["prompt"]["chars"] == len(current.raw_bytes.decode())
+    assert manifest["prompt"]["lines"] == len(current.raw_bytes.decode().splitlines())
+    assert "public_runtime_identity" not in manifest
     assert manifest["boundaries"]["does_not_store_credentials"] is True
     assert (
         manifest["boundaries"]["does_not_store_host_paths_except_exact_prompt_artifact"]

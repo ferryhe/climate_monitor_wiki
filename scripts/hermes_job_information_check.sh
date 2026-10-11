@@ -4,7 +4,35 @@ set -euo pipefail
 if [[ "${1:-}" != "--preflight" && "$(TZ=America/New_York date +%H)" != "05" ]]; then
   exit 0
 fi
-sudo -n docker exec -i climate-pdf-intake-writer python -c '
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+env_file="${CLIMATE_WIKI_ENV_FILE:-$repo/.env}"
+if [[ ! -f "$env_file" ]]; then
+  printf 'Information check requires the configured env file: %s\n' "$env_file" >&2
+  exit 2
+fi
+env_file="$(cd -- "$(dirname -- "$env_file")" && pwd -P)/$(basename -- "$env_file")"
+cd -- "$repo"
+PY="${PYTHON:-$(command -v python3)}"
+[[ "$PY" = /* && -x "$PY" ]] || exit 2
+# Resolve the full caller model once; sudo must not parse its dotenv again.
+project="$(docker compose --project-directory "$repo" --env-file "$env_file" config --format json | "$PY" -c '
+import json, sys
+model = json.load(sys.stdin)
+if "pdf-intake-writer" not in model.get("services", {}):
+    raise SystemExit("Information check requires pdf-intake-writer in the selected Compose model")
+print(model["name"])
+')"
+ids="$(sudo -n docker ps --quiet --no-trunc --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=pdf-intake-writer --filter label=com.docker.compose.oneoff=False)"
+if [[ -z "$ids" ]]; then
+  printf 'Information check requires a running writer for the selected Compose project\n' >&2
+  exit 2
+fi
+mapfile -t writer_ids <<< "$ids"
+if [[ "${#writer_ids[@]}" -ne 1 ]]; then
+  printf 'Information check requires exactly one running writer for the selected Compose project\n' >&2
+  exit 2
+fi
+sudo -n docker exec -i "${writer_ids[0]}" python -c '
 import json
 import os
 import sys
@@ -35,4 +63,4 @@ raise SystemExit(run_daily_checks([
     "--backup-dir", os.environ["CLIMATE_REGISTRY_BACKUP_DIR"], "--refresh-chat",
     "--data-root", os.getenv("CLIMATE_WEB_LISTENING_DATA_DIR", "/pipeline/web-listening"),
 ], result_dir=Path("/pipeline")))
-' "${1:-}" < "${CLIMATE_WIKI_ENV_FILE:-$HOME/climate_monitor_wiki/.env}"
+' "${1:-}" < "$env_file"

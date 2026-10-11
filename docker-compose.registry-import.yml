@@ -25,8 +25,7 @@ services:
           create_host_path: false
 
   pdf-intake-writer:
-    image: climate-monitor-wiki:local
-    container_name: climate-pdf-intake-writer
+    image: ${CLIMATE_WIKI_IMAGE:-${COMPOSE_PROJECT_NAME}-wiki:local}
     restart: unless-stopped
     command: ["python", "-m", "scripts.run_pdf_intake_writer"]
     depends_on:

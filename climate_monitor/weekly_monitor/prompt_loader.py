@@ -15,7 +15,7 @@ JOB_ROOT = (
     / "jobs"
     / "weekly-climate-monitor-08h"
 )
-DEFAULT_WEEKLY_MONITOR_PROMPT_META_PATH = JOB_ROOT / "prompts" / "weekly-monitor-v1.meta.json"
+DEFAULT_WEEKLY_MONITOR_PROMPT_META_PATH = JOB_ROOT / "prompts" / "weekly-monitor-v2.meta.json"
 DEFAULT_ARTICLE_RELEVANCE_PATH = JOB_ROOT / "prompts" / "article-relevance-v1.prompt.md"
 DEFAULT_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v2.prompt.md"
 LEGACY_PILLAR_B_SEARCH_PATH = JOB_ROOT / "prompts" / "pillar-b-search-v1.prompt.md"
@@ -119,7 +119,7 @@ def load_weekly_monitor_prompt(
         raise ValueError("weekly monitor prompt is empty")
     sha256 = hashlib.sha256(raw).hexdigest()
     expected_sha256 = str(meta["sha256"])
-    if path is None and sha256 != expected_sha256:
+    if sha256 != expected_sha256:
         raise ValueError("weekly monitor prompt SHA-256 does not match metadata")
     return LoadedPrompt(
         prompt_id=str(meta["prompt_id"]),

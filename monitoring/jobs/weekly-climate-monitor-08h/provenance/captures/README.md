@@ -7,9 +7,11 @@ was observed during controlled parity or cutover work.
 externally verified Hermes cron-job JSON as observed at capture time: public job identity, UTC cron
 expression, file size/hash/counts, safe runtime shape, and prompt
 hashes/lengths. The capture file does not embed the prompt body. The repository
-prompt is versioned at `../../prompts/weekly-monitor-v1.prompt.md` with its current
-hash in adjacent metadata. Later reviewed prompt changes mean that current hash
-differs from the capture's historical hash; do not treat them as the same bytes.
+legacy prompt is preserved at `../../prompts/weekly-monitor-v1.prompt.md` with its
+exact hash in adjacent metadata. Later reviewed changes made that v1 hash different
+from the capture's historical hash. V2 is now the portable default and has a separate
+body/metadata/hash; do not treat any of these as the same bytes. The historical
+deployed scheduler ID remains here as capture evidence, not in the current manifest.
 
 The raw `job-08h-monitor.json` was provided as a local attachment for
 inspection, but it is intentionally not committed. This remains separate from

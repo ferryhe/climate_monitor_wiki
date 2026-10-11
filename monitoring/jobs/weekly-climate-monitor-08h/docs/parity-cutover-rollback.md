@@ -5,7 +5,10 @@ change does not perform cutover, does not edit live Hermes jobs, and does not
 claim an observed Monday production run.
 Use [PIPELINE_REFERENCE.md](../../../../PIPELINE_REFERENCE.md#verification-and-cutover)
 for current input gates, exact run identity and the module map; the captured v1
-prompt is historical provenance and must retain its exact bytes.
+prompt is historical provenance and must retain its exact bytes. V2 is the current
+portable contract default; select v1 metadata explicitly and pass the loaded prompt
+to the driver for legacy parity. Old unbound staging finishes on its original
+revision or restarts fresh; never relabel its prompt hash or frozen inputs.
 
 ## Controlled Parity
 

@@ -373,9 +373,14 @@ passing the schema alone does not prove the publisher's claim.
 The article/executive response instructions now load the bound
 `article_summary` and `executive_summary` components from the same task state in
 `scripts/run_climate_monitor.py`. Their structured output remains validated by
-`weekly_monitor/authoring_contract.py` and `taxonomy.py`. The pinned
-`weekly-monitor-v1.prompt.md` remains a versioned contract/provenance artifact;
-it is not a second whole-week request in the serial authoring path.
+`weekly_monitor/authoring_contract.py` and `taxonomy.py`. The default
+`weekly-monitor-v2.prompt.md` is a portable weekly contract identity, separate
+from native serial components. The exact v1 bytes/metadata/hash remain legacy
+provenance, selected explicitly with `load_weekly_monitor_prompt(meta_path=...)`
+and passed through `driver.loaded_prompt`. Both identities use the existing
+contract shapes. Body overrides must match their selected metadata hash.
+Old unbound prepared inputs finish on their original revision or restart with
+fresh staging; do not rehash or relabel frozen inputs during an upgrade.
 
 Search discovers candidates and retains factual excerpts. It does not create
 final report summaries, classifications or keywords. Relevance rules are separate

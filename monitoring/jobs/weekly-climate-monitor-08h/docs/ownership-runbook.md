@@ -15,13 +15,12 @@ The current operational authorities are
 
 Repository owns:
 
-- Versioned prompt bytes in
-  `monitoring/jobs/weekly-climate-monitor-08h/prompts/weekly-monitor-v1.prompt.md`.
-  These remain a captured legacy contract, not the live whole-week task.
-- Editable `article-relevance-v1.prompt.md` and `pillar-b-search-v1.prompt.md`
+- Current portable contract identity in `prompts/weekly-monitor-v2.prompt.md`
+  and `prompts/weekly-monitor-v2.meta.json`. Native serial prompts are separately
+  frozen task components. Exact v1 prompt bytes/metadata remain explicit legacy replay.
+- Editable `article-relevance-v1.prompt.md` and `pillar-b-search-v2.prompt.md`
   in the same directory, plus the existing CLI's URL/executive instructions.
-- Prompt metadata in
-  `monitoring/jobs/weekly-climate-monitor-08h/prompts/weekly-monitor-v1.meta.json`.
+- Current prompt metadata in `prompts/weekly-monitor-v2.meta.json`.
 - Prompt loading and SHA-256 provenance in
   `climate_monitor.weekly_monitor.prompt_loader`.
 - The strict weekly driver in `climate_monitor.weekly_monitor.driver`.
@@ -68,7 +67,9 @@ metadata outside that exact prompt artifact.
 
 ## Pinned v1 Prompt Identity
 
-The repository prompt is loaded as raw bytes and identified by:
+For explicit historical replay, select `weekly-monitor-v1.meta.json` through
+`load_weekly_monitor_prompt(meta_path=...)` and pass the result as `driver.loaded_prompt`.
+The legacy artifact is loaded as raw bytes and identified by:
 
 - Prompt ID: `weekly_monitor`
 - Prompt version: `v1`
@@ -79,8 +80,8 @@ The repository prompt is loaded as raw bytes and identified by:
   `prompts/weekly-monitor-v1.meta.json`
 
 The historical capture's `543f8c5b…` hash remains provenance for the originally
-observed job. It is not the current repository prompt hash. This documentation
-update changes neither pinned prompt bytes nor their metadata.
+observed job. It is neither the preserved v1 hash nor the current v2 default hash. The v1 bytes and metadata are unchanged. The loader verifies the selected metadata
+hash even for a body path override, so v1 bytes cannot be silently labelled v2.
 
 The authoring contract requires one `article-semantic-bundle.v1` for every final article
 identity. Missing, duplicate, unknown, extra, malformed, unknown-category, or
@@ -102,7 +103,11 @@ authoring mode:
 python scripts/run_climate_monitor.py --manifest-fixture sample.json --no-sync
 ```
 
-The older supplied-response compatibility replay remains available:
+The older supplied-response compatibility path remains available. For historical v1
+identity use the explicit loader/driver selection above; the CLI defaults to v2.
+Old unbound prepared inputs must finish on the original revision or be prepared
+fresh. Never rewrite their hashes or frozen identity to resume under v2:
+
 
 ```bash
 python scripts/run_climate_monitor.py \
