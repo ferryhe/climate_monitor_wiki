@@ -1339,6 +1339,8 @@ class WikiKnowledgeBase:
                 "words": doc.words,
                 "links": doc.links,
                 "concepts": self.document_concepts.get(doc.path, []),
+                "status": ("No report" if re.search(r"no climate monitor report|no report", doc.markdown, re.I)
+                    else "Reported") if doc.type == "daily" else "-",
                 "source_path": self.source_documents_by_title[doc.title].path
                 if doc.type == "daily" and doc.title in self.source_documents_by_title
                 else None,

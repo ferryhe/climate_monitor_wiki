@@ -1484,6 +1484,140 @@ def test_run_confirmation_summary_is_scoped_and_deduplicated(tmp_path):
     assert status["runs"][1]["current_needs_confirmation_count"] == 2
 
 
+def test_management_meeting_reads_batch_sources_and_run_details(tmp_path, monkeypatch):
+    import climate_monitor.meetings as meetings
+
+    body = (
+        "Example hosts World Climate Summit 2027 on June 10, 2027. "
+        "Example also hosts World Climate Summit 2027 on July 12, 2027."
+    )
+    database = _database(tmp_path, [body])
+    candidates = [
+        _candidate(
+            start_date="2027-06-10", end_date=None, raw_time_text="June 10, 2027",
+            date_evidence="June 10, 2027", location=None, online_url=None,
+            deadline_type=None, deadline_date=None, deadline_evidence=None,
+        ),
+        _candidate(
+            start_date="2027-07-12", end_date=None, raw_time_text="July 12, 2027",
+            date_evidence="July 12, 2027", location=None, online_url=None,
+            deadline_type=None, deadline_date=None, deadline_evidence=None,
+        ),
+    ]
+    for version in ("v1", "v2"):
+        process_batch(
+            database, "batch", prompt_text=version, prompt_version=version,
+            provider="test", model="test", extractor=lambda _: {"events": candidates},
+        )
+
+    statements = []
+    open_connection = meetings._open
+
+    def traced_open(path):
+        connection = open_connection(path)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(meetings, "_open", traced_open)
+    no_matches = query_events(
+        database, base_date="2028-01-01", start_date="2028-01-01", end_date="2028-01-31",
+        timezone_name="UTC", meeting_enabled=True, target_batch_id="batch",
+    )
+    assert no_matches["records"] == []
+    source_reads = [statement for statement in statements
+        if "from climate_event_sources s" in statement.casefold()]
+    assert len(source_reads) == 1
+
+    statements.clear()
+    status = meeting_status(database, batch_id="batch")
+    assert len(status["runs"]) == 2
+    assert all(len(run["items"]) == 1 for run in status["runs"])
+    assert all(run["current_needs_confirmation_events"] == [] for run in status["runs"])
+    item_reads = [statement for statement in statements
+        if "from meeting_run_items where meeting_run_id in" in statement.casefold()]
+    confirmation_reads = [statement for statement in statements
+        if "from (" in statement.casefold() and "climate_event_sources" in statement.casefold()]
+    assert len(item_reads) == 1
+    assert len(confirmation_reads) == 1
+
+
+@pytest.mark.parametrize("count", [1, 20, 101, 229])
+def test_direct_meetings_all_assembles_native_and_pdf_sets_once_at_scale(tmp_path, monkeypatch, count):
+    import climate_registry.publication as publication
+    from climate_registry.read_api import RegistryReader
+
+    database = _database(tmp_path, [])
+    document_sha = "d" * 64
+    snapshots = {}
+    for index in range(count):
+        identity = f"native-{index:03d}"
+        event = {"event_id": identity, "name": f"Native climate meeting {index:03d}",
+            "event_type": "conference", "status": "scheduled", "date_precision": "day",
+            "start_date": "2027-06-10", "end_date": "2027-06-10", "deadline_date": None,
+            "event_timezone": "UTC", "location": None, "online_url": None, "source_count": 1}
+        snapshots[("meeting", identity)] = {"entity_kind": "meeting", "entity_id": identity,
+            "tables": {"climate_events": [event], "climate_event_sources": [],
+                "pdf_intake_calendar_items": [], "meeting_check_attempts": []},
+            "dependencies": {"meeting_runs": [], "article_content_versions": [],
+                "acquisition_batches": [], "meeting_run_items": []}}
+
+        pdf_identity = f"pdf-{index:03d}"
+        occurrence = f"pdf-occurrence-{index:03d}"
+        item = {"event_id": pdf_identity, "occurrence_id": occurrence,
+            "source_document_sha256": document_sha, "name": f"PDF climate meeting {index:03d}",
+            "kind": "event", "raw_date": "June 10, 2027", "date_precision": "day",
+            "start_date": "2027-06-10", "end_date": "2027-06-10", "summary": "Approved PDF meeting",
+            "page": index + 1, "source_urls": []}
+        row = {"event_id": pdf_identity, "occurrence_id": occurrence,
+            "source_document_sha256": document_sha, "name": item["name"], "kind": "event",
+            "raw_date": item["raw_date"], "date_precision": "day", "start_date": item["start_date"],
+            "end_date": item["end_date"], "summary": item["summary"], "page": index + 1,
+            "item_json": json.dumps(item), "type_safe_classification_json": None}
+        snapshots[("pdf_meeting", pdf_identity)] = {"entity_kind": "pdf_meeting", "entity_id": pdf_identity,
+            "tables": {"pdf_intake_calendar_items": [row], "meeting_check_attempts": []},
+            "dependencies": {"pdf_intake_documents": [{"document_sha256": document_sha,
+                    "filename": "source.pdf", "document_json": "{}"}],
+                "pdf_intake_document_sources": []}}
+
+    publication_calls = []
+
+    def selected_snapshots(_connection, kinds, entity_ids=None, **_kwargs):
+        publication_calls.append((tuple(kinds), entity_ids))
+        wanted = set(kinds)
+        selected = {key: value for key, value in snapshots.items() if key[0] in wanted}
+        if isinstance(entity_ids, dict):
+            ids = {(kind, identity) for kind, values in entity_ids.items() for identity in values}
+            selected = {key: value for key, value in selected.items() if key in ids}
+        return selected
+
+    monkeypatch.setattr(publication, "published_snapshots", selected_snapshots)
+    reader = RegistryReader(database, repository_root=tmp_path / "application")
+    page_calls = 0
+    original_meetings = RegistryReader.meetings
+
+    def counted_meetings(self, *args, **kwargs):
+        nonlocal page_calls
+        page_calls += 1
+        return original_meetings(self, *args, **kwargs)
+
+    monkeypatch.setattr(RegistryReader, "meetings", counted_meetings)
+    all_records = reader.meetings_all(base_date="2027-01-01")
+    assert len(all_records) == 2 * count
+    assert len({item.get("event_id", item.get("occurrence_id")) for item in all_records}) == 2 * count
+    assert page_calls == 0
+    assert len(publication_calls) == 1
+
+    publication_calls.clear()
+    paged = []
+    first = reader.meetings(base_date="2027-01-01", page=1, page_size=100)
+    paged.extend(first["items"])
+    for page in range(2, first["pagination"]["pages"] + 1):
+        paged.extend(reader.meetings(base_date="2027-01-01", page=page, page_size=100)["items"])
+    assert len(paged) == 2 * count
+    assert len({item.get("event_id", item.get("occurrence_id")) for item in paged}) == 2 * count
+    assert len(publication_calls) == first["pagination"]["pages"]
+
+
 def test_retry_confirmation_summary_includes_reused_success_lineage(tmp_path):
     database = _database(tmp_path, [
         "Example announces Climate Webinar 2028 for March 2028.",

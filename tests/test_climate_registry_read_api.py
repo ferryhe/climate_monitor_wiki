@@ -1080,6 +1080,273 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert raw.pdf_calendar_items()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
+def test_direct_public_pdf_readers_preserve_frozen_source_and_meeting_contracts(registry_client, monkeypatch):
+    import climate_registry.publication as publication
+
+    _, database = registry_client
+    _insert_pdf_intake_records(database)
+    reader = RegistryReader(database, repository_root=ROOT)
+
+    def fail_projection(_source):
+        raise AssertionError("direct public reads must not open a projected database")
+
+    monkeypatch.setattr(publication, "public_connection", fail_projection)
+    source_observation = {
+        "path": "C:/input/report.pdf",
+        "filename": "report.pdf",
+        "observed_at": "2026-09-03T00:00:00Z",
+    }
+
+    core = reader.article("article-full")
+    assert core["pdf_occurrences"][0]["source_observations"] == [source_observation]
+    pdf_article = reader.pdf_article("pdf-article-unique")
+    assert pdf_article["occurrences"][0]["source_observations"] == [source_observation]
+    assert reader.pdf_articles()["items"][0]["latest_occurrence"]["source_observations"] == [source_observation]
+    calendar = reader.pdf_calendar_items()["items"][0]
+    assert calendar["source_observations"] == [source_observation]
+
+    meetings = reader.meetings(base_date="1900-01-01")
+    assert meetings["items"][0]["source_observations"] == [source_observation]
+    assert meetings["items"][0]["canonical_event_id"] is None
+    assert meetings["coverage"]["returned_record_count"] == 0
+    assert "timezone" not in meetings
+
+
+def test_combined_article_filters_keep_core_dto_for_a_matching_linked_pdf(registry_client, monkeypatch):
+    client, database = registry_client
+    _insert_pdf_intake_records(database)
+
+    def fail_projection(_source):
+        raise AssertionError("HTTP collection reads must not open a projected database")
+
+    def fail_detail(*_args, **_kwargs):
+        raise AssertionError("combined collection reads must not load article details")
+
+    import climate_registry.publication as publication
+    monkeypatch.setattr(publication, "public_connection", fail_projection)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    monkeypatch.setattr(RegistryReader, "article", fail_detail)
+    monkeypatch.setattr(RegistryReader, "articles", fail_detail)
+
+    for params in (
+        {"query": "wildfire", "include_pdf": "true"},
+        {"report_date": "2026-09-03", "include_pdf": "true"},
+        {"pillar": "A", "include_pdf": "true"},
+    ):
+        response = client.get("/api/registry/articles", params=params)
+        assert response.status_code == 200
+        items = response.json()["items"]
+        linked = next(item for item in items if item["canonical_url"] == "https://example.com/full")
+        assert linked["article_id"] == "article-full"
+        assert linked["source_kind"] == "registry"
+        assert linked["title"] == "Climate: 100% transition"
+        assert linked["source_label"] == "Registry · PDF import"
+        assert linked["pdf_occurrence_count"] == 1
+
+
+@pytest.mark.parametrize("count", [1, 100, 229])
+def test_approved_article_collection_batches_candidate_reads_without_details(tmp_path, monkeypatch, count):
+    import climate_registry.publication as publication
+
+    database = tmp_path / "external" / "registry.sqlite3"
+    database.parent.mkdir()
+    with sqlite3.connect(database) as db:
+        apply_migrations(db)
+        db.execute("INSERT INTO sources VALUES('scale-source','scale.example','Scale Publisher','2026-09-01','2026-09-01')")
+        for index in range(count):
+            identity = f"article-{index:03d}"
+            version = f"version-{index:03d}"
+            url = f"https://scale.example/{index}"
+            db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES(?,?,'scale-source','2026-09-01','2026-09-01')",
+                (identity, url))
+            db.execute("INSERT INTO article_versions VALUES(?,?,?,?,?,?,'report-title-summary','2026-09-01','2026-09-01')",
+                (version, identity, f"Article {index}", f"Article {index}", "Approved collection fixture", f"fingerprint-{index}"))
+            db.execute("UPDATE articles SET current_version_id=? WHERE article_id=?", (version, identity))
+        from climate_registry.publication import _approve, stage_entities
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "accepted collection scale fixture"}, status="accepted_legacy")
+
+    publication_calls = []
+    original_selection = publication.published_snapshots
+
+    def counted_selection(*args, **kwargs):
+        publication_calls.append((args[1], kwargs.get("entity_ids", args[2] if len(args) > 2 else None)))
+        return original_selection(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "published_snapshots", counted_selection)
+    monkeypatch.setattr(publication, "public_connection", lambda _source: pytest.fail("article list created a projection"))
+    monkeypatch.setattr(RegistryReader, "article", lambda *_args, **_kwargs: pytest.fail("article collection loaded a detail"))
+    reader = RegistryReader(database, repository_root=tmp_path / "application")
+
+    result = reader.articles(page=1, page_size=20, query="Article")
+    assert result["pagination"]["total"] == count
+    assert len(result["items"]) == min(count, 20)
+    assert len(publication_calls) == 1
+    assert all(item["current_version_id"].startswith("version-") for item in result["items"])
+    assert all(item["record_reference"]["candidate_sha256"] == item["published_candidate_sha256"]
+        for item in result["items"])
+
+
+def test_pdf_http_helpers_share_direct_reads_and_preserve_report_sources(registry_client, monkeypatch):
+    client, database = registry_client
+    _insert_pdf_intake_records(database)
+
+    def fail_projection(_source):
+        raise AssertionError("public HTTP helpers must not create a projected database")
+
+    import climate_registry.publication as publication
+    monkeypatch.setattr(publication, "public_connection", fail_projection)
+    assert client.get("/api/registry/meetings").status_code == 200
+    assert client.get("/api/registry/pdf-intake/articles").status_code == 200
+    assert client.get("/api/registry/pdf-intake/articles/pdf-article-unique").status_code == 200
+    assert client.get("/api/registry/pdf-intake/calendar").status_code == 200
+    report = client.get("/api/registry/pdf-intake/reports/" + "f" * 64)
+    assert report.status_code == 200
+    assert report.json()["source_filenames"] == ["report.pdf"]
+
+
+def test_pdf_document_cache_checks_and_original_bytes_are_reused_per_request(registry_client, monkeypatch):
+    import types
+    import climate_registry.information_checks as information_checks
+    import climate_registry.publication as publication
+    import climate_registry.read_api as read_api
+
+    client, database = registry_client
+    _insert_pdf_intake_records(database)
+    original_pdf = b"%PDF-1.7\nissue221 approved source bytes\n%%EOF\n"
+    document_sha = hashlib.sha256(original_pdf).hexdigest()
+    document_json = json.dumps({"title": "Issue 221 PDF", "page_count": 2,
+        "pages": [{"page": 1, "text": "Approved first page"}, {"page": 2, "text": "Approved second page"}]})
+    with sqlite3.connect(database) as db:
+        db.execute("""INSERT INTO pdf_intake_documents(
+            document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,
+            document_json,imported_at,period_start,period_end,date_of_run,original_pdf)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (document_sha, "C:/input/issue221.pdf", "issue221.pdf", "application/pdf", len(original_pdf),
+             "e" * 64, document_json, "2026-09-03T00:00:00Z", "2026-09-01", "2026-09-02",
+             "2026-09-03", original_pdf))
+        db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES(?,?,?,?)",
+            ("pdf-byte-article", "https://example.net/issue221", "Issue 221 Article", "2026-09-03T00:00:00Z"))
+        for ordinal in (1, 2):
+            occurrence_id = f"pdf-byte-occurrence-{ordinal}"
+            occurrence = {"occurrence_id": occurrence_id, "source_document_sha256": document_sha,
+                "page": ordinal, "raw_url": "https://example.net/issue221", "report_date": "2026-09-03",
+                "title": "Issue 221 Article", "summary": "Frozen PDF article observation",
+                "summary_basis": "verbatim_pdf_article_row", "content_sha256": str(ordinal) * 64}
+            db.execute("""INSERT INTO pdf_intake_article_occurrences(
+                occurrence_id,article_id,source_document_sha256,page,raw_url,report_date,
+                publication_date,content_sha256,page_sha256,occurrence_json)
+                VALUES(?,?,?,?,?,?,NULL,?,?,?)""",
+                (occurrence_id, "pdf-byte-article", document_sha, ordinal, occurrence["raw_url"],
+                 occurrence["report_date"], occurrence["content_sha256"], str(ordinal + 2) * 64,
+                 json.dumps(occurrence)))
+        from climate_registry.publication import _approve, stage_entities
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "accepted Issue 221 PDF fixture"}, status="accepted_legacy")
+
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(publication, "public_connection", lambda _source: pytest.fail("PDF read created a projection"))
+
+    document_decodes = 0
+    original_loads = read_api.json.loads
+
+    def counted_loads(value, *args, **kwargs):
+        nonlocal document_decodes
+        if value == document_json:
+            document_decodes += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(read_api.json, "loads", counted_loads)
+    check_calls = 0
+    original_checks = information_checks.latest_checks_from_attempts
+
+    def counted_checks(*args, **kwargs):
+        nonlocal check_calls
+        check_calls += 1
+        return original_checks(*args, **kwargs)
+
+    monkeypatch.setattr(information_checks, "latest_checks_from_attempts", counted_checks)
+    detail_reader = RegistryReader(database, repository_root=ROOT)
+    detail = detail_reader.pdf_article("pdf-byte-article")
+    assert len(detail["occurrences"]) == 2
+    assert document_decodes == 1
+    assert check_calls == 2
+
+    document_decodes = 0
+    statements = []
+    original_connect = read_api.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        if str(args[0]).startswith(database.as_uri()):
+            connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(read_api.sqlite3, "connect", traced_connect)
+    helper_hashes = 0
+    route_hashes = 0
+    original_sha256 = hashlib.sha256
+
+    def helper_sha256(value=b"", *args, **kwargs):
+        nonlocal helper_hashes
+        if value == original_pdf:
+            helper_hashes += 1
+        return original_sha256(value, *args, **kwargs)
+
+    def route_sha256(value=b"", *args, **kwargs):
+        nonlocal route_hashes
+        if value == original_pdf:
+            route_hashes += 1
+        return original_sha256(value, *args, **kwargs)
+
+    monkeypatch.setattr(read_api, "hashlib", types.SimpleNamespace(sha256=helper_sha256))
+    monkeypatch.setattr(api_server, "hashlib", types.SimpleNamespace(sha256=route_sha256))
+    response = client.get(f"/api/registry/pdf-intake/reports/{document_sha}/pdf")
+    assert response.status_code == 200
+    assert response.content == original_pdf
+    assert document_decodes == 1
+    assert helper_hashes == 1
+    assert route_hashes == 0
+    assert sum("SELECT original_pdf FROM pdf_intake_documents" in statement for statement in statements) == 1
+
+
+def test_hidden_direct_wiki_page_cannot_fall_through_to_active_pdf_layer(
+    registry_client, monkeypatch, tmp_path
+):
+    client, database = registry_client
+    from climate_registry.publication import set_visibility
+
+    base = tmp_path / "weekly-wiki"
+    runtime = tmp_path / "active-pdf-generation"
+    base.mkdir()
+    runtime.mkdir()
+    page = "article-article-full.md"
+    (base / page).write_text("# Previous approved core page\n", encoding="utf-8")
+    (runtime / page).write_text("# Activated PDF overlay\n\nprivate PDF text\n", encoding="utf-8")
+    monkeypatch.setattr(api_server, "WIKI_DIR", base)
+    monkeypatch.setattr(
+        api_server._wiki_static_files, "all_directories", [str(runtime), str(base)]
+    )
+    set_visibility(database, "article", "article-full", False)
+
+    for method in (client.get, client.head):
+        response = method("/wiki/" + page)
+        assert response.status_code == 404
+        assert "private PDF text" not in response.text
+
+
+def test_pdf_publishers_keep_existing_core_host_label(registry_client):
+    client, database = registry_client
+    _insert_pdf_intake_records(database)
+
+    response = client.get("/api/registry/publishers", params={"include_pdf": "true"})
+    assert response.status_code == 200
+    publishers = response.json()["items"]
+    example = [item for item in publishers if item["hostname"] == "example.com"]
+    assert example == [{"hostname": "example.com", "label": "Example Institute"}]
+
+
 def test_pdf_read_paths_remain_available_for_supported_v12_registry(tmp_path, monkeypatch):
     database = _registry(tmp_path, target_version=12)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))

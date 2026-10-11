@@ -524,18 +524,30 @@ class EvidenceTurn:
     def meetings(self, base):
         items, page = [], 1
         reader = self.reader()
-        with reader.public_snapshot():
+        with reader.public_snapshot(direct=True):
             chronology = reader.knowledge_chronology()
-            while True:
-                payload = (self.owner.meeting_view(reader, page=page, base_date=base)
-                    if self.owner.meeting_view else reader.meetings(page=page, page_size=100,
-                        base_date=base, timezone_name="America/New_York", include_unknown=True))
-                items.extend(payload["items"])
-                if page >= payload["pagination"]["pages"] or page >= 10 or not self.research_remaining():
-                    if page < payload["pagination"]["pages"]:
+            if self.owner.meeting_view:
+                while True:
+                    payload = self.owner.meeting_view(reader, page=page, base_date=base)
+                    items.extend(payload["items"])
+                    if page >= payload["pagination"]["pages"] or page >= 10 or not self.research_remaining():
+                        if page < payload["pagination"]["pages"]:
+                            self.notes.append("Meeting scan budget reached; coverage is incomplete.")
+                        break
+                    page += 1
+            else:
+                payload = reader.meetings_all(base_date=base, timezone_name="America/New_York",
+                    include_unknown=True, include_metadata=True)
+                records = payload["items"]
+                pages = (len(records) + 99) // 100
+                limit = min(pages, 10)
+                for page in range(1, limit + 1):
+                    if page > 1 and not self.research_remaining():
                         self.notes.append("Meeting scan budget reached; coverage is incomplete.")
-                    break
-                page += 1
+                        break
+                    items.extend(records[(page - 1) * 100:page * 100])
+                if pages > 10:
+                    self.notes.append("Meeting scan budget reached; coverage is incomplete.")
         self.notes.append("Meeting coverage: " + json.dumps(payload.get("coverage", {}), ensure_ascii=False))
         return items, chronology
 
@@ -768,7 +780,7 @@ class EvidenceTurn:
             self.notes.append(f"Added/material-update window: {start.isoformat()} through {end.isoformat()} (America/New_York).")
             try:
                 reader = self.reader()
-                with reader.public_snapshot():
+                with reader.public_snapshot(direct=True):
                     chronology = reader.knowledge_chronology()
                     selected, unknown, page = [], [], 1
                     def select(item, kind):
@@ -835,7 +847,7 @@ class EvidenceTurn:
             if article_id:
                 try:
                     reader = self.reader()
-                    with reader.public_snapshot():
+                    with reader.public_snapshot(direct=True):
                         detail = reader.article(article_id[1])
                     if not detail.get("publication_date"):
                         text = ("Publication date: unknown\n"
@@ -933,7 +945,7 @@ class EvidenceTurn:
                 version=version[1] if version else None, expand=True, refocus=bool(focus))
         if kind in {"article", "pdf_article"}:
             reader = self.reader()
-            with reader.public_snapshot():
+            with reader.public_snapshot(direct=True):
                 detail = (reader.pdf_article if kind == "pdf_article" else reader.article)(evidence_id)
                 facts = reader.knowledge_chronology().get("article:" + evidence_id, {})
                 body = article_text(detail, facts)
