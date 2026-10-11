@@ -169,7 +169,7 @@ a complete production run.
 For anything touching the running service:
 
 ```bash
-docker compose ps                       # climate-wiki-app + climate-wiki-caddy healthy
+docker compose ps                       # configured wiki + caddy services healthy
 source .env && curl -sk -o /dev/null -w '%{http_code}\n' "https://$SITE_HOST/api/config"   # 200
 ```
 
@@ -204,8 +204,8 @@ identifier breaks a test.
 
 ## Deployment
 
-Two containers: `climate-wiki-app` (uvicorn, internal) behind
-`climate-wiki-caddy` (TLS on 443, HTTP→HTTPS on 80). `wiki/` and `sources/` are
+Compose services: `wiki` (uvicorn, internal) behind
+`caddy` (TLS on 443, HTTP→HTTPS on 80), named within the configured project. `wiki/` and `sources/` are
 bind-mounted read-only, so a host-side ingest is picked up via `POST /api/reload`
 without an image rebuild.
 

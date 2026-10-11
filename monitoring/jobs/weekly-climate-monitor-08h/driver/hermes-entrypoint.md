@@ -44,7 +44,9 @@ payloads stay outside this repository.
 
 Editable search and relevance templates live under `../prompts/` and are loaded
 through `prompt_loader`. URL/executive instruction templates remain in the
-existing CLI. The exact `weekly-monitor-v1.prompt.md` remains pinned legacy
+existing CLI. The default `weekly-monitor-v2.prompt.md` is a concise portable contract
+identity, separate from those native task components. The exact
+`weekly-monitor-v1.prompt.md` remains pinned legacy
 provenance/compatibility evidence, not a second live whole-week task. Its bytes
 and the raw uncommitted `job-08h-monitor.json` are not scheduler configuration.
 

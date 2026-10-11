@@ -99,7 +99,7 @@ the host and in its untracked `.env`); it did not install or change them:
 - Hermes execution data is `$HERMES_HOME/cron/executions.db`; the job
   configuration used to obtain and verify the four real IDs is
   `$HERMES_HOME/cron/jobs.json`.
-- The `climate-wiki-app` named volume
+- The configured project's `climate_runtime` named volume
   `climate_monitor_wiki_climate_runtime` maps host
   `<docker-root>/volumes/climate_monitor_wiki_climate_runtime/_data` to
   `/app/output` read-write. No `/pipeline` mount is currently installed.

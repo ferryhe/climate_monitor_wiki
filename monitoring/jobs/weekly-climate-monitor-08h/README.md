@@ -25,15 +25,19 @@ Key files:
 - `scripts/run_agent_acquisition.py` is the common manual/scheduled launcher. It
   starts `hermes chat` detached through `ManagementService`; it is not an agent,
   queue, worker service, or search wrapper.
+- `prompts/weekly-monitor-v2.prompt.md` and its adjacent metadata are the current
+  host-neutral weekly contract identity. Native serial execution uses separately
+  frozen task components; this artifact does not copy the obsolete whole-week workflow.
 - `prompts/weekly-monitor-v1.prompt.md` is the pinned legacy compatibility
   contract, derived from the captured prompt with later reviewed changes. Its
   current hash is pinned in metadata; the original capture retains its own hash.
   Its old quota, host paths and tools
   are historical bytes, not the executing serial queue's instructions.
-- `prompts/weekly-monitor-v1.meta.json` pins prompt identity and SHA-256.
+- `prompts/weekly-monitor-v1.meta.json` preserves exact legacy identity and SHA-256
+  for explicit `load_weekly_monitor_prompt(meta_path=...)` replay with `driver.loaded_prompt`.
 - `prompts/article-relevance-v1.prompt.md` supplies relevance rules included in
   each URL's joint decision/summary/categories/keywords request.
-- `prompts/pillar-b-search-v1.prompt.md` is the editable discovery task, rendered
+- `prompts/pillar-b-search-v2.prompt.md` is the editable discovery task, rendered
   for an explicit report date through the existing prompt loader and CLI.
 - `scripts/run_climate_monitor.py` at the repository root owns the independent
   URL queue, checkpoints, executive invocation and finalize handoff. The library

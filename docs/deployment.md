@@ -5,7 +5,7 @@ The wiki runs as two containers behind Caddy. The public site is available at
 private IP remains available for internal health checks with Caddy's internal
 CA.
 
-The addresses below are recorded installation examples. For an existing server,
+The examples below are generic contracts. For an existing server,
 read the deployed `PUBLIC_HOST` and `SITE_HOST` from `.env` and record the
 current commit and service state; do not infer live configuration from this
 document. Current pipeline cutover gates and wrapper ownership are in
@@ -14,10 +14,117 @@ document. Current pipeline cutover gates and wrapper ownership are in
 
 ## Stack
 
-| Container | Image | Role |
+| Compose service | Image | Role |
 |---|---|---|
-| `climate-wiki-app` | built from `Dockerfile` | uvicorn serving `api_server:app` on 8501 (internal only) |
-| `climate-wiki-caddy` | `caddy:2-alpine` | TLS termination on 443, HTTP→HTTPS redirect on 80, reverse proxy to the app |
+| `wiki` | built from `Dockerfile`; `${COMPOSE_PROJECT_NAME}-wiki:local` by default | uvicorn serving `api_server:app` on 8501 (internal only) |
+| `caddy` | `caddy:2-alpine` | TLS termination on 443, HTTP→HTTPS redirect on 80, reverse proxy to the app |
+| `pdf-intake-writer` (optional import override) | same `CLIMATE_WIKI_IMAGE` selection as `wiki` | existing PDF intake writer |
+
+Compose owns container and volume names through its project namespace (`-p` or
+`COMPOSE_PROJECT_NAME`). `CLIMATE_WIKI_IMAGE` overrides the common app/writer image.
+Distinct projects get distinct images and acquisition/runtime volumes by default.
+Multiple stacks on one host still need locally selected host ports and nonoverlapping
+`CLIMATE_PROXY_NETWORK_PREFIX` values; project names do not isolate those resources.
+
+Set `CLIMATE_REGISTRY_USER_AGENT` in the local env file to advertise this operator's
+contact information. Empty or unset uses the generic `ClimateMonitorRegistry/1.0`.
+The fetcher reads it at request time, including after host CLI dotenv loading.
+
+Compose forwards `TZ` and `HERMES_TIMEZONE` with `America/New_York` defaults.
+`CLIMATE_SCHEDULE` selects the existing `biweekly-et`, `independent-et` or `weekly-utc` profile.
+These runtime selections do not change the defined ET anchor (2026-09-14), business
+slots, 05:00 ET information checks, Chat's New York day boundaries, or the deliberate
+daily library default. Record and preserve actual server values before upgrading.
+
+## Existing-server portability upgrade
+
+This is the canonical application upgrade recipe. It requires separate deployment
+authorization; a PR or offline Compose render does not prove a server was upgraded.
+Keep actual env values, ordered Compose paths, project/image/volume bindings, content
+sources and deployment receipts outside Git, optionally under ignored
+`external/deployment/`. Do not overwrite an existing `.env` from `.env.example`.
+
+1. Read the current checkout/HEAD and actual running containers. Use existing Docker
+   access (including `sudo -n docker` where already allowed); no new sudo Python
+   permission is assumed. Inspect the current containers' Compose labels
+   `com.docker.compose.project`, `com.docker.compose.project.config_files`, and
+   `com.docker.compose.project.working_dir`, image IDs and mounts. Record the complete
+   ordered file set and actual env-file path. Read only the relevant timezone/schedule
+   values from the app and scheduler; never print credentials or an unfiltered env.
+   Record Registry schema/mode, approved content identity and current API results.
+   The reported `base-wiki-corrected` server override is not in main: inspect the
+   actual local file instead of guessing its content or removing base mounts.
+2. Stop application writers through the complete current model before backup.
+   Retain the previous images, whole external Registry backup and migration receipt,
+   queue, active metadata, Wiki/sources cohort, task bindings and all runtime volumes
+   (including Chat state, acquisition browser/state/artifacts and Caddy certificates).
+   Use the existing Registry migration/backup procedure below. Never use `down -v`,
+   delete a volume, or infer a deployed schema from a historical runbook.
+3. Preserve the existing Compose project name locally. If upgrading from fixed names,
+   use the original model to stop/remove only its service containers after backup;
+   the new model creates project-named replacements. Record each existing volume's
+   actual name, then explicitly retain it through a local final override. For example,
+   with operator-selected names in the local env file:
+
+   ```yaml
+   # external/deployment/retained-resources.yml (local, ignored)
+   volumes:
+     web_listening_runtime:
+       external: true
+       name: ${RETAINED_ACQUISITION_VOLUME:?record the existing acquisition volume}
+     climate_runtime:
+       external: true
+       name: ${RETAINED_APP_RUNTIME_VOLUME:?record the existing app runtime volume}
+   ```
+
+   Retain Caddy volumes the same way if the project name changes. An existing
+   acquisition volume may have a legacy name: select that name locally unchanged.
+   Do not rename it, copy only selected subdirectories, or expect image copy-up to
+   refresh a nonempty browser volume. Keep `CLIMATE_WIKI_IMAGE` set to the retained
+   image binding when needed; build the candidate under the selected common app/writer
+   tag and retain the old image ID under a distinct rollback tag before rebuilding.
+4. Preserve every current override, including local content corrections and optional
+   Registry/import, delivery, status and host-Hermes mounts. Confirm the exact resolved
+   `/app/wiki`, `/app/sources`, `/app/article_metadata` sources form one approved cohort
+   and remain read-only. DB-approved rendering and static flag modes are separate:
+   keep the deployed mode and its sources rather than switching modes to make a
+   health check pass. Use the standard ordered configuration for every command:
+
+   ```bash
+   cd /path/to/verified/checkout
+   # Set actual absolute paths and project from the local deployment receipt.
+   : "${CLIMATE_WIKI_ENV_FILE:?set the existing env file}"
+   : "${COMPOSE_PROJECT_NAME:?set the existing project name}"
+   # The env file's COMPOSE_FILE must include the full ordered list and local override.
+   compose=(--project-directory "$PWD" --env-file "$CLIMATE_WIKI_ENV_FILE" -p "$COMPOSE_PROJECT_NAME")
+   docker compose "${compose[@]}" config --quiet
+   .venv/bin/python -m scripts.safe_compose "${compose[@]}" config --quiet
+   # Review resolved mounts/images/volumes locally; config can contain secrets.
+   # Supply the reviewed commit for the existing build validation.
+   CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)" \
+     .venv/bin/python -m scripts.safe_compose "${compose[@]}" up -d --build --force-recreate wiki caddy
+   docker compose "${compose[@]}" ps
+   ```
+
+   Recreate the writer after the app content gates pass below, if deployed. Preserve
+   the same complete selection when elevation is needed; sudo can remove exported
+   Compose variables, so pass the env file/project explicitly. Recreate services to
+   apply env/mount/image changes; a restart keeps the previous configuration.
+5. Verify actual running image IDs, project, mounts, timezones/schedule and volume
+   names against the receipt. Verify `/api/health`, sanitized `/api/config`, Registry
+   status/schema, approved article/Wiki identities and a cited Chat result against
+   the same approved cohort. HTTP 200 alone does not prove content. Once these gates
+   pass, recreate the configured writer with the same selection using
+   `up -d --no-build --force-recreate pdf-intake-writer`, then run the information-check `--preflight` with the same env/project/file selection;
+   preserve the existing stdin credential transport. Keep saved staging bound to
+   its original prompt/commit; old unbound v1 staging must finish on its original
+   revision or be prepared fresh, never rehashed/relabelled as v2. Keep scheduled writers
+   disabled until the documented gates and required separately authorized operations
+   pass. Store the verified revision/results and rollback pair locally.
+
+The commands later in this document illustrate individual features. On an existing
+server always add its complete configured Compose selection; a partial example is
+not permission to remove other deployed overrides.
 
 `wiki/`, `sources/`, and `article_metadata/` are bind-mounted read-only into the
 app container. A host-side report ingest is visible after `POST /api/reload`;
@@ -61,7 +168,7 @@ upstream lock before completing:
 /opt/web-listening-data/browser-runtimes/playwright
 ```
 
-The dedicated named volume `climate_web_listening_issue126` mounts the whole
+The project-scoped `web_listening_runtime` volume mounts the whole
 Runtime root at `/opt/web-listening-data`. Docker's initial empty-volume copy-up
 seeds the locked browser runtime. Never reuse a non-empty HTTP-only volume and
 expect a new image to update it. The root also owns lifecycle state, jobs,
@@ -74,12 +181,13 @@ fresh mounted volume against the upstream-owned controlled fixture:
 ```bash
 docker run --rm --network none --user 0:0 \
   --entrypoint /usr/local/bin/python \
-  --mount type=volume,src=climate_web_listening_issue126,dst=/opt/web-listening-data \
+  --mount type=volume,src="$ACQUISITION_VOLUME",dst=/opt/web-listening-data \
   "$CANDIDATE_IMAGE_ID" /app/scripts/qualify_web_listening_playwright.py \
   --authorization-window "$AUTHORIZATION_WINDOW"
 ```
 
-This qualifies the installed runtime only. Every public target still receives
+Set `ACQUISITION_VOLUME` to the actual approved volume from the resolved model;
+retain an existing local binding during upgrades. This qualifies the installed runtime only. Every public target still receives
 fresh robots/network/scope/budget checks, and exact-20 browser coverage must be
 reported from actual attempts. CloakBrowser is absent and remains excluded.
 The monitor producer must mount this same volume and set
@@ -142,7 +250,7 @@ The private-IP site uses Caddy's local CA, so clients connecting to the IP show
 a trust warning until its root is imported. Export it with:
 
 ```bash
-sudo docker cp climate-wiki-caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+sudo docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
 ```
 
 Then import `caddy-root.crt` into the OS/browser trust store. `curl -k` skips
@@ -208,7 +316,7 @@ work for plain HTTP traffic while OAuth/WebSocket still trust the old one:
    curl -s -o /dev/null -w '%{http_code}\n' "https://$NEW_HOST/api/config"   # 200
 
    # wiki picked up the new CLIMATE_PUBLIC_ORIGIN (not the old one)
-   docker exec climate-wiki-app printenv CLIMATE_PUBLIC_ORIGIN
+   docker compose exec -T wiki printenv CLIMATE_PUBLIC_ORIGIN
 
    # the old hostname no longer serves this deployment
    curl -sk -o /dev/null -w '%{http_code}\n' "https://$OLD_HOST/" || true
@@ -256,7 +364,7 @@ gates: each item is a stop condition, not a warning. Keep scheduled writers disa
 until every gate below passes.
 
 1. **Pin the target.** Record the target commit and the running image
-   (`docker inspect climate-wiki-app --format '{{.Image}}'`), and keep the previous
+   (`docker inspect "$(docker compose ps -q wiki)" --format '{{.Image}}'`), and keep the previous
    image tagged for rollback. The scheduler that owns the four slots
    (`monitor`, `email`, `publisher`, `registry` — `SCHEDULE` in
    `scripts/hermes_job.py`) lives on the host, outside this repository, and pins the
@@ -764,7 +872,8 @@ existing Caddy configuration and certificates; scheduled jobs do not change:
 
 ```bash
 ROLLBACK_TAG="climate-monitor-wiki:pre-registry-$(date -u +%Y%m%dT%H%M%SZ)"
-docker image tag climate-monitor-wiki:local "$ROLLBACK_TAG"
+: "${CLIMATE_WIKI_IMAGE:?set the selected app/writer image tag from the resolved model}"
+docker image tag "$CLIMATE_WIKI_IMAGE" "$ROLLBACK_TAG"
 
 .venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml -f docker-compose.registry.yml \
@@ -801,7 +910,8 @@ only `wiki`; omit the Registry override if the rollback version predates this
 wiring:
 
 ```bash
-docker image tag "$ROLLBACK_TAG" climate-monitor-wiki:local
+: "${CLIMATE_WIKI_IMAGE:?set the selected app/writer image tag from the resolved model}"
+docker image tag "$ROLLBACK_TAG" "$CLIMATE_WIKI_IMAGE"
 .venv/bin/python -m scripts.safe_compose \
   -f docker-compose.yml -f docker-compose.registry.yml \
   up -d --no-build --no-deps --force-recreate wiki

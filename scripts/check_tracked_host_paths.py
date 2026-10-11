@@ -102,7 +102,7 @@ _PROMPT_ARTIFACT_SHA256 = (
 EXEMPT_PATHS: dict[str, tuple[str, str]] = {
     _PROMPT_ARTIFACT: (
         "hash-pinned provenance artifact: the prompt loader verifies this SHA-256 and "
-        "returns the bytes unchanged; migrating it is #154",
+        "returns the bytes unchanged for explicit legacy replay; v2 is the portable default",
         _PROMPT_ARTIFACT_SHA256,
     ),
 }

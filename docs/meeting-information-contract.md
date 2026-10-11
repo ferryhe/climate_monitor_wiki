@@ -119,13 +119,17 @@ the `intake-writer` queue lock with imports. A failed article check does not ski
 the calendar checks. Missing TypeSafe or governed-reader configuration fails
 preflight before changing the database.
 
-Copy the wrapper to the existing Hermes scripts directory after reviewing it,
-then register one script-only job with two UTC ticks. The wrapper admits only
+Keep the wrapper in its reviewed checkout so it derives that checkout correctly.
+The existing Hermes scripts entrypoint can call it with the local
+`CLIMATE_WIKI_ENV_FILE` and complete Compose selection from
+[the deployment recipe](deployment.md#existing-server-portability-upgrade).
+Then register one script-only job with two UTC ticks. The wrapper admits only
 05:00 `America/New_York`, so it runs once daily across EDT/EST:
 
 ```bash
-install -m 700 scripts/hermes_job_information_check.sh "$HOME/.hermes/scripts/climate-pdf-information-check.sh"
-bash "$HOME/.hermes/scripts/climate-pdf-information-check.sh" --preflight
+# The local Hermes script calls this absolute reviewed checkout path; do not
+# copy the repository wrapper away from its checkout and rely on its default.
+bash /path/to/reviewed/checkout/scripts/hermes_job_information_check.sh --preflight
 hermes cron create '0 9,10 * * *' --name 'Daily PDF Information Check (05:00 ET)' \
   --script climate-pdf-information-check.sh --no-agent --deliver local
 ```
@@ -134,10 +138,15 @@ Read back the existing jobs first and reuse a matching job rather than creating
 duplicates. These ticks assume the verified Hermes scheduler uses UTC. The
 wrapper reuses the deployed `scripts/check_information.py`; installing the job
 does not deploy application code. Each run reads `TYPESAFE_API_KEY` from
-`~/climate_monitor_wiki/.env` through the container's existing dotenv parser,
+the checkout's `.env` (or `CLIMATE_WIKI_ENV_FILE`) through the container's existing dotenv parser,
 without restarting the writer or copying the key into scripts. Set
 `CLIMATE_WIKI_ENV_FILE` for a different configuration location. The key is passed
-through stdin and remains outside Git and command-line arguments.
+through stdin and remains outside Git and command-line arguments. Dispatch uses
+`sudo -n docker compose exec -T pdf-intake-writer` with the selected env file,
+project and complete file set. `COMPOSE_FILE`/`COMPOSE_PROJECT_NAME` in that env
+file work normally; exported shell selections are passed explicitly across sudo.
+Missing env/service/configuration fails closed; no fixed container name or sudo
+Python permission is required. The 05:00 ET gate and `--preflight` stay unchanged.
 
 After article fields are verified, the checker reuses the Registry's
 `deterministic_enrichment` implementation (also used by `capture-enrich`) on the

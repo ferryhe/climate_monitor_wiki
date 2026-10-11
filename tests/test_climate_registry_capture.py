@@ -82,6 +82,27 @@ def _response(status=200, body=None, headers=None):
     )
 
 
+def test_fetch_user_agent_tracks_late_local_configuration(tmp_path, monkeypatch):
+    from dotenv import load_dotenv
+
+    monkeypatch.setenv("CLIMATE_REGISTRY_USER_AGENT", "")
+    monkeypatch.delenv("CLIMATE_REGISTRY_USER_AGENT")
+    transport = FakeTransport(_response(), _response(), _response())
+
+    def fetch():
+        registry_fetch.fetch_document("https://example.com/article",
+            resolver=lambda host, port: [PUBLIC_V4], transport=transport)
+        return transport.calls[-1][1]["User-Agent"]
+
+    assert fetch() == "ClimateMonitorRegistry/1.0"
+    env_file = tmp_path / "local.env"
+    env_file.write_text('CLIMATE_REGISTRY_USER_AGENT="LocalMonitor/1.0 (+https://contact.example/)"\n')
+    load_dotenv(env_file, override=True)
+    assert fetch() == "LocalMonitor/1.0 (+https://contact.example/)"
+    monkeypatch.setenv("CLIMATE_REGISTRY_USER_AGENT", "")
+    assert fetch() == registry_fetch.DEFAULT_USER_AGENT
+
+
 def _run(database, tmp_path, transport, **kwargs):
     return capture.capture_enrich_registry(
         database,

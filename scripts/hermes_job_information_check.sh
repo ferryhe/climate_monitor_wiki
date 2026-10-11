@@ -4,7 +4,23 @@ set -euo pipefail
 if [[ "${1:-}" != "--preflight" && "$(TZ=America/New_York date +%H)" != "05" ]]; then
   exit 0
 fi
-sudo -n docker exec -i climate-pdf-intake-writer python -c '
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+env_file="${CLIMATE_WIKI_ENV_FILE:-$repo/.env}"
+if [[ ! -f "$env_file" ]]; then
+  printf 'Information check requires the configured env file: %s\n' "$env_file" >&2
+  exit 2
+fi
+env_file="$(cd -- "$(dirname -- "$env_file")" && pwd -P)/$(basename -- "$env_file")"
+compose=(--project-directory "$repo" --env-file "$env_file")
+if [[ -n "${COMPOSE_FILE:-}" ]]; then
+  IFS="${COMPOSE_PATH_SEPARATOR:-:}" read -r -a compose_files <<< "$COMPOSE_FILE"
+  for file in "${compose_files[@]}"; do compose+=(-f "$file"); done
+fi
+if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+  compose+=(-p "$COMPOSE_PROJECT_NAME")
+fi
+cd -- "$repo"
+sudo -n docker compose "${compose[@]}" exec -T pdf-intake-writer python -c '
 import json
 import os
 import sys
@@ -35,4 +51,4 @@ raise SystemExit(run_daily_checks([
     "--backup-dir", os.environ["CLIMATE_REGISTRY_BACKUP_DIR"], "--refresh-chat",
     "--data-root", os.getenv("CLIMATE_WEB_LISTENING_DATA_DIR", "/pipeline/web-listening"),
 ], result_dir=Path("/pipeline")))
-' "${1:-}" < "${CLIMATE_WIKI_ENV_FILE:-$HOME/climate_monitor_wiki/.env}"
+' "${1:-}" < "$env_file"

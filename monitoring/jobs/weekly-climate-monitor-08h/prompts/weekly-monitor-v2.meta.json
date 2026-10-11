@@ -1,0 +1,10 @@
+{
+  "schema_version": "weekly-monitor-prompt-meta.v1",
+  "prompt_id": "weekly_monitor",
+  "version": "v2",
+  "prompt_path": "prompts/weekly-monitor-v2.prompt.md",
+  "sha256": "7413d3da0790fb2005d9ec8b7f976d1cb22ddf3d65e022c18e2c275856045190",
+  "authoring_request_schema": "contracts/authoring-request.v1.schema.json",
+  "authoring_response_schema": "contracts/authoring-response.v1.schema.json",
+  "contract_version": "weekly-monitor-authoring.v1"
+}
