@@ -145,6 +145,11 @@ through stdin and remains outside Git and command-line arguments. Dispatch uses
 `sudo -n docker compose exec -T pdf-intake-writer` with the selected env file,
 project and complete file set. `COMPOSE_FILE`/`COMPOSE_PROJECT_NAME` in that env
 file work normally; exported shell selections are passed explicitly across sudo.
+The read-only Compose env query runs in the caller environment (no daemon access
+needed), so file lists and project names can reference exported local variables.
+Compose applies dotenv interpolation and shell precedence; resolved file/project
+choices cross sudo as explicit arguments. A missing separator defaults to `:`;
+either selection can come from the shell while the other comes from the env file.
 Missing env/service/configuration fails closed; no fixed container name or sudo
 Python permission is required. The 05:00 ET gate and `--preflight` stay unchanged.
 

@@ -326,6 +326,9 @@ def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, 
     date = tmp_path / "date"
     date.write_text('#!/bin/sh\nexec /bin/date --date="$CHECK_TEST_TIME" +%H\n')
     date.chmod(0o700)
+    docker = tmp_path / "docker"
+    docker.write_text('#!/bin/sh\n[ "$6" = "config" ] && [ "$7" = "--environment" ] || exit 1\nprintf "COMPOSE_PROJECT_NAME=seasonal-fixture\\n"\n')
+    docker.chmod(0o700)
     sudo = tmp_path / "sudo"
     sudo.write_text('#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n  if [ "$1" = "-c" ]; then shift; printf "%s" "$1" > "$CHECK_TEST_PACKET"; exit 0; fi\n  shift\ndone\nexit 1\n')
     sudo.chmod(0o700)

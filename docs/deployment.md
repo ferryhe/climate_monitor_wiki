@@ -88,7 +88,29 @@ sources and deployment receipts outside Git, optionally under ignored
    `/app/wiki`, `/app/sources`, `/app/article_metadata` sources form one approved cohort
    and remain read-only. DB-approved rendering and static flag modes are separate:
    keep the deployed mode and its sources rather than switching modes to make a
-   health check pass. Use the standard ordered configuration for every command:
+   health check pass. If the operator already has direct Docker access, use the
+   commands below normally. For operators whose existing permission is only
+   `sudo -n docker`, first install this local CLI entrypoint so both the existing
+   `safe_compose` preflight and its daemon command use that permitted Docker route.
+   Run this from the verified checkout and verify `docker_real` is the
+   original absolute Docker executable, never this entrypoint. No sudo Python
+   permission is needed. The file stays in ignored local deployment storage:
+
+   ```bash
+   docker_real="$(command -v docker)"
+   case "$docker_real" in /*) ;; *) printf 'Use the original absolute Docker executable\n' >&2; exit 2 ;; esac
+   sudo -n "$docker_real" compose version
+   mkdir -p external/deployment/docker-cli
+   printf '#!/bin/sh\nexec sudo -n "%s" "$@"\n' "$docker_real" > external/deployment/docker-cli/docker
+   chmod 700 external/deployment/docker-cli/docker
+   sudo_docker_path="$PWD/external/deployment/docker-cli:$PATH"
+   ```
+
+   Normal Compose `config` needs no daemon; the entrypoint is necessary for this
+   operator's recreate operation and ensures the helper uses the same route for
+   its model validation. Scope that PATH to the upgrade commands below; keep the
+   original caller PATH for the information-check wrapper's unprivileged Compose
+   env query and interpolation. Use the standard ordered configuration for every command:
 
    ```bash
    cd /path/to/verified/checkout
@@ -98,12 +120,13 @@ sources and deployment receipts outside Git, optionally under ignored
    # The env file's COMPOSE_FILE must include the full ordered list and local override.
    compose=(--project-directory "$PWD" --env-file "$CLIMATE_WIKI_ENV_FILE" -p "$COMPOSE_PROJECT_NAME")
    docker compose "${compose[@]}" config --quiet
-   .venv/bin/python -m scripts.safe_compose "${compose[@]}" config --quiet
+   PATH="${sudo_docker_path:-$PATH}" .venv/bin/python -m scripts.safe_compose "${compose[@]}" config --quiet
    # Review resolved mounts/images/volumes locally; config can contain secrets.
-   # Supply the reviewed commit for the existing build validation.
-   CLIMATE_REPOSITORY_COMMIT_SHA="$(git rev-parse --verify HEAD)" \
-     .venv/bin/python -m scripts.safe_compose "${compose[@]}" up -d --build --force-recreate wiki caddy
-   docker compose "${compose[@]}" ps
+   # Pass the public reviewed commit explicitly; sudo may strip shell env values.
+   PATH="${sudo_docker_path:-$PATH}" .venv/bin/python -m scripts.safe_compose "${compose[@]}" build \
+     --build-arg "CLIMATE_REPOSITORY_COMMIT_SHA=$(git rev-parse --verify HEAD)" wiki
+   PATH="${sudo_docker_path:-$PATH}" .venv/bin/python -m scripts.safe_compose "${compose[@]}" up -d --no-build --force-recreate wiki caddy
+   PATH="${sudo_docker_path:-$PATH}" docker compose "${compose[@]}" ps
    ```
 
    Recreate the writer after the app content gates pass below, if deployed. Preserve
@@ -115,7 +138,8 @@ sources and deployment receipts outside Git, optionally under ignored
    status/schema, approved article/Wiki identities and a cited Chat result against
    the same approved cohort. HTTP 200 alone does not prove content. Once these gates
    pass, recreate the configured writer with the same selection using
-   `up -d --no-build --force-recreate pdf-intake-writer`, then run the information-check `--preflight` with the same env/project/file selection;
+   `PATH="${sudo_docker_path:-$PATH}" .venv/bin/python -m scripts.safe_compose "${compose[@]}" up -d --no-build --force-recreate pdf-intake-writer`,
+   then run the information-check `--preflight` with the original caller PATH and the same env/project/file selection;
    preserve the existing stdin credential transport. Keep saved staging bound to
    its original prompt/commit; old unbound v1 staging must finish on its original
    revision or be prepared fresh, never rehashed/relabelled as v2. Keep scheduled writers

@@ -12,12 +12,24 @@ if [[ ! -f "$env_file" ]]; then
 fi
 env_file="$(cd -- "$(dirname -- "$env_file")" && pwd -P)/$(basename -- "$env_file")"
 compose=(--project-directory "$repo" --env-file "$env_file")
-if [[ -n "${COMPOSE_FILE:-}" ]]; then
-  IFS="${COMPOSE_PATH_SEPARATOR:-:}" read -r -a compose_files <<< "$COMPOSE_FILE"
+# Resolve Compose selections in the caller environment before sudo strips it.
+selection="$(docker compose "${compose[@]}" config --environment | sed -n '/^COMPOSE_FILE=/p; /^COMPOSE_PATH_SEPARATOR=/p; /^COMPOSE_PROJECT_NAME=/p')"
+file_list=""
+separator=""
+project=""
+while IFS= read -r value; do
+  case "$value" in
+    COMPOSE_FILE=*) file_list="${value#*=}" ;;
+    COMPOSE_PATH_SEPARATOR=*) separator="${value#*=}" ;;
+    COMPOSE_PROJECT_NAME=*) project="${value#*=}" ;;
+  esac
+done <<< "$selection"
+if [[ -n "$file_list" ]]; then
+  IFS="${separator:-:}" read -r -a compose_files <<< "$file_list"
   for file in "${compose_files[@]}"; do compose+=(-f "$file"); done
 fi
-if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
-  compose+=(-p "$COMPOSE_PROJECT_NAME")
+if [[ -n "$project" ]]; then
+  compose+=(-p "$project")
 fi
 cd -- "$repo"
 sudo -n docker compose "${compose[@]}" exec -T pdf-intake-writer python -c '
