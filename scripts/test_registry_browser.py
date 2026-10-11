@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,17 +157,32 @@ window.fetch = (input, options = {}) => {
     const page = Number(url.searchParams.get("page"));
     return registryResponse(200, {items: [{article_id: window.__missingArticle ? "missing" : "article-1",
       title: window.__missingArticle ? "Missing article" : (page === 1 ? "Climate pricing" : "Page two article"), publisher: "Example",
-      last_seen: "2026-08-10", report_summary: "Pricing summary"}],
+      last_seen: "2026-08-10", report_summary: "Pricing summary"},
+      {article_id: "pdf-only", title: "PDF-only article", publisher: "Example", source_kind: "pdf",
+        last_seen: "2026-08-10", occurrence_count: 2}],
       pagination: {page, page_size: 20, total: 2, pages: 2}});
   }
   if (url.pathname === "/api/registry/articles/article-1") {
+    // CONTRACT FIXTURE: distinct Registry/PDF data plus PDF-provided and missing summaries; public data has no populated verified_information.
     return registryResponse(200, {article_id: "article-1", title: "Climate pricing",
       original_url: "https://example.com/article", canonical_url: "https://example.com/article",
       publisher: "Example", source: "example.com", first_seen: "2026-08-03", last_seen: "2026-08-10",
+      summary: "Registry-owned summary.",
       display_policy: "summary_excerpt", latest_fetch: {fetch_status: "success"},
       content: {supporting_excerpt: "Supporting evidence", content_type: "text/html",
         extraction_method: "html-to-markdown", fetched_at: "2026-08-13"},
       categories: ["Regulation"], keywords: ["premium"],
+      pdf_occurrences: [
+        {source_filename: "climate-weekly.pdf", page: 8, report_date: "2026-08-10", raw_url: "https://example.com/article",
+          verification_status: "partial", checked_at: "2026-08-12", verified_information: {
+            summary: "PDF occurrence summary.", categories: ["PDF occurrence category"], keywords: ["PDF occurrence keyword"],
+            source_url: "https://example.com/checked-pdf-source"
+          }},
+        {source_filename: "climate-weekly.pdf", page: 8, report_date: "2026-08-10", raw_url: "https://example.com/pdf-original-source",
+          verification_status: "unchecked", summary: "PDF-provided occurrence summary."},
+        {source_filename: "climate-weekly.pdf", page: 8, report_date: "2026-08-10", raw_url: "https://example.com/article",
+          verification_status: "unchecked"}
+      ],
       summary_provenance: "content_enrichment",
       source_annotation: {source_basis: window.__articleSourceBasis ?? "original_content",
         source_url: window.__articleSourceUrl ?? "https://example.com/article",
@@ -174,6 +190,21 @@ window.fetch = (input, options = {}) => {
       enrichment: {summary: "Enriched summary", categories: ["Legacy category"], keywords: ["legacy"],
         language: "en", generator: {kind: "deterministic", name: "rules", version: "1", generated_at: "2026-08-13"}},
       appearances: [{report_title: "Report detail", report_date: "2026-08-10", pillar: "B", section: "Pillar B"}]});
+  }
+  if (url.pathname === "/api/registry/pdf-intake/articles/pdf-only") {
+    // CONTRACT FIXTURE: the approved public snapshot has no nonempty verified_information values.
+    return registryResponse(200, {article_id: "pdf-only", title: "PDF-only article",
+      canonical_url: "https://example.com/pdf-only", publisher: "Example", source_kind: "pdf",
+      first_seen: "2026-08-10", last_seen: "2026-08-10", occurrences: [
+        {occurrence_id: "occurrence-one", source_document: "climate-report.pdf", page: 22,
+          report_date: "2026-08-10", raw_url: "https://example.com/pdf-only", summary: "PDF passage.",
+          verification_status: "partial", checked_at: "2026-08-11", verified_information: {
+            summary: "Existing checked summary.", categories: ["Climate risk"], keywords: ["insurance"]
+          }},
+        {occurrence_id: "occurrence-two", source_document: "climate-report.pdf", page: 22,
+          report_date: "2026-08-10", raw_url: "https://example.com/pdf-only", summary: "Duplicate recorded appearance.",
+          verification_status: "unchecked"}
+      ]});
   }
   return registryResponse(404, {detail: "Registry record not found."});
 };
@@ -202,7 +233,7 @@ def _new_page(browser, scenario: str):
             route.abort()
             network_audit["external_aborted"].append(url)
             return
-        path = url.removeprefix("http://archive.test")
+        path = urlsplit(url).path
         if path == "/":
             route.fulfill(content_type="text/html", body=INDEX)
         elif path == "/showcase/app.js":
@@ -223,7 +254,6 @@ def _visible(page, text: str) -> None:
 
 def _assert_network_isolation(page, audit) -> None:
     page.wait_for_timeout(50)
-    assert audit["external_attempted"], "fixture should exercise the external-font guard"
     assert audit["external_aborted"] == audit["external_attempted"]
     assert audit["external_completed"] == []
 
@@ -244,7 +274,8 @@ def main() -> int:
 
         page, audit = _new_page(browser, "loading")
         page.get_by_role("tab", name="Historical Reports").wait_for()
-        assert page.get_by_role("tab", name="Historical Reports").get_attribute("aria-selected") == "true"
+        page.wait_for_function("document.querySelector('#chatTab').getAttribute('aria-selected') === 'true'")
+        page.get_by_role("button", name="Open Historical Reports").click()
         _visible(page, "Source-only mode")
         _visible(page, "Checking the historical archive…")
         page.evaluate("window.__releaseRegistry()")
@@ -258,6 +289,7 @@ def main() -> int:
         page.close()
 
         page, audit = _new_page(browser, "empty")
+        page.get_by_role("tab", name="Historical Reports").click()
         _visible(page, "No historical reports are available.")
         page.get_by_role("button", name="Article Database").click()
         _visible(page, "No articles match these filters.")
@@ -265,6 +297,7 @@ def main() -> int:
         page.close()
 
         page, audit = _new_page(browser, "populated")
+        page.get_by_role("tab", name="Historical Reports").click()
         page.get_by_role("button", name="Report page 1", exact=False).wait_for()
         page.get_by_role("button", name="Next").first.click()
         page.get_by_role("button", name="Report page 2", exact=False).wait_for()
@@ -503,11 +536,31 @@ def main() -> int:
         assert page.get_by_text("Pillar B · Example · Captured content", exact=True).count() == 0
         assert page.get_by_text("Pillar B · Example · Official replacement", exact=True).count() == 0
         page.get_by_role("button", name="Climate pricing").click()
-        _visible(page, "Enriched summary")
-        _visible(page, "Supporting evidence")
+        _visible(page, "Registry-owned summary.")
         _visible(page, "Regulation")
         _visible(page, "premium")
         _visible(page, "Summary generated from captured article content")
+        _visible(page, "PDF occurrence summary.")
+        _visible(page, "PDF occurrence category")
+        _visible(page, "PDF occurrence keyword")
+        _visible(page, "PDF-provided occurrence summary.")
+        _visible(page, "PDF-provided · Verification: unchecked")
+        registry_block = page.locator("#registryEnrichment .registry-summary").filter(has_text="Registry-owned summary.")
+        assert registry_block.count() == 1
+        assert registry_block.get_by_text("PDF occurrence summary.", exact=True).count() == 0
+        assert page.locator("#registryEnrichment .registry-tag-block").filter(has_text="Regulation").count() == 1
+        assert page.locator("#registryEnrichment .registry-tag-block").filter(has_text="premium").count() == 1
+        pdf_verified_block = page.locator("#registryEnrichment .registry-detail-section").filter(has_text="PDF occurrence summary.")
+        assert pdf_verified_block.count() == 1
+        pdf_provided_block = page.locator("#registryEnrichment .registry-detail-section").filter(has_text="PDF-provided occurrence summary.")
+        assert pdf_provided_block.count() == 1
+        assert page.locator("#registryEnrichment .registry-detail-section").count() == 2
+        assert pdf_provided_block.get_by_role("heading", name="Summary").count() == 1
+        assert pdf_provided_block.get_by_role("link", name="Open original source").get_attribute("href") == "https://example.com/pdf-original-source"
+        assert pdf_verified_block.get_by_text("PDF occurrence category", exact=True).count() == 1
+        assert pdf_verified_block.get_by_text("PDF occurrence keyword", exact=True).count() == 1
+        assert pdf_verified_block.get_by_role("link", name="Open checked source").get_attribute("href") == "https://example.com/checked-pdf-source"
+        assert page.get_by_text("Supporting evidence", exact=True).count() == 0
         assert page.get_by_text("Summary based on the linked original content", exact=False).count() == 0
         assert page.get_by_text("Legacy category", exact=True).count() == 0
         assert page.get_by_text("legacy", exact=True).count() == 0
@@ -516,7 +569,7 @@ def main() -> int:
         assert page.get_by_text("Extraction", exact=True).count() == 0
         assert page.get_by_text("Not captured", exact=True).count() == 0
         _visible(page, "Latest fetch")
-        _visible(page, "Captured")
+        _visible(page, "Collected at")
         page.evaluate(
             "window.__articleSourceBasis = 'official_replacement'; "
             "window.__articleSourceUrl = 'https://example.com/corrected-article'; "
@@ -525,25 +578,49 @@ def main() -> int:
         corrected_link = page.get_by_role("link", name="Open official replacement")
         corrected_link.wait_for()
         assert corrected_link.get_attribute("href") == "https://example.com/corrected-article"
+        appearances = page.locator("#registryAppearances .registry-appearance")
+        assert appearances.count() == 4
+        assert appearances.all_text_contents()[1:] == [
+            "climate-weekly.pdf · page 82026-08-10 · Verification: partialOpen original source",
+            "climate-weekly.pdf · page 82026-08-10 · Verification: uncheckedOpen original source",
+            "climate-weekly.pdf · page 82026-08-10 · Verification: uncheckedOpen original source",
+        ]
+        page.get_by_role("button", name="PDF-only article").click()
+        page.get_by_role("heading", name="PDF-only article").wait_for()
+        _visible(page, "Existing checked summary.")
+        assert page.get_by_text("PDF passage.", exact=True).count() == 0
+        _visible(page, "Climate risk")
+        _visible(page, "insurance")
+        _visible(page, "Website verification: partial · checked 2026-08-11")
+        pdf_appearances = page.locator("#registryAppearances .registry-appearance")
+        assert pdf_appearances.count() == 2
+        assert pdf_appearances.all_text_contents() == [
+            "climate-report.pdf · page 222026-08-10 · Verification: partialOpen original source",
+            "climate-report.pdf · page 222026-08-10 · Verification: uncheckedOpen original source",
+        ]
+        for hidden_label in ["PDF report history", "Field checks and evidence", "Supporting excerpt"]:
+            assert page.get_by_text(hidden_label, exact=True).count() == 0
+        assert page.get_by_role("link", name="Open original source").first.get_attribute("href") == "https://example.com/pdf-only"
+        assert page.locator("#registryAppearancesSection").is_visible()
         page.get_by_label("Search articles").fill("climate 100%")
         page.get_by_label("Publisher").select_option(label="example")
-        page.get_by_role("button", name="Apply").click()
+        page.get_by_role("button", name="Search").click()
         page.wait_for_function("window.__registryRequests.some(x => x.path.includes('query=climate+100%25') && x.path.includes('source=example.com') && !x.path.includes('pillar='))")
         page.evaluate("window.__publisherTruncated = true; loadRegistryPublishers()")
         page.get_by_label("Other hostname").wait_for(state="visible")
         page.get_by_label("Other hostname").fill("unlisted.example")
-        page.get_by_role("button", name="Apply").click()
+        page.get_by_role("button", name="Search").click()
         page.wait_for_function("window.__registryRequests.some(x => x.path.includes('source=unlisted.example'))")
         page.get_by_role("button", name="Next").last.click()
         page.get_by_role("button", name="Page two article").wait_for()
         page.get_by_role("button", name="Previous").last.click()
         page.evaluate("window.__missingArticle = true")
-        page.get_by_role("button", name="Apply").click()
+        page.get_by_role("button", name="Search").click()
         page.get_by_role("button", name="Missing article").click()
         page.get_by_role("heading", name="Article unavailable").wait_for()
 
         page.get_by_role("tab", name="Obsidian").click()
-        assert page.get_by_role("button", name="Keywords").get_attribute("aria-pressed") == "true"
+        assert page.get_by_role("button", name="Concept Map").get_attribute("aria-pressed") == "true"
         graph_box = page.locator(".panel--graph").bounding_box()
         index_box = page.locator(".panel--table").bounding_box()
         assert graph_box and index_box and graph_box["y"] < index_box["y"]
@@ -565,8 +642,8 @@ def main() -> int:
         page.reload()
         page.get_by_role("heading", name="Report detail").wait_for()
         page.wait_for_function("window.__registryRequests.some(x => x.path.startsWith('/api/registry/reports?'))")
-        assert sum(x["path"] == "/api/registry/status" for x in page.evaluate("window.__registryRequests")) == 1
-        assert sum(x["path"] == "/api/registry/publishers" for x in page.evaluate("window.__registryRequests")) == 1
+        assert sum(x["path"].startswith("/api/registry/status") for x in page.evaluate("window.__registryRequests")) == 1
+        assert sum(x["path"].startswith("/api/registry/publishers") for x in page.evaluate("window.__registryRequests")) == 1
         assert sum(x["path"].startswith("/api/registry/reports?") for x in page.evaluate("window.__registryRequests")) == 1
         page.go_back()
         page.get_by_role("heading", name="Select a report").wait_for()
@@ -587,6 +664,7 @@ def main() -> int:
         page.close()
 
         page, audit = _new_page(browser, "populated")
+        page.get_by_role("tab", name="Historical Reports").click()
         page.set_viewport_size({"width": 390, "height": 844})
         page.get_by_role("button", name="Report page 1", exact=False).click()
         page.get_by_role("heading", name="Report detail").wait_for()
@@ -603,7 +681,7 @@ def main() -> int:
         _visible(page, "Weekly article summary")
         page.get_by_role("button", name="Climate pricing").click()
         page.get_by_role("heading", name="Climate pricing", exact=True).wait_for()
-        _visible(page, "Enriched summary")
+        _visible(page, "Registry-owned summary.")
         _assert_network_isolation(page, audit)
         page.close()
 

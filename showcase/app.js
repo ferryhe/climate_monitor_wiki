@@ -2486,6 +2486,75 @@ function appendVerifiedInformation(container, information) {
   container.append(block);
 }
 
+function appendPdfVerifiedInformation(container, occurrence) {
+  const information = occurrence.verified_information;
+  if (information) {
+    const block = registryElement("section", "registry-detail-section");
+    if (information.summary) {
+      const summary = registryElement("div", "registry-summary");
+      summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", information.summary));
+      block.append(summary);
+    }
+    appendRegistryTags(block, "Categories", information.categories);
+    appendRegistryTags(block, "Keywords", information.keywords);
+    const status = occurrence.verification_status || "status unavailable";
+    const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
+    block.append(registryElement("p", "muted registry-provenance", `Website verification: ${status}${checkedAt}`));
+    const sourceUrl = safeSourceUrl(information.source_url || occurrence.raw_url);
+    if (sourceUrl) {
+      const link = registryElement("a", "registry-source-link", "Open checked source");
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      block.append(link);
+    }
+    container.append(block);
+  }
+  if (!information?.summary && occurrence.summary) {
+    const block = registryElement("section", "registry-detail-section");
+    const summary = registryElement("div", "registry-summary");
+    summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", occurrence.summary));
+    block.append(summary);
+    const status = occurrence.verification_status || "status unavailable";
+    const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
+    block.append(registryElement("p", "muted registry-provenance", `PDF-provided · Verification: ${status}${checkedAt}`));
+    const sourceUrl = safeSourceUrl(occurrence.raw_url);
+    if (sourceUrl) {
+      const link = registryElement("a", "registry-source-link", "Open original source");
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      block.append(link);
+    }
+    container.append(block);
+  }
+}
+
+function appendPdfAppearances(container, occurrences) {
+  if (!Array.isArray(occurrences)) return;
+  occurrences.forEach((occurrence) => {
+    const filename = occurrence.source_filename || occurrence.source_document ||
+      occurrence.source_observations?.[0]?.filename || "";
+    const item = registryElement("li", "registry-appearance");
+    const documentRef = [filename, occurrence.page ? `page ${occurrence.page}` : ""].filter(Boolean).join(" · ");
+    if (documentRef) item.append(registryElement("strong", "", documentRef));
+    const appearanceMeta = [
+      occurrence.report_date || occurrence.publication_date,
+      occurrence.verification_status ? `Verification: ${occurrence.verification_status}` : "",
+    ].filter(Boolean).join(" · ");
+    if (appearanceMeta) item.append(registryElement("span", "registry-card__meta", appearanceMeta));
+    const sourceUrl = safeSourceUrl(occurrence.raw_url);
+    if (sourceUrl) {
+      const link = registryElement("a", "registry-source-link", "Open original source");
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      item.append(link);
+    }
+    container.append(item);
+  });
+}
+
 async function loadImportedRegistryReport(documentId) {
   const requestToken = ++state.registry.reportRequestSequence;
   state.registry.selectedReportDate = documentId;
@@ -2624,7 +2693,7 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
   els.registryEnrichment.replaceChildren();
   els.registryEnrichment.hidden = true;
   els.registryAppearances.replaceChildren();
-  els.registryAppearancesSection.hidden = articleSource === "pdf";
+  els.registryAppearancesSection.hidden = false;
   els.registryContentSection.hidden = true;
   els.registryOriginalLink.hidden = true;
   try {
@@ -2722,10 +2791,11 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
         ),
       );
     }
-    appendRegistryPdfOccurrences(
-      els.registryEnrichment,
-      pdfSource ? article.occurrences : article.pdf_occurrences,
-    );
+    if (pdfSource) {
+      (article.occurrences || []).forEach((occurrence) => appendPdfVerifiedInformation(els.registryEnrichment, occurrence));
+    } else {
+      (article.pdf_occurrences || []).forEach((occurrence) => appendPdfVerifiedInformation(els.registryEnrichment, occurrence));
+    }
     els.registryEnrichment.hidden = els.registryEnrichment.childElementCount === 0;
     const appearances = article.appearances || [];
     appearances.forEach((appearance) => {
@@ -2740,12 +2810,19 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
       );
       els.registryAppearances.append(item);
     });
+    appendPdfAppearances(els.registryAppearances, pdfSource ? article.occurrences : article.pdf_occurrences);
     if (!appearances.length) {
-      els.registryAppearances.append(
-        registryElement("li", "registry-notice", "No report appearances are recorded for this article."),
-      );
+      if (!pdfSource && !article.pdf_occurrences?.length) {
+        els.registryAppearances.append(
+          registryElement("li", "registry-notice", "No report appearances are recorded for this article."),
+        );
+      } else if (pdfSource && !article.occurrences?.length) {
+        els.registryAppearances.append(
+          registryElement("li", "registry-notice", "No report appearances are recorded for this article."),
+        );
+      }
     }
-    const displayText = article.content?.markdown || article.content?.supporting_excerpt || "";
+    const displayText = article.content?.markdown || "";
     if (displayText) {
       els.registryContentSection.hidden = false;
       els.registryContentTitle.textContent = article.content.markdown ? "Original Markdown" : "Supporting excerpt";
