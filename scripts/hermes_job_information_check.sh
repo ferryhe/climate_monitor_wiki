@@ -12,27 +12,27 @@ if [[ ! -f "$env_file" ]]; then
 fi
 env_file="$(cd -- "$(dirname -- "$env_file")" && pwd -P)/$(basename -- "$env_file")"
 cd -- "$repo"
-compose=(--project-directory "$repo" --env-file "$env_file")
-# Resolve Compose selections in the caller environment before sudo strips it.
-selection="$(docker compose "${compose[@]}" config --environment | sed -n '/^COMPOSE_FILE=/p; /^COMPOSE_PATH_SEPARATOR=/p; /^COMPOSE_PROJECT_NAME=/p')"
-file_list=""
-separator=""
-project=""
-while IFS= read -r value; do
-  case "$value" in
-    COMPOSE_FILE=*) file_list="${value#*=}" ;;
-    COMPOSE_PATH_SEPARATOR=*) separator="${value#*=}" ;;
-    COMPOSE_PROJECT_NAME=*) project="${value#*=}" ;;
-  esac
-done <<< "$selection"
-if [[ -n "$file_list" ]]; then
-  IFS="${separator:-:}" read -r -a compose_files <<< "$file_list"
-  for file in "${compose_files[@]}"; do compose+=(-f "$file"); done
+PY="${PYTHON:-$(command -v python3)}"
+[[ "$PY" = /* && -x "$PY" ]] || exit 2
+# Resolve the full caller model once; sudo must not parse its dotenv again.
+project="$(docker compose --project-directory "$repo" --env-file "$env_file" config --format json | "$PY" -c '
+import json, sys
+model = json.load(sys.stdin)
+if "pdf-intake-writer" not in model.get("services", {}):
+    raise SystemExit("Information check requires pdf-intake-writer in the selected Compose model")
+print(model["name"])
+')"
+ids="$(sudo -n docker ps --quiet --no-trunc --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=pdf-intake-writer --filter label=com.docker.compose.oneoff=False)"
+if [[ -z "$ids" ]]; then
+  printf 'Information check requires a running writer for the selected Compose project\n' >&2
+  exit 2
 fi
-if [[ -n "$project" ]]; then
-  compose+=(-p "$project")
+mapfile -t writer_ids <<< "$ids"
+if [[ "${#writer_ids[@]}" -ne 1 ]]; then
+  printf 'Information check requires exactly one running writer for the selected Compose project\n' >&2
+  exit 2
 fi
-sudo -n docker compose "${compose[@]}" exec -T pdf-intake-writer python -c '
+sudo -n docker exec -i "${writer_ids[0]}" python -c '
 import json
 import os
 import sys

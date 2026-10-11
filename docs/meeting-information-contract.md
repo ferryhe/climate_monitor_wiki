@@ -142,15 +142,16 @@ the checkout's `.env` (or `CLIMATE_WIKI_ENV_FILE`) through the container's exist
 without restarting the writer or copying the key into scripts. Set
 `CLIMATE_WIKI_ENV_FILE` for a different configuration location. The key is passed
 through stdin and remains outside Git and command-line arguments. Dispatch uses
-`sudo -n docker compose exec -T pdf-intake-writer` with the selected env file,
-project and complete file set. `COMPOSE_FILE`/`COMPOSE_PROJECT_NAME` in that env
-file work normally; exported shell selections are passed explicitly across sudo.
-The read-only Compose env query runs in the caller environment (no daemon access
-needed), so file lists and project names can reference exported local variables.
-Compose applies dotenv interpolation and shell precedence; resolved file/project
-choices cross sudo as explicit arguments. A missing separator defaults to `:`;
-either selection can come from the shell while the other comes from the env file.
-Missing env/service/configuration fails closed; no fixed container name or sudo
+one complete read-only Compose JSON query in the caller environment, using the
+checkout cwd and normalized env path. Compose resolves all file, project, mount,
+image, volume and timezone interpolation before elevation. The wrapper reuses
+the sibling `PYTHON`/`python3` convention and Python's standard `json` module to
+confirm the model includes `pdf-intake-writer` and read its final project name.
+`sudo -n docker ps` selects that project's running, non-oneoff writer by Compose's
+canonical project/service labels; zero or multiple matches fail before execution.
+`sudo -n docker exec -i` addresses the unique ID and receives the unchanged env
+file through stdin. Sudo never reparses Compose or dotenv. Missing env/model
+writer/configuration or failed Docker lookup stops dispatch; no fixed name or sudo
 Python permission is required. The 05:00 ET gate and `--preflight` stay unchanged.
 
 After article fields are verified, the checker reuses the Registry's
