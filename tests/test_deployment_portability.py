@@ -75,7 +75,7 @@ def test_existing_external_volume_and_image_are_retained_by_local_override(tmp_p
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Hermes wrapper requires Bash on its Linux host")
-@pytest.mark.parametrize("selection_source", ["env-file", "shell", "mixed-env-separator", "shell-separator-override", "env-files-shell-separator", "env-files-shell-interpolation", "file-defined-project"])
+@pytest.mark.parametrize("selection_source", ["env-file", "shell", "mixed-env-separator", "shell-separator-override", "env-files-shell-separator", "env-files-shell-interpolation", "file-defined-project", "relative-env-files"])
 def test_information_check_uses_complete_compose_selection_and_stdin(tmp_path, selection_source):
     docker = _docker()
     selected_files = (";" if selection_source in {"mixed-env-separator", "env-files-shell-separator"} else ":").join(str(path) for path in FILES)
@@ -92,6 +92,9 @@ def test_information_check_uses_complete_compose_selection_and_stdin(tmp_path, s
         override = tmp_path / "named.yml"
         override.write_text("name: portable-check\n")
         local_selections = {"COMPOSE_FILE": ":".join(str(path) for path in [*FILES, override])}
+    if selection_source == "relative-env-files":
+        local_selections = {"COMPOSE_FILE": ":".join(path.name for path in FILES),
+                            "COMPOSE_PROJECT_NAME": "portable-check"}
     env_file = _env_file(tmp_path, "TYPESAFE_API_KEY=stdin-test-only\n" +
         "".join(f"{key}={value}\n" for key, value in local_selections.items()))
     bin_dir = tmp_path / "bin"
@@ -122,7 +125,7 @@ with open(os.environ["TEST_RECEIPT"], "w") as output:
     sudo.chmod(0o700)
     environment = {**_environment(), "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                    "TEST_DOCKER": docker, "TEST_RECEIPT": str(receipt), "CLIMATE_WIKI_ENV_FILE": str(env_file)}
-    if selection_source not in {"env-file", "env-files-shell-interpolation", "file-defined-project"}:
+    if selection_source not in {"env-file", "env-files-shell-interpolation", "file-defined-project", "relative-env-files"}:
         environment["COMPOSE_PROJECT_NAME"] = selections["COMPOSE_PROJECT_NAME"]
         if selection_source != "env-files-shell-separator":
             environment["COMPOSE_FILE"] = selected_files
@@ -132,8 +135,11 @@ with open(os.environ["TEST_RECEIPT"], "w") as output:
         environment["COMPOSE_PATH_SEPARATOR"] = ";"
     if selection_source == "env-files-shell-interpolation":
         environment.update(CLIMATE_LOCAL_COMPOSE_ROOT=str(ROOT), CLIMATE_LOCAL_PROJECT="portable-check")
+    if selection_source == "relative-env-files":
+        environment["CLIMATE_WIKI_ENV_FILE"] = env_file.name
     direct = subprocess.run([docker, "compose", "--project-directory", str(ROOT), "--env-file", str(env_file),
-                             "config", "--format", "json"], cwd=tmp_path, env=environment, capture_output=True, text=True)
+                             "config", "--format", "json"], cwd=ROOT if selection_source == "relative-env-files" else tmp_path,
+                            env=environment, capture_output=True, text=True)
     assert direct.returncode == 0, direct.stderr
     result = subprocess.run(["bash", str(ROOT / "scripts/hermes_job_information_check.sh"), "--preflight"],
                             cwd=tmp_path, env=environment, capture_output=True, text=True)

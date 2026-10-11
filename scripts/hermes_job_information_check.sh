@@ -11,6 +11,7 @@ if [[ ! -f "$env_file" ]]; then
   exit 2
 fi
 env_file="$(cd -- "$(dirname -- "$env_file")" && pwd -P)/$(basename -- "$env_file")"
+cd -- "$repo"
 compose=(--project-directory "$repo" --env-file "$env_file")
 # Resolve Compose selections in the caller environment before sudo strips it.
 selection="$(docker compose "${compose[@]}" config --environment | sed -n '/^COMPOSE_FILE=/p; /^COMPOSE_PATH_SEPARATOR=/p; /^COMPOSE_PROJECT_NAME=/p')"
@@ -31,7 +32,6 @@ fi
 if [[ -n "$project" ]]; then
   compose+=(-p "$project")
 fi
-cd -- "$repo"
 sudo -n docker compose "${compose[@]}" exec -T pdf-intake-writer python -c '
 import json
 import os
