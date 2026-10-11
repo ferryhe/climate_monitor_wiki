@@ -143,7 +143,11 @@ without restarting the writer or copying the key into scripts. Set
 `CLIMATE_WIKI_ENV_FILE` for a different configuration location. The key is passed
 through stdin and remains outside Git and command-line arguments. Dispatch uses
 one complete read-only Compose JSON query in the caller environment, using the
-checkout cwd and normalized env path. Compose resolves all file, project, mount,
+checkout cwd and normalized env path. A relative `CLIMATE_WIKI_ENV_FILE` resolves
+from the original caller directory; relative `COMPOSE_FILE` members resolve from
+the reviewed checkout. Use absolute paths for overrides outside that checkout,
+preserving every file and its order from the actual `config_files` inventory.
+Compose resolves all file, project, mount,
 image, volume and timezone interpolation before elevation. The wrapper reuses
 the sibling `PYTHON`/`python3` convention and Python's standard `json` module to
 confirm the model includes `pdf-intake-writer` and read its final project name.

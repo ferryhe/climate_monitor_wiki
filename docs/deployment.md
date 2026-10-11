@@ -112,6 +112,11 @@ sources and deployment receipts outside Git, optionally under ignored
    original caller PATH for the information-check wrapper's unprivileged Compose
    env query and interpolation. Use the standard ordered configuration for every command:
 
+   The information-check wrapper resolves a relative `CLIMATE_WIKI_ENV_FILE` from
+   the original caller directory. Relative `COMPOSE_FILE` members resolve from the
+   reviewed checkout; use absolute paths for every override outside it. Preserve
+   all absolute paths and their order from the actual `config_files` inventory.
+
    ```bash
    cd /path/to/verified/checkout
    # Set actual absolute paths and project from the local deployment receipt.
