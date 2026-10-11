@@ -222,6 +222,8 @@ class WikiStaticFiles(StaticFiles):
                 return pages[path]
         if not is_registry_runtime_path(path) and path != "index.md":
             return None
+        if is_registry_runtime_path(path) and path.startswith("registry-source-observation-"):
+            return self._layered_markdown(path)
         # ponytail: small generated archive; cache at reload if serving it becomes costly.
         names = {path}
         for directory in self.all_directories:

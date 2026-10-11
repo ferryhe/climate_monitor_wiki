@@ -309,7 +309,7 @@ def validate_allowlist(
     for status, path in changes:
         if (status,path) in (registry_page_changes or set()) and re.fullmatch(r"wiki/climate-monitor-\d{4}-\d{2}-\d{2}\.md",path) and status in {"A","M","D"}:
             continue
-        registry_article = re.fullmatch(r"wiki/article-[A-Za-z0-9_-]+\.md", path)
+        registry_article = re.fullmatch(r"wiki/(?:article|registry-source-observation)-[A-Za-z0-9_-]+\.md", path)
         if registry_article and status in {"A", "M", "D"}:
             continue
         if path in {"wiki/registry-source-observations.md","wiki/registry-meetings.md","wiki/public-registry.json"} and status in {"A", "M", "D"}:

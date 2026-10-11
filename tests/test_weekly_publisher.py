@@ -2216,6 +2216,9 @@ def test_allowlist_permits_only_generated_registry_wiki_paths():
         ("A", "wiki/registry-source-observations.md"),
         ("M", "wiki/registry-source-observations.md"),
         ("D", "wiki/registry-source-observations.md"),
+        ("A", "wiki/registry-source-observation-pdf-1.md"),
+        ("M", "wiki/registry-source-observation-pdf-1.md"),
+        ("D", "wiki/registry-source-observation-pdf-1.md"),
     ], {"2026-08-10"})
     with pytest.raises(publisher.PublishError, match="outside weekly-report allowlist"):
         publisher.validate_allowlist([("A", "wiki/article-.md")])

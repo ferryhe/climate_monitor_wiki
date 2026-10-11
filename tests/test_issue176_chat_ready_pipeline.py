@@ -566,7 +566,7 @@ def test_active_untitled_pdf_source_ignores_failed_aggregate_title(tmp_path):
     generation, active = load_active_projection(runtime, queue / "active.json")
     manifest = load_projection_manifest(generation, active)
     assert manifest["pdf_occurrence_ids"] == [approved_id]
-    page = (generation / "registry-source-observations.md").read_text(encoding="utf-8")
+    page = "\n".join(path.read_text(encoding="utf-8") for path in generation.glob("registry-source-observation-*.md"))
     assert "UNACTIVATED AGGREGATE PDF TITLE" not in page
     assert "Approved PDF source evidence for regional stress tests" in page
     wiki, sources = tmp_path / "wiki", tmp_path / "sources"
