@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import uuid
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -437,6 +438,61 @@ def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any
             "final_url": packet["reader"].get("final_url"), "attempt_id": row["attempt_id"], "run_id": row["run_id"],
             "source_url": row["source_url"],
         })
+    return _check_state(checks)
+
+
+def verified_packet_from_attempt(row: dict[str, Any], *, packet_cache: dict | None = None,
+    candidate_binding: str | None = None) -> dict[str, Any]:
+    """Decode and verify one frozen attempt packet once per candidate binding."""
+    cache_key = ("verified_packet", candidate_binding, row.get("attempt_id"),
+        row.get("source_revision_sha256"), row.get("packet_sha256"), row.get("packet_json"))
+    cached = packet_cache.get(cache_key) if packet_cache is not None else None
+    if cached is not None:
+        return cached
+    try:
+        packet = json.loads(row["packet_json"])
+    except (json.JSONDecodeError, TypeError, KeyError) as exc:
+        raise ValueError("invalid information check packet") from exc
+    if not isinstance(packet, dict):
+        raise ValueError("invalid information check packet")
+    if _sha(packet) != row.get("packet_sha256"):
+        raise ValueError("information check packet hash mismatch")
+    if packet_cache is not None:
+        packet_cache[cache_key] = packet
+    return packet
+
+
+def latest_checks_from_attempts(kind: str, item: dict[str, Any], attempts: list[dict[str, Any]],
+    *, packet_cache: dict | None = None, candidate_binding: str | None = None) -> dict[str, Any]:
+    """Reduce the same frozen check packets after a candidate batch read."""
+    revision = source_revision(kind, item)
+    urls = item.get("source_urls") if kind == "meetings" else [item.get("raw_url")]
+    checks = []
+    for url in dict.fromkeys(urls or [""]):
+        row = max((row for row in attempts if row.get("occurrence_id") == item["occurrence_id"]
+            and row.get("source_url") == (url or "")),
+            key=lambda row: (row.get("checked_at") or "", row.get("attempt_id") or ""), default=None)
+        if row is None or row.get("source_revision_sha256") != revision:
+            continue
+        cache_key = (candidate_binding, kind, item["occurrence_id"], url or "", row.get("attempt_id"),
+            row.get("source_revision_sha256"), row.get("packet_sha256"), row.get("packet_json"))
+        cached = packet_cache.get(cache_key) if packet_cache is not None else None
+        if cached is not None:
+            checks.append(deepcopy(cached))
+            continue
+        try:
+            packet = verified_packet_from_attempt(row, packet_cache=packet_cache,
+                candidate_binding=candidate_binding)
+            checked = {key: value for key, value in packet.items() if key != "reader"} | {
+                "body_sha256": packet["reader"].get("content_hash"),
+                "final_url": packet["reader"].get("final_url"), "attempt_id": row["attempt_id"],
+                "run_id": row["run_id"], "source_url": row["source_url"],
+            }
+            if packet_cache is not None:
+                packet_cache[cache_key] = deepcopy(checked)
+            checks.append(checked)
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ValueError("invalid information check packet") from exc
     return _check_state(checks)
 
 

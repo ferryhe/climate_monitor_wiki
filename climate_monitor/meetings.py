@@ -1625,24 +1625,126 @@ def _public_run(connection: sqlite3.Connection, run: sqlite3.Row) -> dict[str, A
     return value
 
 
+def _meeting_status_selection(
+    connection: sqlite3.Connection, *, batch_id: str | None = None,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    where, parameters = ("WHERE batch_id=?", (batch_id,)) if batch_id else ("", ())
+    raw_rows = [dict(row) for row in connection.execute(
+        f"SELECT * FROM meeting_runs {where} ORDER BY started_at DESC, attempt DESC", parameters
+    )]
+    latest: dict[str, dict[str, Any]] = {}
+    for row in raw_rows:
+        latest.setdefault(row["batch_id"], row)
+    statuses = [row["status"] for row in latest.values()]
+    aggregate = (
+        "not_processed" if not statuses else
+        "partial" if any(value in {"partial", "failed", "running"} for value in statuses) else
+        "complete"
+    )
+    headers = lambda rows: [
+        {key: value for key, value in row.items() if key != "prompt_text"}
+        for row in rows
+    ]
+    return aggregate, headers(list(latest.values())), headers(raw_rows)
+
+
+def _public_runs(connection: sqlite3.Connection, runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Load full run details with set queries while preserving per-run order."""
+    rows = [dict(run) for run in runs]
+    if not rows:
+        return []
+    run_ids = {row["meeting_run_id"] for row in rows}
+    run_by_id = {row["meeting_run_id"]: row for row in rows}
+    missing_parents = {row.get("retry_of_meeting_run_id") for row in rows} - run_ids - {None}
+    while missing_parents:
+        placeholders = ",".join("?" for _ in missing_parents)
+        parents = [dict(row) for row in connection.execute(
+            f"SELECT * FROM meeting_runs WHERE meeting_run_id IN ({placeholders})",
+            tuple(sorted(missing_parents)),
+        )]
+        missing_parents = set()
+        for parent in parents:
+            identity = parent["meeting_run_id"]
+            if identity in run_by_id:
+                continue
+            run_by_id[identity] = parent
+            ancestor = parent.get("retry_of_meeting_run_id")
+            if ancestor and ancestor not in run_by_id:
+                missing_parents.add(ancestor)
+
+    lineages: dict[str, list[str]] = {}
+    lineage_ids = set()
+    for run_id in run_ids:
+        lineage, current = [], run_by_id.get(run_id)
+        while current is not None and current["meeting_run_id"] not in lineage:
+            lineage.append(current["meeting_run_id"])
+            current = run_by_id.get(current.get("retry_of_meeting_run_id"))
+        lineages[run_id] = lineage
+        lineage_ids.update(lineage)
+
+    items_by_run: dict[str, list[dict[str, Any]]] = {identity: [] for identity in run_ids}
+    sorted_ids = sorted(run_ids)
+    for start in range(0, len(sorted_ids), 500):
+        chunk = sorted_ids[start:start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        for item in connection.execute(
+            f"SELECT * FROM meeting_run_items WHERE meeting_run_id IN ({placeholders}) "
+            "ORDER BY meeting_run_id, acquisition_item_id", chunk,
+        ):
+            items_by_run[item["meeting_run_id"]].append({
+                "acquisition_item_id": item["acquisition_item_id"],
+                "article_id": item["article_id"],
+                "content_version_id": item["content_version_id"],
+                "source_url": item["source_url"],
+                "status": item["status"],
+                "candidate_count": item["candidate_count"],
+                "error": item["error_message"],
+                "processed_at": item["processed_at"],
+            })
+
+    events_by_run: dict[str, dict[str, dict[str, Any]]] = {}
+    sorted_lineage_ids = sorted(lineage_ids)
+    for start in range(0, len(sorted_lineage_ids), 500):
+        chunk = sorted_lineage_ids[start:start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        query = f"""SELECT DISTINCT run_id, event_id, name, record_version FROM (
+            SELECT s.meeting_run_id AS run_id, e.event_id, e.name, e.record_version
+            FROM climate_events e JOIN climate_event_sources s ON s.event_id=e.event_id
+            WHERE e.needs_confirmation=1 AND s.meeting_run_id IN ({placeholders})
+            UNION
+            SELECT v.meeting_run_id AS run_id, e.event_id, e.name, e.record_version
+            FROM climate_events e JOIN climate_event_versions v ON v.event_id=e.event_id
+            WHERE e.needs_confirmation=1 AND v.meeting_run_id IN ({placeholders})
+        ) ORDER BY run_id, event_id"""
+        for event in connection.execute(query, (*chunk, *chunk)):
+            events_by_run.setdefault(event["run_id"], {})[event["event_id"]] = {
+                "event_id": event["event_id"],
+                "name": event["name"],
+                "record_version": event["record_version"],
+            }
+
+    result = []
+    for run in rows:
+        value = {key: item for key, item in run.items() if key != "prompt_text"}
+        identity = run["meeting_run_id"]
+        value["items"] = items_by_run[identity]
+        confirmation = {}
+        for parent_id in lineages[identity]:
+            confirmation.update(events_by_run.get(parent_id, {}))
+        value["current_needs_confirmation_events"] = [confirmation[key] for key in sorted(confirmation)]
+        value["current_needs_confirmation_count"] = len(confirmation)
+        result.append(value)
+    return result
+
+
 def meeting_status(database: str | Path, *, batch_id: str | None = None, registry_connection: sqlite3.Connection | None = None) -> dict[str, Any]:
     connection = registry_connection or _open(database)
     try:
-        where, parameters = ("WHERE batch_id=?", (batch_id,)) if batch_id else ("", ())
-        raw_rows = list(connection.execute(
-            f"SELECT * FROM meeting_runs {where} ORDER BY started_at DESC, attempt DESC", parameters
-        ))
-        rows = [_public_run(connection, row) for row in raw_rows]
-        latest: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            latest.setdefault(row["batch_id"], row)
-        statuses = [row["status"] for row in latest.values()]
-        aggregate = (
-            "not_processed" if not statuses else
-            "partial" if any(value in {"partial", "failed", "running"} for value in statuses) else
-            "complete"
-        )
-        return {"status": aggregate, "batches": list(latest.values()), "runs": rows}
+        aggregate, batch_headers, run_headers = _meeting_status_selection(connection, batch_id=batch_id)
+        rows = _public_runs(connection, run_headers)
+        by_id = {row["meeting_run_id"]: row for row in rows}
+        batches = [by_id[row["meeting_run_id"]] for row in batch_headers]
+        return {"status": aggregate, "batches": batches, "runs": rows}
     finally:
         if registry_connection is None:
             connection.close()
@@ -1668,10 +1770,15 @@ def _meeting_coverage(
 ) -> dict[str, Any]:
     if meeting_enabled is None:
         return meeting_status(database, registry_connection=registry_connection)
-    status = meeting_status(database, batch_id=target_batch_id, registry_connection=registry_connection) if target_batch_id else {
-        "status": "not_processed", "batches": [], "runs": [],
-    }
-    latest = status["batches"][0] if status["batches"] else None
+    latest = None
+    if target_batch_id:
+        connection = registry_connection or _open(database)
+        try:
+            _, batches, _ = _meeting_status_selection(connection, batch_id=target_batch_id)
+            latest = batches[0] if batches else None
+        finally:
+            if registry_connection is None:
+                connection.close()
     if not meeting_enabled:
         coverage_status = "disabled"
     elif latest is None:
@@ -1766,9 +1873,24 @@ def query_events(
         raise ValueError("event_types contains an unsupported value")
     connection = registry_connection or _open(database)
     try:
+        events = [dict(row) for row in connection.execute("SELECT * FROM climate_events")]
+        source_rows_by_event: dict[str, list[dict[str, Any]]] = {}
+        if events:
+            for source in connection.execute(
+                """SELECT s.event_id, s.event_source_id, s.content_version_id, s.article_id, s.source_url,
+                          s.content_sha256, s.candidate_json, s.date_evidence, s.deadline_evidence,
+                          s.status_evidence, s.observed_at, s.interpretation_seq,
+                          s.candidate_ordinal, cv.first_fetched_at, b.report_date,
+                          cv.markdown_content, b.started_at AS batch_started_at, b.batch_id
+                   FROM climate_event_sources s
+                   JOIN article_content_versions cv ON cv.content_version_id=s.content_version_id
+                   JOIN meeting_runs mr ON mr.meeting_run_id=s.meeting_run_id
+                   JOIN acquisition_batches b ON b.batch_id=mr.batch_id
+                   ORDER BY s.event_id, s.source_url, s.content_version_id"""
+            ):
+                source_rows_by_event.setdefault(source["event_id"], []).append(dict(source))
         result = []
-        for row in connection.execute("SELECT * FROM climate_events"):
-            event = dict(row)
+        for event in events:
             if event["event_type"] not in requested_types:
                 continue
             if event["event_type"] == "deadline" and not include_deadlines:
@@ -1779,19 +1901,7 @@ def query_events(
                 continue
             if organizer and organizer.casefold() not in (event["organizer"] or "").casefold():
                 continue
-            source_rows = [dict(source) for source in connection.execute(
-                """SELECT s.event_source_id, s.content_version_id, s.article_id, s.source_url,
-                          s.content_sha256, s.candidate_json, s.date_evidence, s.deadline_evidence,
-                          s.status_evidence, s.observed_at, s.interpretation_seq,
-                          s.candidate_ordinal, cv.first_fetched_at, b.report_date,
-                          cv.markdown_content, b.started_at AS batch_started_at, b.batch_id
-                   FROM climate_event_sources s
-                   JOIN article_content_versions cv ON cv.content_version_id=s.content_version_id
-                   JOIN meeting_runs mr ON mr.meeting_run_id=s.meeting_run_id
-                   JOIN acquisition_batches b ON b.batch_id=mr.batch_id
-                   WHERE s.event_id=? ORDER BY s.source_url, s.content_version_id""",
-                (event["event_id"],),
-            )]
+            source_rows = source_rows_by_event.get(event["event_id"], [])
             for source in source_rows:
                 same_article = [row for row in source_rows if row["article_id"] == source["article_id"]]
                 rank = lambda row: (
@@ -1836,7 +1946,7 @@ def query_events(
             event["sources"] = [
                 {
                     **{key: value for key, value in source.items() if key not in {
-                        "candidate_json", "markdown_content", "first_fetched_at", "report_date",
+                        "event_id", "candidate_json", "markdown_content", "first_fetched_at", "report_date",
                         "batch_started_at", "batch_id",
                     }},
                     "collected_at": source["first_fetched_at"],

@@ -679,7 +679,7 @@ def test_offline_recent_content_uses_approved_knowledge_chronology(tmp_path, que
     updated_query = bool(re.search(r"recently updated|最近更新", question, re.I))
     class Reader:
         calls = []
-        def public_snapshot(self): return nullcontext()
+        def public_snapshot(self, *, direct=False): return nullcontext()
         def knowledge_chronology(self):
             self.calls.append("knowledge_chronology")
             return {"article:actual": {"first_ingested_at": "2024-01-01T12:00:00Z" if updated_query else ingested.isoformat(),
@@ -773,7 +773,7 @@ def test_quality_recent_window_uses_question_and_only_relevant_compact_candidate
     items = [{"article_id": str(i), "title": "Generic politics", "summary": "Unrelated politics " * 800} for i in range(9)]
     items.append({"article_id": "energy", "title": "Energy transition battery insurance", "summary": "Battery fire losses affect energy insurance. " * 300})
     class Reader:
-        def public_snapshot(self): return nullcontext()
+        def public_snapshot(self, *, direct=False): return nullcontext()
         def knowledge_chronology(self): return {}
         def articles(self, **kwargs): return {"items": items, "pagination": {"pages": 1}}
         def pdf_articles_all(self): return []
@@ -869,7 +869,7 @@ def test_quality_chronology_scope_is_once_and_only_requested_gap_is_appended(tmp
     from contextlib import nullcontext
     chat = owner(tmp_path)
     class Reader:
-        def public_snapshot(self): return nullcontext()
+        def public_snapshot(self, *, direct=False): return nullcontext()
         def articles(self, **kwargs): return {"items": [], "pagination": {"pages": 1}}
         def pdf_articles_all(self): return []
         def knowledge_chronology(self): return {}
@@ -1380,7 +1380,7 @@ class MeetingsReader:
     def __init__(self, records):
         self.records = records
 
-    def public_snapshot(self):
+    def public_snapshot(self, *, direct=False):
         from contextlib import nullcontext
         return nullcontext()
 
@@ -1389,6 +1389,10 @@ class MeetingsReader:
 
     def meetings(self, **kwargs):
         return {"items": copy.deepcopy(self.records), "pagination": {"pages": 1}, "coverage": {"status": "partial"}}
+
+    def meetings_all(self, *, base_date, timezone_name="UTC", include_unknown=False, include_metadata=False):
+        payload = {"items": copy.deepcopy(self.records), "verification_counts": {}, "coverage": {"status": "partial"}}
+        return payload if include_metadata else payload["items"]
 
     def pdf_articles_all(self):
         return []
@@ -1530,7 +1534,7 @@ def test_offline_named_article_keeps_sourced_publication_date(tmp_path):
         "Risks cascade and compound.\nhttps://example.org/approved")
     chat.responder.kb.reload()
     class Reader:
-        def public_snapshot(self): return nullcontext()
+        def public_snapshot(self, *, direct=False): return nullcontext()
         def knowledge_chronology(self): return {}
         def article(self, article_id):
             assert article_id == "article-a"
@@ -1848,7 +1852,7 @@ def test_chinese_unspaced_explicit_recent_window_selects_only_requested_month(tm
 
     chat = owner(tmp_path)
     class Reader:
-        def public_snapshot(self): return nullcontext()
+        def public_snapshot(self, *, direct=False): return nullcontext()
         def knowledge_chronology(self):
             return {"article:september": {"first_ingested_at": "2026-09-15T12:00:00Z"},
                 "article:october": {"first_ingested_at": "2026-10-10T12:40:00Z"}}
@@ -2148,6 +2152,12 @@ def test_upcoming_keeps_western_event_running_after_new_york_midnight(tmp_path):
             self.base_date = kwargs["base_date"]
             items = [row for row in self.records if row.get("end_date", "9999") >= self.base_date]
             return {"items": copy.deepcopy(items), "pagination": {"pages": 1}, "coverage": {"status": "partial"}}
+
+        def meetings_all(self, *, base_date, timezone_name="UTC", include_unknown=False, include_metadata=False):
+            self.base_date = base_date
+            items = [row for row in self.records if row.get("end_date", "9999") >= base_date]
+            payload = {"items": copy.deepcopy(items), "verification_counts": {}, "coverage": {"status": "partial"}}
+            return payload if include_metadata else payload["items"]
 
     reader = DateFilteredReader([item])
     chat = owner(tmp_path)

@@ -77,6 +77,43 @@ def test_exact_metadata_change_keeps_old_public_version_and_revokes_pass(tmp_pat
     assert reader.article("a")["publisher"] == "New publisher"
 
 
+def test_direct_public_snapshot_keeps_approval_and_visibility_from_one_sqlite_transaction(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "initial transaction fixture"}, status="accepted_legacy")
+
+    def fail_projection(_source):
+        raise AssertionError("direct snapshots must read the source database")
+
+    monkeypatch.setattr(publication, "public_connection", fail_projection)
+    reader = _reader(database, tmp_path)
+    with reader.public_snapshot(direct=True):
+        assert reader.article("a")["title"] == "Title a"
+        assert reader.article("b")["title"] == "Title b"
+
+        with sqlite3.connect(database) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE article_versions SET observed_title='Title a v2' WHERE version_id='v-a'")
+            changed = stage_snapshot(writer, snapshot_entity(writer, "article", "a"))
+            _approve(writer, changed, {"basis": "same-transaction approval"}, status="accepted_legacy")
+            writer.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='article' AND entity_id='b'")
+
+        # Force another candidate lookup so the assertion covers SQLite's pinned
+        # read transaction, rather than only the per-request selection cache.
+        reader._approved_snapshot_cache.clear()
+        reader._approved_article_cards = None
+        assert reader.article("a")["title"] == "Title a"
+        assert reader.article("b")["title"] == "Title b"
+
+    assert reader.article("a")["title"] == "Title a v2"
+    with pytest.raises(RegistryNotFoundError):
+        reader.article("b")
+
+
 def test_exact_raw_body_changes_even_when_display_text_matches(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
@@ -1494,16 +1531,20 @@ def test_combined_reports_and_status_share_pdf_visibility_snapshot(tmp_path, mon
         _pdf(db, identity="standalone", url="https://pdf.example/c", run_date="2026-09-03")
         for sha in stage_entities(db): _approve(db, sha, {"basis": "explicit approved fixture"}, status="accepted_legacy")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    original = getattr(RegistryReader, endpoint)
+    # Schema 21+ report collections use one unpaged approved query. Hook that
+    # batch boundary so the concurrent writer still exercises the same
+    # transaction contract as the legacy page method did.
+    read_method = "approved_reports_all" if endpoint == "reports" else endpoint
+    original = getattr(RegistryReader, read_method)
     changed = False
-    def read(reader, **kwargs):
+    def read(reader, *args, **kwargs):
         nonlocal changed
-        result = original(reader, **kwargs)
+        result = original(reader, *args, **kwargs)
         if not changed:
             changed = True
             set_visibility(database, "pdf_article", "standalone", False)
         return result
-    monkeypatch.setattr(RegistryReader, endpoint, read)
+    monkeypatch.setattr(RegistryReader, read_method, read)
     if endpoint == "status":
         first = api_server.registry_status(include_pdf=True)
         assert (first["articles"], first["reports"], first["latest_report_date"]) == (3, 1, "2026-09-03")
@@ -1577,9 +1618,9 @@ def test_combined_publisher_response_uses_one_public_snapshot(tmp_path, monkeypa
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
     original = RegistryReader.publishers
     switched = False
-    def publishers(reader):
+    def publishers(reader, **kwargs):
         nonlocal switched
-        result = original(reader)
+        result = original(reader, **kwargs)
         if not switched:
             switched = True
             with _writer(database) as db:
@@ -2188,6 +2229,30 @@ def test_all_wiki_markdown_routes_use_approved_pages_and_missing_pages_404(tmp_p
             assert response.status_code==200 and response.text==body
         for name in ("climate-monitor-2026-09-07.md","meetings.md","topic-climate-risk.md"):
             assert client.get("/wiki/"+name).status_code==404
+
+        import climate_registry.wiki as wiki_module
+        article_reads = []
+        original_article = RegistryReader.article
+        def counted_article(self, identity):
+            article_reads.append(identity)
+            return original_article(self, identity)
+        def fail_bulk_render(*args, **kwargs):
+            raise AssertionError("target Wiki requests must not render the full Registry")
+        monkeypatch.setattr(RegistryReader, "article", counted_article)
+        monkeypatch.setattr(wiki_module, "_registry_pages_read", fail_bulk_render)
+
+        index = client.get("/wiki/index.md")
+        assert index.status_code == 200 and "article-a" in index.text
+        assert "Observed summary" not in index.text
+        assert article_reads == [], "the index should list approved pages without rendering article bodies"
+
+        target = client.get("/wiki/article-a.md")
+        head = client.head("/wiki/article-a.md")
+        assert target.status_code == head.status_code == 200
+        assert target.text == pages["article-a.md"] and head.content == b""
+        assert article_reads == ["a", "a"]
+        for name in ("climate-monitor-2026-09-07.md","meetings.md","topic-climate-risk.md"):
+            assert client.head("/wiki/"+name).status_code == 404
 
 
 @pytest.mark.parametrize("legacy",[False,True])

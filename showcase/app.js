@@ -712,20 +712,14 @@ async function loadArticleKeywordGraph() {
       articles.push(...payload.items);
       page += 1;
     }
-    const details = [];
-    for (let offset = 0; offset < articles.length; offset += 8) {
-      const batch = await Promise.all(articles.slice(offset, offset + 8).map((item) =>
-        registryFetch(`${item.source_kind === "pdf" ? "/api/registry/pdf-intake/articles" : "/api/registry/articles"}/${encodeURIComponent(item.article_id)}`)
-          .then((detail) => ({
-            ...detail,
-            source_kind: item.source_kind || "registry",
-            ...(item.source_kind === "pdf" ? {
-              metadata_provenance: { ...detail.metadata_provenance, ...(detail.manual_enrichment ? { keywords: "manual_enrichment" } : {}) },
-            } : {}),
-          }))));
-      details.push(...batch);
-    }
-    state.graphData.articleKeywords = buildArticleKeywordGraph(details);
+    const graphArticles = articles.map((item) => ({
+      ...item,
+      source_kind: item.source_kind || "registry",
+      ...(item.source_kind === "pdf" ? {
+        metadata_provenance: { ...item.metadata_provenance, ...(item.manual_enrichment ? { keywords: "manual_enrichment" } : {}) },
+      } : {}),
+    }));
+    state.graphData.articleKeywords = buildArticleKeywordGraph(graphArticles);
     clearArticleKeywordEvidence();
     renderCurrentGraph();
   } catch (error) {
@@ -1694,7 +1688,7 @@ function showArticleKeywordEvidence(label, articles) {
     button.dataset.articleId = article.article_id;
     button.dataset.articleSource = "registry";
     const provenance = article.metadata_provenance?.keywords;
-    const version = article.enrichment?.content_version_id || article.content?.content_version_id;
+    const version = article.enrichment?.content_version_id || article.content?.content_version_id || article.content_version_id;
     const metadataRecord = article.manual_enrichment?.knowledge_id;
     const sourceKind = article.source_kind === "pdf" ? "pdf" : "registry";
     button.dataset.articleSource = sourceKind;
@@ -1781,13 +1775,6 @@ async function ensureMarkdownLoaded(path) {
   return state.markdownRequests[path];
 }
 
-async function hydrateDocumentsInBackground() {
-  const tasks = state.documents.map((doc) =>
-    ensureMarkdownLoaded(doc.path).catch(() => null),
-  );
-  await Promise.all(tasks);
-}
-
 function clearContext() {
   state.activeContextPath = null;
   renderChatContext();
@@ -1838,10 +1825,7 @@ async function loadConfig() {
   state.promptStarters = Array.isArray(config.prompt_starters) && config.prompt_starters.length
     ? config.prompt_starters
     : DEFAULT_PROMPT_STARTERS;
-  state.documents = (config.documents || []).map((doc) => ({
-    ...doc,
-    status: doc.type === "daily" ? "Loading..." : "-",
-  }));
+  state.documents = (config.documents || []).map((doc) => ({ ...doc, status: doc.status || "-" }));
 
   const data = buildWorkspaceData(state.documents);
   state.rows = data.rows;
@@ -3130,7 +3114,6 @@ async function main() {
 
   try {
     await loadConfig();
-    void hydrateDocumentsInBackground();
   } catch (error) {
     els.status.textContent = "Service unavailable";
     els.status.classList.add("status-pill--offline");

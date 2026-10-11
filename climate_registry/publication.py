@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -55,6 +56,130 @@ PROJECTED_TABLES = set().union(*(set(value) for value in ENTITY_TABLES.values())
 
 def enabled(connection):
     return connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+
+
+def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=None, candidate_sha_out=None,
+    packet_cache=None):
+    """Return exact visible approved snapshots without restoring business rows."""
+    kinds = tuple(sorted(set(kinds)))
+    if not kinds:
+        return {}
+    params = list(kinds)
+    where = "p.entity_kind IN (" + ",".join("?" for _ in kinds) + ")"
+    if entity_ids is not None:
+        if isinstance(entity_ids, dict):
+            filters = []
+            for kind in kinds:
+                values = tuple(sorted(set(entity_ids.get(kind, ()))))
+                if values:
+                    filters.append("(p.entity_kind=? AND p.entity_id IN (" + ",".join("?" for _ in values) + "))")
+                    params.extend((kind, *values))
+            if not filters:
+                return {}
+            where += " AND (" + " OR ".join(filters) + ")"
+        else:
+            values = tuple(sorted(set(entity_ids)))
+            if not values:
+                return {}
+            where += " AND p.entity_id IN (" + ",".join("?" for _ in values) + ")"
+            params.extend(values)
+    rows = connection.execute(f"""SELECT p.entity_kind,p.entity_id,p.is_visible,
+            p.published_candidate_sha256,c.candidate_sha256,c.entity_kind AS candidate_kind,
+            c.entity_id AS candidate_id,c.snapshot_json,
+            EXISTS(SELECT 1 FROM registry_reviews r WHERE r.candidate_sha256=c.candidate_sha256
+                AND r.status IN ('pass','accepted_legacy')) AS approved
+        FROM registry_publication p
+        LEFT JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+        WHERE {where} ORDER BY p.entity_kind,p.entity_id""", params).fetchall()
+    snapshots = {}
+    visibility = {}
+    candidate_bindings = {}
+    for row in rows:
+        key = (row[0], row[1])
+        visibility[key] = bool(row[2])
+        if not row[2] or row[3] is None:
+            continue
+        if row[4] != row[3] or row[5] != row[0] or row[6] != row[1] or not row[8]:
+            raise ValueError("published Registry candidate binding differs")
+        cache_key = (row[0], row[1], row[3])
+        snapshot = candidate_cache.get(cache_key) if candidate_cache is not None else None
+        if snapshot is None:
+            try:
+                snapshot = json.loads(row[7])
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("published Registry snapshot is invalid") from exc
+            if (not isinstance(snapshot, dict) or snapshot.get("entity_kind") != row[0]
+                    or snapshot.get("entity_id") != row[1] or digest(snapshot) != row[3]):
+                raise ValueError("published Registry snapshot hash differs")
+            if candidate_cache is not None:
+                candidate_cache[cache_key] = snapshot
+        if candidate_sha_out is not None:
+            candidate_sha_out[key] = row[3]
+        candidate_bindings[key] = row[3]
+        snapshots[key] = snapshot
+
+    # Alias identity is frozen in the approved candidate dependencies. Current
+    # business rows can already contain a later, unapproved association.
+    core_urls = {
+        row.get("canonical_url"): row.get("article_id")
+        for snapshot in snapshots.values() if snapshot["entity_kind"] == "article"
+        for row in snapshot.get("tables", {}).get("articles", [])
+    }
+    for key, snapshot in list(snapshots.items()):
+        if key[0] not in {"pdf_article", "pdf_meeting"}:
+            continue
+        table = "pdf_intake_article_occurrences" if key[0] == "pdf_article" else "pdf_intake_calendar_items"
+        observed = {row.get("occurrence_id") for row in snapshot.get("tables", {}).get(table, [])}
+        target = None
+        if key[0] == "pdf_article":
+            for article in snapshot.get("tables", {}).get("pdf_intake_articles", []):
+                target = ("article", article.get("core_article_id")) if article.get("core_article_id") else None
+                if target is None and article.get("canonical_url") in core_urls:
+                    target = ("article", core_urls[article["canonical_url"]])
+                if target:
+                    break
+        else:
+            from .information_checks import verified_packet_from_attempt
+            for attempt in snapshot.get("tables", {}).get("meeting_check_attempts", []):
+                try:
+                    packet = verified_packet_from_attempt(attempt, packet_cache=packet_cache,
+                        candidate_binding=candidate_bindings.get(key))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError("published meeting check packet is invalid") from exc
+                if packet.get("canonical_event_id"):
+                    target = ("meeting", packet["canonical_event_id"])
+                    break
+        if target and target in visibility and not visibility[target]:
+            del snapshots[key]
+            continue
+        canonical = snapshots.get(target) if target else None
+        if not observed:
+            continue
+        if canonical is None:
+            # Meeting check attempts are frozen with the native candidate, so
+            # a pre-check PDF candidate may not itself carry the alias ID.
+            # If exactly one approved native snapshot absorbed every exact
+            # occurrence, that native snapshot owns their public identity.
+            owners = [
+                value for owner_key, value in snapshots.items()
+                if owner_key[0] == ("article" if key[0] == "pdf_article" else "meeting")
+                and observed <= {
+                    row.get("occurrence_id")
+                    for row in value.get("tables", {}).get(table, [])
+                }
+            ]
+            if len(owners) > 1:
+                raise ValueError("published PDF observation has multiple canonical owners")
+            if owners:
+                del snapshots[key]
+            continue
+        canonical_observed = {
+            row.get("occurrence_id")
+            for row in canonical.get("tables", {}).get(table, [])
+        }
+        if observed <= canonical_observed:
+            del snapshots[key]
+    return snapshots
 
 
 def require_publication_migration(connection):
@@ -116,6 +241,13 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
             "content_version_id IN (SELECT content_version_id FROM climate_event_sources WHERE event_id=?)", (entity_id,))
         dependencies["meeting_runs"] = _rows(connection, "meeting_runs",
             "meeting_run_id IN (SELECT meeting_run_id FROM climate_event_sources WHERE event_id=?)", (entity_id,))
+        batch_ids = sorted({row["batch_id"] for row in dependencies["meeting_runs"]})
+        if batch_ids:
+            dependencies["acquisition_batches"] = [row for batch_id in batch_ids
+                for row in _rows(connection, "acquisition_batches", "batch_id=?", (batch_id,))]
+            run_ids = sorted({row["meeting_run_id"] for row in dependencies["meeting_runs"]})
+            dependencies["meeting_run_items"] = [row for run_id in run_ids
+                for row in _rows(connection, "meeting_run_items", "meeting_run_id=?", (run_id,))]
     if kind == "meeting":
         tables["pdf_intake_calendar_items"] = _rows(connection, "pdf_intake_calendar_items",
             "event_id=? OR occurrence_id IN (SELECT occurrence_id FROM meeting_check_attempts WHERE json_extract(packet_json,'$.canonical_event_id')=?)", (entity_id, entity_id))
@@ -132,6 +264,10 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
         tables["pdf_intake_article_occurrences"] = [row for key in pdf_ids for row in _rows(connection, "pdf_intake_article_occurrences", "article_id=?", (key,))]
         tables["article_check_attempts"] = [row for key in pdf_ids for row in _rows(connection, "article_check_attempts",
             "occurrence_id IN (SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE article_id=?)", (key,))]
+        batch_ids = sorted({row["batch_id"] for row in tables.get("acquisition_items", [])})
+        if batch_ids:
+            dependencies["acquisition_searches"] = _rows(connection, "acquisition_searches",
+                "batch_id IN (" + ",".join("?" for _ in batch_ids) + ")", batch_ids)
     knowledge_kind = "article" if kind in {"article", "pdf_article"} else "meeting"
     knowledge_ids = {entity_id} | {row["article_id"] for row in tables.get("pdf_intake_articles", [])}
     knowledge = [row for identity in sorted(knowledge_ids) for row in _rows(connection, "knowledge_versions", "entity_kind=? AND entity_id=?", (knowledge_kind, identity),preserve_order=True)]
@@ -756,6 +892,8 @@ def public_wiki_snapshot(database, *, wiki_dir=None):
     """Bind public pages to the revision from the same frozen Registry read."""
     from .read_api import RegistryReader
     reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
+    # Bulk Wiki/KB construction keeps the existing approved projection contract.
+    # Target-page HTTP reads use public_wiki_pages(page=...) and the direct reader.
     with reader.public_snapshot():
         with reader.connect() as connection:
             revision = public_revision(database, connection=getattr(reader, "_snapshot_source_connection", connection))
@@ -764,7 +902,7 @@ def public_wiki_snapshot(database, *, wiki_dir=None):
         return public_wiki_pages(database, wiki_dir=wiki_dir, reader=reader), revision
 
 
-def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None):
+def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None, page=None):
     from tempfile import TemporaryDirectory
     from .wiki import sync_registry_wiki
     static_dir = Path(wiki_dir) if wiki_dir is not None else Path(__file__).resolve().parents[1] / "wiki"
@@ -775,8 +913,50 @@ def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None):
             sha = artifact.pop("artifact_sha256")
             if digest(artifact) != sha:
                 raise ValueError("Git public Wiki snapshot identity differs")
-            return artifact["wiki_pages"]
-        return {path.name: path.read_text(encoding="utf-8") for path in sorted(static_dir.glob("*.md"))}
+            pages = artifact["wiki_pages"]
+            return pages if page is None else ({page: pages[page]} if page in pages else {})
+        pages = {path.name: path.read_text(encoding="utf-8") for path in sorted(static_dir.glob("*.md"))}
+        return pages if page is None else ({page: pages[page]} if page in pages else {})
+    if page is not None:
+        from .read_api import RegistryNotFoundError, RegistryReader
+        selected = reader or RegistryReader(database, repository_root=Path(__file__).resolve().parents[1], source_dir=source_dir)
+        with selected.public_snapshot(direct=True):
+            with selected.connect() as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version >= 21:
+                from .wiki import render_registry_page
+                try:
+                    markdown = render_registry_page(Path(database), page, reader=selected, source_dir=source_dir)
+                except RegistryNotFoundError:
+                    match = re.fullmatch(r"article-([A-Za-z0-9_-]+)\.md", page)
+                    if match:
+                        with selected.connect() as connection:
+                            exists = connection.execute(
+                                "SELECT 1 FROM articles WHERE article_id=?", (match.group(1),)
+                            ).fetchone()
+                        # Older PDF intake still serves its activated projection
+                        # when this Registry has never owned the article. An
+                        # existing but hidden/unapproved core identity stays
+                        # denied by the exact public read above.
+                        if exists is None:
+                            return None
+                    raise
+                if markdown is None:
+                    match = re.fullmatch(r"article-([A-Za-z0-9_-]+)\.md", page)
+                    if match:
+                        with selected.connect() as connection:
+                            exists = connection.execute(
+                                "SELECT 1 FROM articles WHERE article_id=?", (match.group(1),)
+                            ).fetchone()
+                        if exists is None:
+                            return None
+                return {page: markdown} if markdown is not None else {}
+        # Keep the existing full renderer for private and schema-20 registries.
+        with TemporaryDirectory(prefix="climate-public-wiki-page-") as temporary:
+            directory = Path(temporary)
+            sync_registry_wiki(Path(database), directory)
+            target = directory / page
+            return {page: target.read_text(encoding="utf-8")} if target.is_file() else None
     if reader is None and public_revision(database) is None:
         return None
     with TemporaryDirectory(prefix="climate-public-wiki-") as temporary:
@@ -799,15 +979,15 @@ def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None):
                 from .reports import parse_report_directory
                 from climate_monitor.dedupe import canonical_url
                 for report in parse_report_directory(Path(source_dir),allow_offcycle=True):
-                    blocks=[]
+                    articles=[]
                     for article in report.articles:
                         detail=details.get(canonical_url(article.url))
                         if detail:
-                            blocks += ["## "+str(detail.get("title") or detail["canonical_url"]),
-                                detail.get("summary") or detail.get("report_summary") or "",
-                                "Approved Registry version: "+detail["published_candidate_sha256"],detail["canonical_url"],""]
-                    if blocks:
-                        pages[report.path.name]=("# Climate Monitor "+report.report_date+"\n\nSource report: "+report.path.name+"; SHA-256: "+report.sha256+"\n\n"+"\n".join(blocks)).rstrip("\n")+"\n"
+                            articles.append({"article": detail, "source_report_article": True})
+                    if articles:
+                        from .wiki import _registry_report_markdown
+                        pages[report.path.name]=_registry_report_markdown(report.report_date, report.path.name,
+                            report.sha256, articles, approved_versions=True, include_top_source=True)
         pages["index.md"] = "# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(pages)) + "\n"
         return pages
 
@@ -903,7 +1083,7 @@ def install_git_snapshot(database, wiki_dir):
 
 
 def _public_dto(payload):
-    excluded = {"latest_fetch", "supplement_provenance"}
+    excluded = {"latest_fetch", "supplement_provenance", "record_reference"}
     value = {key: item for key, item in payload.items() if key not in excluded}
     if "acquisition_observations" in payload:
         value["acquisition_observations"] = [{key: item for key, item in row.items() if key in {

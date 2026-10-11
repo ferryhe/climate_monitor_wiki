@@ -147,6 +147,30 @@ def test_full_calendar_read_recovers_only_allow_listed_pdfs_once(tmp_path, monke
     assert meetings["pagination"]["total"] == 103
     assert len(calls) == 3 and sorted(len(items) for _, items in calls) == [1, 1, 101]
 
+    # The public direct reader must restore legacy cell fields from only the
+    # approved candidate's original PDF bytes, once per document.
+    from climate_registry.publication import _approve, stage_entities
+    with sqlite3.connect(database) as connection:
+        for candidate_sha in stage_entities(connection):
+            _approve(connection, candidate_sha, {"basis": "approved calendar recovery fixture"}, status="accepted_legacy")
+    legacy_items = RegistryReader(database, public=False, repository_root=tmp_path / "application").pdf_calendar_items_all()
+    expected_fields = (
+        "occurrence_id", "source_document_sha256", "name", "publisher", "relevance",
+        "source_urls", "location", "online_url", "calendar_field_basis", "start_date", "end_date",
+    )
+    expected = {
+        item["occurrence_id"]: {key: item.get(key) for key in expected_fields}
+        for item in legacy_items
+    }
+    calls.clear()
+    direct_reader = RegistryReader(database, repository_root=tmp_path / "application")
+    direct_items = direct_reader.pdf_calendar_items_all()
+    assert {item["occurrence_id"]: {key: item.get(key) for key in expected_fields}
+        for item in direct_items} == expected
+    assert len(calls) == 3
+    assert len({document_sha for document_sha, _items in calls}) == 3
+    assert sum(len(items) for _document_sha, items in calls) == 103
+
 
 def test_update_fields_keep_summary_and_caveat_but_remove_report_badges():
     title, url = "Climate finance update", "https://example.org/article"

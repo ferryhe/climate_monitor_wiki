@@ -58,6 +58,20 @@ def _verified_information_blocks(occurrence: dict) -> list[str]:
         f"Website evidence: {information['source_url']}; checked {information['generated_at']}"] if information else []
 
 
+def _registry_article_has_renderable_content(article: dict) -> bool:
+    content = article.get("available_content") or article.get("content", {})
+    return bool(
+        content.get("markdown")
+        or content.get("supporting_excerpt")
+        or article.get("summary")
+        or article.get("report_summary")
+        or article.get("acquisition_observations")
+        or article.get("date_observations")
+        or any(item.get("summary") for item in article.get("pdf_occurrences", []))
+        or any(item.get("summary") for item in article.get("appearances", []))
+    )
+
+
 def _render_registry_article(article: dict) -> str | None:
     content = article.get("available_content") or article.get("content", {})
     report_summary = article.get("report_summary")
@@ -70,16 +84,7 @@ def _render_registry_article(article: dict) -> str | None:
         and appearance.get("summary") == report_summary
         for appearance in appearances
     )
-    if not (
-        content.get("markdown")
-        or content.get("supporting_excerpt")
-        or article.get("summary")
-        or report_summary
-        or acquisition_observations
-        or date_observations
-        or any(item.get("summary") for item in pdf_occurrences)
-        or any(item.get("summary") for item in appearances)
-    ):
+    if not _registry_article_has_renderable_content({**article, "pdf_occurrences": pdf_occurrences}):
         return None
 
     title = article.get("title") or next(
@@ -251,15 +256,29 @@ def _render_registry_article(article: dict) -> str | None:
     return "\n".join(blocks)
 
 
-def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
+def _registry_source_observation_occurrences(items: list[dict]) -> list[dict]:
     # Keep the first imported identity when later imports repeat the same passage.
     occurrences = sorted(
         [occurrence for item in items for occurrence in item.get("occurrences", [])
          if occurrence.get("summary")],
         key=lambda occurrence: (occurrence.get("imported_at") or "", occurrence["occurrence_id"]),
     )
+    return deduplicate_pdf_occurrences(occurrences, preserve_first_identity=True)
+
+
+def _registry_source_observation_page_names(items: list[dict]) -> set[str]:
+    names = set()
+    for occurrence in _registry_source_observation_occurrences(items):
+        name = f"registry-source-observation-{occurrence['occurrence_id']}.md"
+        if not re.fullmatch(r"registry-source-observation-[A-Za-z0-9_-]+\.md", name):
+            raise ValueError("invalid PDF observation page identity")
+        names.add(name)
+    return names
+
+
+def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
     pages = {}
-    for occurrence in deduplicate_pdf_occurrences(occurrences, preserve_first_identity=True):
+    for occurrence in _registry_source_observation_occurrences(items):
         name = f"registry-source-observation-{occurrence['occurrence_id']}.md"
         if not re.fullmatch(r"registry-source-observation-[A-Za-z0-9_-]+\.md", name):
             raise ValueError("invalid PDF observation page identity")
@@ -287,6 +306,248 @@ def _render_registry_source_observations(items: list[dict]) -> str | None:
         title = markdown.splitlines()[0].removeprefix("# ")
         blocks.append(f"- [[{name.removesuffix('.md')}|{title}]]")
     return "\n".join([*blocks, ""])
+
+
+def _render_registry_meetings(meetings: list[dict]) -> str | None:
+    if not meetings:
+        return None
+    blocks = ["# Meetings and key dates", ""]
+    for item in meetings:
+        if item.get("origin") == "pdf_import":
+            blocks += ["## " + str(item.get("name") or "Key date"), str(item.get("raw_date") or "Date not provided"),
+                item.get("summary") or "", _citation(item), "Provenance: PDF observed record; " + item.get("verification_status", "unchecked"), ""]
+        else:
+            blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
+                item.get("relevance_reason") or "", "Status: " + str(item.get("status") or "Unknown")]
+            blocks += [label + ": " + str(item[field]) for field, label in (
+                ("end_date", "End date"), ("deadline_date", "Deadline"), ("deadline_type", "Deadline type"),
+                ("organizer", "Host"), ("location", "Location"), ("timezone", "Timezone"),
+                ("online_url", "Online URL")) if item.get(field)]
+            for source in item.get("sources", []):
+                url = source.get("source_url")
+                if url:
+                    blocks.append("Source: [" + url + "](" + url + ")")
+            for observation in item.get("pdf_observations", []):
+                blocks += ["PDF observation: " + str(observation.get("summary") or ""), _citation(observation)]
+            blocks.append("")
+    return "\n".join(blocks).rstrip("\n") + "\n"
+
+
+def _registry_report_markdown(report_date: str, filename: str, report_sha256: str,
+    articles: list[dict[str, Any]], *, approved_versions: bool = False,
+    include_top_source: bool = False) -> str:
+    blocks = ["# Climate Monitor " + report_date, ""]
+    source_line = "Source report: " + filename + "; SHA-256: " + report_sha256
+    if include_top_source:
+        blocks += [source_line, ""]
+    for entry in articles:
+        article = entry["article"]
+        appearance = entry.get("appearance") or {}
+        if entry.get("source_report_article"):
+            summary = article.get("summary") or article.get("report_summary")
+        else:
+            summary = article.get("summary") if article.get("summary") is not None else appearance.get("summary") or article.get("report_summary")
+        blocks += ["## " + str(article.get("title") or article["canonical_url"]), summary or ""]
+        if approved_versions:
+            blocks.append("Approved Registry version: " + article["published_candidate_sha256"])
+        else:
+            blocks.append(source_line)
+        blocks += [article["canonical_url"], ""]
+    return "\n".join(blocks).rstrip("\n") + "\n"
+
+
+def _render_registry_report_page(reader: RegistryReader, report_date: str, source_dir=None) -> str | None:
+    with reader.connect() as connection:
+        report = connection.execute("SELECT report_id,filename,report_sha256 FROM reports WHERE report_date=?",
+            (report_date,)).fetchone()
+        if report is None:
+            return None
+        appearances = connection.execute("SELECT article_id,ordinal FROM report_appearances WHERE report_id=? ORDER BY ordinal,article_id",
+            (report["report_id"],)).fetchall()
+    identities = [row["article_id"] for row in appearances]
+    candidates = reader._public_candidates("article", entity_ids={"article": identities}) if identities else {}
+    articles = []
+    for appearance_row in appearances:
+        snapshot = candidates.get(("article", appearance_row["article_id"]))
+        if snapshot is None:
+            continue
+        article = reader._article_from_snapshot(snapshot)
+        if article.get("document_kind") != "article" or not article.get("publication_eligible"):
+            continue
+        appearance = next((item for item in article.get("appearances", [])
+            if item.get("report_date") == report_date and item.get("ordinal") == appearance_row["ordinal"]), None)
+        if appearance is not None:
+            articles.append({"article": article, "appearance": appearance})
+    if not articles:
+        return None
+
+    source_root = Path(source_dir).resolve(strict=False) if source_dir is not None else None
+    source_report = reader._source_report(report_date, report["filename"], report["report_sha256"], archive=True) if source_root else None
+    if source_report is not None:
+        from climate_monitor.dedupe import canonical_url
+        details = {canonical_url(entry["article"]["canonical_url"]): entry["article"] for entry in articles}
+        source_articles = []
+        for observed in source_report.articles:
+            detail = details.get(canonical_url(observed.url))
+            if detail is not None:
+                source_articles.append({"article": detail, "source_report_article": True})
+        if source_articles:
+            return _registry_report_markdown(report_date, source_report.path.name, source_report.sha256,
+                source_articles, approved_versions=True, include_top_source=True)
+    return _registry_report_markdown(report_date, report["filename"], report["report_sha256"], articles)
+
+
+def _registry_page_index(reader: RegistryReader) -> str:
+    names = set()
+    for snapshot in reader._public_candidates("article").values():
+        tables = snapshot.get("tables", {})
+        article = snapshot.get("static_payload") or next(iter(tables.get("articles", [])), {})
+        if article.get("document_kind") != "article" or not article.get("publication_eligible"):
+            continue
+        # The list DTO applies the same approved annotation/report/enrichment
+        # precedence as detail without loading article bodies.
+        card = reader._article_card_from_snapshot(snapshot)
+        content = next((row for row in tables.get("article_content_versions", [])
+            if row.get("content_version_id") == article.get("current_content_version_id")), {})
+        static_payload = snapshot.get("static_payload") or {}
+        static_content = static_payload.get("available_content") or static_payload.get("content") or {}
+        git_wiki_content = snapshot.get("git_wiki") or {}
+        occurrence_summaries = []
+        for row in tables.get("pdf_intake_article_occurrences", []):
+            try:
+                occurrence = json.loads(row.get("occurrence_json") or "{}")
+            except (json.JSONDecodeError, TypeError) as exc:
+                from .read_api import RegistryContractError
+                raise RegistryContractError("invalid PDF article occurrence data") from exc
+            if isinstance(occurrence, dict) and occurrence.get("summary_basis") != "verbatim_pdf_calendar_row":
+                occurrence_summaries.append({"summary": occurrence.get("summary")})
+        # Pass only truthy sentinels into the shared eligibility check. The
+        # index names pages without rendering or returning their body text.
+        index_view = {
+            "available_content": {
+                "markdown": "present" if (static_content.get("markdown") or git_wiki_content.get("markdown")
+                    or content.get("markdown_content")) else None,
+                "supporting_excerpt": "present" if static_content.get("supporting_excerpt") else None,
+            },
+            "summary": card.get("summary"),
+            "report_summary": card.get("report_summary"),
+            "acquisition_observations": (static_payload.get("acquisition_observations")
+                or ([{}] if tables.get("acquisition_items") else [])),
+            "date_observations": static_payload.get("date_observations") or tables.get("article_date_observations", []),
+            "pdf_occurrences": [*static_payload.get("pdf_occurrences", []), *occurrence_summaries],
+            "appearances": card.get("appearances") or static_payload.get("appearances", []),
+        }
+        if _registry_article_has_renderable_content(index_view):
+            names.add("article-" + str(snapshot.get("entity_id")) + ".md")
+        for row in tables.get("report_appearances", []):
+            report = next((item for item in snapshot.get("dependencies", {}).get("reports", [])
+                if item.get("report_id") == row.get("report_id")), None)
+            if report:
+                names.add("climate-monitor-" + report["report_date"] + ".md")
+    pdf_items = reader.pdf_articles_all(include_linked=False)
+    source_names = _registry_source_observation_page_names(pdf_items)
+    names.update(source_names)
+    if source_names:
+        names.add("registry-source-observations.md")
+    if reader.meetings_all(base_date="1900-01-01"):
+        names.add("registry-meetings.md")
+    return "# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(names)) + "\n"
+
+
+def render_registry_page(database: Path, page: str, *, reader: RegistryReader, source_dir=None) -> str | None:
+    """Render one requested public page from exact approved candidate snapshots."""
+    if page == "index.md":
+        return _registry_page_index(reader)
+    match = re.fullmatch(r"article-([A-Za-z0-9_-]+)\.md", page)
+    if match:
+        article = reader.article(match.group(1))
+        if article.get("document_kind") != "article" or not article.get("publication_eligible"):
+            return None
+        rendered = _render_registry_article(article)
+        if rendered:
+            observed_date = (article.get("collected_at") or article.get("information_date") or article.get("publication_date") or article.get("report_date") or article.get("last_seen") or "")[:10]
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", observed_date):
+                rendered += "\nUpdated (source observation): " + observed_date + "\n"
+        return rendered
+    match = re.fullmatch(r"registry-source-observation-([A-Za-z0-9_-]+)\.md", page)
+    if match:
+        occurrence_id = match.group(1)
+        with reader.connect() as connection:
+            row = connection.execute("SELECT article_id,source_document_sha256,page FROM pdf_intake_article_occurrences WHERE occurrence_id=?",
+                (occurrence_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            article = reader.pdf_article(row[0])
+        except Exception as exc:
+            from .read_api import RegistryNotFoundError
+            if isinstance(exc, RegistryNotFoundError):
+                return None
+            raise
+        target = next((item for item in article.get("occurrences", []) if item.get("occurrence_id") == occurrence_id), None)
+        if target is None:
+            return None
+        if article.get("core_article_id"):
+            return None
+        # Index and batch rendering deduplicate exact passages across article
+        # identities. For a target page, limit that same reduction to the
+        # document page that can contain this passage, then select only those
+        # approved article candidates in one batch.
+        with reader.connect() as connection:
+            related = connection.execute("""SELECT DISTINCT o.occurrence_id,o.article_id,p.core_article_id
+                FROM pdf_intake_article_occurrences o JOIN pdf_intake_articles p ON p.article_id=o.article_id
+                WHERE o.source_document_sha256=? AND o.page IS ?""",
+                (row["source_document_sha256"], row["page"])).fetchall()
+        related_ids = {item["article_id"] for item in related}
+        core_ids = {item["core_article_id"] for item in related if item["core_article_id"]}
+        # Same-URL core IDs only locate an approved snapshot that may own the
+        # occurrence. They do not make an unlinked PDF record ineligible.
+        if article.get("canonical_url"):
+            with reader.connect() as connection:
+                core_ids.update(row[0] for row in connection.execute(
+                    "SELECT article_id FROM articles WHERE canonical_url=? ORDER BY article_id",
+                    (article["canonical_url"],)).fetchall())
+        candidates = reader._public_candidates("article", "pdf_article", entity_ids={
+            "article": core_ids, "pdf_article": related_ids,
+        })
+        related_occurrences = []
+        target_key = (target.get("source_document_sha256"), target.get("page"),
+            " ".join((target.get("summary") or "").split()))
+        from climate_monitor.dedupe import canonical_url
+        target_key += (canonical_url(target.get("raw_url") or ""),)
+        wanted_ids = {item["occurrence_id"] for item in related}
+        for identity in sorted(related_ids):
+            owner = next((snapshot for (kind, _), snapshot in candidates.items() if kind == "article"
+                and any(item.get("article_id") == identity for item in snapshot.get("tables", {}).get("pdf_intake_articles", []))), None)
+            snapshot = owner or candidates.get(("pdf_article", identity))
+            if snapshot is None:
+                continue
+            scoped = snapshot if snapshot.get("entity_id") == identity else {**snapshot, "entity_id": identity}
+            for occurrence in reader._pdf_occurrences_from_snapshot(scoped):
+                if occurrence.get("occurrence_id") not in wanted_ids:
+                    continue
+                key = (occurrence.get("source_document_sha256"), occurrence.get("page"),
+                    " ".join((occurrence.get("summary") or "").split()),
+                    canonical_url(occurrence.get("raw_url") or ""))
+                if key == target_key:
+                    related_occurrences.append(occurrence)
+        related_occurrences.sort(key=lambda item: (item.get("imported_at") or "", item.get("occurrence_id") or ""))
+        from .information_checks import deduplicate_pdf_occurrences
+        winners = deduplicate_pdf_occurrences(related_occurrences, preserve_first_identity=True)
+        winner = next((item for item in winners if item.get("occurrence_id") == occurrence_id), None)
+        if winner is None:
+            return None
+        article["occurrences"] = [winner]
+        return _registry_source_observation_pages([article]).get(page)
+    if page == "registry-source-observations.md":
+        items = reader.pdf_articles_all(include_linked=False)
+        return _render_registry_source_observations(items)
+    if page == "registry-meetings.md":
+        return _render_registry_meetings(reader.meetings_all(base_date="1900-01-01"))
+    match = re.fullmatch(r"climate-monitor-(\d{4}-\d{2}-\d{2})\.md", page)
+    if match:
+        return _render_registry_report_page(reader, match.group(1), source_dir=source_dir)
+    return None
 
 
 def _json_strings(value: str | None) -> list[str]:
@@ -576,6 +837,55 @@ def _registry_pages_read(
     reader = reader or RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
     pages: dict[str, str] = {}
     article_details = {}
+    if getattr(reader, "_snapshot_direct", False):
+        with reader.connect() as connection:
+            direct = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+        if direct:
+            candidates = reader._public_candidates("article")
+            for snapshot in candidates.values():
+                article = reader._article_from_snapshot(snapshot)
+                if article.get("document_kind") != "article" or not article.get("publication_eligible"):
+                    continue
+                article_details[article["article_id"]] = article
+                article["pdf_occurrences"] = _filtered(article.get("pdf_occurrences", []), occurrence_filter)
+                rendered = _render_registry_article(article)
+                if rendered:
+                    observed_date = (article.get("collected_at") or article.get("information_date") or article.get("publication_date") or article.get("report_date") or article.get("last_seen") or "")[:10]
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", observed_date):
+                        rendered += "\nUpdated (source observation): " + observed_date + "\n"
+                    pages[f"article-{article['article_id']}.md"] = rendered
+            pdf_items = reader.pdf_articles_all(include_linked=False)
+            pdf_items = [{**item, "occurrences": _filtered(item.get("occurrences", []), occurrence_filter)} for item in pdf_items]
+            pages.update(_registry_source_observation_pages(pdf_items))
+            rendered_sources = _render_registry_source_observations(pdf_items)
+            if rendered_sources:
+                pages["registry-source-observations.md"] = rendered_sources
+            meetings = reader.meetings_all(base_date="1900-01-01")
+            rendered_meetings = _render_registry_meetings(meetings)
+            if rendered_meetings:
+                pages["registry-meetings.md"] = rendered_meetings
+            by_date = defaultdict(list)
+            report_identities = {}
+            for snapshot in candidates.values():
+                article = article_details.get(snapshot.get("entity_id"))
+                if article is None:
+                    continue
+                dependencies = {row.get("report_id"): row for row in snapshot.get("dependencies", {}).get("reports", [])}
+                for row in snapshot.get("tables", {}).get("report_appearances", []):
+                    report = dependencies.get(row.get("report_id"))
+                    if not report:
+                        continue
+                    appearance = next((item for item in article.get("appearances", [])
+                        if item.get("report_date") == report.get("report_date") and item.get("ordinal") == row.get("ordinal")), {})
+                    by_date[report["report_date"]].append({"article": article, "appearance": appearance})
+                    report_identities[report["report_date"]] = (report["filename"], report["report_sha256"])
+            for report_date, items in by_date.items():
+                filename, sha = report_identities[report_date]
+                pages["climate-monitor-" + report_date + ".md"] = _registry_report_markdown(
+                    report_date, filename, sha, items)
+            for name, content in pages.items():
+                (wiki_dir / name).write_text(content, encoding="utf-8")
+            return pages
     page = 1
     while True:
         payload = reader.articles(page=page, page_size=100)

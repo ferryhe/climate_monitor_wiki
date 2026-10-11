@@ -61,6 +61,8 @@ from climate_monitor.hermes_dashboard import (
     proxy_websocket,
 )
 from climate_registry.read_api import (
+    filter_article_cards,
+    filter_pdf_articles,
     RegistryContractError,
     RegistryLocationError,
     RegistryNotFoundError,
@@ -179,7 +181,7 @@ def _range_report_overlay(
 ) -> tuple[RegistryReader | None, RegistryReader | None, dict[str, Any] | None]:
     configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     if configured:
-        with RegistryReader(configured, repository_root=ROOT).connect() as connection:
+        with RegistryReader(configured, repository_root=ROOT, public=False).connect() as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                 return None, None, None
     return load_active_range_overlay(
@@ -215,11 +217,19 @@ class WikiStaticFiles(StaticFiles):
         configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
         if configured and path.endswith(".md"):
             from climate_registry.publication import public_wiki_pages
-            pages = _registry_query(lambda: public_wiki_pages(configured))
+            pages = _registry_query(lambda: public_wiki_pages(configured, page=path))
             if pages is not None:
                 if path not in pages:
                     raise HTTPException(status_code=404, detail="Wiki page not found")
+                # Preserve the scheduled base + activated PDF merge only after
+                # the target Registry read has confirmed this page is public.
+                if is_registry_runtime_path(path) and self._has_runtime_layer(path):
+                    return self._layered_markdown(path)
                 return pages[path]
+            if is_registry_runtime_path(path):
+                if self._has_runtime_layer(path):
+                    return self._layered_markdown(path)
+                raise HTTPException(status_code=404, detail="Wiki page not found")
         if not is_registry_runtime_path(path) and path != "index.md":
             return None
         if is_registry_runtime_path(path) and path.startswith("registry-source-observation-"):
@@ -230,6 +240,18 @@ class WikiStaticFiles(StaticFiles):
             names.update(file.name for file in Path(directory).glob("*.md") if is_registry_runtime_path(file.name))
         files = {name: markdown for name in names if (markdown := self._layered_markdown(name)) is not None}
         return deduplicate_registry_pdf_markdown(files).get(path)
+
+    def _has_runtime_layer(self, path: str) -> bool:
+        """Whether a non-base activated PDF directory owns this exact page."""
+        directories = tuple(self.all_directories)
+        if len(directories) < 2:
+            return False
+        base = os.path.abspath(str(WIKI_DIR))
+        return any(
+            os.path.abspath(str(directory)) != base
+            and (Path(directory) / path).is_file()
+            for directory in directories
+        )
 
     def _layered_markdown(self, path: str) -> str | None:
         layers = []
@@ -685,13 +707,14 @@ def registry_status(include_pdf: bool = False):
         )
     try:
         reader = RegistryReader(configured, repository_root=ROOT)
-        with reader.public_snapshot():
+        with reader.public_snapshot(direct=True):
             status = reader.status()
             if include_pdf:
                 with reader.connect() as connection:
                     selected = reader if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else None
                 status["reports"] = _registry_report_page(reader, 1, 20, include_pdf=True)["pagination"]["total"]
-                status["articles"] = _registry_article_page(1, 20, include_pdf=True, selected=selected)["pagination"]["total"]
+                status["articles"] = (selected.approved_merged_article_count() if selected is not None
+                    else _registry_article_page(1, 20, include_pdf=True)["pagination"]["total"])
                 dates = [item["report_date"] for item in _pdf_reports(reader) if item.get("report_date")]
                 status["latest_report_date"] = max(dates + [status["latest_report_date"] or ""]) or None
             return status
@@ -716,7 +739,13 @@ def _registry_report_page(reader, page, page_size, *, include_pdf):
     validate_page(page, page_size)
     if not include_pdf:
         return reader.reports(page=page, page_size=page_size)
-    items = _all_registry_pages(reader.reports) + _pdf_reports(reader)
+    if getattr(reader, "_snapshot_direct", False):
+        with reader.connect() as connection:
+            direct = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+        core = reader.approved_reports_all() if direct else _all_registry_pages(reader.reports)
+    else:
+        core = _all_registry_pages(reader.reports)
+    items = core + _pdf_reports(reader)
     items.sort(key=lambda item: (item.get("report_date") or "", item.get("report_id") or ""), reverse=True)
     offset = (page - 1) * page_size
     return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, len(items))}
@@ -727,7 +756,7 @@ def registry_reports(page: str = "1", page_size: str = "20", include_pdf: bool =
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_reports():
         reader = _registry_reader()
-        with reader.public_snapshot():
+        with reader.public_snapshot(direct=True):
             return _registry_report_page(reader, parsed_page, parsed_size, include_pdf=include_pdf)
     return _registry_query(query_reports)
 
@@ -748,8 +777,6 @@ def registry_imported_report_pdf(document_sha256: str) -> Response:
         body = report["pdf_bytes"]
         if body is None:
             raise RegistryNotFoundError("original PDF unavailable")
-        if hashlib.sha256(body).hexdigest() != document_sha256:
-            raise RegistryContractError("original PDF hash mismatch")
         return Response(content=body, media_type="application/pdf", headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(report['filename'], safe='')}",
             "X-Content-Type-Options": "nosniff"})
@@ -820,6 +847,36 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
     if not include_pdf:
         payload = (selected or _registry_reader()).articles(page=parsed_page, page_size=parsed_size, **filters)
         return {**payload, "items": [_public_dto(item) for item in payload["items"]]}
+    if selected is not None and getattr(selected, "_snapshot_direct", False):
+        with selected.connect() as connection:
+            direct = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+        if direct:
+            approved_core = selected.approved_article_cards_all()
+            core_by_url = {item["canonical_url"]: {
+                key: value for key, value in item.items() if key not in {"appearances", "source_id"}
+            } | {"source_kind": "registry"} for item in approved_core}
+            core_matches = filter_article_cards(approved_core, **filters, include_internal=True)
+            all_pdf = selected.pdf_articles_all(include_linked=True)
+            pdf_counts = {item["canonical_url"]: len(item.get("occurrences", [])) for item in all_pdf}
+            for core_item in core_by_url.values():
+                if core_item["canonical_url"] in pdf_counts:
+                    core_item.update(source_label="Registry · PDF import",
+                        pdf_occurrence_count=pdf_counts[core_item["canonical_url"]])
+            merged = {item["canonical_url"]: core_by_url[item["canonical_url"]] for item in core_matches}
+            if not pillar:
+                pdf_items = filter_pdf_articles(all_pdf, query=query, source=source, report_date=report_date)
+                for item in pdf_items:
+                    core_item = core_by_url.get(item["canonical_url"])
+                    if core_item is not None:
+                        merged[item["canonical_url"]] = core_item
+                    else:
+                        merged[item["canonical_url"]] = dict(item, source_kind="pdf")
+            items = list(merged.values())
+            items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
+            offset = (parsed_page - 1) * parsed_size
+            payload = items[offset:offset + parsed_size]
+            return {"items": [(_pdf_dto(item) if item.get("source_kind") == "pdf" else _public_dto(item)) for item in payload],
+                "pagination": _pagination(parsed_page, parsed_size, len(items))}
     web_reader, _, manifest = (None, None, None) if selected else _range_report_overlay()
     active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
     readers = [(selected or _registry_reader(), None)] + ([(web_reader, active_ids)] if web_reader else [])
@@ -869,7 +926,11 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
 def registry_publishers(include_pdf: bool = False) -> dict:
     def query_publishers():
         reader = _registry_reader()
-        with reader.public_snapshot():
+        with reader.public_snapshot(direct=True):
+            with reader.connect() as connection:
+                published = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
+            if published:
+                return reader.publishers(include_pdf=include_pdf)
             payload = reader.publishers()
             if not include_pdf:
                 return payload
@@ -897,7 +958,7 @@ def registry_articles(
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_snapshot():
         selected = _registry_reader()
-        with selected.public_snapshot():
+        with selected.public_snapshot(direct=True):
             with selected.connect() as connection:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                     return _registry_article_page(parsed_page, parsed_size, query=query, source=source, pillar=pillar, report_date=report_date, include_pdf=include_pdf, selected=selected)
@@ -1014,7 +1075,7 @@ def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
 def registry_article(article_id: str) -> dict:
     def query_article():
         selected = _registry_reader()
-        with selected.public_snapshot():
+        with selected.public_snapshot(direct=True):
             with selected.connect() as connection:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                     return selected.article(article_id)
