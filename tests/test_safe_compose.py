@@ -68,6 +68,8 @@ def _stub_processes(
     config_stdout: str | None = None,
     config_stderr: str = "",
     actual_returncodes: int | BaseException | list[int | BaseException] = 0,
+    probe_stdout: str | None = None,
+    probe_returncode: int = 0,
 ):
     config_calls: list[tuple[list[str], dict[str, object]]] = []
     actual_calls: list[tuple[list[str], dict[str, object], FakeProcess]] = []
@@ -76,6 +78,8 @@ def _stub_processes(
 
     def fake_run(command, **kwargs):
         config_calls.append((command, kwargs))
+        if "input" in kwargs:
+            return subprocess.CompletedProcess(command, probe_returncode, stdout=probe_stdout, stderr="private probe failure")
         stdout = config_stdout
         if stdout is None:
             stdout = json.dumps(_model() if model is None else model)
@@ -94,6 +98,96 @@ def _stub_processes(
     monkeypatch.setattr(safe_compose.subprocess, "run", fake_run)
     monkeypatch.setattr(safe_compose.subprocess, "Popen", fake_popen)
     return config_calls, actual_calls
+
+
+def _probe_model(false_bind, true_bind):
+    return json.dumps({"services": {name: {"volumes": [{
+        "type": "bind", "target": "/probe", "bind": binding,
+    }]} for name, binding in (("probe-false", false_bind), ("probe-true", true_bind))}})
+
+
+def _writable_registry_model(source):
+    return {"services": {name: {"environment": {
+        "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3", "CLIMATE_PDF_INTAKE_WRITER": "1",
+    }, "volumes": [{"type": "bind", "source": str(source), "target": "/registry", "bind": {}}]}
+        for name in ("wiki", "pdf-intake-writer")}}
+
+
+@pytest.mark.parametrize("old_serializer", [True, False])
+def test_ambiguous_registry_bind_observes_same_cli_once_and_preserves_selection(tmp_path, monkeypatch, old_serializer):
+    stdout = _probe_model({}, {"create_host_path": True}) if old_serializer else _probe_model({"create_host_path": False}, {})
+    configs, actual = _stub_processes(monkeypatch, model=_writable_registry_model(tmp_path), probe_stdout=stdout)
+    selection = ["-f", "base.yml", "-f", "retained.yml", "--env-file", "local.env", "-p", "local-project"]
+    environment = {"PATH": "operator-path", "CALLER_VALUE": "preserved"}
+    if old_serializer:
+        assert safe_compose.run_compose([*selection, "up"], environment=environment) == 0
+        assert actual[0][0] == ["docker", "compose", *selection, "up"]
+    else:
+        with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
+            safe_compose.run_compose([*selection, "up"], environment=environment)
+        assert not actual
+    assert len(configs) == 2
+    assert configs[0][0] == ["docker", "compose", *selection, "--profile", "*", "config", "--format", "json"]
+    assert all(call[1]["env"] == environment for call in configs)
+    assert configs[1][0] == ["docker", "compose", "--env-file", os.devnull, "-p", "compose-bind-probe", "-f", "-", "config", "--format", "json"]
+    assert set(json.loads(configs[1][1]["input"])["services"]) == {"probe-false", "probe-true"}
+
+
+@pytest.mark.parametrize("stdout,returncode,expected", [
+    ("not-json", 0, 2), ("null", 0, 2), ('{"services": []}', 0, 2),
+    (_probe_model({}, {}), 0, 2), (_probe_model({"create_host_path": False}, {"create_host_path": True}), 0, 2),
+    (_probe_model({}, {"create_host_path": 1}), 0, 2), (_probe_model(None, {}), 0, 2),
+    (_probe_model({"unknown": True}, {"create_host_path": True}), 0, 2),
+    ("", 17, 17), ("", -15, 143),
+])
+def test_unrecognized_or_failed_bind_probe_never_dispatches(tmp_path, monkeypatch, capsys, stdout, returncode, expected):
+    _, actual = _stub_processes(monkeypatch, model=_writable_registry_model(tmp_path),
+        probe_stdout=stdout, probe_returncode=returncode)
+    assert safe_compose.main(["up"]) == expected
+    assert "cannot resolve omitted bind create_host_path" in capsys.readouterr().err
+    assert not actual
+
+
+@pytest.mark.parametrize("binding", [None, {"create_host_path": True}, {"create_host_path": False}])
+def test_unambiguous_registry_bind_does_not_probe(tmp_path, monkeypatch, binding):
+    model = _writable_registry_model(tmp_path)
+    for service in model["services"].values():
+        if binding is None:
+            del service["volumes"][0]["bind"]
+        else:
+            service["volumes"][0]["bind"] = binding
+    configs, actual = _stub_processes(monkeypatch, model=model)
+    if binding == {"create_host_path": False}:
+        assert safe_compose.run_compose(["up"]) == 0
+        assert actual
+    else:
+        with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
+            safe_compose.run_compose(["up"])
+        assert not actual
+    assert len(configs) == 1
+
+
+@pytest.mark.parametrize("syntax,allowed", [("false", True), ("true", False), ("omitted", False), ("short", False)])
+def test_real_compose_registry_bind_capability_preserves_rejection(tmp_path, monkeypatch, syntax, allowed):
+    if not safe_compose.shutil.which("docker"):
+        pytest.skip("Docker Compose CLI is not installed")
+    compose = tmp_path / "registry-bind.yml"
+    mount = (f"      - {tmp_path.as_posix()}:/registry\n" if syntax == "short" else
+        f"      - type: bind\n        source: {tmp_path.as_posix()}\n        target: /registry\n")
+    if syntax in {"false", "true"}:
+        mount += f"        bind:\n          create_host_path: {syntax}\n"
+    compose.write_text('services:\n  wiki:\n    image: caddy:2-alpine\n    environment:\n'
+        '      CLIMATE_REGISTRY_DB: /registry/article-registry.sqlite3\n    volumes:\n' + mount)
+    actual = []
+    monkeypatch.setattr(safe_compose, "_run_actual_compose", lambda command, **kwargs: actual.append(command) or 0)
+    arguments = ["-f", str(compose), "up"]
+    if allowed:
+        assert safe_compose.run_compose(arguments) == 0
+        assert actual == [[safe_compose.shutil.which("docker"), "compose", *arguments]]
+    else:
+        with pytest.raises(safe_compose.ComposeBindSourceError, match="read-only bind"):
+            safe_compose.run_compose(arguments)
+        assert not actual
 
 
 @pytest.mark.parametrize("command", ["up", "create"])

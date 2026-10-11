@@ -339,6 +339,10 @@ os.execv(sys.argv[2], sys.argv[2:])
         assert result.returncode == 0, result.stderr
     calls = [json.loads(line) for line in trace.read_text().splitlines()]
     assert all(call["sudo"] for call in calls)
-    assert sum("config" in call["args"] for call in calls) == 2  # explicit config plus safe_compose's real model preflight
+    probes = [call for call in calls if call["args"][1:] == ["--env-file", os.devnull, "-p", "compose-bind-probe",
+        "-f", "-", "config", "--format", "json"]]
+    deployment_calls = [call for call in calls if call not in probes]
+    assert len(probes) <= 1  # older Compose omits false; resolve that representation once
+    assert sum("config" in call["args"] for call in deployment_calls) == 2  # explicit config plus full model preflight
     assert sum("up" in call["args"] for call in calls) == 1
-    assert all(call["args"][:1] == ["compose"] and call["args"][1:1 + len(selection)] == selection for call in calls)
+    assert all(call["args"][:1] == ["compose"] and call["args"][1:1 + len(selection)] == selection for call in deployment_calls)

@@ -116,6 +116,9 @@ sources and deployment receipts outside Git, optionally under ignored
    the original caller directory. Relative `COMPOSE_FILE` members resolve from the
    reviewed checkout; use absolute paths for every override outside it. Preserve
    all absolute paths and their order from the actual `config_files` inventory.
+   If Compose omits the Registry bind's `create_host_path` field, `safe_compose`
+   checks that CLI's serialization with a tiny daemon-free config query. The full
+   deployment model and all mount checks still apply; unknown results stop recreate.
 
    ```bash
    cd /path/to/verified/checkout
