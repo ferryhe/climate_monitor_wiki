@@ -137,7 +137,7 @@ function renderCurrentGraph() {}
 function registryElement(tag,className='',text='') { const element=new MiniElement(tag,text); element.className=className; return element; }
 function registryErrorMessage(error) { return String(error); }
 async function registryFetch(path) {
-  if (path.startsWith('/api/registry/articles?')) return {items:[{article_id:'a',source_kind:'registry'}],pagination:{total:1}};
+  if (path === '/api/registry/article-keywords') return {items:[{article_id:'a',source_kind:'registry'}]};
   return {article_id:'a',title:'Current article',publisher:'Publisher',content:{content_version_id:'v2'},keywords:[]};
 }
 ''' + functions + r'''
@@ -189,7 +189,7 @@ function registryElement(tag,className='',text='') { const element=new MiniEleme
 function registryErrorMessage(error) { return String(error); }
 let resolveListPage;
 async function registryFetch(path) {
-  if (path.startsWith('/api/registry/articles?')) return new Promise(resolve=>{resolveListPage=resolve;});
+  if (path === '/api/registry/article-keywords') return new Promise(resolve=>{resolveListPage=resolve;});
   return {article_id:'a',title:'Current article',publisher:'Publisher',content:{content_version_id:'v2'},keywords:[]};
 }
 function textContent(element) { return element.textContent + element.children.map(textContent).join(''); }
@@ -203,7 +203,7 @@ function textContent(element) { return element.textContent + element.children.ma
   const pendingLoad=loadArticleKeywordGraph();
   cachedFloodClick();
   const duringReload={hidden:els.articleKeywordEvidence.hidden,childCount:els.articleKeywordEvidence.children.length,text:textContent(els.articleKeywordEvidence)};
-  resolveListPage({items:[{article_id:'a',source_kind:'registry'}],pagination:{total:1}});
+  resolveListPage({items:[{article_id:'a',source_kind:'registry'}]});
   await pendingLoad;
   const graph=state.graphData.articleKeywords;
   const afterReload={hidden:els.articleKeywordEvidence.hidden,childCount:els.articleKeywordEvidence.children.length,text:textContent(els.articleKeywordEvidence),nodeCount:graph.nodes.length,emptyMessage:graph.emptyMessage,loading:state.articleKeywordGraphLoading};
@@ -222,4 +222,60 @@ function textContent(element) { return element.textContent + element.children.ma
         "nodeCount": 0,
         "emptyMessage": "No effective article keywords are available.",
         "loading": False,
+    }
+
+
+def test_article_keyword_graph_fetches_complete_collection_once():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable")
+    source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
+    graph_start = source.index("function buildArticleKeywordGraph(articles) {")
+    graph_end = source.index("\nfunction getNodeRadius(", graph_start)
+    functions = source[graph_start:graph_end]
+    script = r'''
+class MiniElement { replaceChildren() {} }
+const articles=Array.from({length:350},(_,i)=>({article_id:`a${i}`,source_kind:'registry',keywords:['Flood']}));
+const state={articleKeywordGraphLoading:false,graphData:{articleKeywords:null},graphMode:'article-keywords'};
+const GRAPH_COPY={articleKeywords:{title:'Article Keywords',hint:'hint',legendHtml:''}};
+const els={articleKeywordEvidence:new MiniElement()};
+let fetches=0;
+function renderCurrentGraph() {}
+function registryErrorMessage(error) { return String(error); }
+async function registryFetch(path) { fetches++; if(path!=='/api/registry/article-keywords') throw Error(path); return {items:articles}; }
+''' + functions + r'''
+(async()=>{ await loadArticleKeywordGraph(); process.stdout.write(JSON.stringify({fetches,items:state.graphData.articleKeywords.nodes[0].weight})); })().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == {"fetches": 1, "items": 350}
+
+
+def test_article_keyword_graph_keeps_error_recovery_and_clears_stale_evidence():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable")
+    source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
+    graph_start = source.index("function buildArticleKeywordGraph(articles) {")
+    graph_end = source.index("\nfunction getNodeRadius(", graph_start)
+    script = r'''
+class MiniElement { constructor(){this.hidden=false;this.children=[1];} replaceChildren(...children){this.children=children;} }
+const state={articleKeywordGraphLoading:false,graphData:{articleKeywords:null},graphMode:'article-keywords'};
+const GRAPH_COPY={articleKeywords:{title:'Article Keywords',hint:'hint',legendHtml:''}};
+const els={articleKeywordEvidence:new MiniElement()};
+let fetches=0;
+function renderCurrentGraph() {}
+function registryErrorMessage(error) { return error.message; }
+async function registryFetch(path) { fetches++; throw Error(`failed:${path}`); }
+''' + source[graph_start:graph_end] + r'''
+(async()=>{ await loadArticleKeywordGraph(); const graph=state.graphData.articleKeywords; process.stdout.write(JSON.stringify({fetches,hidden:els.articleKeywordEvidence.hidden,children:els.articleKeywordEvidence.children.length,loading:state.articleKeywordGraphLoading,nodes:graph.nodes.length,message:graph.emptyMessage,hint:graph.hint})); })().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == {
+        "fetches": 1,
+        "hidden": True,
+        "children": 0,
+        "loading": False,
+        "nodes": 0,
+        "message": "Article keywords could not be loaded.",
+        "hint": "failed:/api/registry/article-keywords",
     }

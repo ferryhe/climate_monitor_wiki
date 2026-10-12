@@ -308,8 +308,12 @@ def test_pdf_approved_occurrences_keep_legacy_latest_order_in_http_search(tmp_pa
     assert response.status_code == 200
     payload = response.json()
     assert payload["pagination"]["total"] == 1
-    assert payload["items"][0]["summary"] == "Newest approved observation"
-    assert payload["items"][0]["latest_occurrence"]["occurrence_id"] == "newer-occ"
+    assert payload["items"][0]["article_id"] == "pdf-one"
+    assert "summary" not in payload["items"][0] and "latest_occurrence" not in payload["items"][0]
+    keywords = TestClient(api_server.app).get("/api/registry/article-keywords").json()["items"]
+    item = next(item for item in keywords if item["article_id"] == "pdf-one")
+    assert item["summary"] == "Newest approved observation"
+    assert item["latest_occurrence"]["occurrence_id"] == "newer-occ"
 
 
 def test_include_pdf_publishers_preserve_sorted_core_label_overwrite(tmp_path, monkeypatch):
@@ -643,6 +647,7 @@ def test_include_pdf_status_counts_approved_url_union_without_detail_assembly(tm
     def unexpected(*_args, **_kwargs):
         pytest.fail("status count assembled the full PDF article list or detail")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    api_server._warm_article_keyword_cache()
     monkeypatch.setattr(api_server, "_registry_article_page", unexpected)
     monkeypatch.setattr(RegistryReader, "pdf_articles_all", unexpected)
     monkeypatch.setattr(RegistryReader, "_pdf_article_from_snapshot", unexpected)
@@ -718,8 +723,8 @@ def test_historical_meeting_candidate_bulk_loads_missing_frozen_batch_metadata(t
     original_source = reader._source_connection
 
     @contextmanager
-    def traced_source():
-        with original_source() as connection:
+    def traced_source(**kwargs):
+        with original_source(**kwargs) as connection:
             connection.set_trace_callback(statements.append)
             yield connection
 
@@ -757,8 +762,8 @@ def test_historical_article_candidate_restores_search_origin_in_one_lookup(tmp_p
     original_source = reader._source_connection
 
     @contextmanager
-    def traced_source():
-        with original_source() as connection:
+    def traced_source(**kwargs):
+        with original_source(**kwargs) as connection:
             connection.set_trace_callback(statements.append)
             yield connection
 

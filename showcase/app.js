@@ -145,9 +145,16 @@ const state = {
     meetingRequestSequence: 0,
     reportPagination: null,
     articlePagination: null,
+    publishersLoaded: false,
+    publishersPromise: null,
     selectedReportDate: null,
     reportRequestSequence: 0,
     articleRequestSequence: 0,
+    reportListRequestSequence: 0,
+    listPages: new Map(),
+    listVersion: null,
+    listFetchSequence: 0,
+    listVersionSequence: 0,
     articleDetailRequestSequence: 0,
     loadPromise: null,
   },
@@ -702,16 +709,8 @@ async function loadArticleKeywordGraph() {
   if (state.articleKeywordGraphLoading) return;
   clearArticleKeywordEvidence();
   state.articleKeywordGraphLoading = true;
-  const articles = [];
   try {
-    let page = 1;
-    let total = Infinity;
-    while (articles.length < total) {
-      const payload = await registryFetch(`/api/registry/articles?include_pdf=true&page=${page}&page_size=100`);
-      total = payload.pagination.total;
-      articles.push(...payload.items);
-      page += 1;
-    }
+    const { items: articles } = await registryFetch("/api/registry/article-keywords");
     const graphArticles = articles.map((item) => ({
       ...item,
       source_kind: item.source_kind || "registry",
@@ -830,7 +829,23 @@ function loadThread() {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      state.messages = parsed.filter((item) => item && item.role && item.content !== undefined && !item.pending);
+      const messages = parsed.filter((item) => item && item.role && item.content !== undefined
+        && !item.pending && !item.transient && !isLegacyStartupFailureNotice(item));
+      let changed = messages.length !== parsed.length;
+      messages.forEach((item) => {
+        const requestMessages = item.blockedRequest?.messages;
+        if (Array.isArray(requestMessages)) {
+          const cleanRequestMessages = requestMessages.filter((message) => !isLegacyStartupFailureNotice(message));
+          if (cleanRequestMessages.length !== requestMessages.length) {
+            item.blockedRequest.messages = cleanRequestMessages;
+            changed = true;
+          }
+        }
+      });
+      state.messages = messages;
+      if (changed) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state.messages));
+      }
     }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
@@ -838,7 +853,8 @@ function loadThread() {
 }
 
 function saveThread() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.messages.slice(-16)));
+  const persisted = state.messages.filter((item) => !item.transient && !isLegacyStartupFailureNotice(item));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted.slice(-16)));
 }
 
 function clearThread() {
@@ -897,12 +913,20 @@ function messageToApi(item) {
   return { role: item.role, content: item.role === "assistant" ? item.content.slice(0, 8000) : item.content, context: item.context || null };
 }
 
+function isLegacyStartupFailureNotice(item) {
+  return item?.role === "assistant" && typeof item.content === "string"
+    && item.content.startsWith("Could not reach the backend service: ")
+    && item.content.endsWith("\n\nStart it with `uvicorn api_server:app --host 0.0.0.0 --port 8501`.")
+    && !item.context && !item.rangeReport && !(item.sources?.length);
+}
+
 function appendMessage(role, content, options = {}) {
   state.messages.push({
     role,
     content,
     sources: options.sources || [],
     pending: Boolean(options.pending),
+    ...(options.transient ? { transient: true } : {}),
   });
   saveThread();
   renderMessages();
@@ -1109,7 +1133,8 @@ async function sendMessage(message, retryRequest = null) {
   if (!retryRequest) appendMessage("user", message);
   const userMessage = state.messages.findLast((item) => item.role === "user");
   const requestBody = retryRequest || {
-    messages: state.messages.filter((item) => !item.pending).map(messageToApi),
+    messages: state.messages.filter((item) => !item.pending && !item.transient
+      && !isLegacyStartupFailureNotice(item)).map(messageToApi),
     contextPath: state.activeContextPath,
     language: "en",
     answerMode: state.answerMode,
@@ -1974,8 +1999,11 @@ function setRegistryMode(mode) {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  if (state.registry.available && state.registry.mode === "articles" && !state.registry.articlePagination) {
-    void loadRegistryArticles();
+  if (state.registry.available && state.registry.mode === "articles") {
+    void loadRegistryPublishers();
+    if (!state.registry.articlePagination) {
+      void loadRegistryArticles();
+    }
   }
 }
 
@@ -2128,33 +2156,45 @@ async function loadRegistryPublishers() {
   if (!els.registryPublisherFilter) {
     return;
   }
+  if (state.registry.publishersLoaded) {
+    return;
+  }
+  if (state.registry.publishersPromise) {
+    return state.registry.publishersPromise;
+  }
   const currentValue = els.registryPublisherFilter.value;
   const allPublishers = registryElement("option", "", "All publishers");
   allPublishers.value = "";
-  try {
-    const payload = await registryFetch("/api/registry/publishers?include_pdf=true");
-    const options = (payload.items || []).map((publisher) => {
-      const option = registryElement("option", "", publisher.label || publisher.hostname);
-      option.value = publisher.hostname;
-      return option;
-    });
-    els.registryPublisherFilter.replaceChildren(allPublishers, ...options);
-    if (els.registryPublisherCustom) {
-      els.registryPublisherCustom.hidden = !payload.truncated;
-      if (!payload.truncated) {
+  state.registry.publishersPromise = (async () => {
+    try {
+      const payload = await registryFetch("/api/registry/publishers?include_pdf=true");
+      const options = (payload.items || []).map((publisher) => {
+        const option = registryElement("option", "", publisher.label || publisher.hostname);
+        option.value = publisher.hostname;
+        return option;
+      });
+      els.registryPublisherFilter.replaceChildren(allPublishers, ...options);
+      if (els.registryPublisherCustom) {
+        els.registryPublisherCustom.hidden = !payload.truncated;
+        if (!payload.truncated) {
+          els.registryPublisherCustom.value = "";
+        }
+      }
+      if (options.some((option) => option.value === currentValue)) {
+        els.registryPublisherFilter.value = currentValue;
+      }
+      state.registry.publishersLoaded = true;
+    } catch {
+      els.registryPublisherFilter.replaceChildren(allPublishers);
+      if (els.registryPublisherCustom) {
+        els.registryPublisherCustom.hidden = true;
         els.registryPublisherCustom.value = "";
       }
+    } finally {
+      state.registry.publishersPromise = null;
     }
-    if (options.some((option) => option.value === currentValue)) {
-      els.registryPublisherFilter.value = currentValue;
-    }
-  } catch {
-    els.registryPublisherFilter.replaceChildren(allPublishers);
-    if (els.registryPublisherCustom) {
-      els.registryPublisherCustom.hidden = true;
-      els.registryPublisherCustom.value = "";
-    }
-  }
+  })();
+  return state.registry.publishersPromise;
 }
 
 async function loadRegistry() {
@@ -2170,39 +2210,100 @@ async function loadRegistry() {
 }
 
 async function loadRegistryOnce() {
-  renderRegistryNotice(els.registryReports, "Checking the historical archive…");
+  state.registry.available = false;
+  let reportsLoaded = false;
   try {
+    reportsLoaded = await loadRegistryReports();
+    if (reportsLoaded) {
+      const reportCount = state.registry.reportPagination?.total ?? 0;
+      els.registryStatus.textContent = `${reportCount} reports`;
+    }
     const status = await registryFetch("/api/registry/status?include_pdf=true");
-    state.registry.loaded = true;
+    state.registry.loaded = reportsLoaded;
     state.registry.available = Boolean(status.available);
     if (!status.available) {
-      els.registryStatus.textContent = "Registry: unavailable";
-      renderRegistryNotice(
-        els.registryReports,
-        "The archive is not connected yet. Chat and the Obsidian explorer remain available.",
-      );
+      els.registryStatus.textContent = reportsLoaded
+        ? `${state.registry.reportPagination?.total ?? 0} reports · Registry unavailable`
+        : "Registry: unavailable";
       renderRegistryNotice(els.registryArticles, "Article history will appear when the registry is connected.");
-      updateRegistryPagination("reports", null);
       updateRegistryPagination("articles", null);
       return;
     }
     els.registryStatus.textContent = `${status.reports} reports · ${status.articles} articles`;
-    await loadRegistryPublishers();
-    await loadRegistryReports();
+    if (state.registry.mode === "articles") {
+      void loadRegistryPublishers();
+      if (!state.registry.articlePagination) {
+        void loadRegistryArticles();
+      }
+    }
   } catch (error) {
     state.registry.loaded = false;
     state.registry.available = false;
-    els.registryStatus.textContent = "Registry: unavailable";
-    renderRegistryNotice(els.registryReports, registryErrorMessage(error));
+    els.registryStatus.textContent = reportsLoaded
+      ? `${state.registry.reportPagination?.total ?? 0} reports`
+      : "Registry: unavailable";
+    if (state.registry.mode === "articles") {
+      renderRegistryNotice(els.registryArticles, registryErrorMessage(error));
+    }
   }
+}
+
+function clearRegistryPageCache() {
+  state.registry.listPages.clear();
+  state.registry.listVersion = null;
+}
+
+async function registryPageFetch(path, prefetch = false) {
+  const pages = state.registry.listPages;
+  const cached = pages.get(path);
+  if (cached) {
+    const payload = cached.payload || await cached.promise;
+    if (prefetch) return payload;
+    try {
+      const status = await registryFetch("/api/registry/status?include_pdf=true");
+      if (status.available && status.cache_version && status.cache_version === cached.version
+          && cached.version === state.registry.listVersion && pages.get(path) === cached) return payload;
+      if (pages.get(path) === cached && cached.version === state.registry.listVersion) clearRegistryPageCache();
+    } catch (error) {
+      if (pages.get(path) === cached && cached.version === state.registry.listVersion) clearRegistryPageCache();
+      throw error;
+    }
+  }
+  const entry = { sequence: ++state.registry.listFetchSequence };
+  entry.promise = registryFetch(path).then((payload) => {
+    if (payload.cache_version && state.registry.listVersion !== payload.cache_version
+        && entry.sequence >= state.registry.listVersionSequence) {
+      clearRegistryPageCache();
+      state.registry.listVersion = payload.cache_version;
+      state.registry.listVersionSequence = entry.sequence;
+    }
+    entry.payload = payload;
+    entry.version = payload.cache_version;
+    if (payload.cache_version && payload.cache_version === state.registry.listVersion) pages.set(path, entry);
+    else if (pages.get(path) === entry) pages.delete(path);
+    return payload;
+  }).catch((error) => {
+    if (pages.get(path) === entry) pages.delete(path);
+    if (error.status === 503 && entry.sequence >= state.registry.listVersionSequence) clearRegistryPageCache();
+    throw error;
+  });
+  pages.set(path, entry);
+  return entry.promise;
+}
+
+function prefetchRegistryPage(path, pagination) {
+  if (!pagination || pagination.page >= pagination.pages) return;
+  const next = path.replace(/([?&]page=)\d+/, `$1${pagination.page + 1}`);
+  registryPageFetch(next, true).catch(() => {});
 }
 
 async function loadRegistryReports() {
   renderRegistryNotice(els.registryReports, "Loading reports…");
+  const sequence = ++state.registry.reportListRequestSequence;
+  const path = `/api/registry/reports?include_pdf=true&page=${state.registry.reportPage}&page_size=12`;
   try {
-    const payload = await registryFetch(
-      `/api/registry/reports?include_pdf=true&page=${state.registry.reportPage}&page_size=12`,
-    );
+    const payload = await registryPageFetch(path);
+    if (sequence !== state.registry.reportListRequestSequence) return false;
     state.registry.reportPagination = payload.pagination;
     els.registryReports.replaceChildren();
     if (!payload.items.length) {
@@ -2224,9 +2325,13 @@ async function loadRegistryReports() {
       els.registryReports.append(button);
     });
     updateRegistryPagination("reports", payload.pagination);
+    prefetchRegistryPage(path, payload.pagination);
+    return true;
   } catch (error) {
+    if (sequence !== state.registry.reportListRequestSequence) return false;
     renderRegistryNotice(els.registryReports, registryErrorMessage(error));
     updateRegistryPagination("reports", null);
+    return false;
   }
 }
 
@@ -2419,7 +2524,8 @@ async function loadRegistryArticles() {
   const publisher = els.registryPublisherCustom?.value.trim() || els.registryPublisherFilter.value;
   if (publisher) params.set("source", publisher);
   try {
-    const payload = await registryFetch(`/api/registry/articles?${params.toString()}`);
+    const path = `/api/registry/articles?${params.toString()}`;
+    const payload = await registryPageFetch(path);
     if (requestSequence !== state.registry.articleRequestSequence) {
       return;
     }
@@ -2450,6 +2556,7 @@ async function loadRegistryArticles() {
       els.registryArticles.append(button);
     });
     updateRegistryPagination("articles", payload.pagination);
+    prefetchRegistryPage(path, payload.pagination);
   } catch (error) {
     if (requestSequence !== state.registry.articleRequestSequence) {
       return;
@@ -3114,15 +3221,16 @@ async function main() {
 
   try {
     await loadConfig();
-  } catch (error) {
+  } catch {
     els.status.textContent = "Service unavailable";
     els.status.classList.add("status-pill--offline");
     if (els.graphHint) {
-      els.graphHint.textContent = `Load failed: ${error.message}`;
+      els.graphHint.textContent = "The service could not be reached.";
     }
     appendMessage(
       "assistant",
-      `Could not reach the backend service: ${error.message}\n\nStart it with \`uvicorn api_server:app --host 0.0.0.0 --port 8501\`.`,
+      "The service could not be reached. Please refresh and try again.",
+      { transient: true },
     );
   }
 }

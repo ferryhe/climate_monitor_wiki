@@ -27,7 +27,7 @@ assert.doesNotMatch(source, /Start with a task, not just a topic|Switch to the O
 assert.match(source, /data-answer-mode="\$\{escapeHtml\(starter\.answer_mode/);
 assert.match(source, /setAnswerMode\(button\.getAttribute\("data-answer-mode"\)/);
 
-const state = { registry: { loaded: false, meetingPage: 3, meetingRequestSequence: 0, articlePage: 1, articleRequestSequence: 0 } };
+const state = { registry: { loaded: false, meetingPage: 3, meetingRequestSequence: 0, articlePage: 1, articleRequestSequence: 0, listPages: new Map(), listVersion: null, listFetchSequence: 0, listVersionSequence: 0 } };
 const tabs = ['registryView', 'meetingsView', 'chatView', 'obsidianView'].map((view) => ({
   dataset: { view }, classList: { toggle() {} }, setAttribute(name, value) { this[name] = value; },
 }));
@@ -45,7 +45,7 @@ const context = vm.createContext({ state, els, URLSearchParams,
     return { items: [], pagination: { total: 0 }, base_date: '2026-10-04', verification_counts: {} };
   },
 });
-for (const name of ['setWorkspaceView', 'loadRegistryMeetings', 'loadRegistryArticles']) {
+for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'setWorkspaceView', 'loadRegistryMeetings', 'loadRegistryArticles']) {
   const fn = source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
   assert.ok(fn, name);
   vm.runInContext(fn, context);

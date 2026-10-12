@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import tempfile
 import threading
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -61,8 +62,6 @@ from climate_monitor.hermes_dashboard import (
     proxy_websocket,
 )
 from climate_registry.read_api import (
-    filter_article_cards,
-    filter_pdf_articles,
     RegistryContractError,
     RegistryLocationError,
     RegistryNotFoundError,
@@ -85,6 +84,7 @@ from climate_registry.pdf_pipeline import (
 )
 from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
 from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto
+from climate_registry.list_projection import RegistryListProjection
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -126,6 +126,13 @@ REPORT_REVIEW_DIR = Path(value).resolve() if (value := os.getenv("CLIMATE_REPORT
 # These are development conveniences, not required for the public site.
 _ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").strip().lower() in {"1", "true", "yes"}
 
+
+@asynccontextmanager
+async def _lifespan(_app):
+    await anyio.to_thread.run_sync(_warm_article_keyword_cache)
+    yield
+
+
 app = FastAPI(
     title="Climate Monitor Wiki Agent",
     description="Agentic RAG API over the Climate Monitor Obsidian wiki.",
@@ -133,6 +140,7 @@ app = FastAPI(
     docs_url="/docs" if _ENABLE_DOCS else None,
     redoc_url="/redoc" if _ENABLE_DOCS else None,
     openapi_url="/openapi.json" if _ENABLE_DOCS else None,
+    lifespan=_lifespan,
 )
 
 # CORS: the application is same-origin served. No cross-origin clients exist.
@@ -150,6 +158,8 @@ _LOGIN_LIMITER = Limiter(key_func=get_remote_address)
 _LOGIN_RATE = parse_rate_limit("5/minute")
 app.state.limiter = _LOGIN_LIMITER
 _RELOAD_LOCK = threading.Lock()
+_ARTICLE_KEYWORDS_LOCK = threading.Lock()
+_ARTICLE_KEYWORDS_CACHE = None
 
 
 def _configured_pdf_queue() -> Path | None:
@@ -646,7 +656,7 @@ def _parse_registry_decimal(value: str) -> int:
 
 
 def _all_registry_pages(method, **filters) -> list[dict[str, Any]]:
-    # ponytail: merge the small archive in memory; use SQL union if it outgrows this.
+    # Legacy/Git overlays still merge here; current approved DB lists use the SQL projection.
     items, page = [], 1
     while True:
         payload = method(page=page, page_size=100, **filters)
@@ -654,6 +664,141 @@ def _all_registry_pages(method, **filters) -> list[dict[str, Any]]:
         if page >= payload["pagination"]["pages"]:
             return items
         page += 1
+
+
+def _article_keyword_file_stamp(database) -> tuple | None:
+    try:
+        path = Path(database).resolve(strict=False)
+        def stamp(file):
+            try:
+                info = file.stat()
+            except FileNotFoundError:
+                return None
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        main = stamp(path)
+        if main is None:
+            return None
+        return (str(path), main, stamp(Path(str(path) + "-wal")), stamp(Path(str(path) + "-journal")))
+    except OSError:
+        return None
+
+
+def _article_keyword_bindings(connection) -> str:
+    rows = [tuple(row) for row in connection.execute("""SELECT p.entity_kind,p.entity_id,p.is_visible,
+            p.published_candidate_sha256,c.candidate_sha256,c.entity_kind,c.entity_id,
+            EXISTS(SELECT 1 FROM registry_reviews r WHERE r.candidate_sha256=c.candidate_sha256
+                AND r.status IN ('pass','accepted_legacy')) AS approved
+        FROM registry_publication p LEFT JOIN registry_candidates c
+            ON c.candidate_sha256=p.published_candidate_sha256
+        WHERE p.entity_kind IN ('article','pdf_article','meeting','pdf_meeting')
+        ORDER BY p.entity_kind,p.entity_id""")]
+    encoded = json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _registry_read_stamps_match(before, after) -> bool:
+    if before == after:
+        return True
+    # SQLite opens can chmod the WAL; only its ctime changes without a data change.
+    return (before is not None and after is not None and before[:2] == after[:2]
+        and before[3] == after[3] and before[2] is not None and after[2] is not None
+        and before[2][:-1] == after[2][:-1])
+
+
+def _clear_article_keyword_cache() -> None:
+    global _ARTICLE_KEYWORDS_CACHE
+    with _ARTICLE_KEYWORDS_LOCK:
+        if _ARTICLE_KEYWORDS_CACHE is not None:
+            _ARTICLE_KEYWORDS_CACHE[1].close()
+        _ARTICLE_KEYWORDS_CACHE = None
+
+
+@contextmanager
+def _registry_list_projection(selected=None):
+    """Share one validated generation for lists and keyword graph bytes."""
+    global _ARTICLE_KEYWORDS_CACHE
+    with _ARTICLE_KEYWORDS_LOCK:
+        try:
+            selected = selected or _registry_reader()
+            if selected.static_snapshot is not None or selected.database is None:
+                if _ARTICLE_KEYWORDS_CACHE is not None:
+                    _ARTICLE_KEYWORDS_CACHE[1].close()
+                    _ARTICLE_KEYWORDS_CACHE = None
+                yield None
+                return
+            for attempt in range(3):
+                before = _article_keyword_file_stamp(selected.database)
+                with selected._source_connection(manage_wal=True, validate=False) as connection:
+                    version = connection.execute("PRAGMA user_version").fetchone()[0]
+                    if version < 21:
+                        if _ARTICLE_KEYWORDS_CACHE is not None:
+                            _ARTICLE_KEYWORDS_CACHE[1].close()
+                            _ARTICLE_KEYWORDS_CACHE = None
+                        yield None
+                        return
+                    try:
+                        bindings = _article_keyword_bindings(connection)
+                    except Exception:
+                        selected._validate_contract(connection)
+                        raise
+                    key = (str(selected.database), version, before, bindings)
+                after = _article_keyword_file_stamp(selected.database)
+                stable = _registry_read_stamps_match(before, after)
+                if not stable and attempt < 2:
+                    continue
+                if before is not None and stable and _ARTICLE_KEYWORDS_CACHE and _ARTICLE_KEYWORDS_CACHE[0] == key:
+                    _ARTICLE_KEYWORDS_CACHE = ((key[0], key[1], after, key[3]), _ARTICLE_KEYWORDS_CACHE[1])
+                    yield _ARTICLE_KEYWORDS_CACHE[1]
+                    return
+                break
+            if _ARTICLE_KEYWORDS_CACHE is not None:
+                _ARTICLE_KEYWORDS_CACHE[1].close()
+                _ARTICLE_KEYWORDS_CACHE = None
+            for attempt in range(3):
+                before = _article_keyword_file_stamp(selected.database)
+                with selected.public_snapshot(direct=True, manage_wal=True):
+                    with selected.connect() as connection:
+                        key = (str(selected.database), connection.execute("PRAGMA user_version").fetchone()[0],
+                            before, _article_keyword_bindings(connection))
+                    projection = RegistryListProjection(selected)
+                    projection.version = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+                after = _article_keyword_file_stamp(selected.database)
+                if after is None:
+                    projection.close()
+                    raise RegistryUnavailableError("registry database is unavailable")
+                if not _registry_read_stamps_match(before, after):
+                    projection.close()
+                    continue
+                break
+            else:
+                raise RegistryUnavailableError("registry database changed during list preparation")
+            if before is not None:
+                _ARTICLE_KEYWORDS_CACHE = ((key[0], key[1], after, key[3]), projection)
+            try:
+                yield projection
+            finally:
+                if _ARTICLE_KEYWORDS_CACHE is None:
+                    projection.close()
+        except Exception:
+            if _ARTICLE_KEYWORDS_CACHE is not None:
+                _ARTICLE_KEYWORDS_CACHE[1].close()
+            _ARTICLE_KEYWORDS_CACHE = None
+            raise
+
+
+def _cached_article_keyword_response() -> Response | None:
+    with _registry_list_projection() as projection:
+        if projection is not None:
+            return Response(content=projection.keyword_body, media_type="application/json")
+    return None
+
+
+def _warm_article_keyword_cache() -> None:
+    _clear_article_keyword_cache()
+    try:
+        _cached_article_keyword_response()
+    except Exception:
+        _clear_article_keyword_cache()
 
 
 def _pdf_reports(selected=None) -> list[dict[str, Any]]:
@@ -707,14 +852,14 @@ def registry_status(include_pdf: bool = False):
         )
     try:
         reader = RegistryReader(configured, repository_root=ROOT)
+        with _registry_list_projection(reader) as projection:
+            if projection is not None:
+                return {**(projection.status_combined if include_pdf else projection.status_core), "cache_version": projection.version}
         with reader.public_snapshot(direct=True):
             status = reader.status()
             if include_pdf:
-                with reader.connect() as connection:
-                    selected = reader if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else None
                 status["reports"] = _registry_report_page(reader, 1, 20, include_pdf=True)["pagination"]["total"]
-                status["articles"] = (selected.approved_merged_article_count() if selected is not None
-                    else _registry_article_page(1, 20, include_pdf=True)["pagination"]["total"])
+                status["articles"] = _registry_article_page(1, 20, include_pdf=True)["pagination"]["total"]
                 dates = [item["report_date"] for item in _pdf_reports(reader) if item.get("report_date")]
                 status["latest_report_date"] = max(dates + [status["latest_report_date"] or ""]) or None
             return status
@@ -739,12 +884,7 @@ def _registry_report_page(reader, page, page_size, *, include_pdf):
     validate_page(page, page_size)
     if not include_pdf:
         return reader.reports(page=page, page_size=page_size)
-    if getattr(reader, "_snapshot_direct", False):
-        with reader.connect() as connection:
-            direct = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
-        core = reader.approved_reports_all() if direct else _all_registry_pages(reader.reports)
-    else:
-        core = _all_registry_pages(reader.reports)
+    core = _all_registry_pages(reader.reports)
     items = core + _pdf_reports(reader)
     items.sort(key=lambda item: (item.get("report_date") or "", item.get("report_id") or ""), reverse=True)
     offset = (page - 1) * page_size
@@ -756,6 +896,9 @@ def registry_reports(page: str = "1", page_size: str = "20", include_pdf: bool =
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_reports():
         reader = _registry_reader()
+        with _registry_list_projection(reader) as projection:
+            if projection is not None:
+                return {**projection.reports(page=parsed_page, page_size=parsed_size, include_pdf=include_pdf), "cache_version": projection.version}
         with reader.public_snapshot(direct=True):
             return _registry_report_page(reader, parsed_page, parsed_size, include_pdf=include_pdf)
     return _registry_query(query_reports)
@@ -841,45 +984,15 @@ def registry_report_pdf(report_date: str) -> Response:
     return _registry_query(read_pdf)
 
 
-def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pillar="", report_date="", include_pdf=False, selected=None):
+def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pillar="", report_date="", include_pdf=False):
     validate_page(parsed_page, parsed_size)
     filters = dict(query=query, source=source, pillar=pillar, report_date=report_date)
     if not include_pdf:
-        payload = (selected or _registry_reader()).articles(page=parsed_page, page_size=parsed_size, **filters)
+        payload = _registry_reader().articles(page=parsed_page, page_size=parsed_size, **filters)
         return {**payload, "items": [_public_dto(item) for item in payload["items"]]}
-    if selected is not None and getattr(selected, "_snapshot_direct", False):
-        with selected.connect() as connection:
-            direct = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
-        if direct:
-            approved_core = selected.approved_article_cards_all()
-            core_by_url = {item["canonical_url"]: {
-                key: value for key, value in item.items() if key not in {"appearances", "source_id"}
-            } | {"source_kind": "registry"} for item in approved_core}
-            core_matches = filter_article_cards(approved_core, **filters, include_internal=True)
-            all_pdf = selected.pdf_articles_all(include_linked=True)
-            pdf_counts = {item["canonical_url"]: len(item.get("occurrences", [])) for item in all_pdf}
-            for core_item in core_by_url.values():
-                if core_item["canonical_url"] in pdf_counts:
-                    core_item.update(source_label="Registry · PDF import",
-                        pdf_occurrence_count=pdf_counts[core_item["canonical_url"]])
-            merged = {item["canonical_url"]: core_by_url[item["canonical_url"]] for item in core_matches}
-            if not pillar:
-                pdf_items = filter_pdf_articles(all_pdf, query=query, source=source, report_date=report_date)
-                for item in pdf_items:
-                    core_item = core_by_url.get(item["canonical_url"])
-                    if core_item is not None:
-                        merged[item["canonical_url"]] = core_item
-                    else:
-                        merged[item["canonical_url"]] = dict(item, source_kind="pdf")
-            items = list(merged.values())
-            items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
-            offset = (parsed_page - 1) * parsed_size
-            payload = items[offset:offset + parsed_size]
-            return {"items": [(_pdf_dto(item) if item.get("source_kind") == "pdf" else _public_dto(item)) for item in payload],
-                "pagination": _pagination(parsed_page, parsed_size, len(items))}
-    web_reader, _, manifest = (None, None, None) if selected else _range_report_overlay()
+    web_reader, _, manifest = _range_report_overlay()
     active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
-    readers = [(selected or _registry_reader(), None)] + ([(web_reader, active_ids)] if web_reader else [])
+    readers = [(_registry_reader(), None)] + ([(web_reader, active_ids)] if web_reader else [])
     core_by_url, by_url = {}, {}
     for reader, allowed_ids in readers:
         if allowed_ids is None:
@@ -900,10 +1013,8 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
                 and (not pillar or any(o.get("pillar") == pillar for a in item.get("acquisition_observations", []) for o in a.get("origins", [])))]
         by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in matches
             if allowed_ids is None or item["article_id"] in allowed_ids})
-    pdf_method = (lambda page, page_size, **filters: page_pdf_articles(
-        selected.pdf_articles_all(include_linked=True), page=page, page_size=page_size, **filters)) if selected else (
-        lambda page, page_size, **filters: registry_pdf_articles(
-            page=str(page), page_size=str(page_size), include_linked=True, **filters))
+    pdf_method = lambda page, page_size, **filters: registry_pdf_articles(
+        page=str(page), page_size=str(page_size), include_linked=True, **filters)
     pdf_items = _all_registry_pages(pdf_method)
     for item in pdf_items:
         core = core_by_url.get(item["canonical_url"])
@@ -926,19 +1037,16 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
 def registry_publishers(include_pdf: bool = False) -> dict:
     def query_publishers():
         reader = _registry_reader()
+        with _registry_list_projection(reader) as projection:
+            if projection is not None:
+                return projection.publishers(include_pdf=include_pdf)
         with reader.public_snapshot(direct=True):
-            with reader.connect() as connection:
-                published = connection.execute("PRAGMA user_version").fetchone()[0] >= 21
-            if published:
-                return reader.publishers(include_pdf=include_pdf)
             payload = reader.publishers()
             if not include_pdf:
                 return payload
-            with reader.connect() as connection:
-                selected = reader if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else None
             by_host = {item["hostname"]: item for item in payload["items"]}
             for item in _all_registry_pages(lambda page, page_size: _registry_article_page(
-                page, page_size, include_pdf=True, selected=selected)):
+                page, page_size, include_pdf=True)):
                 by_host.setdefault(item["source"], {"hostname": item["source"], "label": item["publisher"]})
             items = sorted(by_host.values(), key=lambda item: item["hostname"])
             return {"items": items[:500], "total": len(items), "truncated": payload["truncated"] or len(items) > 500}
@@ -958,12 +1066,25 @@ def registry_articles(
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_snapshot():
         selected = _registry_reader()
-        with selected.public_snapshot(direct=True):
-            with selected.connect() as connection:
-                if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                    return _registry_article_page(parsed_page, parsed_size, query=query, source=source, pillar=pillar, report_date=report_date, include_pdf=include_pdf, selected=selected)
+        with _registry_list_projection(selected) as projection:
+            if projection is not None:
+                return {**projection.articles(page=parsed_page, page_size=parsed_size, query=query, source=source,
+                    pillar=pillar, report_date=report_date, include_pdf=include_pdf), "cache_version": projection.version}
         return _registry_article_page(parsed_page, parsed_size, query=query, source=source, pillar=pillar, report_date=report_date, include_pdf=include_pdf)
     return _registry_query(query_snapshot)
+
+
+@app.get("/api/registry/article-keywords", response_model=None)
+def registry_article_keywords() -> Response:
+    def query_keywords():
+        response = _cached_article_keyword_response()
+        if response is not None:
+            return response
+        # shortcut: external DB writes need a synchronous request rebuild; use reload to prewarm first.
+        items = _all_registry_pages(lambda page, page_size: registry_articles(
+            page=str(page), page_size=str(page_size), include_pdf=True))
+        return JSONResponse(content={"items": items})
+    return _registry_query(query_keywords)
 
 
 @app.get("/api/registry/pdf-intake/articles")
@@ -1170,6 +1291,7 @@ def reload_wiki(
                 pending.unlink(missing_ok=True)
         payload = _public_config()
         payload["pdf_projection"] = metadata
+        _warm_article_keyword_cache()
         return payload
 
 

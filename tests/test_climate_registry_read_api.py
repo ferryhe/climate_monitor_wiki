@@ -269,6 +269,34 @@ def registry_client(tmp_path, monkeypatch, request):
     return TestClient(app), database
 
 
+def test_article_keyword_endpoint_returns_more_than_three_pages_in_one_snapshot(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+    from climate_registry.list_projection import RegistryListProjection
+
+    class Reader:
+        def _public_candidates(self, *kinds): return {}
+        def approved_article_cards_all(self):
+            return [{"article_id": f"article-{index}", "canonical_url": f"https://example.org/{index}",
+                "title": str(index), "source": "example.org", "publisher": "Example"} for index in range(350)]
+        def pdf_articles_all(self, **kwargs): return []
+        def approved_reports_all(self): return []
+        def pdf_reports_all(self): return []
+        def status(self): return {"available": True}
+        def approved_merged_article_count(self): return 350
+        def publishers(self, **kwargs): return {"items": [], "total": 0, "truncated": False}
+
+    projection = RegistryListProjection(Reader())
+    try:
+        monkeypatch.setattr(api_server, "_registry_list_projection", lambda: nullcontext(projection))
+        response = TestClient(app).get("/api/registry/article-keywords")
+        assert response.status_code == 200
+        assert len(response.json()["items"]) == 350
+        assert projection.articles(page=4, page_size=100)["pagination"]["total"] == 350
+        assert len(projection.articles(page=4, page_size=100)["items"]) == 50
+    finally:
+        projection.close()
+
+
 def _insert_pdf_intake_records(database: Path) -> None:
     document_sha256 = "f" * 64
     occurrence = {
@@ -418,7 +446,9 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     client, _ = registry_client
     status = client.get("/api/registry/status")
     assert status.status_code == 200
-    assert status.json() == {
+    status_payload = status.json()
+    assert len(status_payload.pop("cache_version")) == 64
+    assert status_payload == {
         "available": True,
         "schema_version": 22,
         "reports": 2,

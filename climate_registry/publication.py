@@ -58,6 +58,16 @@ def enabled(connection):
     return connection.execute("PRAGMA user_version").fetchone()[0] >= 21
 
 
+def _load_snapshot_json(encoded, strings):
+    def share_values(row):
+        for key, value in row.items():
+            if isinstance(value, str):
+                row[key] = strings.setdefault(value, value)
+        return row
+
+    return json.loads(encoded, object_hook=share_values)
+
+
 def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=None, candidate_sha_out=None,
     packet_cache=None):
     """Return exact visible approved snapshots without restoring business rows."""
@@ -90,10 +100,11 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
                 AND r.status IN ('pass','accepted_legacy')) AS approved
         FROM registry_publication p
         LEFT JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
-        WHERE {where} ORDER BY p.entity_kind,p.entity_id""", params).fetchall()
+        WHERE {where} ORDER BY p.entity_kind,p.entity_id""", params)
     snapshots = {}
     visibility = {}
     candidate_bindings = {}
+    strings = {}
     for row in rows:
         key = (row[0], row[1])
         visibility[key] = bool(row[2])
@@ -105,7 +116,7 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
         snapshot = candidate_cache.get(cache_key) if candidate_cache is not None else None
         if snapshot is None:
             try:
-                snapshot = json.loads(row[7])
+                snapshot = _load_snapshot_json(row[7], strings)
             except (json.JSONDecodeError, TypeError) as exc:
                 raise ValueError("published Registry snapshot is invalid") from exc
             if (not isinstance(snapshot, dict) or snapshot.get("entity_kind") != row[0]
@@ -535,15 +546,17 @@ def public_connection(source):
         projection.execute("CREATE TEMP TABLE public_snapshot_metadata(entity_kind TEXT,entity_id TEXT,snapshot_json TEXT)")
         projection.execute("CREATE TEMP TABLE approved_public_reviews(entity_kind TEXT,entity_id TEXT,approved_at TEXT)")
         projection.executemany("INSERT INTO approved_public_reviews VALUES(?,?,?)", source.execute("SELECT p.entity_kind,p.entity_id,min(r.reviewed_at) FROM registry_publication p JOIN registry_reviews r ON r.candidate_sha256=p.published_candidate_sha256 WHERE p.is_visible=1 AND r.status='pass' GROUP BY p.entity_kind,p.entity_id").fetchall())
-        snapshots = []
         published = {}
+        snapshots_by_sha = {}
+        strings = {}
         for sha, encoded in selected:
-            snapshot = json.loads(encoded)
+            snapshot = _load_snapshot_json(encoded, strings)
             if digest(snapshot) != sha:
                 raise ValueError("published Registry snapshot hash differs")
             published[(snapshot["entity_kind"], snapshot["entity_id"])] = snapshot
+            snapshots_by_sha[sha] = snapshot
         for sha, encoded in selected:
-            snapshot = json.loads(encoded)
+            snapshot = snapshots_by_sha[sha]
             canonical = canonical_entity(source, snapshot["entity_kind"], snapshot["entity_id"])
             if canonical != (snapshot["entity_kind"], snapshot["entity_id"]):
                 state = source.execute("SELECT is_visible,published_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", canonical).fetchone()
@@ -556,9 +569,7 @@ def public_connection(source):
                     row["occurrence_id"] for row in canonical_snapshot["tables"].get(table, [])}
                 if state and (not state[0] or absorbed):
                     continue
-            snapshots.append(snapshot)
             projection.execute("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", (snapshot["entity_kind"], snapshot["entity_id"], encoded))
-        for snapshot in snapshots:
             for row in snapshot["sources"]:
                 projection.execute("UPDATE sources SET hostname=?,display_name=?,first_seen=?,last_seen=? WHERE source_id=?",
                     (row["hostname"], row["display_name"], row["first_seen"], row["last_seen"], row["source_id"]))
