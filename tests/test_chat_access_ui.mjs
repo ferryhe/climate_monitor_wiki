@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
-const names = ['loadThread', 'blockedChatMessage', 'renderChatAccess', 'refreshChatAccess', 'continueWithToken', 'sendMessage', 'setSending', 'appendMessage', 'replacePendingAssistant', 'messageToApi'];
+const names = ['loadThread', 'isLegacyStartupFailureNotice', 'blockedChatMessage', 'renderChatAccess', 'refreshChatAccess', 'continueWithToken', 'sendMessage', 'setSending', 'appendMessage', 'replacePendingAssistant', 'messageToApi'];
 const functions = names.map(name => {
   const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
   assert.ok(match, name);
@@ -104,14 +104,30 @@ const persistedRace = JSON.parse(saved);
 assert.equal(persistedRace.filter(item => item.pending).length, 1);
 assert.ok(persistedRace.find(item => item.role === 'user').blockedRequest);
 const originalRequest = requests.at(-1);
+const legacyStartupNotice = 'Could not reach the backend service: API 503\n\nStart it with `uvicorn api_server:app --host 0.0.0.0 --port 8501`.';
+persistedRace.find(item => item.role === 'user').blockedRequest.messages.unshift({role: 'assistant', content: legacyStartupNotice});
+let nestedOnlySaved = JSON.stringify([{role: 'user', content: 'Keep retrying', blockedRequest: {
+  ...originalRequest, messages: [{role: 'assistant', content: legacyStartupNotice}, ...originalRequest.messages],
+}}]);
+const nestedOnly = vm.createContext({state: {messages: []}, STORAGE_KEY: 'thread',
+  localStorage: {getItem: () => nestedOnlySaved, setItem(_key, value) {nestedOnlySaved = value;}, removeItem() {}}});
+vm.runInContext(functions, nestedOnly);
+nestedOnly.loadThread();
+assert.deepEqual(JSON.parse(JSON.stringify(nestedOnly.state.messages[0].blockedRequest)), originalRequest);
+assert.equal(JSON.parse(nestedOnlySaved)[0].blockedRequest.messages.some(item => item.content === legacyStartupNotice), false);
 const reloadedState = {...state, messages: [], isSending: false};
 const reloadedEls = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAllowance: {}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: ''}, chatTokenForm: {querySelector: () => ({})}};
-let reloadedSaved = saved;
+let reloadedSaved = JSON.stringify(persistedRace);
 const reloaded = vm.createContext({state: reloadedState, els: reloadedEls, fetch, Intl, Date, STORAGE_KEY: 'thread',
-  localStorage: {getItem: () => reloadedSaved, removeItem() {}}, renderMessages() {},
+  localStorage: {getItem: () => reloadedSaved, setItem(_key, value) {reloadedSaved = value;}, removeItem() {}}, renderMessages() {},
   saveThread() {reloadedSaved = JSON.stringify(reloadedState.messages);}, setConnectionStatus() {}, setAnswerMode() {}});
 vm.runInContext(functions, reloaded);
 reloaded.loadThread();
+const restoredRequest = reloaded.blockedChatMessage().blockedRequest;
+assert.deepEqual(JSON.parse(JSON.stringify(restoredRequest)), originalRequest);
+assert.equal(restoredRequest.contextPath, null);
+assert.equal(restoredRequest.answerMode, 'executive');
+assert.equal(JSON.parse(reloadedSaved).find(item => item.role === 'user').blockedRequest.messages.some(item => item.content === legacyStartupNotice), false);
 reloaded.setSending(false);
 await reloaded.refreshChatAccess();
 assert.equal(reloadedState.messages.filter(item => item.pending).length, 0);

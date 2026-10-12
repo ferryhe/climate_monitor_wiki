@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -32,6 +33,92 @@ def _database(tmp_path, version=22):
 
 def _reader(database, tmp_path):
     return RegistryReader(database, repository_root=tmp_path / "application")
+
+
+def _assert_registry_restore_noop(database: Path, tmp_path: Path) -> None:
+    from climate_registry.weekly import restore_registry_backup
+
+    backup = tmp_path / "restore-backup.sqlite3"
+    shutil.copy2(database, backup)
+    result = restore_registry_backup(
+        database=database,
+        backup=backup,
+        expected_sha256=hashlib.sha256(backup.read_bytes()).hexdigest(),
+        backup_dir=tmp_path / "restore-backups",
+        lock_file=database.with_name(f"{database.name}.lock"),
+    )
+    assert result["status"] == "no-op"
+
+
+def _registry_sidecars(database: Path) -> list[Path]:
+    return [Path(str(database) + suffix) for suffix in ("-wal", "-shm", "-journal")
+        if Path(str(database) + suffix).exists()]
+
+
+def test_public_connection_decodes_each_approved_snapshot_once(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
+        approved = {row[0] for row in db.execute("""SELECT c.snapshot_json FROM registry_publication p
+            JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+            WHERE p.is_visible=1 AND EXISTS(SELECT 1 FROM registry_reviews r
+                WHERE r.candidate_sha256=c.candidate_sha256 AND r.status IN ('pass','accepted_legacy'))""")}
+
+    original_loads = publication.json.loads
+    load_counts = {}
+
+    def count_candidate_loads(value, *args, **kwargs):
+        result = original_loads(value, *args, **kwargs)
+        if value in approved:
+            load_counts[value] = load_counts.get(value, 0) + 1
+        return result
+
+    monkeypatch.setattr(publication.json, "loads", count_candidate_loads)
+    source = sqlite3.connect(database)
+    projection = publication.public_connection(source)
+    try:
+        assert load_counts == {encoded: 1 for encoded in approved}
+        assert {row[0] for row in projection.execute("SELECT snapshot_json FROM public_snapshot_metadata")} == approved
+        assert [tuple(row) for row in projection.execute("""SELECT a.article_id,v.observed_title FROM articles a
+            JOIN article_versions v ON v.version_id=a.current_version_id ORDER BY a.article_id""")] == [
+                ("a", "Title a"), ("b", "Title b")]
+    finally:
+        projection.close()
+        source.close()
+
+
+def test_snapshot_loader_shares_unicode_strings_only():
+    import climate_registry.publication as publication
+
+    repeated = "洪水风险🌧️" * 20_000
+    encoded = json.dumps({"rows": [
+        {"payload": repeated, "children": []},
+        {"payload": repeated, "children": []},
+    ]}, ensure_ascii=False)
+    snapshot = publication._load_snapshot_json(encoded, {})
+    rows = snapshot["rows"]
+
+    assert rows[0]["payload"] is rows[1]["payload"]
+    assert rows[0] is not rows[1]
+    assert rows[0]["children"] is not rows[1]["children"]
+    assert publication.digest(snapshot) == publication.digest(json.loads(encoded))
+
+
+def test_public_snapshot_rejects_sha_mismatch_after_shared_string_decode(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+    from climate_registry.read_api import RegistryContractError
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
+    monkeypatch.setattr(publication, "digest", lambda _snapshot: "sha-mismatch")
+
+    with pytest.raises(RegistryContractError, match="invalid published Registry candidate"):
+        _reader(database, tmp_path).article("a")
 
 
 def test_first_pending_partial_publication_and_visibility(tmp_path):
@@ -312,7 +399,8 @@ def test_article_api_uses_one_approved_core_pdf_snapshot(tmp_path,monkeypatch,en
         assert response.json()["pdf_occurrences"][0]["summary"]=="Approved PDF A"
     else:
         item=next(item for item in response.json()["items"] if item["article_id"]=="a")
-        assert item["summary"]==expected["summary"] and item["pdf_occurrence_count"]==1
+        assert item["title"]==expected["title"] and item["pdf_occurrence_count"]==1
+        assert "summary" not in item and "pdf_occurrences" not in item
 
 
 def test_native_review_requires_actual_full_snapshot_inspection(tmp_path, monkeypatch):
@@ -1531,9 +1619,7 @@ def test_combined_reports_and_status_share_pdf_visibility_snapshot(tmp_path, mon
         _pdf(db, identity="standalone", url="https://pdf.example/c", run_date="2026-09-03")
         for sha in stage_entities(db): _approve(db, sha, {"basis": "explicit approved fixture"}, status="accepted_legacy")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    # Schema 21+ report collections use one unpaged approved query. Hook that
-    # batch boundary so the concurrent writer still exercises the same
-    # transaction contract as the legacy page method did.
+    # A completed concurrent visibility write invalidates the entire generation.
     read_method = "approved_reports_all" if endpoint == "reports" else endpoint
     original = getattr(RegistryReader, read_method)
     changed = False
@@ -1547,13 +1633,12 @@ def test_combined_reports_and_status_share_pdf_visibility_snapshot(tmp_path, mon
     monkeypatch.setattr(RegistryReader, read_method, read)
     if endpoint == "status":
         first = api_server.registry_status(include_pdf=True)
-        assert (first["articles"], first["reports"], first["latest_report_date"]) == (3, 1, "2026-09-03")
+        assert (first["articles"], first["reports"], first["latest_report_date"]) == (2, 0, None)
         later = api_server.registry_status(include_pdf=True)
         assert (later["articles"], later["reports"], later["latest_report_date"]) == (2, 0, None)
     else:
         first = api_server.registry_reports(page="1", page_size="1", include_pdf=True)
-        assert first["pagination"]["total"] == 1 and first["items"][0]["report_date"] == "2026-09-03"
-        assert first["items"][0]["article_count"] == 1
+        assert first["pagination"]["total"] == 0 and first["items"] == []
         later = api_server.registry_reports(page="1", page_size="1", include_pdf=True)
         assert later["pagination"]["total"] == 0 and later["items"] == []
 
@@ -1630,7 +1715,7 @@ def test_combined_publisher_response_uses_one_public_snapshot(tmp_path, monkeypa
     monkeypatch.setattr(RegistryReader, "publishers", publishers)
     expected_pdf = {"pdf.example"} if include_pdf else set()
     first = api_server.registry_publishers(include_pdf=include_pdf)
-    assert {item["hostname"] for item in first["items"]} == {"old.example"} | expected_pdf
+    assert {item["hostname"] for item in first["items"]} == {"new.example"} | expected_pdf
     assert first["total"] == len(first["items"])
     later = api_server.registry_publishers(include_pdf=include_pdf)
     assert {item["hostname"] for item in later["items"]} == {"new.example"} | expected_pdf
@@ -1639,6 +1724,392 @@ def test_combined_publisher_response_uses_one_public_snapshot(tmp_path, monkeypa
     assert api_server.registry_articles(include_pdf=True, source="pdf.example")["items"][0]["source_kind"] == "pdf"
     assert api_server.registry_articles(include_pdf=True, source="new.example")["items"][0]["article_id"] == "b"
     assert api_server.registry_articles(include_pdf=False)["pagination"]["total"] == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_article_keyword_collection_uses_one_snapshot_and_reflects_approval(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="standalone", url="https://pdf.example/c")
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit article keyword fixture approval"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    original_snapshot = RegistryReader.public_snapshot
+    snapshots = 0
+
+    def count_snapshots(reader, *, direct=False, manage_wal=False):
+        nonlocal snapshots
+        snapshots += 1
+        return original_snapshot(reader, direct=direct, manage_wal=manage_wal)
+
+    monkeypatch.setattr(RegistryReader, "public_snapshot", count_snapshots)
+    client = TestClient(api_server.app)
+    first = client.get("/api/registry/article-keywords")
+    assert first.status_code == 200
+    payload = first.json()
+    assert snapshots == 1
+    assert len(payload["items"]) == 3
+    assert {item["source_kind"] for item in payload["items"]} == {"registry", "pdf"}
+    assert len({item["canonical_url"] for item in payload["items"]}) == 3
+    assert next(item for item in payload["items"] if item["article_id"] == "a")["source_kind"] == "registry"
+
+    set_visibility(database, "article", "a", False)
+    later = client.get("/api/registry/article-keywords")
+    assert later.status_code == 200
+    assert snapshots == 2
+    assert {item["article_id"] for item in later.json()["items"]} == {"b", "standalone"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_article_keyword_cache_warms_at_startup_and_rechecks_visibility(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit keyword warm fixture approval"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    original = publication.published_snapshots
+    snapshot_loads = 0
+
+    def count_snapshot_loads(*args, **kwargs):
+        nonlocal snapshot_loads
+        snapshot_loads += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "published_snapshots", count_snapshot_loads)
+    api_server._clear_article_keyword_cache()
+    with TestClient(api_server.app) as client:
+        warmed_loads = snapshot_loads
+        assert warmed_loads > 0
+        first = client.get("/api/registry/article-keywords")
+        assert first.status_code == 200 and len(first.json()["items"]) == 2
+        assert snapshot_loads == warmed_loads
+
+        set_visibility(database, "article", "a", False)
+        later = client.get("/api/registry/article-keywords")
+        assert later.status_code == 200
+        assert {item["article_id"] for item in later.json()["items"]} == {"b"}
+        rebuilt_loads = snapshot_loads
+        assert rebuilt_loads > warmed_loads
+        assert client.get("/api/registry/article-keywords").content == later.content
+        assert snapshot_loads == rebuilt_loads
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_article_keyword_wal_startup_warm_is_reused_without_observer(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit WAL startup fixture approval"}, status="accepted_legacy")
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    assert _registry_sidecars(database) == []
+
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    original = publication._load_snapshot_json
+    snapshot_decodes = 0
+
+    def count_snapshot_decodes(*args, **kwargs):
+        nonlocal snapshot_decodes
+        snapshot_decodes += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "_load_snapshot_json", count_snapshot_decodes)
+    api_server._clear_article_keyword_cache()
+    with TestClient(api_server.app) as client:
+        assert _registry_sidecars(database) == []
+        startup_decodes = snapshot_decodes
+        assert startup_decodes > 0
+        first = client.get("/api/registry/article-keywords")
+        assert first.status_code == 200 and len(first.json()["items"]) == 2
+        assert snapshot_decodes == startup_decodes
+        assert _registry_sidecars(database) == []
+        _assert_registry_restore_noop(database, tmp_path)
+        after_restore = client.get("/api/registry/article-keywords")
+        assert after_restore.status_code == 200 and len(after_restore.json()["items"]) == 2
+        assert _registry_sidecars(database) == []
+
+    assert _registry_sidecars(database) == []
+
+
+def test_keyword_wal_managed_snapshot_remains_query_only(tmp_path):
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit managed WAL fixture approval"}, status="accepted_legacy")
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    assert _registry_sidecars(database) == []
+
+    reader = _reader(database, tmp_path)
+    with reader.public_snapshot(direct=True, manage_wal=True):
+        with reader.connect() as connection:
+            assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                connection.execute("UPDATE registry_publication SET is_visible=0")
+
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+    assert _registry_sidecars(database) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_article_keyword_cache_keeps_pending_candidate_private_until_approval(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit keyword candidate fixture approval"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    api_server._clear_article_keyword_cache()
+    with TestClient(api_server.app) as client:
+        original = client.get("/api/registry/article-keywords").json()
+        title = next(item["title"] for item in original["items"] if item["article_id"] == "a")
+
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE article_versions SET observed_title='Pending article title' WHERE version_id='v-a'")
+            stage_entities(db)
+            pending = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='a'").fetchone()[0]
+        pending_response = client.get("/api/registry/article-keywords")
+        assert next(item["title"] for item in pending_response.json()["items"] if item["article_id"] == "a") == title
+
+        with sqlite3.connect(database) as db:
+            _approve(db, pending, {"basis": "explicit approved replacement candidate"}, status="accepted_legacy")
+        approved_response = client.get("/api/registry/article-keywords")
+        assert next(item["title"] for item in approved_response.json()["items"] if item["article_id"] == "a") == "Pending article title"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_article_keyword_cache_detects_wal_commit_and_atomic_database_restore(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+
+    database = _database(tmp_path)
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    replacement = _database(replacement_root)
+    for selected in (database, replacement):
+        with sqlite3.connect(selected) as db:
+            for sha in stage_entities(db):
+                _approve(db, sha, {"basis": "explicit keyword restore fixture approval"}, status="accepted_legacy")
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    set_visibility(replacement, "article", "a", False)
+
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    api_server._clear_article_keyword_cache()
+    with TestClient(api_server.app) as client:
+        assert len(client.get("/api/registry/article-keywords").json()["items"]) == 2
+        writer = sqlite3.connect(database)
+        try:
+            writer.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='article' AND entity_id='a'")
+            writer.commit()
+            changed = client.get("/api/registry/article-keywords")
+            assert changed.status_code == 200
+            assert {item["article_id"] for item in changed.json()["items"]} == {"b"}
+        finally:
+            writer.close()
+        assert not Path(str(database) + "-wal").exists()
+        assert not Path(str(database) + "-shm").exists()
+
+        os.replace(replacement, database)
+        restored = client.get("/api/registry/article-keywords")
+        assert restored.status_code == 200
+        assert {item["article_id"] for item in restored.json()["items"]} == {"b"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_article_keyword_build_racing_commit_retries_before_returning(tmp_path, monkeypatch):
+    import api_server
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit racing keyword fixture approval"}, status="accepted_legacy")
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    original = api_server.RegistryListProjection
+    changed = False
+
+    def race_after_read(*args, **kwargs):
+        nonlocal changed
+        payload = original(*args, **kwargs)
+        if not changed:
+            changed = True
+            set_visibility(database, "article", "a", False)
+        return payload
+
+    monkeypatch.setattr(api_server, "RegistryListProjection", race_after_read)
+    api_server._clear_article_keyword_cache()
+    first = api_server.registry_article_keywords()
+    assert {item["article_id"] for item in json.loads(first.body)["items"]} == {"b"}
+    assert api_server._ARTICLE_KEYWORDS_CACHE is not None
+    later = api_server.registry_article_keywords()
+    assert {item["article_id"] for item in json.loads(later.body)["items"]} == {"b"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_article_keyword_warm_failure_does_not_break_startup_or_hide_registry_503(tmp_path, monkeypatch, corrupt):
+    import api_server
+    from fastapi.testclient import TestClient
+
+    missing = tmp_path / "missing.sqlite3"
+    if corrupt:
+        missing.write_bytes(b"not a registry")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(missing))
+    api_server._clear_article_keyword_cache()
+    with TestClient(api_server.app) as client:
+        assert client.get("/").status_code == 200
+        response = client.get("/api/registry/article-keywords")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Article registry is unavailable."
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+@pytest.mark.parametrize("version", [12, 13])
+def test_article_keyword_endpoint_keeps_legacy_collection_path(tmp_path, monkeypatch, version):
+    import api_server
+    from fastapi.testclient import TestClient
+
+    database = _database(tmp_path, version=version)
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    api_server._clear_article_keyword_cache()
+    client = TestClient(api_server.app)
+    expected = client.get("/api/registry/articles?include_pdf=true&page_size=100").json()["items"]
+    actual = client.get("/api/registry/article-keywords")
+    assert actual.status_code == 200
+    assert actual.json() == {"items": expected}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_successful_reload_prewarms_keywords_but_failed_reload_does_not(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+
+    calls = []
+    monkeypatch.setattr(api_server, "RELOAD_TOKEN", "")
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", None)
+    monkeypatch.setattr(api_server, "_configured_pdf_queue", lambda: None)
+    monkeypatch.setattr(api_server, "_selected_pdf_projection", lambda: (None, None))
+    monkeypatch.setattr(api_server.responder.kb, "reload", lambda: None)
+    monkeypatch.setattr(api_server, "_public_config", lambda: {})
+    monkeypatch.setattr(api_server, "_warm_article_keyword_cache", lambda: calls.append("warm"))
+    with TestClient(api_server.app, client=("127.0.0.1", 54321)) as client:
+        calls.clear()
+        response = client.post("/api/reload")
+        assert response.status_code == 200
+        assert calls == ["warm"]
+
+        calls.clear()
+        monkeypatch.setattr(api_server.responder.kb, "reload", lambda: (_ for _ in ()).throw(OSError("reload failed")))
+        with pytest.raises(OSError, match="reload failed"):
+            client.post("/api/reload")
+        assert calls == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_successful_reload_prepares_wal_keywords_before_first_read(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit keyword reload fixture approval"}, status="accepted_legacy")
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    assert _registry_sidecars(database) == []
+
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "RELOAD_TOKEN", "")
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", None)
+    monkeypatch.setattr(api_server, "_configured_pdf_queue", lambda: None)
+    monkeypatch.setattr(api_server, "_selected_pdf_projection", lambda: (None, None))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    monkeypatch.setattr(api_server.responder.kb, "reload", lambda: None)
+    monkeypatch.setattr(api_server, "_public_config", lambda: {})
+    original = publication._load_snapshot_json
+    snapshot_decodes = 0
+
+    def count_snapshot_decodes(*args, **kwargs):
+        nonlocal snapshot_decodes
+        snapshot_decodes += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "_load_snapshot_json", count_snapshot_decodes)
+    api_server._clear_article_keyword_cache()
+    with TestClient(api_server.app, client=("127.0.0.1", 54321)) as client:
+        before_reload = snapshot_decodes
+        assert before_reload > 0
+        set_visibility(database, "article", "a", False)
+        response = client.post("/api/reload")
+        assert response.status_code == 200
+        after_reload = snapshot_decodes
+        assert after_reload > before_reload
+        assert _registry_sidecars(database) == []
+
+        first = client.get("/api/registry/article-keywords")
+        assert first.status_code == 200
+        assert {item["article_id"] for item in first.json()["items"]} == {"b"}
+        assert snapshot_decodes == after_reload
+        assert _registry_sidecars(database) == []
+        _assert_registry_restore_noop(database, tmp_path)
+        after_restore = client.get("/api/registry/article-keywords")
+        assert after_restore.status_code == 200
+        assert {item["article_id"] for item in after_restore.json()["items"]} == {"b"}
+        assert _registry_sidecars(database) == []
+    assert _registry_sidecars(database) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_concurrent_article_keyword_requests_share_one_builder_and_fresh_responses(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    import api_server
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit concurrent keyword fixture approval"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    original = api_server.RegistryListProjection
+    builds = 0
+
+    def count_builds(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        time.sleep(0.05)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(api_server, "RegistryListProjection", count_builds)
+    api_server._clear_article_keyword_cache()
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        responses = list(pool.map(lambda _index: api_server.registry_article_keywords(), range(5)))
+    assert builds == 1
+    assert len({response.body for response in responses}) == 1
+    responses[0].headers["X-Test-Only"] = "first"
+    assert all("x-test-only" not in response.headers for response in responses[1:])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
@@ -1668,7 +2139,7 @@ def test_combined_status_current_count_uses_its_public_snapshot(tmp_path, monkey
                 _approve(db, new_sha, {"basis": "explicit next-version fixture approval"}, status="accepted_legacy")
         return result
     monkeypatch.setattr(RegistryReader, "status", status)
-    assert api_server.registry_status(include_pdf=True)["articles"] == 2
+    assert api_server.registry_status(include_pdf=True)["articles"] == 1
     assert api_server.registry_status(include_pdf=True)["articles"] == 1
 
 

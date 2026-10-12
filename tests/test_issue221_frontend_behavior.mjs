@@ -30,14 +30,8 @@ async function graphAtSize(size) {
     fetch: async (url) => {
       calls.push(String(url));
       const parsed = new URL(String(url), 'http://localhost');
-      assert.equal(parsed.pathname, '/api/registry/articles', 'graph must use the approved collection endpoint');
-      assert.equal(parsed.searchParams.get('include_pdf'), 'true');
-      const page = Number(parsed.searchParams.get('page'));
-      const pageSize = Number(parsed.searchParams.get('page_size'));
-      return { ok: true, json: async () => ({
-        items: items.slice((page - 1) * pageSize, page * pageSize),
-        pagination: { total: size },
-      }) };
+      assert.equal(parsed.pathname, '/api/registry/article-keywords', 'graph must use the snapshot-backed keyword endpoint');
+      return { ok: true, json: async () => ({ items }) };
     },
     registryErrorMessage: (error) => String(error),
     renderCurrentGraph() {},
@@ -51,8 +45,7 @@ async function graphAtSize(size) {
   ].join('\n'), context);
   await context.runGraph();
   const graph = JSON.parse(JSON.stringify(context.state.graphData.articleKeywords));
-  const expectedPages = Math.max(1, Math.ceil(size / 100));
-  assert.equal(calls.length, expectedPages, `${size} articles should need only collection pages`);
+  assert.equal(calls.length, 1, `${size} articles should need one complete collection request`);
   assert.equal(context.state.articleKeywordGraphLoading, false);
   if (size === 0) {
     assert.deepEqual(graph.nodes, []);
@@ -100,8 +93,8 @@ async function keywordEvidenceUsesApprovedContentVersion() {
     els: { articleKeywordEvidence: section },
     fetch: async (url) => {
       calls.push(String(url));
-      assert.match(String(url), /^\/api\/registry\/articles\?include_pdf=true&page=1&page_size=100$/);
-      return { ok: true, json: async () => ({ items: [article], pagination: { total: 1 } }) };
+      assert.equal(String(url), '/api/registry/article-keywords');
+      return { ok: true, json: async () => ({ items: [article] }) };
     },
     registryElement: element, registryErrorMessage: String, renderCurrentGraph() {},
   });
@@ -119,7 +112,7 @@ async function keywordEvidenceUsesApprovedContentVersion() {
   context.showEvidence(keyword.label, keyword.articles);
   const footer = section.children.find((item) => item.tag === 'ul').children[0].children[1].text;
   assert.equal(footer, 'Publisher · content_enrichment · content version content-a');
-  assert.deepEqual(calls, ['/api/registry/articles?include_pdf=true&page=1&page_size=100'],
+  assert.deepEqual(calls, ['/api/registry/article-keywords'],
     'supporting evidence must keep the approved version without fetching article detail');
 }
 

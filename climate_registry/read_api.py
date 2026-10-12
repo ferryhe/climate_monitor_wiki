@@ -428,7 +428,7 @@ class RegistryReader:
             return result
 
     @contextmanager
-    def public_snapshot(self, *, direct: bool = False):
+    def public_snapshot(self, *, direct: bool = False, manage_wal: bool = False):
         if self.static_snapshot is not None:
             yield self
             return
@@ -436,7 +436,7 @@ class RegistryReader:
             yield self
             return
         if direct:
-            with self._source_connection() as connection:
+            with self._source_connection(manage_wal=manage_wal) as connection:
                 self._snapshot_connection = connection
                 self._snapshot_direct = True
                 self._approved_snapshot_cache = {}
@@ -485,19 +485,20 @@ class RegistryReader:
                         delattr(self, name)
 
     @contextmanager
-    def _source_connection(self) -> Iterator[sqlite3.Connection]:
+    def _source_connection(self, *, manage_wal: bool = False, validate: bool = True) -> Iterator[sqlite3.Connection]:
         if self.database is None or not self.database.is_file():
             raise RegistryUnavailableError("registry database is unavailable")
         connection = None
         try:
             connection = sqlite3.connect(
-                f"{self.database.as_uri()}?mode=ro", uri=True, timeout=2,
+                f"{self.database.as_uri()}?mode={'rw' if manage_wal else 'ro'}", uri=True, timeout=2,
             )
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA query_only = ON")
             connection.execute("PRAGMA trusted_schema = OFF")
             connection.execute("BEGIN")
-            self._validate_contract(connection)
+            if validate:
+                self._validate_contract(connection)
             yield connection
         except RegistryContractError:
             raise
