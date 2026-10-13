@@ -97,19 +97,16 @@ const ANSWER_MODE_COPY = {
   brief: {
     label: "Brief",
     title: "Fast snapshot mode with a short, focused answer.",
-    note: "Fastest mode. Returns a short, focused answer with only the most relevant evidence.",
     placeholder: "Ask for a quick snapshot, the latest highlights, or a short answer in a few bullets...",
   },
   detailed: {
     label: "Detailed",
     title: "Evidence-heavy mode for focused explainers and source-backed questions.",
-    note: "Richer grounded answers that pull more aggressively from raw source reports.",
     placeholder: "Ask for a source-backed explainer, a focused comparison, or a deeper answer with evidence...",
   },
   executive: {
     label: "Report",
     title: "Structured report mode for period summaries, trend shifts, and big-picture questions.",
-    note: "Best for period summaries. Produces a structured report with themes, coverage, and notable signals.",
     placeholder: "Ask for a report across a time window, a theme-based synthesis, or a big-picture trend brief...",
   },
 };
@@ -165,7 +162,6 @@ const els = {
   form: document.getElementById("chatForm"),
   input: document.getElementById("messageInput"),
   send: document.getElementById("sendButton"),
-  chatAllowance: document.getElementById("chatAllowance"),
   chatAccessMessage: document.getElementById("chatAccessMessage"),
   chatTokenForm: document.getElementById("chatTokenForm"),
   chatToken: document.getElementById("chatToken"),
@@ -252,7 +248,6 @@ const els = {
   answerModeButtons: Array.from(document.querySelectorAll("[data-answer-mode]")),
   graphModeButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   workspaceTabs: Array.from(document.querySelectorAll(".tabbar__tab")),
-  answerModeHint: document.getElementById("answerModeHint"),
 };
 
 function escapeHtml(value) {
@@ -858,10 +853,8 @@ function setAnswerMode(mode) {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
     button.title = buttonCopy.title;
+    button.setAttribute("aria-description", buttonCopy.title);
   });
-  if (els.answerModeHint) {
-    els.answerModeHint.textContent = copy.note;
-  }
   if (els.input && copy.placeholder) {
     els.input.placeholder = copy.placeholder;
   }
@@ -1128,7 +1121,11 @@ function blockedChatMessage() {
 function renderChatAccess(status, notice = "") {
   state.chatAccess = status;
   const reset = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "long" }).format(new Date(status.reset_at));
-  if (els.chatAllowance) els.chatAllowance.textContent = `Free questions today: ${status.remaining} of 5 remaining. Resets ${reset} (New York).`;
+  const allowance = `Free questions today: ${status.remaining} of ${status.limit ?? 5} remaining.`;
+  if (els.chatToken) {
+    els.chatToken.placeholder = allowance;
+    els.chatToken.setAttribute("aria-description", allowance);
+  }
   if (els.chatAccessMessage) els.chatAccessMessage.textContent = notice || (status.invalid_token
     ? "This token is invalid or has been revoked."
     : status.access_enabled ? "Access enabled. You can continue asking questions."
@@ -1142,7 +1139,10 @@ async function refreshChatAccess() {
     const response = await fetch("/api/chat/access", { cache: "no-store" });
     if (response.ok) renderChatAccess(await response.json());
   } catch {
-    if (els.chatAllowance) els.chatAllowance.textContent = "Free question allowance is unavailable. Please retry.";
+    if (els.chatToken) {
+      els.chatToken.placeholder = "Free question allowance is unavailable. Please retry.";
+      els.chatToken.setAttribute("aria-description", els.chatToken.placeholder);
+    }
   }
 }
 

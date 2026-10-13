@@ -1453,11 +1453,17 @@ def load_active_range_overlay(
 
 
 @contextmanager
-def _frozen_range_reader(reader):
+def _frozen_range_reader(reader, *, schema_version=None):
     if reader.database is None and reader.static_snapshot is not None:
         frozen = copy.copy(reader)
         frozen.static_snapshot = copy.deepcopy(reader.static_snapshot)
         yield frozen
+        return
+    if (reader.database is not None and reader.public and reader.static_snapshot is None
+            and schema_version is not None and schema_version >= 21):
+        frozen = copy.copy(reader)
+        with frozen.public_snapshot():
+            yield frozen
         return
     with tempfile.TemporaryDirectory(prefix="climate-range-report-") as temporary:
         temporary_root = Path(temporary)
@@ -1484,11 +1490,18 @@ def freeze_range_report(
     pdf_overlay_reader: RegistryReader | None = None,
     overlay_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    schema_version = None
     if reader.database is not None:
-        with reader.connect() as connection:
-            if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                overlay_reader = pdf_overlay_reader = None
-                overlay_manifest = None
+        if reader.public and reader.static_snapshot is None:
+            with reader.public_snapshot(direct=True):
+                with reader.connect() as connection:
+                    schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        else:
+            with reader.connect() as connection:
+                schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if schema_version >= 21:
+            overlay_reader = pdf_overlay_reader = None
+            overlay_manifest = None
     else:
         # The export already contains the exact approved overlay; do not splice private data.
         overlay_reader = pdf_overlay_reader = None
@@ -1557,7 +1570,7 @@ def freeze_range_report(
         )
     pdf_dates = selected_dates(pdf_overlay)
 
-    with _frozen_range_reader(reader) as snapshot_reader:
+    with _frozen_range_reader(reader, schema_version=schema_version) as snapshot_reader:
         public_source = _range_source(snapshot_reader, start_date, end_date)
         public_dates = selected_dates(public_source)
         web_selection_dates = dict(public_dates)

@@ -354,13 +354,6 @@ a {
   color: #e8f3ec;
 }
 
-.mode-switch__note {
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.45;
-  max-width: 420px;
-}
-
 .ghost-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -1862,4 +1855,5 @@ tbody tr.is-selected {
 .chat-token-form { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin: .5rem 0; font-size: .8rem; }
 .chat-token-form[hidden] { display: none; }
 .chat-token-form input { flex: 1; min-width: 8rem; padding: .4rem; }
+.chat-token-form input:focus::placeholder { color: transparent; }
 .chat-token-form button { padding: .4rem .6rem; }
