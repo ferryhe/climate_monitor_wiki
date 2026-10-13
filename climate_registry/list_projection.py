@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from .publication import _pdf_dto, _public_dto
+from climate_monitor.taxonomy import load_article_taxonomy
 from .read_api import RegistryQueryError, _pagination, filter_pdf_articles, validate_page, validate_report_date
 
 
@@ -17,6 +17,23 @@ REPORT_FIELDS = {
     "source_label", "article_count", "calendar_count", "page_count", "cadence", "report_format",
     "sites_checked", "sites_succeeded", "sites_failed", "monitoring_status",
 }
+
+
+def category_record(item):
+    """Map evidence is compact; detail endpoints retain the full approved snapshot."""
+    value = {key: item.get(key) for key in (
+        "article_id", "source_kind", "title", "canonical_url", "publisher", "source", "last_seen",
+        "categories", "published_candidate_sha256", "current_version_id", "content_version_id", "record_reference")}
+    value["metadata_provenance"] = {"categories": (item.get("metadata_provenance") or {}).get("categories")}
+    return value
+
+
+def category_collection(items, taxonomy=None):
+    taxonomy = taxonomy or load_article_taxonomy()
+    return {"taxonomy": {"taxonomy_id": taxonomy.taxonomy_id, "sha256": taxonomy.sha256,
+        "min_items": taxonomy.constraints.categories_min_items, "max_items": taxonomy.constraints.categories_max_items,
+        "categories": [{"id": row.id, "label": row.label, "description": row.description} for row in taxonomy.categories]},
+        "items": [category_record(item) for item in items]}
 
 
 class RegistryListProjection:
@@ -44,7 +61,7 @@ class RegistryListProjection:
             """)
             by_url = {item["canonical_url"]: item for item in core}
             pdf_by_url = {item["canonical_url"]: item for item in pdf}
-            keyword_items = []
+            category_items = []
             for url in by_url.keys() | pdf_by_url.keys():
                 original = by_url.get(url)
                 imported = pdf_by_url.get(url)
@@ -54,10 +71,10 @@ class RegistryListProjection:
                     merged = dict(core_item, source_kind="registry")
                     if imported:
                         merged.update(source_label="Registry · PDF import", pdf_occurrence_count=len(imported["occurrences"]))
-                    keyword_items.append(_public_dto(merged))
+                    category_items.append(merged)
                 else:
                     merged = filter_pdf_articles([imported])[0]
-                    keyword_items.append(_pdf_dto(merged))
+                    category_items.append(merged)
                 card = {key: value for key, value in merged.items() if key in ARTICLE_FIELDS}
                 core_card = ({key: value for key, value in core_item.items() if key in ARTICLE_FIELDS}
                     if core_item is not None else None)
@@ -74,8 +91,8 @@ class RegistryListProjection:
                     (url, "core", row.get("report_date"), row.get("pillar")) for row in (original or {}).get("appearances", [])))
                 db.executemany("INSERT INTO appearances VALUES (?,?,?,?)", (
                     (url, "pdf", row.get("report_date"), None) for row in (imported or {}).get("occurrences", [])))
-            keyword_items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
-            self.keyword_body = json.dumps({"items": keyword_items}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            category_items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
+            self.category_body = json.dumps(category_collection(category_items), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             db.executemany("INSERT INTO reports VALUES (?,?,?,?)", (
                 (item.get("report_id") or "", item.get("report_date") or "", item.get("source_kind") or "registry",
                     json.dumps({key: value for key, value in item.items() if key in REPORT_FIELDS}, ensure_ascii=False))

@@ -186,7 +186,7 @@ def test_run_monitor_writes_a_semantic_sidecar_beside_the_canonical_report(tmp_p
     assert payload["report"]["sha256"] == hashlib.sha256(report_bytes).hexdigest()
     assert payload["report"]["date"] == "2026-05-14"
     assert payload["report"]["filename"] == "climate-monitor-2026-05-14.md"
-    assert payload["taxonomy"]["taxonomy_id"] == "climate-actuarial-v1"
+    assert payload["taxonomy"]["taxonomy_id"] == "climate-actuarial-v2"
     assert payload["taxonomy"]["sha256"] == DEFAULT_TAXONOMY_SHA256
     assert payload["article_count"] == len(payload["articles"]) == len(result.items)
 
@@ -666,7 +666,7 @@ def test_invalid_agent_semantics_fail_closed(supplied):
 def test_agent_supplied_taxonomy_binding_mismatch_is_rejected():
     supplied = {
         "schema_version": "article-semantic-bundle.v1",
-        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_id": "climate-actuarial-v2",
         "taxonomy_sha256": "0" * 64,
         "summary": "A valid summary.",
         "categories": ["Physical Risk"],
@@ -744,25 +744,19 @@ def test_taxonomy_copied_to_another_path_still_validates_by_identity(tmp_path):
     copied.write_bytes(DEFAULT_TAXONOMY_PATH.read_bytes())
 
     taxonomy = load_article_taxonomy(copied)
-    assert taxonomy.taxonomy_id == "climate-actuarial-v1"
+    assert taxonomy.taxonomy_id == "climate-actuarial-v2"
     assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256
 
     bundle = derive_semantic_bundle(_item(), taxonomy=taxonomy)
     assert bundle["taxonomy_sha256"] == DEFAULT_TAXONOMY_SHA256
 
 
-def test_tampered_taxonomy_copy_is_rejected(tmp_path):
-    copied = tmp_path / "tampered.yaml"
-    raw = DEFAULT_TAXONOMY_PATH.read_bytes()
-    copied.write_bytes(raw.replace(b"label: Actuarial Modelling", b"label: Actuarial Modeling"))
-
-    with pytest.raises(ValueError):
-        load_article_taxonomy(copied)
-
-
-# --------------------------------------------------------------------------
-# Verification: report SHA mismatch, stale sidecar, partial write, recovery
-# --------------------------------------------------------------------------
+def test_edited_taxonomy_copy_has_its_own_frozen_definition(tmp_path):
+    copied = tmp_path / "taxonomy.yaml"
+    copied.write_bytes(DEFAULT_TAXONOMY_PATH.read_bytes().replace(b"Physical Risk", b"Physical Hazard", 1))
+    selected = load_article_taxonomy(copied)
+    assert "Physical Hazard" in selected.allowed_labels
+    assert selected.sha256 != DEFAULT_TAXONOMY_SHA256
 
 
 def test_verify_accepts_a_freshly_committed_pair(tmp_path):
@@ -860,6 +854,26 @@ def test_partial_write_is_repaired_by_recovery(tmp_path, monkeypatch):
     assert recover_pending_commit(report_path) == "applied"
     verify_semantic_sidecar(report_path)
     assert not list(tmp_path.glob("*.pending"))
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_retained_sidecar_taxonomy_survives_active_configuration_changes(tmp_path, monkeypatch, legacy):
+    import climate_monitor.taxonomy as taxonomy_module
+    archive = DEFAULT_TAXONOMY_PATH.with_name("article_categories_v1.yaml")
+    selected = load_article_taxonomy(archive if legacy else DEFAULT_TAXONOMY_PATH)
+    report = tmp_path / "climate-monitor-2026-05-14.md"
+    text = "# report\n**URL:** https://www.iais.org/climate-supervision <br>\n"
+    report.write_text(text, encoding="utf-8")
+    payload = build_sidecar_payload(report_date=date(2026, 5, 14), report_filename=report.name,
+        report_sha256=hashlib.sha256(report.read_bytes()).hexdigest(), items=[_item()], taxonomy=selected)
+    if legacy:
+        payload["taxonomy"].pop("definition_yaml")
+    semantic_sidecar_path(report).write_bytes(serialize_sidecar(payload))
+    changed = tmp_path / "active.yaml"
+    changed.write_bytes(DEFAULT_TAXONOMY_PATH.read_bytes().replace(b"Physical Risk", b"Physical Hazard", 1))
+    monkeypatch.setattr(taxonomy_module, "DEFAULT_TAXONOMY_PATH", changed)
+    # The v1 archive remains a repository path, independent of the selected active path.
+    assert verify_semantic_sidecar(report)["taxonomy"]["sha256"] == selected.sha256
 
 
 def test_recovery_applies_a_fully_staged_pair(tmp_path, monkeypatch):
@@ -1082,8 +1096,8 @@ def test_sidecar_schema_pins_the_immutable_taxonomy_identity():
     schema = json.loads((schemas / "article_semantic_sidecar_v1.schema.json").read_text(encoding="utf-8"))
     taxonomy = schema["properties"]["taxonomy"]["properties"]
 
-    assert taxonomy["taxonomy_id"]["const"] == "climate-actuarial-v1"
-    assert taxonomy["sha256"]["const"] == DEFAULT_TAXONOMY_SHA256
+    assert "const" not in taxonomy["taxonomy_id"]
+    assert "const" not in taxonomy["sha256"]
     assert schema["properties"]["schema_version"]["const"] == "article-semantic-sidecar.v1"
     assert schema["additionalProperties"] is False
 

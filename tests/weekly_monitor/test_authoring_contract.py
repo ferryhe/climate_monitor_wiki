@@ -137,6 +137,7 @@ def test_valid_authoring_response_binds_one_bundle_per_final_article():
     result = validate_authoring_response(
         items,
         load_authoring_response(FIXTURE_DIR / "valid-response.json"),
+        taxonomy=load_article_taxonomy(ROOT / "monitoring/taxonomies/article_categories_v1.yaml"),
     )
 
     assert result.article_count == 2
@@ -173,7 +174,7 @@ def test_authoring_request_exposes_the_final_article_input_contract_without_prom
         "version": prompt.version,
         "sha256": prompt.sha256,
     }
-    assert request["taxonomy"]["taxonomy_id"] == "climate-actuarial-v1"
+    assert request["taxonomy"]["taxonomy_id"] == "climate-actuarial-v2"
     assert request["articles"][0]["article_id"] == article_identity(items[0])
     assert "raw_bytes" not in encoded
     assert str(ROOT) not in encoded
@@ -203,6 +204,7 @@ def test_invalid_authoring_responses_fail_closed(fixture_name: str, message: str
         validate_authoring_response(
             items,
             load_authoring_response(FIXTURE_DIR / fixture_name),
+            taxonomy=load_article_taxonomy(ROOT / "monitoring/taxonomies/article_categories_v1.yaml"),
         )
 
 
@@ -212,7 +214,7 @@ def test_response_constants_match_taxonomy_identity():
     assert AUTHORING_RESPONSE_SCHEMA_VERSION_V2 == "weekly-monitor-authoring-response.v2"
     assert AUTHORING_REQUEST_SCHEMA_VERSION_V2 == "weekly-monitor-authoring-request.v2"
     assert AUTHORING_CONTRACT_VERSION_V2 == "weekly-monitor-authoring.v2"
-    assert DEFAULT_TAXONOMY_ID == "climate-actuarial-v1"
+    assert DEFAULT_TAXONOMY_ID == "climate-actuarial-v2"
     assert DEFAULT_TAXONOMY_SHA256 == load_article_taxonomy().sha256
 
 

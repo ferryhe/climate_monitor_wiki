@@ -23,7 +23,9 @@
     "repository": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit_sha"],
+      "required": [
+        "commit_sha"
+      ],
       "properties": {
         "commit_sha": {
           "type": "string",
@@ -34,13 +36,20 @@
     "prompt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "version", "sha256"],
+      "required": [
+        "id",
+        "version",
+        "sha256"
+      ],
       "properties": {
         "id": {
           "const": "weekly_monitor"
         },
         "version": {
-          "enum": ["v1", "v2"]
+          "enum": [
+            "v1",
+            "v2"
+          ]
         },
         "sha256": {
           "type": "string",
@@ -51,7 +60,10 @@
     "driver": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "contract_version"],
+      "required": [
+        "version",
+        "contract_version"
+      ],
       "properties": {
         "version": {
           "const": "weekly-monitor-driver.v1"
@@ -67,20 +79,28 @@
     "taxonomy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["taxonomy_id", "sha256"],
+      "required": [
+        "taxonomy_id",
+        "sha256"
+      ],
       "properties": {
         "taxonomy_id": {
-          "const": "climate-actuarial-v1"
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
         },
         "sha256": {
-          "const": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },
     "report": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["filename", "sha256"],
+      "required": [
+        "filename",
+        "sha256"
+      ],
       "properties": {
         "filename": {
           "type": "string",
@@ -95,7 +115,10 @@
     "semantic_sidecar": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["filename", "sha256"],
+      "required": [
+        "filename",
+        "sha256"
+      ],
       "properties": {
         "filename": {
           "type": "string",
@@ -110,7 +133,10 @@
     "final_articles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["count", "identities"],
+      "required": [
+        "count",
+        "identities"
+      ],
       "properties": {
         "count": {
           "type": "integer",
@@ -128,7 +154,11 @@
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["provider", "model", "settings"],
+      "required": [
+        "provider",
+        "model",
+        "settings"
+      ],
       "properties": {
         "provider": {
           "type": "string",

@@ -52,6 +52,39 @@ class RegistryQueryError(RegistryError):
     """A query or identifier is invalid."""
 
 
+def select_snapshot_article_content(snapshot, article_id, current_version_id):
+    """Select the body exposed by available_content, without observation rendering."""
+    tables = snapshot.get("tables", {})
+    fetches = {row.get("fetch_id"): row for row in tables.get("article_fetches", [])}
+    candidates = []
+    for row in sorted(tables.get("acquisition_items", []), key=lambda value:
+        (value.get("discovered_at") or "", value.get("acquisition_item_id") or "")):
+        if row.get("article_id") != article_id:
+            continue
+        fetch = fetches.get(row.get("fetch_id"), {})
+        resolved = fetches.get(row.get("resolved_by_fetch_id"), {})
+        version_id = fetch.get("content_version_id") if fetch.get("fetch_status") == "success" else None
+        fetched_at = fetch.get("fetched_at") if version_id else None
+        if version_id is None and resolved.get("fetch_status") == "success":
+            version_id, fetched_at = resolved.get("content_version_id"), resolved.get("fetched_at")
+        if version_id and row.get("material_status") == "full_content" and row.get("processing_status") == "complete":
+            candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
+                "fetch_id": row.get("fetch_id"), "acquisition_item_id": row.get("acquisition_item_id")})
+    if current_version_id:
+        current = max((row for row in tables.get("article_fetches", []) if row.get("article_id") == article_id
+            and row.get("content_version_id") == current_version_id and row.get("fetch_status") == "success"),
+            key=lambda row: (row.get("fetched_at") or "", row.get("fetch_id") or ""), default=None)
+        candidates.append({"content_version_id": current_version_id, "fetched_at": current.get("fetched_at") if current else None,
+            "fetch_id": current.get("fetch_id") if current else None, "acquisition_item_id": None})
+    if not candidates:
+        return {}, None
+    selected = max(candidates, key=lambda item: (RegistryReader._timestamp_key(item["fetched_at"]),
+        item["content_version_id"] == current_version_id, item["content_version_id"], item.get("fetch_id") or ""))
+    content = next((row for row in tables.get("article_content_versions", []) if row.get("article_id") == article_id
+        and row.get("content_version_id") == selected["content_version_id"]), None)
+    return selected, content
+
+
 @dataclass(frozen=True)
 class RegistryReportIdentity:
     report_date: str
@@ -428,7 +461,7 @@ class RegistryReader:
             return result
 
     @contextmanager
-    def public_snapshot(self, *, direct: bool = False, manage_wal: bool = False):
+    def public_snapshot(self, *, direct: bool = False, manage_wal: bool = False, source_connection=None):
         if self.static_snapshot is not None:
             yield self
             return
@@ -436,7 +469,11 @@ class RegistryReader:
             yield self
             return
         if direct:
-            with self._source_connection(manage_wal=manage_wal) as connection:
+            from contextlib import nullcontext
+            # A category correction already owns the source transaction. A second
+            # reader would block its writer when a large snapshot spills pages.
+            with (nullcontext(source_connection) if source_connection is not None
+                    else self._source_connection(manage_wal=manage_wal)) as connection:
                 self._snapshot_connection = connection
                 self._snapshot_direct = True
                 self._approved_snapshot_cache = {}
@@ -1799,7 +1836,7 @@ class RegistryReader:
         }
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
             payload.update(core_article_id=core_article_id,confirmation_basis=row["confirmation_basis"])
-        from .publication import snapshot_metadata
+        from .publication import snapshot_metadata, approved_display, digest
         snapshot = snapshot_metadata(connection, "pdf_article", row["article_id"])
         supplements = [item for item in (snapshot or {}).get("supplements", []) if item["source_ref"].startswith("pdf-classification:") and item["entity_id"] == row["article_id"]]
         if supplements:
@@ -1808,6 +1845,11 @@ class RegistryReader:
             payload.update(categories=pending["categories"], keywords=pending["keywords"],
                 manual_enrichment={**pending, "generator_kind": "manual",
                     "evidence": evidence, "knowledge_id": supplements[-1]["knowledge_id"]})
+        if snapshot is not None:
+            payload.update(approved_display(snapshot))
+            payload["published_candidate_sha256"] = digest(snapshot)
+            payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
+                "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
         return payload
 
     @_direct_public_read
@@ -2597,6 +2639,11 @@ class RegistryReader:
     def _article_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         if snapshot.get("static_payload"):
             payload = dict(snapshot["static_payload"])
+            from .publication import approved_display
+            payload.update(approved_display(snapshot))
+            payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
+            payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
+                "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
             from .article_dates import ArticleDateImportError, select_article_dates
             try:
                 payload.update(select_article_dates(payload.get("date_observations", []),
@@ -2808,11 +2855,13 @@ class RegistryReader:
     def _article_card_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         if snapshot.get("static_payload"):
             payload = dict(snapshot["static_payload"])
+            from .publication import approved_display
+            payload.update(approved_display(snapshot))
             if not payload.get("content_version_id"):
                 enrichment = payload.get("enrichment") or {}
                 content = payload.get("content") or {}
                 payload["content_version_id"] = enrichment.get("content_version_id") or content.get("content_version_id")
-            payload["published_candidate_sha256"] = self._published_candidate_sha(snapshot)
+            payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
             payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
                 "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
             return payload
@@ -2929,6 +2978,11 @@ class RegistryReader:
                 manual_enrichment={**pending, "generator_kind": "manual", "evidence": evidence,
                     "knowledge_id": supplements[-1]["knowledge_id"]})
         payload.update(approved_display(snapshot))
+        payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
+        reference_id = (tables["articles"][0]["article_id"]
+            if snapshot["entity_kind"] == "article" else row["article_id"])
+        payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": reference_id,
+            "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
         return payload
 
     def _acquisition_snapshot_projection(self, snapshot, article_id, current_version_id, display_policy):
@@ -2942,7 +2996,7 @@ class RegistryReader:
         else:
             self._prepare_legacy_acquisition_searches((snapshot,))
             searches = self._legacy_acquisition_search_cache
-        observations, candidates = [], []
+        observations = []
         for row in sorted(items, key=lambda value: (value.get("discovered_at") or "", value.get("acquisition_item_id") or "")):
             try:
                 origins = json.loads(row.get("origins_json") or "[]")
@@ -2970,25 +3024,7 @@ class RegistryReader:
             if row.get("resolved_by_fetch_id"):
                 item["resolved_fetch"] = {"status": resolved.get("fetch_status"), "fetched_at": resolved.get("fetched_at"), "content_version_id": resolved.get("content_version_id")}
             observations.append(item)
-            version_id = fetch.get("content_version_id") if fetch.get("fetch_status") == "success" else None
-            fetched_at = fetch.get("fetched_at") if version_id else None
-            if version_id is None and resolved.get("fetch_status") == "success":
-                version_id, fetched_at = resolved.get("content_version_id"), resolved.get("fetched_at")
-            if version_id and row.get("material_status") == "full_content" and row.get("processing_status") == "complete":
-                candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
-                    "fetch_id": row.get("fetch_id"), "acquisition_item_id": row.get("acquisition_item_id")})
-        if current_version_id:
-            current = max((row for row in tables.get("article_fetches", []) if row.get("article_id") == article_id
-                and row.get("content_version_id") == current_version_id and row.get("fetch_status") == "success"),
-                key=lambda row: (row.get("fetched_at") or "", row.get("fetch_id") or ""), default=None)
-            candidates.append({"content_version_id": current_version_id, "fetched_at": current.get("fetched_at") if current else None,
-                "fetch_id": current.get("fetch_id") if current else None, "acquisition_item_id": None})
-        if not candidates:
-            return observations, {}
-        selected = max(candidates, key=lambda item: (RegistryReader._timestamp_key(item["fetched_at"]),
-            item["content_version_id"] == current_version_id, item["content_version_id"], item.get("fetch_id") or ""))
-        content = next((row for row in tables.get("article_content_versions", []) if row.get("article_id") == article_id
-            and row.get("content_version_id") == selected["content_version_id"]), None)
+        selected, content = select_snapshot_article_content(snapshot, article_id, current_version_id)
         if content is None:
             return observations, {}
         available = {key: content.get(key) for key in ("content_version_id", "content_type", "source_bytes", "extraction_method", "extraction_version", "first_fetched_at")}
@@ -3075,6 +3111,11 @@ class RegistryReader:
                 snapshot = snapshot_metadata(connection, "article", article_id)
                 if snapshot and snapshot.get("static_payload"):
                     payload = dict(snapshot["static_payload"])
+                    from .publication import approved_display
+                    payload.update(approved_display(snapshot))
+                    payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
+                    payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
+                        "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
                     from .article_dates import ArticleDateImportError, select_article_dates
                     try:
                         payload.update(select_article_dates(payload.get("date_observations", []),
@@ -3425,6 +3466,8 @@ class RegistryReader:
                 payload["is_visible"] = True
                 from .acquisition_review import digest
                 payload["published_candidate_sha256"] = digest(snapshot)
+                payload["record_reference"] = {"entity_kind": "article", "entity_id": article_id,
+                    "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
                 if snapshot.get("git_wiki"):
                     payload["available_content"] = {"markdown": snapshot["git_wiki"]["markdown"],
                         "selection_basis": "approved_git_wiki", "static_snapshot_sha256": snapshot["git_wiki"]["sha256"]}

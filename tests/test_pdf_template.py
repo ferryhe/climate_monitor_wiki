@@ -260,6 +260,26 @@ def test_linked_pdf_update_retains_ids_in_metadata_and_displays_url(tmp_path):
     assert snapshot == original
 
 
+@pytest.mark.parametrize("categories", [["Climate & Health"], []])
+def test_pdf_update_uses_current_categories_and_keeps_source_topic_separate(tmp_path, categories):
+    from climate_delivery.templates.adapters import adapt_range_report
+    snapshot = range_fixture()
+    item = snapshot["pdf_source_updates"][0]
+    item.update(categories=categories, topic="Old source topic")
+    _refresh_snapshot_identity(snapshot)
+    update = adapt_range_report(snapshot).updates[-1]
+    assert update.topic == (", ".join(categories) or "PDF Source Updates")
+    assert ("Source topic", "Old source topic") in update.metadata
+    if categories:
+        assert ("Categories", "Climate & Health") in update.metadata
+        path = tmp_path / "category-pdf.pdf"
+        range_reports.render_range_report_pdf(snapshot, path)
+        assert "Climate & Health" in text_of(path)[1]
+        assert "Climate &amp; Health" in range_reports.render_range_report_html(snapshot)
+    else:
+        assert not any(label == "Categories" for label, _ in update.metadata)
+
+
 def test_key_dates_preserve_real_meeting_query_fields_and_sources(tmp_path):
     from datetime import datetime, timezone
     from climate_monitor.meetings import process_batch, query_events

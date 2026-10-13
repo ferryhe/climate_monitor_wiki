@@ -1022,63 +1022,65 @@ a {
   opacity: 1;
 }
 
-.graph-node-label--article-keywords {
-  fill: #d9e4ef;
-  font-size: 11px;
-  opacity: 0;
-  pointer-events: none;
-  user-select: none;
+.graph-node--article-categories circle {
+  fill: #426f59;
+  stroke: #739786;
+  stroke-width: 1;
 }
-
-.graph-node--article-keywords:hover + .graph-node-label--article-keywords,
-.graph-node--article-keywords:focus-visible + .graph-node-label--article-keywords {
-  opacity: 1;
-}
-
-.graph-edge--article-keywords {
-  cursor: pointer;
-  pointer-events: stroke;
-}
-
-.graph-edge--article-keywords:focus-visible {
+.graph-node--article-categories:hover circle,
+.graph-node--article-categories:focus-visible circle {
+  fill: #538c6f;
   stroke: var(--accent);
-  stroke-width: 3;
-  outline: none;
+  stroke-width: 2;
 }
-
-.graph-edge-count {
-  fill: var(--ink);
+.graph-node text.graph-node-label--article-categories {
+  fill: #e3eee8;
   font-size: 12px;
   paint-order: stroke;
-  stroke: var(--bg-panel);
+  stroke: #11161a;
   stroke-width: 4px;
   stroke-linejoin: round;
   pointer-events: none;
 }
+.category-map-count { fill: #a5c5b5; font-size: 12px; }
+.graph-edge--article-categories { cursor: pointer; pointer-events: stroke; }
+.category-edge-target { fill: #8aab99; cursor: pointer; pointer-events: fill; }
+.category-edge-target:focus-visible { stroke: var(--accent); stroke-width: 3; outline: none; }
+.graph-edge--article-categories:focus-visible,
+.graph-edge--article-categories.is-highlighted { stroke: var(--accent); stroke-width: 4; outline: none; }
+.graph-edge-count {
+  fill: var(--ink);
+  font-size: 13px;
+  paint-order: stroke;
+  stroke: var(--bg-panel);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
 
-.article-keyword-evidence {
+.article-category-evidence {
   margin-top: 14px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
 }
 
-.article-keyword-evidence:focus {
+.article-category-evidence:focus {
   outline: 2px solid var(--accent);
 }
 
-.article-keyword-evidence h3 {
+.article-category-evidence h3 {
   margin: 0 0 10px;
 }
 
-.article-keyword-evidence__list {
+.article-category-evidence__list {
   display: grid;
   gap: 8px;
   margin: 0;
   padding-left: 20px;
 }
 
-.article-keyword-evidence__item p {
+.article-category-evidence__item p {
   margin: 4px 0 0;
 }
 

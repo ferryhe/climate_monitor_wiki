@@ -49,8 +49,9 @@ def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_card
         assert page(report_date="2026-09-02", pillar="B")["pagination"]["total"] == 1
         assert any("COUNT(*)" in sql for sql in statements)
         assert any("LIMIT 20 OFFSET 0" in sql for sql in statements)
-        keywords = json.loads(projection.keyword_body)["items"][0]
-        assert keywords["keywords"] == ["tail risk"] and keywords["summary"] == "core summary"
+        keywords = json.loads(projection.category_body)["items"][0]
+        assert keywords["categories"] == ["Flood"]
+        assert "keywords" not in keywords and "summary" not in keywords
     finally:
         projection.close()
 
@@ -63,9 +64,9 @@ def test_shared_lists_do_not_revalidate_or_decode_stable_source(tmp_path, monkey
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "list projection fixture"}, status="accepted_legacy")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    api_server._clear_article_keyword_cache()
-    api_server._warm_article_keyword_cache()
-    assert api_server._ARTICLE_KEYWORDS_CACHE is not None
+    api_server._clear_registry_list_cache()
+    api_server._warm_registry_list_cache()
+    assert api_server._REGISTRY_LIST_CACHE is not None
     def unexpected(*args, **kwargs): raise AssertionError("stable list reloaded source snapshots or full contract")
     monkeypatch.setattr(publication, "published_snapshots", unexpected)
     monkeypatch.setattr(RegistryReader, "_validate_contract", unexpected)
@@ -73,8 +74,8 @@ def test_shared_lists_do_not_revalidate_or_decode_stable_source(tmp_path, monkey
     assert api_server.registry_reports(include_pdf=True)["pagination"]["total"] == 0
     assert api_server.registry_status(include_pdf=True)["articles"] == 2
     assert api_server.registry_publishers(include_pdf=True)["items"]
-    assert len(json.loads(api_server.registry_article_keywords().body)["items"]) == 2
-    api_server._clear_article_keyword_cache()
+    assert len(json.loads(api_server.registry_article_categories().body)["items"]) == 2
+    api_server._clear_registry_list_cache()
 
 
 @pytest.mark.parametrize("damage", ["deleted", "schema", "approval", "binding"])
@@ -86,7 +87,7 @@ def test_cached_lists_fail_closed_when_source_is_invalid(tmp_path, monkeypatch, 
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "list invalidation fixture"}, status="accepted_legacy")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    api_server._clear_article_keyword_cache()
+    api_server._clear_registry_list_cache()
     assert api_server.registry_articles(include_pdf=True)["pagination"]["total"] == 2
     if damage == "deleted":
         database.unlink()
@@ -103,7 +104,7 @@ def test_cached_lists_fail_closed_when_source_is_invalid(tmp_path, monkeypatch, 
         api_server.registry_articles(include_pdf=True)
     assert error.value.status_code == 503
     assert error.value.detail == "Article registry is unavailable."
-    assert api_server._ARTICLE_KEYWORDS_CACHE is None
+    assert api_server._REGISTRY_LIST_CACHE is None
 
 
 def test_list_generation_never_publishes_uncommitted_wal_visibility(tmp_path, monkeypatch):
@@ -115,7 +116,7 @@ def test_list_generation_never_publishes_uncommitted_wal_visibility(tmp_path, mo
     with sqlite3.connect(database) as db:
         assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    api_server._clear_article_keyword_cache()
+    api_server._clear_registry_list_cache()
     assert api_server.registry_articles(include_pdf=True)["pagination"]["total"] == 2
     writer = sqlite3.connect(database)
     try:
@@ -131,7 +132,7 @@ def test_list_generation_never_publishes_uncommitted_wal_visibility(tmp_path, mo
         assert status["articles"] == 1 and status["cache_version"] == committed["cache_version"]
     finally:
         writer.close()
-        api_server._clear_article_keyword_cache()
+        api_server._clear_registry_list_cache()
 
 
 @pytest.mark.parametrize("change", ["delete", "replace_invalid"])
@@ -144,7 +145,7 @@ def test_source_removed_or_replaced_during_build_cannot_return_old_cards(tmp_pat
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "list replacement race fixture"}, status="accepted_legacy")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    api_server._clear_article_keyword_cache()
+    api_server._clear_registry_list_cache()
     original = api_server.RegistryListProjection
     def replace_after_build(reader):
         result = original(reader)
@@ -158,7 +159,7 @@ def test_source_removed_or_replaced_during_build_cannot_return_old_cards(tmp_pat
     with pytest.raises(HTTPException) as error:
         api_server.registry_articles(include_pdf=True)
     assert error.value.status_code == 503
-    assert api_server._ARTICLE_KEYWORDS_CACHE is None
+    assert api_server._REGISTRY_LIST_CACHE is None
 
 
 def test_continuously_changing_source_cannot_publish_or_cache_a_generation(tmp_path, monkeypatch):
@@ -171,7 +172,7 @@ def test_continuously_changing_source_cannot_publish_or_cache_a_generation(tmp_p
     with sqlite3.connect(database) as db:
         db.execute("PRAGMA journal_mode=WAL")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    api_server._clear_article_keyword_cache()
+    api_server._clear_registry_list_cache()
     original = api_server.RegistryListProjection
     builds = []
     def change_after_every_build(reader):
@@ -184,7 +185,7 @@ def test_continuously_changing_source_cannot_publish_or_cache_a_generation(tmp_p
     with pytest.raises(HTTPException) as error:
         api_server.registry_articles(include_pdf=True)
     assert error.value.status_code == 503 and len(builds) == 3
-    assert api_server._ARTICLE_KEYWORDS_CACHE is None
+    assert api_server._REGISTRY_LIST_CACHE is None
     for projection in builds:
         with pytest.raises(sqlite3.ProgrammingError):
             projection.connection.execute("SELECT 1")

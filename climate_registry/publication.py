@@ -294,9 +294,9 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
         run_ids = {row["run_id"] for row in tables[prefix+"_check_attempts"]}
         dependencies[prefix+"_check_runs"] = [row for row in _rows(connection,prefix+"_check_runs","1=1",())
             if row["run_id"] in run_ids or any(target.get("occurrence_id") in ids for target in json.loads(row["input_json"]).get("targets",[]))]
-    # Stage supplement records are evidence, not the already public business state.
+    # Supplements and category-correction audit records are not business content.
     tables["knowledge_versions"] = [row for row in tables["knowledge_versions"]
-        if not row["source_ref"].startswith(("registry-supplement:", "pdf-classification:"))]
+        if not row["source_ref"].startswith(("registry-supplement:", "pdf-classification:", "category-correction:"))]
     document_ids = {row["source_document_sha256"] for table in ("pdf_intake_article_occurrences","pdf_intake_calendar_items") for row in tables.get(table,[])}
     if document_ids:
         dependencies["pdf_intake_documents"] = [row for identity in sorted(document_ids) for row in _rows(connection,"pdf_intake_documents","document_sha256=?",(identity,))]
@@ -345,6 +345,52 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
         "information_targets":targets}
 
 
+def _category_correction_inputs(snapshot):
+    """Content/semantics used for classification; repeated observations are not content."""
+    tables = snapshot["tables"]
+    fields = {
+        "article_enrichments": ("status", "summary", "categories_json", "keywords_json"),
+        "article_semantics": ("summary", "categories_json", "keywords_json"),
+    }
+    if snapshot["entity_kind"] == "article":
+        article = tables["articles"][0]
+        from .read_api import select_snapshot_article_content
+        _selected, available_content = select_snapshot_article_content(snapshot, article["article_id"],
+            article.get("current_content_version_id"))
+        fields.update(articles=("canonical_url", "document_kind", "publication_eligible", "display_policy"),
+            article_versions=("observed_title", "canonical_title", "observed_summary"),
+            article_content_versions=("content_sha256", "markdown_sha256", "markdown_content"))
+        tables = {**tables, "article_versions": [row for row in tables.get("article_versions", [])
+            if row["version_id"] == article.get("current_version_id")],
+            "article_content_versions": [row for row in tables.get("article_content_versions", [])
+                if row["content_version_id"] == article.get("current_content_version_id")]}
+    else:
+        fields.update(pdf_intake_articles=("canonical_url", "title", "type_safe_classification_json"))
+    inputs = {table: sorted({digest({key: row.get(key) for key in keys}) for row in tables.get(table, [])})
+        for table, keys in fields.items()}
+    if snapshot["entity_kind"] == "article":
+        inputs["available_content"] = {key: (available_content or {}).get(key)
+            for key in fields["article_content_versions"]}
+    semantic_keys = ("title", "anchor_text", "summary", "summary_basis", "categories", "keywords", "body_sha256")
+    if snapshot["entity_kind"] == "pdf_article":
+        inputs["pdf_occurrences"] = sorted({digest({"content_sha256": row.get("content_sha256"),
+            **{key: json.loads(row["occurrence_json"]).get(key) for key in semantic_keys}})
+            for row in tables.get("pdf_intake_article_occurrences", [])})
+        inputs["verified_information"] = sorted({digest({key: information.get(key) for key in semantic_keys})
+            for row in tables.get("article_check_attempts", [])
+            for information in [json.loads(row.get("packet_json") or "{}").get("verified_information") or {}] if information})
+    inputs["annotations"] = {url: {key: value.get(key) for key in semantic_keys}
+        for url, value in snapshot.get("fallback_annotations", {}).items()}
+    if snapshot["entity_kind"] == "article":
+        inputs["report_fallbacks"] = sorted({digest({key: value.get(key) for key in semantic_keys})
+            for report in snapshot.get("report_fallbacks", {}).values() for value in report.get("articles", [])
+            if value.get("url") == article["canonical_url"]})
+    inputs["supplements"] = [{key: pending.get(key) for key in semantic_keys}
+        for row in snapshot.get("supplements", [])
+        for pending in [json.loads(row["evidence_json"]).get("pending_enrichment") or {}]]
+    return inputs
+
+
 def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
     previous = connection.execute("""SELECT c.snapshot_json FROM registry_publication p JOIN registry_candidates c
         ON c.candidate_sha256=p.latest_candidate_sha256 WHERE p.entity_kind=? AND p.entity_id=?""",
@@ -358,10 +404,19 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
             for prefix in ("article","meeting"):
                 value["tables"].pop(prefix+"_check_attempts",None)
                 value["dependencies"].pop(prefix+"_check_runs",None)
-            value["tables"]["knowledge_versions"]=[row for row in value["tables"].get("knowledge_versions",[]) if row["source_kind"]!="information_check"]
+            value["tables"]["knowledge_versions"]=[row for row in value["tables"].get("knowledge_versions",[])
+                if row["source_kind"]!="information_check" and not row["source_ref"].startswith("category-correction:")]
             return value
-        if display and digest(business_rows(old)) == digest(business_rows(snapshot)):
+        corrected = (display and snapshot["entity_kind"] in {"article", "pdf_article"}
+            and display.get("metadata_provenance", {}).get("categories") == "reviewed_category_correction")
+        same_semantics = corrected and digest(_category_correction_inputs(old)) == digest(_category_correction_inputs(snapshot))
+        if display and (not corrected or same_semantics) and digest(business_rows(old)) == digest(business_rows(snapshot)):
             snapshot["derived_display"] = display
+        elif same_semantics:
+            snapshot["derived_display"] = {"categories": display["categories"],
+                "metadata_provenance": {"categories": "reviewed_category_correction"}}
+            if "manual_enrichment" in display:
+                snapshot["derived_display"]["manual_enrichment"] = display["manual_enrichment"]
     sha = digest(snapshot)
     connection.execute("INSERT OR IGNORE INTO registry_candidates VALUES(?,?,?,?,?,?)",
         (sha, snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, sort_keys=True, ensure_ascii=False),

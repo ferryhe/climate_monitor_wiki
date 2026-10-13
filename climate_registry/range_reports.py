@@ -612,6 +612,7 @@ def _range_source_read(
                 "kind": "registry_pdf",
                 "observation_id": row["occurrence_id"],
                 "pdf_article_id": row["pdf_article_id"],
+                "canonical_url": row["canonical_url"],
                 "core_article_id": article_id,
                 "confirmation_basis": row["confirmation_basis"],
                 "document_sha256": row["source_document_sha256"],
@@ -652,14 +653,16 @@ def _range_source_read(
             if not formal_link:
                 continue
             observations[article_id].append(observation)
+        pdf_details = {article["article_id"]: article for article in reader.pdf_articles_all(include_linked=True)} if has_pdf or reader.static_snapshot is not None else {}
         if reader.static_snapshot is not None:
-            for article in reader.pdf_articles_all(include_linked=True):
+            for article in pdf_details.values():
                 for item in article["occurrences"]:
                     if pdf_occurrence_ids is not None and item["occurrence_id"] not in pdf_occurrence_ids:
                         continue
                     evidence_text=item.get("publication_date_evidence")
                     evidence={"kind":"pdf_text","text":evidence_text,"document_sha256":item["source_document_sha256"],"page":item.get("page")} if isinstance(evidence_text,str) and evidence_text.strip() else None
                     observation={"kind":"registry_pdf","observation_id":item["occurrence_id"],"pdf_article_id":article["article_id"],
+                        "canonical_url":article["canonical_url"],
                         "core_article_id":article.get("core_article_id"),"confirmation_basis":article.get("confirmation_basis"),
                         "document_sha256":item["source_document_sha256"],"content_sha256":item.get("content_sha256"),
                         "batch_id":item.get("management_batch_id"),"filename":item.get("source_filename") or item.get("source_document"),
@@ -981,6 +984,7 @@ def _range_source_read(
             })
 
         selected_ids = {item["article_id"] for item in articles}
+        core_details_by_url = {detail["canonical_url"]: detail for detail in public_details.values()}
         pdf_source_updates = []
         pdf_exclusions = {"non_overlapping_coverage": 0, "unknown_coverage": 0}
         seen_pdf_observations: set[tuple[Any, ...]] = set()
@@ -1031,6 +1035,17 @@ def _range_source_read(
                     "url": item["url"],
                 }],
             }
+            # Keep current approved categories separate from the historical PDF row topic.
+            core_detail = core_details_by_url.get(item.get("canonical_url") or item["url"])
+            detail = core_detail or pdf_details.get(item["pdf_article_id"], {})
+            reference = detail.get("record_reference")
+            if reference is None and detail.get("published_candidate_sha256"):
+                reference = {"entity_kind": "article" if core_detail else "pdf_article", "entity_id": detail["article_id"],
+                    "candidate_sha256": detail["published_candidate_sha256"], "version_id": detail.get("current_version_id") if core_detail else None}
+            update.update(categories=detail.get("categories") or [],
+                metadata_provenance={"categories": (detail.get("metadata_provenance") or {}).get("categories")},
+                published_candidate_sha256=detail.get("published_candidate_sha256"),
+                record_reference=reference)
             display_key = (item["document_sha256"], item["url"], update["publication_date"],
                 " ".join(update["title"].split()), " ".join((update.get("summary") or "").split()))
             if fields and display_key in seen_pdf_updates:
@@ -2099,6 +2114,8 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
         ])
         if item.get("summary"):
             blocks.append(f"<p>{esc(item['summary'])}</p>")
+        if item.get("categories"):
+            blocks.append(f"<p><strong>Categories:</strong> {esc(', '.join(item['categories']))}</p>")
         blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
         url = esc(item["url"])
         blocks.append(

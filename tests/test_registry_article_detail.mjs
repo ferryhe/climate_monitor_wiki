@@ -38,6 +38,7 @@ for (const name of names) {
   vm.runInContext(fn, context);
 }
 const text = (node) => [node.textContent, ...(node.children || []).map(text)].filter(Boolean).join(' ');
+const rootTags = (node, label) => node.children.filter((child) => child.children?.[0]?.textContent === label);
 
 const verified = { children: [], append(...items) { this.children.push(...items); } };
 context.appendPdfVerifiedInformation(verified, {
@@ -47,6 +48,7 @@ context.appendPdfVerifiedInformation(verified, {
 });
 assert.match(text(verified), /Summary Checked facts\./);
 assert.match(text(verified), /Categories Climate risk/);
+assert.match(text(verified), /Source Categories Climate risk/);
 assert.match(text(verified), /Keywords insurance/);
 assert.match(text(verified), /Website verification: partial · checked 2026-08-11/);
 assert.doesNotMatch(text(verified), /Do not repeat this PDF passage\./);
@@ -102,6 +104,10 @@ assert.doesNotMatch(text(enrichment), /manual_category_standardization|manual_su
 assert.match(text(enrichment), /Website-only category/);
 assert.match(text(enrichment), /website-only keyword/);
 assert.doesNotMatch(text(enrichment), /Verified information/);
+assert.equal(rootTags(enrichment, 'Categories').length, 1, 'current article categories render once');
+assert.equal(rootTags(enrichment, 'Keywords').length, 1);
+assert.match(text(enrichment), /Source Categories Website-only category/);
+assert.doesNotMatch(text(rootTags(enrichment, 'Categories')[0]), /Website-only category/);
 
 enrichment.replaceChildren();
 context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Adaptation & Resilience'], keywords: [],
@@ -123,4 +129,51 @@ context.registryFetch = async () => ({ ...reviewedPdf, source_kind: 'registry',
 await context.loadRegistryArticle('registry-article');
 assert.match(text(enrichment), /Registry category/);
 assert.match(text(enrichment), /Registry keyword/);
+
+context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Food & Water Security'],
+  occurrences: [
+    { verified_information: { summary: 'First checked source.', categories: ['First source tag'], keywords: ['first-source-keyword'] } },
+    { verified_information: { summary: 'Second checked source.', categories: ['Second source tag'], keywords: ['second-source-keyword'] } },
+  ],
+});
+await context.loadRegistryArticle('multiple-sources', 'pdf');
+assert.equal(rootTags(enrichment, 'Categories').length, 1);
+assert.match(text(rootTags(enrichment, 'Categories')[0]), /Categories Food & Water Security/);
+assert.doesNotMatch(text(rootTags(enrichment, 'Categories')[0]), /source tag/);
+assert.match(text(enrichment), /Summary First checked source\. Source Categories First source tag Keywords first-source-keyword/);
+assert.match(text(enrichment), /Summary Second checked source\. Source Categories Second source tag Keywords second-source-keyword/);
+
+for (const categories of [[], undefined]) {
+  context.registryFetch = async () => ({ ...reviewedPdf, categories, keywords: [],
+    enrichment: { categories: ['Stale enrichment category'], keywords: ['Stale enrichment keyword'] },
+  });
+  await context.loadRegistryArticle('pdf-empty-or-missing', 'pdf');
+  assert.equal(rootTags(enrichment, 'Categories').length, 0, 'empty or missing PDF root categories never borrow older values');
+  assert.equal(rootTags(enrichment, 'Keywords').length, 0);
+  assert.doesNotMatch(text(enrichment), /Stale enrichment/);
+  assert.match(text(enrichment), /Source Categories Website-only category/);
+}
+
+for (const field of ['categories', 'keywords']) {
+  context.registryFetch = async () => ({ ...reviewedPdf,
+    categories: ['Article-only category'], keywords: ['article-only-keyword'],
+    metadata_provenance: { [field]: 'reviewed_field' },
+  });
+  await context.loadRegistryArticle('mixed-field-provenance', 'pdf');
+  assert.equal(rootTags(enrichment, 'Categories').length, field === 'categories' ? 1 : 0);
+  assert.equal(rootTags(enrichment, 'Keywords').length, field === 'keywords' ? 1 : 0);
+  assert.match(text(enrichment), /Source Categories Website-only category/);
+  assert.ok(!text(enrichment).includes(field === 'categories' ? 'article-only-keyword' : 'Article-only category'));
+}
+
+const emptyRegistry = { ...reviewedPdf, categories: [], enrichment: { categories: ['Stale Registry category'] },
+  occurrences: [], pdf_occurrences: [] };
+context.registryFetch = async () => emptyRegistry;
+await context.loadRegistryArticle('explicit-empty-registry');
+assert.equal(rootTags(enrichment, 'Categories').length, 0);
+assert.doesNotMatch(text(enrichment), /Stale Registry category/);
+delete emptyRegistry.categories;
+await context.loadRegistryArticle('absent-legacy-registry');
+assert.equal(rootTags(enrichment, 'Categories').length, 1);
+assert.match(text(enrichment), /Stale Registry category/);
 console.log('PASS full Registry/PDF detail render: reviewed PDF tags and field sources, occurrence website values, missing tags, legacy provenance hiding, Registry values, summaries, links, and appearances');

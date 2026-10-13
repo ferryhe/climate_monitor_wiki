@@ -2941,7 +2941,7 @@ def test_recent_standalone_pdf_approved_projection_and_followup(tmp_path, static
     assert pdf is not None and not any(source["evidence_id"] == "pending" for source in first["sources"])
     assert pdf["url"] == "https://example.org/standalone"
     if known_time:
-        assert pdf["version"] == reader.knowledge_chronology()["article:standalone"]["knowledge_id"]
+        assert pdf["version"] == reader.pdf_article("standalone")["published_candidate_sha256"]
     assert "standalone insurance findings" in first["text"]
     assert ("First added: 2026-10-08T12:00:00Z" if known_time else "First added: unknown") in first["text"]
     assert ("No confirmed matches" in first["text"]) is (not known_time)

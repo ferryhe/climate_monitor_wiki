@@ -3111,6 +3111,7 @@ def test_managed_binding_rejects_drift_in_its_referenced_taxonomy(tmp_path, monk
     binding = build_task_binding(
         _definition(tmp_path), task_version=1, run_id="taxonomy-drift", attempt=1
     )
+    binding.pop("taxonomy_definition_yaml")  # Historical references remain file-bound.
     binding_path = tmp_path / "runs" / "taxonomy-drift" / "binding.json"
     binding_path.parent.mkdir(parents=True)
     binding_path.write_text(json.dumps(binding), encoding="utf-8")

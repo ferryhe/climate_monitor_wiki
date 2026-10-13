@@ -1,0 +1,89 @@
+schema_version: article-category-taxonomy.v1
+taxonomy_id: climate-actuarial-v2
+constraints:
+  summary:
+    min_chars: 1
+    max_chars: 2000
+  categories:
+    min_items: 1
+    max_items: 4
+  keywords:
+    min_items: 3
+    max_items: 8
+    max_chars: 100
+    disallowed:
+    - article
+    - news
+    - report
+    - update
+categories:
+- id: physical_risk
+  label: Physical Risk
+  description: 气候或天气灾害对人员、资产与业务造成的影响。 地震、海啸等地球物理风险不自动纳入；天气事件不等于已证明气候归因。
+  signals:
+  - physical_risk
+- id: transition_risk
+  label: Transition Risk
+  description: 减排转型中的政策、市场、技术变化及搁浅资产风险。 描述新能源或碳移除技术本身用减排类；有转型风险分析再加此类。
+  signals:
+  - transition_risk
+- id: adaptation_resilience
+  label: Adaptation & Resilience
+  description: 针对气候或天气灾害的适应、预警、基础设施及韧性建设。 一般经济韧性、战争重建和不明灾种的灾害管理不自动纳入。
+  signals:
+  - adaptation_resilience
+- id: climate_risk
+  label: Climate Risk
+  description: 跨多个气候风险维度的综合研究或尚无更具体类别的气候主题。 不作为每篇文章的必加标签；有明确类别时优先具体类别。
+  signals:
+  - general_climate
+- id: insurance_risk
+  label: Insurance Risk
+  description: 气候或天气风险的承保、赔付、再保险、风险转移和保障缺口。 一般保险监管、非气候死亡表、未明确灾种的保险产品不自动纳入。
+  signals:
+  - insurance_risk
+- id: capital_solvency
+  label: Capital & Solvency
+  description: 气候风险对资本充足、偿付能力、资产负债与金融稳定的影响。 气候项目资金动员归气候融资；涉及资本或资产负债风险才加此类。
+  signals:
+  - capital_solvency
+- id: supervision_disclosure
+  label: Supervision & Disclosure
+  description: 明确涉及气候的政策、治理、监管、披露及标准。 一般审计、普通宏观政策或保险监管不能只凭机构名称纳入。
+  signals:
+  - supervision_disclosure
+- id: actuarial_modelling
+  label: Actuarial Modelling
+  description: 气候风险量化、情景、灾害损失、金融与精算模型方法。 一般AI、医疗预测和普通精算课题不自动纳入。
+  signals:
+  - actuarial_modeling
+- id: mitigation_decarbonisation
+  label: Decarbonisation
+  description: 减排、能源替代、脱碳、碳移除及净零实施。 区别于转型造成的风险；同一文章有风险分析时可同时选转型风险。
+  signals:
+  - mitigation_decarbonisation
+- id: climate_finance
+  label: Climate Finance & Investment
+  description: 气候资金动员、适应与减缓项目投资、碳市场及风险融资工具。 一般发展融资和含有investment climate的商业环境文章不自动纳入。
+  signals:
+  - climate_finance
+- id: climate_health
+  label: Climate & Health
+  description: 气候相关的死亡、患病、热暴露、疾病传播、迁移健康及健康共同收益。 普通医疗、糖尿病、避孕药和医疗AI不因属于WHO而纳入。
+  signals:
+  - climate_health
+- id: climate_nature
+  label: Climate & Nature
+  description: 生态系统与气候的具体联系，如森林碳汇、自然降温和生态适应。 一般TNFD或生物多样性报道须有具体气候关联；自然不等于气候。
+  signals:
+  - climate_nature
+- id: climate_science_data
+  label: Science & Data
+  description: 气候与天气观测、科学评估、危险度数据及气候模型输入。 导航菜单中的气候词和一般经济、医疗数据不构成分类依据。
+  signals:
+  - climate_science_data
+- id: climate_food_water
+  label: Food & Water Security
+  description: 气候相关的农业、粮食、水资源、洪旱供水及用水适应。 普通农业增长、水务预算或灌溉重建须先确认气候关联。
+  signals:
+  - climate_food_water

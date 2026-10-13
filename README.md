@@ -295,7 +295,7 @@ stream failure.
 
 - Managed acquisition/search wording: the versioned saved task in `/manage`; tracked prompt files seed the bootstrap. Explicit legacy prompt paths remain compatibility overrides.
 - Relevance rules: the same directory's `article-relevance-v1.prompt.md`.
-- Categories/semantic constraints: `monitoring/taxonomies/article_categories_v1.yaml`, validated against its versioned identity.
+- Categories/semantic constraints: editable `monitoring/taxonomies/article_categories.yaml`, validated against its byte-derived identity; v1 remains a historical archive and existing saved tasks retain their path until edited. See [article categories](docs/article-categories.md).
 - Page titles: `python -m climate_monitor.article_title saved-page.html`; disable in the monitor with `--no-page-titles` on a fresh prepare.
 - Article/executive instructions: the same saved task exposes `article_summary` and `executive_summary`, alongside acquisition, search and relevance prompts. Runs freeze these versions and hashes; see [PIPELINE_CONFIG.md](PIPELINE_CONFIG.md#prompt-templates).
   Not every prompt section has been externalized.
