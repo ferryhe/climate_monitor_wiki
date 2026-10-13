@@ -27,7 +27,8 @@ while `source_url` records the publisher page actually used. The API exposes
 each distinction as provenance.
 
 The controlled category taxonomy is versioned in
-`monitoring/taxonomies/article_categories_v1.yaml`. That YAML file is the
+`monitoring/taxonomies/article_categories.yaml`. The v1 file remains a historical archive;
+saved tasks retain their path until edited (see [article categories](article-categories.md)). The active YAML is the
 single authority for category labels, signal mappings, count bounds, and
 disallowed generic keywords. `climate_monitor` classification and historical
 Registry annotation validation both load it. The accompanying

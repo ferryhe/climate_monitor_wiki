@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .dedupe import canonical_url
-from .taxonomy import ArticleTaxonomy, load_article_taxonomy, validate_semantic_bundle
+from .taxonomy import ArticleTaxonomy, frozen_article_taxonomy, load_article_taxonomy, validate_semantic_bundle
 
 
 SIDECAR_SCHEMA_VERSION = "article-semantic-sidecar.v1"
@@ -340,6 +340,7 @@ def build_sidecar_payload(
             "schema_version": selected.schema_version,
             "taxonomy_id": selected.taxonomy_id,
             "sha256": selected.sha256,
+            "definition_yaml": selected.definition_yaml,
         },
         "provenance": {
             "generator": GENERATOR,
@@ -383,14 +384,11 @@ def _verify_payload(payload: Any, *, report_bytes: bytes, report_path: Path) -> 
     if payload.get("schema_version") != SIDECAR_SCHEMA_VERSION:
         raise SemanticBundleError("unsupported sidecar schema_version")
 
-    taxonomy = load_article_taxonomy()
     identity = payload.get("taxonomy")
-    if not isinstance(identity, Mapping) or (
-        identity.get("taxonomy_id") != taxonomy.taxonomy_id
-        or identity.get("sha256") != taxonomy.sha256
-        or identity.get("schema_version") != taxonomy.schema_version
-    ):
-        raise SemanticBundleError("sidecar taxonomy identity does not match the supported taxonomy")
+    try:
+        taxonomy = frozen_article_taxonomy(identity)
+    except ValueError as exc:
+        raise SemanticBundleError("sidecar taxonomy identity does not match the supported taxonomy") from exc
 
     report = payload.get("report")
     if not isinstance(report, Mapping):

@@ -32,8 +32,10 @@ EXPECTED_LABELS = {
     "Capital & Solvency",
     "Supervision & Disclosure",
     "Actuarial Modelling",
+    "Decarbonisation", "Climate Finance & Investment", "Climate & Health",
+    "Climate & Nature", "Science & Data", "Food & Water Security",
 }
-EXPECTED_TAXONOMY_SHA256 = "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+EXPECTED_TAXONOMY_SHA256 = hashlib.sha256(DEFAULT_TAXONOMY_PATH.read_bytes()).hexdigest()
 EXPECTED_SIGNAL_LABELS = {
     "physical_risk": "Physical Risk",
     "transition_risk": "Transition Risk",
@@ -43,6 +45,9 @@ EXPECTED_SIGNAL_LABELS = {
     "capital_solvency": "Capital & Solvency",
     "supervision_disclosure": "Supervision & Disclosure",
     "actuarial_modeling": "Actuarial Modelling",
+    "mitigation_decarbonisation": "Decarbonisation", "climate_finance": "Climate Finance & Investment",
+    "climate_health": "Climate & Health", "climate_nature": "Climate & Nature",
+    "climate_science_data": "Science & Data", "climate_food_water": "Food & Water Security",
 }
 
 
@@ -69,8 +74,8 @@ def _semantic_schema() -> dict[str, object]:
 def test_versioned_taxonomy_is_the_shared_category_authority():
     taxonomy = load_article_taxonomy()
 
-    assert len(taxonomy.categories) == 8
-    assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID == "climate-actuarial-v1"
+    assert len(taxonomy.categories) == 14
+    assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID == "climate-actuarial-v2"
     assert taxonomy.allowed_labels == EXPECTED_LABELS
     assert taxonomy.labels_by_signal == EXPECTED_SIGNAL_LABELS
     assert CATEGORY_LABELS == EXPECTED_SIGNAL_LABELS
@@ -84,7 +89,7 @@ def test_semantic_bundle_is_normalized_against_the_versioned_taxonomy():
     validated = validate_semantic_bundle(
         {
             "schema_version": "article-semantic-bundle.v1",
-            "taxonomy_id": "climate-actuarial-v1",
+            "taxonomy_id": "climate-actuarial-v2",
             "taxonomy_sha256": EXPECTED_TAXONOMY_SHA256,
             "summary": "Observed wildfire losses affect catastrophe pricing assumptions.",
             "categories": ["Physical Risk", "Insurance Risk"],
@@ -130,7 +135,7 @@ def test_semantic_bundle_is_normalized_against_the_versioned_taxonomy():
 def test_invalid_semantic_bundle_fails_closed(field, value, message):
     bundle = {
         "schema_version": "article-semantic-bundle.v1",
-        "taxonomy_id": "climate-actuarial-v1",
+        "taxonomy_id": "climate-actuarial-v2",
         "taxonomy_sha256": EXPECTED_TAXONOMY_SHA256,
         "summary": "Source-backed summary.",
         "categories": ["Climate Risk"],
@@ -236,7 +241,7 @@ def test_generic_keyword_cannot_be_hidden_with_default_ignorables(keyword):
 
 def test_taxonomy_strings_share_default_ignorable_validation():
     raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
-    modified = raw.replace("Acute and chronic", "Acute\u034f and chronic", 1)
+    modified = raw.replace("description: ", "description: \u034f", 1)
 
     with pytest.raises(ValueError, match="normalized"):
         taxonomy_module._parse_article_taxonomy_bytes(modified.encode("utf-8"))
@@ -254,8 +259,8 @@ def test_taxonomy_loader_rejects_duplicate_labels():
 def test_taxonomy_loader_rejects_duplicate_yaml_keys():
     raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
     modified = raw.replace(
-        "taxonomy_id: climate-actuarial-v1",
-        "taxonomy_id: other-v1\ntaxonomy_id: climate-actuarial-v1",
+        "taxonomy_id: climate-actuarial-v2",
+        "taxonomy_id: other-v1\ntaxonomy_id: climate-actuarial-v2",
         1,
     )
 
@@ -287,40 +292,42 @@ def test_taxonomy_loader_does_not_cache_stale_path_contents(tmp_path: Path):
         load_article_taxonomy(path)
 
 
-def test_taxonomy_loader_rejects_a_different_v1_identity(tmp_path: Path):
-    raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
-    path = tmp_path / "taxonomy.yaml"
-    path.write_text(raw.replace(DEFAULT_TAXONOMY_ID, "other-v1", 1), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="unsupported taxonomy_id"):
-        load_article_taxonomy(path)
-
-
-def test_default_taxonomy_sha_is_pinned_at_runtime(tmp_path: Path, monkeypatch):
-    raw = DEFAULT_TAXONOMY_PATH.read_text(encoding="utf-8")
-    path = tmp_path / "article_categories_v1.yaml"
-    path.write_text(raw.replace("Acute and chronic", "Chronic and acute", 1), encoding="utf-8")
-    monkeypatch.setattr(taxonomy_module, "DEFAULT_TAXONOMY_PATH", path)
-
-    with pytest.raises(ValueError, match="taxonomy identity"):
-        load_article_taxonomy(path)
-
-
-def test_public_loader_pins_v1_identity_independent_of_path(tmp_path: Path):
+def test_editable_taxonomy_changes_identity_without_python_changes(tmp_path, monkeypatch):
     raw = DEFAULT_TAXONOMY_PATH.read_bytes()
-    copied = tmp_path / "copied-v1.yaml"
-    copied.write_bytes(raw)
-    assert load_article_taxonomy(copied).sha256 == EXPECTED_TAXONOMY_SHA256
+    path = tmp_path / "taxonomy.yaml"
+    path.write_bytes(raw.replace(b"Physical Risk", b"Physical Hazard", 1))
+    monkeypatch.setattr(taxonomy_module, "DEFAULT_TAXONOMY_PATH", path)
+    selected = load_article_taxonomy()
+    assert "Physical Hazard" in selected.allowed_labels
+    assert selected.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    bundle = _valid_semantic_bundle()
+    bundle.update(taxonomy_sha256=selected.sha256, categories=["Physical Hazard"])
+    assert validate_semantic_bundle(bundle)["categories"] == ["Physical Hazard"]
+    old_identity = {"taxonomy_id": selected.taxonomy_id, "sha256": selected.sha256,
+                    "definition_yaml": selected.definition_yaml}
+    path.write_bytes(raw)
+    assert taxonomy_module.frozen_article_taxonomy(old_identity) == selected
+    with pytest.raises(ValueError, match="frozen identity"):
+        taxonomy_module.frozen_article_taxonomy({**old_identity, "sha256": "0" * 64})
 
-    modified = tmp_path / "modified-v1.yaml"
-    modified.write_bytes(raw.replace(b"Acute and chronic", b"Chronic and acute", 1))
-    with pytest.raises(ValueError, match="taxonomy identity"):
-        load_article_taxonomy(modified)
 
-    changed_category = tmp_path / "changed-category-v1.yaml"
-    changed_category.write_bytes(raw.replace(b"Physical Risk", b"Physical Hazard", 1))
-    with pytest.raises(ValueError, match="taxonomy identity"):
-        load_article_taxonomy(changed_category)
+def test_legacy_taxonomy_is_validated_from_the_immutable_archive():
+    archive = load_article_taxonomy(DEFAULT_TAXONOMY_PATH.with_name("article_categories_v1.yaml"))
+    assert len(archive.categories) == 8
+    assert archive.sha256 == "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+    assert taxonomy_module.frozen_article_taxonomy({"taxonomy_id": archive.taxonomy_id, "sha256": archive.sha256}) == archive
+    bundle = _valid_semantic_bundle()
+    bundle.update(taxonomy_id=archive.taxonomy_id, taxonomy_sha256=archive.sha256)
+    validate_semantic_bundle(bundle, taxonomy=archive)
+
+
+@pytest.mark.parametrize("categories", [["Unknown"], ["Physical Risk", "Physical Risk"],
+    ["Physical Risk", "Transition Risk", "Climate Risk", "Insurance Risk", "Climate & Health"]])
+def test_editable_taxonomy_still_rejects_unknown_duplicate_and_five_categories(categories):
+    bundle = _valid_semantic_bundle()
+    bundle["categories"] = categories
+    with pytest.raises(ValueError):
+        validate_semantic_bundle(bundle)
 
 
 def test_bundle_validator_rejects_forged_taxonomy_objects():
@@ -365,12 +372,12 @@ def test_json_schema_snapshot_matches_the_yaml_authority():
     }
     assert "schema alone does not express" in schema["description"]
     assert properties["schema_version"]["const"] == "article-semantic-bundle.v1"
-    assert properties["taxonomy_id"]["const"] == taxonomy.taxonomy_id
-    assert properties["taxonomy_sha256"]["const"] == taxonomy.sha256
+    assert "const" not in properties["taxonomy_id"]
+    assert "const" not in properties["taxonomy_sha256"]
     assert properties["summary"]["minLength"] == taxonomy.constraints.summary_min_chars
     assert properties["summary"]["maxLength"] == taxonomy.constraints.summary_max_chars
     assert properties["categories"]["minItems"] == taxonomy.constraints.categories_min_items
-    assert properties["categories"]["maxItems"] == taxonomy.constraints.categories_max_items
+    assert "maxItems" not in properties["categories"]  # Runtime enforces the configured bound.
     assert properties["keywords"]["minItems"] == taxonomy.constraints.keywords_min_items
     assert properties["keywords"]["maxItems"] == taxonomy.constraints.keywords_max_items
     assert properties["keywords"]["items"]["maxLength"] == taxonomy.constraints.keyword_max_chars

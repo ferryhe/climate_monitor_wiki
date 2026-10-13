@@ -24,7 +24,11 @@
     "report": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["date", "filename", "sha256"],
+      "required": [
+        "date",
+        "filename",
+        "sha256"
+      ],
       "properties": {
         "date": {
           "type": "string",
@@ -43,23 +47,37 @@
     "taxonomy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "taxonomy_id", "sha256"],
+      "required": [
+        "schema_version",
+        "taxonomy_id",
+        "sha256"
+      ],
       "properties": {
         "schema_version": {
           "const": "article-category-taxonomy.v1"
         },
         "taxonomy_id": {
-          "const": "climate-actuarial-v1"
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
         },
         "sha256": {
-          "const": "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "definition_yaml": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generator", "bundle_schema_version", "identity_scheme"],
+      "required": [
+        "generator",
+        "bundle_schema_version",
+        "identity_scheme"
+      ],
       "properties": {
         "generator": {
           "const": "climate_monitor.semantic_bundle"
@@ -113,7 +131,11 @@
             "type": "string"
           },
           "lane": {
-            "enum": ["website", "document", "research"]
+            "enum": [
+              "website",
+              "document",
+              "research"
+            ]
           },
           "content_hash": {
             "type": "string"
@@ -122,7 +144,10 @@
             "$ref": "https://github.com/ferryhe/climate_monitor_wiki/monitoring/schemas/article_semantic_bundle_v1.schema.json"
           },
           "semantics_provenance": {
-            "enum": ["agent_bundle", "pipeline_derived"]
+            "enum": [
+              "agent_bundle",
+              "pipeline_derived"
+            ]
           }
         }
       }

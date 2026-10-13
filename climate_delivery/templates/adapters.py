@@ -333,11 +333,14 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
             citations.append({"kind": "url", "url": item["url"]})
         source_urls = [item.get("url"), *(citation.get("url") for citation in item.get("citations", []))]
         institution = publisher_name(item.get("publisher"), source_urls)
-        updates.append(Update(_title(item["title"]), institution, item.get("topic") or "PDF Source Updates",
+        topic = (", ".join(item["categories"]) or "PDF Source Updates") if "categories" in item else item.get("topic") or "PDF Source Updates"
+        category_metadata = (("Categories", ", ".join(item["categories"])),) if item.get("categories") else ()
+        source_topic = (("Source topic", item["topic"]),) if "categories" in item and item.get("topic") else ()
+        updates.append(Update(_title(item["title"]), institution, topic,
             item.get("core_article_id") or item["pdf_article_id"], None,
             _date(item["publication_date"]) if item.get("publication_date") else None, coverage,
             _paragraphs(item.get("summary")) + _material_summary_paragraphs(item) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])) +
-            ((("PDF article ID", item["pdf_article_id"]),) if item.get("core_article_id") else ()), _citations(citations),
+            ((("PDF article ID", item["pdf_article_id"]),) if item.get("core_article_id") else ()) + category_metadata + source_topic, _citations(citations),
             content_sha256=item.get("content_sha256"),
             article_id_label="Core article ID" if item.get("core_article_id") else "PDF article ID",
             imported_from_pdf=True))

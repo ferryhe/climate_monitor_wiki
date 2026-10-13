@@ -11,22 +11,18 @@ import yaml
 
 
 TAXONOMY_SCHEMA_VERSION = "article-category-taxonomy.v1"
-DEFAULT_TAXONOMY_ID = "climate-actuarial-v1"
-DEFAULT_TAXONOMY_SHA256 = "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
 DEFAULT_TAXONOMY_PATH = (
     Path(__file__).resolve().parents[1]
     / "monitoring"
     / "taxonomies"
-    / "article_categories_v1.yaml"
+    / "article_categories.yaml"
 )
+ARCHIVED_V1_TAXONOMY_PATH = DEFAULT_TAXONOMY_PATH.with_name("article_categories_v1.yaml")
 MAX_TAXONOMY_BYTES = 64 * 1024
 _TOKEN = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _TOP_LEVEL_FIELDS = {"schema_version", "taxonomy_id", "constraints", "categories"}
 _CONSTRAINT_FIELDS = {"summary", "categories", "keywords"}
 _CATEGORY_FIELDS = {"id", "label", "description", "signals"}
-_SUPPORTED_TAXONOMY_IDENTITIES = {
-    (TAXONOMY_SCHEMA_VERSION, DEFAULT_TAXONOMY_ID): DEFAULT_TAXONOMY_SHA256,
-}
 # Frozen from Unicode 17.0.0 DerivedCoreProperties.txt (2025-07-30), property
 # Default_Ignorable_Code_Point. These 27 sorted ranges contain 4,174 code
 # points. Runtime validation never downloads or derives Unicode property data.
@@ -120,6 +116,7 @@ class ArticleTaxonomy:
     sha256: str
     categories: tuple[ArticleCategory, ...]
     constraints: SemanticConstraints
+    definition_yaml: str
 
     @property
     def allowed_labels(self) -> frozenset[str]:
@@ -312,7 +309,7 @@ def _parse_article_taxonomy_bytes(raw: bytes) -> ArticleTaxonomy:
     if root["schema_version"] != TAXONOMY_SCHEMA_VERSION:
         raise ValueError("unsupported taxonomy schema_version")
     taxonomy_id = _normalized_string(root["taxonomy_id"], name="taxonomy_id", maximum=64)
-    if _TOKEN.fullmatch(taxonomy_id) is None or taxonomy_id != DEFAULT_TAXONOMY_ID:
+    if _TOKEN.fullmatch(taxonomy_id) is None:
         raise ValueError("unsupported taxonomy_id")
     sha256 = hashlib.sha256(raw).hexdigest()
     return ArticleTaxonomy(
@@ -321,21 +318,19 @@ def _parse_article_taxonomy_bytes(raw: bytes) -> ArticleTaxonomy:
         sha256=sha256,
         categories=_parse_categories(root["categories"]),
         constraints=_parse_constraints(root["constraints"]),
+        definition_yaml=decoded,
     )
 
 
 def _validate_supported_taxonomy_identity(taxonomy: ArticleTaxonomy) -> None:
     if not isinstance(taxonomy, ArticleTaxonomy):
         raise ValueError("taxonomy does not match a supported taxonomy identity")
-    expected_sha256 = _SUPPORTED_TAXONOMY_IDENTITIES.get(
-        (taxonomy.schema_version, taxonomy.taxonomy_id)
-    )
-    if expected_sha256 is None or taxonomy.sha256 != expected_sha256:
+    if taxonomy != _parse_article_taxonomy_bytes(taxonomy.definition_yaml.encode("utf-8")):
         raise ValueError("taxonomy does not match a supported taxonomy identity")
 
 
-def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTaxonomy:
-    taxonomy_path = Path(path)
+def load_article_taxonomy(path: str | Path | None = None) -> ArticleTaxonomy:
+    taxonomy_path = Path(path) if path is not None else DEFAULT_TAXONOMY_PATH
     try:
         with taxonomy_path.open("rb") as source:
             raw = source.read(MAX_TAXONOMY_BYTES + 1)
@@ -346,6 +341,24 @@ def load_article_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> ArticleTa
     return taxonomy
 
 
+def frozen_article_taxonomy(identity: Any) -> ArticleTaxonomy:
+    """Resolve retained bytes; only the immutable v1 archive permits a legacy reference."""
+    if not isinstance(identity, dict):
+        raise ValueError("taxonomy identity is missing")
+    if "definition_yaml" in identity:
+        raw = identity["definition_yaml"]
+        if not isinstance(raw, str):
+            raise ValueError("taxonomy definition must be YAML text")
+        selected = _parse_article_taxonomy_bytes(raw.encode("utf-8"))
+    else:
+        selected = load_article_taxonomy(ARCHIVED_V1_TAXONOMY_PATH)
+    if (identity.get("taxonomy_id") != selected.taxonomy_id
+            or identity.get("sha256") != selected.sha256
+            or identity.get("schema_version", selected.schema_version) != selected.schema_version):
+        raise ValueError("taxonomy definition does not match its frozen identity")
+    return selected
+
+
 def validate_semantic_bundle(
     value: Any,
     *,
@@ -353,8 +366,6 @@ def validate_semantic_bundle(
 ) -> dict[str, Any]:
     selected = taxonomy or load_article_taxonomy()
     _validate_supported_taxonomy_identity(selected)
-    if taxonomy is not None and selected != load_article_taxonomy():
-        raise ValueError("taxonomy does not match the supported taxonomy contract")
     bundle = _mapping(
         value,
         name="semantic bundle",
@@ -432,3 +443,8 @@ def _semantic_values(
         output.append(item)
         seen.add(key)
     return tuple(output)
+
+
+# Compatibility names for callers; configuration bytes are the authority.
+DEFAULT_TAXONOMY_ID = load_article_taxonomy().taxonomy_id
+DEFAULT_TAXONOMY_SHA256 = load_article_taxonomy().sha256

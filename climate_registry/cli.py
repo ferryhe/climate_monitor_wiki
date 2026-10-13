@@ -112,6 +112,12 @@ def _parser() -> argparse.ArgumentParser:
     semantic.add_argument("--backup-dir", type=Path)
     semantic.add_argument("--apply", action="store_true")
 
+    categories = subcommands.add_parser("correct-categories")
+    categories.add_argument("--database", required=True, type=Path)
+    categories.add_argument("--manifest", required=True, type=Path)
+    categories.add_argument("--backup-dir", type=Path)
+    categories.add_argument("--apply", action="store_true")
+
     restore = subcommands.add_parser("restore-backup")
     restore.add_argument("--database", required=True, type=Path)
     restore.add_argument("--backup", required=True, type=Path)
@@ -235,6 +241,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 database=args.database,
                 backup_dir=args.backup_dir,
             )
+        elif args.command == "correct-categories":
+            from .category_correction import correct_article_categories
+            result = correct_article_categories(database=args.database, manifest=args.manifest,
+                apply=args.apply, backup_dir=args.backup_dir)
         elif args.command == "init":
             result = initialize_registry(args.database)
         else:

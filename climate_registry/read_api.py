@@ -428,7 +428,7 @@ class RegistryReader:
             return result
 
     @contextmanager
-    def public_snapshot(self, *, direct: bool = False, manage_wal: bool = False):
+    def public_snapshot(self, *, direct: bool = False, manage_wal: bool = False, source_connection=None):
         if self.static_snapshot is not None:
             yield self
             return
@@ -436,7 +436,11 @@ class RegistryReader:
             yield self
             return
         if direct:
-            with self._source_connection(manage_wal=manage_wal) as connection:
+            from contextlib import nullcontext
+            # A category correction already owns the source transaction. A second
+            # reader would block its writer when a large snapshot spills pages.
+            with (nullcontext(source_connection) if source_connection is not None
+                    else self._source_connection(manage_wal=manage_wal)) as connection:
                 self._snapshot_connection = connection
                 self._snapshot_direct = True
                 self._approved_snapshot_cache = {}
@@ -1799,7 +1803,7 @@ class RegistryReader:
         }
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
             payload.update(core_article_id=core_article_id,confirmation_basis=row["confirmation_basis"])
-        from .publication import snapshot_metadata
+        from .publication import snapshot_metadata, approved_display, digest
         snapshot = snapshot_metadata(connection, "pdf_article", row["article_id"])
         supplements = [item for item in (snapshot or {}).get("supplements", []) if item["source_ref"].startswith("pdf-classification:") and item["entity_id"] == row["article_id"]]
         if supplements:
@@ -1808,6 +1812,11 @@ class RegistryReader:
             payload.update(categories=pending["categories"], keywords=pending["keywords"],
                 manual_enrichment={**pending, "generator_kind": "manual",
                     "evidence": evidence, "knowledge_id": supplements[-1]["knowledge_id"]})
+        if snapshot is not None:
+            payload.update(approved_display(snapshot))
+            payload["published_candidate_sha256"] = digest(snapshot)
+            payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
+                "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
         return payload
 
     @_direct_public_read
@@ -2597,6 +2606,11 @@ class RegistryReader:
     def _article_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         if snapshot.get("static_payload"):
             payload = dict(snapshot["static_payload"])
+            from .publication import approved_display
+            payload.update(approved_display(snapshot))
+            payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
+            payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
+                "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
             from .article_dates import ArticleDateImportError, select_article_dates
             try:
                 payload.update(select_article_dates(payload.get("date_observations", []),
@@ -2808,11 +2822,13 @@ class RegistryReader:
     def _article_card_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         if snapshot.get("static_payload"):
             payload = dict(snapshot["static_payload"])
+            from .publication import approved_display
+            payload.update(approved_display(snapshot))
             if not payload.get("content_version_id"):
                 enrichment = payload.get("enrichment") or {}
                 content = payload.get("content") or {}
                 payload["content_version_id"] = enrichment.get("content_version_id") or content.get("content_version_id")
-            payload["published_candidate_sha256"] = self._published_candidate_sha(snapshot)
+            payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
             payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
                 "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
             return payload
@@ -2929,6 +2945,11 @@ class RegistryReader:
                 manual_enrichment={**pending, "generator_kind": "manual", "evidence": evidence,
                     "knowledge_id": supplements[-1]["knowledge_id"]})
         payload.update(approved_display(snapshot))
+        payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
+        reference_id = (tables["articles"][0]["article_id"]
+            if snapshot["entity_kind"] == "article" else row["article_id"])
+        payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": reference_id,
+            "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
         return payload
 
     def _acquisition_snapshot_projection(self, snapshot, article_id, current_version_id, display_policy):
@@ -3075,6 +3096,11 @@ class RegistryReader:
                 snapshot = snapshot_metadata(connection, "article", article_id)
                 if snapshot and snapshot.get("static_payload"):
                     payload = dict(snapshot["static_payload"])
+                    from .publication import approved_display
+                    payload.update(approved_display(snapshot))
+                    payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
+                    payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
+                        "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
                     from .article_dates import ArticleDateImportError, select_article_dates
                     try:
                         payload.update(select_article_dates(payload.get("date_observations", []),
@@ -3425,6 +3451,8 @@ class RegistryReader:
                 payload["is_visible"] = True
                 from .acquisition_review import digest
                 payload["published_candidate_sha256"] = digest(snapshot)
+                payload["record_reference"] = {"entity_kind": "article", "entity_id": article_id,
+                    "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
                 if snapshot.get("git_wiki"):
                     payload["available_content"] = {"markdown": snapshot["git_wiki"]["markdown"],
                         "selection_basis": "approved_git_wiki", "static_snapshot_sha256": snapshot["git_wiki"]["sha256"]}

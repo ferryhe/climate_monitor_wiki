@@ -207,9 +207,10 @@ article titles, ordered categories, summaries, keywords and original links.
 The semantic sidecar binds structured metadata to that report. Delivery reuses
 the narrative executive summary; old bullet-only reports retain their existing
 extractive fallback. Taxonomy is owned by
-`monitoring/taxonomies/article_categories_v1.yaml`, not a duplicate label list in
+`monitoring/taxonomies/article_categories.yaml`, not a duplicate label list in
 a cron prompt. The legacy `daily` document type and library cadence default remain
 load-bearing; weekly operation is explicit.
+The v1 taxonomy remains a historical archive; saved tasks retain their path until edited. See [article categories](docs/article-categories.md).
 
 ## Legacy scripts and cleanup
 

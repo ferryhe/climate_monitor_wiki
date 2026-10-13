@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from climate_monitor.taxonomy import load_article_taxonomy
+
 import hashlib
 import json
 import os
@@ -84,7 +86,7 @@ from climate_registry.pdf_pipeline import (
 )
 from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
 from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto
-from climate_registry.list_projection import RegistryListProjection
+from climate_registry.list_projection import RegistryListProjection, category_collection
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -129,7 +131,7 @@ _ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").strip().lower() in {"1", "true", "ye
 
 @asynccontextmanager
 async def _lifespan(_app):
-    await anyio.to_thread.run_sync(_warm_article_keyword_cache)
+    await anyio.to_thread.run_sync(_warm_registry_list_cache)
     yield
 
 
@@ -158,8 +160,8 @@ _LOGIN_LIMITER = Limiter(key_func=get_remote_address)
 _LOGIN_RATE = parse_rate_limit("5/minute")
 app.state.limiter = _LOGIN_LIMITER
 _RELOAD_LOCK = threading.Lock()
-_ARTICLE_KEYWORDS_LOCK = threading.Lock()
-_ARTICLE_KEYWORDS_CACHE = None
+_REGISTRY_LIST_LOCK = threading.Lock()
+_REGISTRY_LIST_CACHE = None
 
 
 def _configured_pdf_queue() -> Path | None:
@@ -666,7 +668,7 @@ def _all_registry_pages(method, **filters) -> list[dict[str, Any]]:
         page += 1
 
 
-def _article_keyword_file_stamp(database) -> tuple | None:
+def _registry_file_stamp(database) -> tuple | None:
     try:
         path = Path(database).resolve(strict=False)
         def stamp(file):
@@ -683,7 +685,7 @@ def _article_keyword_file_stamp(database) -> tuple | None:
         return None
 
 
-def _article_keyword_bindings(connection) -> str:
+def _registry_public_bindings(connection) -> str:
     rows = [tuple(row) for row in connection.execute("""SELECT p.entity_kind,p.entity_id,p.is_visible,
             p.published_candidate_sha256,c.candidate_sha256,c.entity_kind,c.entity_id,
             EXISTS(SELECT 1 FROM registry_reviews r WHERE r.candidate_sha256=c.candidate_sha256
@@ -705,64 +707,64 @@ def _registry_read_stamps_match(before, after) -> bool:
         and before[2][:-1] == after[2][:-1])
 
 
-def _clear_article_keyword_cache() -> None:
-    global _ARTICLE_KEYWORDS_CACHE
-    with _ARTICLE_KEYWORDS_LOCK:
-        if _ARTICLE_KEYWORDS_CACHE is not None:
-            _ARTICLE_KEYWORDS_CACHE[1].close()
-        _ARTICLE_KEYWORDS_CACHE = None
+def _clear_registry_list_cache() -> None:
+    global _REGISTRY_LIST_CACHE
+    with _REGISTRY_LIST_LOCK:
+        if _REGISTRY_LIST_CACHE is not None:
+            _REGISTRY_LIST_CACHE[1].close()
+        _REGISTRY_LIST_CACHE = None
 
 
 @contextmanager
 def _registry_list_projection(selected=None):
-    """Share one validated generation for lists and keyword graph bytes."""
-    global _ARTICLE_KEYWORDS_CACHE
-    with _ARTICLE_KEYWORDS_LOCK:
+    """Share one validated generation for lists and category graph bytes."""
+    global _REGISTRY_LIST_CACHE
+    with _REGISTRY_LIST_LOCK:
         try:
             selected = selected or _registry_reader()
             if selected.static_snapshot is not None or selected.database is None:
-                if _ARTICLE_KEYWORDS_CACHE is not None:
-                    _ARTICLE_KEYWORDS_CACHE[1].close()
-                    _ARTICLE_KEYWORDS_CACHE = None
+                if _REGISTRY_LIST_CACHE is not None:
+                    _REGISTRY_LIST_CACHE[1].close()
+                    _REGISTRY_LIST_CACHE = None
                 yield None
                 return
             for attempt in range(3):
-                before = _article_keyword_file_stamp(selected.database)
+                before = _registry_file_stamp(selected.database)
                 with selected._source_connection(manage_wal=True, validate=False) as connection:
                     version = connection.execute("PRAGMA user_version").fetchone()[0]
                     if version < 21:
-                        if _ARTICLE_KEYWORDS_CACHE is not None:
-                            _ARTICLE_KEYWORDS_CACHE[1].close()
-                            _ARTICLE_KEYWORDS_CACHE = None
+                        if _REGISTRY_LIST_CACHE is not None:
+                            _REGISTRY_LIST_CACHE[1].close()
+                            _REGISTRY_LIST_CACHE = None
                         yield None
                         return
                     try:
-                        bindings = _article_keyword_bindings(connection)
+                        bindings = _registry_public_bindings(connection)
                     except Exception:
                         selected._validate_contract(connection)
                         raise
-                    key = (str(selected.database), version, before, bindings)
-                after = _article_keyword_file_stamp(selected.database)
+                    key = (str(selected.database), version, before, bindings, load_article_taxonomy().sha256)
+                after = _registry_file_stamp(selected.database)
                 stable = _registry_read_stamps_match(before, after)
                 if not stable and attempt < 2:
                     continue
-                if before is not None and stable and _ARTICLE_KEYWORDS_CACHE and _ARTICLE_KEYWORDS_CACHE[0] == key:
-                    _ARTICLE_KEYWORDS_CACHE = ((key[0], key[1], after, key[3]), _ARTICLE_KEYWORDS_CACHE[1])
-                    yield _ARTICLE_KEYWORDS_CACHE[1]
+                if before is not None and stable and _REGISTRY_LIST_CACHE and _REGISTRY_LIST_CACHE[0] == key:
+                    _REGISTRY_LIST_CACHE = ((key[0], key[1], after, key[3], key[4]), _REGISTRY_LIST_CACHE[1])
+                    yield _REGISTRY_LIST_CACHE[1]
                     return
                 break
-            if _ARTICLE_KEYWORDS_CACHE is not None:
-                _ARTICLE_KEYWORDS_CACHE[1].close()
-                _ARTICLE_KEYWORDS_CACHE = None
+            if _REGISTRY_LIST_CACHE is not None:
+                _REGISTRY_LIST_CACHE[1].close()
+                _REGISTRY_LIST_CACHE = None
             for attempt in range(3):
-                before = _article_keyword_file_stamp(selected.database)
+                before = _registry_file_stamp(selected.database)
                 with selected.public_snapshot(direct=True, manage_wal=True):
                     with selected.connect() as connection:
                         key = (str(selected.database), connection.execute("PRAGMA user_version").fetchone()[0],
-                            before, _article_keyword_bindings(connection))
+                            before, _registry_public_bindings(connection), load_article_taxonomy().sha256)
                     projection = RegistryListProjection(selected)
                     projection.version = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
-                after = _article_keyword_file_stamp(selected.database)
+                after = _registry_file_stamp(selected.database)
                 if after is None:
                     projection.close()
                     raise RegistryUnavailableError("registry database is unavailable")
@@ -773,32 +775,32 @@ def _registry_list_projection(selected=None):
             else:
                 raise RegistryUnavailableError("registry database changed during list preparation")
             if before is not None:
-                _ARTICLE_KEYWORDS_CACHE = ((key[0], key[1], after, key[3]), projection)
+                _REGISTRY_LIST_CACHE = ((key[0], key[1], after, key[3], key[4]), projection)
             try:
                 yield projection
             finally:
-                if _ARTICLE_KEYWORDS_CACHE is None:
+                if _REGISTRY_LIST_CACHE is None:
                     projection.close()
         except Exception:
-            if _ARTICLE_KEYWORDS_CACHE is not None:
-                _ARTICLE_KEYWORDS_CACHE[1].close()
-            _ARTICLE_KEYWORDS_CACHE = None
+            if _REGISTRY_LIST_CACHE is not None:
+                _REGISTRY_LIST_CACHE[1].close()
+            _REGISTRY_LIST_CACHE = None
             raise
 
 
-def _cached_article_keyword_response() -> Response | None:
+def _cached_article_category_response() -> Response | None:
     with _registry_list_projection() as projection:
         if projection is not None:
-            return Response(content=projection.keyword_body, media_type="application/json")
+            return Response(content=projection.category_body, media_type="application/json")
     return None
 
 
-def _warm_article_keyword_cache() -> None:
-    _clear_article_keyword_cache()
+def _warm_registry_list_cache() -> None:
+    _clear_registry_list_cache()
     try:
-        _cached_article_keyword_response()
+        _cached_article_category_response()
     except Exception:
-        _clear_article_keyword_cache()
+        _clear_registry_list_cache()
 
 
 def _pdf_reports(selected=None) -> list[dict[str, Any]]:
@@ -1074,17 +1076,17 @@ def registry_articles(
     return _registry_query(query_snapshot)
 
 
-@app.get("/api/registry/article-keywords", response_model=None)
-def registry_article_keywords() -> Response:
-    def query_keywords():
-        response = _cached_article_keyword_response()
+@app.get("/api/registry/article-categories", response_model=None)
+def registry_article_categories() -> Response:
+    def query_categories():
+        response = _cached_article_category_response()
         if response is not None:
             return response
         # shortcut: external DB writes need a synchronous request rebuild; use reload to prewarm first.
-        items = _all_registry_pages(lambda page, page_size: registry_articles(
-            page=str(page), page_size=str(page_size), include_pdf=True))
-        return JSONResponse(content={"items": items})
-    return _registry_query(query_keywords)
+        items = _all_registry_pages(lambda page, page_size: _registry_article_page(
+            page, page_size, include_pdf=True))
+        return JSONResponse(content=category_collection(items))
+    return _registry_query(query_categories)
 
 
 @app.get("/api/registry/pdf-intake/articles")
@@ -1291,7 +1293,7 @@ def reload_wiki(
                 pending.unlink(missing_ok=True)
         payload = _public_config()
         payload["pdf_projection"] = metadata
-        _warm_article_keyword_cache()
+        _warm_registry_list_cache()
         return payload
 
 

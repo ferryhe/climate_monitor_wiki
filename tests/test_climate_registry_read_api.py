@@ -269,7 +269,7 @@ def registry_client(tmp_path, monkeypatch, request):
     return TestClient(app), database
 
 
-def test_article_keyword_endpoint_returns_more_than_three_pages_in_one_snapshot(monkeypatch, tmp_path):
+def test_article_category_endpoint_returns_more_than_three_pages_in_one_snapshot(monkeypatch, tmp_path):
     from contextlib import nullcontext
     from climate_registry.list_projection import RegistryListProjection
 
@@ -288,7 +288,7 @@ def test_article_keyword_endpoint_returns_more_than_three_pages_in_one_snapshot(
     projection = RegistryListProjection(Reader())
     try:
         monkeypatch.setattr(api_server, "_registry_list_projection", lambda: nullcontext(projection))
-        response = TestClient(app).get("/api/registry/article-keywords")
+        response = TestClient(app).get("/api/registry/article-categories")
         assert response.status_code == 200
         assert len(response.json()["items"]) == 350
         assert projection.articles(page=4, page_size=100)["pagination"]["total"] == 350

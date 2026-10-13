@@ -52,12 +52,13 @@ delegates to the existing public entrypoints.
 | Acquisition task parameters and five business prompts | The authenticated `/manage` API and one `climate-acquisition-task-state.v1` at `CLIMATE_TASK_CONFIG` |
 | Source inventory and reviewed site scopes | Existing `monitoring/supranational_sources.yaml` and `monitoring/site_scopes.yaml`, referenced by configured source keys |
 | Per-source site guidance | `.agents/skills/climate-site-*/SKILL.md`, using the shared `monitoring/site-skill-workflow.md`; new run bindings freeze selected Hermes guidance and hashes, while the YAML scope remains authoritative |
-| Categories and semantic limits | Structured/versioned `monitoring/taxonomies/article_categories_v1.yaml`, whose normalized hash is bound to each effective task |
+| Categories and semantic limits | Editable `monitoring/taxonomies/article_categories.yaml`, whose exact byte hash is bound to each effective task |
 | Model/provider | Effective task parameters; GPT-5.6 Luna default with credentials outside the repository |
 | Runtime Registry and run paths | Effective task parameters, placed on external persistent storage by the operator |
 | Live schedule | Hermes on the controlled server; `scripts/run_agent_acquisition.py --scheduled-start` consumes the same task definition as manual start |
 
 Do not duplicate these definitions in new workflow scripts or cron prompt text.
+The v1 taxonomy remains a historical archive; saved tasks retain their selected path until edited. See [article categories](docs/article-categories.md).
 The old numeric Step callers remain until the verified scheduler cutover.
 
 The per-source skills contain reviewed operator notes and short Hermes search

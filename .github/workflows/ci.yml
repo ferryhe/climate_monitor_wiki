@@ -290,13 +290,12 @@ jobs:
           jsonschema_version = metadata.version("jsonschema")
           version_parts = jsonschema_version.split(".")
 
-          assert DEFAULT_TAXONOMY_ID == "climate-actuarial-v1"
-          assert DEFAULT_TAXONOMY_SHA256 == (
-              "3deefa1cc0df7a2e1ce8ef538271c0ab4465bb928f20e6418aafc8a834794d94"
-          )
+          assert DEFAULT_TAXONOMY_SHA256 == __import__("hashlib").sha256(
+              __import__("pathlib").Path("monitoring/taxonomies/article_categories.yaml").read_bytes()
+          ).hexdigest()
           assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID
           assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256
-          assert len(taxonomy.categories) == 8
+          assert taxonomy.categories and taxonomy.constraints.categories_min_items <= taxonomy.constraints.categories_max_items
           assert metadata.version("hermes-agent") == "0.20.5"
           assert metadata.version("web-listening") == "0.1.0"
           assert __import__("shutil").which("hermes")

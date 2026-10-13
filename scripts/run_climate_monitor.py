@@ -84,6 +84,15 @@ def _bound_taxonomy(binding: dict) -> ArticleTaxonomy:
         raise SystemExit("bound taxonomy reference cannot be resolved") from exc
     if path.parent != taxonomy_root or not path.is_file():
         raise SystemExit("bound taxonomy reference is outside monitoring/taxonomies")
+    if "taxonomy_definition_yaml" in binding:
+        from climate_monitor.taxonomy import _parse_article_taxonomy_bytes
+        try:
+            taxonomy = _parse_article_taxonomy_bytes(binding["taxonomy_definition_yaml"].encode("utf-8"))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise SystemExit("bound taxonomy definition is invalid") from exc
+        if taxonomy.sha256 != binding.get("taxonomy_sha256"):
+            raise SystemExit("bound taxonomy sha256 differs from the immutable task binding")
+        return taxonomy
     actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual_sha256 != binding.get("taxonomy_sha256"):
         raise SystemExit("bound taxonomy sha256 drifted from the immutable task binding")
@@ -1190,6 +1199,7 @@ def _run_prepare(args, parser) -> int:
             "schema_version": taxonomy.schema_version,
             "taxonomy_id": taxonomy.taxonomy_id,
             "sha256": taxonomy.sha256,
+            "definition_yaml": taxonomy.definition_yaml,
         },
         "stats": stats,
         "stats_sha256": _canonical_digest(stats),
@@ -1864,6 +1874,7 @@ def _run_authoring_sequence(args, parser) -> MonitorRunResult:
         url = canonical_url(article["url"])
         payload = {"task": "article", "article": {"url": article["url"], "title": article["title"]},
                    "evidence": views[url], "allowed_categories": sorted(taxonomy.allowed_labels),
+                   "category_definitions": [{"label": category.label, "description": category.description} for category in taxonomy.categories],
                    "semantic_constraints": constraints}
         instruction = url_prompt + "\nINPUT_JSON:\n" + _canonical_bytes(payload).decode("utf-8")
         key = hashlib.sha256(article["article_id"].encode("utf-8")).hexdigest()

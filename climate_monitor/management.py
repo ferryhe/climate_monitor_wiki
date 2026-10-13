@@ -266,7 +266,7 @@ def default_task_definition() -> dict[str, Any]:
         },
         "taxonomy": {
             "schema_version": "article-taxonomy-ref.v1",
-            "path": "monitoring/taxonomies/article_categories_v1.yaml",
+            "path": "monitoring/taxonomies/article_categories.yaml",
             "version": "v1",
         },
         "prompts": prompts,
@@ -478,7 +478,7 @@ def effective_task(value: Mapping[str, Any]) -> dict[str, Any]:
         "parameters": copy.deepcopy(definition["parameters"]),
         "runtime": copy.deepcopy(definition["runtime"]),
         "taxonomy": copy.deepcopy(definition["taxonomy"]),
-        "taxonomy_sha256": _text_sha((Path(__file__).resolve().parents[1] / definition["taxonomy"]["path"]).read_text(encoding="utf-8")),
+        "taxonomy_sha256": hashlib.sha256((Path(__file__).resolve().parents[1] / definition["taxonomy"]["path"]).read_bytes()).hexdigest(),
         "prompt_versions": prompt_versions,
         "prompt_hashes": hashes,
     }
@@ -800,6 +800,7 @@ def build_task_binding(
         "effective_sha256": view["hashes"]["effective_sha256"],
         "repository_commit_sha": repository_commit_sha,
         "taxonomy_sha256": view["effective"]["taxonomy_sha256"],
+        "taxonomy_definition_yaml": (REPOSITORY_ROOT / normalized["taxonomy"]["path"]).read_bytes().decode("utf-8"),
         "prompt_hashes": view["hashes"]["components"],
         "prompt_versions": view["effective"]["prompt_versions"],
         "report_date": report_date.isoformat(),

@@ -310,10 +310,13 @@ def test_pdf_approved_occurrences_keep_legacy_latest_order_in_http_search(tmp_pa
     assert payload["pagination"]["total"] == 1
     assert payload["items"][0]["article_id"] == "pdf-one"
     assert "summary" not in payload["items"][0] and "latest_occurrence" not in payload["items"][0]
-    keywords = TestClient(api_server.app).get("/api/registry/article-keywords").json()["items"]
-    item = next(item for item in keywords if item["article_id"] == "pdf-one")
-    assert item["summary"] == "Newest approved observation"
-    assert item["latest_occurrence"]["occurrence_id"] == "newer-occ"
+    client = TestClient(api_server.app)
+    categories = client.get("/api/registry/article-categories").json()["items"]
+    item = next(item for item in categories if item["article_id"] == "pdf-one")
+    assert "summary" not in item and "latest_occurrence" not in item
+    detail = client.get("/api/registry/pdf-intake/articles/pdf-one").json()
+    assert detail["occurrences"][0]["occurrence_id"] == "newer-occ"
+    assert detail["published_candidate_sha256"] == item["published_candidate_sha256"]
 
 
 def test_include_pdf_publishers_preserve_sorted_core_label_overwrite(tmp_path, monkeypatch):
@@ -647,7 +650,7 @@ def test_include_pdf_status_counts_approved_url_union_without_detail_assembly(tm
     def unexpected(*_args, **_kwargs):
         pytest.fail("status count assembled the full PDF article list or detail")
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
-    api_server._warm_article_keyword_cache()
+    api_server._warm_registry_list_cache()
     monkeypatch.setattr(api_server, "_registry_article_page", unexpected)
     monkeypatch.setattr(RegistryReader, "pdf_articles_all", unexpected)
     monkeypatch.setattr(RegistryReader, "_pdf_article_from_snapshot", unexpected)
@@ -927,7 +930,7 @@ def test_unlinked_same_url_pdf_remains_in_collection_and_wiki_sources(tmp_path, 
     assert [item["article_id"] for item in response.json()["items"]] == ["pdf-a"]
 
 
-def test_article_keyword_collection_carries_approved_content_version_reference(tmp_path):
+def test_article_category_collection_carries_approved_content_version_reference(tmp_path):
     from climate_registry.publication import export_public_snapshot, install_git_snapshot
 
     database = _database(tmp_path)
@@ -967,7 +970,7 @@ def test_article_keyword_collection_carries_approved_content_version_reference(t
     assert static["content_version_id"] == direct["content_version_id"]
 
 
-def test_article_keyword_collection_uses_frozen_content_fallback_without_enrichment(tmp_path):
+def test_article_category_collection_uses_frozen_content_fallback_without_enrichment(tmp_path):
     from climate_registry.annotations import ArticleAnnotation
 
     database = _database(tmp_path)

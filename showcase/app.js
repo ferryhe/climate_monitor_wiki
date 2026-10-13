@@ -74,10 +74,10 @@ const GRAPH_COPY = {
       <span><i class="dot dot-keyword"></i>Concept</span>
     `,
   },
-  articleKeywords: {
-    title: "Article Keywords",
-    hint: "Keyword size and pair counts show how many distinct public articles contain them. Co-occurrence does not imply causality. Activate a keyword or connection to inspect supporting articles and their Registry metadata provenance.",
-    legendHtml: `<span><i class="dot dot-keyword"></i>Keyword</span>`,
+  articleCategories: {
+    title: "Category Map",
+    hint: "Counts show distinct public articles. Select a category or connection to inspect supporting articles. Shared categories do not imply causality.",
+    legendHtml: `<span><i class="dot dot-keyword"></i>Category</span>`,
   },
 };
 
@@ -131,8 +131,8 @@ const state = {
   markdownRequests: {},
   graph: null,
   graphFrame: 0,
-  graphData: { notes: null, keywords: null, articleKeywords: null },
-  articleKeywordGraphLoading: false,
+  graphData: { notes: null, keywords: null, articleCategories: null },
+  articleCategoryGraphLoading: false,
   promptStarters: DEFAULT_PROMPT_STARTERS,
   registry: {
     loaded: false,
@@ -194,7 +194,7 @@ const els = {
   wikiSearch: document.getElementById("wikiSearch"),
   rows: document.getElementById("rows"),
   graphSvg: document.getElementById("graphSvg"),
-  articleKeywordEvidence: document.getElementById("articleKeywordEvidence"),
+  articleCategoryEvidence: document.getElementById("articleCategoryEvidence"),
   graphTitle: document.getElementById("graphTitle"),
   graphLegend: document.getElementById("graphLegend"),
   graphHint: document.getElementById("graphHint"),
@@ -643,13 +643,13 @@ function normalizeGraphData(mode, graph) {
 }
 
 function graphDataForCurrentMode() {
-  if (state.graphMode === "article-keywords") {
-    return state.graphData.articleKeywords || {
-      mode: "article-keywords",
-      title: GRAPH_COPY.articleKeywords.title,
-      hint: "Loading effective public article keywords…",
-      emptyMessage: "Loading effective public article keywords…",
-      legendHtml: GRAPH_COPY.articleKeywords.legendHtml,
+  if (state.graphMode === "article-categories") {
+    return state.graphData.articleCategories || {
+      mode: "article-categories",
+      title: GRAPH_COPY.articleCategories.title,
+      hint: "Loading public article categories…",
+      emptyMessage: "Loading public article categories…",
+      legendHtml: GRAPH_COPY.articleCategories.legendHtml,
       nodes: [], links: [], staticLayout: true,
     };
   }
@@ -662,27 +662,22 @@ function graphDataForCurrentMode() {
     : buildNoteGraph(state.rows, state.edges);
 }
 
-function buildArticleKeywordGraph(articles) {
+function buildArticleCategoryGraph(articles, taxonomy) {
+  const definitions = taxonomy.categories;
+  const allowed = new Map(definitions.map((category) => [category.label, category.id]));
   const byIdentity = new Map();
   for (const article of articles) {
-    if (!article.article_id || !Array.isArray(article.keywords)) continue;
-    const identity = `${article.source_kind || "registry"}:${article.article_id}`;
+    if (!article.article_id || !Array.isArray(article.categories)) continue;
+    const identity = article.canonical_url || `${article.source_kind || "registry"}:${article.article_id}`;
     if (byIdentity.has(identity)) continue;
-    const keywords = new Map();
-    article.keywords.forEach((value) => {
-      const label = String(value || "").trim();
-      if (label && !keywords.has(label.toLowerCase())) keywords.set(label.toLowerCase(), label);
-    });
-    byIdentity.set(identity, { ...article, keywords: [...keywords.values()] });
+    const categories = [...new Set(article.categories)].filter((label) => allowed.has(label));
+    byIdentity.set(identity, { ...article, categories });
   }
-  const keywordArticles = new Map();
+  const categoryArticles = new Map(definitions.map((category) => [category.id, []]));
   const pairArticles = new Map();
   for (const article of byIdentity.values()) {
-    const keys = article.keywords.map((label) => label.toLowerCase()).sort();
-    for (const key of keys) {
-      if (!keywordArticles.has(key)) keywordArticles.set(key, []);
-      keywordArticles.get(key).push(article);
-    }
+    const keys = article.categories.map((label) => allowed.get(label)).sort();
+    for (const key of keys) categoryArticles.get(key).push(article);
     for (let left = 0; left < keys.length; left += 1) {
       for (let right = left + 1; right < keys.length; right += 1) {
         const key = JSON.stringify([keys[left], keys[right]]);
@@ -691,61 +686,55 @@ function buildArticleKeywordGraph(articles) {
       }
     }
   }
-  const nodeId = (key) => `article-keyword:${encodeURIComponent(key)}`;
-  const nodes = [...keywordArticles].map(([key, supporting]) => ({
-    id: nodeId(key), label: supporting[0].keywords.find((label) => label.toLowerCase() === key),
-    kind: "keyword", type: "keyword", mode: "article-keywords", weight: supporting.length, articles: supporting,
+  const nodeId = (key) => `article-category:${key}`;
+  const nodes = definitions.map((category) => ({
+    id: nodeId(category.id), label: category.label, description: category.description,
+    kind: "category", type: "category", mode: "article-categories",
+    weight: categoryArticles.get(category.id).length, articles: categoryArticles.get(category.id),
   }));
   const links = [...pairArticles].map(([key, supporting]) => {
     const [left, right] = JSON.parse(key);
     return { source: nodeId(left), target: nodeId(right), weight: supporting.length, articles: supporting };
   });
-  return { mode: "article-keywords", title: GRAPH_COPY.articleKeywords.title,
-    hint: GRAPH_COPY.articleKeywords.hint, legendHtml: GRAPH_COPY.articleKeywords.legendHtml,
-    nodes, links, emptyMessage: nodes.length ? "" : "No effective article keywords are available.", staticLayout: true };
+  return { mode: "article-categories", title: GRAPH_COPY.articleCategories.title,
+    hint: GRAPH_COPY.articleCategories.hint, legendHtml: GRAPH_COPY.articleCategories.legendHtml,
+    nodes, links, emptyMessage: "No public article categories are available.", staticLayout: true, loaded: true };
 }
 
-async function loadArticleKeywordGraph() {
-  if (state.articleKeywordGraphLoading) return;
-  clearArticleKeywordEvidence();
-  state.articleKeywordGraphLoading = true;
+async function loadArticleCategoryGraph() {
+  if (state.articleCategoryGraphLoading || state.graphData.articleCategories?.loaded) return;
+  clearArticleCategoryEvidence();
+  state.articleCategoryGraphLoading = true;
   try {
-    const { items: articles } = await registryFetch("/api/registry/article-keywords");
-    const graphArticles = articles.map((item) => ({
-      ...item,
-      source_kind: item.source_kind || "registry",
-      ...(item.source_kind === "pdf" ? {
-        metadata_provenance: { ...item.metadata_provenance, ...(item.manual_enrichment ? { keywords: "manual_enrichment" } : {}) },
-      } : {}),
-    }));
-    state.graphData.articleKeywords = buildArticleKeywordGraph(graphArticles);
-    clearArticleKeywordEvidence();
+    const { items: articles, taxonomy } = await registryFetch("/api/registry/article-categories");
+    state.graphData.articleCategories = buildArticleCategoryGraph(articles, taxonomy);
+    clearArticleCategoryEvidence();
     renderCurrentGraph();
   } catch (error) {
-    clearArticleKeywordEvidence();
-    state.graphData.articleKeywords = {
-      mode: "article-keywords", title: GRAPH_COPY.articleKeywords.title,
-      hint: registryErrorMessage(error), legendHtml: GRAPH_COPY.articleKeywords.legendHtml,
-      emptyMessage: "Article keywords could not be loaded.", nodes: [], links: [], staticLayout: true,
+    clearArticleCategoryEvidence();
+    state.graphData.articleCategories = {
+      mode: "article-categories", title: GRAPH_COPY.articleCategories.title,
+      hint: registryErrorMessage(error), legendHtml: GRAPH_COPY.articleCategories.legendHtml,
+      emptyMessage: "Article categories could not be loaded.", nodes: [], links: [], staticLayout: true,
     };
     renderCurrentGraph();
   } finally {
-    state.articleKeywordGraphLoading = false;
+    state.articleCategoryGraphLoading = false;
   }
 }
 
-function clearArticleKeywordEvidence() {
-  if (!els.articleKeywordEvidence) return;
-  els.articleKeywordEvidence.replaceChildren();
-  els.articleKeywordEvidence.hidden = true;
+function clearArticleCategoryEvidence() {
+  if (!els.articleCategoryEvidence) return;
+  els.articleCategoryEvidence.replaceChildren();
+  els.articleCategoryEvidence.hidden = true;
 }
 
 function setGraphMode(mode) {
   if (!mode) {
     return;
   }
-  if (state.graphMode === "article-keywords" && mode !== "article-keywords") {
-    clearArticleKeywordEvidence();
+  if (state.graphMode === "article-categories" && mode !== "article-categories") {
+    clearArticleCategoryEvidence();
   }
   state.graphMode = mode;
   els.graphModeButtons.forEach((button) => {
@@ -754,14 +743,11 @@ function setGraphMode(mode) {
     button.setAttribute("aria-pressed", String(active));
   });
   renderCurrentGraph();
-  if (mode === "article-keywords") void loadArticleKeywordGraph();
+  if (mode === "article-categories") void loadArticleCategoryGraph();
 }
 
 function getNodeRadius(node) {
   const importance = Math.max(1, Number(node.importance || node.degree || node.weight || 1));
-  if (node.type === "keyword" && node.mode === "article-keywords") {
-    return Math.min(7, 3 + Math.sqrt(importance) * 0.35);
-  }
   if (node.kind === "keyword") {
     return Math.min(22, 7 + Math.sqrt(importance) * 2.4);
   }
@@ -789,6 +775,51 @@ function projectRadialPosition(rank, count, centerX, centerY, maxRadius) {
     x: centerX + Math.cos(angle) * radius,
     y: centerY + Math.sin(angle) * radius * 0.78,
   };
+}
+
+function categoryEdgeRoutes(links, width, columns) {
+  const cellWidth = width / columns;
+  const routes = links.map((edge) => {
+    let [source, target] = [edge.source, edge.target];
+    if (source.y > target.y || (source.y === target.y && source.x > target.x)) [source, target] = [target, source];
+    const sameRow = source.y === target.y;
+    const sameColumn = source.x === target.x;
+    const side = source.x >= width - cellWidth ? -1 : 1;
+    const gutterX = sameColumn ? source.x + side * cellWidth / 2
+      : target.x + (source.x < target.x ? -1 : 1) * cellWidth / 2;
+    const hit = sameColumn && !sameRow
+      ? { x: gutterX, y: (source.y + target.y) / 2 }
+      : { x: sameRow ? (source.x + target.x) / 2 : (source.x + gutterX) / 2,
+          y: sameRow ? source.y - 56 : source.y + 56 };
+    return { source, target, sameRow, sameColumn, side, gutterX, hit };
+  });
+  const groups = new Map();
+  routes.forEach((route) => {
+    const key = `${route.hit.x}:${route.hit.y}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(route);
+  });
+  groups.forEach((group) => group.forEach((route, index) => {
+    const spacing = Math.min(5, 12 / Math.max(1, group.length - 1));
+    const offset = (index - (group.length - 1) / 2) * spacing;
+    const { source, target, sameRow, sameColumn, side } = route;
+    route.radius = Math.min(2, spacing / 3);
+    if (sameColumn && !sameRow) {
+      route.hit.x += offset;
+      // Keep the outside gutter inside the SVG, including a narrow mobile column.
+      route.hit.x = Math.max(3, Math.min(width - 3, route.hit.x));
+      route.points = [[source.x + side * (cellWidth / 2 - 8), source.y],
+        [route.hit.x, source.y], [route.hit.x, target.y], [target.x + side * (cellWidth / 2 - 8), target.y]];
+    } else {
+      route.hit.y += offset;
+      route.points = sameRow
+        ? [[source.x, source.y - 44], [source.x, route.hit.y], [target.x, route.hit.y], [target.x, target.y - 44]]
+        : [[source.x, source.y + 44], [source.x, route.hit.y], [route.gutterX, route.hit.y],
+          [route.gutterX, target.y - 56], [target.x, target.y - 56], [target.x, target.y - 44]];
+    }
+    route.path = route.points.map(([x, y], point) => `${point ? "L" : "M"}${x},${y}`).join(" ");
+  }));
+  return routes;
 }
 
 function setConnectionStatus(agentMode, model) {
@@ -1382,8 +1413,13 @@ function renderGraph(graphData) {
 
   const svg = els.graphSvg;
   const NS = "http://www.w3.org/2000/svg";
-  const width = 1200;
-  const height = 700;
+  const categoryMode = graphData.mode === "article-categories";
+  const width = categoryMode ? Math.max(280, svg.getBoundingClientRect().width || 1200) : 1200;
+  const categoryColumns = width < 520 ? 2 : width < 850 ? 3 : 4;
+  const height = categoryMode ? Math.ceil(graphData.nodes.length / categoryColumns) * 112 + 32 : 700;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.style.height = categoryMode ? `${height}px` : "";
+  svg.classList.toggle("category-map", categoryMode);
   svg.innerHTML = "";
 
   if (!graphData.nodes.length) {
@@ -1405,7 +1441,7 @@ function renderGraph(graphData) {
     degreeById.set(edge.target, (degreeById.get(edge.target) || 0) + 1);
   });
   const importanceFor = (node) =>
-    graphData.mode === "article-keywords"
+    graphData.mode === "article-categories"
       ? Math.max(Number(node.weight || 0), 1)
       : Math.max(Number(node.weight || 0), degreeById.get(node.id) || 0, 1);
   const centralRank = new Map(
@@ -1425,12 +1461,13 @@ function renderGraph(graphData) {
       height / 2,
       Math.min(width, height) * 0.42,
     );
-    const articleKeywordPosition = graphData.mode === "article-keywords"
-      ? projectGridPosition(centralRank.get(node.id) || 0, graphData.nodes.length, 20, width - 20, 20, height - 20)
+    const articleCategoryPosition = graphData.mode === "article-categories"
+      ? { x: ((graphData.nodes.indexOf(node) % categoryColumns) + 0.5) * width / categoryColumns,
+          y: (Math.floor(graphData.nodes.indexOf(node) / categoryColumns) + 0.5) * 112 + 16 }
       : null;
     const position =
-      graphData.mode === "article-keywords"
-        ? articleKeywordPosition
+      graphData.mode === "article-categories"
+        ? articleCategoryPosition
         : graphData.mode === "keywords"
         ? radialPosition
         : Number.isFinite(node.x) && Number.isFinite(node.y)
@@ -1455,84 +1492,145 @@ function renderGraph(graphData) {
     .map((edge) => ({ ...edge, source: byId.get(edge.source), target: byId.get(edge.target) }))
     .filter((edge) => edge.source && edge.target);
   const staticLayout = Boolean(graphData.staticLayout);
+  const categoryRoutes = categoryMode ? categoryEdgeRoutes(links, width, categoryColumns) : [];
   let ticksRemaining = 0;
 
   const linkGroup = document.createElementNS(NS, "g");
   const nodeGroup = document.createElementNS(NS, "g");
+  const edgeTargetGroup = document.createElementNS(NS, "g");
+  const edgeLabelGroup = document.createElementNS(NS, "g");
   svg.appendChild(linkGroup);
   svg.appendChild(nodeGroup);
+  svg.appendChild(edgeTargetGroup);
+  svg.appendChild(edgeLabelGroup);
 
-  const lineEls = links.map((edge) => {
-    const line = document.createElementNS(NS, "line");
+  const edgeTargetEls = [];
+  const lineEls = links.map((edge, index) => {
+    const line = document.createElementNS(NS, categoryMode ? "path" : "line");
+    line.setAttribute("fill", "none");
     line.setAttribute(
       "stroke",
       graphData.mode === "keywords" ? "rgba(135, 168, 199, 0.28)" : "rgba(151, 163, 170, 0.42)",
     );
     line.setAttribute("stroke-width", "1.1");
-    if (graphData.mode === "article-keywords") {
-      line.setAttribute("class", "graph-edge graph-edge--article-keywords");
-      line.setAttribute("role", "button");
-      line.setAttribute("tabindex", "0");
-      line.setAttribute("aria-label", `${edge.source.label} and ${edge.target.label}: ${edge.weight} supporting articles`);
+    if (graphData.mode === "article-categories") {
+      line.setAttribute("class", "graph-edge graph-edge--article-categories");
+      const target = document.createElementNS(NS, "circle");
+      target.setAttribute("class", "category-edge-target");
+      target.setAttribute("role", "button");
+      target.setAttribute("tabindex", "0");
+      target.setAttribute("r", String(categoryRoutes[index].radius));
+      target.setAttribute("aria-label", `${edge.source.label} and ${edge.target.label}: ${edge.weight} supporting articles`);
       const title = document.createElementNS(NS, "title");
       title.textContent = `${edge.weight} articles contain both ${edge.source.label} and ${edge.target.label}`;
       line.appendChild(title);
-      const activate = () => activateArticleKeywordEvidence(`${edge.source.label} + ${edge.target.label}`, edge.articles);
+      target.appendChild(title.cloneNode(true));
+      const activate = () => activateArticleCategoryEvidence(`${edge.source.label} + ${edge.target.label}`, edge.articles);
       line.addEventListener("click", activate);
-      line.addEventListener("keydown", (event) => {
+      target.addEventListener("click", activate);
+      target.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); }
       });
+      edgeTargetGroup.appendChild(target);
+      edgeTargetEls.push(target);
     }
     linkGroup.appendChild(line);
     return line;
   });
-  const edgeLabelEls = graphData.mode === "article-keywords" ? links.map((edge) => {
+  const edgeLabelEls = graphData.mode === "article-categories" ? links.map((edge) => {
     const label = document.createElementNS(NS, "text");
     label.textContent = String(edge.weight);
     label.setAttribute("class", "graph-edge-count");
     label.setAttribute("text-anchor", "middle");
     label.setAttribute("aria-hidden", "true");
-    linkGroup.appendChild(label);
+    label.hidden = true;
+    label.style.display = "none";
+    const index = links.indexOf(edge);
+    const line = lineEls[index];
+    const target = edgeTargetEls[index];
+    const reveal = () => { label.style.display = ""; line.classList.add("is-highlighted"); };
+    const hide = () => { if (line.getAttribute("aria-pressed") !== "true") { label.style.display = "none"; line.classList.remove("is-highlighted"); } };
+    line.setAttribute("aria-pressed", "false");
+    target.setAttribute("aria-pressed", "false");
+    line.addEventListener("pointerenter", reveal); line.addEventListener("pointerleave", hide);
+    target.addEventListener("pointerenter", reveal); target.addEventListener("pointerleave", hide);
+    target.addEventListener("focus", reveal); target.addEventListener("blur", hide);
+    const select = () => {
+      lineEls.forEach((other, index) => {
+        other.setAttribute("aria-pressed", String(other === line));
+        edgeTargetEls[index].setAttribute("aria-pressed", String(other === line));
+        other.classList.toggle("is-highlighted", other === line);
+        if (edgeLabelEls[index]) edgeLabelEls[index].style.display = other === line ? "" : "none";
+      });
+    };
+    line.addEventListener("click", select);
+    target.addEventListener("click", select);
+    target.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") select(); });
+    edgeLabelGroup.appendChild(label);
     return label;
   }) : [];
 
-  const nodeLabelEls = [];
   const nodeEls = nodes.map((node) => {
     const group = document.createElementNS(NS, "g");
     group.setAttribute("class", `graph-node graph-node--${node.kind || "note"} graph-node--${graphData.mode}`);
     group.setAttribute("role", "button");
     group.setAttribute("tabindex", "0");
-    group.setAttribute(
-      "aria-label",
-      graphData.mode === "article-keywords"
-        ? `${node.label}: ${node.weight} supporting articles`
-        : node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`,
-    );
-
-    const circle = document.createElementNS(NS, "circle");
-    circle.setAttribute("r", String(getNodeRadius(node)));
-    circle.setAttribute("fill", GRAPH_COLORS[node.type] || GRAPH_COLORS.topic);
-    circle.setAttribute("stroke", "#0d1411");
-    circle.setAttribute("stroke-width", "1");
-
-    const label = document.createElementNS(NS, "text");
-    label.textContent = graphData.mode === "article-keywords" ? `${node.label} (${node.weight})` : node.label;
-    label.setAttribute("x", "10");
-    label.setAttribute("y", "4");
-
-    group.appendChild(circle);
-    nodeGroup.appendChild(group);
-    if (graphData.mode === "article-keywords") {
-      label.setAttribute("class", "graph-node-label--article-keywords");
-      nodeGroup.appendChild(label);
-      nodeLabelEls.push(label);
-    } else {
+    group.setAttribute("aria-label", categoryMode ? `${node.label}: ${node.weight} supporting articles`
+      : node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`);
+    if (categoryMode) {
+      const card = document.createElementNS(NS, "rect");
+      const cardWidth = width / categoryColumns - 16;
+      card.setAttribute("x", String(-cardWidth / 2));
+      card.setAttribute("y", "-44");
+      card.setAttribute("width", String(cardWidth));
+      card.setAttribute("height", "88");
+      card.setAttribute("rx", "12");
+      group.appendChild(card);
+      const title = document.createElementNS(NS, "title");
+      title.textContent = `${node.label}: ${node.description || ""}`;
+      group.appendChild(title);
+      const label = document.createElementNS(NS, "text");
+      label.setAttribute("class", "graph-node-label--article-categories");
+      label.setAttribute("text-anchor", "middle");
+      const lines = [];
+      const lineLimit = Math.max(15, Math.floor(cardWidth / 7));
+      for (const word of node.label.split(" ")) {
+        if (!lines.length || `${lines[lines.length - 1]} ${word}`.length > lineLimit) lines.push(word);
+        else lines[lines.length - 1] += ` ${word}`;
+      }
+      lines.forEach((text, index) => {
+        const span = document.createElementNS(NS, "tspan");
+        span.textContent = text;
+        span.setAttribute("x", "0");
+        span.setAttribute("y", String(-12 - (lines.length - 1) * 8 + index * 16));
+        label.appendChild(span);
+      });
+      const count = document.createElementNS(NS, "tspan");
+      count.textContent = `${node.weight} articles`;
+      count.setAttribute("x", "0"); count.setAttribute("y", "28");
+      count.setAttribute("class", "category-map-count");
+      label.appendChild(count);
       group.appendChild(label);
+    } else {
+      const circle = document.createElementNS(NS, "circle");
+      circle.setAttribute("r", String(getNodeRadius(node)));
+      circle.setAttribute("fill", GRAPH_COLORS[node.type] || GRAPH_COLORS.topic);
+      circle.setAttribute("stroke", "#0d1411"); circle.setAttribute("stroke-width", "1");
+      const label = document.createElementNS(NS, "text");
+      label.textContent = node.label; label.setAttribute("x", "10"); label.setAttribute("y", "4");
+      group.append(circle, label);
     }
+    nodeGroup.appendChild(group);
 
     const activateNode = () => {
-      if (graphData.mode === "article-keywords") {
-        activateArticleKeywordEvidence(node.label, node.articles);
+      if (graphData.mode === "article-categories") {
+        lineEls.forEach((line, index) => {
+          line.setAttribute("aria-pressed", "false");
+          line.classList.remove("is-highlighted");
+          edgeTargetEls[index].setAttribute("aria-pressed", "false");
+          edgeLabelEls[index].style.display = "none";
+        });
+        activateArticleCategoryEvidence(node.label, node.articles);
         return;
       }
       if (node.kind === "keyword") {
@@ -1555,6 +1653,7 @@ function renderGraph(graphData) {
 
     let dragging = false;
     group.addEventListener("pointerdown", (event) => {
+      if (categoryMode) return;
       dragging = true;
       node.pinned = true;
       startAnimation(90);
@@ -1584,23 +1683,26 @@ function renderGraph(graphData) {
 
   function draw() {
     links.forEach((edge, index) => {
-      lineEls[index].setAttribute("x1", edge.source.x);
-      lineEls[index].setAttribute("y1", edge.source.y);
-      lineEls[index].setAttribute("x2", edge.target.x);
-      lineEls[index].setAttribute("y2", edge.target.y);
+      if (categoryMode) {
+        lineEls[index].setAttribute("d", categoryRoutes[index].path);
+        edgeTargetEls[index].setAttribute("cx", categoryRoutes[index].hit.x);
+        edgeTargetEls[index].setAttribute("cy", categoryRoutes[index].hit.y);
+      } else {
+        lineEls[index].setAttribute("x1", edge.source.x);
+        lineEls[index].setAttribute("y1", edge.source.y);
+        lineEls[index].setAttribute("x2", edge.target.x);
+        lineEls[index].setAttribute("y2", edge.target.y);
+      }
     });
 
     nodes.forEach((node, index) => {
       nodeEls[index].setAttribute("transform", `translate(${node.x},${node.y})`);
-      if (nodeLabelEls[index]) {
-        nodeLabelEls[index].setAttribute("x", String(node.x + getNodeRadius(node) + 3));
-        nodeLabelEls[index].setAttribute("y", String(node.y + 4));
-      }
+
     });
     links.forEach((edge, index) => {
       if (edgeLabelEls[index]) {
-        edgeLabelEls[index].setAttribute("x", String((edge.source.x + edge.target.x) / 2));
-        edgeLabelEls[index].setAttribute("y", String((edge.source.y + edge.target.y) / 2 - 5));
+        edgeLabelEls[index].setAttribute("x", String(Math.max(16, Math.min(width - 16, categoryRoutes[index].hit.x))));
+        edgeLabelEls[index].setAttribute("y", String(Math.max(18, categoryRoutes[index].hit.y - 5)));
       }
     });
   }
@@ -1694,30 +1796,31 @@ function renderGraph(graphData) {
   startAnimation();
 }
 
-function activateArticleKeywordEvidence(label, articles) {
-  if (state.graphMode !== "article-keywords" || state.articleKeywordGraphLoading) return;
-  showArticleKeywordEvidence(label, articles);
+function activateArticleCategoryEvidence(label, articles) {
+  if (state.graphMode !== "article-categories" || state.articleCategoryGraphLoading) return;
+  showArticleCategoryEvidence(label, articles);
 }
 
-function showArticleKeywordEvidence(label, articles) {
-  if (!els.articleKeywordEvidence) return;
-  const section = els.articleKeywordEvidence;
+function showArticleCategoryEvidence(label, articles) {
+  if (!els.articleCategoryEvidence) return;
+  const section = els.articleCategoryEvidence;
   section.replaceChildren();
   section.hidden = false;
   section.append(registryElement("h3", "", `Supporting articles: ${label}`));
-  const list = registryElement("ul", "article-keyword-evidence__list");
+  const list = registryElement("ul", "article-category-evidence__list");
   [...articles].sort((a, b) => (a.title || "").localeCompare(b.title || "")).forEach((article) => {
-    const item = registryElement("li", "article-keyword-evidence__item");
+    const item = registryElement("li", "article-category-evidence__item");
     const button = registryElement("button", "registry-article-link", article.title || article.canonical_url);
     button.type = "button";
     button.dataset.articleId = article.article_id;
     button.dataset.articleSource = "registry";
-    const provenance = article.metadata_provenance?.keywords;
-    const version = article.enrichment?.content_version_id || article.content?.content_version_id || article.content_version_id;
-    const metadataRecord = article.manual_enrichment?.knowledge_id;
+    const provenance = article.metadata_provenance?.categories;
+    const version = article.content_version_id;
+    const articleVersion = article.current_version_id || article.record_reference?.version_id;
+    const metadataRecord = article.published_candidate_sha256;
     const sourceKind = article.source_kind === "pdf" ? "pdf" : "registry";
     button.dataset.articleSource = sourceKind;
-    item.append(button, registryElement("p", "muted", `${article.publisher || article.source || "Publisher unavailable"}${provenance ? ` · ${provenance}` : ""}${version ? ` · content version ${version}` : metadataRecord ? ` · metadata record ${metadataRecord}` : ""}`));
+    item.append(button, registryElement("p", "muted", `${article.publisher || article.source || "Publisher unavailable"}${provenance ? ` · ${provenance}` : ""}${version ? ` · content version ${version}` : articleVersion ? ` · article version ${articleVersion}` : metadataRecord ? ` · approved candidate ${metadataRecord.slice(0, 12)}` : ""}`));
     list.append(item);
   });
   section.append(list);
@@ -2586,7 +2689,6 @@ function appendPdfVerifiedInformation(container, occurrence) {
       summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", information.summary));
       block.append(summary);
     }
-    appendRegistryTags(block, "Categories", information.categories);
     appendRegistryTags(block, "Keywords", information.keywords);
     const status = occurrence.verification_status || "status unavailable";
     const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
@@ -2856,12 +2958,12 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
       );
       els.registryEnrichment.append(summaryBlock);
     }
+    appendRegistryTags(
+      els.registryEnrichment,
+      "Categories",
+      article.categories === undefined ? article.enrichment?.categories || [] : article.categories,
+    );
     if (!pdfSource) {
-      appendRegistryTags(
-        els.registryEnrichment,
-        "Categories",
-        article.categories?.length ? article.categories : article.enrichment?.categories || [],
-      );
       appendRegistryTags(
         els.registryEnrichment,
         "Keywords",
@@ -3174,6 +3276,9 @@ function attachEvents() {
     }
   });
 
+  window.addEventListener("resize", () => {
+    if (state.graphMode === "article-categories") renderCurrentGraph();
+  });
   window.addEventListener("hashchange", () => {
     if (window.location.hash === "#meetings") {
       setWorkspaceView("meetingsView");
