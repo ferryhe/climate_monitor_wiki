@@ -1022,20 +1022,24 @@ a {
   opacity: 1;
 }
 
-.graph-node--article-categories rect {
-  fill: #172820;
+.graph-node--article-categories circle {
+  fill: #426f59;
   stroke: #739786;
   stroke-width: 1;
 }
-.graph-node--article-categories:hover rect,
-.graph-node--article-categories:focus-visible rect {
-  fill: #234132;
+.graph-node--article-categories:hover circle,
+.graph-node--article-categories:focus-visible circle {
+  fill: #538c6f;
   stroke: var(--accent);
   stroke-width: 2;
 }
 .graph-node text.graph-node-label--article-categories {
   fill: #e3eee8;
-  font-size: 13px;
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: #11161a;
+  stroke-width: 4px;
+  stroke-linejoin: round;
   pointer-events: none;
 }
 .category-map-count { fill: #a5c5b5; font-size: 12px; }

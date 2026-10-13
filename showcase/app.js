@@ -747,6 +747,7 @@ function setGraphMode(mode) {
 }
 
 function getNodeRadius(node) {
+  if (node.mode === "article-categories") return node.radius;
   const importance = Math.max(1, Number(node.importance || node.degree || node.weight || 1));
   if (node.kind === "keyword") {
     return Math.min(22, 7 + Math.sqrt(importance) * 2.4);
@@ -777,49 +778,63 @@ function projectRadialPosition(rank, count, centerX, centerY, maxRadius) {
   };
 }
 
-function categoryEdgeRoutes(links, width, columns) {
-  const cellWidth = width / columns;
-  const routes = links.map((edge) => {
-    let [source, target] = [edge.source, edge.target];
-    if (source.y > target.y || (source.y === target.y && source.x > target.x)) [source, target] = [target, source];
-    const sameRow = source.y === target.y;
-    const sameColumn = source.x === target.x;
-    const side = source.x >= width - cellWidth ? -1 : 1;
-    const gutterX = sameColumn ? source.x + side * cellWidth / 2
-      : target.x + (source.x < target.x ? -1 : 1) * cellWidth / 2;
-    const hit = sameColumn && !sameRow
-      ? { x: gutterX, y: (source.y + target.y) / 2 }
-      : { x: sameRow ? (source.x + target.x) / 2 : (source.x + gutterX) / 2,
-          y: sameRow ? source.y - 56 : source.y + 56 };
-    return { source, target, sameRow, sameColumn, side, gutterX, hit };
-  });
-  const groups = new Map();
-  routes.forEach((route) => {
-    const key = `${route.hit.x}:${route.hit.y}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(route);
-  });
-  groups.forEach((group) => group.forEach((route, index) => {
-    const spacing = Math.min(5, 12 / Math.max(1, group.length - 1));
-    const offset = (index - (group.length - 1) / 2) * spacing;
-    const { source, target, sameRow, sameColumn, side } = route;
-    route.radius = Math.min(2, spacing / 3);
-    if (sameColumn && !sameRow) {
-      route.hit.x += offset;
-      // Keep the outside gutter inside the SVG, including a narrow mobile column.
-      route.hit.x = Math.max(3, Math.min(width - 3, route.hit.x));
-      route.points = [[source.x + side * (cellWidth / 2 - 8), source.y],
-        [route.hit.x, source.y], [route.hit.x, target.y], [target.x + side * (cellWidth / 2 - 8), target.y]];
-    } else {
-      route.hit.y += offset;
-      route.points = sameRow
-        ? [[source.x, source.y - 44], [source.x, route.hit.y], [target.x, route.hit.y], [target.x, target.y - 44]]
-        : [[source.x, source.y + 44], [source.x, route.hit.y], [route.gutterX, route.hit.y],
-          [route.gutterX, target.y - 56], [target.x, target.y - 56], [target.x, target.y - 44]];
+function layoutArticleCategoryNodes(nodes, width, height = 0) {
+  const columns = width < 304 ? 1 : width < 600 ? 2 : width < 900 ? 3 : 4;
+  height = Math.max(height, 760, Math.ceil(nodes.length / columns) * 170 + 80);
+  const maxWeight = Math.max(1, ...nodes.map((node) => Number(node.weight) || 0));
+  const placed = [];
+  const positions = new Map();
+  const ranked = [...nodes].sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label));
+  for (const [rank, node] of ranked.entries()) {
+    const radius = 16 + (width < 520 ? 20 : 32) * Math.sqrt((Number(node.weight) || 0) / maxWeight);
+    const labelLines = [];
+    for (const word of node.label.split(" ")) {
+      if (!labelLines.length || `${labelLines[labelLines.length - 1]} ${word}`.length > 18) labelLines.push(word);
+      else labelLines[labelLines.length - 1] += ` ${word}`;
     }
-    route.path = route.points.map(([x, y], point) => `${point ? "L" : "M"}${x},${y}`).join(" ");
-  }));
-  return routes;
+    const seed = projectRadialPosition(rank, nodes.length, width / 2, height / 2, Math.min(width, height) * 0.42);
+    seed.y = height / 2 + (seed.y - height / 2) * height / Math.min(width, height);
+    let nearest = null;
+    for (let x = 76; x <= width - 76; x += 10) {
+      for (let y = radius + 16; y <= height - radius - labelLines.length * 16 - 46; y += 10) {
+        const bounds = { left: x - 64, right: x + 64, top: y - radius, bottom: y + radius + labelLines.length * 16 + 30 };
+        if (placed.some((other) => bounds.left < other.right + 14 && bounds.right > other.left - 14
+          && bounds.top < other.bottom + 14 && bounds.bottom > other.top - 14)) continue;
+        const distance = (x - seed.x) ** 2 + (y - seed.y) ** 2;
+        if (!nearest || distance < nearest.distance) nearest = { x, y, radius, labelLines, bounds, distance };
+      }
+    }
+    if (!nearest) return layoutArticleCategoryNodes(nodes, width, height + 170);
+    placed.push(nearest.bounds);
+    positions.set(node.id, nearest);
+  }
+  return { height, nodes: nodes.map((node) => positions.get(node.id)) };
+}
+
+function categoryEdgeRoutes(links, nodes, width, height) {
+  const targets = [];
+  for (let x = 24; x <= width - 24; x += 16) {
+    for (let y = 24; y <= height - 24; y += 16) {
+      if (!nodes.some(({ bounds }) => x > bounds.left - 20 && x < bounds.right + 20
+        && y > bounds.top - 20 && y < bounds.bottom + 20)) targets.push({ x, y });
+    }
+  }
+  return links.map(({ source, target }) => {
+    const midpoint = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 };
+    let nearest = 0;
+    targets.forEach((point, index) => {
+      if ((point.x - midpoint.x) ** 2 + (point.y - midpoint.y) ** 2
+        < (targets[nearest].x - midpoint.x) ** 2 + (targets[nearest].y - midpoint.y) ** 2) nearest = index;
+    });
+    const hit = targets.splice(nearest, 1)[0];
+    const endpoint = (node) => {
+      const distance = Math.hypot(hit.x - node.x, hit.y - node.y) || 1;
+      return { x: node.x + (hit.x - node.x) * node.radius / distance, y: node.y + (hit.y - node.y) * node.radius / distance };
+    };
+    const start = endpoint(source), end = endpoint(target);
+    // The quadratic passes through the exposed mouse target at its midpoint.
+    return { hit, radius: 4, path: `M${start.x},${start.y} Q${2 * hit.x - (start.x + end.x) / 2},${2 * hit.y - (start.y + end.y) / 2} ${end.x},${end.y}` };
+  });
 }
 
 function setConnectionStatus(agentMode, model) {
@@ -1415,8 +1430,8 @@ function renderGraph(graphData) {
   const NS = "http://www.w3.org/2000/svg";
   const categoryMode = graphData.mode === "article-categories";
   const width = categoryMode ? Math.max(280, svg.getBoundingClientRect().width || 1200) : 1200;
-  const categoryColumns = width < 520 ? 2 : width < 850 ? 3 : 4;
-  const height = categoryMode ? Math.ceil(graphData.nodes.length / categoryColumns) * 112 + 32 : 700;
+  const categoryLayout = categoryMode ? layoutArticleCategoryNodes(graphData.nodes, width) : null;
+  const height = categoryLayout?.height || 700;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.style.height = categoryMode ? `${height}px` : "";
   svg.classList.toggle("category-map", categoryMode);
@@ -1452,7 +1467,7 @@ function renderGraph(graphData) {
   const noteCount = graphData.nodes.filter((node) => node.kind !== "keyword").length;
   let noteIndex = 0;
 
-  const nodes = graphData.nodes.map((node) => {
+  const nodes = graphData.nodes.map((node, index) => {
     const importance = importanceFor(node);
     const radialPosition = projectRadialPosition(
       centralRank.get(node.id) || 0,
@@ -1461,13 +1476,9 @@ function renderGraph(graphData) {
       height / 2,
       Math.min(width, height) * 0.42,
     );
-    const articleCategoryPosition = graphData.mode === "article-categories"
-      ? { x: ((graphData.nodes.indexOf(node) % categoryColumns) + 0.5) * width / categoryColumns,
-          y: (Math.floor(graphData.nodes.indexOf(node) / categoryColumns) + 0.5) * 112 + 16 }
-      : null;
     const position =
       graphData.mode === "article-categories"
-        ? articleCategoryPosition
+        ? categoryLayout.nodes[index]
         : graphData.mode === "keywords"
         ? radialPosition
         : Number.isFinite(node.x) && Number.isFinite(node.y)
@@ -1492,7 +1503,7 @@ function renderGraph(graphData) {
     .map((edge) => ({ ...edge, source: byId.get(edge.source), target: byId.get(edge.target) }))
     .filter((edge) => edge.source && edge.target);
   const staticLayout = Boolean(graphData.staticLayout);
-  const categoryRoutes = categoryMode ? categoryEdgeRoutes(links, width, categoryColumns) : [];
+  const categoryRoutes = categoryMode ? categoryEdgeRoutes(links, nodes, width, height) : [];
   let ticksRemaining = 0;
 
   const linkGroup = document.createElementNS(NS, "g");
@@ -1578,36 +1589,25 @@ function renderGraph(graphData) {
     group.setAttribute("aria-label", categoryMode ? `${node.label}: ${node.weight} supporting articles`
       : node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`);
     if (categoryMode) {
-      const card = document.createElementNS(NS, "rect");
-      const cardWidth = width / categoryColumns - 16;
-      card.setAttribute("x", String(-cardWidth / 2));
-      card.setAttribute("y", "-44");
-      card.setAttribute("width", String(cardWidth));
-      card.setAttribute("height", "88");
-      card.setAttribute("rx", "12");
-      group.appendChild(card);
+      const circle = document.createElementNS(NS, "circle");
+      circle.setAttribute("r", String(getNodeRadius(node)));
+      group.appendChild(circle);
       const title = document.createElementNS(NS, "title");
       title.textContent = `${node.label}: ${node.description || ""}`;
       group.appendChild(title);
       const label = document.createElementNS(NS, "text");
       label.setAttribute("class", "graph-node-label--article-categories");
       label.setAttribute("text-anchor", "middle");
-      const lines = [];
-      const lineLimit = Math.max(15, Math.floor(cardWidth / 7));
-      for (const word of node.label.split(" ")) {
-        if (!lines.length || `${lines[lines.length - 1]} ${word}`.length > lineLimit) lines.push(word);
-        else lines[lines.length - 1] += ` ${word}`;
-      }
-      lines.forEach((text, index) => {
+      node.labelLines.forEach((text, index) => {
         const span = document.createElementNS(NS, "tspan");
         span.textContent = text;
         span.setAttribute("x", "0");
-        span.setAttribute("y", String(-12 - (lines.length - 1) * 8 + index * 16));
+        span.setAttribute("y", String(node.radius + 18 + index * 16));
         label.appendChild(span);
       });
       const count = document.createElementNS(NS, "tspan");
       count.textContent = `${node.weight} articles`;
-      count.setAttribute("x", "0"); count.setAttribute("y", "28");
+      count.setAttribute("x", "0"); count.setAttribute("y", String(node.radius + node.labelLines.length * 16 + 22));
       count.setAttribute("class", "category-map-count");
       label.appendChild(count);
       group.appendChild(label);

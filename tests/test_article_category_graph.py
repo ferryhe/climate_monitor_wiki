@@ -17,6 +17,7 @@ def run_js(body):
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     start = source.index("function buildArticleCategoryGraph(articles, taxonomy) {")
     end = source.index("\nfunction getNodeRadius(", start)
+    layout_end = source.index("\nfunction setConnectionStatus(", end)
     evidence_start = source.index("function showArticleCategoryEvidence(")
     evidence_end = source.index("\nasync function fetchMarkdown(", evidence_start)
     taxonomy = {"categories": [{"id": item.id, "label": item.label} for item in load_article_taxonomy().categories]}
@@ -34,7 +35,7 @@ function renderCurrentGraph() {}
 function registryElement(tag,className="",text="") { return new Element(tag,text); }
 function registryErrorMessage(error) { return String(error); }
 '''
-    script = "const taxonomy=" + json.dumps(taxonomy) + ";" + setup + source[start:end] + source[evidence_start:evidence_end] + body
+    script = "const taxonomy=" + json.dumps(taxonomy) + ";" + setup + source[start:layout_end] + source[evidence_start:evidence_end] + body
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
@@ -49,12 +50,15 @@ const graph=buildArticleCategoryGraph([
   metadata_provenance:{categories:"reviewed_category_correction"},published_candidate_sha256:"approved-pdf"},
  {article_id:"d",categories:["Unknown"],keywords:["Climate & Health"]}
 ],taxonomy);
+const layout=layoutArticleCategoryNodes(graph.nodes,340);
+graph.nodes=graph.nodes.map((node,index)=>({...node,...layout.nodes[index]}));
 process.stdout.write(JSON.stringify(graph));
 ''')
     nodes = {item["label"]: item for item in result["nodes"]}
     assert len(nodes) == 14
     assert nodes["Physical Risk"]["weight"] == 3
     assert nodes["Climate & Health"]["weight"] == 0
+    assert nodes["Physical Risk"]["radius"] > nodes["Insurance Risk"]["radius"] > nodes["Climate & Health"]["radius"]
     assert sorted(item["weight"] for item in result["links"]) == [1, 2]
     pdf = next(item for item in nodes["Insurance Risk"]["articles"] if item.get("source_kind") == "pdf")
     assert pdf["published_candidate_sha256"] == "approved-pdf"
@@ -101,30 +105,47 @@ def test_category_map_visible_labels_and_accessible_edges_replace_old_path():
     assert 'Math.max(280, svg.getBoundingClientRect().width' in app
     assert 'node.label.split(" ")' in app
     assert 'function buildKeywordGraph(' in app
-    assert "opacity: 0" not in css[css.index(".graph-node--article-categories rect"):css.index(".article-category-evidence {")]
+    assert '.graph-node--article-categories rect' not in css
+    assert 'const card = document.createElementNS' not in app
+    assert 'circle.setAttribute("r", String(getNodeRadius(node)))' in app
+    assert "opacity: 0" not in css[css.index(".graph-node--article-categories circle"):css.index(".article-category-evidence {")]
 
 
-def test_all_category_pair_routes_and_mouse_targets_stay_outside_cards():
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("Node.js is unavailable")
-    app = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
-    helper = app[app.index("function categoryEdgeRoutes("):app.index("\nfunction setConnectionStatus(")]
-    script = helper + r'''
-const results=[280,340,1000,1200].map(width=>{
- const columns=width<520?2:width<850?3:4, cell=width/columns;
- const nodes=Array.from({length:14},(_,index)=>({x:(index%columns+0.5)*cell,y:(Math.floor(index/columns)+0.5)*112+16}));
- const links=[];nodes.forEach((source,index)=>nodes.slice(index+1).forEach(target=>links.push({source,target})));
- const routes=categoryEdgeRoutes(links,width,columns);
- const inside=(point,card)=>point[0]>card.x-cell/2+8 && point[0]<card.x+cell/2-8 && point[1]>card.y-44 && point[1]<card.y+44;
- const intersects=(left,right,card)=>left[0]===right[0]
-   ? left[0]>card.x-cell/2+8 && left[0]<card.x+cell/2-8 && Math.max(left[1],right[1])>card.y-44 && Math.min(left[1],right[1])<card.y+44
-   : left[1]>card.y-44 && left[1]<card.y+44 && Math.max(left[0],right[0])>card.x-cell/2+8 && Math.min(left[0],right[0])<card.x+cell/2-8;
- return {width,count:routes.length,blocked:routes.some(route=>nodes.some(card=>inside([route.hit.x,route.hit.y],card)
-   || route.points.slice(1).some((point,index)=>intersects(route.points[index],point,card)))),
-   overlapping:routes.some((route,index)=>routes.slice(index+1).some(other=>Math.hypot(route.hit.x-other.hit.x,route.hit.y-other.hit.y)<=route.radius+other.radius))};
-});process.stdout.write(JSON.stringify(results));
-'''
-    result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True)
-    assert json.loads(result.stdout) == [{"width": width, "count": 91, "blocked": False, "overlapping": False}
-        for width in (280, 340, 1000, 1200)]
+def test_category_circle_sizes_follow_support_count_instead_of_degree():
+    result = run_js(r'''
+const weights=[0,1,2,10,129];
+const nodes=weights.map((weight,index)=>({id:String(index),label:"Category "+index,mode:"article-categories",weight,degree:999-weight,importance:999-weight}));
+const layout=layoutArticleCategoryNodes(nodes,340);
+const changed=layoutArticleCategoryNodes(nodes.map(node=>({...node,degree:0,importance:1})),340);
+process.stdout.write(JSON.stringify({radii:layout.nodes.map((position,index)=>getNodeRadius({...nodes[index],...position})),
+ unchanged:layout.nodes.every((position,index)=>position.radius===changed.nodes[index].radius)}));
+''')
+    assert all(left < right for left, right in zip(result["radii"], result["radii"][1:]))
+    assert result["unchanged"]
+
+
+def test_category_circles_labels_and_all_pair_targets_fit_responsive_network():
+    result = run_js(r'''
+const results=[];
+for(const width of [280,304,340,390,640,900,1000,1200]) {
+ for(const weights of [Array(14).fill(0),Array(14).fill(331),[124,39,129,13,105,29,109,98,64,98,25,30,50,33]]) {
+  const input=taxonomy.categories.map((category,index)=>({...category,weight:weights[index]}));
+  const layout=layoutArticleCategoryNodes(input,width);
+  const nodes=input.map((node,index)=>({...node,...layout.nodes[index]}));
+  const links=[];nodes.forEach((source,index)=>nodes.slice(index+1).forEach(target=>links.push({source,target})));
+  const routes=categoryEdgeRoutes(links,nodes,width,layout.height);
+  const overlaps=(a,b)=>a.left<b.right && a.right>b.left && a.top<b.bottom && a.bottom>b.top;
+  results.push({width,count:routes.length,
+   clipped:nodes.some(({bounds:b})=>b.left<12 || b.right>width-12 || b.top<12 || b.bottom>layout.height-12),
+   nodeOverlap:nodes.some((node,index)=>nodes.slice(index+1).some(other=>overlaps(node.bounds,other.bounds))),
+   blocked:routes.some(({hit,radius})=>nodes.some(({bounds:b})=>hit.x+radius>b.left && hit.x-radius<b.right && hit.y+radius>b.top && hit.y-radius<b.bottom)),
+   targetOverlap:routes.some((route,index)=>routes.slice(index+1).some(other=>Math.hypot(route.hit.x-other.hit.x,route.hit.y-other.hit.y)<=route.radius+other.radius)),
+   disconnected:routes.some(route=>{const p=route.path.match(/-?\d+(?:\.\d+)?/g).map(Number);return Math.hypot((p[0]+2*p[2]+p[4])/4-route.hit.x,(p[1]+2*p[3]+p[5])/4-route.hit.y)>1e-6;})});
+ }
+}
+process.stdout.write(JSON.stringify(results));
+''')
+    assert len(result) == 24
+    for item in result:
+        assert item == {"width": item["width"], "count": 91, "clipped": False, "nodeOverlap": False,
+            "blocked": False, "targetOverlap": False, "disconnected": False}

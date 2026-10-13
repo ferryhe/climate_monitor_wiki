@@ -57,6 +57,8 @@ verifies the resulting bindings and does not add duplicate history.
 Category Map uses `/api/registry/article-categories`: one compact, approved,
 canonical-URL-deduplicated collection plus the configured taxonomy. Registry
 articles take precedence over linked PDF observations. Each article contributes
-once to a node and once to each category pair. All labels remain visible; edge
+once to a node and once to each category pair. Circle sizes increase with the
+distinct supporting-article count; the responsive network leaves room for each
+category name and article count, with a taller canvas on narrow screens. All labels remain visible; edge
 counts appear on hover, keyboard focus or selection. Supporting-article buttons
 open the existing Registry/PDF detail with the retained version and provenance.
