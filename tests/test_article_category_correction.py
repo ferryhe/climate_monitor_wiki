@@ -148,6 +148,99 @@ def test_captured_stored_content_switch_does_not_reuse_another_bodys_categories(
         assert detail["categories"] != ["Physical Risk", "Climate & Health"]
 
 
+@pytest.mark.parametrize("has_current_pointer", [False, True])
+@pytest.mark.parametrize("changed_body", [False, True])
+def test_managed_available_content_controls_category_carry(tmp_path, has_current_pointer, changed_body):
+    from climate_registry.acquisition import store_acquisition_batch
+    from test_issue112_acquisition import _batch, _item, _database as acquisition_database
+
+    database = acquisition_database(tmp_path)
+    flood = "# Flood insurance\n\nFlood damage affects physical climate risk and insurance underwriting."
+    solar = "# Solar transition\n\nSolar energy investment reduces carbon emissions through decarbonisation."
+
+    def observe(batch_id, body, stamp):
+        item = _item(body=body)
+        item["discovered_at"] = item["evidence"]["fetched_at"] = stamp
+        store_acquisition_batch(database, _batch([item], batch_id=batch_id))
+
+    observe("first", flood, "2026-09-10T08:00:00Z")
+    with sqlite3.connect(database) as db:
+        identity, = db.execute("SELECT article_id FROM articles").fetchone()
+        pointer = db.execute("SELECT content_version_id FROM article_content_versions").fetchone()[0] if has_current_pointer else None
+        db.execute("UPDATE articles SET display_policy='full_markdown',current_content_version_id=? WHERE article_id=?", (pointer, identity))
+        original = snapshot_entity(db, "article", identity, annotations={}, source_dir=tmp_path / "sources")
+        original["derived_display"] = {"categories": ["Physical Risk", "Insurance Risk"],
+            "metadata_provenance": {"categories": "reviewed_category_correction"}}
+        approved = stage_snapshot(db, original)
+        _approve(db, approved, {"basis": "Exact corrected flood fixture"}, status="accepted_legacy")
+    reader = _reader(database, tmp_path)
+    assert reader.article(identity)["available_content"]["markdown"] == flood
+
+    body = solar if changed_body else flood
+    observe("second", body, "2026-09-10T09:00:00Z")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT current_content_version_id FROM articles").fetchone()[0] == pointer
+        latest, published = db.execute("SELECT latest_candidate_sha256,published_candidate_sha256 FROM registry_publication WHERE entity_id=?", (identity,)).fetchone()
+        assert published == approved and latest != approved
+        snapshot = json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (latest,)).fetchone()[0])
+        detail = reader._article_from_snapshot(snapshot)
+        assert detail["available_content"]["markdown"] == body
+        assert ("derived_display" in snapshot) == (not changed_body)
+        _approve(db, latest, {"basis": "Managed observation fixture"}, status="accepted_legacy")
+    detail = reader.article(identity)
+    assert detail["available_content"]["markdown"] == body
+    assert (detail["metadata_provenance"].get("categories") == "reviewed_category_correction") == (not changed_body)
+
+
+@pytest.mark.parametrize("route,select_new_body", [
+    ("resolved", True), ("failed", False), ("pending", False),
+    ("equal_instant", False), ("later_instant", True),
+])
+def test_category_body_selection_preserves_public_sql_eligibility_and_time_order(tmp_path, route, select_new_body):
+    from climate_registry.acquisition import store_acquisition_batch
+    from climate_registry.publication import _category_correction_inputs
+    from test_issue112_acquisition import _batch, _item, _database as acquisition_database
+
+    database = acquisition_database(tmp_path)
+    flood, solar = "# Flood insurance\n\nFlood damage.", "# Solar transition\n\nSolar energy."
+    store_acquisition_batch(database, _batch([_item(body=flood)], batch_id="first"))
+    with sqlite3.connect(database) as db:
+        identity = db.execute("SELECT article_id FROM articles").fetchone()[0]
+        pointer = db.execute("SELECT content_version_id FROM article_content_versions").fetchone()[0]
+        db.execute("UPDATE articles SET current_content_version_id=? WHERE article_id=?", (pointer, identity))
+        old = snapshot_entity(db, "article", identity, annotations={}, source_dir=tmp_path / "sources")
+    item = _item(body=solar, status="failed" if route == "failed" else "ok",
+        processing_status="pending" if route in {"pending", "resolved"} else "complete")
+    stamp = {"equal_instant": "2026-09-10T10:00:00+02:00", "later_instant": "2026-09-10T04:30:00-04:00"}.get(route, "2026-09-10T09:00:00Z")
+    item["discovered_at"] = item["evidence"]["fetched_at"] = stamp
+    store_acquisition_batch(database, _batch([item], batch_id="second", completed=False))
+    with sqlite3.connect(database) as db:
+        fetch_id = db.execute("SELECT fetch_id FROM acquisition_items WHERE batch_id='second'").fetchone()[0]
+        if route == "resolved":
+            # Append a retained full-content observation whose original fetch failed;
+            # its resolution references the existing successful fetch.
+            db.execute("""INSERT INTO article_fetches SELECT 'failed-primary',article_id,requested_url,final_url,
+                fetched_at,'failed',403,content_type,NULL,NULL,'blocked','Blocked fixture',NULL
+                FROM article_fetches WHERE fetch_id=?""", (fetch_id,))
+            db.row_factory = sqlite3.Row
+            retained = dict(db.execute("SELECT * FROM acquisition_items WHERE batch_id='second'").fetchone())
+            retained.update(acquisition_item_id="resolved-item", ordinal=2, fetch_id="failed-primary",
+                processing_status="complete", resolved_by_fetch_id=fetch_id)
+            db.execute("INSERT INTO acquisition_items(" + ",".join(retained) + ") VALUES(" + ",".join("?" for _ in retained) + ")", tuple(retained.values()))
+        snapshot = snapshot_entity(db, "article", identity, annotations={}, source_dir=tmp_path / "sources")
+        reader = _reader(database, tmp_path)
+        db.row_factory = sqlite3.Row
+        sql_observations, sql_body = reader._acquisition_projection(db, identity, pointer, "full_markdown")
+        observations, body = reader._acquisition_snapshot_projection(snapshot, identity, pointer, "full_markdown")
+        assert body["markdown"] == sql_body["markdown"] == (solar if select_new_body else flood)
+        assert body["content_version_id"] == sql_body["content_version_id"]
+        assert body["collected_at"] == sql_body["collected_at"]
+        if route.startswith("resolved"):
+            assert observations[-1]["resolved_fetch"] == sql_observations[-1]["resolved_fetch"]
+            assert observations[-1]["fetch"]["status"] == "failed"
+        assert (_category_correction_inputs(old) == _category_correction_inputs(snapshot)) == (not select_new_body)
+
+
 @pytest.mark.parametrize("kind,identity", [("article", "a"), ("pdf_article", "pdf-c")])
 def test_repeat_observation_retains_only_corrected_categories_through_approval(tmp_path, kind, identity):
     database, manifest, plan, bindings = fixture(tmp_path)

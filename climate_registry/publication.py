@@ -354,6 +354,9 @@ def _category_correction_inputs(snapshot):
     }
     if snapshot["entity_kind"] == "article":
         article = tables["articles"][0]
+        from .read_api import select_snapshot_article_content
+        _selected, available_content = select_snapshot_article_content(snapshot, article["article_id"],
+            article.get("current_content_version_id"))
         fields.update(articles=("canonical_url", "document_kind", "publication_eligible", "display_policy"),
             article_versions=("observed_title", "canonical_title", "observed_summary"),
             article_content_versions=("content_sha256", "markdown_sha256", "markdown_content"))
@@ -365,6 +368,9 @@ def _category_correction_inputs(snapshot):
         fields.update(pdf_intake_articles=("canonical_url", "title", "type_safe_classification_json"))
     inputs = {table: sorted({digest({key: row.get(key) for key in keys}) for row in tables.get(table, [])})
         for table, keys in fields.items()}
+    if snapshot["entity_kind"] == "article":
+        inputs["available_content"] = {key: (available_content or {}).get(key)
+            for key in fields["article_content_versions"]}
     semantic_keys = ("title", "anchor_text", "summary", "summary_basis", "categories", "keywords", "body_sha256")
     if snapshot["entity_kind"] == "pdf_article":
         inputs["pdf_occurrences"] = sorted({digest({"content_sha256": row.get("content_sha256"),

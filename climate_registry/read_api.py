@@ -52,6 +52,39 @@ class RegistryQueryError(RegistryError):
     """A query or identifier is invalid."""
 
 
+def select_snapshot_article_content(snapshot, article_id, current_version_id):
+    """Select the body exposed by available_content, without observation rendering."""
+    tables = snapshot.get("tables", {})
+    fetches = {row.get("fetch_id"): row for row in tables.get("article_fetches", [])}
+    candidates = []
+    for row in sorted(tables.get("acquisition_items", []), key=lambda value:
+        (value.get("discovered_at") or "", value.get("acquisition_item_id") or "")):
+        if row.get("article_id") != article_id:
+            continue
+        fetch = fetches.get(row.get("fetch_id"), {})
+        resolved = fetches.get(row.get("resolved_by_fetch_id"), {})
+        version_id = fetch.get("content_version_id") if fetch.get("fetch_status") == "success" else None
+        fetched_at = fetch.get("fetched_at") if version_id else None
+        if version_id is None and resolved.get("fetch_status") == "success":
+            version_id, fetched_at = resolved.get("content_version_id"), resolved.get("fetched_at")
+        if version_id and row.get("material_status") == "full_content" and row.get("processing_status") == "complete":
+            candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
+                "fetch_id": row.get("fetch_id"), "acquisition_item_id": row.get("acquisition_item_id")})
+    if current_version_id:
+        current = max((row for row in tables.get("article_fetches", []) if row.get("article_id") == article_id
+            and row.get("content_version_id") == current_version_id and row.get("fetch_status") == "success"),
+            key=lambda row: (row.get("fetched_at") or "", row.get("fetch_id") or ""), default=None)
+        candidates.append({"content_version_id": current_version_id, "fetched_at": current.get("fetched_at") if current else None,
+            "fetch_id": current.get("fetch_id") if current else None, "acquisition_item_id": None})
+    if not candidates:
+        return {}, None
+    selected = max(candidates, key=lambda item: (RegistryReader._timestamp_key(item["fetched_at"]),
+        item["content_version_id"] == current_version_id, item["content_version_id"], item.get("fetch_id") or ""))
+    content = next((row for row in tables.get("article_content_versions", []) if row.get("article_id") == article_id
+        and row.get("content_version_id") == selected["content_version_id"]), None)
+    return selected, content
+
+
 @dataclass(frozen=True)
 class RegistryReportIdentity:
     report_date: str
@@ -2963,7 +2996,7 @@ class RegistryReader:
         else:
             self._prepare_legacy_acquisition_searches((snapshot,))
             searches = self._legacy_acquisition_search_cache
-        observations, candidates = [], []
+        observations = []
         for row in sorted(items, key=lambda value: (value.get("discovered_at") or "", value.get("acquisition_item_id") or "")):
             try:
                 origins = json.loads(row.get("origins_json") or "[]")
@@ -2991,25 +3024,7 @@ class RegistryReader:
             if row.get("resolved_by_fetch_id"):
                 item["resolved_fetch"] = {"status": resolved.get("fetch_status"), "fetched_at": resolved.get("fetched_at"), "content_version_id": resolved.get("content_version_id")}
             observations.append(item)
-            version_id = fetch.get("content_version_id") if fetch.get("fetch_status") == "success" else None
-            fetched_at = fetch.get("fetched_at") if version_id else None
-            if version_id is None and resolved.get("fetch_status") == "success":
-                version_id, fetched_at = resolved.get("content_version_id"), resolved.get("fetched_at")
-            if version_id and row.get("material_status") == "full_content" and row.get("processing_status") == "complete":
-                candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
-                    "fetch_id": row.get("fetch_id"), "acquisition_item_id": row.get("acquisition_item_id")})
-        if current_version_id:
-            current = max((row for row in tables.get("article_fetches", []) if row.get("article_id") == article_id
-                and row.get("content_version_id") == current_version_id and row.get("fetch_status") == "success"),
-                key=lambda row: (row.get("fetched_at") or "", row.get("fetch_id") or ""), default=None)
-            candidates.append({"content_version_id": current_version_id, "fetched_at": current.get("fetched_at") if current else None,
-                "fetch_id": current.get("fetch_id") if current else None, "acquisition_item_id": None})
-        if not candidates:
-            return observations, {}
-        selected = max(candidates, key=lambda item: (RegistryReader._timestamp_key(item["fetched_at"]),
-            item["content_version_id"] == current_version_id, item["content_version_id"], item.get("fetch_id") or ""))
-        content = next((row for row in tables.get("article_content_versions", []) if row.get("article_id") == article_id
-            and row.get("content_version_id") == selected["content_version_id"]), None)
+        selected, content = select_snapshot_article_content(snapshot, article_id, current_version_id)
         if content is None:
             return observations, {}
         available = {key: content.get(key) for key in ("content_version_id", "content_type", "source_bytes", "extraction_method", "extraction_version", "first_fetched_at")}
