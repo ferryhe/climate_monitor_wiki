@@ -55,11 +55,15 @@ def _registry_sidecars(database: Path) -> list[Path]:
         if Path(str(database) + suffix).exists()]
 
 
-def test_public_connection_decodes_each_approved_snapshot_once(tmp_path, monkeypatch):
+def test_public_connection_streams_approved_snapshots_without_bulk_fetch(tmp_path, monkeypatch):
     import climate_registry.publication as publication
+    import weakref
 
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('c','https://example.org/c','s','2026-09-01','2026-09-01')")
+        db.execute("INSERT INTO article_versions VALUES('v-c','c','Title c','Title c','Observed summary','f-c','report-title-summary','2026-09-01','2026-09-01')")
+        db.execute("UPDATE articles SET current_version_id='v-c' WHERE article_id='c'")
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
         approved = {row[0] for row in db.execute("""SELECT c.snapshot_json FROM registry_publication p
@@ -68,7 +72,10 @@ def test_public_connection_decodes_each_approved_snapshot_once(tmp_path, monkeyp
                 WHERE r.candidate_sha256=c.candidate_sha256 AND r.status IN ('pass','accepted_legacy'))""")}
 
     original_loads = publication.json.loads
+    original_snapshot_loader = publication._load_snapshot_json
     load_counts = {}
+    snapshot_refs = []
+    max_live_snapshots = 0
 
     def count_candidate_loads(value, *args, **kwargs):
         result = original_loads(value, *args, **kwargs)
@@ -76,15 +83,49 @@ def test_public_connection_decodes_each_approved_snapshot_once(tmp_path, monkeyp
             load_counts[value] = load_counts.get(value, 0) + 1
         return result
 
+    class TrackedSnapshot(dict):
+        pass
+
+    def track_snapshot_lifetimes(encoded, strings):
+        nonlocal max_live_snapshots
+        snapshot = TrackedSnapshot(original_snapshot_loader(encoded, strings))
+        snapshot_refs.append(weakref.ref(snapshot))
+        max_live_snapshots = max(max_live_snapshots, sum(ref() is not None for ref in snapshot_refs))
+        return snapshot
+
     monkeypatch.setattr(publication.json, "loads", count_candidate_loads)
+    monkeypatch.setattr(publication, "_load_snapshot_json", track_snapshot_lifetimes)
     source = sqlite3.connect(database)
-    projection = publication.public_connection(source)
+
+    class GuardedCursor:
+        def __init__(self, cursor, sql):
+            self.cursor = cursor
+            self.sql = " ".join(sql.split()).lower()
+
+        def fetchall(self):
+            assert "select * from" not in self.sql
+            assert "c.snapshot_json" not in self.sql
+            return self.cursor.fetchall()
+
+        def __iter__(self):
+            return iter(self.cursor)
+
+        def __getattr__(self, name):
+            return getattr(self.cursor, name)
+
+    class GuardedSource:
+        def execute(self, sql, *args):
+            return GuardedCursor(source.execute(sql, *args), sql)
+
+    projection = publication.public_connection(GuardedSource())
     try:
-        assert load_counts == {encoded: 1 for encoded in approved}
+        assert len(approved) >= 3
+        assert load_counts == {encoded: 2 for encoded in approved}
+        assert max_live_snapshots <= 2
         assert {row[0] for row in projection.execute("SELECT snapshot_json FROM public_snapshot_metadata")} == approved
         assert [tuple(row) for row in projection.execute("""SELECT a.article_id,v.observed_title FROM articles a
             JOIN article_versions v ON v.version_id=a.current_version_id ORDER BY a.article_id""")] == [
-                ("a", "Title a"), ("b", "Title b")]
+                ("a", "Title a"), ("b", "Title b"), ("c", "Title c")]
     finally:
         projection.close()
         source.close()

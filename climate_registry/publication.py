@@ -591,37 +591,38 @@ def public_connection(source):
             if table.startswith("sqlite_") or table in PROJECTED_TABLES or table in {"schema_migrations", "registry_candidates", "registry_reviews", "registry_publication"}:
                 continue
             cursor = source.execute(f'SELECT * FROM "{table}"')
-            values = cursor.fetchall()
-            if values:
-                projection.executemany(f'INSERT INTO "{table}" VALUES({",".join("?" for _ in cursor.description)})', values)
-        selected = source.execute("""SELECT c.candidate_sha256,c.snapshot_json FROM registry_publication p
+            if cursor.description:
+                projection.executemany(f'INSERT INTO "{table}" VALUES({",".join("?" for _ in cursor.description)})', cursor)
+        selected_sql = """SELECT c.candidate_sha256,c.snapshot_json FROM registry_publication p
             JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
             WHERE p.is_visible=1 AND EXISTS(SELECT 1 FROM registry_reviews r
-                WHERE r.candidate_sha256=c.candidate_sha256 AND r.status IN ('pass','accepted_legacy'))""").fetchall()
+                WHERE r.candidate_sha256=c.candidate_sha256 AND r.status IN ('pass','accepted_legacy'))"""
         projection.execute("CREATE TEMP TABLE public_snapshot_metadata(entity_kind TEXT,entity_id TEXT,snapshot_json TEXT)")
         projection.execute("CREATE TEMP TABLE approved_public_reviews(entity_kind TEXT,entity_id TEXT,approved_at TEXT)")
         projection.executemany("INSERT INTO approved_public_reviews VALUES(?,?,?)", source.execute("SELECT p.entity_kind,p.entity_id,min(r.reviewed_at) FROM registry_publication p JOIN registry_reviews r ON r.candidate_sha256=p.published_candidate_sha256 WHERE p.is_visible=1 AND r.status='pass' GROUP BY p.entity_kind,p.entity_id").fetchall())
-        published = {}
-        snapshots_by_sha = {}
-        strings = {}
-        for sha, encoded in selected:
-            snapshot = _load_snapshot_json(encoded, strings)
+        published_occurrences = {}
+        for sha, encoded in source.execute(selected_sql):
+            snapshot = _load_snapshot_json(encoded, {})
             if digest(snapshot) != sha:
                 raise ValueError("published Registry snapshot hash differs")
-            published[(snapshot["entity_kind"], snapshot["entity_id"])] = snapshot
-            snapshots_by_sha[sha] = snapshot
-        for sha, encoded in selected:
-            snapshot = snapshots_by_sha[sha]
+            kind = snapshot["entity_kind"]
+            table = "pdf_intake_article_occurrences" if kind in {"article", "pdf_article"} else "pdf_intake_calendar_items"
+            published_occurrences[(kind, snapshot["entity_id"])] = {
+                row["occurrence_id"] for row in snapshot.get("tables", {}).get(table, [])
+            }
+        for sha, encoded in source.execute(selected_sql):
+            snapshot = _load_snapshot_json(encoded, {})
+            if digest(snapshot) != sha:
+                raise ValueError("published Registry snapshot hash differs")
             canonical = canonical_entity(source, snapshot["entity_kind"], snapshot["entity_id"])
             if canonical != (snapshot["entity_kind"], snapshot["entity_id"]):
                 state = source.execute("SELECT is_visible,published_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", canonical).fetchone()
                 # A pending raw alias cannot replace an older approved observation.
                 # Suppress it only when the approved canonical snapshot absorbed it.
-                canonical_snapshot = published.get(canonical)
+                canonical_occurrences = published_occurrences.get(canonical)
                 table = "pdf_intake_article_occurrences" if snapshot["entity_kind"] == "pdf_article" else "pdf_intake_calendar_items"
                 observations = {row["occurrence_id"] for row in snapshot["tables"].get(table, [])}
-                absorbed = canonical_snapshot is not None and bool(observations) and observations <= {
-                    row["occurrence_id"] for row in canonical_snapshot["tables"].get(table, [])}
+                absorbed = canonical_occurrences is not None and bool(observations) and observations <= canonical_occurrences
                 if state and (not state[0] or absorbed):
                     continue
             projection.execute("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", (snapshot["entity_kind"], snapshot["entity_id"], encoded))

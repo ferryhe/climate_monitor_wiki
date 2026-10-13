@@ -1573,6 +1573,7 @@ def freeze_range_report(
     with _frozen_range_reader(reader, schema_version=schema_version) as snapshot_reader:
         public_source = _range_source(snapshot_reader, start_date, end_date)
         public_dates = selected_dates(public_source)
+        del public_source
         web_selection_dates = dict(public_dates)
         for article_id, values in pdf_dates.items():
             bucket = web_selection_dates.setdefault(article_id, [])
