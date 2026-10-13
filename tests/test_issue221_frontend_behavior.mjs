@@ -207,6 +207,7 @@ async function articleDetailUsesCurrentCategories() {
   const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
   article = {
     title: 'Approved PDF article', categories: ['Food & Water Security'],
+    metadata_provenance: { categories: 'reviewed_category_correction' },
     occurrences: [{ verified_information: {
       summary: 'Checked summary', categories: ['Old source category'], keywords: ['Observed keyword'],
     } }],
@@ -215,7 +216,10 @@ async function articleDetailUsesCurrentCategories() {
   let displayed = texts(els.registryEnrichment);
   assert.equal(displayed.filter((text) => text === 'Categories').length, 1);
   assert.ok(displayed.includes('Food & Water Security'));
-  assert.ok(!displayed.includes('Old source category'));
+  assert.ok(displayed.includes('Source Categories'));
+  assert.ok(displayed.includes('Old source category'));
+  const currentCategories = els.registryEnrichment.children.find((block) => block.children[0]?.text === 'Categories');
+  assert.ok(!texts(currentCategories).includes('Old source category'), 'source categories do not become article categories');
   assert.ok(displayed.includes('Checked summary'));
   assert.ok(displayed.includes('Observed keyword'));
   article = { title: 'Unclassified article', categories: [], enrichment: { categories: ['Stale category'] } };

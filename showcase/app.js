@@ -2689,6 +2689,7 @@ function appendPdfVerifiedInformation(container, occurrence) {
       summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", information.summary));
       block.append(summary);
     }
+    appendRegistryTags(block, "Source Categories", information.categories);
     appendRegistryTags(block, "Keywords", information.keywords);
     const status = occurrence.verification_status || "status unavailable";
     const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
@@ -2958,17 +2959,23 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
       );
       els.registryEnrichment.append(summaryBlock);
     }
-    appendRegistryTags(
-      els.registryEnrichment,
-      "Categories",
-      article.categories === undefined ? article.enrichment?.categories || [] : article.categories,
-    );
     if (!pdfSource) {
+      appendRegistryTags(
+        els.registryEnrichment,
+        "Categories",
+        article.categories === undefined ? article.enrichment?.categories || [] : article.categories,
+      );
       appendRegistryTags(
         els.registryEnrichment,
         "Keywords",
         article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
       );
+    } else {
+      for (const [field, label] of [["categories", "Categories"], ["keywords", "Keywords"]]) {
+        if (article.metadata_provenance?.[field] && article[field]?.length) {
+          appendRegistryTags(els.registryEnrichment, label, article[field]);
+        }
+      }
     }
     if (!pdfSource && summaryPresentation.provenanceCopy) {
       const reviewed =
