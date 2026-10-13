@@ -3,16 +3,35 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
-const extract = (name) => source.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['registryElement', 'safeSourceUrl', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances'];
+const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
+const names = ['registryElement', 'safeSourceUrl', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
-    setAttribute(name, value) { this[name] = value; } };
+    replaceChildren(...items) { this.children = [...items]; },
+    setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; },
+    get childElementCount() { return this.children.length; } };
   created.push(element);
   return element;
 } };
-const context = vm.createContext({ document, URL });
+const articleDetail = document.createElement('section');
+const articleTitle = document.createElement('h2');
+const articleMeta = document.createElement('dl');
+const enrichment = document.createElement('div');
+const appearancesSection = document.createElement('section');
+const appearancesEl = document.createElement('ul');
+const contentSection = document.createElement('section');
+const originalLink = document.createElement('a');
+const context = vm.createContext({ document, URL, console,
+  state: { registry: { articleDetailRequestSequence: 0 } },
+  els: { registryArticleDetail: articleDetail, registryArticleTitle: articleTitle,
+    registryArticleMeta: articleMeta, registryEnrichment: enrichment,
+    registryAppearances: appearancesEl, registryAppearancesSection: appearancesSection,
+    registryContentSection: contentSection, registryOriginalLink: originalLink,
+    registryContentTitle: document.createElement('h3'), registryMarkdown: document.createElement('div') },
+  registryErrorMessage: (error) => String(error),
+});
+vm.runInContext(source.match(/const REGISTRY_SUMMARY_PRESENTATION = \{[\s\S]*?\n\};/)?.[0], context);
 for (const name of names) {
   const fn = extract(name);
   assert.ok(fn, `missing ${name}`);
@@ -67,4 +86,41 @@ assert.deepEqual(appearances.children.map(text), [
 assert.equal(appearances.children[0].children[1].href, 'https://example.org/a');
 assert.doesNotMatch(source.match(/async function loadRegistryArticle\([\s\S]*?\n\}/)?.[0] || '',
   /appendRegistryPdfOccurrences|supporting_excerpt/);
-console.log('PASS Registry/PDF detail labels, verified-summary precedence, PDF-provided summaries, missing values, source links, duplicate appearances, and excerpt hiding');
+
+const reviewedPdf = {
+  title: 'Reviewed PDF article', publisher: 'Example', first_seen: '2026-01-01', last_seen: '2026-02-01',
+  source_kind: 'pdf', categories: ['Capital & Solvency', 'Supervision & Disclosure'], keywords: ['solvency', 'climate risk'],
+  metadata_provenance: { categories: 'manual_category_standardization', keywords: 'manual_supplement' },
+  occurrences: [{ verification_status: 'verified', verified_information: { categories: ['Website-only category'], keywords: ['website-only keyword'] } }],
+  appearances: [],
+};
+context.registryFetch = async () => reviewedPdf;
+await context.loadRegistryArticle('reviewed-pdf', 'pdf');
+assert.match(text(enrichment), /Categories Capital & Solvency Supervision & Disclosure/);
+assert.match(text(enrichment), /Keywords solvency climate risk/);
+assert.doesNotMatch(text(enrichment), /manual_category_standardization|manual_supplement/);
+assert.match(text(enrichment), /Website-only category/);
+assert.match(text(enrichment), /website-only keyword/);
+assert.doesNotMatch(text(enrichment), /Verified information/);
+
+enrichment.replaceChildren();
+context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Adaptation & Resilience'], keywords: [],
+  metadata_provenance: { categories: 'manual_category_standardization' }, occurrences: [], });
+await context.loadRegistryArticle('pdf-categories-only', 'pdf');
+assert.match(text(enrichment), /Categories Adaptation & Resilience/);
+assert.doesNotMatch(text(enrichment), /Keywords/);
+
+enrichment.replaceChildren();
+context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Legacy fixture category'], keywords: ['Legacy fixture keyword'],
+  metadata_provenance: {}, occurrences: [], });
+await context.loadRegistryArticle('pdf-legacy', 'pdf');
+assert.doesNotMatch(text(enrichment), /Legacy fixture/);
+
+enrichment.replaceChildren();
+context.registryFetch = async () => ({ ...reviewedPdf, source_kind: 'registry',
+  categories: ['Registry category'], keywords: ['Registry keyword'], metadata_provenance: {}, occurrences: [],
+  pdf_occurrences: [], });
+await context.loadRegistryArticle('registry-article');
+assert.match(text(enrichment), /Registry category/);
+assert.match(text(enrichment), /Registry keyword/);
+console.log('PASS full Registry/PDF detail render: reviewed PDF tags and field sources, occurrence website values, missing tags, legacy provenance hiding, Registry values, summaries, links, and appearances');

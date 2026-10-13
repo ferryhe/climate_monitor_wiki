@@ -2867,6 +2867,12 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
         "Keywords",
         article.keywords?.length ? article.keywords : article.enrichment?.keywords || [],
       );
+    } else {
+      for (const [field, label] of [["categories", "Categories"], ["keywords", "Keywords"]]) {
+        if (article.metadata_provenance?.[field] && article[field]?.length) {
+          appendRegistryTags(els.registryEnrichment, label, article[field]);
+        }
+      }
     }
     if (!pdfSource && summaryPresentation.provenanceCopy) {
       const reviewed =
