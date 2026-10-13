@@ -92,6 +92,62 @@ def test_unchanged_pending_restage_does_not_borrow_corrected_public_categories(t
         assert "derived_display" not in observed
 
 
+@pytest.mark.parametrize("returned_body", ["solar", "flood"])
+def test_captured_stored_content_switch_does_not_reuse_another_bodys_categories(tmp_path, returned_body):
+    from climate_registry.capture import _capture_one, _conditional_headers
+    from climate_registry.fetch import FetchResponse
+
+    database, manifest, plan, _ = fixture(tmp_path)
+    texts = {
+        "solar": "Solar energy investment and renewable electricity reduce carbon emissions through decarbonisation. " * 8,
+        "flood": "Flood catastrophe damage and physical climate risk affect insurance underwriting and resilience. " * 8,
+    }
+
+    def capture_body(db, body, sequence):
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM articles WHERE article_id='a'").fetchone()
+        headers, previous = _conditional_headers(db, "a")
+        response = FetchResponse(200, row["canonical_url"], {"content-type": "text/html"},
+            ("<html><body><p>" + texts[body] + "</p></body></html>").encode())
+        result = _capture_one(db, row, prepared=(row["canonical_url"], headers, previous, response),
+            clock=lambda: f"2026-09-0{sequence}T12:00:00Z", id_factory=lambda prefix: f"{prefix}-{sequence}",
+            max_bytes=100_000)
+        pointer = db.execute("SELECT current_content_version_id FROM articles WHERE article_id='a'").fetchone()[0]
+        return result, pointer
+
+    with sqlite3.connect(database) as db:
+        _, solar = capture_body(db, "solar", 1)
+        _, flood = capture_body(db, "flood", 2)
+        assert solar != flood
+        approved = stage_snapshot(db, snapshot_entity(db, "article", "a", annotations={}, source_dir=tmp_path / "sources"))
+        _approve(db, approved, {"basis": "Current flood body"}, status="accepted_legacy")
+        plan["records"][0]["expected_binding"] = {"is_visible": 1,
+            "published_candidate_sha256": approved, "latest_candidate_sha256": approved}
+    plan["records"][0]["expected_categories"] = _reader(database, tmp_path).article("a")["categories"]
+    manifest.write_text(json.dumps(plan), encoding="utf-8")
+    correct_article_categories(database=database, manifest=manifest, apply=True, backup_dir=tmp_path / "backups")
+
+    with sqlite3.connect(database) as db:
+        before = {table: db.execute(f"SELECT * FROM {table}").fetchall()
+            for table in ("article_content_versions", "article_enrichments")}
+        result, pointer = capture_body(db, returned_body, 3)
+        assert result == {"article_id": "a", "status": "captured", "content_version": "reused", "enrichment": "reused"}
+        assert pointer == (solar if returned_body == "solar" else flood)
+        assert {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table}")]
+            for table in before} == before
+        snapshot = snapshot_entity(db, "article", "a", annotations={}, source_dir=tmp_path / "sources")
+        candidate = stage_snapshot(db, snapshot)
+        if returned_body == "solar":
+            assert "derived_display" not in snapshot
+        else:
+            assert snapshot["derived_display"]["categories"] == ["Physical Risk", "Climate & Health"]
+        _approve(db, candidate, {"basis": "Captured stored body"}, status="accepted_legacy")
+    detail = _reader(database, tmp_path).article("a")
+    assert (detail["metadata_provenance"].get("categories") == "reviewed_category_correction") == (returned_body == "flood")
+    if returned_body == "solar":
+        assert detail["categories"] != ["Physical Risk", "Climate & Health"]
+
+
 @pytest.mark.parametrize("kind,identity", [("article", "a"), ("pdf_article", "pdf-c")])
 def test_repeat_observation_retains_only_corrected_categories_through_approval(tmp_path, kind, identity):
     database, manifest, plan, bindings = fixture(tmp_path)

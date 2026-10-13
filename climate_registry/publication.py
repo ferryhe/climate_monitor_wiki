@@ -358,7 +358,9 @@ def _category_correction_inputs(snapshot):
             article_versions=("observed_title", "canonical_title", "observed_summary"),
             article_content_versions=("content_sha256", "markdown_sha256", "markdown_content"))
         tables = {**tables, "article_versions": [row for row in tables.get("article_versions", [])
-            if row["version_id"] == article.get("current_version_id")]}
+            if row["version_id"] == article.get("current_version_id")],
+            "article_content_versions": [row for row in tables.get("article_content_versions", [])
+                if row["content_version_id"] == article.get("current_content_version_id")]}
     else:
         fields.update(pdf_intake_articles=("canonical_url", "title", "type_safe_classification_json"))
     inputs = {table: sorted({digest({key: row.get(key) for key in keys}) for row in tables.get(table, [])})
