@@ -102,21 +102,17 @@
                         Report
                       </button>
                     </div>
-                    <span id="answerModeHint" class="mode-switch__note" aria-live="polite">
-                      Richer grounded answers that pull more aggressively from raw source reports.
-                    </span>
                   </div>
                   <span class="composer-shell__hint">
                     Enter for a new line. Use Ctrl/⌘ + Enter to send.
                   </span>
                 </div>
 
-                <p id="chatAllowance" class="chat-access-note" aria-live="polite">Loading free question allowance…</p>
                 <p id="chatAccessMessage" class="chat-access-note" role="status"></p>
                 <button id="retryChatQuestion" type="button" hidden>Retry question</button>
                 <form id="chatTokenForm" class="chat-token-form">
                   <label for="chatToken">Access token</label>
-                  <input id="chatToken" type="password" autocomplete="off" maxlength="256" required />
+                  <input id="chatToken" type="password" autocomplete="off" maxlength="256" required placeholder="Loading free question allowance…" />
                   <button type="submit">Continue with token</button>
                 </form>
                 <form id="chatForm" class="composer-card">

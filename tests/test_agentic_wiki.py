@@ -249,7 +249,7 @@ def test_showcase_root_defaults_to_chat_and_contains_workspaces():
     assert 'id="graphSvg"' in body
     assert 'id="rows"' in body
     assert 'data-answer-mode="detailed"' in body
-    assert 'id="answerModeHint"' in body
+    assert 'id="answerModeHint"' not in body
     assert 'id="registryPublisherCustom"' in body
     assert 'data-graph-mode="keywords"' in body
     assert body.index('id="chatTab"') < body.index('id="registryTab"')

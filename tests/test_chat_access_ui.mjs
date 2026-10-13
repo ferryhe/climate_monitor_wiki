@@ -11,7 +11,7 @@ const functions = names.map(name => {
 }).join('\n');
 const state = {messages: [{role: 'assistant', content: 'Previous answer', context: 'frame-1'}], activeContextPath: 'wiki/example.md', answerMode: 'brief', isSending: false};
 const button = {disabled: false};
-const els = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAllowance: {}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: ''}, chatTokenForm: {hidden: false, querySelector: () => button}};
+const els = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: '', setAttribute(name, value) {this[name] = value;}}, chatTokenForm: {hidden: false, querySelector: () => button}};
 const quota = {remaining: 0, limit: 5, reset_at: '2026-10-11T00:00:00-04:00', access_enabled: false};
 let tokenEnabled = false;
 let accessRequests = 0;
@@ -46,8 +46,8 @@ assert.equal(state.messages.filter(item => item.pending).length, 0);
 assert.ok(state.messages.at(-1).blockedRequest);
 assert.equal(els.send.disabled, true);
 assert.equal(els.retryChatQuestion.hidden, true);
-assert.match(els.chatAllowance.textContent, /^Free questions today: 0 of 5 remaining\./);
-assert.match(els.chatAllowance.textContent, /New York/);
+assert.equal(els.chatToken.placeholder, 'Free questions today: 0 of 5 remaining.');
+assert.equal(els.chatToken['aria-description'], els.chatToken.placeholder);
 assert.match(els.chatAccessMessage.textContent, /^You've used today's 5 free questions for this network\. Enter an access token to continue, or return after .+\.$/);
 
 state.messages = JSON.parse(saved); // Refresh preserves the blocked question and full request.
@@ -116,7 +116,7 @@ nestedOnly.loadThread();
 assert.deepEqual(JSON.parse(JSON.stringify(nestedOnly.state.messages[0].blockedRequest)), originalRequest);
 assert.equal(JSON.parse(nestedOnlySaved)[0].blockedRequest.messages.some(item => item.content === legacyStartupNotice), false);
 const reloadedState = {...state, messages: [], isSending: false};
-const reloadedEls = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAllowance: {}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: ''}, chatTokenForm: {querySelector: () => ({})}};
+const reloadedEls = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: '', setAttribute(name, value) {this[name] = value;}}, chatTokenForm: {querySelector: () => ({})}};
 let reloadedSaved = JSON.stringify(persistedRace);
 const reloaded = vm.createContext({state: reloadedState, els: reloadedEls, fetch, Intl, Date, STORAGE_KEY: 'thread',
   localStorage: {getItem: () => reloadedSaved, setItem(_key, value) {reloadedSaved = value;}, removeItem() {}}, renderMessages() {},
@@ -155,4 +155,8 @@ await inFlight;
 const html = readFileSync(new URL('../showcase/index.html', import.meta.url), 'utf8');
 assert.ok(html.includes('>Access token</label>'));
 assert.ok(html.includes('>Continue with token</button>'));
-console.log('PASS: blocked request persistence, invalid token retention, exact resume, established-token refresh recovery, single user history, allowance and required copy');
+assert.ok(html.includes('autocomplete="off" maxlength="256" required'));
+assert.ok(!html.includes('id="chatAllowance"'));
+const css = readFileSync(new URL('../showcase/styles.css', import.meta.url), 'utf8');
+assert.ok(css.includes('.chat-token-form input:focus::placeholder'));
+console.log('PASS: blocked request persistence, invalid token retention, exact resume, established-token refresh recovery, single user history, allowance placeholder and required copy');

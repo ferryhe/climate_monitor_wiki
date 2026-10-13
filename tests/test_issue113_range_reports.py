@@ -2038,6 +2038,46 @@ def test_freeze_range_report_uses_one_database_snapshot_across_all_reads(
     assert snapshot_databases[0] != database and not snapshot_databases[0].exists()
 
 
+def test_schema21_freeze_reuses_one_public_view(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path, target_version=21)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+    _insert_pdf_calendar(database, "Stable public event")
+    reader = _reader(database, tmp_path)
+    original_public_connection = publication.public_connection
+    projection_calls = 0
+
+    def build_view_then_publish_late_event(source):
+        nonlocal projection_calls
+        projection = original_public_connection(source)
+        projection_calls += 1
+        if projection_calls == 1:
+            _insert_pdf_calendar(database, "Late public event")
+        return projection
+
+    monkeypatch.setattr(publication, "public_connection", build_view_then_publish_late_event)
+    monkeypatch.setattr(
+        range_reports,
+        "snapshot_registry",
+        lambda *_args, **_kwargs: pytest.fail("schema 21 should reuse its public projection"),
+    )
+
+    snapshot = freeze_range_report(
+        reader,
+        tmp_path / "schema21-range-output",
+        start_date="2026-09-17",
+        end_date="2026-09-30",
+        generated_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+    )
+
+    assert projection_calls == 1
+    assert {item["name"] for item in snapshot["pdf_calendar"]["records"]} == {
+        "Stable public event"
+    }
+
+
 def test_pre_pdf_registry_marks_calendar_unavailable_without_losing_articles(tmp_path, monkeypatch):
     database = tmp_path / "registry-v12.sqlite3"
     connection = sqlite3.connect(database)
