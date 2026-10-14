@@ -4,6 +4,7 @@ import vm from 'node:vm';
 
 const taxonomy = {categories:[{id:"flood",label:"Flood"},{id:"insurance",label:"Insurance"}]};
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
+const index = readFileSync(new URL('../showcase/index.html', import.meta.url), 'utf8');
 const slice = (start, end) => {
   const from = source.indexOf(start);
   const to = source.indexOf(end, from);
@@ -201,7 +202,7 @@ async function articleDetailUsesCurrentCategories() {
   vm.runInContext([
     slice('function appendPdfVerifiedInformation(container, occurrence) {', '\nfunction appendPdfAppearances('),
     slice('function appendRegistryTags(container, label, values) {', '\nasync function loadRegistryArticle('),
-    slice('async function loadRegistryArticle(articleId, articleSource = "registry") {', '\nasync function loadFinalPipelineReports('),
+    slice('async function loadRegistryArticle(articleId, articleSource = "registry") {', '\nfunction attachEvents('),
     'globalThis.loadDetail = loadRegistryArticle;',
   ].join('\n'), context);
   const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
@@ -232,3 +233,60 @@ async function articleDetailUsesCurrentCategories() {
 }
 
 await articleDetailUsesCurrentCategories();
+
+async function importedPdfDetailOmitsUnwantedMetadata() {
+  const element = (tag = 'div', className = '', text = '') => ({
+    tag, className, text, children: [], hidden: false, dataset: {},
+    append(...children) { this.children.push(...children); },
+    setAttribute() {},
+  });
+  const els = Object.fromEntries([
+    'registryReportDetail', 'registryReportTitle', 'registryReportMeta', 'registryImportedReport', 'registryReportPdf',
+  ].map((name) => [name, element()]));
+  const calls = [];
+  const context = vm.createContext({
+    els, state: { registry: { reportRequestSequence: 0 } },
+    registryFetch: async (path) => {
+      calls.push(path);
+      return {
+        report_title: 'Imported report', report_date: '2026-09-28', filename: 'report.pdf',
+        source_filenames: ['report.pdf'], edition: 5, reporting_period: 'Sep',
+        period_start: '2026-09-01', period_end: '2026-09-28', page_count: 12,
+        pdf_created_at: 'created', pdf_modified_at: 'modified', imported_at: 'imported',
+        pdf_metadata: { '/CreationDate': 'creation', '/Creator': 'creator', '/ModDate': 'modification',
+          '/Producer': 'producer', '/Title': 'Useful PDF title' },
+        report_pdf: { filename: 'report.pdf', download_url: '/api/registry/pdf-intake/reports/doc-1/pdf' },
+      };
+    },
+    registryElement: element,
+    registryMetric: (label, value) => element('div', 'metric', `${label}: ${value}`),
+    clearHistoricalReportContent() {}, registryErrorMessage: String,
+    appendRegistryPdfOccurrences() {}, appendInformationCheck() {}, safeSourceUrl: (value) => value,
+  });
+  vm.runInContext([
+    slice('async function loadImportedRegistryReport(documentId) {', '\nfunction appendRegistryPdfOccurrences('),
+    'globalThis.loadImported = loadImportedRegistryReport;',
+  ].join('\n'), context);
+  await context.loadImported('doc-1');
+  const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
+  const displayed = texts(els.registryImportedReport).join(' ');
+  for (const hidden of ['Sources', 'Edition', 'Period start', 'Period end',
+    'PDF created', 'PDF modified', 'CreationDate', 'Creator', 'ModDate', 'Producer', 'creation', 'producer']) {
+    assert.ok(!displayed.includes(hidden), `${hidden} should not appear in imported PDF detail`);
+  }
+  assert.ok(displayed.includes('Report date: 2026-09-28'));
+  assert.ok(displayed.includes('Reporting period: Sep'));
+  assert.ok(displayed.includes('Pages: 12'));
+  assert.ok(displayed.includes('Imported: imported'));
+  assert.ok(displayed.includes('Title: Useful PDF title'));
+  assert.deepEqual(calls, ['/api/registry/pdf-intake/reports/doc-1']);
+  assert.equal(els.registryReportPdf.href, '/api/registry/pdf-intake/reports/doc-1/pdf');
+}
+
+await importedPdfDetailOmitsUnwantedMetadata();
+
+assert.ok(!source.includes('loadFinalPipelineReports'));
+assert.ok(!source.includes("fetch('/api/registry/final-reports')"));
+assert.ok(!source.includes("fetch('/api/job-status')"));
+assert.ok(!index.includes('Enter for a new line. Use Ctrl/⌘ + Enter to send.'));
+assert.ok(source.includes('(event.metaKey || event.ctrlKey) && event.key === "Enter"'));

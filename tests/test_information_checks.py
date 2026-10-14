@@ -140,6 +140,148 @@ def test_meeting_and_article_runs_are_independent_resumable_and_immutable(tmp_pa
     assert list((tmp_path / "backups").glob("*.bak"))
 
 
+def test_fresh_runs_skip_current_verified_targets_but_keep_incomplete_targets_eligible(tmp_path):
+    database = _database(tmp_path)
+    calls = []
+    fetch = lambda identifier, url: (calls.append(identifier), _record(identifier, url))[1]
+    options = dict(database=database, kind="meetings", backup_dir=tmp_path / "backups",
+        fetcher=fetch, verifier=_judgment)
+    first = run_checks(**options)
+    assert first["status"] == "partial" and calls == ["meeting-1", "meeting-2"]
+
+    second = run_checks(**options)
+    assert second["status"] == "partial" and second["item_count"] == 1
+    assert calls == ["meeting-1", "meeting-2", "meeting-2"]
+
+    article_calls = []
+    article_options = dict(database=database, kind="articles", backup_dir=tmp_path / "backups",
+        fetcher=lambda identifier, url: (article_calls.append(identifier), _record(identifier, url))[1],
+        verifier=_judgment)
+    first_articles = run_checks(**article_options)
+    second_articles = run_checks(**article_options)
+    assert first_articles["status"] == second_articles["status"] == "partial"
+    assert second_articles["item_count"] == 1
+    assert article_calls == ["article-1", "article-2", "article-2"]
+
+
+def test_reverify_all_creates_a_new_latest_attempt_and_source_changes_recheck(tmp_path):
+    database = _database(tmp_path)
+    calls = []
+    fetch = lambda identifier, url: (calls.append(identifier), _record(identifier, url))[1]
+    options = dict(database=database, kind="meetings", backup_dir=tmp_path / "backups",
+        occurrence_ids={"meeting-1"}, fetcher=fetch, verifier=_judgment)
+    first = run_checks(**options)
+    skipped = run_checks(**options)
+    assert skipped["status"] == "complete" and skipped["item_count"] == 0
+    assert calls == ["meeting-1"]
+
+    forced = run_checks(**options, reverify_all=True)
+    assert forced["status"] == "complete" and forced["item_count"] == 1
+    assert calls == ["meeting-1", "meeting-1"]
+    with sqlite3.connect(database) as connection:
+        attempts = connection.execute(
+            "SELECT run_id FROM meeting_check_attempts WHERE occurrence_id='meeting-1' ORDER BY rowid"
+        ).fetchall()
+    assert [row[0] for row in attempts] == [first["run_id"], forced["run_id"]]
+    checked = check_targets(database, "meetings", {"meeting-1"})[0]
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        latest = latest_checks(connection, "meetings", {**checked["fields"],
+            "occurrence_id": checked["occurrence_id"], "source_document_sha256": "a" * 64,
+            "source_urls": [checked["source_url"]]})
+    assert latest["checks"][0]["run_id"] == forced["run_id"]
+
+    changed = {**checked, "source_revision_sha256": "f" * 64,
+        "source_binding": {**checked["source_binding"], "record_version": 2}}
+    from climate_registry.information_checks import _currently_verified_targets
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        current_verified = _currently_verified_targets(connection, "meeting", [changed])
+        binding_changed = {**checked,
+            "source_binding": {**checked["source_binding"], "record_version": 2}}
+        binding_only_verified = _currently_verified_targets(
+            connection, "meeting", [binding_changed])
+        stale_item = {**checked["fields"], "occurrence_id": checked["occurrence_id"],
+            "source_urls": [checked["source_url"]], "name": "Changed meeting"}
+        stale_status = latest_checks(connection, "meetings", stale_item)
+    expected_key = (checked["occurrence_id"], checked["source_url"])
+    assert current_verified == binding_only_verified == {expected_key}
+    assert binding_changed["source_revision_sha256"] == checked["source_revision_sha256"]
+    assert stale_status["verification_status"] == "unchecked"
+
+
+def test_information_check_cli_forwards_reverify_all(tmp_path, monkeypatch):
+    from scripts import check_information
+    monkeypatch.delenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", raising=False)
+    received = {}
+    def run(database, **kwargs):
+        received.update(kwargs)
+        return {"run_id": "forced-run", "status": "complete", "item_count": 1, "completed_count": 1}
+    monkeypatch.setattr(check_information, "run_checks", run)
+    assert check_information.main([
+        "--kind", "articles", "--database", str(tmp_path / "registry.sqlite3"),
+        "--backup-dir", str(tmp_path / "backups"), "--reverify-all",
+    ]) == 0
+    assert received["reverify_all"] is True
+
+
+def test_current_verified_native_target_uses_its_core_foreign_key():
+    from climate_registry.information_checks import _currently_verified_targets, _json, _sha
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("""CREATE TABLE article_check_attempts (
+        occurrence_id TEXT, core_article_id TEXT, event_source_id TEXT, source_url TEXT,
+        source_revision_sha256 TEXT, checked_at TEXT, verification_status TEXT,
+        packet_json TEXT, packet_sha256 TEXT
+    )""")
+    target = {
+        "occurrence_id": "core:article-a", "source_url": "https://example.org/a",
+        "source_revision_sha256": "a" * 64, "entity_kind": "article", "entity_id": "article-a",
+        "source_binding": {"article_id": "article-a", "version_id": "version-a"},
+        "fields": {"title": "Approved article"},
+    }
+    packet = {"verification_status": "verified", "method": "legacy-checker",
+        "reviewed_scope": "article", "source_url": target["source_url"]}
+    connection.execute("INSERT INTO article_check_attempts VALUES(?,?,?,?,?,?,?,?,?)",
+        (None, "article-a", None, target["source_url"], target["source_revision_sha256"],
+            "2026-10-14T12:00:00Z", "verified", _json(packet), _sha(packet)))
+    assert _currently_verified_targets(connection, "article", [target]) == {
+        (target["occurrence_id"], target["source_url"])
+    }
+    changed_binding = {**target, "source_binding": {"article_id": "article-a", "version_id": "new"}}
+    assert _currently_verified_targets(connection, "article", [changed_binding]) == {
+        (target["occurrence_id"], target["source_url"])
+    }
+
+
+def test_manually_reviewed_legacy_attempt_skips_same_meeting_url_despite_new_revision():
+    from climate_registry.information_checks import _currently_verified_targets, _json, _sha
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("""CREATE TABLE meeting_check_attempts (
+        occurrence_id TEXT, event_source_id TEXT, source_url TEXT, source_revision_sha256 TEXT,
+        checked_at TEXT, verification_status TEXT, packet_json TEXT, packet_sha256 TEXT
+    )""")
+    target = {
+        "occurrence_id": "event-source-1", "source_url": "https://example.org/meeting",
+        "source_revision_sha256": "new-revision", "entity_kind": "meeting",
+        "entity_id": "event-1", "source_binding": {"event_source_id": "event-source-1"},
+        "fields": {"name": "Updated meeting"},
+    }
+    packet = {
+        "verification_status": "verified", "method": "manual-review",
+        "reviewed_scope": "meeting", "confirmed_field_evidence": {"name": "confirmed"},
+        "date_update_evidence": {}, "recorded_at": "2025-01-01T00:00:00Z",
+        "evidence_reference": "legacy-review-1",
+    }
+    connection.execute("INSERT INTO meeting_check_attempts VALUES(?,?,?,?,?,?,?,?)",
+        ("event-source-1", "event-source-1", target["source_url"], "old-revision",
+            "2025-01-01T00:00:00Z", "verified", _json(packet), _sha(packet)))
+    assert _currently_verified_targets(connection, "meeting", [target]) == {
+        (target["occurrence_id"], target["source_url"])
+    }
+
+
 def test_accessible_homepage_and_conflicting_date_never_promote(tmp_path):
     database = _database(tmp_path)
     target = check_targets(database, "meetings", {"meeting-1"})[0]

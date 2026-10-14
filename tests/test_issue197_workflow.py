@@ -563,7 +563,7 @@ def test_daily_checks_dedupe_each_kind_without_cross_approving_reports(tmp_path,
     monkeypatch.setattr(check_information, "datetime", SimpleNamespace(now=lambda _tz: at))
     calls = []
     def run(database, **kwargs):
-        calls.append(kwargs["kind"])
+        calls.append((kwargs["kind"], kwargs["reverify_all"]))
         return {"run_id": kwargs["kind"] + "-run", "status": "complete", "item_count": 1, "completed_count": 1}
     monkeypatch.setattr(check_information, "run_checks", run)
     for kind in ("articles", "meetings"):
@@ -575,7 +575,7 @@ def test_daily_checks_dedupe_each_kind_without_cross_approving_reports(tmp_path,
         receipt = json.loads(result.read_text())
         assert receipt["occurrence"] == "2026-10-06T09:00:00Z"
         assert "approval" not in receipt
-    assert calls == ["articles", "meetings"]
+    assert calls == [("articles", False), ("meetings", False)]
 
 
 def test_weekly_search_does_not_run_rotation_reader(monkeypatch):

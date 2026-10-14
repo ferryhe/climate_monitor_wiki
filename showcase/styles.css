@@ -808,11 +808,6 @@ a {
   flex-wrap: wrap;
 }
 
-.composer-shell__hint {
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
 .composer-card {
   display: flex;
   align-items: flex-end;
