@@ -398,6 +398,7 @@ class EvidenceTurn:
         urls = [url for url in urls if isinstance(url, str) and len(url) <= 2048][:8]
         source = {"index": index, "title": (item.get("name") or item.get("title") or "Read source")[:300],
             "path": item.get("path") or "", "heading": kind, "url": (item.get("url") or item.get("path") or "") if kind == "wiki" else urls[0] if urls else "",
+            "canonical_url": item.get("canonical_url"),
             "snippet": body[:600], "source_urls": urls, "type": item.get("type") or kind, "date": item.get("publication_date") or item.get("start_date") or item.get("date") or "-",
             "corpus": item.get("corpus") or ("wiki" if kind == "wiki" else "source"), "matched_section": item.get("heading"), "evidence_id": stable,
             "version": version, "retrieved_at": item.get("retrieved_at"), "truncated": len(body) < len(text) or item.get("truncated", False)

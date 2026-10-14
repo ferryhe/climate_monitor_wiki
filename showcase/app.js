@@ -278,6 +278,7 @@ function inlineFmt(raw) {
     return `\u0000${links.length - 1}\u0000`;
   };
   return text
+    .replace(/`([^`\n]+)`/g, (_, code) => keepLink(`<code>${code}</code>`))
     .replace(
       /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
       (_, page, alias) =>
@@ -289,8 +290,11 @@ function inlineFmt(raw) {
     )
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "<em>$1</em>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>')
+    .replace(/https?:\/\/[^\s<]+/g, (url) => keepLink(url))
+    .replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, value) => value
+      .split(/\s*,\s*/)
+      .map((index) => `<button class="citation" type="button" data-citation-index="${index}" aria-label="Show cited evidence [${index}]">[${index}]</button>`)
+      .join(""))
     .replace(/\u0000(\d+)\u0000/g, (_, index) => links[index]);
 }
 
@@ -1002,20 +1006,28 @@ function renderSourceCards(sources) {
         ${sources
           .map(
             (source) => `
-              <button class="source-card" type="button" data-path="${escapeHtml(source.path || "")}" data-url="${escapeHtml(safeSourceUrl(source.url))}">
+              <a class="source-card" data-index="${escapeHtml(source.index)}" href="${escapeHtml(sourceCitationHref(source))}" target="_blank" rel="noopener noreferrer">
                 <div class="source-card__title">
                   <span class="source-card__index">[${source.index}]</span>
-                  <span class="source-card__heading">${escapeHtml(source.title || source.path || "Source")}</span>
+                  <span class="source-card__heading">${escapeHtml(source.document_title || source.title || source.path || "Source")}</span>
                 </div>
-                <p class="source-card__meta">${escapeHtml((source.corpus || "wiki").toUpperCase())} · ${escapeHtml(source.heading || source.path || "")}</p>
+                <p class="source-card__meta">${escapeHtml((source.corpus || "wiki").toUpperCase())} · ${escapeHtml(source.matched_section || source.heading || source.path || "")}</p>
                 <p class="source-card__snippet">${escapeHtml(source.snippet || "")}</p>
-              </button>
+              </a>
             `,
           )
           .join("")}
       </div>
     </details>
   `;
+}
+
+function sourceCitationHref(source) {
+  const canonical = safeSourceUrl(source.canonical_url);
+  if (canonical) return canonical;
+  const path = source.path || "";
+  if (/^(?:wiki|sources)\/[\w./-]+$/.test(path)) return `/${path}`;
+  return safeSourceUrl(source.url);
 }
 
 function renderEmptyState() {
@@ -3222,6 +3234,20 @@ function attachEvents() {
       return;
     }
 
+    const citation = target.closest("[data-citation-index]");
+    if (citation) {
+      const row = citation.closest(".message-row");
+      const sources = row?.querySelector(".message-sources");
+      const source = [...(sources?.querySelectorAll(".source-card") || [])]
+        .find((card) => card.dataset.index === citation.dataset.citationIndex);
+      if (sources && source) {
+        sources.open = true;
+        source.focus({ preventScroll: true });
+        source.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+      return;
+    }
+
     const tab = target.closest(".tabbar__tab");
     if (tab) {
       setWorkspaceView(tab.dataset.view);
@@ -3255,19 +3281,6 @@ function attachEvents() {
       setRegistryMode("articles");
       const articleSource = articleCard.dataset.articleSource || "registry";
       void loadRegistryArticle(articleCard.dataset.articleId, articleSource);
-      return;
-    }
-
-    const sourceCard = target.closest(".source-card");
-    if (sourceCard) {
-      if (sourceCard.dataset.path?.startsWith("wiki/")) {
-        setActiveContext(sourceCard.dataset.path, { switchView: "obsidianView" });
-      } else if (sourceCard.dataset.path) {
-        window.open(`/${sourceCard.dataset.path}`, "_blank", "noopener");
-      } else {
-        const url = safeSourceUrl(sourceCard.dataset.url);
-        if (url) window.open(url, "_blank", "noopener");
-      }
       return;
     }
 

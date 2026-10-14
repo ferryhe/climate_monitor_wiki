@@ -830,6 +830,8 @@ class WikiChunk:
     markdown: str
     links: list[str]
     corpus: CorpusType
+    document_title: str | None = None
+    canonical_url: str | None = None
     tokens: list[str] = field(default_factory=list)
     urls: list[str] = field(default_factory=list)
 
@@ -846,9 +848,11 @@ class SearchHit:
             "index": index,
             "evidence_id": self.chunk.id,
             "title": self.chunk.title,
+            "document_title": self.chunk.document_title or self.chunk.title,
             "path": self.chunk.path,
             "heading": self.chunk.heading,
             "url": url,
+            "canonical_url": self.chunk.canonical_url,
             "score": round(self.score, 3),
             "snippet": _evidence_excerpt(
                 self.chunk.text, 420, citation_text=self.chunk.markdown
@@ -1118,10 +1122,13 @@ class WikiKnowledgeBase:
         text = _strip_markdown(markdown)
         if not text:
             return None
+        canonical = (re.search(r"(?m)^Canonical article:\s*\[[^\]]*\]\((https?://[^)\s]+)\)", doc.markdown)
+            if Path(doc.path).name.startswith(("article-", "pdf-article-")) else None)
 
         return WikiChunk(
             id=f"{doc.file}:{doc.corpus}:{index}",
             title=doc.title,
+            document_title=_document_catalog_presentation(doc)["display_title"] or doc.title,
             path=doc.path,
             heading=heading,
             type=doc.type,
@@ -1130,6 +1137,7 @@ class WikiKnowledgeBase:
             markdown=markdown,
             links=doc.links,
             corpus=doc.corpus,
+            canonical_url=canonical[1] if canonical else None,
             tokens=_tokens(f"{doc.title} {heading} {text}"),
             urls=URL_RE.findall(markdown),
         )

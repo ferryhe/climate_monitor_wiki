@@ -706,9 +706,15 @@ a {
 .citation {
   display: inline-block;
   margin: 0 1px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--accent-2);
   font-family: "IBM Plex Mono", monospace;
   font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
 
 .obs-wikilink {
@@ -746,6 +752,7 @@ a {
   border-radius: 18px;
   padding: 12px 14px;
   text-align: left;
+  text-decoration: none;
 }
 
 .source-card__title {
@@ -1120,6 +1127,12 @@ select.search-input option {
 .source-card:focus-visible {
   outline: 2px solid rgba(126, 182, 150, 0.4);
   outline-offset: 3px;
+}
+
+.citation:focus-visible {
+  outline: 2px solid rgba(126, 182, 150, 0.7);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .registry-shell {
