@@ -1051,7 +1051,8 @@ class RegistryReader:
                     if value.get("source_document_sha256") == document_sha256
                     and (allowed_articles is None or value.get("occurrence_id") in allowed_articles)]
                 if occurrences:
-                    articles_by_id[article_id] = {**article, "occurrences": occurrences}
+                    articles_by_id[article_id] = {**article, "occurrences": deduplicate_pdf_occurrences(
+                        occurrences, preserve_first_identity=True)}
         article_order = [row[0] for row in connection.execute(
             "SELECT article_id FROM pdf_intake_articles a WHERE EXISTS "
             "(SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id "

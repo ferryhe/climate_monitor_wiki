@@ -91,6 +91,60 @@ def test_imported_pdf_history_retains_structure_original_download_and_one_copy(t
         {"hostname": "example.org", "label": "example.org"}]
 
 
+def test_published_pdf_report_deduplicates_exact_passages_only():
+    document_sha = "a" * 64
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript("""
+        CREATE TABLE pdf_intake_article_occurrences (
+            occurrence_id TEXT, article_id TEXT, source_document_sha256 TEXT
+        );
+        CREATE TABLE pdf_intake_calendar_items (
+            occurrence_id TEXT, event_id TEXT, source_document_sha256 TEXT
+        );
+        CREATE TABLE pdf_intake_articles (article_id TEXT);
+    """)
+    rows = [
+        {"occurrence_id": "first-copy", "article_id": "article-a", "source_document_sha256": document_sha,
+         "report_date": "2026-09-28", "page": 2, "raw_url": "https://example.org/report?a=1#top",
+         "occurrence_json": json.dumps({"summary": "Same passage"})},
+        {"occurrence_id": "second-copy", "article_id": "article-a", "source_document_sha256": document_sha,
+         "report_date": "2026-09-28", "page": 2, "raw_url": "https://example.org/report?a=1#copy",
+         "occurrence_json": json.dumps({"summary": "Same passage"})},
+        {"occurrence_id": "distinct-page", "article_id": "article-a", "source_document_sha256": document_sha,
+         "report_date": "2026-09-28", "page": 3, "raw_url": "https://example.org/report?a=1",
+         "occurrence_json": json.dumps({"summary": "Same passage"})},
+    ]
+    connection.executemany(
+        "INSERT INTO pdf_intake_article_occurrences VALUES (:occurrence_id,:article_id,:source_document_sha256)", rows
+    )
+    connection.execute("INSERT INTO pdf_intake_articles VALUES ('article-a')")
+    snapshot = {
+        "entity_kind": "pdf_article", "entity_id": "article-a", "_approved_candidate_sha256": "b" * 64,
+        "dependencies": {"pdf_intake_documents": [{
+            "document_sha256": document_sha, "filename": "report.pdf", "document_json": json.dumps({"title": "Report"}),
+        }]},
+        "tables": {
+            "pdf_intake_articles": [{"article_id": "article-a", "canonical_url": "https://example.org/report"}],
+            "pdf_intake_article_occurrences": rows,
+        },
+    }
+    reader = object.__new__(RegistryReader)
+    reader.public = True
+    reader._snapshot_direct = True
+    reader._pdf_document_cache = {}
+    reader._pdf_source_cache = {}
+    reader._pdf_check_packet_cache = {}
+    reader._pdf_document_candidates = lambda _connection, _sha: {("pdf_article", "article-a"): snapshot}
+
+    report = reader._pdf_report_from_published_candidates(
+        connection, document_sha, allowed_occurrence_ids=None, allowed_calendar_ids=None, include_bytes=False
+    )
+    occurrences = report["articles"][0]["occurrences"]
+    assert [item["occurrence_id"] for item in occurrences] == ["distinct-page", "second-copy"]
+    assert report["article_count"] == 1
+
+
 def test_unified_articles_share_pagination_and_keep_linked_pdf_details(tmp_path, monkeypatch):
     client, database = _client(monkeypatch, tmp_path)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
