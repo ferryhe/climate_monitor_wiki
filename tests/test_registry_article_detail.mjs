@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['registryElement', 'safeSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -17,6 +17,7 @@ const document = { createElement(tag) {
 const articleDetail = document.createElement('section');
 const articleTitle = document.createElement('h2');
 const articleMeta = document.createElement('dl');
+const articleInfo = document.createElement('details');
 const enrichment = document.createElement('div');
 const appearancesSection = document.createElement('section');
 const appearancesEl = document.createElement('ul');
@@ -25,7 +26,7 @@ const originalLink = document.createElement('a');
 const context = vm.createContext({ document, URL, console,
   state: { registry: { articleDetailRequestSequence: 0, evidenceNavigationSequence: 0 } },
   els: { registryArticleDetail: articleDetail, registryArticleTitle: articleTitle,
-    registryArticleMeta: articleMeta, registryEnrichment: enrichment,
+    registryArticleMeta: articleMeta, registryArticleInfo: articleInfo, registryEnrichment: enrichment,
     registryAppearances: appearancesEl, registryAppearancesSection: appearancesSection,
     registryContentSection: contentSection, registryOriginalLink: originalLink,
     registryContentTitle: document.createElement('h3'), registryMarkdown: document.createElement('div') },
@@ -97,6 +98,12 @@ const reviewedPdf = {
   appearances: [],
 };
 context.registryFetch = async () => reviewedPdf;
+await context.loadRegistryArticle('reviewed-pdf', 'pdf');
+assert.equal(articleInfo.hidden, false);
+articleInfo.open = true;
+context.resetRegistryArticleDetail('Loading another article…');
+assert.equal(articleInfo.hidden, true);
+assert.equal(articleInfo.open, undefined, 'switching articles resets the information disclosure');
 await context.loadRegistryArticle('reviewed-pdf', 'pdf');
 assert.match(text(enrichment), /Categories Capital & Solvency Supervision & Disclosure/);
 assert.match(text(enrichment), /Keywords solvency climate risk/);

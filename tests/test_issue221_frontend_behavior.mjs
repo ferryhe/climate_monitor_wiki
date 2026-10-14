@@ -201,6 +201,7 @@ async function articleDetailUsesCurrentCategories() {
     registrySummaryPresentation: () => ({}), appendPdfAppearances() {},
   });
   vm.runInContext([
+    slice('function showMobileDetail(panel) {', '\nfunction closeMobileDetail('),
     slice('function appendPdfVerifiedInformation(container, occurrence) {', '\nfunction appendPdfAppearances('),
     slice('function appendRegistryTags(container, label, values) {', '\nasync function loadRegistryArticle('),
     slice('function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {', '\nasync function loadRegistryArticle('),
@@ -265,6 +266,7 @@ async function importedPdfDetailOmitsUnwantedMetadata() {
     appendRegistryPdfOccurrences() {}, appendInformationCheck() {}, safeSourceUrl: (value) => value,
   });
   vm.runInContext([
+    slice('function showMobileDetail(panel) {', '\nfunction closeMobileDetail('),
     slice('async function loadImportedRegistryReport(documentId, page = 1) {', '\nfunction appendRegistryPdfOccurrences('),
     'globalThis.loadImported = loadImportedRegistryReport;',
   ].join('\n'), context);

@@ -97,17 +97,17 @@ const ANSWER_MODE_COPY = {
   brief: {
     label: "Brief",
     title: "Fast snapshot mode with a short, focused answer.",
-    placeholder: "Ask for a quick snapshot, the latest highlights, or a short answer in a few bullets...",
+    placeholder: "Ask for a quick answer…",
   },
   detailed: {
     label: "Detailed",
     title: "Evidence-heavy mode for focused explainers and source-backed questions.",
-    placeholder: "Ask for a source-backed explainer, a focused comparison, or a deeper answer with evidence...",
+    placeholder: "Ask about climate risk and insurance…",
   },
   executive: {
     label: "Report",
     title: "Structured report mode for period summaries, trend shifts, and big-picture questions.",
-    placeholder: "Ask for a report across a time window, a theme-based synthesis, or a big-picture trend brief...",
+    placeholder: "Ask for a report or trend summary…",
   },
 };
 
@@ -165,12 +165,16 @@ const els = {
   input: document.getElementById("messageInput"),
   send: document.getElementById("sendButton"),
   chatAccessMessage: document.getElementById("chatAccessMessage"),
+  chatAccessDetails: document.getElementById("chatAccessDetails"),
+  chatAccessSummary: document.getElementById("chatAccessSummary"),
+  chatContextHeader: document.getElementById("chatContextHeader"),
+  navMenuButton: document.getElementById("navMenuButton"),
+  mobilePageLabel: document.getElementById("mobilePageLabel"),
   chatTokenForm: document.getElementById("chatTokenForm"),
   chatToken: document.getElementById("chatToken"),
   retryChatQuestion: document.getElementById("retryChatQuestion"),
   clearChat: document.getElementById("clearChatButton"),
   clearContext: document.getElementById("clearContextButton"),
-  jumpToReports: document.getElementById("jumpToReportsButton"),
   useInChat: document.getElementById("useInChatButton"),
   clearSelection: document.getElementById("clearSelectionButton"),
   status: document.getElementById("connectionStatus"),
@@ -240,6 +244,7 @@ const els = {
   articlesPage: document.getElementById("articlesPage"),
   registryArticleTitle: document.getElementById("registryArticleTitle"),
   registryOriginalLink: document.getElementById("registryOriginalLink"),
+  registryArticleInfo: document.getElementById("registryArticleInfo"),
   registryArticleMeta: document.getElementById("registryArticleMeta"),
   registryEnrichment: document.getElementById("registryEnrichment"),
   registryAppearances: document.getElementById("registryAppearances"),
@@ -930,11 +935,35 @@ function stopGraphAnimation() {
   }
 }
 
+function showMobileDetail(panel) {
+  if (!panel || !window.matchMedia("(max-width: 760px)").matches) return;
+  if (!panel.classList.contains("is-detail-open")) {
+    panel.dataset.listScroll = String(window.scrollY);
+    panel.listFocus = panel.querySelector(".registry-card:focus");
+  }
+  panel.classList.add("is-detail-open");
+  window.scrollTo({ top: 0 });
+  panel.querySelector(".mobile-back")?.focus({ preventScroll: true });
+}
+
+function closeMobileDetail(panel) {
+  panel.classList.remove("is-detail-open");
+  window.scrollTo({ top: Number(panel.dataset.listScroll) || 0 });
+  (panel.listFocus || panel.querySelector(".registry-list-panel .registry-card"))?.focus({ preventScroll: true });
+}
+
+function closeNavigation() {
+  if (els.navMenuButton?.getAttribute("aria-expanded") === "true") els.navMenuButton.focus();
+  els.navMenuButton?.setAttribute("aria-expanded", "false");
+}
+
 function setWorkspaceView(viewId) {
   if (!viewId) {
     return;
   }
   state.activeView = viewId;
+  closeNavigation();
+  if (els.mobilePageLabel) els.mobilePageLabel.textContent = {chatView: "Chat", registryView: "Reports", meetingsView: "Dates", obsidianView: "Graph"}[viewId] || "Menu";
   if (els.chatView) {
     els.chatView.hidden = viewId !== "chatView";
   }
@@ -1152,13 +1181,8 @@ function renderEmptyState() {
     <div class="suggestions">
       ${starters.map(
         (starter) =>
-          `<button class="suggestion-chip" type="button" data-prompt="${escapeHtml(starter.prompt || "")}" data-answer-mode="${escapeHtml(starter.answer_mode || "detailed")}" title="${escapeHtml(starter.description || "")}">
-            <span class="suggestion-chip__meta">
-              <span class="suggestion-chip__mode">${escapeHtml((ANSWER_MODE_COPY[starter.answer_mode] || ANSWER_MODE_COPY.detailed).label)}</span>
-              <span class="suggestion-chip__label">${escapeHtml(starter.label || "")}</span>
-            </span>
-            <span class="suggestion-chip__prompt">${escapeHtml(starter.prompt || "")}</span>
-            <span class="suggestion-chip__description">${escapeHtml(starter.description || "")}</span>
+          `<button class="suggestion-chip" type="button" data-prompt="${escapeHtml(starter.prompt || "")}" data-answer-mode="${escapeHtml(starter.answer_mode || "detailed")}" title="${escapeHtml(starter.prompt || "")}" aria-description="${escapeHtml(starter.prompt || "")}">
+            <span>${escapeHtml(starter.label || "")}</span><span aria-hidden="true">↗</span>
           </button>`,
       ).join("")}
     </div>
@@ -1168,7 +1192,7 @@ function renderEmptyState() {
     button.addEventListener("click", () => {
       setAnswerMode(button.getAttribute("data-answer-mode") || state.answerMode);
       els.input.value = button.getAttribute("data-prompt");
-      els.form.requestSubmit();
+      els.input.focus();
     });
   });
 
@@ -1266,12 +1290,17 @@ function renderChatAccess(status, notice = "") {
     els.chatToken.placeholder = allowance;
     els.chatToken.setAttribute("aria-description", allowance);
   }
+  if (els.chatAccessSummary) {
+    els.chatAccessSummary.textContent = status.access_enabled && !status.invalid_token
+      ? "Access enabled" : `Access token · ${status.remaining} free questions left`;
+    els.chatAccessSummary.title = `Free questions reset after ${reset}.`;
+    els.chatAccessSummary.setAttribute("aria-description", els.chatAccessSummary.title);
+  }
   if (els.chatAccessMessage) els.chatAccessMessage.textContent = notice || (status.invalid_token
-    ? "This token is invalid or has been revoked."
-    : status.access_enabled ? "Access enabled. You can continue asking questions."
-    : status.remaining === 0 ? `You've used today's 5 free questions for this network. Enter an access token to continue, or return after ${reset}.` : "");
+    ? "This token is invalid or has been revoked." : "");
   if (els.chatTokenForm) els.chatTokenForm.hidden = status.access_enabled && !status.invalid_token;
   if (els.retryChatQuestion) els.retryChatQuestion.hidden = !blockedChatMessage() || status.invalid_token || (!status.access_enabled && status.remaining === 0);
+  if (els.chatAccessDetails && (status.invalid_token || notice || (els.retryChatQuestion && !els.retryChatQuestion.hidden))) els.chatAccessDetails.open = true;
 }
 
 async function refreshChatAccess() {
@@ -1309,6 +1338,7 @@ async function continueWithToken(event) {
     if (blocked) await sendMessage(blocked.content, blocked.blockedRequest);
   } catch (error) {
     els.chatAccessMessage.textContent = error.message;
+    if (els.chatAccessDetails) els.chatAccessDetails.open = true;
   } finally {
     button.disabled = false;
   }
@@ -1346,6 +1376,7 @@ async function sendMessage(message, retryRequest = null) {
           else {
             els.chatAccessMessage.textContent = "This token is invalid or has been revoked.";
             els.chatTokenForm.hidden = false;
+            if (els.chatAccessDetails) els.chatAccessDetails.open = true;
           }
           return;
         }
@@ -1372,6 +1403,7 @@ async function sendMessage(message, retryRequest = null) {
 }
 
 function renderChatContext() {
+  if (els.chatContextHeader) els.chatContextHeader.hidden = !state.activeContextPath;
   const doc = state.rows.find((item) => item.path === state.activeContextPath);
 
   if (!doc) {
@@ -2461,6 +2493,7 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
   }
   if (state.activeView !== "registryView") setWorkspaceView("registryView");
   setRegistryMode("articles");
+  showMobileDetail(els.registryArticlesPanel);
   resetRegistryArticleDetail("Loading PDF observation…", url);
   try {
     const queries = [...new Set([search, url, (snippet || "").slice(0, 100)].map((value) => String(value || "").trim()).filter((value) => value.length >= 4))].slice(0, 3);
@@ -2500,13 +2533,15 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
     }
     if (navigationSequence === state.registry.evidenceNavigationSequence) {
       els.registryArticleTitle.textContent = "PDF observation unavailable";
-      els.registryArticleMeta.textContent = "This PDF observation is not available in the public Registry.";
+      els.registryEnrichment.textContent = "This PDF observation is not available in the public Registry.";
+      els.registryEnrichment.hidden = false;
       els.registryArticleDetail.setAttribute("aria-busy", "false");
     }
   } catch (error) {
     if (navigationSequence === state.registry.evidenceNavigationSequence) {
       els.registryArticleTitle.textContent = "Article unavailable";
-      els.registryArticleMeta.textContent = registryErrorMessage(error);
+      els.registryEnrichment.textContent = registryErrorMessage(error);
+      els.registryEnrichment.hidden = false;
       els.registryArticleDetail.setAttribute("aria-busy", "false");
     }
   }
@@ -2761,6 +2796,7 @@ function resetHistoricalReportDetail() {
 }
 
 async function loadRegistryReport(reportDate, fallbackSourceUrl = "") {
+  showMobileDetail(els.registryReportsPanel);
   const requestToken = ++state.registry.reportRequestSequence;
   const isCurrentRequest = () =>
     state.registry.selectedReportDate === reportDate &&
@@ -2886,10 +2922,13 @@ async function loadRegistryReport(reportDate, fallbackSourceUrl = "") {
           .filter(Boolean)
           .join(" · "),
       );
-      item.append(button, meta);
+      const information = registryElement("details", "registry-report-info");
+      information.append(registryElement("summary", "", "Report information"), meta);
+      item.append(button);
       if (summaryPresentation.text) {
         item.append(registryElement("p", "registry-card__summary", summaryPresentation.text));
       }
+      item.append(information);
       els.registryReportArticles.append(item);
     });
     if (!report.articles.length) {
@@ -3054,6 +3093,7 @@ function appendPdfAppearances(container, occurrences) {
 }
 
 async function loadImportedRegistryReport(documentId, page = 1) {
+  showMobileDetail(els.registryReportsPanel);
   const requestToken = ++state.registry.reportRequestSequence;
   state.registry.selectedReportDate = documentId;
   const isCurrent = () => requestToken === state.registry.reportRequestSequence;
@@ -3080,7 +3120,9 @@ async function loadImportedRegistryReport(documentId, page = 1) {
         metadata.append(registryMetric(label.replace(/^\//, ""), value));
       }
     });
-    content.append(metadata);
+    const information = registryElement("details", "registry-report-info");
+    information.append(registryElement("summary", "", "Report information"), metadata);
+    content.append(information);
     if ((report.pagination?.page ?? page) === 1 && report.executive_summary?.length) {
       const executive = registryElement("details", "registry-imported-summary meeting-entry");
       executive.append(registryElement("summary", "meeting-entry__summary", "Executive Summary"));
@@ -3185,7 +3227,6 @@ function appendRegistryPdfOccurrences(container, occurrences) {
     return;
   }
   const block = registryElement("div", "registry-pdf-history");
-  block.append(registryElement("h4", "", "PDF report history"));
   const list = registryElement("ul", "registry-pdf-history__list");
   occurrences.forEach((occurrence) => {
     const item = registryElement("li", "registry-pdf-history__item");
@@ -3196,10 +3237,13 @@ function appendRegistryPdfOccurrences(container, occurrences) {
         ? `Publication date ${occurrence.publication_date}`
         : "Date unavailable";
     const page = occurrence.page ? ` · page ${occurrence.page}` : "";
-    item.append(
+    const information = registryElement("details", "registry-report-info");
+    information.append(
+      registryElement("summary", "", "Report information"),
       registryElement("strong", "", `${sourceName} · ${date}${page}`),
-      registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."),
     );
+    appendInformationCheck(information, occurrence);
+    item.append(registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."));
     const sourceUrl = safeSourceUrl(occurrence.raw_url);
     if (sourceUrl) {
       const link = registryElement("a", "registry-source-link", "Open source link");
@@ -3208,7 +3252,7 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       link.rel = "noopener noreferrer";
       item.append(link);
     }
-    appendInformationCheck(item, occurrence);
+    item.append(information);
     appendVerifiedInformation(item, occurrence.verified_information);
     list.append(item);
   });
@@ -3232,6 +3276,10 @@ function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {
   els.registryArticleDetail.setAttribute("aria-busy", "true");
   els.registryArticleTitle.textContent = title;
   els.registryArticleMeta.replaceChildren();
+  if (els.registryArticleInfo) {
+    els.registryArticleInfo.hidden = true;
+    els.registryArticleInfo.removeAttribute("open");
+  }
   els.registryEnrichment.replaceChildren();
   els.registryEnrichment.hidden = true;
   els.registryAppearances.replaceChildren();
@@ -3249,6 +3297,7 @@ function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {
 }
 
 async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "") {
+  showMobileDetail(els.registryArticlesPanel);
   state.registry.evidenceNavigationSequence += 1;
   const requestSequence = ++state.registry.articleDetailRequestSequence;
   const isCurrentRequest = () => requestSequence === state.registry.articleDetailRequestSequence;
@@ -3310,6 +3359,7 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
       metrics.push(registryMetric("Date basis", "Unconfirmed"));
     }
     els.registryArticleMeta.append(...metrics);
+    if (els.registryArticleInfo) els.registryArticleInfo.hidden = false;
     const summaryPresentation = registrySummaryPresentation(article);
     if (pdfSource && article.type_safe_classification?.label) {
       appendRegistryTags(els.registryEnrichment, "TypeSafe classification", [article.type_safe_classification.label]);
@@ -3439,6 +3489,22 @@ function attachSourceCardClickHandler() {
 }
 
 function attachEvents() {
+  els.navMenuButton?.addEventListener("click", () => {
+    const expanded = els.navMenuButton.getAttribute("aria-expanded") === "true";
+    els.navMenuButton.setAttribute("aria-expanded", String(!expanded));
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".tabbar")) closeNavigation();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && els.navMenuButton?.getAttribute("aria-expanded") === "true") {
+      closeNavigation();
+      els.navMenuButton.focus();
+    }
+  });
+  document.querySelectorAll(".mobile-back").forEach((button) => {
+    button.addEventListener("click", () => closeMobileDetail(button.closest(".registry-grid")));
+  });
   attachSourceCardClickHandler();
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
@@ -3531,14 +3597,6 @@ function attachEvents() {
   if (els.wikiSearch) {
     els.wikiSearch.addEventListener("input", () => {
       applyTableFilter(els.wikiSearch.value);
-    });
-  }
-
-  if (els.jumpToReports) {
-    els.jumpToReports.addEventListener("click", () => {
-      beginEvidenceNavigation();
-      setRegistryMode("reports");
-      setWorkspaceView("registryView");
     });
   }
 

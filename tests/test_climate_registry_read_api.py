@@ -1900,8 +1900,8 @@ def test_frontend_exposes_safe_registry_workspace_without_operations():
     index = (root / "showcase" / "index.html").read_text(encoding="utf-8")
     script = (root / "showcase" / "app.js").read_text(encoding="utf-8")
     assert 'data-view="registryView"' in index
-    assert "Historical Reports" in index
-    assert "Article Database" in index
+    assert 'aria-selected="false">Reports</button>' in index
+    assert 'data-registry-mode="articles" aria-pressed="false">\n                Articles\n' in index
     assert "/api/registry/reports" in script
     assert "/api/registry/articles" in script
     assert "registryMarkdown.textContent" in script

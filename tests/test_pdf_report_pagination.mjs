@@ -40,7 +40,7 @@ const context = vm.createContext({
       pages: [{page: 1, text: 'Extracted text should never render'}] };
   },
 });
-vm.runInContext(source.slice(start, end) + '\nglobalThis.load = loadImportedRegistryReport;', context);
+vm.runInContext(source.match(/function showMobileDetail\([^]*?\n\}/)[0] + '\n' + source.slice(start, end) + '\nglobalThis.load = loadImportedRegistryReport;', context);
 await context.load('document');
 assert.equal(calls[0], '/api/registry/pdf-intake/reports/document?page=1&page_size=5');
 assert.ok(texts(els.registryImportedReport).includes('1. Article'));
@@ -54,8 +54,14 @@ assert.ok(texts(executive).includes('Complete summary'));
 const list = firstNodes.find((node) => node.className === 'registry-pdf-history__list');
 assert.equal(list.tag, 'ul');
 const occurrence = list.children[0];
+const information = occurrence.children.find((node) => node.tag === 'details');
+assert.equal(information.open, false);
+assert.equal(information.children[0].text, 'Report information');
+assert.ok(texts(information).includes('report.pdf · Report date 2026-09-28 · page 19'));
+assert.ok(texts(information).includes('PDF import · URL accessible'));
+assert.ok(occurrence.children.some((node) => node.text === 'Real summary'));
 assert.ok(occurrence.children.findIndex((node) => node.text === 'Open source link') <
-  occurrence.children.findIndex((node) => node.text === 'PDF import · URL accessible'));
+  occurrence.children.indexOf(information));
 assert.equal(firstNodes.find((node) => node.text === 'Previous').disabled, true);
 assert.equal(firstNodes.find((node) => node.text === 'Next').disabled, false);
 firstNodes.find((node) => node.text === 'Next').handlers.click();

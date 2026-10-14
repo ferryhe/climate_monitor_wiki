@@ -2,30 +2,37 @@
 
 ## Overview
 
-The web application has three complementary operator tabs:
+The web application has four complementary tabs:
 
-- `Historical Reports`: the default operational archive for weekly briefings,
+- `Reports`: the report archive for weekly briefings,
   PDFs, source articles, and article-level provenance.
 - `Chat`: a minimal single-column conversation surface with inline evidence drawers inside assistant messages.
-- `Obsidian`: a restored browsing workspace with `Graph View`, `Dataview`, and `Note Detail`.
+- `Graph`: a restored browsing workspace with `Graph View`, `Dataview`, and `Note Detail`.
 
-The three tabs share one piece of state: `activeContextPath`.
+The tabs share one piece of state: `activeContextPath`.
+`Dates` shows upcoming meetings and deadlines. On screens up to 760px wide, the header uses a page menu and Reports shows a list or a detail at a time. Returning to the list preserves its page, filters, and scroll position. Desktop keeps the horizontal tabs and two panes.
+
+Prompt starters keep the same API questions and answer modes. Compact buttons fill the composer for review before sending. The allowance and token entry share one expandable control; invalid-token and request errors stay visible.
+
 The chat tab also shares one response-control state: `answerMode`, with `brief`, `detailed`, and `executive`.
 
-## Historical Reports Tab
+## Reports Tab
 
-The application opens on `Historical Reports`. Operators use it to validate the
+The application opens on `Chat`. The `Reports` tab keeps the report archive. Operators use it to validate the
 published weekly output without reading server files:
 
 - choose a report date from the newest-first list;
 - read the narrative `Executive Summary` and `Monitoring Snapshot`;
 - download the report PDF;
 - inspect the articles that appeared in that report; and
-- switch to `Article Database` to search and filter the full article history by
+- switch to `Articles` to search and filter the full article history by
   publisher, pillar, or report date.
 
-Selecting an article opens its metadata, captured content, classification, and
-report appearances in the detail pane. If the optional Registry or delivery
+Selecting an article opens its captured content, classification, and
+report appearances in the detail pane, with metadata in a closed `Article information`
+disclosure. Imported reports keep each article's summary and source link visible,
+with its PDF reference and check status in `Report information`.
+If the optional Registry or delivery
 artifact mount is unavailable, this tab reports that state without affecting
 Chat or the Obsidian explorer.
 
@@ -57,7 +64,7 @@ This keeps the answering flow close to the `c-ross-2` style while using the dark
 `Detailed` mode is intended to surface richer evidence from `sources/` raw reports instead of relying only on curated wiki notes.
 `Report` mode is intended to produce sectioned report-style answers for period summaries such as `this month` or explicit date ranges, using theme clusters as the main organizing structure and day-by-day coverage as supporting context.
 
-## Obsidian Tab
+## Graph Tab
 
 The Obsidian workspace restores the older browsing affordances:
 
