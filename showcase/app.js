@@ -431,8 +431,14 @@ function sourceLinkForRow(row) {
 }
 
 function historicalReportDateFromHash() {
-  const match = /^#historical-report=(\d{4}-\d{2}-\d{2})$/.exec(window.location.hash);
+  const match = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&url=[^&]*)?$/.exec(window.location.hash);
   return match ? match[1] : "";
+}
+
+function safeReportSourceUrl(value) {
+  const absolute = safeSourceUrl(value);
+  if (absolute) return absolute;
+  return /^\/(?:sources|wiki)\/[\w./-]+$/.test(value || "") ? value : "";
 }
 
 function beginEvidenceNavigation() {
@@ -440,19 +446,20 @@ function beginEvidenceNavigation() {
   return ++state.registry.evidenceNavigationSequence;
 }
 
-function openHistoricalReport(reportDate, { updateHash = true } = {}) {
+function openHistoricalReport(reportDate, { updateHash = true, fallbackSourceUrl = "" } = {}) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate || "")) {
     return;
   }
   beginEvidenceNavigation();
-  const nextHash = `#historical-report=${encodeURIComponent(reportDate)}`;
+  const sourceUrl = safeReportSourceUrl(fallbackSourceUrl);
+  const nextHash = `#historical-report=${encodeURIComponent(reportDate)}${sourceUrl ? `&url=${encodeURIComponent(sourceUrl)}` : ""}`;
   if (updateHash && window.location.hash !== nextHash) {
     window.history.pushState(null, "", nextHash);
   }
   state.registry.selectedReportDate = reportDate;
   setRegistryMode("reports");
   setWorkspaceView("registryView");
-  void loadRegistryReport(reportDate);
+  void loadRegistryReport(reportDate, sourceUrl);
 }
 
 function normalizeSearchText(value) {
@@ -1070,7 +1077,7 @@ function sourceNavigationTarget(source) {
   const articleUrl = source.type === "web" ? safeSourceUrl(source.canonical_url || source.url) : "";
   if (articleUrl) return { kind: "article-url", url: articleUrl };
   const reportMatch = /^(?:wiki|sources)\/climate-monitor-(\d{4}-\d{2}-\d{2})\.md$/.exec(path);
-  if (reportMatch) return { kind: "report", date: reportMatch[1] };
+  if (reportMatch) return { kind: "report", date: reportMatch[1], url: safeReportSourceUrl(sourceCitationHref(source)) };
   return null;
 }
 
@@ -1081,7 +1088,7 @@ function sourceNavigationAttributes(source) {
   if (target.kind === "article") return `data-source-navigation="article" data-article-id="${escapeHtml(target.id)}" data-article-source="${escapeHtml(target.source)}"${target.url ? ` data-original-url="${escapeHtml(target.url)}"` : ""}`;
   if (target.kind === "article-url") return `data-source-navigation="article-url" data-source-url="${escapeHtml(target.url)}"`;
   if (target.kind === "pdf-observation") return `data-source-navigation="pdf-observation" data-occurrence-id="${escapeHtml(target.id)}" data-observation-search="${escapeHtml(target.search)}" data-observation-url="${escapeHtml(target.url)}" data-observation-snippet="${escapeHtml(target.snippet)}"`;
-  return `data-source-navigation="report" data-report-date="${target.date}"`;
+  return `data-source-navigation="report" data-report-date="${target.date}"${target.url ? ` data-report-source-url="${escapeHtml(target.url)}"` : ""}`;
 }
 
 function sourceNavigationHref(source) {
@@ -1096,12 +1103,17 @@ function sourceNavigationHref(source) {
     const params = new URLSearchParams({ search: target.search, url: target.url, snippet: (target.snippet || "").slice(0, 100) });
     return `#registry-pdf-occurrence=${encodeURIComponent(target.id)}&${params}`;
   }
-  return `#historical-report=${encodeURIComponent(target.date)}`;
+  return `#historical-report=${encodeURIComponent(target.date)}${target.url ? `&url=${encodeURIComponent(target.url)}` : ""}`;
 }
 
 function sourceNavigationFromHash() {
   try {
     const rawHash = window.location.hash;
+    const report = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&url=([^&]*))?$/.exec(rawHash);
+    if (report) {
+      const params = new URLSearchParams(rawHash.slice(rawHash.indexOf("&") + 1));
+      return { kind: "report", date: report[1], url: safeReportSourceUrl(params.get("url") || "") };
+    }
     const pdfObservation = /^#registry-pdf-occurrence=([^&]+)(?:&search=([^&]*))?(?:&url=([^&]*))?(?:&snippet=([^&]*))?$/.exec(rawHash);
     if (pdfObservation) {
       const params = new URLSearchParams(rawHash.slice(rawHash.indexOf("&") + 1));
@@ -2748,7 +2760,7 @@ function resetHistoricalReportDetail() {
   clearHistoricalReportContent();
 }
 
-async function loadRegistryReport(reportDate) {
+async function loadRegistryReport(reportDate, fallbackSourceUrl = "") {
   const requestToken = ++state.registry.reportRequestSequence;
   const isCurrentRequest = () =>
     state.registry.selectedReportDate === reportDate &&
@@ -2889,7 +2901,16 @@ async function loadRegistryReport(reportDate) {
     if (isCurrentRequest()) {
       clearHistoricalReportContent();
       els.registryReportTitle.textContent = "Report unavailable";
-      els.registryReportMeta.textContent = registryErrorMessage(error);
+      const fallbackSource = safeReportSourceUrl(fallbackSourceUrl);
+      if (fallbackSource) {
+        const link = registryElement("a", "registry-source-link", "Open original source");
+        link.href = fallbackSource;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        els.registryReportMeta.replaceChildren(registryElement("span", "", registryErrorMessage(error)), link);
+      } else {
+        els.registryReportMeta.textContent = registryErrorMessage(error);
+      }
     }
   } finally {
     if (isCurrentRequest()) {
@@ -3368,10 +3389,12 @@ function attachSourceCardClickHandler() {
         snippet: sourceCard.dataset.observationSnippet,
       });
     } else if (sourceCard.dataset.sourceNavigation === "report") {
-      openHistoricalReport(sourceCard.dataset.reportDate);
+      openHistoricalReport(sourceCard.dataset.reportDate, { fallbackSourceUrl: sourceCard.dataset.reportSourceUrl || "" });
     }
   });
-}function attachEvents() {
+}
+
+function attachEvents() {
   attachSourceCardClickHandler();
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
@@ -3620,7 +3643,8 @@ function attachSourceCardClickHandler() {
     }
     const reportDate = historicalReportDateFromHash();
     if (reportDate) {
-      openHistoricalReport(reportDate, { updateHash: false });
+      openHistoricalReport(reportDate, { updateHash: false,
+        fallbackSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.url : "" });
     } else {
       resetHistoricalReportDetail();
     }
@@ -3672,7 +3696,8 @@ async function main() {
     void openPdfObservationEvidence(sourceTarget.id, { search: sourceTarget.search, url: sourceTarget.url,
       snippet: sourceTarget.snippet, updateHash: false });
   } else if (reportDate) {
-    openHistoricalReport(reportDate, { updateHash: false });
+    openHistoricalReport(reportDate, { updateHash: false,
+      fallbackSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.url : "" });
   }
 
   try {

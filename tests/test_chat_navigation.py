@@ -50,6 +50,108 @@ __FUNCTIONS__
     assert result.returncode == 0, result.stderr
 
 
+def test_report_source_survives_hash_navigation_and_failed_registry_detail():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable")
+    source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
+    function_specs = (
+        ("escapeHtml", "function"), ("safeSourceUrl", "function"), ("safeReportSourceUrl", "function"),
+        ("sourceNavigationTarget", "function"), ("sourceNavigationAttributes", "function"),
+        ("sourceNavigationHref", "function"), ("sourceNavigationFromHash", "function"),
+        ("sourceCitationHref", "function"), ("renderSourceCards", "function"),
+        ("historicalReportDateFromHash", "function"), ("beginEvidenceNavigation", "function"),
+        ("openHistoricalReport", "function"), ("loadRegistryReport", "async function"),
+        ("attachSourceCardClickHandler", "function"),
+    )
+    functions = []
+    for name, prefix in function_specs:
+        start = source.index(f"{prefix} {name}(")
+        end = source.index("\n}", start) + 2
+        functions.append(source[start:end])
+    script = r'''
+const assert = require("node:assert/strict");
+const state = {registry: {evidenceNavigationSequence: 0, articleDetailRequestSequence: 0,
+  reportRequestSequence: 0, selectedReportDate: null}};
+let failRegistry = true;
+let clickHandler;
+const window = {location: {hash: "", origin: "https://local.example"},
+  history: {pushState(_state, _title, hash) { window.location.hash = hash; }}};
+class Element {}
+const document = {addEventListener(type, handler) { if (type === "click") clickHandler = handler; }};
+const meta = {children: [], _text: "", set textContent(value) { this._text = value; this.children = []; },
+  get textContent() { return this._text; }, replaceChildren(...children) { this.children = children; this._text = ""; }};
+const container = () => ({hidden: false, children: [], append(...children) { this.children.push(...children); },
+  replaceChildren(...children) { this.children = children; }});
+const els = {
+  registryReportDetail: {setAttribute() {}}, registryReportTitle: {textContent: ""}, registryReportMeta: meta,
+  registryImportedReport: container(), registryReportPdf: {hidden: true, removeAttribute() {}},
+  registryExecutiveSummary: {hidden: true}, registryBriefingExecutiveSummaryItems: container(),
+  registryExecutiveSummaryItems: container(), registryMonitoringSnapshot: {hidden: true},
+  registrySnapshotMetrics: container(), registrySnapshotNotes: container(),
+  registryReportArticlesTitle: {hidden: true}, registryReportArticles: container(),
+};
+const registryElement = (tag, className = "", text = "") => ({tag, className, textContent: text,
+  children: [], append(...children) { this.children.push(...children); }});
+const registryMetric = (label, value) => registryElement("dt", "", `${label}: ${value}`);
+const registrySummaryPresentation = () => ({text: "", sourceLabel: ""});
+const registryErrorMessage = error => error.message;
+const clearHistoricalReportContent = () => {
+  els.registryImportedReport.hidden = true; els.registryImportedReport.replaceChildren();
+  els.registryReportPdf.hidden = true; els.registryExecutiveSummary.hidden = true;
+  els.registryBriefingExecutiveSummaryItems.hidden = true; els.registryBriefingExecutiveSummaryItems.replaceChildren();
+  els.registryExecutiveSummaryItems.hidden = true; els.registryExecutiveSummaryItems.replaceChildren();
+  els.registryMonitoringSnapshot.hidden = true; els.registrySnapshotMetrics.replaceChildren();
+  els.registrySnapshotNotes.replaceChildren(); els.registryReportArticlesTitle.hidden = true;
+  els.registryReportArticles.replaceChildren();
+};
+const registryFetch = async () => {
+  if (failRegistry) throw new Error("Registry unavailable");
+  return {report_date: "2026-08-10", report_title: "Available report", monitoring: {}, executive_summary: [], articles: []};
+};
+const setRegistryMode = () => {};
+const setWorkspaceView = () => {};
+const URLSearchParams = global.URLSearchParams;
+__FUNCTIONS__
+let loaded;
+const originalLoader = loadRegistryReport;
+loadRegistryReport = (...args) => { loaded = originalLoader(...args); return loaded; };
+attachSourceCardClickHandler();
+(async () => {
+  const source = {index: 1, title: "Report evidence", path: "sources/climate-monitor-2026-08-10.md"};
+  const html = renderSourceCards([source]);
+  assert.match(html, /href="#historical-report=2026-08-10&amp;url=%2Fsources%2Fclimate-monitor-2026-08-10\.md"/);
+  const target = sourceNavigationTarget(source);
+  assert.deepEqual(target, {kind: "report", date: "2026-08-10", url: "/sources/climate-monitor-2026-08-10.md"});
+  const card = new Element();
+  card.dataset = {sourceNavigation: "report", reportDate: target.date, reportSourceUrl: target.url};
+  card.closest = selector => selector === "[data-source-navigation]" ? card : null;
+  const event = {target: card, button: 0, preventDefault() { this.prevented = true; }};
+  clickHandler(event);
+  assert.equal(event.prevented, true);
+  assert.equal(window.location.hash, "#historical-report=2026-08-10&url=%2Fsources%2Fclimate-monitor-2026-08-10.md");
+  assert.deepEqual(sourceNavigationFromHash(), target, "the reload hash retains the original sources URL");
+  assert.equal(historicalReportDateFromHash(), target.date);
+  await loaded;
+  assert.equal(els.registryReportTitle.textContent, "Report unavailable");
+  assert.equal(meta.children[0].textContent, "Registry unavailable");
+  assert.equal(meta.children[1].textContent, "Open original source");
+  assert.equal(meta.children[1].href, target.url, "a 503 leaves the real source page available in report details");
+  assert.equal(meta.children[1].target, "_blank");
+
+  failRegistry = false;
+  const reloadTarget = sourceNavigationFromHash();
+  openHistoricalReport(reloadTarget.date, {updateHash: false, fallbackSourceUrl: reloadTarget.url});
+  await loaded;
+  assert.equal(els.registryReportTitle.textContent, "Available report");
+  assert.equal(meta.children.length, 0, "a successful Registry report stays on the normal detail path");
+  assert.match(meta.textContent, /2026-08-10/);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''.replace("__FUNCTIONS__", "\n".join(functions))
+    result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_matched_web_evidence_passes_original_url_to_registry_detail_fallback():
     node = shutil.which("node")
     if not node:

@@ -14,7 +14,7 @@ def test_chat_citations_render_and_open_the_matching_reference():
     if not node:
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
-    names = ("escapeHtml", "inlineFmt", "safeSourceUrl", "sourceNavigationTarget", "sourceNavigationAttributes", "sourceNavigationHref", "sourceNavigationFromHash", "sourceCitationHref", "renderSourceCards")
+    names = ("escapeHtml", "inlineFmt", "safeSourceUrl", "safeReportSourceUrl", "sourceNavigationTarget", "sourceNavigationAttributes", "sourceNavigationHref", "sourceNavigationFromHash", "sourceCitationHref", "renderSourceCards")
     functions = []
     for name in names:
         start = source.index(f"function {name}(")
@@ -64,13 +64,13 @@ process.stdout.write(JSON.stringify({html, article, report, cards, articleTarget
     assert 'data-source-navigation="meeting"' in cards
     assert 'data-meeting-name="G20 Leaders\' Summit, Miami"' in cards
     assert 'data-article-id="article-00de8b1c45986f255c385eb6"' in cards
-    assert 'data-source-navigation="report" data-report-date="2026-08-10"' in cards
+    assert 'data-source-navigation="report" data-report-date="2026-08-10" data-report-source-url="/sources/climate-monitor-2026-08-10.md"' in cards
     assert 'data-article-id="article-pdf1" data-article-source="pdf"' in cards
     assert 'href="#meeting=name%3AG20%20Leaders\'%20Summit%2C%20Miami"' in cards
     assert 'data-original-url="https://publisher.example/article"' in cards
     assert 'href="#registry-article=registry:article-00de8b1c45986f255c385eb6&amp;url=https%3A%2F%2Fpublisher.example%2Farticle"' in cards
     assert rendered["articleTarget"] == {"kind": "article", "source": "registry", "id": "article-00de8b1c45986f255c385eb6", "url": "https://publisher.example/article"}
-    assert 'href="#historical-report=2026-08-10"' in cards
+    assert 'href="#historical-report=2026-08-10&amp;url=%2Fsources%2Fclimate-monitor-2026-08-10.md"' in cards
     assert 'data-source-navigation="article-url" data-source-url="https://publisher.example/article"' in cards
     assert 'href="#registry-article-url=https%3A%2F%2Fpublisher.example%2Farticle"' in cards
     assert 'data-source-navigation="pdf-observation" data-occurrence-id="pdf-article-occurrence-occ-123"' in cards
