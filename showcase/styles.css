@@ -1892,7 +1892,11 @@ tbody tr.is-selected {
     align-items: flex-start;
   }
 
-  .composer-shell__context { padding-inline: 4px; }
+  .composer-shell__context { min-width: 0; padding-inline: 4px; }
+  .composer-shell__context .context-badge {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 
   .graph-viewport.is-expanded { gap: 8px; padding: 10px; }
   .graph-viewport.is-expanded .graph-expanded-selection { font-size: 12px; }
