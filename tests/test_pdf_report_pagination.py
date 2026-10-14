@@ -35,9 +35,9 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
     calls = []
     original = RegistryReader._pdf_article_from_snapshot
 
-    def counted(self, snapshot):
+    def counted(self, snapshot, **kwargs):
         calls.append(snapshot["entity_id"])
-        return original(self, snapshot)
+        return original(self, snapshot, **kwargs)
 
     monkeypatch.setattr(RegistryReader, "_pdf_article_from_snapshot", counted)
     reader = _reader(database, tmp_path)
@@ -67,6 +67,16 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
     assert "pages" not in response.json()
     assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=0").status_code == 400
     assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=1&page_size=101").status_code == 400
+    api_server._clear_registry_list_cache()
+    assert client.get("/api/registry/reports?include_pdf=true").status_code == 200
+    import climate_registry.publication as publication
+    original_decode = publication._load_snapshot_json
+    def no_redecode(*args):
+        pytest.fail("unchanged PDF page decoded an already validated candidate")
+    monkeypatch.setattr(publication, "_load_snapshot_json", no_redecode)
+    assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=2").status_code == 200
+    monkeypatch.setattr(publication, "_load_snapshot_json", original_decode)
+    api_server._clear_registry_list_cache()
 
     # Legacy runtime reads use the catalog before constructing occurrence/check payloads.
     runtime = RegistryReader(database, repository_root=tmp_path / "application", public=False)
@@ -84,6 +94,29 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
             "VALUES('calendar-occ','calendar-alias',?,1,'https://example.org/meeting','2026-09-01',?,?,?)",
             (document, "d" * 64, "c" * 64, json.dumps({"summary_basis": "verbatim_pdf_calendar_row"})))
     assert runtime.pdf_report_module_catalog(document) == catalog
+    with sqlite3.connect(database) as connection:
+        _approve_all(connection)
+    published = reader.pdf_report(document, page=1, page_size=5)
+    assert len(published["articles"]) == 5
+    assert published["pagination"]["total"] == 7
+    assert published["article_count"] == 7
+    assert [row["article_id"] for row in reader.pdf_report(document, page=2)["articles"]] == ["pdf-5", "pdf-6"]
+    # A new visibility generation must not reuse the previously visible PDF candidate.
+    assert client.get("/api/registry/reports?include_pdf=true").status_code == 200
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='pdf_article' AND entity_id='pdf-0'")
+    assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=1").status_code == 404
+    assert api_server._REGISTRY_LIST_CACHE is None
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE registry_publication SET is_visible=1 WHERE entity_kind='pdf_article' AND entity_id='pdf-0'")
+    assert client.get("/api/registry/reports?include_pdf=true").status_code == 200
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER registry_candidates_immutable_update")
+        connection.execute("UPDATE registry_candidates SET snapshot_json=json_set(snapshot_json,'$.tampered',1) "
+            "WHERE candidate_sha256=(SELECT published_candidate_sha256 FROM registry_publication "
+            "WHERE entity_kind='pdf_article' AND entity_id='pdf-0')")
+    assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=1").status_code == 503
+    assert api_server._REGISTRY_LIST_CACHE is None
 
 
 def test_legacy_pagination_crosses_article_calendar_boundary():

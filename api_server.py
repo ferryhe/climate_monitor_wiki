@@ -10,7 +10,7 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -716,7 +716,7 @@ def _clear_registry_list_cache() -> None:
 
 
 @contextmanager
-def _registry_list_projection(selected=None):
+def _registry_list_projection(selected=None, *, prepare=True):
     """Share one validated generation for lists and category graph bytes."""
     global _REGISTRY_LIST_CACHE
     with _REGISTRY_LIST_LOCK:
@@ -756,6 +756,9 @@ def _registry_list_projection(selected=None):
             if _REGISTRY_LIST_CACHE is not None:
                 _REGISTRY_LIST_CACHE[1].close()
                 _REGISTRY_LIST_CACHE = None
+            if not prepare:
+                yield None
+                return
             for attempt in range(3):
                 before = _registry_file_stamp(selected.database)
                 with selected.public_snapshot(direct=True, manage_wal=True):
@@ -817,10 +820,17 @@ def _pdf_reports(selected=None) -> list[dict[str, Any]]:
 
 def _pdf_report(document_sha256: str, *, include_bytes: bool = False, page: int | None = None, page_size: int = 5) -> dict[str, Any]:
     public_reader = _registry_reader()
-    with public_reader.public_snapshot(direct=True):
-        with public_reader.connect() as connection:
-            if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                return public_reader.pdf_report(document_sha256, include_bytes=include_bytes, page=page, page_size=page_size)
+    with (_registry_list_projection(public_reader, prepare=False) if page is not None else nullcontext(None)) as projection:
+        with public_reader.public_snapshot(direct=True):
+            with public_reader.connect() as connection:
+                if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                    # Recheck inside this read transaction; another process may have published since list lookup.
+                    if projection is not None and _REGISTRY_LIST_CACHE is not None:
+                        key = _REGISTRY_LIST_CACHE[0]
+                        if (_registry_read_stamps_match(key[2], _registry_file_stamp(public_reader.database))
+                                and key[3] == _registry_public_bindings(connection)):
+                            public_reader._approved_candidate_cache.update(projection.candidate_cache)
+                    return public_reader.pdf_report(document_sha256, include_bytes=include_bytes, page=page, page_size=page_size)
 
     reader, article_ids, calendar_ids = _pdf_registry_view()
     module_keys = None

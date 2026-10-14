@@ -1006,10 +1006,12 @@ class RegistryReader:
             "pdf_intake_document_sources": source_rows,
         }).get(document_sha256, [])
         source_filenames = sorted({row.get("filename") for row in document_sources if row.get("filename")})
-        article_ids_for_document = {row.get("article_id") for snapshot in candidates.values()
+        article_ids_for_document = {row.get("article_id") for (kind, identity), snapshot in candidates.items()
             for row in snapshot.get("tables", {}).get("pdf_intake_article_occurrences", [])
-            if row.get("source_document_sha256") == document_sha256
-            and row.get("summary_basis") != "verbatim_pdf_calendar_row"
+            if kind in {"article", "pdf_article"}
+            and (kind != "pdf_article" or row.get("article_id") == identity)
+            and row.get("source_document_sha256") == document_sha256
+            and json.loads(row["occurrence_json"]).get("summary_basis") != "verbatim_pdf_calendar_row"
             and (allowed_occurrence_ids is None or row.get("occurrence_id") in allowed_occurrence_ids)}
         if allowed_calendar_ids is None:
             calendar_count = len(approved_calendar_ids)

@@ -104,6 +104,8 @@ class RegistryListProjection:
                     (include_pdf, index, json.dumps(item, ensure_ascii=False)) for index, item in enumerate(payload["items"])))
             db.commit()
             db.execute("PRAGMA query_only=ON")
+            # PDF pages reuse the same exact, validated generation as their report list.
+            self.candidate_cache = dict(getattr(reader, "_approved_candidate_cache", {}))
         except Exception:
             db.close()
             raise
