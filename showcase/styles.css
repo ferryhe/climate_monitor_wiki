@@ -1353,6 +1353,25 @@ select.search-input option {
   opacity: 0.38;
 }
 
+.registry-pagination--pdf {
+  flex-wrap: wrap;
+}
+
+.registry-page-jump {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.registry-page-jump input {
+  width: 5rem;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--ink);
+}
+
 .registry-notice {
   margin: 0;
   padding: 18px;

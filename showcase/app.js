@@ -3081,10 +3081,12 @@ async function loadImportedRegistryReport(documentId, page = 1) {
       }
     });
     content.append(metadata);
-    if (report.executive_summary?.length) {
-      const executive = registryElement("section", "registry-imported-summary");
-      executive.append(registryElement("h4", "", "Executive Summary"));
-      report.executive_summary.forEach((summary) => executive.append(registryElement("p", "", summary)));
+    if ((report.pagination?.page ?? page) === 1 && report.executive_summary?.length) {
+      const executive = registryElement("details", "registry-imported-summary meeting-entry");
+      executive.append(registryElement("summary", "meeting-entry__summary", "Executive Summary"));
+      const body = registryElement("div", "meeting-entry__body");
+      report.executive_summary.forEach((summary) => body.append(registryElement("p", "", summary)));
+      executive.append(body);
       content.append(executive);
     }
     const modules = registryElement("div", "registry-imported-modules");
@@ -3128,7 +3130,7 @@ async function loadImportedRegistryReport(documentId, page = 1) {
       modules.append(block);
     });
     if (report.pagination) {
-      const pagination = registryElement("nav", "registry-pagination");
+      const pagination = registryElement("nav", "registry-pagination registry-pagination--pdf");
       pagination.setAttribute("aria-label", "PDF report pages");
       const { page: current, pages, total } = report.pagination;
       [["Previous", current - 1, current <= 1], ["Next", current + 1, current >= pages]].forEach(([label, next, disabled]) => {
@@ -3139,6 +3141,25 @@ async function loadImportedRegistryReport(documentId, page = 1) {
         pagination.append(button);
       });
       pagination.append(registryElement("span", "", `Page ${current} of ${pages || 1} · ${total} modules`));
+      const jump = registryElement("form", "registry-page-jump");
+      const pageInput = registryElement("input");
+      pageInput.type = "number";
+      pageInput.min = "1";
+      pageInput.max = String(pages || 1);
+      pageInput.step = "1";
+      pageInput.required = true;
+      pageInput.value = String(current);
+      pageInput.setAttribute("aria-label", "Page number");
+      const go = registryElement("button", "ghost-button", "Go to page");
+      go.type = "submit";
+      jump.append(pageInput, go);
+      jump.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!pageInput.reportValidity()) return;
+        const next = Number(pageInput.value);
+        if (next !== current) void loadImportedRegistryReport(documentId, next);
+      });
+      pagination.append(jump);
       details.append(pagination);
     }
     details.hidden = false;
