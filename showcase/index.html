@@ -53,13 +53,9 @@
               </div>
 
               <div class="chat-hero__meta">
-                <div id="activeContextBadge" class="context-badge" hidden></div>
                 <div class="chat-hero__actions">
                   <button id="jumpToReportsButton" class="ghost-button" type="button">
                     Open Historical Reports
-                  </button>
-                  <button id="clearContextButton" class="ghost-button" type="button" hidden>
-                    Clear context
                   </button>
                 </div>
               </div>
@@ -103,6 +99,13 @@
                       </button>
                     </div>
                   </div>
+                </div>
+
+                <div class="composer-shell__context">
+                  <div id="activeContextBadge" class="context-badge" role="status" aria-live="polite" hidden></div>
+                  <button id="clearContextButton" class="ghost-button" type="button" hidden>
+                    Clear context
+                  </button>
                 </div>
 
                 <p id="chatAccessMessage" class="chat-access-note" role="status"></p>
@@ -351,16 +354,30 @@
                 </div>
               </div>
 
-              <div class="graph-wrap">
-                <svg
-                  id="graphSvg"
-                  viewBox="0 0 1200 700"
-                  preserveAspectRatio="xMidYMid meet"
-                ></svg>
+              <div class="graph-viewport" id="graphViewport">
+                <div class="graph-viewport__toolbar">
+                  <p id="graphExpandedSelection" class="graph-expanded-selection" role="status" aria-live="polite" hidden></p>
+                  <button
+                    id="graphExpandButton"
+                    class="ghost-button graph-expand-button"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="graphViewport"
+                  >
+                    Expand graph
+                  </button>
+                </div>
+                <div class="graph-wrap">
+                  <svg
+                    id="graphSvg"
+                    viewBox="0 0 1200 700"
+                    preserveAspectRatio="xMidYMid meet"
+                  ></svg>
+                </div>
               </div>
 
               <p id="graphHint" class="hint">
-                Edges connect a note to each detected concept it contains. Concept size shows the number of linked notes. Click a note to set it as the active chat context, or click a concept to filter the Page Index.
+                Uses 27 manually maintained climate rules matched against Wiki page content, headings/titles, and linked source reports. Shows up to 18 concepts found on 2+ pages, or up to 12 if none recur. Size counts linked notes. Click a note to set chat context or a concept to filter the Page Index.
               </p>
               <section id="articleCategoryEvidence" class="article-category-evidence" aria-live="polite" tabindex="-1" hidden></section>
             </section>

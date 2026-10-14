@@ -66,9 +66,60 @@ The Obsidian workspace restores the older browsing affordances:
 - `Note Detail`: metadata plus raw Markdown preview for the selected note
 
 The current page order is `Dataview + Note Detail` first, then `Graph View`.
-`Notes` mode keeps the Obsidian-style note-link graph.
+`Notes` mode shows the wiki's internal page relationships from both Obsidian
+wikilinks and local Markdown `.md` links. Links to external websites, source
+reports, and paths outside the wiki stay out of this graph. The Page Index
+search scopes Notes mode. Notes and Concept Map use static radial layouts, with
+page labels revealed on hover, keyboard focus, or selection; selecting a note
+also highlights its linked pages and edges. `Expand graph` opens the current map
+to the available screen area; Escape or `Close full-screen graph` returns to the
+page. In the expanded view, selecting a note shows its title and reminds the
+reader that closing the map returns to the full Note Detail pane.
 `Keywords` mode now renders a note-to-concept map built from a backend concept index derived from both curated wiki notes and `sources/` raw reports.
 The API now precomputes both graph payloads so the frontend can hydrate the Obsidian workspace directly instead of assembling the keyword graph on the fly.
+
+Wiki pages include approved article content and PDF/source-observation pages
+rendered from Registry evidence. The display title uses the Markdown page
+heading; lowercase headings are made readable and show the canonical host when
+one is present. A domain-only PDF observation heading is shown as a PDF source
+observation with its explicit website and page number. The original Markdown,
+page path, and retrieval content remain available in Note Detail. The Concept
+Map hides exact structural headings and bare domain labels from the graph view
+only; the full concept catalog, pages, and evidence remain available elsewhere.
+
+### How the Keywords graph gets its concepts
+
+The Keywords graph is an index over existing pages and source reports; it does
+not write Wiki content. Its `CONCEPT_RULES` are 27 manually maintained pattern
+rules in `agentic_wiki/wiki_agent.py`. The index also considers H2–H4 headings,
+bold source-entry labels, and titles of topical Wiki pages. For each Wiki page,
+it combines matches from that page with matches from its associated source
+report when one is linked, then counts each concept once per Wiki page. The
+graph shows up to 18 recurring concepts found on at least two pages; when there
+are no such recurring concepts, it falls back to up to 12 indexed concepts.
+Structural labels and bare domains are hidden from the graph presentation only.
+
+This is separate from Registry article `summary`, `categories`, and `keywords`,
+which describe an article's semantic enrichment, and from the `Category Map`,
+which uses the Registry's article-category taxonomy. These indexes have
+different inputs and purposes; a concept match does not create an article
+annotation or a Wiki page.
+
+### How Wiki pages are produced
+
+The normal refresh projects retained reports and eligible Registry article and
+PDF/source-observation records into derived Markdown pages, then refreshes the
+Wiki index. Article pages retain available verified article content, Registry
+summaries, and their provenance. PDF/source-observation pages retain the report-provided
+summary, citation, and observation details, and mark unconfirmed article
+details as unconfirmed. Existing topical Wiki pages are preserved by the sync;
+the concept index does not synthesize or replace them.
+
+Pages and the index carry their real internal links: Obsidian wikilinks and
+local Markdown `.md` links feed Notes mode. The graph reflects those links, and
+the Keywords mode reflects the concept index. Chat retrieval reads Wiki pages
+and retained `sources/` reports independently of graph edges, so graph indexing
+does not author or alter the facts used in answers.
 
 Selecting a note node or Dataview row sets the active note for chat retrieval.
 Clicking a keyword node applies that concept as a Dataview filter so you can jump straight to the relevant note set.
@@ -77,6 +128,9 @@ For daily report notes, the `Source` link in the detail panel points to the corr
 ## Active Context Rules
 
 - Selecting a note in the Obsidian tab activates it for chat.
+- `Use in chat` moves the selected note's display title into a persistent status
+  beside the composer. Chat still uses the same question input, and retrieval
+  prioritizes that note until the context is cleared or another note is chosen.
 - Clicking an inline citation opens its matching evidence entry in that assistant reply.
 - Clicking a meeting source card opens its matching Dates record in the app; article and report cards open their matching Historical Reports detail. The original source URL remains available from those details.
 - Source cards show a retrieval score only when one was supplied, using its raw score without a percentage or probability label. After an answer arrives, the chat positions the current question at the top with the answer below it.
@@ -89,6 +143,7 @@ The web workspace depends on `GET /api/config` returning:
 
 - `wiki.documents`
 - `documents[].title`
+- `documents[].display_title`
 - `documents[].path`
 - `documents[].type`
 - `documents[].date`

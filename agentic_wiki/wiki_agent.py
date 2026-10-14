@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 try:
     from openai import OpenAI
@@ -26,6 +27,7 @@ MAX_EVIDENCE_CHARS_BRIEF = 9000
 MAX_EVIDENCE_CHARS_DETAILED = 18000
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.+:/-]*|[\u4e00-\u9fff]+", re.IGNORECASE)
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 REGISTRY_RUNTIME_PATH_RE = re.compile(r"(?:article|registry-source-observation)-[A-Za-z0-9_-]+\.md")
 SOURCE_ITEM_RE = re.compile(r"^(?:→\s*)?\*\*(.+?)\*\*\s*$")
@@ -166,6 +168,34 @@ CONCEPT_TOKEN_CASE = {
     "tnfd": "TNFD",
     "us": "US",
     "wri": "WRI",
+}
+
+GRAPH_HIDDEN_CONCEPTS = {
+    "date observations",
+    "article semantic summary",
+    "report observation",
+    "verified article content",
+    "registry article-version summary",
+    "acquisition observation",
+    "pdf report observation",
+    "registry source observations",
+    "original links",
+    "categories",
+    "keywords",
+    "key findings",
+    "new research",
+    "anti-bot / acquisition notes",
+    "stealth escalation enabled",
+    "dedup notes",
+    "climate",
+    "news",
+}
+DOMAIN_LABEL_RE = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}", re.IGNORECASE)
+DISPLAY_TITLE_TOKEN_CASE = {
+    "cop31": "COP31",
+    "imf": "IMF",
+    "nyc": "NYC",
+    "unep": "UNEP",
 }
 
 BOILERPLATE_HEADINGS = {
@@ -757,9 +787,67 @@ def _catalog_date(value: str) -> date | None:
         return None
 
 
-def _document_catalog_presentation(doc: WikiDocument) -> dict[str, str | None]:
+def _humanize_lowercase_title(value: str) -> str:
+    display_title = value[:1].upper() + value[1:] if value and value == value.lower() else value
+    display_title = re.sub(r"\bUNEP\s+FI\b", "UNEP FI", display_title, flags=re.IGNORECASE)
+    display_title = re.sub(r"\b(?:COP31|IMF|NYC)\b", lambda match: DISPLAY_TITLE_TOKEN_CASE[match.group(0).casefold()], display_title, flags=re.IGNORECASE)
+    return re.sub(r"^Un\b", "UN", display_title)
+
+
+def _canonical_article_host(markdown: str) -> str | None:
+    match = re.search(r"(?im)^Canonical article:\s*\[?(https?://[^\s\])]+)", markdown)
+    if not match:
+        return None
+    host = urlsplit(match.group(1)).hostname
+    return host.removeprefix("www.") if host else None
+
+
+def _document_display_title(doc: WikiDocument) -> str:
     heading = re.search(r"(?m)^#\s+(.+?)\s*$", doc.markdown)
-    display_title = heading.group(1).strip() if heading else doc.title
+    raw_title = heading.group(1).strip() if heading else doc.title
+
+    if doc.path.startswith("wiki/registry-source-observation-") and DOMAIN_LABEL_RE.fullmatch(raw_title):
+        website = re.search(r"(?im)^Website:\s*(\S+)", doc.markdown)
+        host = website.group(1).rstrip(".,;") if website else raw_title
+        is_pdf = re.search(r"(?im)^##\s+PDF report observation:", doc.markdown)
+        pdf_page = re.search(r"(?im)^PDF:.*?\bpage\s+(\d+)\b", doc.markdown) if is_pdf else None
+        details = ["PDF source observation" if is_pdf else "Source observation", host]
+        if pdf_page:
+            details.append(f"p. {pdf_page.group(1)}")
+        return " · ".join(details)
+
+    display_title = _humanize_lowercase_title(raw_title)
+    host = _canonical_article_host(doc.markdown) if raw_title == raw_title.lower() else None
+    return f"{display_title} — {host}" if host else display_title
+
+
+def _is_displayable_graph_concept(label: str) -> bool:
+    normalized = label.strip().casefold()
+    return normalized not in GRAPH_HIDDEN_CONCEPTS and not DOMAIN_LABEL_RE.fullmatch(label.strip()) and not re.fullmatch(
+        r"Article Article [a-f0-9]{24}", label.strip(), re.IGNORECASE
+    )
+
+
+def _local_wiki_markdown_links(markdown: str) -> list[str]:
+    targets: list[str] = []
+    for href in MARKDOWN_LINK_RE.findall(markdown):
+        parsed = urlsplit(href)
+        target = parsed.path.replace("\\", "/").removeprefix("./")
+        if parsed.scheme or parsed.netloc or target.startswith("/"):
+            continue
+        parts = target.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            continue
+        if len(parts) > 2 or (len(parts) == 2 and parts[0] != "wiki"):
+            continue
+        if not parts[-1].lower().endswith(".md"):
+            continue
+        targets.append(Path(parts[-1]).stem)
+    return targets
+
+
+def _document_catalog_presentation(doc: WikiDocument) -> dict[str, str | None]:
+    display_title = _document_display_title(doc)
     candidates: list[tuple[date, int, str, str]] = []
     # shortcut: accept explicit year/month/day and ISO quarter precision only.
     date_pattern = r"(\d{4}-Q[1-4]|\d{4}(?:-\d{2}(?:-\d{2})?)?)"
@@ -1023,14 +1111,11 @@ class WikiKnowledgeBase:
         if is_registry_runtime_path(path.name):
             markdown = merge_registry_runtime_markdown(path.name, "", markdown)
         title = _title_from_file(path)
-        links = (
-            [
-                item.replace("wiki/", "").replace(".md", "").strip()
-                for item in LINK_RE.findall(markdown)
-            ]
-            if corpus == "wiki"
-            else []
-        )
+        links = []
+        if corpus == "wiki":
+            links = [item.replace("wiki/", "").replace(".md", "").strip() for item in LINK_RE.findall(markdown)]
+            links.extend(_local_wiki_markdown_links(markdown))
+            links = list(dict.fromkeys(links))
         text = _strip_markdown(markdown)
         return WikiDocument(
             title=title,
@@ -1245,7 +1330,7 @@ class WikiKnowledgeBase:
             {
                 "id": doc.path,
                 "refPath": doc.path,
-                "label": doc.title,
+                "label": _document_display_title(doc),
                 "kind": "note",
                 "type": doc.type,
             }
@@ -1261,12 +1346,13 @@ class WikiKnowledgeBase:
                     continue
                 links.append({"source": doc.path, "target": target.path})
 
-        return {"nodes": nodes, "links": links}
+        return {"nodes": nodes, "links": links, "static_layout": True}
 
     def _build_keyword_graph(self) -> dict[str, Any]:
         rows = sorted(self.documents, key=lambda item: item.title.casefold())
-        keyword_entries = [concept for concept in self.concepts if concept["document_count"] >= 2][:18]
-        fallback_entries = self.concepts[:12]
+        displayable_concepts = [concept for concept in self.concepts if _is_displayable_graph_concept(concept["label"])]
+        keyword_entries = [concept for concept in displayable_concepts if concept["document_count"] >= 2][:18]
+        fallback_entries = displayable_concepts[:12]
         selected_entries = keyword_entries or fallback_entries
         selected_labels = {concept["label"] for concept in selected_entries}
 
@@ -1283,7 +1369,7 @@ class WikiKnowledgeBase:
             {
                 "id": doc.path,
                 "refPath": doc.path,
-                "label": doc.title,
+                "label": _document_display_title(doc),
                 "kind": "note",
                 "type": doc.type,
             }

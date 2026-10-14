@@ -4,7 +4,7 @@ import re
 
 import anyio
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
-from agentic_wiki.wiki_agent import _expand_query, _requested_dates, _strip_markdown
+from agentic_wiki.wiki_agent import _expand_query, _is_displayable_graph_concept, _requested_dates, _strip_markdown
 from api_server import WikiStaticFiles, app, responder
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +19,36 @@ def test_wiki_index_loads_documents_and_chunks():
     assert kb.stats()["chunks"] >= kb.stats()["documents"]
     assert any(doc["path"] == "wiki/index.md" for doc in kb.document_catalog())
     assert any(concept["label"] == "Parametric Insurance" for concept in kb.concept_catalog())
+
+
+def test_explorer_graph_uses_display_titles_and_filters_only_graph_concepts():
+    kb = WikiKnowledgeBase()
+    catalog = {row["path"]: row for row in kb.document_catalog()}
+    notes = kb.graph_catalog()["notes"]
+    note_nodes = {node["id"]: node for node in notes["nodes"]}
+    examples = {
+        "wiki/article-article-80e0b5d29c869655b3c4fa50.md": "Diabetes",
+        "wiki/article-article-9d539ef65354a1bfdc7b135c.md": "Climate — wri.org",
+        "wiki/article-article-b59d17b73ebf5cba1f54e094.md": "News — wri.org",
+        "wiki/article-article-f725cf7cae3ac18f4bdfa9a2.md": "UNEP FI at COP31 — unepfi.org",
+        "wiki/registry-source-observation-pdf-article-occurrence-0c5feabb1862ce55d5d0a549.md": "PDF source observation · imf.org · p. 20",
+        "wiki/registry-source-observation-pdf-article-occurrence-3b48d57498ab73453817d499.md": "PDF source observation · g20.org · p. 19",
+    }
+
+    assert notes["static_layout"] is True
+    for path, display_title in examples.items():
+        assert catalog[path]["display_title"] == display_title
+        assert note_nodes[path]["label"] == display_title
+        assert note_nodes[path]["refPath"] == path
+    assert catalog["wiki/article-article-80e0b5d29c869655b3c4fa50.md"]["title"].startswith("article-article-")
+
+    concept_labels = {node["label"] for node in kb.graph_catalog()["keywords"]["nodes"] if node["kind"] == "keyword"}
+    assert "Date Observations" in {concept["label"] for concept in kb.concept_catalog()}
+    assert "Date Observations" not in concept_labels
+    assert "Climate Risk" in concept_labels
+    assert _is_displayable_graph_concept("Diabetes") is True
+    assert _is_displayable_graph_concept("Climate Risk") is True
+    assert _is_displayable_graph_concept("imf.org") is False
 
 
 def test_subject_rarity_and_chunk_length_outweigh_repeated_audience_words(tmp_path):

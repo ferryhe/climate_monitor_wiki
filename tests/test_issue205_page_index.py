@@ -238,3 +238,27 @@ def test_page_index_explains_internal_links_and_zero_link_pages():
     html = (Path(__file__).parents[1] / "showcase" / "index.html").read_text(encoding="utf-8")
     assert "internal wiki links" in html.lower()
     assert "0-link pages remain useful" in html.lower()
+
+
+def test_local_markdown_links_and_obsidian_aliases_build_wiki_graph_edges(tmp_path):
+    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
+    wiki.mkdir()
+    sources.mkdir()
+    (wiki / "index.md").write_text(
+        "# Wiki index\n\n"
+        "[[article-article-a|Readable alias]]\n"
+        "[Generated index link](article-article-a.md)\n"
+        "[Wiki path link](wiki/article-article-a.md)\n"
+        "[External article](https://example.org/article-article-a.md)\n"
+        "[Source report](sources/climate-monitor-2026-09-07.md)\n"
+        "[Outside page](../article-article-a.md)\n",
+        encoding="utf-8",
+    )
+    (wiki / "article-article-a.md").write_text("# Climate and Diabetes\n\nArticle text.\n", encoding="utf-8")
+    kb = WikiKnowledgeBase(wiki, sources)
+
+    index = next(row for row in kb.document_catalog() if row["path"] == "wiki/index.md")
+    assert index["links"] == ["article-article-a"]
+    assert kb.graph_catalog()["notes"]["links"] == [
+        {"source": "wiki/index.md", "target": "wiki/article-article-a.md"}
+    ]
