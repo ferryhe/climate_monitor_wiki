@@ -6,9 +6,11 @@ const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf
 const start = source.indexOf('async function loadImportedRegistryReport(');
 const end = source.indexOf('\nfunction appendRegistryTags(', start);
 const element = (tag = 'div', className = '', text = '') => ({
-  tag, className, text, children: [], dataset: {}, handlers: {},
+  tag, className, text, children: [], dataset: {}, handlers: {}, attributes: {}, open: false,
   append(...children) { this.children.push(...children); },
-  setAttribute() {}, addEventListener(event, handler) { this.handlers[event] = handler; },
+  setAttribute(name, value) { this.attributes[name] = value; },
+  addEventListener(event, handler) { this.handlers[event] = handler; },
+  reportValidity() { return this.valid !== false; },
 });
 const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
 const nodes = (node) => [node, ...node.children.flatMap(nodes)];
@@ -43,6 +45,12 @@ await context.load('document');
 assert.equal(calls[0], '/api/registry/pdf-intake/reports/document?page=1&page_size=5');
 assert.ok(texts(els.registryImportedReport).includes('1. Article'));
 const firstNodes = nodes(els.registryImportedReport);
+const executive = firstNodes.find((node) => node.className.includes('registry-imported-summary'));
+assert.equal(executive.tag, 'details');
+assert.equal(executive.open, false);
+assert.equal(executive.children[0].tag, 'summary');
+assert.equal(executive.children[0].text, 'Executive Summary');
+assert.ok(texts(executive).includes('Complete summary'));
 const list = firstNodes.find((node) => node.className === 'registry-pdf-history__list');
 assert.equal(list.tag, 'ul');
 const occurrence = list.children[0];
@@ -54,16 +62,39 @@ firstNodes.find((node) => node.text === 'Next').handlers.click();
 await new Promise((resolve) => setImmediate(resolve));
 const displayed = texts(els.registryImportedReport);
 assert.ok(displayed.includes('6. Article'));
-assert.ok(displayed.includes('Complete summary'));
+assert.ok(!displayed.includes('Complete summary'));
+assert.ok(!displayed.includes('Executive Summary'));
 assert.ok(displayed.includes('Date(s)') && displayed.includes('Host') && displayed.includes('Location'));
 assert.ok(!displayed.includes('Internal detail'));
 assert.ok(!displayed.some((text) => text.includes('Extracted text')));
 const secondNodes = nodes(els.registryImportedReport);
 assert.equal(secondNodes.find((node) => node.text === 'Next').disabled, true);
 assert.equal(secondNodes.find((node) => node.className === 'meeting-entry').tag, 'details');
+const jump = secondNodes.find((node) => node.tag === 'form');
+const input = jump.children[0];
+assert.equal(input.type, 'number');
+assert.equal(input.min, '1');
+assert.equal(input.max, '2');
+assert.equal(input.step, '1');
+assert.equal(input.required, true);
+assert.equal(input.value, '2');
+assert.equal(input.attributes['aria-label'], 'Page number');
+assert.equal(jump.children[1].type, 'submit');
+const submit = () => jump.handlers.submit({preventDefault() {}});
+let callCount = calls.length;
+submit();
+assert.equal(calls.length, callCount, 'Current-page submission must not reload');
+input.value = '0'; input.valid = false;
+submit();
+assert.equal(calls.length, callCount, 'Invalid page must not issue a request');
+input.value = '1'; input.valid = true;
+submit();
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(calls.at(-1), '/api/registry/pdf-intake/reports/document?page=1&page_size=5');
+assert.equal(nodes(els.registryImportedReport).find((node) => node.tag === 'details').open, false);
 const old = context.load('old');
 await context.load('current');
 resolveOld({report_title: 'Stale report'});
 await old;
 assert.equal(els.registryReportTitle.textContent, 'Report');
-console.log('PDF pagination, numbering, meeting fields, source order and stale requests passed');
+console.log('PDF summary disclosure, page jump, pagination, numbering, meetings and stale requests passed');
