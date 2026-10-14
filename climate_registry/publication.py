@@ -93,9 +93,14 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
                 return {}
             where += " AND p.entity_id IN (" + ",".join("?" for _ in values) + ")"
             params.extend(values)
+    snapshot_column = "c.snapshot_json"
+    cached_hashes = sorted({key[2] for key, value in (candidate_cache or {}).items() if value is not None})
+    if cached_hashes:
+        snapshot_column = "CASE WHEN c.candidate_sha256 IN (" + ",".join("?" for _ in cached_hashes) + ") THEN NULL ELSE c.snapshot_json END"
+        params = cached_hashes + params
     rows = connection.execute(f"""SELECT p.entity_kind,p.entity_id,p.is_visible,
             p.published_candidate_sha256,c.candidate_sha256,c.entity_kind AS candidate_kind,
-            c.entity_id AS candidate_id,c.snapshot_json,
+            c.entity_id AS candidate_id,{snapshot_column},
             c.candidate_sha256 IN (SELECT candidate_sha256 FROM registry_reviews
                 WHERE status IN ('pass','accepted_legacy')) AS approved
         FROM registry_publication p

@@ -965,7 +965,7 @@ class RegistryReader:
 
     def _pdf_report_from_published_candidates(self, connection, document_sha256: str, *,
         allowed_occurrence_ids: set[str] | None, allowed_calendar_ids: set[str] | None,
-        include_bytes: bool) -> dict[str, Any]:
+        include_bytes: bool, page: int | None = None, page_size: int = 5) -> dict[str, Any]:
         candidates = self._pdf_document_candidates(connection, document_sha256)
         document_row = next((row for snapshot in candidates.values()
             for row in snapshot.get("dependencies", {}).get("pdf_intake_documents", [])
@@ -1006,10 +1006,12 @@ class RegistryReader:
             "pdf_intake_document_sources": source_rows,
         }).get(document_sha256, [])
         source_filenames = sorted({row.get("filename") for row in document_sources if row.get("filename")})
-        article_ids_for_document = {row.get("article_id") for snapshot in candidates.values()
+        article_ids_for_document = {row.get("article_id") for (kind, identity), snapshot in candidates.items()
             for row in snapshot.get("tables", {}).get("pdf_intake_article_occurrences", [])
-            if row.get("source_document_sha256") == document_sha256
-            and row.get("summary_basis") != "verbatim_pdf_calendar_row"
+            if kind in {"article", "pdf_article"}
+            and (kind != "pdf_article" or row.get("article_id") == identity)
+            and row.get("source_document_sha256") == document_sha256
+            and json.loads(row["occurrence_json"]).get("summary_basis") != "verbatim_pdf_calendar_row"
             and (allowed_occurrence_ids is None or row.get("occurrence_id") in allowed_occurrence_ids)}
         if allowed_calendar_ids is None:
             calendar_count = len(approved_calendar_ids)
@@ -1031,6 +1033,30 @@ class RegistryReader:
                 raise RegistryContractError("original PDF hash mismatch")
             return dict(item, pdf_bytes=body)
 
+        article_order = [row[0] for row in connection.execute(
+            "SELECT article_id FROM pdf_intake_articles a WHERE EXISTS "
+            "(SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id "
+            "AND o.source_document_sha256=?)", (document_sha256,)).fetchall()
+            if row[0] in article_ids_for_document]
+        selected_articles = set(article_order)
+        selected_calendars = approved_calendar_ids if allowed_calendar_ids is None else approved_calendar_ids & allowed_calendar_ids
+        if page is not None:
+            validate_page(page, page_size)
+            # Select module identities before constructing article/check payloads.
+            calendar_rows = {row["occurrence_id"]: json.loads(row["item_json"])
+                for snapshot in candidates.values()
+                for row in snapshot.get("tables", {}).get("pdf_intake_calendar_items", [])
+                if row.get("occurrence_id") in selected_calendars}
+            calendar_order = sorted(calendar_rows, key=lambda identity: (
+                calendar_rows[identity].get("start_date") or "9999",
+                calendar_rows[identity].get("name") or "", identity))
+            offset = (page - 1) * page_size
+            modules = [("article", identity) for identity in article_order] + [("calendar", identity) for identity in calendar_order]
+            selected = modules[offset:offset + page_size]
+            selected_articles = {identity for kind, identity in selected if kind == "article"}
+            selected_calendars = {identity for kind, identity in selected if kind == "calendar"}
+            item["pagination"] = _pagination(page, page_size, len(modules))
+            item["article_offset"] = min(offset, len(article_order))
         source_observations = document_sources
         allowed_articles = allowed_occurrence_ids
         articles_by_id = {}
@@ -1039,7 +1065,7 @@ class RegistryReader:
                 continue
             for row in snapshot.get("tables", {}).get("pdf_intake_articles", []):
                 article_id = row.get("article_id")
-                if not article_id or (kind == "pdf_article" and article_id != identity):
+                if article_id not in selected_articles or (kind == "pdf_article" and article_id != identity):
                     continue
                 scoped = {**snapshot, "entity_id": article_id,
                     "_approved_candidate_sha256": self._published_candidate_sha(snapshot)}
@@ -1053,10 +1079,6 @@ class RegistryReader:
                 if occurrences:
                     articles_by_id[article_id] = {**article, "occurrences": deduplicate_pdf_occurrences(
                         occurrences, preserve_first_identity=True)}
-        article_order = [row[0] for row in connection.execute(
-            "SELECT article_id FROM pdf_intake_articles a WHERE EXISTS "
-            "(SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id "
-            "AND o.source_document_sha256=?)", (document_sha256,)).fetchall()]
         articles = [articles_by_id[identity] for identity in article_order if identity in articles_by_id]
 
         calendars_by_id = {}
@@ -1070,7 +1092,7 @@ class RegistryReader:
             attempts = tables.get("meeting_check_attempts", [])
             for row in tables.get("pdf_intake_calendar_items", []):
                 occurrence_id = row.get("occurrence_id")
-                if (row.get("source_document_sha256") != document_sha256 or not occurrence_id
+                if (row.get("source_document_sha256") != document_sha256 or occurrence_id not in selected_calendars
                         or (allowed_calendar_ids is not None and occurrence_id not in allowed_calendar_ids)):
                     continue
                 try:
@@ -1111,15 +1133,55 @@ class RegistryReader:
             "report_pdf": {"filename": document_row["filename"],
                 "download_url": f"/api/registry/pdf-intake/reports/{document_sha256}/pdf"}
                 if document_row.get("original_pdf") else None})
-        item["article_count"] = len(articles)
+        if page is None:
+            item["article_count"] = len(articles)
+        else:
+            item.pop("pages", None)
         for occurrence in [value for article in articles for value in article["occurrences"]] + calendars:
             occurrence["source_observations"] = [{key: value for key, value in observation.items() if key != "path"}
                 for observation in occurrence.get("source_observations", [])]
         return item
 
+    @staticmethod
+    def paginate_pdf_report(report: dict[str, Any], page: int, page_size: int) -> dict[str, Any]:
+        validate_page(page, page_size)
+        articles, calendars = report["articles"], report["calendar_items"]
+        offset = (page - 1) * page_size
+        end = offset + page_size
+        payload = {key: value for key, value in report.items() if key != "pages"}
+        payload.update(articles=articles[offset:end],
+            calendar_items=calendars[max(0, offset - len(articles)):max(0, end - len(articles))],
+            article_offset=min(offset, len(articles)),
+            pagination=_pagination(page, page_size, len(articles) + len(calendars)))
+        return payload
+
+    def pdf_report_module_catalog(self, document_sha256: str, *, allowed_occurrence_ids=None,
+        allowed_calendar_ids=None) -> list[tuple[str, str]]:
+        """Lightweight identities for legacy public/runtime report merging."""
+        if self.static_snapshot is not None and "pdf_report_details" in self.static_snapshot:
+            stored = self.static_snapshot["pdf_report_details"].get(document_sha256, {})
+            return [("article", article["canonical_url"]) for article in stored.get("articles", [])
+                if any(allowed_occurrence_ids is None or row["occurrence_id"] in allowed_occurrence_ids
+                    for row in article["occurrences"])] + [("calendar", row["occurrence_id"])
+                for row in stored.get("calendar_items", [])
+                if allowed_calendar_ids is None or row["occurrence_id"] in allowed_calendar_ids]
+        with self.connect() as connection:
+            articles = connection.execute("SELECT a.canonical_url, o.occurrence_id "
+                "FROM pdf_intake_articles a JOIN pdf_intake_article_occurrences o ON o.article_id=a.article_id "
+                "WHERE o.source_document_sha256=? AND COALESCE(json_extract(o.occurrence_json, '$.summary_basis'), '') "
+                "!= 'verbatim_pdf_calendar_row' ORDER BY a.rowid", (document_sha256,)).fetchall()
+            calendars = connection.execute("SELECT occurrence_id FROM pdf_intake_calendar_items "
+                "WHERE source_document_sha256=? ORDER BY start_date, name, occurrence_id", (document_sha256,)).fetchall()
+        return list(dict.fromkeys([("article", row[0]) for row in articles
+            if allowed_occurrence_ids is None or row[1] in allowed_occurrence_ids])) + [
+            ("calendar", row[0]) for row in calendars
+            if allowed_calendar_ids is None or row[0] in allowed_calendar_ids]
+
     @_direct_public_read
     def pdf_report(self, document_sha256: str, *, allowed_occurrence_ids: set[str] | None = None,
-        allowed_calendar_ids: set[str] | None = None, include_bytes: bool = False) -> dict[str, Any]:
+        allowed_calendar_ids: set[str] | None = None, include_bytes: bool = False,
+        page: int | None = None, page_size: int = 5,
+        module_keys: set[tuple[str, str]] | None = None) -> dict[str, Any]:
         if len(document_sha256) != 64 or any(char not in "0123456789abcdef" for char in document_sha256):
             raise RegistryQueryError("invalid PDF document id")
         if self.public and getattr(self, "_snapshot_direct", False):
@@ -1127,7 +1189,7 @@ class RegistryReader:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                     return self._pdf_report_from_published_candidates(connection, document_sha256,
                         allowed_occurrence_ids=allowed_occurrence_ids,
-                        allowed_calendar_ids=allowed_calendar_ids, include_bytes=include_bytes)
+                        allowed_calendar_ids=allowed_calendar_ids, include_bytes=include_bytes, page=page, page_size=page_size)
         item = next((item for item in self.pdf_reports_all(allowed_occurrence_ids=allowed_occurrence_ids,
             allowed_calendar_ids=allowed_calendar_ids) if item["document_sha256"] == document_sha256), None)
         if item is None:
@@ -1144,8 +1206,19 @@ class RegistryReader:
                 payload["articles"] = [article for article in payload["articles"] if article["occurrences"]]
             if allowed_calendar_ids is not None:
                 payload["calendar_items"] = [row for row in payload["calendar_items"] if row["occurrence_id"] in allowed_calendar_ids]
+            if module_keys is not None:
+                payload["articles"] = [row for row in payload["articles"] if ("article", row["canonical_url"]) in module_keys]
+                payload["calendar_items"] = [row for row in payload["calendar_items"] if ("calendar", row["occurrence_id"]) in module_keys]
             return {**payload,**item,"report_pdf":None}
         with self.connect() as connection:
+            if module_keys is not None:
+                occurrence_ids = {row[1] for row in connection.execute(
+                    "SELECT a.canonical_url,o.occurrence_id FROM pdf_intake_articles a "
+                    "JOIN pdf_intake_article_occurrences o ON o.article_id=a.article_id "
+                    "WHERE o.source_document_sha256=?", (document_sha256,)) if ("article", row[0]) in module_keys}
+                allowed_occurrence_ids = occurrence_ids if allowed_occurrence_ids is None else occurrence_ids & allowed_occurrence_ids
+                calendar_ids = {identity for kind, identity in module_keys if kind == "calendar"}
+                allowed_calendar_ids = calendar_ids if allowed_calendar_ids is None else calendar_ids & allowed_calendar_ids
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                 candidates = self._public_candidates("article", "pdf_article", "meeting", "pdf_meeting")
                 document_row = next((row for snapshot in candidates.values()
@@ -1229,6 +1302,8 @@ class RegistryReader:
             articles = []
             for article_row in connection.execute("""SELECT * FROM pdf_intake_articles a WHERE EXISTS (
                 SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id AND o.source_document_sha256=?)""", (document_sha256,)):
+                if module_keys is not None and ("article", article_row["canonical_url"]) not in module_keys:
+                    continue
                 payload = self._pdf_article_payload(connection, article_row, allowed_occurrence_ids=allowed_occurrence_ids)
                 occurrences = deduplicate_pdf_occurrences([value for value in payload["occurrences"]
                     if value.get("source_document_sha256") == document_sha256])

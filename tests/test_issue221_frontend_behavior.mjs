@@ -239,7 +239,7 @@ async function importedPdfDetailOmitsUnwantedMetadata() {
   const element = (tag = 'div', className = '', text = '') => ({
     tag, className, text, children: [], hidden: false, dataset: {},
     append(...children) { this.children.push(...children); },
-    setAttribute() {},
+    setAttribute() {}, addEventListener() {},
   });
   const els = Object.fromEntries([
     'registryReportDetail', 'registryReportTitle', 'registryReportMeta', 'registryImportedReport', 'registryReportPdf',
@@ -265,7 +265,7 @@ async function importedPdfDetailOmitsUnwantedMetadata() {
     appendRegistryPdfOccurrences() {}, appendInformationCheck() {}, safeSourceUrl: (value) => value,
   });
   vm.runInContext([
-    slice('async function loadImportedRegistryReport(documentId) {', '\nfunction appendRegistryPdfOccurrences('),
+    slice('async function loadImportedRegistryReport(documentId, page = 1) {', '\nfunction appendRegistryPdfOccurrences('),
     'globalThis.loadImported = loadImportedRegistryReport;',
   ].join('\n'), context);
   await context.loadImported('doc-1');
@@ -280,7 +280,7 @@ async function importedPdfDetailOmitsUnwantedMetadata() {
   assert.ok(displayed.includes('Pages: 12'));
   assert.ok(displayed.includes('Imported: imported'));
   assert.ok(displayed.includes('Title: Useful PDF title'));
-  assert.deepEqual(calls, ['/api/registry/pdf-intake/reports/doc-1']);
+  assert.deepEqual(calls, ['/api/registry/pdf-intake/reports/doc-1?page=1&page_size=5']);
   assert.equal(els.registryReportPdf.href, '/api/registry/pdf-intake/reports/doc-1/pdf');
 }
 
