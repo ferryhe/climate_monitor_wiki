@@ -12,6 +12,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+from climate_monitor.publisher_mapping import publisher_name
 from .acquisition_review import digest, now_stamp
 
 
@@ -1157,6 +1158,9 @@ def install_git_snapshot(database, wiki_dir):
 def _public_dto(payload):
     excluded = {"latest_fetch", "supplement_provenance", "record_reference"}
     value = {key: item for key, item in payload.items() if key not in excluded}
+    if "publisher" in value:
+        value["publisher"] = publisher_name(value["publisher"],
+            [value.get("canonical_url"), value.get("url")])
     if "acquisition_observations" in payload:
         value["acquisition_observations"] = [{key: item for key, item in row.items() if key in {
             "acquisition_item_id", "batch_id", "raw_url", "source_name", "title", "summary", "discovered_at",
@@ -1204,6 +1208,9 @@ def _occurrence_dto(item):
 
 def _pdf_dto(item):
     payload = {key: value for key, value in item.items() if key not in {"checks", "reader", "attempts"}}
+    if "publisher" in payload:
+        payload["publisher"] = publisher_name(payload["publisher"],
+            [payload.get("canonical_url"), payload.get("url")])
     if payload.get("manual_enrichment"):
         manual = payload["manual_enrichment"]
         payload["manual_enrichment"] = {key: value for key, value in manual.items() if key in {"generator", "categories", "keywords", "summary_basis", "source_row_sha256"}}

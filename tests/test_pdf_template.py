@@ -146,7 +146,7 @@ def test_chat_report_lists_frozen_projects_and_complete_calendar():
         pdf_url="/reports/snapshot.pdf")
     assert "# Climate Risk Intelligence Report" in text
     assert "**Calendar as at:** 2026-10-01 (UTC)" in text
-    assert "### Alpha Institution" in text and "FINAL BODY SENTINEL" in text
+    assert "### example.test" in text and "FINAL BODY SENTINEL" in text
     assert "## PDF Source Context - Publication Date Unconfirmed" in text
     assert "PDF-only fixture" in text and "not confirmed publications" in text
     assert "Meeting snapshot status: failed" in text
@@ -550,7 +550,7 @@ def test_shared_template_content_links_unicode_and_pagination(tmp_path, route, l
                 outlines.append(entry.title)
     walk(reader.outline)
     assert "Executive Summary" in outlines and "Key Dates" in outlines
-    assert "Alpha Institution" in outlines
+    assert "example.test" in outlines
     annotations = [ref.get_object() for page in reader.pages for ref in page.get("/Annots", [])]
     assert any(item.get("/Dest") for item in annotations)
     assert any(item.get("/A", {}).get("/URI", "").startswith("https://example.test/") for item in annotations)

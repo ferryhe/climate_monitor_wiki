@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from climate_delivery.errors import ClimateDeliveryError
 from climate_monitor.dedupe import canonical_url
+from climate_monitor.publisher_mapping import publisher_name
 
 from .annotations import ArticleAnnotation, load_article_annotations
 from .capture import article_body_markdown, article_preview
@@ -294,22 +295,7 @@ def _log_db_annotation_precedence(
 
 
 def _publisher_label(hostname: str, display_name: str) -> str:
-    host = hostname.casefold().removeprefix("www.")
-    display = " ".join(display_name.split()).strip()
-    if display and display.casefold().removeprefix("www.") != host:
-        return display[:80]
-    labels = host.split(".")
-    if len(labels) == 1:
-        return labels[0][:80]
-    if labels[-1] == "gov" and len(labels) >= 3:
-        agency = labels[-3].replace("-", " ")
-        jurisdiction = labels[-2].upper()
-        return f"{jurisdiction} {agency}"[:80]
-    if len(labels[-1]) == 2 and len(labels) >= 3 and labels[-2] in {
-        "ac", "co", "com", "edu", "gov", "net", "org",
-    }:
-        return labels[-3][:80]
-    return labels[-2][:80]
+    return publisher_name(display_name, [hostname])
 
 
 def _public_read(function):

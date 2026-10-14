@@ -193,7 +193,23 @@ or `null`.
 
 `GET /api/registry/publishers` returns at most 500 deterministic publisher
 choices. Each item contains the canonical `hostname` used for filtering and a
-short `label` for display.
+`label` for display. Publisher names in these choices, article lists and details,
+report articles, and newly rendered reports use
+`climate_monitor.publisher_mapping.publisher_name`. This is a presentation rule:
+stored hostnames, source IDs, approved snapshots, and historical report files
+remain unchanged.
+
+Known institutions reuse `monitoring/supranational_sources.yaml`; supplemental
+website names are verified against official sites. Distinct channels such as
+World Bank Blogs retain their own labels and hostname filters. Unknown websites
+retain their complete hostname rather than a potentially ambiguous domain fragment.
+
+Shared websites have a website-level default in the publisher dropdown. Article
+URLs select a more specific institution only for known paths: BIS/BCBS,
+IFRS Foundation/ISSB, UNEP FI/PSI/FIT, UNDP Sustainable Finance Hub/SIF, and OSFI/OCA.
+A legacy source label alone must not assign every article on a shared website
+to one subsidiary institution. Name verification and exceptions are recorded in
+`docs/publisher-names.json`.
 
 ## Biweekly material selection and immutable review
 

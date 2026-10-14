@@ -250,7 +250,7 @@ def test_dated_wiki_uses_the_same_publication_eligibility_as_bulk(tmp_path):
     assert "Real climate article" in direct and "Real climate article" in bulk
 
 
-def test_core_publishers_keep_distinct_historical_labels_without_pdf(tmp_path):
+def test_core_publishers_collapse_historical_labels_to_canonical_host_without_pdf(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as connection:
         candidate = stage_snapshot(connection, snapshot_entity(connection, "article", "a"))
@@ -261,9 +261,8 @@ def test_core_publishers_keep_distinct_historical_labels_without_pdf(tmp_path):
 
     result = _reader(database, tmp_path).publishers()
     assert result == {"items": [
-        {"hostname": "example.org", "label": "New publisher"},
-        {"hostname": "example.org", "label": "Publisher"},
-    ], "total": 2, "truncated": False}
+        {"hostname": "example.org", "label": "example.org"},
+    ], "total": 1, "truncated": False}
 
 
 def test_incomplete_source_report_bundle_keeps_report_summary_but_not_search_semantics(tmp_path, monkeypatch):
@@ -319,7 +318,7 @@ def test_pdf_approved_occurrences_keep_legacy_latest_order_in_http_search(tmp_pa
     assert detail["published_candidate_sha256"] == item["published_candidate_sha256"]
 
 
-def test_include_pdf_publishers_preserve_sorted_core_label_overwrite(tmp_path, monkeypatch):
+def test_include_pdf_publishers_use_canonical_host_label(tmp_path, monkeypatch):
     import api_server
     from fastapi.testclient import TestClient
 
@@ -335,7 +334,7 @@ def test_include_pdf_publishers_preserve_sorted_core_label_overwrite(tmp_path, m
     monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
     response = TestClient(api_server.app).get("/api/registry/publishers", params={"include_pdf": "true"})
     assert response.status_code == 200
-    assert response.json() == {"items": [{"hostname": "example.org", "label": "Zulu Current"}],
+    assert response.json() == {"items": [{"hostname": "example.org", "label": "example.org"}],
         "total": 1, "truncated": False}
 
 
@@ -820,7 +819,7 @@ def test_installed_static_payload_priority_is_shared_by_index_and_target(tmp_pat
     assert "article-a.md" in index
 
 
-def test_static_publishers_keep_historical_labels_without_pdf_and_merge_with_pdf(tmp_path, monkeypatch):
+def test_static_publishers_collapse_historical_labels_and_merge_pdf_hosts(tmp_path, monkeypatch):
     from climate_registry.publication import export_public_snapshot, install_git_snapshot
 
     source_root = tmp_path / "static-source"
@@ -850,12 +849,11 @@ def test_static_publishers_keep_historical_labels_without_pdf_and_merge_with_pdf
     monkeypatch.setattr(reader, "article", lambda *_args, **_kwargs: pytest.fail("publishers lookup called article detail"))
 
     assert reader.publishers() == {"items": [
-        {"hostname": "example.org", "label": "Alpha Historical"},
-        {"hostname": "example.org", "label": "Zulu Current"}], "total": 2, "truncated": False}
+        {"hostname": "example.org", "label": "example.org"}], "total": 1, "truncated": False}
     merged = reader.publishers(include_pdf=True)
     assert merged["items"] == [
-        {"hostname": "example.org", "label": "Zulu Current"},
-        {"hostname": "other.example", "label": "other"}]
+        {"hostname": "example.org", "label": "example.org"},
+        {"hostname": "other.example", "label": "other.example"}]
     assert merged["total"] == 2 and merged["truncated"] is False
 
 
