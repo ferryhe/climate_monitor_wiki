@@ -180,6 +180,7 @@ const els = {
   chatAccessDetails: document.getElementById("chatAccessDetails"),
   chatAccessSummary: document.getElementById("chatAccessSummary"),
   chatContextHeader: document.getElementById("chatContextHeader"),
+  jumpToReports: document.getElementById("jumpToReportsButton"),
   navMenuButton: document.getElementById("navMenuButton"),
   mobilePageLabel: document.getElementById("mobilePageLabel"),
   chatTokenForm: document.getElementById("chatTokenForm"),
@@ -3632,6 +3633,10 @@ function attachEvents() {
     button.addEventListener("click", () => closeMobileDetail(button.closest(".registry-grid")));
   });
   attachSourceCardClickHandler();
+  els.jumpToReports?.addEventListener("click", () => {
+    beginEvidenceNavigation();
+    setWorkspaceView("registryView");
+  });
   els.graphExpandButton?.addEventListener("click", toggleGraphExpanded);
   document.addEventListener("keydown", handleGraphKeydown);
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {

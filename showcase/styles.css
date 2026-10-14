@@ -1877,8 +1877,8 @@ tbody tr.is-selected {
   .status-pill { display: none; }
 
   .message-list {
-    height: calc(100vh - 302px);
-    min-height: 380px;
+    height: 100%;
+    min-height: 0;
     padding-inline: 6px;
   }
 

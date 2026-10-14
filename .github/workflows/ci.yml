@@ -193,6 +193,8 @@ jobs:
           node tests/test_chat_access_ui.mjs
           node tests/test_chat_report_history.mjs
           node tests/test_explorer_graph_view.mjs
+          node tests/test_meetings_tab.mjs
+          node tests/test_mobile_layout.mjs
 
       - name: Check pull request whitespace
         if: github.event_name == 'pull_request'

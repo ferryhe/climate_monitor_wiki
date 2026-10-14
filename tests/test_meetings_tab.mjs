@@ -40,9 +40,11 @@ Object.assign(els, { workspaceTabs: tabs, registryMeetingSearch: { value: '' }, 
   registryArticles: { replaceChildren() {} }, registrySearch: { value: '' }, registryPublisherFilter: { value: '' },
   registryPublisherCustom: { value: '' } });
 const calls = [];
+let evidenceNavigationCount = 0;
 const context = vm.createContext({ state, els, URLSearchParams,
   loadRegistry: () => calls.push('registry'), stopGraphAnimation() {}, renderCurrentGraph() {},
   handleGraphKeydown() {},
+  beginEvidenceNavigation: () => { evidenceNavigationCount += 1; },
   renderRegistryNotice() {}, updateRegistryPagination() {}, registryErrorMessage() {},
   registryFetch: async (url) => {
     calls.push(url);
@@ -120,6 +122,7 @@ const form = input();
 const verification = input('');
 const publisher = input('');
 const custom = input('old.example');
+const jumpToReports = input();
 Object.assign(els, {
   registryMeetingSearchForm: form,
   registryMeetingVerification: verification,
@@ -129,9 +132,9 @@ Object.assign(els, {
   registrySearch: input(),
   registryArticles: { replaceChildren() {} },
   meetingsPrevious: null, meetingsNext: null, form: null,
-  registryModeButtons: [], answerModeButtons: [], graphModeButtons: [],
+  registryModeButtons: [], answerModeButtons: [], graphModeButtons: [], jumpToReports,
   reportsPrevious: null, reportsNext: null, articlesPrevious: null, articlesNext: null,
-  input: null, wikiSearch: null, jumpToReports: null, useInChat: null, clearChat: null,
+  input: null, wikiSearch: null, useInChat: null, clearChat: null,
   clearContext: null, clearSelection: null,
 });
 const paginationUpdates = [];
@@ -149,6 +152,11 @@ for (const name of ['attachEvents']) {
   vm.runInContext(fn, context);
 }
 context.attachEvents();
+context.setWorkspaceView('chatView');
+jumpToReports.listeners.click();
+assert.equal(evidenceNavigationCount, 1, 'opening Historical Reports starts evidence navigation');
+assert.equal(state.activeView, 'registryView', 'the reports action opens the Reports workspace');
+assert.equal(els.registryView.hidden, false);
 state.registry.meetingPage = 4;
 verification.value = 'verified';
 verification.listeners.change();
