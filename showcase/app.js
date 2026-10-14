@@ -1298,9 +1298,9 @@ function renderChatAccess(status, notice = "") {
   }
   if (els.chatAccessMessage) els.chatAccessMessage.textContent = notice || (status.invalid_token
     ? "This token is invalid or has been revoked." : "");
-  if (status.invalid_token && els.chatAccessDetails) els.chatAccessDetails.open = true;
   if (els.chatTokenForm) els.chatTokenForm.hidden = status.access_enabled && !status.invalid_token;
   if (els.retryChatQuestion) els.retryChatQuestion.hidden = !blockedChatMessage() || status.invalid_token || (!status.access_enabled && status.remaining === 0);
+  if (els.chatAccessDetails && (status.invalid_token || notice || (els.retryChatQuestion && !els.retryChatQuestion.hidden))) els.chatAccessDetails.open = true;
 }
 
 async function refreshChatAccess() {
@@ -2493,6 +2493,7 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
   }
   if (state.activeView !== "registryView") setWorkspaceView("registryView");
   setRegistryMode("articles");
+  showMobileDetail(els.registryArticlesPanel);
   resetRegistryArticleDetail("Loading PDF observation…", url);
   try {
     const queries = [...new Set([search, url, (snippet || "").slice(0, 100)].map((value) => String(value || "").trim()).filter((value) => value.length >= 4))].slice(0, 3);

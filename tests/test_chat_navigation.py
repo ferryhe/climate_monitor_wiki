@@ -344,7 +344,7 @@ def test_pdf_observation_preserves_full_id_and_detail_recovers_after_missing_mat
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("safeSourceUrl", "beginEvidenceNavigation", "resetRegistryArticleDetail", "sourceNavigationFromHash", "openPdfObservationEvidence"):
+    for name in ("showMobileDetail", "safeSourceUrl", "beginEvidenceNavigation", "resetRegistryArticleDetail", "sourceNavigationFromHash", "openPdfObservationEvidence"):
         start = source.index(f"async function {name}(") if name == "openPdfObservationEvidence" else source.index(f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -354,7 +354,12 @@ const state = {activeView: "chatView", registry: {evidenceNavigationSequence: 0,
 let matchOccurrence = false;
 let fetchFails = false;
 let detailNotFound = true;
+const panelClasses = new Set();
+let focusedDetail = false;
 const els = {
+  registryArticlesPanel: {dataset: {}, classList: {
+    contains: name => panelClasses.has(name), add: name => panelClasses.add(name),
+  }, querySelector: selector => selector === ".mobile-back" ? {focus() { focusedDetail = true; }} : null},
   registryArticleTitle: {textContent: "Old title"},
   registryArticleMeta: {textContent: "Old meta", replaceChildren() { this.textContent = ""; }},
   registryEnrichment: {children: ["Old unrelated summary"], replaceChildren(...items) { this.children = items; }, hidden: false},
@@ -376,11 +381,14 @@ const setWorkspaceView = value => { state.activeView = value; };
 const setRegistryMode = () => {};
 const registryErrorMessage = error => error.message;
 const loadRegistryArticle = async id => { els.registryArticleTitle.textContent = `Loaded ${id}`; };
-const window = {location: {hash: ""}, history: {pushState(_a, _b, hash) { window.location.hash = hash; }}};
+const window = {scrollY: 280, matchMedia: () => ({matches: true}), scrollTo() {},
+  location: {hash: ""}, history: {pushState(_a, _b, hash) { window.location.hash = hash; }}};
 __FUNCTIONS__
 (async () => {
   const lookup = {search: "Guide for supervisors", url: "https://publisher.example/source?x=1&y=2", snippet: "Retained PDF passage"};
   await openPdfObservationEvidence("pdf-article-occurrence-target", lookup);
+  assert.ok(panelClasses.has("is-detail-open"), "missing PDF observations must open the phone detail pane");
+  assert.equal(focusedDetail, true);
   assert.equal(els.registryArticleTitle.textContent, "PDF observation unavailable");
   assert.deepEqual(els.registryArticleDetail.children, ["retained detail node"]);
   assert.deepEqual(els.registryEnrichment.children, [], "failed lookup must not leave the previous article summary visible");
@@ -392,7 +400,11 @@ __FUNCTIONS__
   const deepLink = sourceNavigationFromHash();
   assert.deepEqual(deepLink, {kind: "pdf-observation", id: "pdf-article-occurrence-target", ...lookup});
   fetchFails = true;
+  panelClasses.clear();
+  focusedDetail = false;
   await openPdfObservationEvidence("pdf-article-occurrence-target", lookup);
+  assert.ok(panelClasses.has("is-detail-open"), "failed PDF lookups must open the phone detail pane");
+  assert.equal(focusedDetail, true);
   assert.equal(els.registryArticleTitle.textContent, "Article unavailable");
   assert.equal(els.registryEnrichment.textContent, "Registry unavailable");
   assert.equal(els.registryOriginalLink.href, lookup.url, "fetch errors retain the cited source URL");
@@ -460,7 +472,7 @@ def test_stale_pdf_lookup_cannot_replace_a_later_direct_article_navigation():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("safeSourceUrl", "beginEvidenceNavigation", "resetRegistryArticleDetail", "openRegistryArticleEvidence", "openPdfObservationEvidence"):
+    for name in ("showMobileDetail", "safeSourceUrl", "beginEvidenceNavigation", "resetRegistryArticleDetail", "openRegistryArticleEvidence", "openPdfObservationEvidence"):
         start = source.index(f"async function {name}(" if name == "openPdfObservationEvidence" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])

@@ -138,6 +138,7 @@ assert.equal(reloadedEls.send.disabled, true);
 assert.equal(reloadedEls.chatTokenForm.hidden, true);
 assert.equal(reloadedEls.retryChatQuestion.hidden, false);
 assert.equal(reloadedEls.retryChatQuestion.disabled, false);
+assert.equal(reloadedEls.chatAccessDetails.open, true, 'refresh recovery keeps Retry question visible');
 holdGeneration = false;
 let retryClick;
 reloadedEls.retryChatQuestion.addEventListener = (event, callback) => { assert.equal(event, 'click'); retryClick = callback; };
