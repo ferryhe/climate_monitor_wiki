@@ -1230,6 +1230,10 @@ def test_pdf_http_helpers_share_direct_reads_and_preserve_report_sources(registr
     assert client.get("/api/registry/pdf-intake/articles").status_code == 200
     assert client.get("/api/registry/pdf-intake/articles/pdf-article-unique").status_code == 200
     assert client.get("/api/registry/pdf-intake/calendar").status_code == 200
+    monkeypatch.setattr(
+        api_server, "_pdf_registry_view",
+        lambda: pytest.fail("current Registry detail must not resolve the legacy overlay"),
+    )
     report = client.get("/api/registry/pdf-intake/reports/" + "f" * 64)
     assert report.status_code == 200
     assert report.json()["source_filenames"] == ["report.pdf"]
@@ -1404,12 +1408,15 @@ def test_pdf_read_api_uses_legacy_source_columns_on_v13_registry(tmp_path, monke
 
     detail = client.get("/api/registry/pdf-intake/articles/pdf-article-unique")
     calendar = client.get("/api/registry/pdf-intake/calendar")
+    report = client.get("/api/registry/pdf-intake/reports/" + "f" * 64)
 
     assert detail.status_code == 200
     assert "source_observations" not in detail.json()["occurrences"][0]
     assert "C:/input/report.pdf" not in detail.text
     assert calendar.status_code == 200
     assert "source_observations" not in calendar.json()["items"][0]
+    assert report.status_code == 200
+    assert report.json()["source_filenames"] == ["report.pdf"]
     assert "C:/input/report.pdf" not in calendar.text
     raw = RegistryReader(database, repository_root=ROOT, public=False)
     assert raw.pdf_article("pdf-article-unique")["occurrences"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"

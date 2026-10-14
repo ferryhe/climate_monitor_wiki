@@ -816,9 +816,15 @@ def _pdf_reports(selected=None) -> list[dict[str, Any]]:
 
 
 def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[str, Any]:
+    public_reader = _registry_reader()
+    with public_reader.public_snapshot(direct=True):
+        with public_reader.connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                return public_reader.pdf_report(document_sha256, include_bytes=include_bytes)
+
     reader, article_ids, calendar_ids = _pdf_registry_view()
     try:
-        public = _registry_reader().pdf_report(document_sha256, include_bytes=include_bytes)
+        public = public_reader.pdf_report(document_sha256, include_bytes=include_bytes)
     except RegistryNotFoundError:
         public = None
     runtime = None

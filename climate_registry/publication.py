@@ -96,8 +96,8 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
     rows = connection.execute(f"""SELECT p.entity_kind,p.entity_id,p.is_visible,
             p.published_candidate_sha256,c.candidate_sha256,c.entity_kind AS candidate_kind,
             c.entity_id AS candidate_id,c.snapshot_json,
-            EXISTS(SELECT 1 FROM registry_reviews r WHERE r.candidate_sha256=c.candidate_sha256
-                AND r.status IN ('pass','accepted_legacy')) AS approved
+            c.candidate_sha256 IN (SELECT candidate_sha256 FROM registry_reviews
+                WHERE status IN ('pass','accepted_legacy')) AS approved
         FROM registry_publication p
         LEFT JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
         WHERE {where} ORDER BY p.entity_kind,p.entity_id""", params)

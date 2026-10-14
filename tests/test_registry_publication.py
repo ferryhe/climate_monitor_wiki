@@ -579,6 +579,32 @@ def _complete_fixture_information(database,*,entity_ids=()):
             assert result["status"]=="partial" and result["completed_count"]==result["item_count"]
 
 
+def test_public_candidates_include_only_visible_exact_approved_versions(tmp_path):
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for identity in ("c", "d"):
+            db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES(?,?, 's','2026-09-01','2026-09-01')",
+                (identity, "https://example.org/" + identity))
+            db.execute("INSERT INTO article_versions VALUES(?,?,?,?,?,?,?,'2026-09-01','2026-09-01')",
+                ("v-" + identity, identity, "Title " + identity, "Title " + identity,
+                 "Observed summary", "f-" + identity, "report-title-summary"))
+            db.execute("UPDATE articles SET current_version_id=? WHERE article_id=?",
+                ("v-" + identity, identity))
+        stage_entities(db)
+
+    _complete_fixture_information(database, entity_ids=("a",))
+    with sqlite3.connect(database) as db:
+        candidates = dict(db.execute("SELECT entity_id,latest_candidate_sha256 FROM registry_publication"))
+        _approve(db, candidates["a"], {"basis": "accepted pass fixture"}, status="pass")
+        _approve(db, candidates["b"], {"basis": "accepted legacy fixture"}, status="accepted_legacy")
+        _approve(db, candidates["c"], {"basis": "needs correction fixture"}, status="needs_correction")
+
+    reader = _reader(database, tmp_path)
+    assert {item["article_id"] for item in reader.articles()["items"]} == {"a", "b"}
+    set_visibility(database, "article", "b", False)
+    assert {item["article_id"] for item in reader.articles()["items"]} == {"a"}
+
+
 def _approve_native_packet(database,root,hermes,session,*,statuses=None):
     from climate_registry.publication import prepare_review,review_candidates
     from climate_registry.acquisition_review import claim_review
