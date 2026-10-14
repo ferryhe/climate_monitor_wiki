@@ -70,15 +70,15 @@ The current page order is `Dataview + Note Detail` first, then `Graph View`.
 `Keywords` mode now renders a note-to-concept map built from a backend concept index derived from both curated wiki notes and `sources/` raw reports.
 The API now precomputes both graph payloads so the frontend can hydrate the Obsidian workspace directly instead of assembling the keyword graph on the fly.
 
-Selecting a note node, Dataview row, or evidence source sets the active note for chat retrieval.
+Selecting a note node or Dataview row sets the active note for chat retrieval.
 Clicking a keyword node applies that concept as a Dataview filter so you can jump straight to the relevant note set.
 For daily report notes, the `Source` link in the detail panel points to the corresponding `sources/*.md` file on GitHub's default branch instead of the local wiki summary note.
 
 ## Active Context Rules
 
 - Selecting a note in the Obsidian tab activates it for chat.
-- Clicking a `wiki/` source card in chat jumps to the Obsidian tab and activates that note.
-- Clicking a `sources/` source card opens the raw report directly.
+- Clicking an inline citation opens its matching evidence entry in that assistant reply.
+- Clicking a source card opens its canonical publisher article when known, or its cited wiki/report document in a new tab.
 - Clearing context removes the retrieval priority boost.
 - The Obsidian plugin continues to send the vault's active note path as `contextPath`.
 

@@ -3410,11 +3410,15 @@ def test_links_reserve_single_article_canonical_keeps_offline_and_aggregate_link
     rows = turn.execute("search_knowledge", {"query": "energy transition", "target": "wiki"})["evidence"]
     article = next(row for row in rows if row["source"]["path"].endswith("article-energy.md"))
     assert article["source"]["url"].endswith("wiki/article-energy.md")
+    assert article["source"]["title"] == "article-energy"
+    assert article["source"]["document_title"] == "Energy report"
+    assert article["source"]["canonical_url"] == canonical
     assert article["source"]["source_urls"] == ([canonical] if online else ["https://example.org/;"])
     detail = turn.execute("get_source_details", {"evidence_id": article["source"]["evidence_id"]})
     assert detail["source"]["source_urls"] == ([canonical] if online else ["https://example.org/;"])
     aggregate = [row for row in rows if row["source"]["path"].endswith("weekly.md")]
     assert {url for row in aggregate for url in row["source"]["source_urls"]} == {"https://example.org/first", "https://example.org/second"}
+    assert all(row["source"]["canonical_url"] is None for row in aggregate)
 
 
 def test_links_reserve_finish_only_selected_targets_not_every_observed_link(tmp_path):

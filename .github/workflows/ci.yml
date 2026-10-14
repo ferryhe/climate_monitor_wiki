@@ -191,6 +191,7 @@ jobs:
           node --check showcase/app.js
           node --check management_ui/manage.js
           node tests/test_chat_access_ui.mjs
+          node tests/test_chat_report_history.mjs
 
       - name: Check pull request whitespace
         if: github.event_name == 'pull_request'
