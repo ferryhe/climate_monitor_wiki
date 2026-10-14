@@ -23,6 +23,15 @@ def test_concept_map_filters_both_graph_paths_without_changing_note_contracts():
         "Pdf Report Observation",
         "Registry Source Observations",
         "Original Links",
+        "Categories",
+        "Keywords",
+        "Key Findings",
+        "New Research",
+        "Anti-Bot / Acquisition Notes",
+        "Stealth Escalation Enabled",
+        "Dedup Notes",
+        "Climate",
+        "News",
         "Article Article 0123456789abcdef01234567",
     ]
     concepts = [
@@ -31,6 +40,8 @@ def test_concept_map_filters_both_graph_paths_without_changing_note_contracts():
     ] + [
         {"label": "Climate Risk", "document_count": 3},
         {"label": "Parametric Insurance", "document_count": 2},
+        {"label": "Diabetes", "document_count": 2},
+        {"label": "imf.org", "document_count": 2},
     ]
     script = r"""
 const fs = require("node:fs");
@@ -60,17 +71,19 @@ const context = {
     notes: { title: "Vault Links", hint: "", legendHtml: "" },
     keywords: { title: "Concept Map", hint: "Edges explain concepts.", legendHtml: "Concept" },
   },
-  state: { rows: fixture.rows, concepts: fixture.concepts },
+  state: { rows: fixture.rows, concepts: fixture.concepts, filteredRows: fixture.rows },
+  els: { wikiSearch: { value: "" } },
 };
 vm.createContext(context);
 vm.runInContext(declarationSource("HIDDEN_GRAPH_CONCEPTS"), context);
-for (const name of ["keywordNodeId", "isDisplayableGraphConcept", "buildKeywordGraph", "normalizeGraphData"]) {
+for (const name of ["keywordNodeId", "isDisplayableGraphConcept", "buildKeywordGraph", "normalizeGraphData", "scopeNotesGraphToPageSearch"]) {
   vm.runInContext(functionSource(name), context);
 }
 const sourceGraph = {
   nodes: [
     { id: "wiki/a.md", refPath: "wiki/a.md", label: "article-article-a", kind: "note", type: "topic" },
     { id: "wiki/orphan.md", refPath: "wiki/orphan.md", label: "article-article-orphan", kind: "note", type: "topic" },
+    { id: "wiki/b.md", refPath: "wiki/b.md", label: "article-article-b", kind: "note", type: "topic" },
     ...fixture.concepts.map((concept) => ({
       id: context.keywordNodeId(concept.label), label: concept.label, kind: "keyword", type: "keyword", weight: concept.document_count,
     })),
@@ -89,11 +102,20 @@ const notesGraph = context.normalizeGraphData("notes", {
 });
 context.state.rows = fixture.rows;
 const fallback = context.buildKeywordGraph(fixture.rows);
+context.els.wikiSearch.value = "second";
+context.state.filteredRows = fixture.rows.filter((row) => row.path === "wiki/b.md");
+const scopedNotes = context.scopeNotesGraphToPageSearch(context.normalizeGraphData("notes", {
+  nodes: sourceGraph.nodes.filter((node) => node.kind === "note"),
+  links: [{ source: "wiki/a.md", target: "wiki/orphan.md" }],
+}));
 process.stdout.write(JSON.stringify({
   sourceUnchanged: JSON.stringify(sourceGraph) === sourceBefore,
   casingVariantsHidden: ["PDF Report Observation", "pdf report observation", "Original Links"].every(
     (label) => !context.isDisplayableGraphConcept(label),
   ),
+  meaningfulConceptVisible: context.isDisplayableGraphConcept("Diabetes") && context.isDisplayableGraphConcept("Climate Risk"),
+  domainConceptHidden: !context.isDisplayableGraphConcept("imf.org"),
+  scopedNotes,
   notesGraphNodeIds: notesGraph.nodes.map((node) => node.id),
   notesGraphLinks: notesGraph.links,
   precomputed,
@@ -105,13 +127,13 @@ process.stdout.write(JSON.stringify({
             "path": "wiki/a.md",
             "displayTitle": "Readable Article Title",
             "type": "topic",
-            "concepts": [{"label": label} for label in [*excluded, "Climate Risk", "Parametric Insurance"]],
+            "concepts": [{"label": label} for label in [*excluded, "Climate Risk", "Parametric Insurance", "Diabetes", "imf.org"]],
         },
         {
             "path": "wiki/b.md",
             "displayTitle": "Second Article Title",
             "type": "topic",
-            "concepts": [{"label": label} for label in ["Climate Risk", "Parametric Insurance"]],
+            "concepts": [{"label": label} for label in ["Climate Risk", "Parametric Insurance", "Diabetes", "imf.org"]],
         },
         {
             "path": "wiki/orphan.md",
@@ -131,6 +153,12 @@ process.stdout.write(JSON.stringify({
 
     assert data["sourceUnchanged"] is True
     assert data["casingVariantsHidden"] is True
+    assert data["meaningfulConceptVisible"] is True
+    assert data["domainConceptHidden"] is True
+    assert [node["id"] for node in data["scopedNotes"]["nodes"]] == ["wiki/b.md"]
+    assert data["scopedNotes"]["links"] == []
+    assert data["scopedNotes"]["emptyMessage"] == "No notes match the Page Index search."
+    assert data["scopedNotes"]["staticLayout"] is True
     assert data["notesGraphNodeIds"] == ["wiki/a.md", "wiki/orphan.md"]
     assert data["notesGraphLinks"] == [{"source": "wiki/a.md", "target": "wiki/orphan.md"}]
     precomputed = data["precomputed"]
@@ -140,6 +168,7 @@ process.stdout.write(JSON.stringify({
         "Readable Article Title",
         "Climate Risk",
         "Parametric Insurance",
+        "Diabetes",
     ]
     assert precomputed["nodes"][0]["id"] == "wiki/a.md"
     assert precomputed["nodes"][0]["refPath"] == "wiki/a.md"
@@ -147,6 +176,7 @@ process.stdout.write(JSON.stringify({
     assert precomputed["links"] == [
         {"source": "wiki/a.md", "target": "keyword:climate-risk"},
         {"source": "wiki/a.md", "target": "keyword:parametric-insurance"},
+        {"source": "wiki/a.md", "target": "keyword:diabetes"},
     ]
 
     fallback = data["fallback"]
@@ -156,14 +186,17 @@ process.stdout.write(JSON.stringify({
         "Second Article Title",
         "Climate Risk",
         "Parametric Insurance",
+        "Diabetes",
     ]
     assert [node["id"] for node in fallback["nodes"][:2]] == ["wiki/a.md", "wiki/b.md"]
     assert [node["refPath"] for node in fallback["nodes"][:2]] == ["wiki/a.md", "wiki/b.md"]
     assert fallback["links"] == [
         {"source": "wiki/a.md", "target": "keyword:climate-risk"},
         {"source": "wiki/a.md", "target": "keyword:parametric-insurance"},
+        {"source": "wiki/a.md", "target": "keyword:diabetes"},
         {"source": "wiki/b.md", "target": "keyword:climate-risk"},
         {"source": "wiki/b.md", "target": "keyword:parametric-insurance"},
+        {"source": "wiki/b.md", "target": "keyword:diabetes"},
     ]
 
 
@@ -174,14 +207,35 @@ def test_concept_map_copy_and_note_label_accessibility_contract():
     css = (root / "showcase" / "styles.css").read_text(encoding="utf-8")
 
     assert 'title: "Concept Map"' in app
-    assert "Edges connect a note to each detected concept it contains." in app
-    assert "Concept size shows the number of linked notes." in app
+    assert "27 manually maintained climate rules" in app
+    assert "up to 18 concepts found on 2+ pages, or up to 12 if none recur" in app
+    assert "27 manually maintained climate rules" in html
+    assert "up to 18 concepts found on 2+ pages, or up to 12 if none recur" in html
     assert 'id="graphTitle">Concept Map</h3>' in html
     assert 'data-graph-mode="keywords"' in html
-    assert ".graph-node--keywords.graph-node--note text {" in css
+    assert ".graph-node--keywords.graph-node--note text,\n.graph-node--notes.graph-node--note text {" in css
     assert ".graph-node--keywords.graph-node--note:hover text," in css
     assert ".graph-node--keywords.graph-node--note:focus-visible text," in css
     assert ".graph-node--keywords.graph-node--note.is-active text" in css
+    assert ".graph-node--notes.graph-node--note.is-neighbor circle" in css
+    assert "graph-edge--notes.is-context-link" in css
+    assert ".graph-wrap" in css and "overflow: auto;" in css
+    assert "function graphNodePosition(mode, node, rank, count, width, height" in app
+    assert "function graphCanvasHeight(rectHeight, categoryHeight = 0)" in app
+    assert 'graphCanvasHeight(svg.getBoundingClientRect().height, categoryLayout?.height)' in app
+    assert "Search the Page Index to focus this graph." in app
+    assert 'Selected reference for chat: ${doc.displayTitle}' in app
+    assert html.index('id="activeContextBadge"') > html.index('<footer class="composer-shell">')
+    assert 'class="composer-shell__context"' in html
+    assert 'state.confirmedContextPath = state.activeContextPath;' in app
+    assert ".context-badge.is-confirmed" in css
+    assert 'aria-live="polite"' in html
+    assert 'id="graphExpandButton"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'id="graphExpandedSelection"' in html
+    assert ".graph-viewport.is-expanded" in css
+    assert 'els.graphExpandButton?.addEventListener("click", toggleGraphExpanded);' in app
+    assert 'document.addEventListener("keydown", handleGraphKeydown);' in app
     assert 'node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`' in app
     assert 'group.addEventListener("click", activateNode);' in app
     assert 'if (event.key === "Enter" || event.key === " ")' in app

@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const source = fs.readFileSync('showcase/app.js', 'utf8');
+const styles = fs.readFileSync('showcase/styles.css', 'utf8');
+const mobileMessageRule = styles.match(/@media \(max-width: 760px\) \{[\s\S]*?\.message-list\s*\{([^}]*)\}/)?.[1] || '';
+const mobileContextRule = styles.match(/@media \(max-width: 760px\) \{[\s\S]*?\.composer-shell__context\s*\{([^}]*)\}/)?.[1] || '';
+const mobileBadgeRule = styles.match(/@media \(max-width: 760px\) \{[\s\S]*?\.composer-shell__context \.context-badge\s*\{([^}]*)\}/)?.[1] || '';
+assert.match(mobileMessageRule, /height:\s*100%/, 'the mobile message viewport fills its flex-sized chat stage');
+assert.match(mobileMessageRule, /min-height:\s*0/, 'the message viewport can shrink when the composer grows');
+assert.doesNotMatch(mobileMessageRule, /calc\(100vh\s*-\s*302px\)/,
+  'mobile replies do not extend beyond the available chat stage');
+assert.match(mobileContextRule, /min-width:\s*0/, 'the composer context row can shrink beside its action');
+assert.match(mobileBadgeRule, /min-width:\s*0/, 'a long source reference can shrink inside the context row');
+assert.match(mobileBadgeRule, /overflow-wrap:\s*anywhere/,
+  'a long source host such as carbonaccountingfinancials.com wraps on a narrow screen');
 const extract = (name) => source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))[0];
 let mobile = true;
 let focused = null;

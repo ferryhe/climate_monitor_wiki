@@ -388,6 +388,16 @@ a {
   display: none;
 }
 
+.context-badge.is-confirmed {
+  border-color: var(--accent);
+  border-radius: 12px;
+  background: rgba(126, 182, 150, 0.2);
+  color: #f0fff3;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px rgba(126, 182, 150, 0.16);
+}
+
 .chat-stage,
 .panel {
   border: 1px solid var(--line);
@@ -760,6 +770,14 @@ a {
   padding: 0 10px 8px;
 }
 
+.composer-shell__context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px 8px;
+}
+
 .composer-shell__controls {
   display: flex;
   align-items: center;
@@ -915,10 +933,62 @@ a {
 
 .graph-wrap {
   width: 100%;
+  max-height: min(65vh, 700px);
   border-radius: 22px;
-  overflow: hidden;
+  overflow: auto;
   border: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(17, 22, 26, 0.96), rgba(13, 18, 22, 0.98));
+}
+
+.graph-viewport__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-height: 40px;
+  margin-bottom: 8px;
+}
+
+.graph-expand-button { white-space: nowrap; }
+
+.graph-expanded-selection {
+  flex: 1;
+  min-width: 0;
+  margin: 0 auto 0 0;
+  color: #d9e4ef;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+html.graph-expanded { overflow: hidden; }
+html.graph-expanded .panel--graph { overflow: visible; }
+
+.graph-viewport.is-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 0;
+  border-radius: 0;
+  background: #0d1411;
+  box-shadow: none;
+}
+
+.graph-viewport.is-expanded .graph-viewport__toolbar { flex: 0 0 auto; }
+.graph-viewport.is-expanded .graph-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  border-radius: 14px;
+}
+.graph-viewport.is-expanded #graphSvg {
+  height: 100%;
+  min-height: 100%;
+  max-height: none;
 }
 
 #graphSvg {
@@ -964,16 +1034,23 @@ a {
   font-size: 11px;
 }
 
-.graph-node--keywords.graph-node--note text {
+.graph-node--keywords.graph-node--note text,
+.graph-node--notes.graph-node--note text {
   opacity: 0;
   transition: opacity 0.15s ease;
 }
 
 .graph-node--keywords.graph-node--note:hover text,
 .graph-node--keywords.graph-node--note:focus-visible text,
-.graph-node--keywords.graph-node--note.is-active text {
+.graph-node--keywords.graph-node--note.is-active text,
+.graph-node--notes.graph-node--note:hover text,
+.graph-node--notes.graph-node--note:focus-visible text,
+.graph-node--notes.graph-node--note.is-active text {
   opacity: 1;
 }
+
+.graph-node--notes.graph-node--note.is-neighbor circle { stroke: var(--accent); stroke-width: 2; }
+.graph-edge--notes.is-context-link { stroke: var(--accent); stroke-width: 2; opacity: 0.9; }
 
 .graph-node--article-categories circle {
   fill: #426f59;
@@ -1799,6 +1876,39 @@ tbody tr.is-selected {
 
   .tabbar__tab { min-height: 44px; text-align: left; }
   .status-pill { display: none; }
+
+  .message-list {
+    height: 100%;
+    min-height: 0;
+    padding-inline: 6px;
+  }
+
+  .composer-shell {
+    padding-bottom: 12px;
+  }
+
+  .composer-shell__utility {
+    padding-inline: 4px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .composer-shell__context { min-width: 0; padding-inline: 4px; }
+  .composer-shell__context .context-badge {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .graph-viewport.is-expanded { gap: 8px; padding: 10px; }
+  .graph-viewport.is-expanded .graph-expanded-selection { font-size: 12px; }
+
+  .detail-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .meeting-date-group {
+    grid-template-columns: 1fr;
+  }
 
   .chat-app, .obsidian-shell, .registry-shell {
     width: calc(100% - 20px);

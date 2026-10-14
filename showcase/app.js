@@ -56,7 +56,7 @@ const GRAPH_COPY = {
   notes: {
     title: "Vault Links",
     hint:
-      "Drag note nodes to rearrange the graph. Click a node or a Dataview row to inspect the note and set it as the active chat context.",
+      "Search the Page Index to focus this graph. Labels appear on hover, keyboard focus, or selection; selecting a note highlights linked pages and edges.",
     legendHtml: `
       <span><i class="dot dot-daily"></i>Daily</span>
       <span><i class="dot dot-topic"></i>Topic</span>
@@ -66,7 +66,7 @@ const GRAPH_COPY = {
   keywords: {
     title: "Concept Map",
     hint:
-      "Edges connect a note to each detected concept it contains. Concept size shows the number of linked notes. Click a note to set it as the active chat context, or click a concept to filter the Page Index.",
+      "Uses 27 manually maintained climate rules matched against Wiki page content, headings/titles, and linked source reports. Shows up to 18 concepts found on 2+ pages, or up to 12 if none recur. Size counts linked notes. Click a note to set chat context or a concept to filter the Page Index.",
     legendHtml: `
       <span><i class="dot dot-daily"></i>Daily</span>
       <span><i class="dot dot-topic"></i>Topic</span>
@@ -91,6 +91,15 @@ const HIDDEN_GRAPH_CONCEPTS = new Set([
   "pdf report observation",
   "registry source observations",
   "original links",
+  "categories",
+  "keywords",
+  "key findings",
+  "new research",
+  "anti-bot / acquisition notes",
+  "stealth escalation enabled",
+  "dedup notes",
+  "climate",
+  "news",
 ]);
 
 const ANSWER_MODE_COPY = {
@@ -119,8 +128,11 @@ const state = {
   filteredRows: [],
   edges: [],
   graphMode: "keywords",
+  graphExpanded: false,
+  graphReturnFocus: null,
   answerMode: "detailed",
   activeContextPath: null,
+  confirmedContextPath: null,
   isSending: false,
   chatAccess: null,
   activeView: "chatView",
@@ -168,6 +180,7 @@ const els = {
   chatAccessDetails: document.getElementById("chatAccessDetails"),
   chatAccessSummary: document.getElementById("chatAccessSummary"),
   chatContextHeader: document.getElementById("chatContextHeader"),
+  jumpToReports: document.getElementById("jumpToReportsButton"),
   navMenuButton: document.getElementById("navMenuButton"),
   mobilePageLabel: document.getElementById("mobilePageLabel"),
   chatTokenForm: document.getElementById("chatTokenForm"),
@@ -195,6 +208,9 @@ const els = {
   wikiStats: document.getElementById("wikiStats"),
   wikiSearch: document.getElementById("wikiSearch"),
   rows: document.getElementById("rows"),
+  graphViewport: document.getElementById("graphViewport"),
+  graphExpandButton: document.getElementById("graphExpandButton"),
+  graphExpandedSelection: document.getElementById("graphExpandedSelection"),
   graphSvg: document.getElementById("graphSvg"),
   articleCategoryEvidence: document.getElementById("articleCategoryEvidence"),
   graphTitle: document.getElementById("graphTitle"),
@@ -533,7 +549,9 @@ function keywordNodeId(label) {
 }
 
 function isDisplayableGraphConcept(label) {
-  return !HIDDEN_GRAPH_CONCEPTS.has(label.toLowerCase()) && !/^Article Article [a-f0-9]{24}$/i.test(label);
+  const value = String(label || "").trim();
+  const isDomain = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/i.test(value);
+  return !HIDDEN_GRAPH_CONCEPTS.has(value.toLowerCase()) && !isDomain && !/^Article Article [a-f0-9]{24}$/i.test(value);
 }
 
 function buildNoteGraph(rows, edges) {
@@ -550,6 +568,7 @@ function buildNoteGraph(rows, edges) {
       type: row.type,
     })),
     links: edges.map((edge) => ({ source: edge.source, target: edge.target })),
+    staticLayout: true,
   };
 }
 
@@ -657,7 +676,7 @@ function normalizeGraphData(mode, graph) {
     legendHtml: copy.legendHtml,
     nodes,
     links,
-    staticLayout: Boolean(graph?.static_layout || graph?.staticLayout),
+    staticLayout: mode === "notes" || Boolean(graph?.static_layout || graph?.staticLayout),
   };
 }
 
@@ -673,12 +692,27 @@ function graphDataForCurrentMode() {
     };
   }
   const precomputed = state.graphData?.[state.graphMode];
-  if (precomputed) {
-    return normalizeGraphData(state.graphMode, precomputed);
-  }
-  return state.graphMode === "keywords"
-    ? buildKeywordGraph(state.rows)
-    : buildNoteGraph(state.rows, state.edges);
+  const graph = precomputed
+    ? normalizeGraphData(state.graphMode, precomputed)
+    : state.graphMode === "keywords"
+      ? buildKeywordGraph(state.rows)
+      : buildNoteGraph(state.rows, state.edges);
+  return state.graphMode === "notes" ? scopeNotesGraphToPageSearch(graph) : graph;
+}
+
+function scopeNotesGraphToPageSearch(graph) {
+  const query = String(els.wikiSearch?.value || "").trim();
+  if (!query) return graph;
+  const paths = new Set(state.filteredRows.map((row) => row.path));
+  const nodes = graph.nodes.filter((node) => paths.has(node.refPath || node.id));
+  const visibleIds = new Set(nodes.map((node) => node.id));
+  return {
+    ...graph,
+    nodes,
+    links: graph.links.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    hint: `Page Index search: ${nodes.length} matching notes. Labels appear on hover, keyboard focus, or selection.`,
+    emptyMessage: "No notes match the Page Index search.",
+  };
 }
 
 function buildArticleCategoryGraph(articles, taxonomy) {
@@ -774,17 +808,6 @@ function getNodeRadius(node) {
   return Math.min(12, (node.type === "index" ? 7 : 5) + Math.sqrt(importance));
 }
 
-function projectGridPosition(index, count, minX, maxX, minY, maxY) {
-  const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
-  const rows = Math.max(1, Math.ceil(count / cols));
-  const col = index % cols;
-  const row = Math.floor(index / cols);
-  return {
-    x: minX + ((col + 0.5) / cols) * (maxX - minX),
-    y: minY + ((row + 0.5) / rows) * (maxY - minY),
-  };
-}
-
 function projectRadialPosition(rank, count, centerX, centerY, maxRadius) {
   if (rank === 0 || count <= 1) {
     return { x: centerX, y: centerY };
@@ -795,6 +818,65 @@ function projectRadialPosition(rank, count, centerX, centerY, maxRadius) {
     x: centerX + Math.cos(angle) * radius,
     y: centerY + Math.sin(angle) * radius * 0.78,
   };
+}
+
+function graphCanvasHeight(rectHeight, categoryHeight = 0) {
+  return categoryHeight || Math.max(320, rectHeight || 700);
+}
+
+function graphNodePosition(mode, node, rank, count, width, height, categoryPosition = null) {
+  if (mode === "article-categories") return categoryPosition;
+  if (mode !== "notes" && mode !== "keywords" && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+    return { x: node.x, y: node.y };
+  }
+  return projectRadialPosition(rank, count, width / 2, height / 2, Math.min(width, height) * 0.42);
+}
+
+function setGraphExpanded(expanded) {
+  if (Boolean(expanded) === state.graphExpanded || !els.graphViewport) return;
+
+  state.graphExpanded = Boolean(expanded);
+  els.graphViewport.classList.toggle("is-expanded", state.graphExpanded);
+  document.documentElement.classList.toggle("graph-expanded", state.graphExpanded);
+  if (els.graphExpandButton) {
+    els.graphExpandButton.setAttribute("aria-expanded", String(state.graphExpanded));
+    els.graphExpandButton.textContent = state.graphExpanded ? "Close full-screen graph" : "Expand graph";
+  }
+
+  if (state.graphExpanded) {
+    state.graphReturnFocus = document.activeElement;
+    els.graphExpandButton?.focus();
+  }
+  renderExpandedGraphSelection();
+  renderCurrentGraph();
+  if (!state.graphExpanded) {
+    const returnFocus = state.graphReturnFocus;
+    state.graphReturnFocus = null;
+    if (returnFocus?.focus) returnFocus.focus();
+    else els.graphExpandButton?.focus();
+  }
+}
+
+function toggleGraphExpanded() {
+  setGraphExpanded(!state.graphExpanded);
+}
+
+function handleGraphKeydown(event) {
+  if (event.key === "Escape" && state.graphExpanded) {
+    event.preventDefault();
+    setGraphExpanded(false);
+  }
+}
+
+function renderExpandedGraphSelection() {
+  if (!els.graphExpandedSelection) return;
+  els.graphExpandedSelection.hidden = !state.graphExpanded;
+  if (!state.graphExpanded) return;
+
+  const selected = state.rows.find((row) => row.path === state.activeContextPath);
+  els.graphExpandedSelection.textContent = selected
+    ? `Selected page: ${selected.displayTitle} · ${selected.type}. Close graph to view Note Detail.`
+    : "Select a note to see its title here. Close graph to view Note Detail.";
 }
 
 function layoutArticleCategoryNodes(nodes, width, height = 0) {
@@ -961,6 +1043,7 @@ function setWorkspaceView(viewId) {
   if (!viewId) {
     return;
   }
+  if (viewId !== "obsidianView" && state.graphExpanded) setGraphExpanded(false);
   state.activeView = viewId;
   closeNavigation();
   if (els.mobilePageLabel) els.mobilePageLabel.textContent = {chatView: "Chat", registryView: "Reports", meetingsView: "Dates", obsidianView: "Graph"}[viewId] || "Menu";
@@ -988,6 +1071,7 @@ function setWorkspaceView(viewId) {
     state.registry.meetingPage = 1;
     void loadRegistryMeetings();
   }
+  if (viewId === "obsidianView") renderCurrentGraph();
   if (viewId === "chatView" && state.pendingQuestionFocus) {
     state.pendingQuestionFocus = false;
     renderMessages({ focusCurrentQuestion: true });
@@ -1408,6 +1492,7 @@ function renderChatContext() {
 
   if (!doc) {
     els.activeContextBadge.hidden = true;
+    els.activeContextBadge.classList.remove("is-confirmed");
     els.activeContext.hidden = true;
     if (els.clearContext) {
       els.clearContext.disabled = true;
@@ -1423,7 +1508,11 @@ function renderChatContext() {
   }
 
   const contextKind = doc.type === "daily" ? "report" : "note";
-  els.activeContextBadge.textContent = `Focused ${contextKind}: ${doc.displayTitle}`;
+  const confirmed = state.confirmedContextPath === doc.path;
+  els.activeContextBadge.classList.toggle("is-confirmed", confirmed);
+  els.activeContextBadge.textContent = confirmed
+    ? `Selected reference for chat: ${doc.displayTitle}`
+    : `Focused ${contextKind}: ${doc.displayTitle}`;
   els.activeContextBadge.hidden = false;
   els.activeContext.textContent = `${doc.displayTitle} is the focused ${contextKind} prioritized during chat retrieval.`;
   els.activeContext.hidden = false;
@@ -1511,6 +1600,7 @@ function applyTableFilter(query = "") {
     state.filteredRows = [...state.rows];
   }
   renderRows();
+  if (state.graphMode === "notes") renderCurrentGraph();
 }
 
 function displayDateLabel(row) {
@@ -1563,17 +1653,33 @@ function updateGraphSelection() {
   if (!state.graph) {
     return;
   }
+  const neighborIds = new Set();
+  for (const edge of state.graph.links || []) {
+    if (edge.source.id === state.activeContextPath) neighborIds.add(edge.target.id);
+    if (edge.target.id === state.activeContextPath) neighborIds.add(edge.source.id);
+  }
   state.graph.nodes.forEach((node, index) => {
     const active = node.kind === "note" && (node.refPath || node.id) === state.activeContextPath;
     const group = state.graph.nodeEls[index];
     const circle = group.querySelector("circle");
     group.classList.toggle("is-active", active);
+    group.classList.toggle("is-neighbor", node.kind === "note" && neighborIds.has(node.id));
     if (circle) {
       const baseRadius = getNodeRadius(node);
       circle.setAttribute("r", String(active ? baseRadius + 2 : baseRadius));
       circle.setAttribute("stroke-width", active ? "2" : "1");
     }
   });
+  (state.graph.links || []).forEach((edge, index) => {
+    const line = state.graph.linkEls?.[index];
+    if (line) {
+      line.classList.toggle(
+        "is-context-link",
+        edge.source.id === state.activeContextPath || edge.target.id === state.activeContextPath,
+      );
+    }
+  });
+  renderExpandedGraphSelection();
 }
 
 function renderCurrentGraph() {
@@ -1601,9 +1707,12 @@ function renderGraph(graphData) {
   const svg = els.graphSvg;
   const NS = "http://www.w3.org/2000/svg";
   const categoryMode = graphData.mode === "article-categories";
-  const width = categoryMode ? Math.max(280, svg.getBoundingClientRect().width || 1200) : 1200;
+  if (!categoryMode) svg.style.height = "";
+  const width = categoryMode
+    ? Math.max(280, svg.getBoundingClientRect().width || 1200)
+    : Math.max(320, svg.getBoundingClientRect().width || 1200);
   const categoryLayout = categoryMode ? layoutArticleCategoryNodes(graphData.nodes, width) : null;
-  const height = categoryLayout?.height || 700;
+  const height = graphCanvasHeight(svg.getBoundingClientRect().height, categoryLayout?.height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.style.height = categoryMode ? `${height}px` : "";
   svg.classList.toggle("category-map", categoryMode);
@@ -1636,26 +1745,25 @@ function renderGraph(graphData) {
       .sort((left, right) => importanceFor(right) - importanceFor(left) || left.label.localeCompare(right.label))
       .map((node, index) => [node.id, index]),
   );
-  const noteCount = graphData.nodes.filter((node) => node.kind !== "keyword").length;
-  let noteIndex = 0;
-
   const nodes = graphData.nodes.map((node, index) => {
     const importance = importanceFor(node);
+    const rank = centralRank.get(node.id) || 0;
     const radialPosition = projectRadialPosition(
-      centralRank.get(node.id) || 0,
+      rank,
       graphData.nodes.length,
       width / 2,
       height / 2,
       Math.min(width, height) * 0.42,
     );
-    const position =
-      graphData.mode === "article-categories"
-        ? categoryLayout.nodes[index]
-        : graphData.mode === "keywords"
-        ? radialPosition
-        : Number.isFinite(node.x) && Number.isFinite(node.y)
-        ? { x: node.x, y: node.y }
-        : projectGridPosition(noteIndex++, noteCount, 70, width - 70, 70, height - 70);
+    const position = graphNodePosition(
+      graphData.mode,
+      node,
+      rank,
+      graphData.nodes.length,
+      width,
+      height,
+      categoryLayout?.nodes[index],
+    );
 
     return {
       ...node,
@@ -1716,6 +1824,8 @@ function renderGraph(graphData) {
       });
       edgeTargetGroup.appendChild(target);
       edgeTargetEls.push(target);
+    } else if (graphData.mode === "notes") {
+      line.setAttribute("class", "graph-edge graph-edge--notes");
     }
     linkGroup.appendChild(line);
     return line;
@@ -1789,8 +1899,21 @@ function renderGraph(graphData) {
       circle.setAttribute("fill", GRAPH_COLORS[node.type] || GRAPH_COLORS.topic);
       circle.setAttribute("stroke", "#0d1411"); circle.setAttribute("stroke-width", "1");
       const label = document.createElementNS(NS, "text");
-      label.textContent = node.label; label.setAttribute("x", "10"); label.setAttribute("y", "4");
+      const rightAligned = graphData.mode === "notes" && node.x > width / 2;
+      const availableWidth = rightAligned ? node.x - 24 : width - node.x - 24;
+      const maxLabelLength = Math.max(8, Math.floor(availableWidth / 6));
+      label.textContent = graphData.mode === "notes" && node.label.length > maxLabelLength
+        ? `${node.label.slice(0, Math.max(5, maxLabelLength - 1))}…`
+        : node.label;
+      label.setAttribute("x", rightAligned ? "-10" : "10");
+      label.setAttribute("y", "4");
+      if (rightAligned) label.setAttribute("text-anchor", "end");
       group.append(circle, label);
+      if (graphData.mode === "notes") {
+        const title = document.createElementNS(NS, "title");
+        title.textContent = node.label;
+        group.appendChild(title);
+      }
     }
     nodeGroup.appendChild(group);
 
@@ -1959,7 +2082,7 @@ function renderGraph(graphData) {
     }
   }
 
-  state.graph = { nodes, nodeEls };
+  state.graph = { nodes, nodeEls, links, linkEls: lineEls };
   updateGraphSelection();
   draw();
   if (staticLayout) {
@@ -2077,6 +2200,7 @@ async function ensureMarkdownLoaded(path) {
 
 function clearContext() {
   state.activeContextPath = null;
+  state.confirmedContextPath = null;
   renderChatContext();
   renderRows();
   renderDetail(null);
@@ -2099,6 +2223,9 @@ function setActiveContext(path, options = {}) {
     return;
   }
 
+  if (state.activeContextPath !== path) {
+    state.confirmedContextPath = null;
+  }
   state.activeContextPath = path;
   renderChatContext();
   renderRows();
@@ -3506,6 +3633,12 @@ function attachEvents() {
     button.addEventListener("click", () => closeMobileDetail(button.closest(".registry-grid")));
   });
   attachSourceCardClickHandler();
+  els.jumpToReports?.addEventListener("click", () => {
+    beginEvidenceNavigation();
+    setWorkspaceView("registryView");
+  });
+  els.graphExpandButton?.addEventListener("click", toggleGraphExpanded);
+  document.addEventListener("keydown", handleGraphKeydown);
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
   });
@@ -3605,6 +3738,8 @@ function attachEvents() {
       if (!state.activeContextPath) {
         return;
       }
+      state.confirmedContextPath = state.activeContextPath;
+      renderChatContext();
       beginEvidenceNavigation();
       setWorkspaceView("chatView");
       els.input.focus();
@@ -3717,7 +3852,7 @@ function attachEvents() {
   });
 
   window.addEventListener("resize", () => {
-    if (state.graphMode === "article-categories") renderCurrentGraph();
+    if (state.graphExpanded || state.activeView === "obsidianView") renderCurrentGraph();
   });
   window.addEventListener("hashchange", () => {
     const sourceTarget = sourceNavigationFromHash();
