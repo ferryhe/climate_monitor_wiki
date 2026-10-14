@@ -514,13 +514,76 @@ def _check_run_input(connection, prefix, run_id, database):
     return frozen
 
 
+def _currently_verified_targets(connection, prefix: str, targets: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Return target keys whose latest attempt verifies the exact current source binding."""
+    target_by_key = {(target["occurrence_id"], target["source_url"]): target for target in targets}
+    if not target_by_key:
+        return set()
+    grouped: dict[str, dict[str, set[str]]] = {}
+    for target in targets:
+        if target["entity_kind"] == "article":
+            column, identity = "core_article_id", target["entity_id"]
+        elif target["entity_kind"] == "meeting":
+            column, identity = "event_source_id", target["occurrence_id"]
+        else:
+            column, identity = "occurrence_id", target["occurrence_id"]
+        grouped.setdefault(column, {}).setdefault(identity, set()).add(target["source_url"])
+
+    latest = {}
+    available_columns = {row[1] for row in connection.execute(f"PRAGMA table_info({prefix}_check_attempts)")}
+    selected_columns = ["rowid AS _attempt_rowid", "occurrence_id"] + [
+        column for column in ("core_article_id", "event_source_id") if column in available_columns
+    ] + ["source_url", "source_revision_sha256", "checked_at", "packet_json", "packet_sha256"]
+    for column, identities in grouped.items():
+        pairs = [(identity, url) for identity, urls in identities.items() for url in urls]
+        for start in range(0, len(pairs), 300):
+            chunk = pairs[start:start + 300]
+            where = " OR ".join(f"({column}=? AND source_url=?)" for _ in chunk)
+            parameters = [value for pair in chunk for value in pair]
+            rows = connection.execute(
+                f"SELECT {', '.join(selected_columns)} "
+                f"FROM {prefix}_check_attempts WHERE {where} "
+                "ORDER BY checked_at DESC, rowid DESC", parameters)
+            for row in rows:
+                key = (attempt_identity(row, prefix), row["source_url"])
+                latest.setdefault(key, row)
+
+    verified = set()
+    for key, target in target_by_key.items():
+        row = latest.get(key)
+        if row is None or row["source_revision_sha256"] != target["source_revision_sha256"]:
+            continue
+        try:
+            packet = json.loads(row["packet_json"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("invalid information check packet") from exc
+        if not isinstance(packet, dict):
+            raise ValueError("invalid information check packet")
+        if _sha(packet) != row["packet_sha256"]:
+            raise ValueError("information check packet hash mismatch")
+        # Source revision does not cover every candidate binding field.
+        if (packet.get("occurrence_id") != target["occurrence_id"]
+                or packet.get("source_url") != target["source_url"]
+                or packet.get("source_revision_sha256") != target["source_revision_sha256"]
+                or packet.get("source_binding") != target["source_binding"]
+                or packet.get("entity_kind") != target["entity_kind"]
+                or packet.get("entity_id") != target["entity_id"]
+                or packet.get("fields") != target["fields"]):
+            continue
+        if packet.get("verification_status") == "verified":
+            verified.add(key)
+    return verified
+
+
 def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: set[str] | None = None,
     resume_run_id: str | None = None, retry_run_id: str | None = None, limit: int | None = None,
+    reverify_all: bool = False,
     data_root: Path | None = None, verifier: Callable = typesafe_verify, fetcher: Callable | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """One terminal attempt per record/URL. Retry creates new immutable attempts."""
     prefix = KINDS.get(kind)
-    if prefix is None or (resume_run_id and retry_run_id) or (limit is not None and limit < 1):
+    if (prefix is None or (resume_run_id and retry_run_id) or (limit is not None and limit < 1)
+            or (reverify_all and (resume_run_id or retry_run_id))):
         raise ValueError("invalid check options")
     from .publication import resolve_database
     database = resolve_database(database)
@@ -536,20 +599,17 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
     else:
         targets = check_targets(database, kind, occurrence_ids)
         if retry_run_id:
-            with sqlite3.connect(database) as connection:
-                if not connection.execute(f"SELECT 1 FROM {prefix}_check_runs WHERE run_id=?", (retry_run_id,)).fetchone():
-                    raise ValueError("retry run does not exist in this information kind")
-                connection.row_factory=sqlite3.Row
-                previous = {(attempt_identity(row,prefix),row["source_url"]):row["verification_status"]=="verified" and not json.loads(row["packet_json"]).get("enrichment_error")
-                    for row in connection.execute(f"SELECT * FROM {prefix}_check_attempts WHERE run_id=?",(retry_run_id,))}
-                keys = {(target["occurrence_id"], target["source_url"]) for target in original["targets"]}
-            targets = [target for target in targets if (target["occurrence_id"], target["source_url"]) in keys
-                and not previous.get((target["occurrence_id"], target["source_url"]), False)]
+            keys = {(target["occurrence_id"], target["source_url"]) for target in original["targets"]}
+            targets = [target for target in targets if (target["occurrence_id"], target["source_url"]) in keys]
         run_id = f"{prefix}-check-" + uuid.uuid4().hex
-        frozen = {"schema_version": CHECK_VERSION, "kind": kind, "targets": targets, "retry_of": retry_run_id,
-            "registry_database": str(database)}
-        encoded = _json(frozen)
         with _writer(database) as connection:
+            if not reverify_all:
+                verified = _currently_verified_targets(connection, prefix, targets)
+                targets = [target for target in targets
+                    if (target["occurrence_id"], target["source_url"]) not in verified]
+            frozen = {"schema_version": CHECK_VERSION, "kind": kind, "targets": targets, "retry_of": retry_run_id,
+                "registry_database": str(database)}
+            encoded = _json(frozen)
             connection.execute(f"INSERT INTO {prefix}_check_runs(run_id,input_json,input_sha256,created_at,status,item_count) VALUES(?,?,?,?,?,?)",
                 (run_id, encoded, hashlib.sha256(encoded.encode()).hexdigest(), _now(), "pending", len(targets)))
     with _writer(database) as connection:

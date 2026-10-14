@@ -99,11 +99,17 @@ python scripts/check_information.py --kind meetings --database /data/registry.sq
 python scripts/check_information.py --kind articles --database /data/registry.sqlite3 --backup-dir /data/backups --result /data/article-check.json
 python scripts/check_information.py --kind meetings --database /data/registry.sqlite3 --backup-dir /data/backups --resume <run_id>
 python scripts/check_information.py --kind meetings --database /data/registry.sqlite3 --backup-dir /data/backups --retry <run_id>
+python scripts/check_information.py --kind meetings --database /data/registry.sqlite3 --backup-dir /data/backups --limit 10 --reverify-all
 ```
 
-`--occurrence-id` selects individual observations. `--resume` skips saved terminal
-attempts and continues the exact frozen input. `--retry` creates a new run for
-unverified entries and preserves old attempts. Exit 0 means all targets verified;
+Fresh runs skip observations already verified against their current source
+binding; unresolved and partial observations remain eligible. `--reverify-all`
+rechecks the selected targets and preserves prior attempts. It is a manual
+fresh-run option and cannot be combined with `--resume`, `--retry`, or
+`--scheduled`. `--occurrence-id` selects individual observations. `--resume`
+skips saved terminal attempts and continues the exact frozen input. `--retry`
+creates a new run for eligible entries and preserves old attempts. Exit 0 means
+all targets verified;
 exit 2 means there is pending work or unresolved evidence. JSON progress and the
 summary identify each remaining record. Meetings and articles use independent
 run and attempt tables; one does not block the other.

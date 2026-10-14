@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
     continuation = parser.add_mutually_exclusive_group()
     continuation.add_argument("--resume", help="Continue unchecked entries in a frozen run")
     continuation.add_argument("--retry", help="Create a new run for the unverified entries of this run")
+    parser.add_argument("--reverify-all", action="store_true", help="Recheck all selected targets, including verified ones")
     parser.add_argument("--limit", type=int, help="Process at most this many entries, then resume later")
     parser.add_argument("--data-root", type=Path, default=os.getenv("WEB_LISTENING_DATA_ROOT"))
     parser.add_argument("--result", type=Path, help="Save machine-readable run summary")
@@ -58,6 +59,10 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
     args = parser.parse_args(argv)
     if args.resume and args.occurrence_id:
         parser.error("--resume uses its frozen observations; omit --occurrence-id")
+    if args.reverify_all and (args.resume or args.retry):
+        parser.error("--reverify-all applies only to a fresh run; omit --resume/--retry")
+    if args.reverify_all and args.scheduled:
+        parser.error("--reverify-all is for manual checks; omit --scheduled")
     if args.refresh_chat and (not args.queue_dir or not args.runtime_wiki_dir):
         parser.error("--refresh-chat needs --queue-dir and --runtime-wiki-dir")
     if args.scheduled:
@@ -91,7 +96,8 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
     with exclusive_lock(args.queue_dir, "intake-writer") if args.queue_dir else nullcontext():
         result = run_checks(args.database.resolve(), kind=args.kind, backup_dir=args.backup_dir.resolve(),
             occurrence_ids=set(args.occurrence_id) if args.occurrence_id else None,
-            resume_run_id=args.resume, retry_run_id=args.retry, limit=args.limit, data_root=args.data_root,
+            resume_run_id=args.resume, retry_run_id=args.retry, limit=args.limit, reverify_all=args.reverify_all,
+            data_root=args.data_root,
             progress=progress)
     if args.occurrence:
         result["occurrence"] = args.occurrence

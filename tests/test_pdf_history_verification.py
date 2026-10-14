@@ -274,9 +274,12 @@ def test_enrichment_failure_remains_visible_and_retryable(tmp_path):
     checked = next(item for item in reader.pdf_article("pdf-article")["occurrences"] if item["occurrence_id"] == "article-1")
     assert checked["verification_status"] == "verified" and checked["verified_information"] is None
     assert checked["checks"][0]["enrichment_error"] == "insufficient_content"
+    retry = run_checks(**options, retry_run_id=short["run_id"],
+        fetcher=lambda *_: pytest.fail("verified observations are skipped even when enrichment failed"))
+    assert retry["status"] == "complete" and retry["item_count"] == 0
     body = "Climate insurance companies assess physical risk, capital exposure, biodiversity impacts and transition scenarios using scientific research and financial data."
-    retry = run_checks(**options, retry_run_id=short["run_id"], fetcher=lambda identifier, url: _record(identifier, url, body))
-    assert retry["status"] == "complete" and retry["item_count"] == 1 and retry["enrichment_failed_count"] == 0
+    repair = run_checks(**options, reverify_all=True, fetcher=lambda identifier, url: _record(identifier, url, body))
+    assert repair["status"] == "complete" and repair["item_count"] == 1 and repair["enrichment_failed_count"] == 0
     from climate_registry.wiki import render_runtime_registry
     page = render_runtime_registry(tmp_path / "wiki", web_database=None, pdf_database=database,
         manifest={"web_items": [], "pdf_occurrence_ids": ["article-1"]})["registry-source-observation-article-1.md"]
