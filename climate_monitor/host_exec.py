@@ -222,7 +222,8 @@ def call(directory, token_path, request, *, owner_uid):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(IO_TIMEOUT)
             sock.connect(f'/proc/self/fd/{fd}/executor.sock')
-            _require(_peer(sock) == owner_uid and before == _socket_stat(fd, owner_uid))
+            _require(_peer(sock) == owner_uid and
+                     _signature(before) == _signature(_socket_stat(fd, owner_uid)))
             _send(sock, request)
             reply = _receive(sock)
         _require(type(reply) is dict and set(reply) == {'version', 'request_sha256', 'result', 'mac'})
