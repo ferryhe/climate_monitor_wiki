@@ -515,9 +515,9 @@ def _check_run_input(connection, prefix, run_id, database):
 
 
 def _currently_verified_targets(connection, prefix: str, targets: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """Return target keys whose latest attempt verifies the exact current source binding."""
-    target_by_key = {(target["occurrence_id"], target["source_url"]): target for target in targets}
-    if not target_by_key:
+    """Return keys with a latest verified attempt for the same logical observation and URL."""
+    target_keys = {(target["occurrence_id"], target["source_url"]) for target in targets}
+    if not target_keys:
         return set()
     grouped: dict[str, dict[str, set[str]]] = {}
     for target in targets:
@@ -533,7 +533,9 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
     available_columns = {row[1] for row in connection.execute(f"PRAGMA table_info({prefix}_check_attempts)")}
     selected_columns = ["rowid AS _attempt_rowid", "occurrence_id"] + [
         column for column in ("core_article_id", "event_source_id") if column in available_columns
-    ] + ["source_url", "source_revision_sha256", "checked_at", "packet_json", "packet_sha256"]
+    ] + ["source_url", "checked_at", "packet_json", "packet_sha256"]
+    if "verification_status" in available_columns:
+        selected_columns.append("verification_status")
     for column, identities in grouped.items():
         pairs = [(identity, url) for identity, urls in identities.items() for url in urls]
         for start in range(0, len(pairs), 300):
@@ -545,13 +547,14 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
                 f"FROM {prefix}_check_attempts WHERE {where} "
                 "ORDER BY checked_at DESC, rowid DESC", parameters)
             for row in rows:
-                key = (attempt_identity(row, prefix), row["source_url"])
-                latest.setdefault(key, row)
+                attempt = dict(row)
+                key = (attempt_identity(attempt, prefix), attempt["source_url"])
+                latest.setdefault(key, attempt)
 
     verified = set()
-    for key, target in target_by_key.items():
+    for key in target_keys:
         row = latest.get(key)
-        if row is None or row["source_revision_sha256"] != target["source_revision_sha256"]:
+        if row is None or row.get("verification_status") != "verified":
             continue
         try:
             packet = json.loads(row["packet_json"])
@@ -561,16 +564,8 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
             raise ValueError("invalid information check packet")
         if _sha(packet) != row["packet_sha256"]:
             raise ValueError("information check packet hash mismatch")
-        # Source revision does not cover every candidate binding field.
-        if (packet.get("occurrence_id") != target["occurrence_id"]
-                or packet.get("source_url") != target["source_url"]
-                or packet.get("source_revision_sha256") != target["source_revision_sha256"]
-                or packet.get("source_binding") != target["source_binding"]
-                or packet.get("entity_kind") != target["entity_kind"]
-                or packet.get("entity_id") != target["entity_id"]
-                or packet.get("fields") != target["fields"]):
-            continue
-        if packet.get("verification_status") == "verified":
+        if (row.get("verification_status") == "verified"
+                and packet.get("verification_status") == "verified"):
             verified.add(key)
     return verified
 

@@ -102,9 +102,11 @@ python scripts/check_information.py --kind meetings --database /data/registry.sq
 python scripts/check_information.py --kind meetings --database /data/registry.sqlite3 --backup-dir /data/backups --limit 10 --reverify-all
 ```
 
-Fresh runs skip observations already verified against their current source
-binding; unresolved and partial observations remain eligible. `--reverify-all`
-rechecks the selected targets and preserves prior attempts. It is a manual
+Fresh runs skip an observation/URL pair when its latest hash-valid attempt is
+verified, including older attempts without current revision-binding fields;
+unresolved and partial latest attempts remain eligible. `--reverify-all`
+rechecks the selected targets, preserves prior attempts, and does not change
+review or approval state. It is a manual
 fresh-run option and cannot be combined with `--resume`, `--retry`, or
 `--scheduled`. `--occurrence-id` selects individual observations. `--resume`
 skips saved terminal attempts and continues the exact frozen input. `--retry`

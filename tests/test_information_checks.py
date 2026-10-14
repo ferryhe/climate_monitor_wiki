@@ -201,10 +201,13 @@ def test_reverify_all_creates_a_new_latest_attempt_and_source_changes_recheck(tm
             "source_binding": {**checked["source_binding"], "record_version": 2}}
         binding_only_verified = _currently_verified_targets(
             connection, "meeting", [binding_changed])
-    assert current_verified == set()
-    assert (changed["occurrence_id"], changed["source_url"]) not in current_verified
+        stale_item = {**checked["fields"], "occurrence_id": checked["occurrence_id"],
+            "source_urls": [checked["source_url"]], "name": "Changed meeting"}
+        stale_status = latest_checks(connection, "meetings", stale_item)
+    expected_key = (checked["occurrence_id"], checked["source_url"])
+    assert current_verified == binding_only_verified == {expected_key}
     assert binding_changed["source_revision_sha256"] == checked["source_revision_sha256"]
-    assert binding_only_verified == set()
+    assert stale_status["verification_status"] == "unchecked"
 
 
 def test_information_check_cli_forwards_reverify_all(tmp_path, monkeypatch):
@@ -228,7 +231,8 @@ def test_current_verified_native_target_uses_its_core_foreign_key():
     connection.row_factory = sqlite3.Row
     connection.execute("""CREATE TABLE article_check_attempts (
         occurrence_id TEXT, core_article_id TEXT, event_source_id TEXT, source_url TEXT,
-        source_revision_sha256 TEXT, checked_at TEXT, packet_json TEXT, packet_sha256 TEXT
+        source_revision_sha256 TEXT, checked_at TEXT, verification_status TEXT,
+        packet_json TEXT, packet_sha256 TEXT
     )""")
     target = {
         "occurrence_id": "core:article-a", "source_url": "https://example.org/a",
@@ -236,11 +240,44 @@ def test_current_verified_native_target_uses_its_core_foreign_key():
         "source_binding": {"article_id": "article-a", "version_id": "version-a"},
         "fields": {"title": "Approved article"},
     }
-    packet = {**target, "verification_status": "verified", "access_status": "accessible"}
-    connection.execute("INSERT INTO article_check_attempts VALUES(?,?,?,?,?,?,?,?)",
+    packet = {"verification_status": "verified", "method": "legacy-checker",
+        "reviewed_scope": "article", "source_url": target["source_url"]}
+    connection.execute("INSERT INTO article_check_attempts VALUES(?,?,?,?,?,?,?,?,?)",
         (None, "article-a", None, target["source_url"], target["source_revision_sha256"],
-            "2026-10-14T12:00:00Z", _json(packet), _sha(packet)))
+            "2026-10-14T12:00:00Z", "verified", _json(packet), _sha(packet)))
     assert _currently_verified_targets(connection, "article", [target]) == {
+        (target["occurrence_id"], target["source_url"])
+    }
+    changed_binding = {**target, "source_binding": {"article_id": "article-a", "version_id": "new"}}
+    assert _currently_verified_targets(connection, "article", [changed_binding]) == {
+        (target["occurrence_id"], target["source_url"])
+    }
+
+
+def test_manually_reviewed_legacy_attempt_skips_same_meeting_url_despite_new_revision():
+    from climate_registry.information_checks import _currently_verified_targets, _json, _sha
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("""CREATE TABLE meeting_check_attempts (
+        occurrence_id TEXT, event_source_id TEXT, source_url TEXT, source_revision_sha256 TEXT,
+        checked_at TEXT, verification_status TEXT, packet_json TEXT, packet_sha256 TEXT
+    )""")
+    target = {
+        "occurrence_id": "event-source-1", "source_url": "https://example.org/meeting",
+        "source_revision_sha256": "new-revision", "entity_kind": "meeting",
+        "entity_id": "event-1", "source_binding": {"event_source_id": "event-source-1"},
+        "fields": {"name": "Updated meeting"},
+    }
+    packet = {
+        "verification_status": "verified", "method": "manual-review",
+        "reviewed_scope": "meeting", "confirmed_field_evidence": {"name": "confirmed"},
+        "date_update_evidence": {}, "recorded_at": "2025-01-01T00:00:00Z",
+        "evidence_reference": "legacy-review-1",
+    }
+    connection.execute("INSERT INTO meeting_check_attempts VALUES(?,?,?,?,?,?,?,?)",
+        ("event-source-1", "event-source-1", target["source_url"], "old-revision",
+            "2025-01-01T00:00:00Z", "verified", _json(packet), _sha(packet)))
+    assert _currently_verified_targets(connection, "meeting", [target]) == {
         (target["occurrence_id"], target["source_url"])
     }
 
