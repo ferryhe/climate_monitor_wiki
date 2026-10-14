@@ -314,6 +314,47 @@ def test_nonce_replay_survives_restart(setup):
         assert exchange(server, token, req, positive=True)['status'] == 'replay'
 
 
+def test_socket_atime_change_during_connect_does_not_reject_exchange(setup, monkeypatch):
+    root, token = setup
+    req = request(token)
+    with serving(root, token) as server:
+        socket_stat = protocol._socket_stat
+        calls = 0
+
+        class AtimeChanged:
+            def __init__(self, st):
+                self.st = st
+
+            def __getattr__(self, name):
+                value = getattr(self.st, name)
+                return value + (1 if name == 'st_atime' else 1_000_000_000) if name in {
+                    'st_atime', 'st_atime_ns'} else value
+
+            def __iter__(self):
+                values = list(self.st)
+                values[7] += 1
+                return iter(values)
+
+            def __eq__(self, other):
+                return tuple(self) == tuple(other)
+
+        def atime_changed(fd, owner_uid):
+            nonlocal calls
+            st = socket_stat(fd, owner_uid)
+            calls += 1
+            if calls == 2:
+                changed = AtimeChanged(st)
+                assert [index for index, pair in enumerate(zip(st, changed))
+                        if pair[0] != pair[1]] == [7]
+                assert protocol._signature(st) == protocol._signature(changed)
+                assert st != changed
+                return changed
+            return st
+
+        monkeypatch.setattr(protocol, '_socket_stat', atime_changed)
+        assert exchange(server, token, req, positive=True)['status'] == 'not_ready'
+
+
 @pytest.mark.parametrize('changes', [dict(purpose='dashboard'), dict(audience='dashboard'),
                                     dict(expires_at=1), dict(enabled=False), dict(uid=os.getuid()+1)])
 def test_auth_policy_rejects(setup, changes):
