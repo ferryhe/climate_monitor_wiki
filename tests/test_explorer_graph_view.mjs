@@ -3,6 +3,11 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../showcase/styles.css', import.meta.url), 'utf8');
+const expandedSelectionRule = styles.match(/\.graph-expanded-selection\s*\{([^}]*)\}/)?.[1] || '';
+assert.match(expandedSelectionRule, /min-width:\s*0/, 'the selected-page status may shrink beside Close graph');
+assert.match(expandedSelectionRule, /overflow-wrap:\s*anywhere/,
+  'long source hosts wrap within the full-screen graph toolbar');
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `missing ${name}`);
@@ -103,6 +108,10 @@ assert.equal(expandButton.attributes['aria-expanded'], 'true');
 assert.equal(expandButton.textContent, 'Close full-screen graph');
 assert.equal(selection.hidden, false);
 assert.match(selection.textContent, /Selected page: Diabetes.*Close graph to view Note Detail/);
+const longPdfTitle = 'PDF source observation · carbonaccountingfinancials.com · p.24';
+state.rows[0].displayTitle = longPdfTitle;
+context.renderExpandedGraphSelection();
+assert.ok(selection.textContent.includes(longPdfTitle), 'the expanded status preserves a long PDF source title');
 assert.equal(renders, 1);
 
 let prevented = false;

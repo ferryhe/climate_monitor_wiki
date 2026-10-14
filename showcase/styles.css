@@ -958,6 +958,7 @@ a {
   color: #d9e4ef;
   font-size: 14px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 html.graph-expanded { overflow: hidden; }
