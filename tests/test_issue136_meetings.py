@@ -12,7 +12,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+import api_server
+from api_server import app
 from climate_monitor.meetings import (
     freeze_snapshot,
     load_snapshot,
@@ -994,6 +997,49 @@ def test_partial_dates_unknown_end_and_snapshots_are_stable(tmp_path):
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         connection.execute("UPDATE meeting_snapshots SET base_date='2099-01-01'")
     connection.close()
+
+
+def test_approved_partial_meeting_http_filter_supports_focused_unknown_date_record(tmp_path, monkeypatch):
+    body = "Example announces Climate Webinar 2028 for March 2028."
+    database = _database(tmp_path, [body])
+    candidate = _candidate(
+        name="Climate Webinar 2028", event_type="webinar", date_precision="month",
+        start_date="2028-03", end_date=None, raw_time_text="March 2028",
+        date_evidence="March 2028", location=None, online_url=None,
+        deadline_type=None, deadline_date=None, deadline_evidence=None,
+    )
+    process_batch(
+        database, "batch", prompt_text="prompt", prompt_version="v1", provider="p", model="m",
+        extractor=lambda request: {"events": [candidate]},
+    )
+    producer_record = next(record for record in query_events(
+        database, base_date="2028-04-01", include_unknown=True, timezone_name="UTC",
+    )["records"] if record["name"] == "Climate Webinar 2028")
+    with sqlite3.connect(database) as connection:
+        from climate_registry.publication import _approve, snapshot_entity, stage_snapshot
+
+        snapshot = snapshot_entity(connection, "meeting", producer_record["event_id"], include_pending=False)
+        candidate_sha = stage_snapshot(connection, snapshot, basis="accepted_legacy")
+        _approve(connection, candidate_sha, {"basis": "approved partial date fixture"}, status="accepted_legacy")
+
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setattr(api_server, "_pdf_registry_view", lambda: (api_server._registry_reader(), set(), set()))
+    client = TestClient(app)
+    base = {"query": "Climate Webinar 2028", "base_date": "1900-01-01"}
+    ordinary = client.get("/api/registry/meetings", params=base)
+    assert ordinary.status_code == 200
+    assert ordinary.json()["items"] == []
+
+    focused = client.get("/api/registry/meetings", params={**base, "include_unknown": "true"})
+    assert focused.status_code == 200
+    items = focused.json()["items"]
+    assert len(items) == 1
+    item = items[0]
+    assert (item.get("canonical_event_id") or item.get("event_id") or item.get("occurrence_id")) == producer_record["event_id"]
+    assert item["raw_time_text"] == "March 2028"
+    assert item["date_precision"] == "month"
+    assert item["start_date"] == "2028-03"
+    assert item["end_date"] is None
 
 
 def test_coverage_and_snapshot_identity_include_enabled_target_batch_context(tmp_path):
