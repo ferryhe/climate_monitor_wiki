@@ -1,0 +1,1033 @@
+{
+  "checked_on": "2026-10-14",
+  "base_commit": "6df10ee7acfa524b86665c4c0a3e2c3978e13d95",
+  "inventory_endpoint": "https://aiclimate.aiforactuaries.org/api/registry/publishers?include_pdf=true",
+  "inventory_count": 109,
+  "verification_note": "Configured entries reuse governed acquisition names. Official_page and official_search entries use official website or indexed official-source evidence. Unverified entries retain complete hostnames. Channel suffixes distinguish host filters; shared-site article labels use specific URL paths. This is a name review, not a statement about source reliability or legal ownership.",
+  "sources": [
+    {
+      "hostname": "actuaries.org",
+      "evidence_url": "https://www.actuaries.org/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "International Actuarial Association (IAA)",
+      "official_name": "International Actuarial Association (IAA)",
+      "previous_label": "actuaries"
+    },
+    {
+      "hostname": "actuaries.org.nz",
+      "evidence_url": "https://www.actuaries.org.nz/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "New Zealand Society of Actuaries (NZSA)",
+      "official_name": "New Zealand Society of Actuaries (NZSA)",
+      "previous_label": "actuaries"
+    },
+    {
+      "hostname": "actuaries.org.uk",
+      "evidence_url": "https://www.actuaries.org.uk/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "Institute and Faculty of Actuaries (IFoA)",
+      "official_name": "Institute and Faculty of Actuaries (IFoA)",
+      "previous_label": "actuaries"
+    },
+    {
+      "hostname": "actuariesclimateindex.org",
+      "evidence_url": "https://actuariesclimateindex.org/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "Actuaries Climate Index (ACI)",
+      "official_name": "Actuaries Climate Index (ACI)",
+      "previous_label": "actuariesclimateindex"
+    },
+    {
+      "hostname": "actuary.info",
+      "evidence_url": "https://actuary.info/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "The Daily Actuary",
+      "official_name": "The Daily Actuary",
+      "previous_label": "actuary"
+    },
+    {
+      "hostname": "actuary.org",
+      "evidence_url": "https://www.actuary.org/",
+      "verification": "official_search",
+      "notes": "Official website name; preserve the full name rather than adding an unconfirmed acronym. Legacy AAA labels remain recognized aliases.",
+      "display_name": "American Academy of Actuaries",
+      "official_name": "American Academy of Actuaries",
+      "previous_label": "actuary"
+    },
+    {
+      "hostname": "adaptation-fund.org",
+      "evidence_url": "https://www.adaptation-fund.org/About/",
+      "verification": "official_search",
+      "notes": "Official site’s About page identifies the Adaptation Fund; its official materials use AF.",
+      "display_name": "Adaptation Fund (AF)",
+      "official_name": "Adaptation Fund (AF)",
+      "previous_label": "adaptation-fund"
+    },
+    {
+      "hostname": "adaptation-undp.org",
+      "evidence_url": "https://www.adaptation-undp.org/",
+      "verification": "official_page",
+      "notes": "Official page describes UNDP’s climate adaptation work and is branded as the UNDP Climate Change Adaptation website.",
+      "display_name": "United Nations Development Programme (UNDP) — Climate Change Adaptation",
+      "official_name": "United Nations Development Programme (UNDP) — Climate Change Adaptation",
+      "previous_label": "adaptation-undp"
+    },
+    {
+      "hostname": "adb.org",
+      "evidence_url": "https://www.adb.org/",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as ADB; configuration is authoritative.",
+      "display_name": "Asian Development Bank (ADB)",
+      "official_name": "Asian Development Bank (ADB)",
+      "previous_label": "adb"
+    },
+    {
+      "hostname": "afdb.org",
+      "evidence_url": "https://www.afdb.org/en",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as AFDB; configuration is authoritative.",
+      "display_name": "African Development Bank Group (AFDB)",
+      "official_name": "African Development Bank Group (AFDB)",
+      "previous_label": "afdb"
+    },
+    {
+      "hostname": "ajg.com",
+      "evidence_url": "https://www.ajg.com/about-us/",
+      "verification": "official_search",
+      "notes": "Official company site presents Gallagher as its brand; investor relations identifies the company as Arthur J. Gallagher & Co.",
+      "display_name": "Arthur J. Gallagher & Co. (Gallagher)",
+      "official_name": "Arthur J. Gallagher & Co. (Gallagher)",
+      "previous_label": "ajg"
+    },
+    {
+      "hostname": "alliedoffsets.com",
+      "evidence_url": "https://www.alliedoffsets.com/",
+      "verification": "official_search",
+      "notes": "Official site uses AlliedOffsets as the brand spelling.",
+      "display_name": "AlliedOffsets",
+      "official_name": "AlliedOffsets",
+      "previous_label": "alliedoffsets"
+    },
+    {
+      "hostname": "aon.com",
+      "evidence_url": "https://www.aon.com/about-us",
+      "verification": "official_search",
+      "notes": "Official site identifies Aon plc and uses Aon as its brand.",
+      "display_name": "Aon",
+      "official_name": "Aon",
+      "previous_label": "aon"
+    },
+    {
+      "hostname": "artemis.bm",
+      "evidence_url": "https://www.artemis.bm/",
+      "verification": "official_page",
+      "notes": "Official homepage title and brand use Artemis; no expansion is needed.",
+      "display_name": "Artemis",
+      "official_name": "Artemis",
+      "previous_label": "artemis"
+    },
+    {
+      "hostname": "axa.com.hk",
+      "evidence_url": "https://www.axa.com.hk/en/article/axa-announces-re-domicile-completion",
+      "verification": "official_search",
+      "notes": "Official AXA Hong Kong site names AXA Hong Kong and Macau; brand is AXA.",
+      "display_name": "AXA Hong Kong and Macau (AXA)",
+      "official_name": "AXA Hong Kong and Macau (AXA)",
+      "previous_label": "axa"
+    },
+    {
+      "hostname": "bis.org",
+      "evidence_url": "https://www.bis.org/index.htm",
+      "verification": "configured",
+      "notes": "Configured default identity is BIS. This is a shared host: the configured BCBS identity applies to /bcbs/ paths only; do not label the whole host BCBS.",
+      "display_name": "Bank for International Settlements (BIS)",
+      "official_name": "Bank for International Settlements (BIS)",
+      "previous_label": "bcbs"
+    },
+    {
+      "hostname": "blog.alliedoffsets.com",
+      "evidence_url": "https://blog.alliedoffsets.com/beyond-data-aggregation-a-look-behind-the-scenes-at-alliedoffsets",
+      "verification": "official_search",
+      "notes": "Official AlliedOffsets blog uses the same AlliedOffsets brand as the parent site.",
+      "display_name": "AlliedOffsets — Blog",
+      "official_name": "AlliedOffsets",
+      "previous_label": "alliedoffsets"
+    },
+    {
+      "hostname": "blogs.afdb.org",
+      "evidence_url": "https://www.afdb.org/en",
+      "verification": "configured",
+      "notes": "Subdomain follows the configured AFDB source identity.",
+      "display_name": "African Development Bank Group (AFDB) — Blogs",
+      "official_name": "African Development Bank Group (AFDB)",
+      "previous_label": "afdb"
+    },
+    {
+      "hostname": "blogs.worldbank.org",
+      "evidence_url": "https://www.worldbank.org/",
+      "verification": "configured",
+      "notes": "Subdomain follows the configured world-bank identity and display override.",
+      "display_name": "World Bank Group (WBG) — Blogs",
+      "official_name": "World Bank Group (WBG)",
+      "previous_label": "worldbank"
+    },
+    {
+      "hostname": "briefglance.com",
+      "evidence_url": "https://briefglance.com/",
+      "verification": "official_page",
+      "notes": "Official homepage and copyright line use BriefGlance.com; the site identifies Linkator Ltd as provider, not as the publication brand.",
+      "display_name": "BriefGlance.com",
+      "official_name": "BriefGlance.com",
+      "previous_label": "briefglance"
+    },
+    {
+      "hostname": "carbonaccountingfinancials.com",
+      "evidence_url": "https://carbonaccountingfinancials.com/",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as PCAF; configuration is authoritative.",
+      "display_name": "Partnership for Carbon Accounting Financials (PCAF)",
+      "official_name": "Partnership for Carbon Accounting Financials (PCAF)",
+      "previous_label": "carbonaccountingfinancials"
+    },
+    {
+      "hostname": "casact.org",
+      "evidence_url": "https://www.casact.org/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "Casualty Actuarial Society (CAS)",
+      "official_name": "Casualty Actuarial Society (CAS)",
+      "previous_label": "casact"
+    },
+    {
+      "hostname": "cbd.int",
+      "evidence_url": "https://www.cbd.int/contact",
+      "verification": "official_search",
+      "notes": "Official site identifies the Secretariat of the Convention on Biological Diversity; CBD is the official short form.",
+      "display_name": "Secretariat of the Convention on Biological Diversity (CBD)",
+      "official_name": "Secretariat of the Convention on Biological Diversity (CBD)",
+      "previous_label": "cbd"
+    },
+    {
+      "hostname": "cdp.net",
+      "evidence_url": "https://www.cdp.net/en/about",
+      "verification": "official_page",
+      "notes": "Official About page and current site branding use CDP; no legacy expansion is added.",
+      "display_name": "CDP",
+      "official_name": "CDP",
+      "previous_label": "cdp"
+    },
+    {
+      "hostname": "ceres.org",
+      "evidence_url": "https://www.ceres.org/about",
+      "verification": "official_search",
+      "notes": "Official About page identifies Ceres as the organization’s name.",
+      "display_name": "Ceres",
+      "official_name": "Ceres",
+      "previous_label": "ceres"
+    },
+    {
+      "hostname": "cetex.org",
+      "evidence_url": "https://cetex.org/wp-content/uploads/2025/09/Seven-Lessons-for-Indias-Climate-Finance-Taxonomy.pdf",
+      "verification": "official_search",
+      "notes": "Official CETEx publication gives the full name; current website styles the name CETEx.",
+      "display_name": "Centre for Economic Transition Expertise (CETEx)",
+      "official_name": "Centre for Economic Transition Expertise (CETEx)",
+      "previous_label": "cetex"
+    },
+    {
+      "hostname": "cia-ica.ca",
+      "evidence_url": "https://www.cia-ica.ca/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained with its English/French acronyms.",
+      "display_name": "Canadian Institute of Actuaries (CIA/ICA)",
+      "official_name": "Canadian Institute of Actuaries (CIA/ICA)",
+      "previous_label": "cia-ica"
+    },
+    {
+      "hostname": "climate.copernicus.eu",
+      "evidence_url": "https://climate.copernicus.eu/",
+      "verification": "official_search",
+      "notes": "Previously confirmed in the actuarial-core pass; retained as requested.",
+      "display_name": "Copernicus Climate Change Service (C3S)",
+      "official_name": "Copernicus Climate Change Service (C3S)",
+      "previous_label": "copernicus"
+    },
+    {
+      "hostname": "climatepolicyinitiative.org",
+      "evidence_url": "https://www.climatepolicyinitiative.org/about-cpi/what-we-do/",
+      "verification": "official_search",
+      "notes": "Official site expands CPI as Climate Policy Initiative.",
+      "display_name": "Climate Policy Initiative (CPI)",
+      "official_name": "Climate Policy Initiative (CPI)",
+      "previous_label": "climatepolicyinitiative"
+    },
+    {
+      "hostname": "climatepromise.undp.org",
+      "evidence_url": "https://climatepromise.undp.org/",
+      "verification": "official_search",
+      "notes": "Official UNDP Climate Promise site; distinct from general UNDP.",
+      "display_name": "United Nations Development Programme (UNDP) — Climate Promise",
+      "official_name": "UNDP Climate Promise",
+      "previous_label": "undp"
+    },
+    {
+      "hostname": "content.naic.org",
+      "evidence_url": "https://content.naic.org/about",
+      "verification": "official_search",
+      "notes": "Official About page gives the full name and acronym.",
+      "display_name": "National Association of Insurance Commissioners (NAIC)",
+      "official_name": "National Association of Insurance Commissioners (NAIC)",
+      "previous_label": "naic"
+    },
+    {
+      "hostname": "dawgen.global",
+      "evidence_url": "https://www.dawgen.global/about-us/",
+      "verification": "official_search",
+      "notes": "Official About page identifies the firm as Dawgen Global.",
+      "display_name": "Dawgen Global",
+      "official_name": "Dawgen Global",
+      "previous_label": "dawgen"
+    },
+    {
+      "hostname": "deloitte.com",
+      "evidence_url": "https://www.deloitte.com/global/en/about.html",
+      "verification": "official_search",
+      "notes": "Official global site brands the organization as Deloitte; Deloitte Touche Tohmatsu Limited is a distinct legal entity within the network.",
+      "display_name": "Deloitte",
+      "official_name": "Deloitte",
+      "previous_label": "deloitte"
+    },
+    {
+      "hostname": "desapublications.un.org",
+      "evidence_url": "https://desapublications.un.org/publications/category/Capacity%20Development/category/capacity%20development",
+      "verification": "official_search",
+      "notes": "Official publications site and its materials identify the publisher as UN DESA; the full department name is stated on the site.",
+      "display_name": "United Nations Department of Economic and Social Affairs (UN DESA)",
+      "official_name": "United Nations Department of Economic and Social Affairs (UN DESA)",
+      "previous_label": "un"
+    },
+    {
+      "hostname": "descartesunderwriting.com",
+      "evidence_url": "https://descartesunderwriting.com/about/descartes-underwriting",
+      "verification": "official_search",
+      "notes": "Official About page uses the Descartes Underwriting name.",
+      "display_name": "Descartes Underwriting",
+      "official_name": "Descartes Underwriting",
+      "previous_label": "descartesunderwriting"
+    },
+    {
+      "hostname": "documents.worldbank.org",
+      "evidence_url": "https://www.worldbank.org/",
+      "verification": "configured",
+      "notes": "Subdomain follows the configured world-bank identity and display override.",
+      "display_name": "World Bank Group (WBG) — Documents & Reports",
+      "official_name": "World Bank Group (WBG)",
+      "previous_label": "worldbank"
+    },
+    {
+      "hostname": "domain-b.com",
+      "evidence_url": "https://domain-b.com/",
+      "verification": "unverified",
+      "notes": "Current homepage could not be retrieved. Historical official indexed pages use domain-B, but no current brand confirmation was available; the complete hostname is retained.",
+      "display_name": "domain-b.com",
+      "official_name": "domain-b.com",
+      "previous_label": "domain-b"
+    },
+    {
+      "hostname": "earthdata.nasa.gov",
+      "evidence_url": "https://www.earthdata.nasa.gov/home",
+      "verification": "official_search",
+      "notes": "NASA Earthdata is the official portal brand for NASA Earth science data.",
+      "display_name": "NASA Earthdata",
+      "official_name": "NASA Earthdata",
+      "previous_label": "NASA earthdata"
+    },
+    {
+      "hostname": "eiopa.europa.eu",
+      "evidence_url": "https://www.eiopa.europa.eu/about/contact-us_en",
+      "verification": "official_search",
+      "notes": "Previously confirmed in prior research; official contact page gives the full name and acronym.",
+      "display_name": "European Insurance and Occupational Pensions Authority (EIOPA)",
+      "official_name": "European Insurance and Occupational Pensions Authority (EIOPA)",
+      "previous_label": "europa"
+    },
+    {
+      "hostname": "electrictruckworld.com",
+      "evidence_url": "https://electrictruckworld.com/",
+      "verification": "official_page",
+      "notes": "Official homepage heading is Electric Truck World, with the tagline World of Electric Trucks.",
+      "display_name": "Electric Truck World",
+      "official_name": "Electric Truck World",
+      "previous_label": "electrictruckworld"
+    },
+    {
+      "hostname": "energy.gov",
+      "evidence_url": "https://www.energy.gov/mission",
+      "verification": "official_search",
+      "notes": "Official Energy.gov site identifies the department; DOE is the official short form.",
+      "display_name": "U.S. Department of Energy (DOE)",
+      "official_name": "U.S. Department of Energy (DOE)",
+      "previous_label": "energy"
+    },
+    {
+      "hostname": "ey.com",
+      "evidence_url": "https://www.ey.com/en_gl/about-us/governance/ey-network",
+      "verification": "official_search",
+      "notes": "Official site uses EY for the global network of member firms; Ernst & Young Global Limited (EYG) coordinates the network and is not the whole network.",
+      "display_name": "EY",
+      "official_name": "EY",
+      "previous_label": "ey"
+    },
+    {
+      "hostname": "fao.org",
+      "evidence_url": "https://www.fao.org/",
+      "verification": "configured",
+      "notes": "Name and abbreviation are in monitoring/supranational_sources.yaml missing_url_notes; that configuration has no source URL.",
+      "display_name": "Food and Agriculture Organization of the United Nations (FAO)",
+      "official_name": "Food and Agriculture Organization of the United Nations (FAO)",
+      "previous_label": "fao"
+    },
+    {
+      "hostname": "forbes.com",
+      "evidence_url": "https://www.forbes.com/",
+      "verification": "official_page",
+      "notes": "Official homepage uses Forbes as the publication brand.",
+      "display_name": "Forbes",
+      "official_name": "Forbes",
+      "previous_label": "forbes"
+    },
+    {
+      "hostname": "fsb-tcfd.org",
+      "evidence_url": "https://www.fsb-tcfd.org/about/",
+      "verification": "official_search",
+      "notes": "Official About page provides the name and acronym; it states that the Task Force fulfilled its remit and disbanded in 2023.",
+      "display_name": "Task Force on Climate-Related Financial Disclosures (TCFD)",
+      "official_name": "Task Force on Climate-Related Financial Disclosures (TCFD)",
+      "previous_label": "fsb-tcfd"
+    },
+    {
+      "hostname": "fsb.org",
+      "evidence_url": "https://www.fsb.org/",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as FSB; configuration is authoritative.",
+      "display_name": "Financial Stability Board (FSB)",
+      "official_name": "Financial Stability Board (FSB)",
+      "previous_label": "fsb"
+    },
+    {
+      "hostname": "g20.org",
+      "evidence_url": "https://g20.org",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as G20; configuration is authoritative.",
+      "display_name": "Group of Twenty (G20)",
+      "official_name": "Group of Twenty (G20)",
+      "previous_label": "g20"
+    },
+    {
+      "hostname": "gca.org",
+      "evidence_url": "https://gca.org/",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as GCA; configuration is authoritative.",
+      "display_name": "Global Center on Adaptation (GCA)",
+      "official_name": "Global Center on Adaptation (GCA)",
+      "previous_label": "gca"
+    },
+    {
+      "hostname": "genevaassociation.org",
+      "evidence_url": "https://www.genevaassociation.org/about-us/who-we-are",
+      "verification": "official_search",
+      "notes": "Official About page identifies The Geneva Association as its name; no acronym is used.",
+      "display_name": "The Geneva Association",
+      "official_name": "The Geneva Association",
+      "previous_label": "genevaassociation"
+    },
+    {
+      "hostname": "globalbankingandfinance.com",
+      "evidence_url": "https://www.globalbankingandfinance.com/about-us/",
+      "verification": "official_search",
+      "notes": "Official About and publishing-principles pages use the full name and GBFR short form.",
+      "display_name": "Global Banking & Finance Review (GBFR)",
+      "official_name": "Global Banking & Finance Review (GBFR)",
+      "previous_label": "globalbankingandfinance"
+    },
+    {
+      "hostname": "globalpolicyjournal.com",
+      "evidence_url": "https://www.globalpolicyjournal.com/about/background",
+      "verification": "official_search",
+      "notes": "Official editorial statement calls the publication Global Policy and says it is based at Durham University.",
+      "display_name": "Global Policy",
+      "official_name": "Global Policy",
+      "previous_label": "globalpolicyjournal"
+    },
+    {
+      "hostname": "iais.org",
+      "evidence_url": "https://www.iais.org/",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as IAIS; configuration is authoritative.",
+      "display_name": "International Association of Insurance Supervisors (IAIS)",
+      "official_name": "International Association of Insurance Supervisors (IAIS)",
+      "previous_label": "iais"
+    },
+    {
+      "hostname": "iea.org",
+      "evidence_url": "https://iea.org",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as IEA; configuration is authoritative.",
+      "display_name": "International Energy Agency (IEA)",
+      "official_name": "International Energy Agency (IEA)",
+      "previous_label": "iea"
+    },
+    {
+      "hostname": "ifac.org",
+      "evidence_url": "https://www.ifac.org/",
+      "verification": "configured",
+      "notes": "Configured in monitoring/supranational_sources.yaml as IFAC; configuration is authoritative.",
+      "display_name": "International Federation of Accountants (IFAC)",
+      "official_name": "International Federation of Accountants (IFAC)",
+      "previous_label": "ifac"
+    },
+    {
+      "hostname": "ifrs.org",
+      "evidence_url": "https://www.ifrs.org/",
+      "verification": "official_page",
+      "notes": "Publisher mapping's base-host default is IFRS Foundation (IFRS); the supranational YAML also has path-specific ISSB rules. Do not apply the ISSB label to every ifrs.org URL.",
+      "display_name": "IFRS Foundation (IFRS)",
+      "official_name": "IFRS Foundation (IFRS)",
+      "previous_label": "ifrs"
+    },
+    {
+      "hostname": "ilo.org",
+      "evidence_url": "https://www.ilo.org/",
+      "verification": "configured",
+      "notes": "Configured source key ilo in monitoring/supranational_sources.yaml; retain its full_name and abbreviation.",
+      "display_name": "International Labour Organization (ILO)",
+      "official_name": "International Labour Organization (ILO)",
+      "previous_label": "ilo"
+    },
+    {
+      "hostname": "imf.org",
+      "evidence_url": "https://www.imf.org/",
+      "verification": "configured",
+      "notes": "Configured source key imf in monitoring/supranational_sources.yaml.",
+      "display_name": "International Monetary Fund (IMF)",
+      "official_name": "International Monetary Fund (IMF)",
+      "previous_label": "imf"
+    },
+    {
+      "hostname": "indonesia.un.org",
+      "evidence_url": "https://indonesia.un.org/en/about/about-the-un",
+      "verification": "official_page",
+      "notes": "Official country-team site. Keep distinct from the general United Nations host.",
+      "display_name": "United Nations in Indonesia",
+      "official_name": "United Nations in Indonesia",
+      "previous_label": "un"
+    },
+    {
+      "hostname": "industryresearch.biz",
+      "evidence_url": "https://www.industryresearch.biz/aboutus",
+      "verification": "official_page",
+      "notes": "Official About page uses Industry Research as its brand; footer says Industry Research Biz. No acronym or distinct legal entity was confirmed.",
+      "display_name": "Industry Research",
+      "official_name": "Industry Research",
+      "previous_label": "industryresearch"
+    },
+    {
+      "hostname": "informedclearly.com",
+      "evidence_url": "https://informedclearly.com/nl/about",
+      "verification": "official_page",
+      "notes": "The About page styles the brand as “Informed, Clearly” and describes a multilingual digital news platform. No acronym or separate legal publisher name was confirmed.",
+      "display_name": "Informed, Clearly",
+      "official_name": "Informed, Clearly",
+      "previous_label": "informedclearly"
+    },
+    {
+      "hostname": "inrisklabs.com",
+      "evidence_url": "https://inrisklabs.com/",
+      "verification": "official_page",
+      "notes": "Current homepage title is InRisk; an article also uses “InRisk Labs.” No acronym was presented.",
+      "display_name": "InRisk",
+      "official_name": "InRisk",
+      "previous_label": "inrisklabs"
+    },
+    {
+      "hostname": "insurance.ca.gov",
+      "evidence_url": "https://www.insurance.ca.gov/0500-about-us/02-department/index.cfm",
+      "verification": "official_page",
+      "notes": "Official department page confirms the name and CDI abbreviation.",
+      "display_name": "California Department of Insurance (CDI)",
+      "official_name": "California Department of Insurance (CDI)",
+      "previous_label": "CA insurance"
+    },
+    {
+      "hostname": "insurancebusinessmag.com",
+      "evidence_url": "https://www.insurancebusinessmag.com/us/about-us/",
+      "verification": "official_page",
+      "notes": "Official About page identifies Insurance Business as the global media brand and Insurance Business America as the US edition.",
+      "display_name": "Insurance Business",
+      "official_name": "Insurance Business",
+      "previous_label": "insurancebusinessmag"
+    },
+    {
+      "hostname": "insuranceerm.com",
+      "evidence_url": "https://www.insuranceerm.com/company/about.html",
+      "verification": "official_page",
+      "notes": "Official About page identifies the publication as InsuranceERM and says it is published by Field Gibson Media.",
+      "display_name": "InsuranceERM",
+      "official_name": "InsuranceERM",
+      "previous_label": "insuranceerm"
+    },
+    {
+      "hostname": "insurancejournal.com",
+      "evidence_url": "https://www.insurancejournal.com/about/",
+      "verification": "official_page",
+      "notes": "Official About page uses Insurance Journal; no acronym.",
+      "display_name": "Insurance Journal",
+      "official_name": "Insurance Journal",
+      "previous_label": "insurancejournal"
+    },
+    {
+      "hostname": "ipcc.ch",
+      "evidence_url": "https://www.ipcc.ch/",
+      "verification": "configured",
+      "notes": "Configured source key ipcc in monitoring/supranational_sources.yaml.",
+      "display_name": "Intergovernmental Panel on Climate Change (IPCC)",
+      "official_name": "Intergovernmental Panel on Climate Change (IPCC)",
+      "previous_label": "ipcc"
+    },
+    {
+      "hostname": "irff.undp.org",
+      "evidence_url": "https://irff.undp.org/",
+      "verification": "configured",
+      "notes": "Configured source key irff; retain the dedicated subdomain identity rather than the parent UNDP label.",
+      "display_name": "Insurance and Risk Finance Facility (IRFF)",
+      "official_name": "Insurance and Risk Finance Facility (IRFF)",
+      "previous_label": "undp"
+    },
+    {
+      "hostname": "iri.columbia.edu",
+      "evidence_url": "https://iri.columbia.edu/about-us/what-is-iri/",
+      "verification": "official_page",
+      "notes": "Official IRI page says it is part of Columbia Climate School; the page heading includes “What was IRI?”, so the institute name is retained as the source identity.",
+      "display_name": "International Research Institute for Climate and Society (IRI)",
+      "official_name": "International Research Institute for Climate and Society (IRI)",
+      "previous_label": "columbia"
+    },
+    {
+      "hostname": "iso.org",
+      "evidence_url": "https://www.iso.org/about",
+      "verification": "official_page",
+      "notes": "ISO explicitly says the short name ISO is not an acronym and is inspired by Greek isos; preserve ISO as the official short name.",
+      "display_name": "ISO (International Organization for Standardization)",
+      "official_name": "ISO (International Organization for Standardization)",
+      "previous_label": "iso"
+    },
+    {
+      "hostname": "lse.ac.uk",
+      "evidence_url": "https://www.lse.ac.uk/about-lse",
+      "verification": "official_page",
+      "notes": "Official About page provides the full name and LSE short form.",
+      "display_name": "London School of Economics and Political Science (LSE)",
+      "official_name": "London School of Economics and Political Science (LSE)",
+      "previous_label": "lse"
+    },
+    {
+      "hostname": "mapfre.com",
+      "evidence_url": "https://www.mapfre.com/en/we-are-mapfre/our-brand/",
+      "verification": "official_page",
+      "notes": "Current brand page says the refreshed logo uses lowercase letters and styles the brand as Mapfre. Existing supplemental mapping uses uppercase MAPFRE, so the code spelling may be stale.",
+      "display_name": "Mapfre",
+      "official_name": "Mapfre",
+      "previous_label": "mapfre"
+    },
+    {
+      "hostname": "mcdermottlaw.com",
+      "evidence_url": "https://www.mcdermottlaw.com/",
+      "verification": "official_page",
+      "notes": "Current firm site uses McDermott Will & Schulte; its official 2025 merger release says this name launched on August 1, 2025.",
+      "display_name": "McDermott Will & Schulte",
+      "official_name": "McDermott Will & Schulte",
+      "previous_label": "mcdermottlaw"
+    },
+    {
+      "hostname": "munichre.com",
+      "evidence_url": "https://www.munichre.com/en/company/about-munich-re.html",
+      "verification": "official_page",
+      "notes": "Official corporate site identifies the group as Munich Re; its broader corporate identity is Munich Re Group.",
+      "display_name": "Munich Re",
+      "official_name": "Munich Re",
+      "previous_label": "munichre"
+    },
+    {
+      "hostname": "ncelenviro.org",
+      "evidence_url": "https://ncelenviro.org/app/uploads/2023/10/About-NCEL.pdf",
+      "verification": "official_page",
+      "notes": "Official NCEL material spells out the organization name and abbreviation.",
+      "display_name": "National Caucus of Environmental Legislators (NCEL)",
+      "official_name": "National Caucus of Environmental Legislators (NCEL)",
+      "previous_label": "ncelenviro"
+    },
+    {
+      "hostname": "news.climate.columbia.edu",
+      "evidence_url": "https://news.climate.columbia.edu/about/",
+      "verification": "official_page",
+      "notes": "Official About page says State of the Planet is the news site of the Columbia Climate School; keep distinct from iri.columbia.edu.",
+      "display_name": "State of the Planet (Columbia Climate School)",
+      "official_name": "State of the Planet (Columbia Climate School)",
+      "previous_label": "columbia"
+    },
+    {
+      "hostname": "ngfs.net",
+      "evidence_url": "https://www.ngfs.net/",
+      "verification": "configured",
+      "notes": "Configured source key ngfs in YAML is authoritative. The official site also expands NGFS as Network of Central Banks and Supervisors for Greening the Financial System; preserve the configured display name.",
+      "display_name": "Network for Greening the Financial System (NGFS)",
+      "official_name": "Network for Greening the Financial System (NGFS)",
+      "previous_label": "ngfs"
+    },
+    {
+      "hostname": "oecd.org",
+      "evidence_url": "https://www.oecd.org/",
+      "verification": "configured",
+      "notes": "Configured source key oecd in monitoring/supranational_sources.yaml.",
+      "display_name": "Organisation for Economic Co-operation and Development (OECD)",
+      "official_name": "Organisation for Economic Co-operation and Development (OECD)",
+      "previous_label": "oecd"
+    },
+    {
+      "hostname": "openknowledge.worldbank.org",
+      "evidence_url": "https://www.worldbank.org/ext/en/legal/terms-conditions/open-knowledge-repository",
+      "verification": "official_search",
+      "notes": "World Bank identifies this as the Open Knowledge Repository (OKR), its official open-access repository. The repository host returned 403 to direct page retrieval; parent World Bank label would lose the repository identity.",
+      "display_name": "World Bank Open Knowledge Repository (OKR)",
+      "official_name": "World Bank Open Knowledge Repository (OKR)",
+      "previous_label": "worldbank"
+    },
+    {
+      "hostname": "orfonline.org",
+      "evidence_url": "https://www.orfonline.org/about-us",
+      "verification": "official_page",
+      "notes": "Official About page and site legal terms use Observer Research Foundation (ORF).",
+      "display_name": "Observer Research Foundation (ORF)",
+      "official_name": "Observer Research Foundation (ORF)",
+      "previous_label": "orfonline"
+    },
+    {
+      "hostname": "osfi-bsif.gc.ca",
+      "evidence_url": "https://www.osfi-bsif.gc.ca/en/contact-us",
+      "verification": "official_page",
+      "notes": "Official page spells out OSFI. The bilingual host also uses the French abbreviation BSIF; existing supplemental mapping selects OSFI.",
+      "display_name": "Office of the Superintendent of Financial Institutions (OSFI)",
+      "official_name": "Office of the Superintendent of Financial Institutions (OSFI)",
+      "previous_label": "gc"
+    },
+    {
+      "hostname": "papers.ssrn.com",
+      "evidence_url": "https://www.elsevier.support/ssrn/answer/what-is-ssrn",
+      "verification": "official_search",
+      "notes": "Elsevier’s official SSRN support page calls the platform SSRN and says it was formerly known as Social Science Research Network; use the current brand.",
+      "display_name": "SSRN",
+      "official_name": "SSRN",
+      "previous_label": "ssrn"
+    },
+    {
+      "hostname": "preventionweb.net",
+      "evidence_url": "https://www.preventionweb.net/",
+      "verification": "official_page",
+      "notes": "Official homepage calls it PreventionWeb, a global knowledge-sharing platform for disaster risk reduction and resilience managed by UNDRR.",
+      "display_name": "PreventionWeb",
+      "official_name": "PreventionWeb",
+      "previous_label": "preventionweb"
+    },
+    {
+      "hostname": "reinsurancene.ws",
+      "evidence_url": "https://www.reinsurancene.ws/",
+      "verification": "official_page",
+      "notes": "Official homepage uses Reinsurance News. Its contact page says the site is owned and operated by Steve Evans Ltd.",
+      "display_name": "Reinsurance News",
+      "official_name": "Reinsurance News",
+      "previous_label": "reinsurancene"
+    },
+    {
+      "hostname": "research.reading.ac.uk",
+      "evidence_url": "https://www.reading.ac.uk/research/",
+      "verification": "official_page",
+      "notes": "Shared research host. Only /climate-and-finance/ is labelled Climate and Finance Research Cluster (University of Reading).",
+      "display_name": "University of Reading",
+      "official_name": "University of Reading",
+      "previous_label": "reading"
+    },
+    {
+      "hostname": "reuters.com",
+      "evidence_url": "https://reutersagency.com/en/about/about-us/",
+      "verification": "official_page",
+      "notes": "Reuters Agency's official About page identifies Reuters as its news agency brand; no acronym.",
+      "display_name": "Reuters",
+      "official_name": "Reuters",
+      "previous_label": "reuters"
+    },
+    {
+      "hostname": "riskpublishing.com",
+      "evidence_url": "https://riskpublishing.com/about-us/",
+      "verification": "official_page",
+      "notes": "Official About page identifies Risk Publishing as an enterprise risk-management knowledge platform; no acronym.",
+      "display_name": "Risk Publishing",
+      "official_name": "Risk Publishing",
+      "previous_label": "riskpublishing"
+    },
+    {
+      "hostname": "sdgfinance.undp.org",
+      "evidence_url": "https://sdgfinance.undp.org/",
+      "verification": "official_page",
+      "notes": "Official site is UNDP’s Sustainable Finance Hub. The configured SIF label applies only to its /sustainable-insurance-forum path; do not label the whole shared host SIF.",
+      "display_name": "UNDP Sustainable Finance Hub",
+      "official_name": "UNDP Sustainable Finance Hub",
+      "previous_label": "undp"
+    },
+    {
+      "hostname": "searca.org",
+      "evidence_url": "https://www.searca.org/",
+      "verification": "official_page",
+      "notes": "Official homepage spells out the full name and acronym.",
+      "display_name": "Southeast Asian Regional Center for Graduate Study and Research in Agriculture (SEARCA)",
+      "official_name": "Southeast Asian Regional Center for Graduate Study and Research in Agriculture (SEARCA)",
+      "previous_label": "searca"
+    },
+    {
+      "hostname": "soa.org",
+      "evidence_url": "https://www.soa.org/about/purpose/",
+      "verification": "official_page",
+      "notes": "Official About page confirms the full name and abbreviation.",
+      "display_name": "Society of Actuaries (SOA)",
+      "official_name": "Society of Actuaries (SOA)",
+      "previous_label": "soa"
+    },
+    {
+      "hostname": "southernclimate.org",
+      "evidence_url": "https://southernclimate.org/resources/",
+      "verification": "official_page",
+      "notes": "Official site names the program and uses SCIPP in its newsletter and resource materials.",
+      "display_name": "Southern Climate Impacts Planning Program (SCIPP)",
+      "official_name": "Southern Climate Impacts Planning Program (SCIPP)",
+      "previous_label": "southernclimate"
+    },
+    {
+      "hostname": "spglobal.com",
+      "evidence_url": "https://www.spglobal.com/en/who-we-are/about-sp-global",
+      "verification": "official_page",
+      "notes": "Official About page uses the exact brand spelling S&P Global.",
+      "display_name": "S&P Global",
+      "official_name": "S&P Global",
+      "previous_label": "spglobal"
+    },
+    {
+      "hostname": "swissre.com",
+      "evidence_url": "https://www.swissre.com/about-us/",
+      "verification": "official_page",
+      "notes": "Official About page and brand page use Swiss Re; no expansion is needed.",
+      "display_name": "Swiss Re",
+      "official_name": "Swiss Re",
+      "previous_label": "swissre"
+    },
+    {
+      "hostname": "tnfd.global",
+      "evidence_url": "https://tnfd.global/",
+      "verification": "configured",
+      "notes": "Configured source key tnfd in monitoring/supranational_sources.yaml.",
+      "display_name": "Taskforce on Nature-related Financial Disclosures (TNFD)",
+      "official_name": "Taskforce on Nature-related Financial Disclosures (TNFD)",
+      "previous_label": "tnfd"
+    },
+    {
+      "hostname": "un.org",
+      "evidence_url": "https://www.un.org/about-us",
+      "verification": "official_page",
+      "notes": "General organization identity; keep distinct from the country-team subdomain indonesia.un.org.",
+      "display_name": "United Nations (UN)",
+      "official_name": "United Nations (UN)",
+      "previous_label": "un"
+    },
+    {
+      "hostname": "unctad.org",
+      "evidence_url": "https://unctad.org/news/unctad-rebrands-un-trade-and-development",
+      "verification": "official_search",
+      "notes": "Current official brand replaces the historical configured expansion for display only; the source key remains unctad.",
+      "display_name": "UN Trade and Development (UNCTAD)",
+      "official_name": "UN Trade and Development (UNCTAD)",
+      "previous_label": "unctad"
+    },
+    {
+      "hostname": "understandrisk.org",
+      "evidence_url": "https://www.gfdrr.org/en/understandingrisk",
+      "verification": "official_page",
+      "notes": "The host currently redirects to GFDRR’s official Understanding Risk page. UR is a community/forum identity, not simply the parent World Bank label.",
+      "display_name": "Understanding Risk (UR)",
+      "official_name": "Understanding Risk (UR)",
+      "previous_label": "understandrisk"
+    },
+    {
+      "hostname": "undp.org",
+      "evidence_url": "https://www.undp.org",
+      "verification": "configured",
+      "notes": "Configured source key undp in monitoring/supranational_sources.yaml.",
+      "display_name": "United Nations Development Programme (UNDP)",
+      "official_name": "United Nations Development Programme (UNDP)",
+      "previous_label": "undp"
+    },
+    {
+      "hostname": "undrr.org",
+      "evidence_url": "https://www.undrr.org/our-work/our-team",
+      "verification": "official_page",
+      "notes": "Official page spells out the office name and abbreviation.",
+      "display_name": "United Nations Office for Disaster Risk Reduction (UNDRR)",
+      "official_name": "United Nations Office for Disaster Risk Reduction (UNDRR)",
+      "previous_label": "undrr"
+    },
+    {
+      "hostname": "unep.org",
+      "evidence_url": "https://www.unep.org",
+      "verification": "configured",
+      "notes": "Configured source key unep in monitoring/supranational_sources.yaml.",
+      "display_name": "United Nations Environment Programme (UNEP)",
+      "official_name": "United Nations Environment Programme (UNEP)",
+      "previous_label": "unep"
+    },
+    {
+      "hostname": "unepfi.org",
+      "evidence_url": "https://www.unepfi.org/about/about-us/",
+      "verification": "official_page",
+      "notes": "Official About page confirms the identity. PSI and FIT are specific initiatives under this shared host; they must remain path-specific, not host-wide.",
+      "display_name": "United Nations Environment Programme Finance Initiative (UNEP FI)",
+      "official_name": "United Nations Environment Programme Finance Initiative (UNEP FI)",
+      "previous_label": "unepfi"
+    },
+    {
+      "hostname": "unfccc.int",
+      "evidence_url": "https://unfccc.int/",
+      "verification": "configured",
+      "notes": "Configured source key unfccc in monitoring/supranational_sources.yaml.",
+      "display_name": "United Nations Framework Convention on Climate Change (UNFCCC)",
+      "official_name": "United Nations Framework Convention on Climate Change (UNFCCC)",
+      "previous_label": "unfccc"
+    },
+    {
+      "hostname": "unwater.org",
+      "evidence_url": "https://www.unwater.org/",
+      "verification": "configured",
+      "notes": "Configured source key unwater in monitoring/supranational_sources.yaml.",
+      "display_name": "United Nations Water (UN-Water)",
+      "official_name": "United Nations Water (UN-Water)",
+      "previous_label": "unwater"
+    },
+    {
+      "hostname": "viewpoint.pwc.com",
+      "evidence_url": "https://www.pwc.com/us/en/products/viewpoint.html",
+      "verification": "official_page",
+      "notes": "PwC describes Viewpoint as its research platform for accounting, financial reporting and sustainability reporting; retain the product identity rather than the parent PwC label.",
+      "display_name": "PwC Viewpoint",
+      "official_name": "PwC Viewpoint",
+      "previous_label": "pwc"
+    },
+    {
+      "hostname": "weforum.org",
+      "evidence_url": "https://www.weforum.org",
+      "verification": "configured",
+      "notes": "Configured source key wef in monitoring/supranational_sources.yaml.",
+      "display_name": "World Economic Forum (WEF)",
+      "official_name": "World Economic Forum (WEF)",
+      "previous_label": "weforum"
+    },
+    {
+      "hostname": "who.int",
+      "evidence_url": "https://www.who.int/",
+      "verification": "configured",
+      "notes": "Configured source key who in monitoring/supranational_sources.yaml.",
+      "display_name": "World Health Organization (WHO)",
+      "official_name": "World Health Organization (WHO)",
+      "previous_label": "who"
+    },
+    {
+      "hostname": "wmo.int",
+      "evidence_url": "https://wmo.int/",
+      "verification": "configured",
+      "notes": "Configured source key wmo in monitoring/supranational_sources.yaml.",
+      "display_name": "World Meteorological Organization (WMO)",
+      "official_name": "World Meteorological Organization (WMO)",
+      "previous_label": "wmo"
+    },
+    {
+      "hostname": "worldbank.org",
+      "evidence_url": "https://www.worldbank.org/",
+      "verification": "configured",
+      "notes": "Configured source key world-bank; publisher_mapping.py applies the explicit World Bank Group (WBG) display override.",
+      "display_name": "World Bank Group (WBG)",
+      "official_name": "World Bank Group (WBG)",
+      "previous_label": "worldbank"
+    },
+    {
+      "hostname": "wri.org",
+      "evidence_url": "https://www.wri.org/",
+      "verification": "configured",
+      "notes": "Configured source entry in monitoring/supranational_sources.yaml.",
+      "display_name": "World Resources Institute (WRI)",
+      "official_name": "World Resources Institute (WRI)",
+      "previous_label": "wri"
+    },
+    {
+      "hostname": "wto.org",
+      "evidence_url": "https://www.wto.org/",
+      "verification": "configured",
+      "notes": "Configured source key wto in monitoring/supranational_sources.yaml.",
+      "display_name": "World Trade Organization (WTO)",
+      "official_name": "World Trade Organization (WTO)",
+      "previous_label": "wto"
+    }
+  ],
+  "validation": {
+    "branch": "codex/publisher-names",
+    "revision": "uncommitted working-tree changes based on 6df10ee7acfa524b86665c4c0a3e2c3978e13d95",
+    "environment": "Ubuntu 24.04 under WSL; Python 3.12.3; nonroot ubuntu; native Git checkout; native Linux PATH",
+    "affected_tests": {
+      "passed": 614,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 182.49
+    },
+    "full_suite_initial": {
+      "passed": 4485,
+      "failed": 16,
+      "skipped": 47,
+      "seconds": 1018.89
+    },
+    "full_suite_resolution": "Eleven historical-name expectations were aligned with canonical display names and passed in the affected suite. Three relocated-environment failures were fixed and passed on recheck. Two Docker CLI unavailable checks still fail on both base and candidate; they were not changed.",
+    "remaining_full_suite_failures": [
+      "tests/test_safe_compose.py::test_later_compose_file_cannot_change_protected_mount_safety[volume]",
+      "tests/test_safe_compose.py::test_later_compose_file_cannot_change_protected_mount_safety[writable]"
+    ],
+    "independent_review": "PASS; no requirement-scoped findings on the final code and test changes",
+    "node_syntax": "node --check showcase/app.js passed",
+    "diff_whitespace": "git diff --check passed",
+    "product_files_sha256": {
+      "api_server.py": "ea3c1b056e76af5f225ab22be4921294b85555b3dad7278096366a88e57a0855",
+      "climate_monitor/publisher_mapping.py": "8d58951f7e3676ddb0b399ea4327bd30b9b6c29ad635a91f25a1e3147d4f6f0b",
+      "climate_registry/list_projection.py": "b3a1b8a3857f5ed68e328ef56a2c76b5e7dc33b5941663d1d7deada807cfb55d",
+      "climate_registry/publication.py": "88f6be101c5ff5228fede447a3143563b91017889403c1b5638fcef555897317",
+      "climate_registry/range_reports.py": "6666496213539316b625f77ce6ec100f47d3bbf2df1712077b4c2887743a1dda",
+      "climate_registry/read_api.py": "11cf2360708611511f5ca940ab32a88e25a2127e73fb3bcad9a7e63d04750e0d"
+    },
+    "test_files_sha256": {
+      "tests/test_climate_registry_read_api.py": "1c479462573fe0820b1d6fefb33aeff5e0d4a8e1d78d56d1c70ab2256d666df3",
+      "tests/test_registry_list_projection.py": "62184138d4eb8901ede8ceabcb0b6293dc3636de99769ca74e6672562314f490",
+      "tests/test_issue113_range_reports.py": "8a100f92ad28698b4feaf72f0382d3082a1b30af993577af72b434ddb62361c7",
+      "tests/test_issue221_review_repairs.py": "c0ffc1b0199e4adcd53224a4ef7dd167efa66e607bf944b355af66fca695b5f3",
+      "tests/test_pdf_template.py": "0fd6c8c6af216eaef3d46308a1ec59017af271f80ccc24e24b5f4546a0f3f601",
+      "tests/test_registry_publication.py": "4502eab6768733e1ec390b17fe707f9c62037c11ba38d4df13b739c0b9c61fdc",
+      "tests/test_publisher_mapping.py": "bba4f88857216c69b525d6c1c685fdb64d24e230d6acee3d6888469360c475f1"
+    },
+    "deployment": "not published, merged or deployed"
+  }
+}

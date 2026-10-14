@@ -78,6 +78,62 @@ def test_shared_lists_do_not_revalidate_or_decode_stable_source(tmp_path, monkey
     api_server._clear_registry_list_cache()
 
 
+def test_optimized_projection_uses_article_paths_and_keeps_host_filtering():
+    from climate_registry.read_api import _publisher_label
+
+    class Reader:
+        def _public_candidates(self, *kinds):
+            return {}
+        def approved_article_cards_all(self):
+            return [
+                {"article_id": "bcbs", "canonical_url": "https://bis.org/committees/bcbs/overview",
+                    "title": "BCBS", "source": "bis.org", "publisher": "The Basel Committee on Banking Supervision",
+                    "source_id": "source-bis", "last_seen": "2026-09-02", "appearances": []},
+                {"article_id": "bis", "canonical_url": "https://bis.org/about/index.htm",
+                    "title": "BIS", "source": "bis.org", "publisher": "The Basel Committee on Banking Supervision",
+                    "source_id": "source-bis", "last_seen": "2026-09-01", "appearances": []},
+            ]
+        def pdf_articles_all(self, **kwargs):
+            return [
+                {"article_id": "pdf-oca", "canonical_url": "https://osfi-bsif.gc.ca/en/oca/about-office-chief-actuary",
+                    "title": "OCA", "summary": "OCA summary", "source": "osfi-bsif.gc.ca", "publisher": "osfi-bsif.gc.ca",
+                    "last_seen": "2026-09-03", "source_kind": "pdf", "occurrences": [{"report_date": "2026-09-03"}]},
+                {"article_id": "pdf-bcbs", "canonical_url": "https://bis.org/committees/bcbs/pdf-only",
+                    "title": "BCBS PDF", "summary": "BCBS PDF summary", "source": "bis.org", "publisher": "bis.org",
+                    "last_seen": "2026-09-04", "source_kind": "pdf", "occurrences": [{"report_date": "2026-09-04"}]},
+            ]
+        def approved_reports_all(self): return []
+        def pdf_reports_all(self): return []
+        def status(self): return {"available": True}
+        def approved_merged_article_count(self): return 2
+        def publishers(self, *, include_pdf=False):
+            items = [{"hostname": "bis.org", "label": _publisher_label(
+                "bis.org", "The Basel Committee on Banking Supervision")}]
+            if include_pdf:
+                items.append({"hostname": "osfi-bsif.gc.ca", "label": _publisher_label(
+                    "osfi-bsif.gc.ca", "osfi-bsif.gc.ca")})
+            return {"items": items, "total": len(items), "truncated": False}
+
+    projection = RegistryListProjection(Reader())
+    try:
+        items = projection.articles(page=1, page_size=10, include_pdf=True)["items"]
+        assert {item["article_id"]: (item["publisher"], item["source"]) for item in items} == {
+            "pdf-oca": ("Office of the Chief Actuary (OCA)", "osfi-bsif.gc.ca"),
+            "pdf-bcbs": ("The Basel Committee on Banking Supervision (BCBS)", "bis.org"),
+            "bcbs": ("The Basel Committee on Banking Supervision (BCBS)", "bis.org"),
+            "bis": ("Bank for International Settlements (BIS)", "bis.org"),
+        }
+        assert projection.articles(page=1, page_size=10, source="source-bis")["pagination"]["total"] == 2
+        assert projection.publishers(include_pdf=True)["items"][0] == {
+            "hostname": "bis.org", "label": "Bank for International Settlements (BIS)"}
+        categories = {item["article_id"]: item["publisher"]
+            for item in json.loads(projection.category_body)["items"]}
+        assert categories["bcbs"] == "The Basel Committee on Banking Supervision (BCBS)"
+        assert categories["bis"] == "Bank for International Settlements (BIS)"
+    finally:
+        projection.close()
+
+
 @pytest.mark.parametrize("damage", ["deleted", "schema", "approval", "binding"])
 def test_cached_lists_fail_closed_when_source_is_invalid(tmp_path, monkeypatch, damage):
     import api_server

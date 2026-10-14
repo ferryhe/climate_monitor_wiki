@@ -53,6 +53,9 @@ def test_approved_export_pdf_uses_same_date_projection_without_database(tmp_path
         "date_basis", "range_date", "collected_at", "summary", "categories", "keywords", "content", "citations")
     assert [{key: item[key] for key in fields} for item in static_source["articles"]] == [
         {key: item[key] for key in fields} for item in live_source["articles"]]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT display_name FROM sources WHERE source_id='source'").fetchone()[0] == \
+            "Example Institute"
     assert static_source["unknown_publication_date_article_ids"] == live_source["unknown_publication_date_article_ids"]
     assert static_source["date_unknown_article_ids"] == live_source["date_unknown_article_ids"]
     before = (wiki / "public-registry.json").read_bytes()
@@ -1409,7 +1412,7 @@ def test_pdf_stated_dates_select_unlinked_updates_and_keep_different_summaries(t
     assert len(updates) == 2
     assert {item["summary"] for item in updates} == {
         "Original project summary.", "Different summary for the same URL."}
-    assert all(item["publication_date"] == "2026-09-21" and item["publisher"] == "Example Institution"
+    assert all(item["publication_date"] == "2026-09-21" and item["publisher"] == "pdf.example"
                and item["publication_date_label"] == "PDF-stated publication date" for item in updates)
     assert all(item["core_article_id"] is None for item in updates)
     assert database.read_bytes() == before
@@ -1649,7 +1652,7 @@ def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_p
     assert "summary.pdf" not in html_report and document_sha not in html_report
     assert "PDF import" in html_report
     assert "article publication date unconfirmed; coverage period 2026-09-01 through 2026-09-30" in html_report
-    assert 'href="#publisher-1">Example Institute</a>' in html_report
+    assert 'href="#publisher-1">example.org</a>' in html_report
 
 
 def test_executive_summary_states_when_selected_updates_have_no_stored_summary():

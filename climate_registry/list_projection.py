@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from climate_monitor.publisher_mapping import publisher_name
 from climate_monitor.taxonomy import load_article_taxonomy
 from .read_api import RegistryQueryError, _pagination, filter_pdf_articles, validate_page, validate_report_date
 
@@ -24,6 +25,7 @@ def category_record(item):
     value = {key: item.get(key) for key in (
         "article_id", "source_kind", "title", "canonical_url", "publisher", "source", "last_seen",
         "categories", "published_candidate_sha256", "current_version_id", "content_version_id", "record_reference")}
+    value["publisher"] = publisher_name(value.get("publisher"), [value.get("canonical_url")])
     value["metadata_provenance"] = {"categories": (item.get("metadata_provenance") or {}).get("categories")}
     return value
 
@@ -76,8 +78,12 @@ class RegistryListProjection:
                     merged = filter_pdf_articles([imported])[0]
                     category_items.append(merged)
                 card = {key: value for key, value in merged.items() if key in ARTICLE_FIELDS}
+                if "publisher" in card:
+                    card["publisher"] = publisher_name(card["publisher"], [card.get("canonical_url")])
                 core_card = ({key: value for key, value in core_item.items() if key in ARTICLE_FIELDS}
                     if core_item is not None else None)
+                if core_card is not None:
+                    core_card["publisher"] = publisher_name(core_card.get("publisher"), [core_card.get("canonical_url")])
                 core_search = " ".join(str(original.get(key) or "") for key in
                     ("title", "summary", "canonical_url", "categories", "keywords")).casefold() if original else None
                 pdf_search = " ".join((imported["title"] or "", imported["summary"] or "", url)).casefold() if imported else None

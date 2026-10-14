@@ -1654,6 +1654,7 @@ def test_actual_render_startup_ignores_retired_projection(tmp_path, retired, run
     script = '''import json
 from fastapi.testclient import TestClient
 from scripts import run_render_web
+from climate_monitor.publisher_mapping import publisher_name
 def serve():
     import api_server
     artifact = json.loads((run_render_web.ROOT / 'wiki/public-registry.json').read_text())
@@ -1664,7 +1665,10 @@ def serve():
     assert client.get('/api/registry/status').status_code == 200
     assert client.get('/api/registry/articles').json()['pagination']['total'] == len(artifact['articles'])
     first = artifact['articles'][0]
-    assert client.get('/api/registry/articles/' + first['article_id']).json() == first
+    expected = dict(first)
+    if 'publisher' in expected:
+        expected['publisher'] = publisher_name(expected['publisher'], [expected.get('canonical_url')])
+    assert client.get('/api/registry/articles/' + first['article_id']).json() == expected
     assert api_server.responder.kb.source_documents == []
     assert client.post('/api/chat', json={'message':'climate', 'answer_mode':'brief'}).status_code == 200
 run_render_web._run_app = serve
@@ -2862,7 +2866,10 @@ def test_new_range_uses_approved_annotations_dates_and_render_public_dto(tmp_pat
     reader=_reader(database,tmp_path)
     expected=reader.article("a")
     ranged=_range_source(reader,"2026-08-31","2026-08-31")["articles"][0]
-    assert {key:ranged[key] for key in ("title","summary","categories","keywords","publisher")}=={key:expected[key] for key in ("title","summary","categories","keywords","publisher")}
+    assert expected["publisher"] == "Publisher"
+    expected_display = {key: expected[key] for key in ("title","summary","categories","keywords","publisher")}
+    expected_display["publisher"] = "example.org"
+    assert {key:ranged[key] for key in ("title","summary","categories","keywords","publisher")} == expected_display
     assert ranged["range_date"]=="2026-08-31" and ranged["date_basis"]=="information_date"
     assert ranged["provenance"]["summary"]["candidate_sha256"]==first
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True)

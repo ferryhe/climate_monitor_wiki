@@ -297,13 +297,13 @@ def test_article_category_endpoint_returns_more_than_three_pages_in_one_snapshot
         projection.close()
 
 
-def _insert_pdf_intake_records(database: Path) -> None:
+def _insert_pdf_intake_records(database: Path, *, unique_url="https://example.com/wildfire-report") -> None:
     document_sha256 = "f" * 64
     occurrence = {
         "occurrence_id": "pdf-occurrence-unique",
         "source_document_sha256": document_sha256,
         "page": 3,
-        "raw_url": "https://example.com/wildfire-report?utm_source=pdf",
+        "raw_url": unique_url + "?utm_source=pdf",
         "report_date": "2026-09-03",
         "publication_date": "2026-09-01",
         "title": "Wildfire risk report",
@@ -347,7 +347,7 @@ def _insert_pdf_intake_records(database: Path) -> None:
             article_id, canonical_url, title, type_safe_classification_json, imported_at
         ) VALUES (?, ?, ?, ?, ?)""",
         (
-            ("pdf-article-unique", "https://example.com/wildfire-report", "Wildfire risk report",
+            ("pdf-article-unique", unique_url, "Wildfire risk report",
              '{"provider":"typesafe","label":"article"}', "2026-09-03T00:00:00Z"),
             ("pdf-article-core", "https://example.com/full", "Core article duplicate", None,
              "2026-09-03T00:00:00Z"),
@@ -532,9 +532,9 @@ def test_publishers_are_bounded_deterministic_read_only_choices(registry_client)
     assert response.status_code == 200
     assert response.json() == {
         "items": [
-            {"hostname": "example.com", "label": "Example Institute"},
-            {"hostname": "insurer.test", "label": "Insurer Research"},
-            {"hostname": "soa.org", "label": "soa"},
+            {"hostname": "example.com", "label": "example.com"},
+            {"hostname": "insurer.test", "label": "insurer.test"},
+            {"hostname": "soa.org", "label": "Society of Actuaries (SOA)"},
         ],
         "total": 3,
         "truncated": False,
@@ -542,7 +542,7 @@ def test_publishers_are_bounded_deterministic_read_only_choices(registry_client)
 
 
 @pytest.mark.parametrize("registry_client",[20],indirect=True)
-def test_publisher_label_keeps_state_government_context(registry_client):
+def test_publisher_label_uses_canonical_state_agency_name(registry_client):
     client, database = registry_client
     connection = sqlite3.connect(database)
     with connection:
@@ -560,7 +560,8 @@ def test_publisher_label_keeps_state_government_context(registry_client):
 
     items = client.get("/api/registry/publishers").json()["items"]
 
-    assert {item["hostname"]: item["label"] for item in items}["insurance.ca.gov"] == "CA insurance"
+    assert {item["hostname"]: item["label"] for item in items}["insurance.ca.gov"] == \
+        "California Department of Insurance (CDI)"
 
 
 @pytest.mark.parametrize("registry_client",[20],indirect=True)
@@ -1378,7 +1379,28 @@ def test_pdf_publishers_keep_existing_core_host_label(registry_client):
     assert response.status_code == 200
     publishers = response.json()["items"]
     example = [item for item in publishers if item["hostname"] == "example.com"]
-    assert example == [{"hostname": "example.com", "label": "Example Institute"}]
+    assert example == [{"hostname": "example.com", "label": "example.com"}]
+
+
+def test_legacy_pdf_publisher_fallback_uses_host_default_for_shared_site(
+    registry_client, monkeypatch,
+):
+    from contextlib import nullcontext
+
+    client, database = registry_client
+    _insert_pdf_intake_records(database, unique_url="https://bis.org/publ/bcbs239.pdf")
+    # Exercise the slower include-PDF fallback instead of the optimized projection.
+    monkeypatch.setattr(api_server, "_registry_list_projection", lambda *args, **kwargs: nullcontext(None))
+
+    articles = client.get("/api/registry/articles", params={"include_pdf": "true"})
+    publishers = client.get("/api/registry/publishers", params={"include_pdf": "true"})
+
+    assert articles.status_code == 200
+    pdf_article = next(item for item in articles.json()["items"] if item["article_id"] == "pdf-article-unique")
+    assert pdf_article["publisher"] == "The Basel Committee on Banking Supervision (BCBS)"
+    assert publishers.status_code == 200
+    bis = [item for item in publishers.json()["items"] if item["hostname"] == "bis.org"]
+    assert bis == [{"hostname": "bis.org", "label": "Bank for International Settlements (BIS)"}]
 
 
 def test_pdf_read_paths_remain_available_for_supported_v12_registry(tmp_path, monkeypatch):

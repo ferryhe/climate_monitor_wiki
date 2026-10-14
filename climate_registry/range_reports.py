@@ -932,7 +932,7 @@ def _range_source_read(
                 "article_id": article_id,
                 "canonical_url": base["canonical_url"],
                 "title": title,
-                "publisher": base.get("publisher"),
+                "publisher": publisher_name(base.get("publisher"), [base["canonical_url"]]),
                 "publication_date": publication_date,
                 "information_date": information_date,
                 "date_basis": basis,
@@ -1035,6 +1035,9 @@ def _range_source_read(
                     "url": item["url"],
                 }],
             }
+            update["publisher"] = publisher_name(
+                update.get("publisher"), [update.get("canonical_url"), update.get("url")],
+            )
             # Keep current approved categories separate from the historical PDF row topic.
             core_detail = core_details_by_url.get(item.get("canonical_url") or item["url"])
             detail = core_detail or pdf_details.get(item["pdf_article_id"], {})

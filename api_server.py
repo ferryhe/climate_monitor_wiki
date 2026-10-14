@@ -76,6 +76,7 @@ from climate_registry.read_api import (
     validate_page,
     validate_report_date,
     _pagination,
+    _publisher_label,
 )
 from climate_registry.pdf_pipeline import (
     enqueue_pdf_batch,
@@ -1094,7 +1095,11 @@ def registry_publishers(include_pdf: bool = False) -> dict:
             by_host = {item["hostname"]: item for item in payload["items"]}
             for item in _all_registry_pages(lambda page, page_size: _registry_article_page(
                 page, page_size, include_pdf=True)):
-                by_host.setdefault(item["source"], {"hostname": item["source"], "label": item["publisher"]})
+                hostname = item["source"]
+                by_host.setdefault(hostname, {
+                    "hostname": hostname,
+                    "label": _publisher_label(hostname, hostname),
+                })
             items = sorted(by_host.values(), key=lambda item: item["hostname"])
             return {"items": items[:500], "total": len(items), "truncated": payload["truncated"] or len(items) > 500}
     return _registry_query(query_publishers)
