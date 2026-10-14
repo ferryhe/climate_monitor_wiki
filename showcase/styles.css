@@ -1556,7 +1556,18 @@ select.search-input option {
   display: grid;
   gap: 12px;
   margin: 0;
-  padding-left: 20px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.registry-imported-content {
+  max-height: 500vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.registry-imported-summary p {
+  white-space: pre-wrap;
 }
 
 .registry-pdf-history__item {

@@ -815,23 +815,41 @@ def _pdf_reports(selected=None) -> list[dict[str, Any]]:
     return list({item["document_sha256"]: item for item in runtime + public}.values())
 
 
-def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[str, Any]:
+def _pdf_report(document_sha256: str, *, include_bytes: bool = False, page: int | None = None, page_size: int = 5) -> dict[str, Any]:
     public_reader = _registry_reader()
     with public_reader.public_snapshot(direct=True):
         with public_reader.connect() as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                return public_reader.pdf_report(document_sha256, include_bytes=include_bytes)
+                return public_reader.pdf_report(document_sha256, include_bytes=include_bytes, page=page, page_size=page_size)
 
     reader, article_ids, calendar_ids = _pdf_registry_view()
+    module_keys = None
+    pagination = None
+    if page is not None:
+        catalog = public_reader.pdf_report_module_catalog(document_sha256)
+        if article_ids is not None:
+            catalog += reader.pdf_report_module_catalog(document_sha256,
+                allowed_occurrence_ids=article_ids, allowed_calendar_ids=calendar_ids)
+        catalog = list(dict.fromkeys(catalog))
+        catalog = [row for row in catalog if row[0] == "article"] + [row for row in catalog if row[0] == "calendar"]
+        offset = (page - 1) * page_size
+        module_keys = set(catalog[offset:offset + page_size])
+        pagination = _pagination(page, page_size, len(catalog))
+        article_offset = min(offset, sum(kind == "article" for kind, _ in catalog))
+    def paged(report):
+        if pagination is None:
+            return report
+        return {**{key: value for key, value in report.items() if key != "pages"},
+            "pagination": pagination, "article_offset": article_offset}
     try:
-        public = public_reader.pdf_report(document_sha256, include_bytes=include_bytes)
+        public = public_reader.pdf_report(document_sha256, include_bytes=include_bytes, module_keys=module_keys)
     except RegistryNotFoundError:
         public = None
     runtime = None
     if article_ids is not None:
         try:
             runtime = reader.pdf_report(document_sha256, include_bytes=include_bytes,
-                allowed_occurrence_ids=article_ids, allowed_calendar_ids=calendar_ids)
+                allowed_occurrence_ids=article_ids, allowed_calendar_ids=calendar_ids, module_keys=module_keys)
         except RegistryNotFoundError:
             pass
     if public is None and runtime is None:
@@ -839,7 +857,7 @@ def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[st
     if include_bytes:
         return next((item for item in (public, runtime) if item and item["pdf_bytes"] is not None), public or runtime)
     if not public or not runtime:
-        return public or runtime
+        return paged(public or runtime)
     by_url = {item["canonical_url"]: item for item in public["articles"]}
     for item in runtime["articles"]:
         by_url[item["canonical_url"]] = _merge_pdf_article_payloads(by_url.get(item["canonical_url"]), item)
@@ -847,7 +865,7 @@ def _pdf_report(document_sha256: str, *, include_bytes: bool = False) -> dict[st
     public["calendar_items"] = _merge_pdf_calendar_items(public["calendar_items"], runtime["calendar_items"])
     public["source_filenames"] = sorted(set(public["source_filenames"] + runtime["source_filenames"]))
     public["report_pdf"] = public["report_pdf"] or runtime["report_pdf"]
-    return public
+    return paged(public)
 
 
 @app.get("/api/registry/status", response_model=None)
@@ -913,11 +931,22 @@ def registry_reports(page: str = "1", page_size: str = "20", include_pdf: bool =
 
 
 @app.get("/api/registry/pdf-intake/reports/{document_sha256}")
-def registry_pdf_report(document_sha256: str) -> dict:
+def registry_pdf_report(document_sha256: str, page: str | None = None, page_size: str = "5") -> dict:
     def read_report():
-        report = _pdf_report(document_sha256)
+        parsed_page = _parse_registry_decimal(page) if page is not None else None
+        parsed_size = _parse_registry_decimal(page_size)
+        if parsed_page is not None:
+            validate_page(parsed_page, parsed_size)
+        report = _pdf_report(document_sha256, page=parsed_page, page_size=parsed_size)
+        if parsed_page is not None and "pagination" not in report:
+            report = RegistryReader.paginate_pdf_report(report, parsed_page, parsed_size)
+        calendars = [_calendar_dto(item) for item in report["calendar_items"]]
+        if parsed_page is not None:
+            fields = {"name", "kind", "raw_date", "start_date", "end_date", "deadline_date",
+                "organizer", "publisher", "relevance", "relevance_reason", "location", "source_urls", "online_url"}
+            calendars = [{key: value for key, value in item.items() if key in fields} for item in calendars]
         return {**report, "articles": [_pdf_dto(item) for item in report["articles"]],
-            "calendar_items": [_calendar_dto(item) for item in report["calendar_items"]]}
+            "calendar_items": calendars}
     return _registry_query(read_report)
 
 

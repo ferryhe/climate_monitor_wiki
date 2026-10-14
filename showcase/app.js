@@ -2761,7 +2761,7 @@ function appendPdfAppearances(container, occurrences) {
   });
 }
 
-async function loadImportedRegistryReport(documentId) {
+async function loadImportedRegistryReport(documentId, page = 1) {
   const requestToken = ++state.registry.reportRequestSequence;
   state.registry.selectedReportDate = documentId;
   const isCurrent = () => requestToken === state.registry.reportRequestSequence;
@@ -2770,11 +2770,13 @@ async function loadImportedRegistryReport(documentId) {
   els.registryReportTitle.textContent = "Loading imported report…";
   els.registryReportMeta.textContent = "Loading PDF details…";
   try {
-    const report = await registryFetch(`/api/registry/pdf-intake/reports/${encodeURIComponent(documentId)}`);
+    const report = await registryFetch(`/api/registry/pdf-intake/reports/${encodeURIComponent(documentId)}?page=${page}&page_size=5`);
     if (!isCurrent()) return;
     els.registryReportTitle.textContent = report.report_title;
     els.registryReportMeta.textContent = [report.report_date || "Report date unavailable", "PDF import", report.filename].join(" · ");
     const details = els.registryImportedReport;
+    const content = registryElement("div", "registry-imported-content");
+    details.append(content);
     const metadata = registryElement("dl", "detail-meta");
     const fields = {"Report date": report.report_date, "Reporting period": report.reporting_period,
       "Pages": report.page_count, "Imported": report.imported_at};
@@ -2786,46 +2788,67 @@ async function loadImportedRegistryReport(documentId) {
         metadata.append(registryMetric(label.replace(/^\//, ""), value));
       }
     });
-    details.append(metadata);
-    (report.executive_summary || []).forEach((summary) => {
-      details.append(registryElement("h4", "", "Executive Summary"), registryElement("p", "", summary));
-    });
-    if (report.articles?.length) details.append(registryElement("h4", "", "Articles"));
-    (report.articles || []).forEach((article) => {
-      const button = registryElement("button", "registry-article-link", article.title || article.canonical_url);
+    content.append(metadata);
+    if (report.executive_summary?.length) {
+      const executive = registryElement("section", "registry-imported-summary");
+      executive.append(registryElement("h4", "", "Executive Summary"));
+      report.executive_summary.forEach((summary) => executive.append(registryElement("p", "", summary)));
+      content.append(executive);
+    }
+    const modules = registryElement("div", "registry-imported-modules");
+    content.append(modules);
+    if (report.articles?.length) modules.append(registryElement("h4", "", "Articles"));
+    (report.articles || []).forEach((article, index) => {
+      const block = registryElement("section", "registry-detail-section");
+      const button = registryElement("button", "registry-article-link", `${(report.article_offset || 0) + index + 1}. ${article.title || article.canonical_url}`);
       button.type = "button";
       button.dataset.articleId = article.article_id;
       button.dataset.articleSource = "pdf";
-      details.append(button);
-      appendRegistryPdfOccurrences(details, article.occurrences);
+      block.append(button);
+      appendRegistryPdfOccurrences(block, article.occurrences);
+      modules.append(block);
     });
-    if (report.calendar_items?.length) details.append(registryElement("h4", "", "Meetings & Key Dates"));
+    if (report.calendar_items?.length) modules.append(registryElement("h4", "", "Meetings & Key Dates"));
     (report.calendar_items || []).forEach((item) => {
-      const block = registryElement("section", "registry-detail-section");
-      block.append(registryElement("h4", "", item.name || "Calendar item"));
+      const block = registryElement("details", "meeting-entry");
+      const summary = registryElement("summary", "meeting-entry__summary");
+      summary.append(registryElement("span", "meeting-entry__name", item.name || "Calendar item"),
+        registryElement("span", "meeting-entry__institution", item.organizer || item.publisher || ""),
+        registryElement("span", "meeting-entry__location-short", item.location || ""));
+      block.append(summary);
+      const body = registryElement("div", "meeting-entry__body");
       const values = registryElement("dl", "detail-meta");
-      ["kind", "event_type", "raw_date", "date_precision", "start_date", "end_date", "date_evidence",
-        "organizer", "publisher", "location", "raw_time_text", "event_timezone", "status", "deadline_type",
-        "deadline_date", "deadline_evidence", "relevance", "page"].forEach((key) => {
-        if (item[key]) values.append(registryMetric(key.replaceAll("_", " "), item[key]));
+      Object.entries({ "Kind": item.kind,
+        "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
+        "Host": item.organizer || item.publisher, "Relevance": item.relevance || item.relevance_reason,
+        "Location": item.location }).forEach(([label, value]) => {
+        if (value) values.append(registryElement("dt", "", label), registryElement("dd", "", value));
       });
-      block.append(values);
+      body.append(values);
       [...new Set([...(item.source_urls || []), item.online_url])].forEach((url) => {
         const safe = safeSourceUrl(url);
         if (!safe) return;
         const link = registryElement("a", "registry-source-link", url);
         link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
-        block.append(link);
+        body.append(link);
       });
-      appendInformationCheck(block, item);
-      details.append(block);
+      block.append(body);
+      modules.append(block);
     });
-    (report.pages || []).forEach((page) => {
-      if (!page.text) return;
-      const section = registryElement("details", "registry-detail-section");
-      section.append(registryElement("summary", "", `Extracted text · page ${page.page}`), registryElement("pre", "md-preview", page.text));
-      details.append(section);
-    });
+    if (report.pagination) {
+      const pagination = registryElement("nav", "registry-pagination");
+      pagination.setAttribute("aria-label", "PDF report pages");
+      const { page: current, pages, total } = report.pagination;
+      [["Previous", current - 1, current <= 1], ["Next", current + 1, current >= pages]].forEach(([label, next, disabled]) => {
+        const button = registryElement("button", "ghost-button", label);
+        button.type = "button";
+        button.disabled = disabled;
+        button.addEventListener("click", () => void loadImportedRegistryReport(documentId, next));
+        pagination.append(button);
+      });
+      pagination.append(registryElement("span", "", `Page ${current} of ${pages || 1} · ${total} modules`));
+      details.append(pagination);
+    }
     details.hidden = false;
     const download = report.report_pdf;
     if (download?.download_url === `/api/registry/pdf-intake/reports/${documentId}/pdf` && download.filename) {
@@ -2850,7 +2873,7 @@ function appendRegistryPdfOccurrences(container, occurrences) {
   }
   const block = registryElement("div", "registry-pdf-history");
   block.append(registryElement("h4", "", "PDF report history"));
-  const list = registryElement("ol", "registry-pdf-history__list");
+  const list = registryElement("ul", "registry-pdf-history__list");
   occurrences.forEach((occurrence) => {
     const item = registryElement("li", "registry-pdf-history__item");
     const sourceName = occurrence.source_document || occurrence.source_observations?.[0]?.filename || "Imported PDF";
@@ -2864,8 +2887,6 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       registryElement("strong", "", `${sourceName} · ${date}${page}`),
       registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."),
     );
-    appendInformationCheck(item, occurrence);
-    appendVerifiedInformation(item, occurrence.verified_information);
     const sourceUrl = safeSourceUrl(occurrence.raw_url);
     if (sourceUrl) {
       const link = registryElement("a", "registry-source-link", "Open source link");
@@ -2874,6 +2895,8 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       link.rel = "noopener noreferrer";
       item.append(link);
     }
+    appendInformationCheck(item, occurrence);
+    appendVerifiedInformation(item, occurrence.verified_information);
     list.append(item);
   });
   block.append(list);
