@@ -21,7 +21,9 @@ assert.match(html, /<label class="sr-only" for="registryMeetingVerification">Ver
 assert.match(styles, /select\.search-input option\s*\{[^}]*background: var\(--bg-elevated\);[^}]*color: var\(--ink\);/);
 assert.match(styles, /\.search-input:focus[\s\S]*?outline: 2px solid/);
 assert.doesNotMatch(html, /data-registry-mode="meetings"/);
-assert.match(source, /setWorkspaceView\(window\.location\.hash === "#meetings" \? "meetingsView" : state\.activeView\)/);
+assert.match(source, /if \(window\.location\.hash === "#meetings"\) \{\s+beginEvidenceNavigation\(\);\s+setWorkspaceView\("meetingsView"\);/);
+assert.match(source, /sourceTarget\?\.kind === "meeting" \|\| window\.location\.hash === "#meetings"/,
+  'startup routing supports exact meeting evidence links and preserves the general #meetings view');
 assert.match(source, /activeView: "chatView"/);
 assert.doesNotMatch(source, /Start with a task, not just a topic|Switch to the Obsidian tab whenever/);
 assert.match(source, /data-answer-mode="\$\{escapeHtml\(starter\.answer_mode/);
@@ -138,6 +140,7 @@ context.registryElement = (tag, className, textContent) => ({ tag, className, te
 context.document = { ...document, addEventListener() {} };
 context.Element = class {};
 context.window = { addEventListener() {}, location: { hash: '' } };
+context.attachSourceCardClickHandler = () => {};
 for (const name of ['attachEvents']) {
   const fn = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
   assert.ok(fn, name);

@@ -1213,7 +1213,8 @@ def registry_pdf_calendar(
 
 @app.get("/api/registry/meetings")
 def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
-    verification_status: str = "", base_date: str | None = None) -> dict:
+    verification_status: str = "", base_date: str | None = None,
+    include_unknown: bool = False) -> dict:
     def query_meetings():
         parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
         validate_page(parsed_page, parsed_size)
@@ -1222,7 +1223,8 @@ def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
         if base_date:
             validate_report_date(base_date)
         return _effective_meetings(_registry_reader(), page=parsed_page, page_size=parsed_size,
-            query=query, verification_status=verification_status, base_date=base_date)
+            query=query, verification_status=verification_status, base_date=base_date,
+            include_unknown=include_unknown)
     def public_payload():
         payload = query_meetings()
         return {**payload, "items": [_calendar_dto(item) for item in payload["items"]]}

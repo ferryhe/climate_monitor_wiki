@@ -398,11 +398,19 @@ class EvidenceTurn:
         urls = [url for url in urls if isinstance(url, str) and len(url) <= 2048][:8]
         source = {"index": index, "title": (item.get("name") or item.get("title") or "Read source")[:300],
             "path": item.get("path") or "", "heading": kind, "url": (item.get("url") or item.get("path") or "") if kind == "wiki" else urls[0] if urls else "",
-            "canonical_url": item.get("canonical_url"),
+            "canonical_url": item.get("canonical_url") or (item.get("final_url") if kind == "web" else None),
             "snippet": body[:600], "source_urls": urls, "type": item.get("type") or kind, "date": item.get("publication_date") or item.get("start_date") or item.get("date") or "-",
             "corpus": item.get("corpus") or ("wiki" if kind == "wiki" else "source"), "matched_section": item.get("heading"), "evidence_id": stable,
             "version": version, "retrieved_at": item.get("retrieved_at"), "truncated": len(body) < len(text) or item.get("truncated", False)
                 or (kind == "web" and len(body) < len(item["body"]))}
+        if isinstance(item.get("score"), (int, float)) and not isinstance(item.get("score"), bool):
+            source["score"] = item["score"]
+        if kind == "meeting":
+            source["meeting_id"] = stable
+        article_id = item.get("article_id")
+        if article_id:
+            source["article_id"] = article_id
+            source["article_source"] = item.get("article_source") or ("pdf" if kind == "pdf_article" else "registry")
         source["date_kind"] = "wiki_document_date" if kind == "wiki" else "event_start" if kind == "meeting" and item.get("start_date") else "publication_date" if item.get("publication_date") else "unknown"
         source["verification_status"] = item.get("verification_status")
         document = next((doc for doc in [*self.owner.responder.kb.documents, *self.owner.responder.kb.source_documents]
@@ -861,7 +869,7 @@ class EvidenceTurn:
                 except Exception as exc:
                     self.notes.append(f"Publication date: unknown in available approved metadata ({type(exc).__name__}); collection, report and update dates are not substitutes.")
         from .wiki_agent import SearchHit, REGISTRY_RUNTIME_PATH_RE
-        hits = ([SearchHit(chunk, 0, "Explicit current page identity") for chunk in self.owner.responder.kb.chunks
+        hits = ([SearchHit(chunk, 0, "Explicit current page identity", ranked=False) for chunk in self.owner.responder.kb.chunks
             if chunk.path == self.named_page][:6] if self.named_page else
             self.owner.responder.kb.search(query, top_k=6 if self.source_only else 24, context_path=context_path,
                 **({"corpus": corpus or "wiki"} if corpus or (not self.source_only and not (context_path or "").lstrip("/").startswith("sources/")) else {})))
@@ -921,7 +929,11 @@ class EvidenceTurn:
             chunk = next((chunk for chunk in self.owner.responder.kb.chunks if chunk.id == evidence_id), None)
             if not chunk:
                 return {"status": "unavailable", "reason": "Source is no longer in the current corpus; do not reuse cached snippets."}
-            item = SearchHit(chunk, 0, "Original result identity").to_source(1, self.owner.responder.base_source_url)
+            item = SearchHit(chunk, 0, "Original result identity", ranked=False).to_source(1, self.owner.responder.base_source_url)
+            if "score" in source:
+                item["score"] = source["score"]
+            else:
+                item.pop("score", None)
             document = next((doc for doc in [*self.owner.responder.kb.documents, *self.owner.responder.kb.source_documents]
                 if doc.path == chunk.path), None)
             body = document.markdown if document else chunk.markdown or chunk.text

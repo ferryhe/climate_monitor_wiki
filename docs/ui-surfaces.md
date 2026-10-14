@@ -78,7 +78,8 @@ For daily report notes, the `Source` link in the detail panel points to the corr
 
 - Selecting a note in the Obsidian tab activates it for chat.
 - Clicking an inline citation opens its matching evidence entry in that assistant reply.
-- Clicking a source card opens its canonical publisher article when known, or its cited wiki/report document in a new tab.
+- Clicking a meeting source card opens its matching Dates record in the app; article and report cards open their matching Historical Reports detail. The original source URL remains available from those details.
+- Source cards show a retrieval score only when one was supplied, using its raw score without a percentage or probability label. After an answer arrives, the chat positions the current question at the top with the answer below it.
 - Clearing context removes the retrieval priority boost.
 - The Obsidian plugin continues to send the vault's active note path as `contextPath`.
 

@@ -218,7 +218,8 @@ async function checkStartupNoticePersistence() {
     fetch: async (url) => url === '/api/manage/session' ? { ok: false } : { ok: true },
     setSending() {}, setAnswerMode() {}, setGraphMode() {}, setWorkspaceView() {},
     renderMessages() {}, attachEvents() {}, historicalReportDateFromHash: () => '',
-    refreshChatAccess: async () => {}, loadConfig: async () => { throw new Error('API 503'); },
+    refreshChatAccess: async () => {}, sourceNavigationFromHash: () => null,
+    loadConfig: async () => { throw new Error('API 503'); },
     setConnectionStatus() {},
   });
   for (const name of ['isLegacyStartupFailureNotice', 'loadThread', 'saveThread',
