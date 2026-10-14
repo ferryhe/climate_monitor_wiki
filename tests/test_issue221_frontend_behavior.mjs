@@ -185,6 +185,7 @@ async function articleDetailUsesCurrentCategories() {
     append(...children) { this.children.push(...children); },
     replaceChildren(...children) { this.children = children; },
     setAttribute() {},
+    removeAttribute(name) { delete this[name]; },
     get childElementCount() { return this.children.length; },
   });
   const els = Object.fromEntries([
@@ -194,7 +195,7 @@ async function articleDetailUsesCurrentCategories() {
   ].map((name) => [name, element()]));
   let article;
   const context = vm.createContext({
-    els, state: { registry: { articleDetailRequestSequence: 0 } },
+    els, state: { registry: { articleDetailRequestSequence: 0, evidenceNavigationSequence: 0 } },
     registryElement: element, registryMetric: element, registryFetch: async () => article,
     safeSourceUrl: (value) => value || '', registryErrorMessage: String,
     registrySummaryPresentation: () => ({}), appendPdfAppearances() {},
@@ -202,8 +203,8 @@ async function articleDetailUsesCurrentCategories() {
   vm.runInContext([
     slice('function appendPdfVerifiedInformation(container, occurrence) {', '\nfunction appendPdfAppearances('),
     slice('function appendRegistryTags(container, label, values) {', '\nasync function loadRegistryArticle('),
-    slice('async function loadRegistryArticle(articleId, articleSource = "registry") {', '\nfunction attachEvents('),
-    'globalThis.loadDetail = loadRegistryArticle;',
+    slice('function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {', '\nasync function loadRegistryArticle('),
+    slice('async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "") {', '\nfunction attachSourceCardClickHandler('),    'globalThis.loadDetail = loadRegistryArticle;',
   ].join('\n'), context);
   const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
   article = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,6 +27,8 @@ MOCK_FETCH = r"""
 window.__registryRequests = [];
 window.__registryScenario = "loading";
 window.__missingArticle = false;
+window.__deferNextArticleLookup = false;
+window.__releaseArticleLookup = null;
 window.__publisherTruncated = false;
 window.__deferNextReport = null;
 window.__pendingReportResponses = [];
@@ -150,17 +153,39 @@ window.fetch = (input, options = {}) => {
   if (url.pathname === "/api/registry/reports/2026-07-20") {
     return registryResponse(500, {detail: "Internal error"});
   }
+  if (url.pathname === "/api/registry/meetings") {
+    const all = [
+      {canonical_event_id: "evt-1", name: "G20 Leaders' Summit, Miami", start_date: "2026-10-20",
+        raw_date: "October 20, 2026", organizer: "G20", source_urls: ["https://events.example/g20"]},
+      {canonical_event_id: "evt-pre-cop", name: "Pre-COP31 ministerial and Leaders' event", start_date: "2026-10-05",
+        raw_date: "October 5–8, 2026", organizer: "UNFCCC", source_urls: ["https://events.example/pre-cop"]},
+      {canonical_event_id: "evt-pre-cop-other", name: "Pre-COP31 ministerial and Leaders' event", start_date: "2026-10-05",
+        raw_date: "October 5–8, 2026", organizer: "UNFCCC", source_urls: ["https://events.example/pre-cop-other"]}
+    ];
+    const query = url.searchParams.get("query") || "";
+    const items = all.filter(item => !query || `${item.name} ${item.organizer}`.toLowerCase().includes(query.toLowerCase()));
+    return registryResponse(200, {items, base_date: "2026-10-14", pagination: {page: 1, page_size: 20, total: items.length, pages: items.length ? 1 : 0}, verification_counts: {verified: 1}});
+  }
   if (url.pathname === "/api/registry/articles") {
     if (window.__registryScenario === "empty") {
       return registryResponse(200, {items: [], pagination: {page: 1, page_size: 20, total: 0, pages: 0}});
     }
     const page = Number(url.searchParams.get("page"));
-    return registryResponse(200, {items: [{article_id: window.__missingArticle ? "missing" : "article-1",
+    if (window.__deferNextArticleLookup && url.searchParams.get("query") === "https://example.com/article") {
+      window.__deferNextArticleLookup = false;
+      return new Promise((resolve) => { window.__releaseArticleLookup = () => resolve(registryResponse(200,
+        {items: [{article_id: "article-1", canonical_url: "https://example.com/article", title: "Climate pricing"}],
+          pagination: {page, page_size: 20, total: 1, pages: 1}})); });
+    }
+    const all = [{article_id: window.__missingArticle ? "missing" : "article-1", canonical_url: "https://example.com/article",
       title: window.__missingArticle ? "Missing article" : (page === 1 ? "Climate pricing" : "Page two article"), publisher: "Example",
       last_seen: "2026-08-10", report_summary: "Pricing summary"},
-      {article_id: "pdf-only", title: "PDF-only article", publisher: "Example", source_kind: "pdf",
+      {article_id: "pdf-only", canonical_url: "https://example.com/pdf-only", title: "PDF-only article", publisher: "Example", source_kind: "pdf",
         last_seen: "2026-08-10", occurrence_count: 2}],
-      pagination: {page, page_size: 20, total: 2, pages: 2}});
+    const query = url.searchParams.get("query") || "";
+    const items = query ? all.filter(item => (item.canonical_url || "").toLowerCase().includes(query.toLowerCase())) : all;
+    return registryResponse(200, {items, pagination: {page, page_size: 20, total: items.length,
+      pages: query ? (items.length ? 1 : 0) : 2}});
   }
   if (url.pathname === "/api/registry/articles/article-1") {
     // CONTRACT FIXTURE: distinct Registry/PDF data plus PDF-provided and missing summaries; public data has no populated verified_information.
@@ -191,6 +216,12 @@ window.fetch = (input, options = {}) => {
         language: "en", generator: {kind: "deterministic", name: "rules", version: "1", generated_at: "2026-08-13"}},
       appearances: [{report_title: "Report detail", report_date: "2026-08-10", pillar: "B", section: "Pillar B"}]});
   }
+  if (url.pathname === "/api/registry/articles/article-00de8b1c45986f255c385eb6") {
+    return registryResponse(200, {article_id: "article-00de8b1c45986f255c385eb6", title: "Mapped article",
+      canonical_url: "https://publisher.example/article", original_url: "https://publisher.example/article",
+      publisher: "Publisher", first_seen: "2026-08-10", last_seen: "2026-08-10", summary: "Registry detail summary.",
+      content: {supporting_excerpt: "Registry excerpt."}, appearances: []});
+  }
   if (url.pathname === "/api/registry/pdf-intake/articles/pdf-only") {
     // CONTRACT FIXTURE: the approved public snapshot has no nonempty verified_information values.
     return registryResponse(200, {article_id: "pdf-only", title: "PDF-only article",
@@ -203,22 +234,32 @@ window.fetch = (input, options = {}) => {
           }},
         {occurrence_id: "occurrence-two", source_document: "climate-report.pdf", page: 22,
           report_date: "2026-08-10", raw_url: "https://example.com/pdf-only", summary: "Duplicate recorded appearance.",
+          verification_status: "unchecked"},
+        {occurrence_id: "pdf-article-occurrence-hash123", source_document: "climate-report.pdf", page: 22,
+          report_date: "2026-08-10", raw_url: "https://example.com/pdf-only", summary: "Historical PDF observation.",
           verification_status: "unchecked"}
       ]});
+  }
+  if (url.pathname === "/api/registry/pdf-intake/articles") {
+    return registryResponse(200, {items: [{article_id: "pdf-only", title: "PDF-only article",
+      canonical_url: "https://example.com/pdf-only", occurrence_count: 3,
+      latest_occurrence: {occurrence_id: "occurrence-two", source_document: "climate-report.pdf", page: 22}
+    }], pagination: {page: 1, page_size: 100, total: 1, pages: 1}});
   }
   return registryResponse(404, {detail: "Registry record not found."});
 };
 """
 
 
-def _new_page(browser, scenario: str):
+def _new_page(browser, scenario: str, messages=None):
     page = browser.new_page()
     network_audit = {
         "external_attempted": [],
         "external_aborted": [],
         "external_completed": [],
     }
-    page.add_init_script(MOCK_FETCH + f'\nwindow.__registryScenario = "{scenario}";')
+    seed = f'localStorage.setItem("climate-monitor-agent-thread", {json.dumps(json.dumps(messages))});' if messages is not None else ""
+    page.add_init_script(MOCK_FETCH + f'\nwindow.__registryScenario = "{scenario}";\n{seed}')
 
     def record_response(response):
         if not response.url.startswith("http://archive.test/"):
@@ -277,7 +318,7 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#chatTab').getAttribute('aria-selected') === 'true'")
         page.get_by_role("button", name="Open Historical Reports").click()
         _visible(page, "Source-only mode")
-        _visible(page, "Checking the historical archive…")
+        _visible(page, "Registry: checking")
         page.evaluate("window.__releaseRegistry()")
         _visible(page, "The archive is not connected yet. Chat and the wiki remain available.")
         page.get_by_role("tab", name="Chat").click()
@@ -593,9 +634,10 @@ def main() -> int:
         _visible(page, "insurance")
         _visible(page, "Website verification: partial · checked 2026-08-11")
         pdf_appearances = page.locator("#registryAppearances .registry-appearance")
-        assert pdf_appearances.count() == 2
+        assert pdf_appearances.count() == 3
         assert pdf_appearances.all_text_contents() == [
             "climate-report.pdf · page 222026-08-10 · Verification: partialOpen original source",
+            "climate-report.pdf · page 222026-08-10 · Verification: uncheckedOpen original source",
             "climate-report.pdf · page 222026-08-10 · Verification: uncheckedOpen original source",
         ]
         for hidden_label in ["PDF report history", "Field checks and evidence", "Supporting excerpt"]:
@@ -682,6 +724,127 @@ def main() -> int:
         page.get_by_role("button", name="Climate pricing").click()
         page.get_by_role("heading", name="Climate pricing", exact=True).wait_for()
         _visible(page, "Registry-owned summary.")
+        _assert_network_isolation(page, audit)
+        page.close()
+
+        prior_history = [
+            item
+            for index in range(8)
+            for item in (
+                {"role": "user", "content": f"Earlier question {index}: explain the prior result."},
+                {"role": "assistant", "content": f"Earlier answer {index}. " + "Supporting detail from the long prior discussion. " * 8},
+            )
+        ]
+        evidence_messages = prior_history + [
+            {"role": "user", "content": "Question about the evidence"},
+            {"role": "assistant", "content": "Answer [1] [2] [3] [4] [5] [6]", "sources": [
+                {"index": 1, "title": "G20 Leaders' Summit, Miami", "document_title": "Meetings and key dates",
+                 "path": "wiki/registry-meetings.md", "matched_section": "G20 Leaders' Summit, Miami", "corpus": "wiki", "snippet": "Meeting details"},
+                {"index": 2, "title": "Mapped article", "document_title": "Mapped article",
+                 "path": "wiki/article-article-00de8b1c45986f255c385eb6.md", "canonical_url": "https://publisher.example/article",
+                 "corpus": "wiki", "score": 4.25, "snippet": "Article evidence"},
+                {"index": 3, "title": "Climate monitor report", "document_title": "Climate monitor report",
+                 "path": "wiki/climate-monitor-2026-08-10.md", "corpus": "wiki", "snippet": "Report evidence"},
+                {"index": 4, "title": "Pre-COP31 ministerial and Leaders' event", "document_title": "Calendar",
+                 "meeting_id": "evt-pre-cop", "corpus": "source", "snippet": "Past approved meeting"},
+                {"index": 5, "title": "https://example.com/article", "document_title": "Page evidence",
+                  "type": "web", "url": "https://example.com/article", "corpus": "source", "snippet": "Current webpage facts"},
+                {"index": 6, "title": "PDF observation", "document_title": "Guide for supervisors",
+                  "path": "wiki/registry-source-observation-pdf-article-occurrence-hash123.md",
+                  "corpus": "wiki", "snippet": "PDF observation evidence"},
+                {"index": 7, "title": "Missing observation", "document_title": "Missing observation",
+                  "path": "wiki/registry-source-observation-pdf-article-occurrence-missing.md",
+                  "corpus": "wiki", "snippet": "Missing PDF observation"},
+                {"index": 8, "title": "Unlisted article", "document_title": "Unlisted article",
+                  "path": "wiki/article-article-unavailable.md", "canonical_url": "https://publisher.example/unlisted",
+                  "corpus": "wiki", "snippet": "Retained article source"}
+            ]},
+            {"role": "user", "content": "Current pending question"},
+            {"role": "assistant", "content": "", "pending": True}
+        ]
+        page, audit = _new_page(browser, "populated", evidence_messages)
+        page.get_by_text("Question about the evidence", exact=True).wait_for()
+        page.get_by_text("Evidence 8", exact=True).click()
+        assert page.locator(".source-card").nth(1).inner_text().find("Retrieval score 4.25") >= 0
+        assert "Retrieval score" not in page.locator(".source-card").nth(0).inner_text()
+        page.locator(".source-card").nth(0).click()
+        page.get_by_role("tab", name="Dates").wait_for()
+        page.locator(".meeting-entry[open]").get_by_text("G20 Leaders' Summit, Miami", exact=True).wait_for()
+        assert page.evaluate("window.__registryRequests.some(x => x.path.includes('/api/registry/meetings?') && x.path.includes('G20'))")
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(1).click()
+        page.get_by_role("heading", name="Mapped article", exact=True).wait_for()
+        _visible(page, "Registry detail summary.")
+        assert page.get_by_role("link", name="Open original source").get_attribute("href") == "https://publisher.example/article"
+        original_hash = page.evaluate("window.location.hash")
+        request_count = page.evaluate("window.__registryRequests.length")
+        for modifier in ["Control", "Meta", "Shift", "Alt"]:
+            page.locator(".source-card").nth(1).dispatch_event("click", {"ctrlKey": modifier == "Control",
+                "metaKey": modifier == "Meta", "shiftKey": modifier == "Shift", "altKey": modifier == "Alt"})
+        assert page.evaluate("window.location.hash") == original_hash
+        assert page.evaluate("window.__registryRequests.length") == request_count
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(7).click()
+        page.get_by_role("heading", name="Article unavailable", exact=True).wait_for()
+        assert page.get_by_role("link", name="Open original source").get_attribute("href") == "https://publisher.example/unlisted"
+        _visible(page, "The original cited source is still available below.")
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(4).click()
+        page.get_by_role("heading", name="Climate pricing", exact=True).wait_for()
+        assert page.get_by_role("link", name="Open original source").get_attribute("href") == "https://example.com/article"
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(2).click()
+        page.get_by_role("heading", name="Report detail").wait_for()
+        assert page.url.endswith("#historical-report=2026-08-10")
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(5).click()
+        page.get_by_role("heading", name="PDF-only article", exact=True).wait_for()
+        assert page.url.split("#", 1)[1].startswith("registry-pdf-occurrence=pdf-article-occurrence-hash123&search=")
+        assert page.evaluate("window.__registryRequests.some(x => x.path.includes('/api/registry/pdf-intake/articles?') && x.path.includes('include_linked=true'))")
+        assert page.evaluate("window.__registryRequests.some(x => x.path.endsWith('/api/registry/pdf-intake/articles/pdf-only'))")
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(6).click()
+        page.get_by_role("heading", name="PDF observation unavailable", exact=True).wait_for()
+        assert page.locator("#registryOriginalLink").count() == 1
+        assert page.locator("#registryOriginalLink").is_hidden()
+        assert page.get_by_text("Registry detail summary.", exact=True).count() == 0
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(1).click()
+        page.get_by_role("heading", name="Mapped article", exact=True).wait_for()
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.evaluate("window.__deferNextArticleLookup = true")
+        page.locator(".source-card").nth(4).click()
+        page.wait_for_function("window.__releaseArticleLookup !== null")
+        page.get_by_role("button", name="Climate pricing", exact=True).click()
+        page.get_by_role("heading", name="Climate pricing", exact=True).wait_for()
+        direct_hash = page.evaluate("window.location.hash")
+        page.evaluate("window.__releaseArticleLookup()")
+        page.wait_for_timeout(50)
+        assert page.get_by_role("heading", name="Climate pricing", exact=True).is_visible()
+        assert page.evaluate("window.location.hash") == direct_hash
+        page.get_by_role("tab", name="Chat").click()
+        page.get_by_text("Evidence 8", exact=True).click()
+        page.locator(".source-card").nth(3).click()
+        page.locator(".meeting-entry[open]").get_by_text("Pre-COP31 ministerial and Leaders' event", exact=True).wait_for()
+        page.get_by_text("Selected evidence record", exact=True).wait_for()
+        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        page.locator(".meeting-entry[open]").get_by_text("Pre-COP31 ministerial and Leaders' event", exact=True).wait_for()
+        page.get_by_text("Selected evidence record", exact=True).wait_for()
+        opened_ids = page.locator(".meeting-entry[open]").evaluate_all("items => items.map(item => item.dataset.meetingId)")
+        assert opened_ids == ["evt-pre-cop"]
+        assert page.evaluate("window.__registryRequests.some(x => x.path.includes('base_date=1900-01-01') && x.path.includes('Pre-COP31'))")
+        page.get_by_role("tab", name="Chat").click()
+        page.evaluate("replacePendingAssistant('Final answer')")
+        page.get_by_text("Final answer", exact=True).wait_for()
+        assert abs(page.locator(".message-row--user").last.evaluate("row => row.getBoundingClientRect().top - document.querySelector('#messages').getBoundingClientRect().top")) < 2
         _assert_network_isolation(page, audit)
         page.close()
 

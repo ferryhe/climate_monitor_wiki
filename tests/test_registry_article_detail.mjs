@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['registryElement', 'safeSourceUrl', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['registryElement', 'safeSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -23,7 +23,7 @@ const appearancesEl = document.createElement('ul');
 const contentSection = document.createElement('section');
 const originalLink = document.createElement('a');
 const context = vm.createContext({ document, URL, console,
-  state: { registry: { articleDetailRequestSequence: 0 } },
+  state: { registry: { articleDetailRequestSequence: 0, evidenceNavigationSequence: 0 } },
   els: { registryArticleDetail: articleDetail, registryArticleTitle: articleTitle,
     registryArticleMeta: articleMeta, registryEnrichment: enrichment,
     registryAppearances: appearancesEl, registryAppearancesSection: appearancesSection,

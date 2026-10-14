@@ -124,6 +124,7 @@ const state = {
   isSending: false,
   chatAccess: null,
   activeView: "chatView",
+  pendingQuestionFocus: false,
   markdownByPath: {},
   markdownRequests: {},
   graph: null,
@@ -153,6 +154,7 @@ const state = {
     listFetchSequence: 0,
     listVersionSequence: 0,
     articleDetailRequestSequence: 0,
+    evidenceNavigationSequence: 0,
     loadPromise: null,
   },
 };
@@ -433,10 +435,16 @@ function historicalReportDateFromHash() {
   return match ? match[1] : "";
 }
 
+function beginEvidenceNavigation() {
+  state.registry.articleDetailRequestSequence += 1;
+  return ++state.registry.evidenceNavigationSequence;
+}
+
 function openHistoricalReport(reportDate, { updateHash = true } = {}) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate || "")) {
     return;
   }
+  beginEvidenceNavigation();
   const nextHash = `#historical-report=${encodeURIComponent(reportDate)}`;
   if (updateHash && window.location.hash !== nextHash) {
     window.history.pushState(null, "", nextHash);
@@ -944,6 +952,10 @@ function setWorkspaceView(viewId) {
     state.registry.meetingPage = 1;
     void loadRegistryMeetings();
   }
+  if (viewId === "chatView" && state.pendingQuestionFocus) {
+    state.pendingQuestionFocus = false;
+    renderMessages({ focusCurrentQuestion: true });
+  }
   if (viewId === "obsidianView") {
     renderCurrentGraph();
   } else {
@@ -985,14 +997,14 @@ function replacePendingAssistant(content, sources = [], rangeReport = null, cont
       message.context = context;
       message.pending = false;
       saveThread();
-      renderMessages();
+      renderMessages({ focusCurrentQuestion: true });
       return;
     }
   }
 
   state.messages.push({ role: "assistant", content, sources, rangeReport, context, pending: false });
   saveThread();
-  renderMessages();
+  renderMessages({ focusCurrentQuestion: true });
 }
 
 function renderSourceCards(sources) {
@@ -1006,12 +1018,12 @@ function renderSourceCards(sources) {
         ${sources
           .map(
             (source) => `
-              <a class="source-card" data-index="${escapeHtml(source.index)}" href="${escapeHtml(sourceCitationHref(source))}" target="_blank" rel="noopener noreferrer">
+              <a class="source-card" data-index="${escapeHtml(source.index)}" ${sourceNavigationAttributes(source)} href="${escapeHtml(sourceNavigationHref(source) || sourceCitationHref(source))}" target="_blank" rel="noopener noreferrer">
                 <div class="source-card__title">
                   <span class="source-card__index">[${source.index}]</span>
                   <span class="source-card__heading">${escapeHtml(source.document_title || source.title || source.path || "Source")}</span>
                 </div>
-                <p class="source-card__meta">${escapeHtml((source.corpus || "wiki").toUpperCase())} · ${escapeHtml(source.matched_section || source.heading || source.path || "")}</p>
+                <p class="source-card__meta">${escapeHtml((source.corpus || "wiki").toUpperCase())} · ${escapeHtml(source.matched_section || source.heading || source.path || "")}${Number.isFinite(source.score) ? ` · Retrieval score ${escapeHtml(source.score)}` : ""}</p>
                 <p class="source-card__snippet">${escapeHtml(source.snippet || "")}</p>
               </a>
             `,
@@ -1020,6 +1032,94 @@ function renderSourceCards(sources) {
       </div>
     </details>
   `;
+}
+
+function sourceNavigationTarget(source) {
+  const path = source.path || "";
+  if (source.meeting_id || path === "wiki/registry-meetings.md") {
+    const name = source.matched_section || (source.heading !== "meeting" ? source.heading : "") || source.title || "";
+    return { kind: "meeting", id: source.meeting_id || "", name };
+  }
+  const articleMatch = /^(?:wiki\/)?(pdf-)?article-(.+)\.md$/.exec(path);
+  const articleId = source.article_id || (articleMatch
+    ? articleMatch[1] && !articleMatch[2].startsWith("article-") ? `article-${articleMatch[2]}` : articleMatch[2]
+    : "");
+  const legacyKind = [source.heading, source.type].find((value) => ["meeting", "article", "pdf_article"].includes(value));
+  // Old EvidenceTurn records kept the Registry identity in evidence_id and the
+  // entity kind in heading/type. Wiki chunks and web reads also have evidence
+  // IDs, so only interpret this legacy shape when it is not a Wiki source.
+  const legacyId = !path && source.corpus !== "wiki" ? source.evidence_id || "" : "";
+  if (!source.meeting_id && !path && legacyKind === "meeting" && legacyId) {
+    return { kind: "meeting", id: legacyId, name: source.title || source.document_title || "" };
+  }
+  const legacyArticleId = !path && ["article", "pdf_article"].includes(legacyKind) ? legacyId : "";
+  if (!articleId && legacyArticleId) {
+    return { kind: "article", id: legacyArticleId, source: legacyKind === "pdf_article" ? "pdf" : "registry",
+      url: safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url) };
+  }
+  if (articleId) {
+    const articleSource = source.article_source || (path.includes("pdf-article-") ? "pdf" : "registry");
+    return { kind: "article", id: articleId, source: articleSource,
+      url: safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url) };
+  }
+  const pdfObservationMatch = /^(?:wiki\/)?registry-source-observation-pdf-article-occurrence-([A-Za-z0-9_-]+)\.md$/.exec(path);
+  if (pdfObservationMatch) return { kind: "pdf-observation", id: `pdf-article-occurrence-${pdfObservationMatch[1]}`,
+    search: source.matched_section || source.document_title || source.title || "",
+    url: safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url),
+    snippet: source.snippet || "" };
+  const articleUrl = source.type === "web" ? safeSourceUrl(source.canonical_url || source.url) : "";
+  if (articleUrl) return { kind: "article-url", url: articleUrl };
+  const reportMatch = /^(?:wiki|sources)\/climate-monitor-(\d{4}-\d{2}-\d{2})\.md$/.exec(path);
+  if (reportMatch) return { kind: "report", date: reportMatch[1] };
+  return null;
+}
+
+function sourceNavigationAttributes(source) {
+  const target = sourceNavigationTarget(source);
+  if (!target) return "";
+  if (target.kind === "meeting") return `data-source-navigation="meeting"${target.id ? ` data-meeting-id="${escapeHtml(target.id)}"` : ""}${target.name ? ` data-meeting-name="${escapeHtml(target.name)}"` : ""}`;
+  if (target.kind === "article") return `data-source-navigation="article" data-article-id="${escapeHtml(target.id)}" data-article-source="${escapeHtml(target.source)}"${target.url ? ` data-original-url="${escapeHtml(target.url)}"` : ""}`;
+  if (target.kind === "article-url") return `data-source-navigation="article-url" data-source-url="${escapeHtml(target.url)}"`;
+  if (target.kind === "pdf-observation") return `data-source-navigation="pdf-observation" data-occurrence-id="${escapeHtml(target.id)}" data-observation-search="${escapeHtml(target.search)}" data-observation-url="${escapeHtml(target.url)}" data-observation-snippet="${escapeHtml(target.snippet)}"`;
+  return `data-source-navigation="report" data-report-date="${target.date}"`;
+}
+
+function sourceNavigationHref(source) {
+  const target = sourceNavigationTarget(source);
+  if (!target) return "";
+  if (target.kind === "meeting") return target.id
+    ? `#meeting=${encodeURIComponent(`id:${target.id}${target.name ? `|name:${target.name}` : ""}`)}`
+    : target.name ? `#meeting=${encodeURIComponent(`name:${target.name}`)}` : "#meetings";
+  if (target.kind === "article") return `#registry-article=${encodeURIComponent(target.source)}:${encodeURIComponent(target.id)}${target.url ? `&url=${encodeURIComponent(target.url)}` : ""}`;
+  if (target.kind === "article-url") return `#registry-article-url=${encodeURIComponent(target.url)}`;
+  if (target.kind === "pdf-observation") {
+    const params = new URLSearchParams({ search: target.search, url: target.url, snippet: (target.snippet || "").slice(0, 100) });
+    return `#registry-pdf-occurrence=${encodeURIComponent(target.id)}&${params}`;
+  }
+  return `#historical-report=${encodeURIComponent(target.date)}`;
+}
+
+function sourceNavigationFromHash() {
+  try {
+    const rawHash = window.location.hash;
+    const pdfObservation = /^#registry-pdf-occurrence=([^&]+)(?:&search=([^&]*))?(?:&url=([^&]*))?(?:&snippet=([^&]*))?$/.exec(rawHash);
+    if (pdfObservation) {
+      const params = new URLSearchParams(rawHash.slice(rawHash.indexOf("&") + 1));
+      return { kind: "pdf-observation", id: decodeURIComponent(pdfObservation[1]),
+        search: params.get("search") || "", url: params.get("url") || "", snippet: params.get("snippet") || "" };
+    }
+    const hash = decodeURIComponent(rawHash);
+    const meeting = /^#meeting=(?:id:([^|]+)(?:\|name:(.+))?|name:(.+))$/.exec(hash);
+    if (meeting) return { kind: "meeting", id: meeting[1] || "", name: meeting[2] || meeting[3] || "" };
+    const article = /^#registry-article=(registry|pdf):([^&]+)(?:&url=([^&]*))?$/.exec(rawHash);
+    if (article) return { kind: "article", source: article[1], id: decodeURIComponent(article[2]),
+      url: article[3] ? safeSourceUrl(decodeURIComponent(article[3])) : "" };
+    const articleUrl = /^#registry-article-url=(https?:\/\/\S+)$/.exec(hash);
+    if (articleUrl) return { kind: "article-url", url: safeSourceUrl(articleUrl[1]) };
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function sourceCitationHref(source) {
@@ -1063,12 +1163,13 @@ function renderEmptyState() {
   els.messages.appendChild(shell);
 }
 
-function renderMessages() {
+function renderMessages({ focusCurrentQuestion = false } = {}) {
   if (!els.messages) {
     return;
   }
 
   els.messages.innerHTML = "";
+  els.messages.style.paddingBottom = "";
   if (state.messages.length === 0) {
     renderEmptyState();
     return;
@@ -1112,6 +1213,21 @@ function renderMessages() {
     els.messages.appendChild(row);
   });
 
+  if (focusCurrentQuestion) {
+    if (els.chatView?.hidden || !els.messages.clientHeight) {
+      state.pendingQuestionFocus = true;
+      return;
+    }
+    state.pendingQuestionFocus = false;
+    els.messages.style.paddingBottom = `${els.messages.clientHeight}px`;
+    const question = [...els.messages.querySelectorAll(".message-row--user")].at(-1);
+    if (question) {
+      els.messages.scrollTop += question.getBoundingClientRect().top - els.messages.getBoundingClientRect().top;
+      return;
+    }
+  } else {
+    els.messages.style.paddingBottom = "";
+  }
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
@@ -1946,6 +2062,7 @@ function setActiveContext(path, options = {}) {
   updateGraphSelection();
 
   if (options.switchView) {
+    beginEvidenceNavigation();
     setWorkspaceView(options.switchView);
   }
 
@@ -2201,20 +2318,41 @@ function appendMeetingLocations(container, item) {
   });
 }
 
-async function loadRegistryMeetings() {
+async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
   const sequence = ++state.registry.meetingRequestSequence;
   renderRegistryNotice(els.registryMeetings, "Loading meetings…");
   const params = new URLSearchParams({ page: String(state.registry.meetingPage), page_size: "20" });
-  if (els.registryMeetingSearch.value.trim()) params.set("query", els.registryMeetingSearch.value.trim());
+  const query = focusName || els.registryMeetingSearch.value.trim();
+  if (query) params.set("query", query);
+  if (focusId || focusName) {
+    params.set("base_date", "1900-01-01");
+    params.set("include_unknown", "true");
+  }
   if (els.registryMeetingVerification.value) params.set("verification_status", els.registryMeetingVerification.value);
   try {
-    const payload = await registryFetch(`/api/registry/meetings?${params}`);
+    let payload = await registryFetch(`/api/registry/meetings?${params}`);
+    while (focusId && !payload.items.some((item) =>
+      (item.canonical_event_id || item.event_id || item.occurrence_id || "") === focusId) &&
+      Number(params.get("page")) < payload.pagination.pages) {
+      params.set("page", String(Number(params.get("page")) + 1));
+      payload = await registryFetch(`/api/registry/meetings?${params}`);
+    }
     if (sequence !== state.registry.meetingRequestSequence) return;
+    state.registry.meetingPage = Number(params.get("page"));
     state.registry.meetingPagination = payload.pagination;
     els.registryMeetings.replaceChildren();
+    const focusedMeeting = focusId
+      ? payload.items.find((item) => (item.canonical_event_id || item.event_id || item.occurrence_id || "") === focusId)
+      : focusName
+        ? payload.items.filter((item) => item.name === focusName).length === 1
+          ? payload.items.find((item) => item.name === focusName)
+          : payload.pagination.total === 1 ? payload.items[0] : null
+        : null;
     const counts = payload.verification_counts || {};
-    els.registryMeetingCounts.textContent = `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
-      `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
+    els.registryMeetingCounts.textContent = focusId || focusName
+      ? "Selected evidence record"
+      : `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
+        `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
     const groups = new Map();
     payload.items.forEach((item) => {
       const date = meetingDateGroup(item);
@@ -2228,6 +2366,7 @@ async function loadRegistryMeetings() {
       const entries = registryElement("div", "meeting-date-group__entries");
       group.items.forEach((item) => {
         const card = registryElement("details", "meeting-entry");
+        card.dataset.meetingId = item.canonical_event_id || item.event_id || item.occurrence_id || "";
         const summary = registryElement("summary", "meeting-entry__summary");
         summary.append(registryElement("span", "meeting-entry__name", item.name),
           registryElement("span", "meeting-entry__institution", meetingInstitution(item)),
@@ -2235,8 +2374,10 @@ async function loadRegistryMeetings() {
         card.append(summary);
         const body = registryElement("div", "meeting-entry__body");
         const fields = registryElement("dl", "detail-meta");
-        const values = { "Date(s)": item.raw_date || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
-          "Time": item.raw_time_text, "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
+        const partialDateText = item.date_precision && item.date_precision !== "day" ? item.raw_time_text : "";
+        const values = { "Date(s)": item.raw_date || partialDateText || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
+          "Time": item.raw_time_text === partialDateText ? "" : item.raw_time_text,
+          "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
           "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
           "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
         Object.entries(values).forEach(([label, value]) => {
@@ -2254,6 +2395,10 @@ async function loadRegistryMeetings() {
         });
         appendInformationCheck(body, item, true);
         card.append(body);
+        if (item === focusedMeeting) {
+          card.open = true;
+          requestAnimationFrame(() => card.scrollIntoView({ block: "center", behavior: "smooth" }));
+        }
         entries.append(card);
       });
       section.append(entries);
@@ -2265,6 +2410,132 @@ async function loadRegistryMeetings() {
   } catch (error) {
     if (sequence === state.registry.meetingRequestSequence) renderRegistryNotice(els.registryMeetings, registryErrorMessage(error));
   }
+}
+
+function openMeetingEvidence(meetingId, meetingName, { updateHash = true } = {}) {
+  beginEvidenceNavigation();
+  if (updateHash) {
+    const value = meetingId ? `id:${meetingId}${meetingName ? `|name:${meetingName}` : ""}` : `name:${meetingName}`;
+    const hash = `#meeting=${encodeURIComponent(value)}`;
+    if (window.location.hash !== hash) window.history.pushState(null, "", hash);
+  }
+  els.registryMeetingSearch.value = meetingName || "";
+  els.registryMeetingVerification.value = "";
+  setWorkspaceView("meetingsView");
+  state.registry.meetingPage = 1;
+  void loadRegistryMeetings({ focusId: meetingId, focusName: meetingName });
+}
+
+function openRegistryArticleEvidence(articleId, articleSource = "registry", { updateHash = true, fallbackSourceUrl = "" } = {}) {
+  if (!articleId) return;
+  beginEvidenceNavigation();
+  if (updateHash) {
+    const safeFallbackUrl = safeSourceUrl(fallbackSourceUrl);
+    const hash = `#registry-article=${encodeURIComponent(articleSource)}:${encodeURIComponent(articleId)}${safeFallbackUrl ? `&url=${encodeURIComponent(safeFallbackUrl)}` : ""}`;
+    if (window.location.hash !== hash) window.history.pushState(null, "", hash);
+  }
+  if (state.activeView !== "registryView") setWorkspaceView("registryView");
+  setRegistryMode("articles");
+  void loadRegistryArticle(articleId, articleSource, fallbackSourceUrl);
+}
+
+async function openPdfObservationEvidence(occurrenceId, { search = "", url = "", snippet = "", updateHash = true } = {}) {
+  if (!/^[A-Za-z0-9_-]+$/.test(occurrenceId || "")) return;
+  const navigationSequence = beginEvidenceNavigation();
+  if (updateHash) {
+    const params = new URLSearchParams({ search, url: safeSourceUrl(url), snippet: (snippet || "").slice(0, 100) });
+    const hash = `#registry-pdf-occurrence=${encodeURIComponent(occurrenceId)}&${params}`;
+    if (window.location.hash !== hash) window.history.pushState(null, "", hash);
+  }
+  if (state.activeView !== "registryView") setWorkspaceView("registryView");
+  setRegistryMode("articles");
+  resetRegistryArticleDetail("Loading PDF observation…", url);
+  try {
+    const queries = [...new Set([search, url, (snippet || "").slice(0, 100)].map((value) => String(value || "").trim()).filter((value) => value.length >= 4))].slice(0, 3);
+    const candidateIds = new Set();
+    const checkedIds = new Set();
+    for (const query of [...queries, ""]) {
+      for (let page = 1; page <= 10; page += 1) {
+        const params = new URLSearchParams({ page: String(page), page_size: "100", include_linked: "true" });
+        if (query) params.set("query", query.slice(0, 200));
+        const payload = await registryFetch(`/api/registry/pdf-intake/articles?${params}`);
+        if (navigationSequence !== state.registry.evidenceNavigationSequence) return;
+        for (const item of payload.items || []) {
+          if (item.latest_occurrence?.occurrence_id === occurrenceId) {
+            await loadRegistryArticle(item.article_id, "pdf", url);
+            return;
+          }
+          if (item.article_id) candidateIds.add(item.article_id);
+        }
+        if (page >= payload.pagination.pages) break;
+      }
+      for (const articleId of candidateIds) {
+        if (checkedIds.has(articleId)) continue;
+        checkedIds.add(articleId);
+        let article;
+        try {
+          article = await registryFetch(`/api/registry/pdf-intake/articles/${encodeURIComponent(articleId)}`);
+        } catch (error) {
+          if (error.status === 404) continue;
+          throw error;
+        }
+        if (navigationSequence !== state.registry.evidenceNavigationSequence) return;
+        if ((article.occurrences || []).some((occurrence) => occurrence.occurrence_id === occurrenceId)) {
+          await loadRegistryArticle(articleId, "pdf", url);
+          return;
+        }
+      }
+    }
+    if (navigationSequence === state.registry.evidenceNavigationSequence) {
+      els.registryArticleTitle.textContent = "PDF observation unavailable";
+      els.registryArticleMeta.textContent = "This PDF observation is not available in the public Registry.";
+      els.registryArticleDetail.setAttribute("aria-busy", "false");
+    }
+  } catch (error) {
+    if (navigationSequence === state.registry.evidenceNavigationSequence) {
+      els.registryArticleTitle.textContent = "Article unavailable";
+      els.registryArticleMeta.textContent = registryErrorMessage(error);
+      els.registryArticleDetail.setAttribute("aria-busy", "false");
+    }
+  }
+}
+
+function comparableSourceUrl(value) {
+  const safe = safeSourceUrl(value);
+  if (!safe) return "";
+  const url = new URL(safe);
+  url.hash = "";
+  if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/$/, "");
+  return url.href;
+}
+
+async function openWebEvidence(url, { updateHash = true } = {}) {
+  const safe = safeSourceUrl(url);
+  if (!safe) return;
+  const lookup = comparableSourceUrl(safe);
+  const navigationSequence = beginEvidenceNavigation();
+  if (updateHash) {
+    const hash = `#registry-article-url=${encodeURIComponent(safe)}`;
+    if (window.location.hash !== hash) window.history.pushState(null, "", hash);
+  }
+  if (state.activeView !== "registryView") setWorkspaceView("registryView");
+  setRegistryMode("articles");
+  try {
+    for (let page = 1; page <= 10; page += 1) {
+      const params = new URLSearchParams({ query: lookup, include_pdf: "true", page: String(page), page_size: "100" });
+      const payload = await registryFetch(`/api/registry/articles?${params}`);
+      if (navigationSequence !== state.registry.evidenceNavigationSequence) return;
+      const match = payload.items.find((article) => comparableSourceUrl(article.canonical_url) === comparableSourceUrl(safe));
+      if (match) {
+        await loadRegistryArticle(match.article_id, match.source_kind === "pdf" ? "pdf" : "registry", safe);
+        return;
+      }
+      if (page >= payload.pagination.pages) break;
+    }
+  } catch {
+    // An unreadable Registry does not change the original web evidence.
+  }
+  if (navigationSequence === state.registry.evidenceNavigationSequence) window.location.assign(safe);
 }
 
 async function loadRegistryPublishers() {
@@ -2892,18 +3163,31 @@ function appendRegistryTags(container, label, values) {
   container.append(block);
 }
 
-async function loadRegistryArticle(articleId, articleSource = "registry") {
-  const requestSequence = ++state.registry.articleDetailRequestSequence;
-  const isCurrentRequest = () => requestSequence === state.registry.articleDetailRequestSequence;
+function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {
   els.registryArticleDetail.setAttribute("aria-busy", "true");
-  els.registryArticleTitle.textContent = "Loading article…";
+  els.registryArticleTitle.textContent = title;
   els.registryArticleMeta.replaceChildren();
   els.registryEnrichment.replaceChildren();
   els.registryEnrichment.hidden = true;
   els.registryAppearances.replaceChildren();
   els.registryAppearancesSection.hidden = false;
   els.registryContentSection.hidden = true;
+  els.registryMarkdown.textContent = "";
   els.registryOriginalLink.hidden = true;
+  els.registryOriginalLink.removeAttribute("href");
+  const safeFallbackUrl = safeSourceUrl(fallbackSourceUrl);
+  if (safeFallbackUrl) {
+    els.registryOriginalLink.href = safeFallbackUrl;
+    els.registryOriginalLink.textContent = "Open original source";
+    els.registryOriginalLink.hidden = false;
+  }
+}
+
+async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "") {
+  state.registry.evidenceNavigationSequence += 1;
+  const requestSequence = ++state.registry.articleDetailRequestSequence;
+  const isCurrentRequest = () => requestSequence === state.registry.articleDetailRequestSequence;
+  resetRegistryArticleDetail("Loading article…");
   try {
     const pdfSource = articleSource === "pdf";
     const endpoint = pdfSource
@@ -3047,7 +3331,14 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
       return;
     }
     els.registryArticleTitle.textContent = "Article unavailable";
-    els.registryEnrichment.append(registryElement("p", "registry-notice", registryErrorMessage(error)));
+    const fallbackSource = safeSourceUrl(fallbackSourceUrl);
+    if (fallbackSource) {
+      els.registryOriginalLink.href = fallbackSource;
+      els.registryOriginalLink.textContent = "Open original source";
+      els.registryOriginalLink.hidden = false;
+    }
+    els.registryEnrichment.append(registryElement("p", "registry-notice",
+      `${registryErrorMessage(error)}${fallbackSource ? " The original cited source is still available below." : ""}`));
     els.registryEnrichment.hidden = false;
   } finally {
     if (isCurrentRequest()) {
@@ -3056,7 +3347,32 @@ async function loadRegistryArticle(articleId, articleSource = "registry") {
   }
 }
 
-function attachEvents() {
+function attachSourceCardClickHandler() {
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const sourceCard = target.closest("[data-source-navigation]");
+    if (!sourceCard || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (sourceCard.dataset.sourceNavigation === "meeting") {
+      openMeetingEvidence(sourceCard.dataset.meetingId || "", sourceCard.dataset.meetingName || "");
+    } else if (sourceCard.dataset.sourceNavigation === "article") {
+      openRegistryArticleEvidence(sourceCard.dataset.articleId, sourceCard.dataset.articleSource || "registry",
+        { fallbackSourceUrl: sourceCard.dataset.originalUrl || "" });
+    } else if (sourceCard.dataset.sourceNavigation === "article-url") {
+      void openWebEvidence(sourceCard.dataset.sourceUrl);
+    } else if (sourceCard.dataset.sourceNavigation === "pdf-observation") {
+      void openPdfObservationEvidence(sourceCard.dataset.occurrenceId, {
+        search: sourceCard.dataset.observationSearch,
+        url: sourceCard.dataset.observationUrl,
+        snippet: sourceCard.dataset.observationSnippet,
+      });
+    } else if (sourceCard.dataset.sourceNavigation === "report") {
+      openHistoricalReport(sourceCard.dataset.reportDate);
+    }
+  });
+}function attachEvents() {
+  attachSourceCardClickHandler();
   els.registryMeetingSearchForm?.addEventListener("submit", (event) => {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
   });
@@ -3088,7 +3404,10 @@ function attachEvents() {
   });
 
   els.registryModeButtons.forEach((button) => {
-    button.addEventListener("click", () => setRegistryMode(button.dataset.registryMode));
+    button.addEventListener("click", () => {
+      beginEvidenceNavigation();
+      setRegistryMode(button.dataset.registryMode);
+    });
   });
 
   if (els.registrySearchForm) {
@@ -3150,6 +3469,7 @@ function attachEvents() {
 
   if (els.jumpToReports) {
     els.jumpToReports.addEventListener("click", () => {
+      beginEvidenceNavigation();
       setRegistryMode("reports");
       setWorkspaceView("registryView");
     });
@@ -3160,6 +3480,7 @@ function attachEvents() {
       if (!state.activeContextPath) {
         return;
       }
+      beginEvidenceNavigation();
       setWorkspaceView("chatView");
       els.input.focus();
     });
@@ -3215,8 +3536,14 @@ function attachEvents() {
       return;
     }
 
+    const sourceCard = target.closest("[data-source-navigation]");
+    if (sourceCard) {
+      return;
+    }
+
     const tab = target.closest(".tabbar__tab");
     if (tab) {
+      beginEvidenceNavigation();
       setWorkspaceView(tab.dataset.view);
       return;
     }
@@ -3233,6 +3560,7 @@ function attachEvents() {
 
     const pdfReportCard = target.closest("[data-pdf-report-id]");
     if (pdfReportCard) {
+      beginEvidenceNavigation();
       void loadImportedRegistryReport(pdfReportCard.dataset.pdfReportId);
       return;
     }
@@ -3267,7 +3595,26 @@ function attachEvents() {
     if (state.graphMode === "article-categories") renderCurrentGraph();
   });
   window.addEventListener("hashchange", () => {
+    const sourceTarget = sourceNavigationFromHash();
+    if (sourceTarget?.kind === "meeting") {
+      openMeetingEvidence(sourceTarget.id, sourceTarget.name, { updateHash: false });
+      return;
+    }
+    if (sourceTarget?.kind === "article") {
+      openRegistryArticleEvidence(sourceTarget.id, sourceTarget.source, { updateHash: false, fallbackSourceUrl: sourceTarget.url });
+      return;
+    }
+    if (sourceTarget?.kind === "article-url") {
+      void openWebEvidence(sourceTarget.url, { updateHash: false });
+      return;
+    }
+    if (sourceTarget?.kind === "pdf-observation") {
+      void openPdfObservationEvidence(sourceTarget.id, { search: sourceTarget.search, url: sourceTarget.url,
+        snippet: sourceTarget.snippet, updateHash: false });
+      return;
+    }
     if (window.location.hash === "#meetings") {
+      beginEvidenceNavigation();
       setWorkspaceView("meetingsView");
       return;
     }
@@ -3286,7 +3633,12 @@ function attachEvents() {
       renderCurrentGraph();
     } else if (state.activeView === "meetingsView") {
       state.registry.meetingPage = 1;
-      void loadRegistryMeetings();
+      const target = sourceNavigationFromHash();
+      if (target?.kind === "meeting" && els.registryMeetingSearch.value.trim() === target.name && !els.registryMeetingVerification.value) {
+        void loadRegistryMeetings({ focusId: target.id, focusName: target.name });
+      } else {
+        void loadRegistryMeetings();
+      }
     }
   });
 }
@@ -3303,12 +3655,24 @@ async function main() {
     .catch(() => {});
   setAnswerMode(state.answerMode);
   setGraphMode(state.graphMode);
-  setWorkspaceView(window.location.hash === "#meetings" ? "meetingsView" : state.activeView);
+  const sourceTarget = sourceNavigationFromHash();
+  const reportDate = historicalReportDateFromHash();
+  setWorkspaceView(sourceTarget?.kind === "meeting" || window.location.hash === "#meetings"
+    ? "meetingsView"
+    : sourceTarget?.kind === "article" || sourceTarget?.kind === "article-url" || sourceTarget?.kind === "pdf-observation" || reportDate ? "registryView" : state.activeView);
   renderMessages();
   attachEvents();
-  const linkedReportDate = historicalReportDateFromHash();
-  if (linkedReportDate) {
-    openHistoricalReport(linkedReportDate, { updateHash: false });
+  if (sourceTarget?.kind === "meeting") {
+    openMeetingEvidence(sourceTarget.id, sourceTarget.name, { updateHash: false });
+  } else if (sourceTarget?.kind === "article") {
+    openRegistryArticleEvidence(sourceTarget.id, sourceTarget.source, { updateHash: false, fallbackSourceUrl: sourceTarget.url });
+  } else if (sourceTarget?.kind === "article-url") {
+    void openWebEvidence(sourceTarget.url, { updateHash: false });
+  } else if (sourceTarget?.kind === "pdf-observation") {
+    void openPdfObservationEvidence(sourceTarget.id, { search: sourceTarget.search, url: sourceTarget.url,
+      snippet: sourceTarget.snippet, updateHash: false });
+  } else if (reportDate) {
+    openHistoricalReport(reportDate, { updateHash: false });
   }
 
   try {

@@ -21,13 +21,13 @@ const plugin = readFileSync(new URL('../.obsidian/plugins/climate-agent-chat/mai
 assert.ok(plugin.includes('context: message.context || null'));
 assert.ok(plugin.includes('context: payload.context || null'));
 assert.ok(plugin.includes('window.open(source.url'));
-const functionNames = ['escapeHtml', 'inlineFmt', 'safeSourceUrl', 'sourceCitationHref', 'renderSourceCards'];
+const functionNames = ['escapeHtml', 'inlineFmt', 'safeSourceUrl', 'sourceNavigationTarget', 'sourceNavigationAttributes', 'sourceNavigationHref', 'sourceCitationHref', 'renderSourceCards'];
 const helpers = functionNames.map(name => {
   const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
   assert.ok(match, name);
   return match[0];
 }).join('\n');
-const ui = vm.runInNewContext(`${helpers}\n({ inlineFmt, renderSourceCards })`, { URL });
+const ui = vm.runInNewContext(`${helpers}\n({ inlineFmt, renderSourceCards })`, { URL, URLSearchParams });
 const inline = ui.inlineFmt('Claim [1], then grouped [1, 2].');
 const renderedCitations = [...inline.matchAll(/<button class="citation"[^>]*data-citation-index="(\d+)"/g)];
 assert.deepEqual(renderedCitations.map(match => match[1]), ['1', '1', '2']);
@@ -38,10 +38,12 @@ const cards = renderSourceCards([
   { index: 3, path: 'sources/report.md', url: 'https://github.example/sources/report.md', title: 'report', document_title: 'Weekly report', corpus: 'source', matched_section: 'Summary', snippet: 'Report passage.' },
   ...['web', 'meeting'].map((type, index) => ({ index: index + 4, type, path: '', url: `https://example.org/${type}`, title: `Actual ${type} source`, corpus: type, matched_section: 'Official page', snippet: `${type} passage.` })),
 ]);
-assert.ok(cards.includes('href="https://publisher.example/article"'));
+assert.ok(cards.includes('href="#registry-article=registry:123&amp;url=https%3A%2F%2Fpublisher.example%2Farticle"'));
+assert.ok(cards.includes('data-original-url="https://publisher.example/article"'));
 assert.ok(cards.includes('href="/wiki/weekly.md"'));
 assert.ok(cards.includes('href="/sources/report.md"'));
-assert.ok(cards.includes('href="https://example.org/web"'));
+assert.ok(cards.includes('href="#registry-article-url=https%3A%2F%2Fexample.org%2Fweb"'));
+assert.ok(cards.includes('data-source-url="https://example.org/web"'));
 assert.ok(cards.includes('href="https://example.org/meeting"'));
 assert.equal((cards.match(/target="_blank"/g) || []).length, 5);
 assert.ok(cards.includes('Real article title'));

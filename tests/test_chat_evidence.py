@@ -36,6 +36,28 @@ def owner(tmp_path):
     return responder.chat_evidence
 
 
+def test_chat_source_payload_preserves_real_score_and_record_navigation_ids(tmp_path):
+    turn = EvidenceTurn(owner(tmp_path), "Show the evidence", None, [])
+    scored = turn.add({"evidence_id": "passage-1", "title": "Report passage", "score": 2.375}, kind="wiki", text="Finding.")
+    unscored = turn.add({"evidence_id": "passage-2", "title": "Unscored fact"}, kind="wiki", text="Another finding.")
+    meeting = turn.add({"event_id": "event-1", "name": "Climate meeting"}, kind="meeting", text="Meeting details.")
+    article = turn.add({"article_id": "article-1", "title": "Registry article"}, kind="article", text="Article detail.")
+
+    assert scored["source"]["score"] == 2.375
+    assert "score" not in unscored["source"]
+    assert meeting["source"]["meeting_id"] == "event-1"
+    assert article["source"]["article_id"] == "article-1"
+    assert article["source"]["article_source"] == "registry"
+
+
+def test_search_hit_scores_distinguish_ranked_zero_from_unranked_identity(tmp_path):
+    from agentic_wiki.wiki_agent import SearchHit
+
+    chunk = owner(tmp_path).responder.kb.chunks[0]
+    assert SearchHit(chunk, 0, "real ranked zero").to_source(1)["score"] == 0
+    assert "score" not in SearchHit(chunk, 0, "unranked lookup", ranked=False).to_source(1)
+
+
 def scripted_provider(chat, monkeypatch, provider, script, *, check_drafts=False, script_controls_plan=False):
     requests = []
     script_index = 0
@@ -439,6 +461,7 @@ def test_wiki_first_aggregate_detail_keeps_matched_section_and_verification(tmp_
     detail = turn.get_source_details(hit["source"]["evidence_id"])
     assert "energy grids" in detail["text"] and "Beta conference" not in detail["text"]
     assert "unchecked" in detail["text"] and detail["source"]["matched_section"] == "Alpha conference"
+    assert detail["source"]["score"] == hit["source"]["score"]
 
 
 def test_wiki_first_registered_text_is_not_deduplicated_against_unread_preview(tmp_path):

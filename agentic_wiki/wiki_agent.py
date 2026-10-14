@@ -841,6 +841,7 @@ class SearchHit:
     chunk: WikiChunk
     score: float
     reason: str
+    ranked: bool = True
 
     def to_source(self, index: int, base_url: str = "") -> dict[str, Any]:
         url = f"{base_url}/{self.chunk.path}" if base_url else self.chunk.path
@@ -853,7 +854,7 @@ class SearchHit:
             "heading": self.chunk.heading,
             "url": url,
             "canonical_url": self.chunk.canonical_url,
-            "score": round(self.score, 3),
+            **({"score": round(self.score, 3)} if self.ranked else {}),
             "snippet": _evidence_excerpt(
                 self.chunk.text, 420, citation_text=self.chunk.markdown
             ),
@@ -2068,7 +2069,7 @@ class AgenticWikiResponder:
             if chunk.date == requested_date and chunk.path == path
         ]
         return [
-            SearchHit(chunk=chunk, score=0.0, reason="window coverage fallback")
+            SearchHit(chunk=chunk, score=0.0, reason="window coverage fallback", ranked=False)
             for chunk in chunk_candidates
         ]
 
