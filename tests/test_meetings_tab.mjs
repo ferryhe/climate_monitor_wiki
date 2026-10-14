@@ -12,8 +12,9 @@ assert.match(html, /id="chatView"[^>]*aria-labelledby="chatTab"(?![^>]*\shidden)
 assert.match(html, /id="registryView"[\s\S]*?aria-labelledby="registryTab"[\s\S]*?hidden/);
 assert.match(html, /id="meetingsTab"[\s\S]*?data-view="meetingsView"[\s\S]*?aria-controls="meetingsView"/);
 assert.match(html, /id="meetingsView"[^>]*aria-labelledby="meetingsTab"/);
-assert.match(html, /<h2>Meetings &amp; Key Dates<\/h2>[\s\S]*?Browse upcoming meetings and key deadlines\./);
-assert.match(html, /Ask about climate risk and insurance\. Answers include sources\./);
+assert.match(html, /<h2>Dates<\/h2>/);
+assert.doesNotMatch(html, /Browse upcoming meetings and key deadlines/);
+assert.doesNotMatch(html, /Minimal Chat Surface|Ask about climate risk and insurance/);
 assert.match(html, /id="registrySearchForm"[\s\S]*?>Search<\/button>/);
 assert.match(html, /id="registryMeetingSearchForm"[\s\S]*?>Search<\/button>/);
 assert.match(html, /<label class="sr-only" for="registryPublisherFilter">Publisher<\/label>[\s\S]*?<select id="registryPublisherFilter"/);
@@ -47,7 +48,7 @@ const context = vm.createContext({ state, els, URLSearchParams,
     return { items: [], pagination: { total: 0 }, base_date: '2026-10-04', verification_counts: {} };
   },
 });
-for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'setWorkspaceView', 'loadRegistryMeetings', 'loadRegistryArticles']) {
+for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'closeNavigation', 'setWorkspaceView', 'loadRegistryMeetings', 'loadRegistryArticles']) {
   const fn = source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
   assert.ok(fn, name);
   vm.runInContext(fn, context);
@@ -137,7 +138,7 @@ const pending = [];
 context.updateRegistryPagination = (name, pagination) => paginationUpdates.push([name, pagination?.tag]);
 context.registryFetch = (url) => new Promise((resolve) => pending.push({ resolve, url }));
 context.registryElement = (tag, className, textContent) => ({ tag, className, textContent, append() {} });
-context.document = { ...document, addEventListener() {} };
+context.document = { ...document, addEventListener() {}, querySelectorAll() { return []; } };
 context.Element = class {};
 context.window = { addEventListener() {}, location: { hash: '' } };
 context.attachSourceCardClickHandler = () => {};

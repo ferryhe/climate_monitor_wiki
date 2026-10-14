@@ -61,7 +61,7 @@ def test_report_source_survives_hash_navigation_and_failed_registry_detail():
         ("sourceNavigationHref", "function"), ("sourceNavigationFromHash", "function"),
         ("sourceCitationHref", "function"), ("renderSourceCards", "function"),
         ("historicalReportDateFromHash", "function"), ("beginEvidenceNavigation", "function"),
-        ("openHistoricalReport", "function"), ("loadRegistryReport", "async function"),
+        ("openHistoricalReport", "function"), ("showMobileDetail", "function"), ("loadRegistryReport", "async function"),
         ("attachSourceCardClickHandler", "function"),
     )
     functions = []
@@ -384,6 +384,8 @@ __FUNCTIONS__
   assert.equal(els.registryArticleTitle.textContent, "PDF observation unavailable");
   assert.deepEqual(els.registryArticleDetail.children, ["retained detail node"]);
   assert.deepEqual(els.registryEnrichment.children, [], "failed lookup must not leave the previous article summary visible");
+  assert.equal(els.registryEnrichment.hidden, false, "lookup errors stay visible outside the metadata disclosure");
+  assert.match(els.registryEnrichment.textContent, /not available in the public Registry/);
   assert.deepEqual(els.registryAppearances.children, [], "failed lookup must not leave previous article appearances visible");
   assert.equal(els.registryOriginalLink.href, lookup.url);
   assert.equal(els.registryOriginalLink.hidden, false);
@@ -392,6 +394,7 @@ __FUNCTIONS__
   fetchFails = true;
   await openPdfObservationEvidence("pdf-article-occurrence-target", lookup);
   assert.equal(els.registryArticleTitle.textContent, "Article unavailable");
+  assert.equal(els.registryEnrichment.textContent, "Registry unavailable");
   assert.equal(els.registryOriginalLink.href, lookup.url, "fetch errors retain the cited source URL");
   fetchFails = false;
   matchOccurrence = true;
@@ -410,7 +413,7 @@ def test_pdf_detail_404_keeps_original_url_and_clears_unrelated_detail():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("safeSourceUrl", "resetRegistryArticleDetail", "loadRegistryArticle"):
+    for name in ("showMobileDetail", "safeSourceUrl", "resetRegistryArticleDetail", "loadRegistryArticle"):
         start = source.index(f"async function {name}(" if name == "loadRegistryArticle" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -538,7 +541,7 @@ def test_article_card_navigation_invalidates_pending_web_resolution_and_keeps_so
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name, prefix in (("beginEvidenceNavigation", "function"), ("resetRegistryArticleDetail", "function"), ("comparableSourceUrl", "function"),
+    for name, prefix in (("showMobileDetail", "function"), ("beginEvidenceNavigation", "function"), ("resetRegistryArticleDetail", "function"), ("comparableSourceUrl", "function"),
                          ("openWebEvidence", "async function"), ("loadRegistryArticle", "async function")):
         start = source.index(f"{prefix} {name}(")
         end = source.index("\n}", start) + 2
@@ -642,7 +645,7 @@ def test_hidden_chat_completion_defers_question_alignment_until_chat_reentry():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("setWorkspaceView", "renderMessages"):
+    for name in ("closeNavigation", "setWorkspaceView", "renderMessages"):
         start = source.index(f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])

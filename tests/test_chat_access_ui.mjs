@@ -11,7 +11,7 @@ const functions = names.map(name => {
 }).join('\n');
 const state = {messages: [{role: 'assistant', content: 'Previous answer', context: 'frame-1'}], activeContextPath: 'wiki/example.md', answerMode: 'brief', isSending: false};
 const button = {disabled: false};
-const els = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: '', setAttribute(name, value) {this[name] = value;}}, chatTokenForm: {hidden: false, querySelector: () => button}};
+const els = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAccessMessage: {}, chatAccessDetails: {}, chatAccessSummary: {setAttribute(name, value) {this[name] = value;}}, retryChatQuestion: {}, chatToken: {value: '', setAttribute(name, value) {this[name] = value;}}, chatTokenForm: {hidden: false, querySelector: () => button}};
 const quota = {remaining: 0, limit: 5, reset_at: '2026-10-11T00:00:00-04:00', access_enabled: false};
 let tokenEnabled = false;
 let accessRequests = 0;
@@ -48,7 +48,9 @@ assert.equal(els.send.disabled, true);
 assert.equal(els.retryChatQuestion.hidden, true);
 assert.equal(els.chatToken.placeholder, 'Free questions today: 0 of 5 remaining.');
 assert.equal(els.chatToken['aria-description'], els.chatToken.placeholder);
-assert.match(els.chatAccessMessage.textContent, /^You've used today's 5 free questions for this network\. Enter an access token to continue, or return after .+\.$/);
+assert.equal(els.chatAccessMessage.textContent, '', 'quota is shown once in the token control');
+assert.equal(els.chatAccessSummary.textContent, 'Access token · 0 free questions left');
+assert.match(els.chatAccessSummary.title, /^Free questions reset after /);
 
 state.messages = JSON.parse(saved); // Refresh preserves the blocked question and full request.
 state.answerMode = 'executive';
@@ -82,7 +84,8 @@ assert.equal(requests[1].contextPath, 'wiki/example.md');
 assert.equal(state.messages.filter(item => item.role === 'user').length, 1);
 assert.equal(state.messages.at(-1).content, 'Resumed answer');
 assert.equal(context.blockedChatMessage(), undefined);
-assert.equal(els.chatAccessMessage.textContent, 'Access enabled. You can continue asking questions.');
+assert.equal(els.chatAccessSummary.textContent, 'Access enabled');
+assert.equal(els.chatAccessMessage.textContent, '');
 assert.equal(els.chatToken.value, '');
 assert.equal(els.send.disabled, false);
 assert.equal(els.chatTokenForm.hidden, true);
@@ -116,7 +119,7 @@ nestedOnly.loadThread();
 assert.deepEqual(JSON.parse(JSON.stringify(nestedOnly.state.messages[0].blockedRequest)), originalRequest);
 assert.equal(JSON.parse(nestedOnlySaved)[0].blockedRequest.messages.some(item => item.content === legacyStartupNotice), false);
 const reloadedState = {...state, messages: [], isSending: false};
-const reloadedEls = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAccessMessage: {}, retryChatQuestion: {}, chatToken: {value: '', setAttribute(name, value) {this[name] = value;}}, chatTokenForm: {querySelector: () => ({})}};
+const reloadedEls = {send: {}, form: {setAttribute() {}}, input: {focus() {}}, chatAccessMessage: {}, chatAccessDetails: {}, chatAccessSummary: {setAttribute(name, value) {this[name] = value;}}, retryChatQuestion: {}, chatToken: {value: '', setAttribute(name, value) {this[name] = value;}}, chatTokenForm: {querySelector: () => ({})}};
 let reloadedSaved = JSON.stringify(persistedRace);
 const reloaded = vm.createContext({state: reloadedState, els: reloadedEls, fetch, Intl, Date, STORAGE_KEY: 'thread',
   localStorage: {getItem: () => reloadedSaved, setItem(_key, value) {reloadedSaved = value;}, removeItem() {}}, renderMessages() {},
@@ -154,7 +157,7 @@ finishOriginalGeneration({ok: true, json: async () => ({text: 'Original tab comp
 await inFlight;
 const html = readFileSync(new URL('../showcase/index.html', import.meta.url), 'utf8');
 assert.ok(html.includes('>Access token</label>'));
-assert.ok(html.includes('>Continue with token</button>'));
+assert.ok(html.includes('>Continue</button>'));
 assert.ok(html.includes('autocomplete="off" maxlength="256" required'));
 assert.ok(!html.includes('id="chatAllowance"'));
 const css = readFileSync(new URL('../showcase/styles.css', import.meta.url), 'utf8');
