@@ -2342,8 +2342,11 @@ class RegistryReader:
             occurrence_id = item["occurrence_id"]
             imported_by_id[occurrence_id] = merge_checked_observation(imported_by_id[occurrence_id], item) if occurrence_id in imported_by_id else item
         from .range_reports import _calendar_end_date
-        for item in self.resolve_pdf_meeting_identities(list(imported_by_id.values())):
-            item = collected_pdf_meeting(item)
+        imported = [collected_pdf_meeting(item)
+            for item in self.resolve_pdf_meeting_identities(list(imported_by_id.values()))]
+        imported = [item for item in imported if not item.get("canonical_pdf_event_id")] + merge_meeting_observations(
+            [item for item in imported if item.get("canonical_pdf_event_id")])
+        for item in imported:
             end = _calendar_end_date(item)
             if end is not None and end < date.fromisoformat(base_date):
                 continue
@@ -2451,9 +2454,11 @@ class RegistryReader:
                 merge_checked_observation(imported_by_id[occurrence_id], item)
                 if occurrence_id in imported_by_id else item
             )
-        imported = list(imported_by_id.values())
-        for item in self.resolve_pdf_meeting_identities(imported):
-            item = collected_pdf_meeting(item)
+        imported = [collected_pdf_meeting(item)
+            for item in self.resolve_pdf_meeting_identities(list(imported_by_id.values()))]
+        imported = [item for item in imported if not item.get("canonical_pdf_event_id")] + merge_meeting_observations(
+            [item for item in imported if item.get("canonical_pdf_event_id")])
+        for item in imported:
             end = _calendar_end_date(item)
             if end is not None and end < date.fromisoformat(base_date):
                 continue

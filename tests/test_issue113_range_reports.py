@@ -360,7 +360,7 @@ def _insert_meeting_check(
     database: Path, occurrence_id: str, *, website_candidate: dict | None = None,
     canonical_event_id: str | None = None, verification_status: str = "verified",
     checked_at: str = NOW, run_id: str = "fixture-run", attempt_id: str = "fixture-attempt",
-    source_url: str | None = None,
+    source_url: str | None = None, source_revision_sha256: str | None = None,
 ) -> None:
     from climate_registry.information_checks import _sha as check_sha, source_revision
 
@@ -384,7 +384,7 @@ def _insert_meeting_check(
         connection.execute(
             """INSERT INTO meeting_check_attempts(attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256) VALUES
                (?, ?, ?, ?, ?, ?, 'accessible', ?, ?, ?)""",
-            (attempt_id, run_id, occurrence_id, source_url, source_revision("meetings", item),
+            (attempt_id, run_id, occurrence_id, source_url, source_revision_sha256 or source_revision("meetings", item),
              checked_at, verification_status, packet_json, check_sha(packet)),
         )
 

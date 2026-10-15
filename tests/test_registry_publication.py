@@ -3452,10 +3452,12 @@ def test_historical_empty_t1_with_path_remains_audit_only_after_storage_upgrade(
         assert database.read_bytes()==before
 
 
-def _approved_pdf_pair(tmp_path, monkeypatch):
+def _approved_pdf_pair(tmp_path, monkeypatch, *, legacy_target_state=None):
     from test_issue136_meetings import _candidate
+    from climate_registry.information_checks import source_revision
     import test_issue113_range_reports as fixtures
     database = _database(tmp_path)
+    old_source_revision = None
     with sqlite3.connect(database) as db:
         _pdf(db, identity="pdf-article", url="https://example.org/pdf")
         db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/second.pdf','second.pdf','application/pdf',1,?,'{}','2026-08-02')", ("a"*64,"b"*64))
@@ -3466,14 +3468,33 @@ def _approved_pdf_pair(tmp_path, monkeypatch):
                 "start_date": "2027-06-10", "end_date": "2027-06-12", "summary": event+" original observation",
                 "page": page, "source_urls": [url], "source_document_sha256": document,
                 "canonical_pdf_event_id": "target"}  # Raw aliases alone are not authorization.
+            if event == "source" and legacy_target_state is not None:
+                old_source_revision = source_revision("meetings", item)
+                item.update(location="Legacy unchecked location", online_url="https://legacy.test/", event_timezone="UTC",
+                    deadline_type="registration", deadline_date="2099-01-01", relevance_reason="Legacy unchecked relevance",
+                    raw_time_text="Old clock", raw_date="Old source date", start_date="1900-01-01", end_date="1900-01-01",
+                    source_urls=["https://example.org/", "https://legacy.test/"], status="cancelled")
+                if legacy_target_state != "verified":
+                    item.update(start_date="2099-01-01", end_date="2099-01-01", raw_date="Future unchecked source", status="scheduled")
             db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'day',?,?,?, ?,NULL,?)",
                 (occurrence,event,document,page,item["name"],item["raw_date"],item["start_date"],item["end_date"],item["summary"],"c"*64,json.dumps(item)))
     monkeypatch.setattr(fixtures, "_reader", lambda db, root: RegistryReader(db, repository_root=db.parent/"application", public=False))
     for event, occurrence, url in (("target","z-target","https://example.org/exact-event"), ("source","a-source","https://example.org/")):
-        fixtures._insert_meeting_check(database, occurrence,
-            website_candidate=_candidate(name="IAIS Annual Conference 2027", location=event+" verified location",
-                deadline_type=None,deadline_date=None,deadline_evidence=None),
-            canonical_event_id="non-native-"+event, run_id="run-"+event, attempt_id="check-"+event, source_url=url)
+        candidate = _candidate(name="IAIS Annual Conference 2027", location=event+" verified location",
+            deadline_type=None,deadline_date=None,deadline_evidence=None)
+        verification_status = "verified"
+        if event == "target" and legacy_target_state is not None:
+            candidate.update(location=None, online_url=None, timezone=None, raw_time_text=None,
+                deadline_type=None, deadline_date=None, deadline_evidence=None, relevance_reason=None)
+            if legacy_target_state == "cancelled":
+                candidate["status"] = "cancelled"
+            if legacy_target_state == "expired":
+                candidate.update(start_date="2020-01-01", end_date="2020-01-02")
+            if legacy_target_state == "unverified":
+                verification_status, candidate = "partial", None
+        fixtures._insert_meeting_check(database, occurrence, website_candidate=candidate,
+            canonical_event_id="non-native-"+event, run_id="run-"+event, attempt_id="check-"+event, source_url=url,
+            verification_status=verification_status, source_revision_sha256=old_source_revision if event == "source" else None)
     with sqlite3.connect(database) as db:
         for sha in stage_entities(db):
             _approve(db,sha,{"basis":"explicit exact PDF fixture approval"},status="accepted_legacy")
@@ -3614,6 +3635,8 @@ def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pendin
     monkeypatch.setattr(api_server,"_range_report_overlay",lambda:(None,None,None))
     response=TestClient(api_server.app).get("/api/registry/pdf-intake/articles/"+identity)
     assert response.status_code==200
+    assert response.json()["summary"] == "Reviewed source summary"
+    assert response.json()["summary_provenance"] == "owner_reviewed_source_evidence"
     public=response.json()["occurrences"][0]
     assert public["summary"]=="Original PDF observation" and public["display_summary"]=="Reviewed source summary"
 
@@ -3660,3 +3683,172 @@ def test_range_reports_keep_approved_pdf_summary_and_source_evidence(tmp_path, d
         assert "source.pdf" in rendered
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT occurrence_json,content_sha256 FROM pdf_intake_article_occurrences").fetchall() == raw_before
+
+
+def _approved_legacy_pdf_pair(tmp_path, monkeypatch, *, target_state="verified"):
+    database = _approved_pdf_pair(tmp_path, monkeypatch, legacy_target_state=target_state)
+    with sqlite3.connect(database) as db:
+        snapshot = snapshot_entity(db, "pdf_meeting", "source")
+        snapshot["derived_display"] = {"canonical_pdf_event_id": "target"}
+        sha = stage_snapshot(db, snapshot)
+        _approve(db, sha, {"basis": "explicit reviewed legacy PDF identity"}, status="accepted_legacy")
+    return database
+
+
+def test_legacy_pdf_alias_retains_unchecked_source_in_verified_global_target(tmp_path, monkeypatch):
+    from climate_monitor.meeting_fields import MEETING_FIELDS, collected_pdf_meeting, merge_meeting_observations
+    from climate_registry.publication import export_public_snapshot
+    from climate_registry.range_reports import _pdf_calendar_payload
+    database = _approved_legacy_pdf_pair(tmp_path, monkeypatch)
+    reader = _reader(database, tmp_path)
+    with sqlite3.connect(database) as db:
+        raw_before = db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+        publication_before = db.execute("SELECT * FROM registry_publication ORDER BY entity_kind,entity_id").fetchall()
+    calendar = reader.pdf_calendar_items_all()
+    legacy = next(item for item in calendar if item["event_id"] == "source")
+    target = next(item for item in calendar if item["event_id"] == "target")
+    assert legacy["collected_candidate"] is None and legacy["verification_status"] != "verified"
+    assert "pdf_observations" not in legacy
+    primary = collected_pdf_meeting(target)
+    records = reader.meetings_all(base_date="2026-01-01")
+    assert len(records) == 1
+    for values in (calendar, list(reversed(calendar))):
+        assert merge_meeting_observations([collected_pdf_meeting(item) for item in values]) == records
+    merged = records[0]
+    assert {key: merged.get(key) for key in MEETING_FIELDS} == {key: primary.get(key) for key in MEETING_FIELDS}
+    assert merged["summary"] == target["summary"] and merged["collected_candidate_source_url"] == "https://example.org/exact-event"
+    assert merged["pdf_observations"] == [target, legacy]
+    assert merged["pdf_observations"][1]["collected_candidate"] is None
+    with reader.public_snapshot():
+        assert reader.meetings_all(base_date="2026-01-01") == records
+    for document, occurrence in (("f"*64, "z-target"), ("a"*64, "a-source")):
+        assert [item["occurrence_id"] for item in reader.pdf_report(document)["calendar_items"]] == [occurrence]
+    root = tmp_path/"application"; (root/"wiki").mkdir(parents=True)
+    path = root/"wiki/public-registry.json"; export_public_snapshot(database, path)
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    assert len(artifact["meeting_records"]) == 1 and len(artifact["meetings"]) == 2
+    markdown = artifact["wiki_pages"]["registry-meetings.md"]
+    assert markdown.count("## IAIS Annual Conference 2027\n") == 1
+    for sha, page in (("f"*64, 9), ("a"*64, 12)):
+        assert "SHA-256: "+sha+"; page "+str(page) in markdown
+    static = RegistryReader.from_public_export(root)
+    assert static.meetings_all(base_date="2026-01-01") == artifact["meeting_records"]
+    for current in (reader, static):
+        payload = _pdf_calendar_payload(current, base_date="2026-01-01")
+        assert len(payload["records"]) == 1 and len(payload["records"][0]["pdf_observations"]) == 2
+    import api_server
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None,None,None))
+    assert TestClient(api_server.app).get("/api/registry/meetings?base_date=2026-01-01").json()["items"] == artifact["meeting_records"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == raw_before
+        assert db.execute("SELECT * FROM registry_publication ORDER BY entity_kind,entity_id").fetchall() == publication_before
+
+
+@pytest.mark.parametrize("target_state", ["unverified", "cancelled", "expired", "hidden", "missing"])
+def test_legacy_pdf_alias_cannot_revive_ineligible_target(tmp_path, monkeypatch, target_state):
+    from climate_registry.range_reports import _pdf_calendar_payload
+    database = _approved_legacy_pdf_pair(tmp_path, monkeypatch, target_state=target_state)
+    if target_state == "hidden":
+        set_visibility(database, "pdf_meeting", "target", False)
+    if target_state == "missing":
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE registry_publication SET published_candidate_sha256=NULL WHERE entity_kind='pdf_meeting' AND entity_id='target'")
+    reader = _reader(database, tmp_path)
+    for projected in (False, True):
+        if projected:
+            with reader.public_snapshot(): rows = reader.meetings_all(base_date="2026-01-01")
+        else:
+            rows = reader.meetings_all(base_date="2026-01-01")
+        assert all(row.get("verification_status") != "verified" for row in rows)
+        assert all(len(row.get("pdf_observations", [])) <= 1 for row in rows)
+        if target_state in {"cancelled", "expired"}:
+            assert rows == []
+    calendar = _pdf_calendar_payload(reader, base_date="2026-01-01")
+    assert all(len(row.get("pdf_observations", [])) <= 1 for row in calendar["records"])
+    if target_state in {"cancelled", "expired"}:
+        assert calendar["records"] == []
+
+
+@pytest.mark.parametrize("display,provenance,expected", [("Reviewed summary", "owner_reviewed_source_evidence", "Reviewed summary"),
+    ("", "owner_reviewed_source_evidence", "Raw summary"), ("   ", "owner_reviewed_source_evidence", "Raw summary"),
+    ("Unmarked summary", None, "Raw summary")])
+def test_pdf_api_payload_normalization_uses_only_marked_occurrence_summary(display, provenance, expected):
+    import api_server
+    occurrence = {"occurrence_id": "pdf-observation", "summary": "Raw summary", "source_document_sha256": "a"*64,
+        "display_summary": display, "display_summary_provenance": provenance}
+    payload = {"summary": "Entity summary", "summary_provenance": "owner_reviewed_source_evidence", "occurrences": [occurrence]}
+    merged = api_server._merge_pdf_article_payloads(payload, None)
+    assert merged["summary"] == expected and merged["occurrences"][0]["summary"] == "Raw summary"
+    if expected == "Reviewed summary":
+        assert merged["summary_provenance"] == provenance
+    else:
+        assert "summary_provenance" not in merged
+
+
+def test_pdf_api_raw_latest_observation_does_not_inherit_older_reviewed_summary_provenance():
+    import api_server
+    older = {"occurrence_id": "older", "report_date": "2026-09-14", "summary": "Older raw summary", "page": 1,
+        "source_document_sha256": "a"*64, "raw_url": "https://example.org/article",
+        "display_summary": "Older approved summary", "display_summary_provenance": "owner_reviewed_source_evidence"}
+    latest = {"occurrence_id": "latest", "report_date": "2026-09-28", "summary": "Latest report observation", "page": 2,
+        "source_document_sha256": "b"*64, "raw_url": "https://example.org/article"}
+    public = {"summary": "Older approved summary", "summary_provenance": "owner_reviewed_source_evidence", "occurrences": [older]}
+    merged = api_server._merge_pdf_article_payloads(public, {"occurrences": [latest]})
+    assert merged["summary"] == "Latest report observation"
+    assert "summary_provenance" not in merged
+    assert merged["occurrences"][0]["summary"] == latest["summary"]
+    assert merged["occurrences"][1]["display_summary"] == "Older approved summary"
+    assert public["summary_provenance"] == "owner_reviewed_source_evidence"
+
+
+def test_repeated_target_report_keeps_verified_primary_across_public_consumers(tmp_path, monkeypatch):
+    from climate_registry.publication import export_public_snapshot
+    from climate_registry.range_reports import _pdf_calendar_payload
+    database = _approved_legacy_pdf_pair(tmp_path, monkeypatch)
+    with sqlite3.connect(database) as db:
+        document = "b"*64
+        db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/old-target.pdf','old-target.pdf','application/pdf',1,?,'{}','2026-07-01')", (document,"c"*64))
+        item = json.loads(db.execute("SELECT item_json FROM pdf_intake_calendar_items WHERE event_id='target'").fetchone()[0])
+        item.update(occurrence_id="0-old-target", source_document_sha256=document, page=8,
+            start_date="1900-01-01", end_date="1900-01-01", raw_date="1 January 1900", summary="Unchecked older target observation")
+        db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'day',?,?,?, ?,NULL,?)",
+            (item["occurrence_id"],item["event_id"],document,item["page"],item["name"],item["raw_date"],item["start_date"],item["end_date"],item["summary"],"d"*64,json.dumps(item)))
+        snapshot = snapshot_entity(db, "pdf_meeting", "target")
+        sha = stage_snapshot(db, snapshot)
+        _approve(db, sha, {"basis": "explicit repeated target report fixture approval"}, status="accepted_legacy")
+        raw_before = db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+    reader = _reader(database, tmp_path)
+    observations = reader.pdf_calendar_items_all()
+    old = next(item for item in observations if item["occurrence_id"] == "0-old-target")
+    assert old["collected_candidate"] is None and old["verification_status"] != "verified"
+    records = reader.meetings_all(base_date="2026-01-01")
+    assert len(records) == 1
+    merged = records[0]
+    assert merged["occurrence_id"] == "z-target" and merged["verification_status"] == "verified"
+    assert merged["collected_candidate"] and merged["collected_candidate_source_url"] == "https://example.org/exact-event"
+    assert {item["occurrence_id"]: item for item in merged["pdf_observations"]} == {item["occurrence_id"]: item for item in observations}
+    with reader.public_snapshot():
+        assert reader.meetings_all(base_date="2026-01-01") == records
+    root = tmp_path/"application"; (root/"wiki").mkdir(parents=True)
+    output = root/"wiki/public-registry.json"; export_public_snapshot(database, output)
+    artifact = json.loads(output.read_text(encoding="utf-8"))
+    assert len(artifact["meeting_records"]) == 1 and len(artifact["meetings"]) == 3
+    markdown = artifact["wiki_pages"]["registry-meetings.md"]
+    assert markdown.count("## IAIS Annual Conference 2027\n") == 1
+    for document, page, occurrence in (("f"*64,9,"z-target"),("a"*64,12,"a-source"),("b"*64,8,"0-old-target")):
+        assert "SHA-256: "+document+"; page "+str(page) in markdown
+        assert [item["occurrence_id"] for item in reader.pdf_report(document)["calendar_items"]] == [occurrence]
+    static = RegistryReader.from_public_export(root)
+    for current in (reader, static):
+        result = _pdf_calendar_payload(current, base_date="2026-01-01")
+        assert len(result["records"]) == 1 and result["records"][0]["occurrence_id"] == "z-target"
+        assert len(result["records"][0]["pdf_observations"]) == 3
+    import api_server
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None,None,None))
+    assert TestClient(api_server.app).get("/api/registry/meetings?base_date=2026-01-01").json()["items"] == artifact["meeting_records"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == raw_before

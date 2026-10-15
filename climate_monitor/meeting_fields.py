@@ -61,6 +61,8 @@ def pdf_meeting_fields(item: dict[str, Any]) -> dict[str, Any]:
 def collected_pdf_meeting(item: dict[str, Any]) -> dict[str, Any]:
     candidate = item.get("collected_candidate")
     if not candidate or item.get("verification_status") != "verified":
+        if item.get("canonical_pdf_event_id"):
+            return dict(item, pdf_event_id=item["event_id"], pdf_observations=[dict(item)])
         return item
     source_url = next((
         check.get("source_url") for check in item.get("checks", [])
@@ -74,10 +76,17 @@ def collected_pdf_meeting(item: dict[str, Any]) -> dict[str, Any]:
 
 def merge_meeting_observations(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge validated identities, retaining source-local pending observations."""
+    pdf_targets = {item.get("canonical_pdf_event_id") for item in records
+        if item.get("canonical_pdf_event_id") == (item.get("pdf_event_id") or item.get("event_id"))
+        and item.get("verification_status") == "verified" and item.get("collected_candidate")}
     merged = {}
     for raw in records:
         item = dict(raw)
         imported = bool(item.get("source_document_sha256"))
+        target = item.get("canonical_pdf_event_id")
+        if target and target not in pdf_targets:
+            item.pop("canonical_pdf_event_id", None)
+            item["event_id"] = item.get("canonical_event_id") or item.get("pdf_event_id") or item.get("event_id")
         identity = (item.get("canonical_event_id") or item.get("canonical_pdf_event_id") or item.get("occurrence_id")) if imported else item.get("event_id")
         identity = identity or str(len(merged))
         if identity not in merged:
@@ -86,9 +95,15 @@ def merge_meeting_observations(records: list[dict[str, Any]]) -> list[dict[str, 
         existing = merged[identity]
         # A reviewed PDF target supplies the global display; both observations stay local.
         target = item.get("canonical_pdf_event_id")
-        if target and item.get("pdf_event_id") == target and existing.get("pdf_event_id") != target:
+        if (target and (item.get("pdf_event_id") or item.get("event_id")) == target
+                and item.get("verification_status") == "verified" and item.get("collected_candidate")
+                and ((existing.get("pdf_event_id") or existing.get("event_id")) != target
+                    or existing.get("verification_status") != "verified" or not existing.get("collected_candidate"))):
             existing, item = item, existing
             merged[identity] = existing
+        if target and target in pdf_targets:
+            existing["pdf_observations"] = existing.get("pdf_observations", []) + item.get("pdf_observations", [])
+            continue
         for field in MEETING_FIELDS:
             if field not in {"source_urls", "relevance_reason"} and not existing.get(field):
                 existing[field] = item.get(field)
