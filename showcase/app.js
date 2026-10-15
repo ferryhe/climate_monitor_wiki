@@ -3139,17 +3139,6 @@ async function loadRegistryArticles() {
   }
 }
 
-function appendVerifiedInformation(container, information) {
-  if (!information) return;
-  const block = registryElement("section", "registry-detail-section");
-  block.append(registryElement("h4", "", "Verified information"));
-  if (information.summary) block.append(registryElement("p", "", information.summary));
-  appendRegistryTags(block, "Categories", information.categories || []);
-  appendRegistryTags(block, "Keywords", information.keywords || []);
-  block.append(registryElement("p", "muted", `From checked website content · ${information.generated_at || ""}`));
-  container.append(block);
-}
-
 function appendPdfVerifiedInformation(container, occurrence) {
   const information = occurrence.verified_information;
   const displaySummary = occurrence.display_summary;
@@ -3390,8 +3379,6 @@ function appendRegistryPdfOccurrences(container, occurrences) {
     if (occurrence.display_summary) {
       item.append(registryElement("p", "muted registry-provenance", "Approved reviewed summary"));
     }
-    appendVerifiedInformation(item, occurrence.display_summary && occurrence.verified_information
-      ? { ...occurrence.verified_information, summary: null } : occurrence.verified_information);
     list.append(item);
   });
   block.append(list);

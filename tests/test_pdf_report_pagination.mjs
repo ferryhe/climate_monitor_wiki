@@ -25,7 +25,6 @@ const context = vm.createContext({
   clearHistoricalReportContent() { els.registryImportedReport.children = []; },
   safeSourceUrl: (url) => url?.startsWith('https://') ? url : '',
   appendInformationCheck(container) { container.append(element('p', '', 'PDF import · URL accessible')); },
-  appendVerifiedInformation() {},
   registryFetch: async (path) => {
     calls.push(path);
     if (path.includes('old')) return new Promise((resolve) => { resolveOld = resolve; });
@@ -116,3 +115,8 @@ assert.ok(texts(reviewedReport).includes('Reviewed report summary.'));
 assert.ok(texts(reviewedReport).includes('Approved reviewed summary'));
 assert.ok(!texts(reviewedReport).includes('Mixed raw PDF passage.'));
 assert.ok(texts(reviewedReport).includes('reviewed.pdf · Report date 2026-09-14 · page 13'));
+
+assert.ok(!texts(reviewedReport).includes('Verified information'));
+assert.ok(!texts(reviewedReport).includes('Outdated checked summary.'));
+assert.ok(texts(reviewedReport).includes('PDF import · URL accessible'));
+assert.ok(texts(reviewedReport).includes('Open source link'));
