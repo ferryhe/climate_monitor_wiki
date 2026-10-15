@@ -231,9 +231,16 @@ summary/PDF hashes. A missing, unreadable, oversized, mismatched, or incomplete
 artifact is ignored as a whole, leaving the existing Markdown-based report UI
 available.
 
-When the artifact is valid, `GET /api/registry/reports/{date}` adds
-`report_briefing` and `report_pdf`. Otherwise both fields are `null`. The
-controlled `GET /api/registry/reports/{date}/pdf` endpoint revalidates Registry
+A valid artifact supplies `report_pdf` to `GET /api/registry/reports/{date}`;
+otherwise that field is `null`. `report_briefing` remains `null`: artifact
+integrity does not verify generated narrative facts. The weekly refresh job
+still checks the complete private summary, monitoring counts, source identity
+and artifact hashes before and after reload, alongside the public PDF identity,
+exact article membership and source-verified article fields. Fetch status for the
+article gate comes only from the same SHA-guarded private target records; it is
+not added to public article responses. Its `briefing` and
+`monitoring_snapshot` result flags are false because those sections are withheld.
+The controlled `GET /api/registry/reports/{date}/pdf` endpoint revalidates Registry
 identity and every artifact before returning validated bytes as an attachment;
 the artifact root is never exposed as a static directory.
 

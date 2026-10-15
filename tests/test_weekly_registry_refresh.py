@@ -23,6 +23,7 @@ def _stub_sha_binding(monkeypatch):
             "database_sha256": "c" * 64,
             "target_article_count": 1,
             "target_article_ids": ["article-safe"],
+            "target_latest_fetches": {"article-safe": {"fetch_status": "success"}},
         },
     )
 
@@ -118,17 +119,7 @@ def _api_payload(url, *, method="GET", headers=None, timeout):
     if url.endswith(f"/api/registry/reports/{TARGET}"):
         return {
             "report_date": TARGET,
-            "report_briefing": {
-                "executive_summary": ["Weekly narrative."],
-                "monitoring_snapshot": {
-                    "sites_checked": 1,
-                    "sites_succeeded": 1,
-                    "sites_failed": 0,
-                    "pillar_a_updates": 1,
-                    "pillar_b_updates": 0,
-                    "notes": [],
-                },
-            },
+            "report_briefing": None,
             "report_pdf": {
                 "filename": f"climate-monitor-{TARGET}.pdf",
                 "download_url": f"/api/registry/reports/{TARGET}/pdf",
@@ -210,8 +201,8 @@ def test_draft_job_runs_dry_live_reload_and_complete_api_verification(
         "verification": {
             "latest_report_date": TARGET,
             "source_registry_artifact_sha_match": True,
-            "briefing": True,
-            "monitoring_snapshot": True,
+            "briefing": False,
+            "monitoring_snapshot": False,
             "pdf": True,
             "article_count": 1,
                 "sample_article_id": "article-safe",

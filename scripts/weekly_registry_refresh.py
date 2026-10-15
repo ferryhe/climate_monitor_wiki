@@ -372,6 +372,13 @@ def _verify_sha_binding(
             # off-cycle report remain loadable (policy lives at ingestion).
             allow_offcycle=True,
         )
+        target_latest_fetches = {}
+        for article_id in registry_article_ids:
+            latest_fetch = reader.article(article_id).get("latest_fetch")
+            target_latest_fetches[article_id] = (
+                {name: latest_fetch.get(name) for name in ("fetch_status", "http_status", "error_code")}
+                if isinstance(latest_fetch, dict) else None
+            )
         database_after = _stream_sha256(args.database)
     except _JobError:
         raise
@@ -388,11 +395,32 @@ def _verify_sha_binding(
         or registry_article_ids != sync_result["target_article_ids"]
     ):
         raise _JobError("sha_verification_failed")
+    # Archive integrity permits unknown historical counts; this weekly job still requires complete monitoring.
+    briefing = artifact.briefing
+    snapshot = briefing.get("monitoring_snapshot") if isinstance(briefing, dict) else None
+    metric_names = ("sites_checked", "sites_succeeded", "sites_failed", "pillar_a_updates", "pillar_b_updates")
+    if (
+        not isinstance(briefing, dict)
+        or not isinstance(briefing.get("executive_summary"), list)
+        or not briefing["executive_summary"]
+        or not all(_nonempty(item) for item in briefing["executive_summary"])
+        or not isinstance(snapshot, dict)
+        or any(
+            isinstance(snapshot.get(name), bool)
+            or not isinstance(snapshot.get(name), int)
+            or snapshot[name] < 0
+            for name in metric_names
+        )
+        or not isinstance(snapshot.get("notes"), list)
+        or not all(_nonempty(item) for item in snapshot["notes"])
+    ):
+        raise _JobError("sha_verification_failed")
     return {
         "report_sha256": expected,
         "database_sha256": database_after,
         "target_article_count": sync_result["target_article_count"],
         "target_article_ids": list(sync_result["target_article_ids"]),
+        "target_latest_fetches": target_latest_fetches,
     }
 
 
@@ -424,6 +452,8 @@ def _verify_article(
             for item in appearances
         )
     )
+    if common_invalid:
+        raise _JobError("article_detail_incomplete")
     summary_provenance = detail.get("summary_provenance")
     db_complete = (
         summary_provenance in {"content_enrichment", "verified_source_evidence"}
@@ -465,7 +495,7 @@ def _verify_article(
         and latest_fetch.get("http_status") == 403
         and latest_fetch.get("error_code") == "http_error"
     )
-    if common_invalid or not (db_complete or fallback_complete):
+    if not (db_complete or fallback_complete):
         raise _JobError("article_detail_incomplete")
 
 
@@ -496,32 +526,12 @@ def _reload_and_verify(
         f"{base_url}/api/registry/reports/{parse.quote(args.date, safe='')}",
         timeout=args.request_timeout,
     )
-    briefing = report.get("report_briefing")
-    snapshot = briefing.get("monitoring_snapshot") if isinstance(briefing, dict) else None
     pdf = report.get("report_pdf")
     articles = report.get("articles")
-    metric_names = (
-        "sites_checked",
-        "sites_succeeded",
-        "sites_failed",
-        "pillar_a_updates",
-        "pillar_b_updates",
-    )
     if (
         report.get("report_date") != args.date
-        or not isinstance(briefing, dict)
-        or not isinstance(briefing.get("executive_summary"), list)
-        or not briefing["executive_summary"]
-        or not all(_nonempty(item) for item in briefing["executive_summary"])
-        or not isinstance(snapshot, dict)
-        or any(
-            isinstance(snapshot.get(name), bool)
-            or not isinstance(snapshot.get(name), int)
-            or snapshot[name] < 0
-            for name in metric_names
-        )
-        or not isinstance(snapshot.get("notes"), list)
-        or not all(_nonempty(item) for item in snapshot["notes"])
+        or "report_briefing" not in report
+        or report["report_briefing"] is not None
         or not isinstance(pdf, dict)
         or pdf.get("filename") != f"climate-monitor-{args.date}.pdf"
         or pdf.get("download_url") != f"/api/registry/reports/{args.date}/pdf"
@@ -546,8 +556,9 @@ def _reload_and_verify(
             timeout=args.request_timeout,
         )
         if detail.get("publication_eligible") is True:
+            # Fetch evidence stays private and comes from the same SHA-guarded target record.
             _verify_article(
-                detail,
+                {**detail, "latest_fetch": sha_binding["target_latest_fetches"].get(candidate_id)},
                 article_id=candidate_id,
                 target_date=args.date,
                 fallback_article_ids=fallback_article_ids,
@@ -561,8 +572,8 @@ def _reload_and_verify(
         "source_registry_artifact_sha_match": (
             sha_binding["report_sha256"] == sync_result["report_sha256"]
         ),
-        "briefing": True,
-        "monitoring_snapshot": True,
+        "briefing": False,
+        "monitoring_snapshot": False,
         "pdf": True,
         "article_count": len(articles),
         "sample_article_id": verified_ids[0],

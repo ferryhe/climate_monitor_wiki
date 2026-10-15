@@ -500,21 +500,7 @@ def test_current_four_historical_report_details_are_api_readable(
         summary, pdf_bytes = expected_artifacts[report_date]
         assert payload["report_date"] == summary["report"]["date"] == report_date
         assert payload["report_title"] == summary["report"]["title"]
-        assert payload["report_briefing"] == {
-            "executive_summary": summary["executive_summary"],
-            "monitoring_snapshot": {
-                "sites_checked": summary["report"]["sites"]["checked"],
-                "sites_succeeded": summary["report"]["sites"]["succeeded"],
-                "sites_failed": summary["report"]["sites"]["failed"],
-                "pillar_a_updates": sum(
-                    item["pillar"] == "A" for item in summary["highlights"]
-                ),
-                "pillar_b_updates": sum(
-                    item["pillar"] == "B" for item in summary["highlights"]
-                ),
-                "notes": summary["monitoring_notes"],
-            },
-        }
+        assert payload["report_briefing"] is None
         assert payload["report_pdf"] == {
             "filename": f"climate-monitor-{report_date}.pdf",
             "download_url": f"/api/registry/reports/{report_date}/pdf",
