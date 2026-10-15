@@ -573,6 +573,14 @@ def _env_public_registry(tmp_path):
     report('2026-09-07','Approved existing article','https://example.org/approved')
     database=tmp_path/'registry.sqlite3'
     build_audit_registry(sources,database,tmp_path/'audit')
+    from verified_fixtures import seed_verified_articles
+    from climate_registry.publication import snapshot_entity, stage_snapshot, _approve
+    with sqlite3.connect(database) as db:
+        seed_verified_articles(db)
+        identity = db.execute("SELECT article_id FROM articles").fetchone()[0]
+        sha = stage_snapshot(db, snapshot_entity(db, "article", identity, source_dir=sources))
+        _approve(db, sha, {"basis":"source-bound verified fixture"}, status="accepted_legacy")
+    db.close()
     report('2026-09-14','Pending new article','https://example.org/pending')
     update_registry(sources,database,tmp_path/'backups')
     with sqlite3.connect(database) as db:

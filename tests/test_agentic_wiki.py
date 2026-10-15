@@ -21,8 +21,22 @@ def test_wiki_index_loads_documents_and_chunks():
     assert any(concept["label"] == "Parametric Insurance" for concept in kb.concept_catalog())
 
 
-def test_explorer_graph_uses_display_titles_and_filters_only_graph_concepts():
-    kb = WikiKnowledgeBase()
+def test_explorer_graph_uses_display_titles_and_filters_only_graph_concepts(tmp_path):
+    wiki, sources = tmp_path/"wiki", tmp_path/"sources"
+    wiki.mkdir(); sources.mkdir()
+    fixture_articles = {
+        "80e0b5d29c869655b3c4fa50": ("Diabetes", "who.int"),
+        "9d539ef65354a1bfdc7b135c": ("climate", "wri.org"),
+        "b59d17b73ebf5cba1f54e094": ("news", "wri.org"),
+        "f725cf7cae3ac18f4bdfa9a2": ("unep fi at cop31", "unepfi.org"),
+    }
+    for identity, (title, host) in fixture_articles.items():
+        (wiki/f"article-article-{identity}.md").write_text(
+            f"# {title}\n\nCanonical article: https://{host}/fixture\n\n## Date Observations\n\nClimate Risk.", encoding="utf-8")
+    for identity, host, page in (("0c5feabb1862ce55d5d0a549", "imf.org", 20), ("3b48d57498ab73453817d499", "g20.org", 19)):
+        (wiki/f"registry-source-observation-pdf-article-occurrence-{identity}.md").write_text(
+            f"# {host}\n\n## PDF report observation: fixture\n\nWebsite: {host}\nPDF: fixture.pdf; page {page}\nClimate Risk.", encoding="utf-8")
+    kb = WikiKnowledgeBase(wiki, sources)
     catalog = {row["path"]: row for row in kb.document_catalog()}
     notes = kb.graph_catalog()["notes"]
     note_nodes = {node["id"]: node for node in notes["nodes"]}
@@ -213,7 +227,10 @@ def test_api_chat_prioritizes_context_path_source():
     assert payload["sources"][0]["path"] == "wiki/parametric-insurance.md"
 
 
-def test_api_config_exposes_graph_and_dataview_fields():
+def test_api_config_exposes_graph_and_dataview_fields(monkeypatch):
+    base = "https://github.com/ferryhe/climate_monitor_wiki/blob/main"
+    monkeypatch.setattr(responder, "base_source_url", base)
+    monkeypatch.setattr(responder, "source_document_base_url", base)
     client = TestClient(app)
 
     response = client.get("/api/config")
@@ -257,11 +274,11 @@ def test_api_config_exposes_graph_and_dataview_fields():
     assert any(concept["label"] == "Parametric Insurance" for concept in parametric_doc["concepts"])
     assert any(concept["label"] == "IAIS" for concept in payload["concepts"])
 
-    daily_doc = next(doc for doc in payload["documents"] if doc["path"] == "wiki/climate-monitor-2026-04-02.md")
-    assert daily_doc["source_path"] == "sources/climate-monitor-2026-04-02.md"
+    daily_doc = next(doc for doc in payload["documents"] if doc["path"] == "wiki/climate-monitor-2026-08-17.md")
+    assert daily_doc["source_path"] == "sources/climate-monitor-2026-08-17.md"
     assert (
         daily_doc["source_url"]
-        == "https://github.com/ferryhe/climate_monitor_wiki/blob/main/sources/climate-monitor-2026-04-02.md"
+        == "https://github.com/ferryhe/climate_monitor_wiki/blob/main/sources/climate-monitor-2026-08-17.md"
     )
 
 
@@ -399,8 +416,14 @@ def test_requested_dates_supports_english_month_and_range_phrases():
     assert two_weeks[-1] == "2026-08-10"
 
 
-def test_executive_mode_produces_structured_window_brief_offline():
-    responder_instance = AgenticWikiResponder()
+def test_executive_mode_produces_structured_window_brief_offline(tmp_path):
+    wiki, sources = tmp_path/"wiki", tmp_path/"sources"
+    wiki.mkdir(); sources.mkdir()
+    report = "# Climate Monitor 2026-04-01\n\n## Executive Summary\n\nPhysical climate risk and insurance monitoring evidence.\n"
+    for directory in (wiki, sources):
+        (directory/"climate-monitor-2026-04-01.md").write_text(report, encoding="utf-8")
+        (directory/"climate-monitor-2026-05-04.md").write_text(report.replace("2026-04-01", "2026-05-04"), encoding="utf-8")
+    responder_instance = AgenticWikiResponder(wiki_dir=wiki, source_dir=sources)
     responder_instance.client = None
 
     result = responder_instance.answer(

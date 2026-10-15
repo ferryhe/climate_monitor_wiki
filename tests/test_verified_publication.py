@@ -727,3 +727,60 @@ def test_resolved_acquisition_body_uses_actual_successful_fetch_across_public_pa
         assert current_day and current_day[0]["provenance"]["collection_time"]["selected"]["observation_id"] == "current-success"
         assert _range_source(static, "2026-09-02", "2026-09-02")["articles"] == current_day
     assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+
+
+def test_normal_capture_same_body_collection_history_is_frozen_and_shared(tmp_path):
+    from climate_registry.capture import capture_enrich_registry
+    from test_climate_registry_capture import FakeTransport, _response, PUBLIC_V4
+    from climate_registry.range_reports import _range_source
+    database = _database(tmp_path)
+    original = b"<html><h1>Title good</h1><p>Summary good. Climate risk and insurance capital, flood modelling and regulatory disclosure.</p></html>"
+    other = b"<html><h1>Other body</h1><p>Other climate risk source and insurance evidence.</p></html>"
+    def capture(day, response):
+        return capture_enrich_registry(database, tmp_path/"capture-backups", article_ids=["good"], refresh=True,
+            resolver=lambda host, port:[PUBLIC_V4], transport=FakeTransport(response), clock=lambda:day+"T12:00:00Z")
+    for day, response in (("2026-08-31", _response(body=other)), ("2026-09-01", _response(body=original)),
+            ("2026-09-02", _response(body=original)), ("2026-09-03", _response(403, b"")), ("2026-09-04", _response(304, b""))):
+        capture(day, response)
+    with sqlite3.connect(database) as db:
+        selected_version, body = db.execute("SELECT c.content_version_id,c.markdown_content FROM articles a JOIN article_content_versions c ON c.content_version_id=a.current_content_version_id WHERE a.article_id='good'").fetchone()
+        assert db.execute("SELECT count(*) FROM acquisition_items").fetchone()[0] == 0
+        successes = db.execute("SELECT fetch_id,fetched_at FROM article_fetches WHERE article_id='good' AND content_version_id=? AND fetch_status='success' ORDER BY fetched_at", (selected_version,)).fetchall()
+        assert len(successes) == 2
+        failed_enrichments = db.execute("SELECT enrichment_id,status,summary,error_code,error_message FROM article_enrichments WHERE status='failed' ORDER BY enrichment_id").fetchall()
+        assert failed_enrichments and all(item[2] is None and item[3] for item in failed_enrichments)
+    db.close()
+    assert _check(database, tmp_path, ids={"core:good"}, body=body)["unverified_count"] == 0
+    _approve_all(database)
+    with sqlite3.connect(database) as db:
+        approved_sha = db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0]
+    db.close()
+    # A later real capture stages a draft; the published history must stay frozen.
+    capture("2026-09-05", _response(body=original))
+    reader = _reader(database, tmp_path)
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    def verify(current):
+        detail = current.article("good")
+        assert detail["published_candidate_sha256"] == approved_sha
+        assert detail["summary"] == "Summary good" and detail["summary_provenance"] == "verified_source_evidence"
+        if not current.static_snapshot:
+            with current.connect() as db:
+                assert [tuple(row) for row in db.execute("SELECT enrichment_id,status,summary,error_code,error_message FROM article_enrichments WHERE status='failed' ORDER BY enrichment_id")] == failed_enrichments
+        collections = detail["available_content"]["collection_observations"]
+        assert [(item["fetch_id"], item["fetched_at"]) for item in collections] == successes
+        assert all(item["status"] == "success" and item["content_version_id"] == selected_version for item in collections)
+        assert all(item["requested_url"] == item["final_url"] == "https://example.org/good" for item in collections)
+    verify(reader)
+    with reader.public_snapshot(): verify(reader)
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    static = RegistryReader.from_public_export(root); verify(static)
+    for day, expected in (("2026-08-31",0), ("2026-09-01",1), ("2026-09-02",1),
+            ("2026-09-03",0), ("2026-09-04",0), ("2026-09-05",0)):
+        live = _range_source(reader, day, day)["articles"]
+        assert len(live) == expected
+        assert _range_source(static, day, day)["articles"] == live
+    live = _range_source(reader, "2026-08-31", "2026-09-05")["articles"]
+    assert _range_source(static, "2026-08-31", "2026-09-05")["articles"] == live
+    assert {item["observation_id"] for item in live[0]["provenance"]["collection_time"]["all"]} == {identity for identity, stamp in successes}
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before

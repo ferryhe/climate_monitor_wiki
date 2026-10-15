@@ -70,6 +70,16 @@
       "available_content": {
         "acquisition_item_id": "acquisition-item-488fdf2a9aa171ec78d6c786",
         "collected_at": "2026-09-14T18:42:11.777709Z",
+        "collection_observations": [
+          {
+            "content_version_id": "content-3afd99be76fd846c27398087",
+            "fetch_id": "fetch-488fdf2a9aa171ec78d6c786",
+            "fetched_at": "2026-09-14T18:42:11.777709Z",
+            "final_url": "https://www.wri.org/news/statement-unep-report-warns-world-soon-exceed-1-5-degrees-c",
+            "requested_url": "https://www.wri.org/news/statement-unep-report-warns-world-soon-exceed-1-5-degrees-c",
+            "status": "success"
+          }
+        ],
         "content_sha256": "dccd7d886ea0f6272419a93ffd77f84f0976c976728d0de9bfe5f1dd16266a7a",
         "content_type": "text/markdown",
         "content_version_id": "content-3afd99be76fd846c27398087",
@@ -360,6 +370,16 @@
       "available_content": {
         "acquisition_item_id": null,
         "collected_at": "2026-08-19T02:10:59.014460Z",
+        "collection_observations": [
+          {
+            "content_version_id": "content-d5794ab700ef69b4bfc612ab6215b06a",
+            "fetch_id": "fetch-934813112c6947f8b26cc078c84564fb",
+            "fetched_at": "2026-08-19T02:10:59.014460Z",
+            "final_url": "https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo",
+            "requested_url": "https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo",
+            "status": "success"
+          }
+        ],
         "content_sha256": "ca851552a580534b3ab0e211842163797e73990a0ba1266a650c1392ee47a732",
         "content_type": "text/html",
         "content_version_id": "content-d5794ab700ef69b4bfc612ab6215b06a",
@@ -637,6 +657,16 @@
       "available_content": {
         "acquisition_item_id": null,
         "collected_at": "2026-10-07T22:17:31.527432Z",
+        "collection_observations": [
+          {
+            "content_version_id": "content-92292c930c42e49bd3c40d18a9cc6668",
+            "fetch_id": "fetch-9955766492964df8968d8fd92d331d63",
+            "fetched_at": "2026-10-07T22:17:31.527432Z",
+            "final_url": "https://wmo.int/media/news/flood-tragedy-nepal-highlights-cross-border-and-cascading-risks",
+            "requested_url": "https://wmo.int/media/news/flood-tragedy-nepal-highlights-cross-border-and-cascading-risks",
+            "status": "success"
+          }
+        ],
         "content_sha256": "5cecb97bf47519c8a9623cd322d1c427e2f37fd3d97d27d67896faeec89bd8c1",
         "content_type": "text/html",
         "content_version_id": "content-92292c930c42e49bd3c40d18a9cc6668",
@@ -965,6 +995,16 @@
       "available_content": {
         "acquisition_item_id": "acquisition-item-4732fd8b5eb752a7cf9154ef",
         "collected_at": "2026-09-14T18:42:10.915462Z",
+        "collection_observations": [
+          {
+            "content_version_id": "content-1270a31d1edc8025526fa181",
+            "fetch_id": "fetch-4732fd8b5eb752a7cf9154ef",
+            "fetched_at": "2026-09-14T18:42:10.915462Z",
+            "final_url": "https://www.wri.org/insights/carbon-dioxide-removal-policies-frameworks",
+            "requested_url": "https://www.wri.org/insights/carbon-dioxide-removal-policies-frameworks",
+            "status": "success"
+          }
+        ],
         "content_sha256": "e9484d1dba41dceb6729077032e9fb57a8ffc7ea6248ee9031908e925e58e027",
         "content_type": "text/markdown",
         "content_version_id": "content-1270a31d1edc8025526fa181",
@@ -1227,7 +1267,7 @@
       "title": "As the US Carbon Dioxide Removal Market Retreats, Other Governments Step Up"
     }
   ],
-  "artifact_sha256": "afd21f27f51bc186a4e7d07025d95edbd5831d81881fdcd174de055eea40f99f",
+  "artifact_sha256": "2a7afaf4b909cb6df78e31af1b6da704915dfe69036b3e439035eae90bd0babc",
   "knowledge_chronology": {
     "article:article-011a25cd2ce33dcc38cecc14": {
       "first_ingested_at": "2026-10-15T03:18:21.172633+00:00",

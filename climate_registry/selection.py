@@ -494,12 +494,12 @@ def load_registry_selection_snapshot(database: Path, source_dir: Path) -> Regist
                 raise RegistryInputError(
                     "registry article graph and source history are not synchronized"
                 )
-            from .publication import public_connection
-            projection = public_connection(connection)
-            if projection is not connection:
-                connection.close()
-                connection = projection
-            urls = frozenset(row[0] for row in connection.execute("SELECT canonical_url FROM articles"))
+            from .publication import enabled, published_snapshots
+            if enabled(connection):
+                # Dedup reads approved visible URL history, independently of factual display eligibility.
+                urls = frozenset(row["canonical_url"]
+                    for snapshot in published_snapshots(connection, ("article",), apply_policy=False).values()
+                    for row in snapshot.get("tables", {}).get("articles", []))
         except SchemaContractError as exc:
             raise RegistryInputError("registry schema contract is invalid") from exc
         except (RegistryInputError, RegistryBuildError):

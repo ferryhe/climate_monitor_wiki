@@ -502,7 +502,8 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         for row in tables.get("article_enrichments", []):
             if row.get("summary") and row["summary"] != fields.get("summary"):
                 excluded.append("field_outside_verification:enrichment.summary")
-            row["summary"] = fields.get("summary")
+            if row.get("status") == "complete":
+                row["summary"] = fields.get("summary")
         for row in tables.get("article_semantics", []):
             excluded.extend("field_outside_verification:semantics."+key for key in ("title", "summary") if row.get(key))
             row.update(title=None, summary=None)

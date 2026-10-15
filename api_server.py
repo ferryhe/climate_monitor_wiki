@@ -1001,7 +1001,7 @@ def registry_report(report_date: str) -> dict:
             # off-cycle report remain loadable via the API.
             allow_offcycle=True,
         )
-        report["report_briefing"] = artifact.briefing if artifact else None
+        report["report_briefing"] = None  # Delivery integrity is not factual verification.
         report["report_pdf"] = (
             {
                 "filename": artifact.pdf_filename,

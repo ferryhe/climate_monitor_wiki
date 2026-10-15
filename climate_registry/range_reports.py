@@ -540,22 +540,14 @@ def _range_source_read(
         for identity,detail in public_details.items():
             available = detail.get("available_content") or {}
             known={item["observation_id"] for item in observations[identity]}
+            collection_fetches = []
             for item in detail.get("acquisition_observations", []):
                 key = item["acquisition_item_id"]
                 if item.get("processing_status", "complete") != "complete" or item.get("selection_status", "selected") != "selected":
                     continue
                 if acquisition_item_ids is not None and key not in acquisition_item_ids:
                     continue
-                for field in ("fetch", "resolved_fetch"):
-                    fetch = item.get(field) or {}
-                    if (available.get("fetch_id") and fetch.get("status") == "success"
-                            and fetch.get("content_version_id") == available.get("content_version_id")
-                            and fetch.get("fetch_id") and fetch.get("requested_url") and fetch.get("fetched_at")):
-                        stamp, day = _collection_timestamp(fetch["fetched_at"])
-                        observation = {"date":day, "collected_at":stamp, "observation_id":fetch["fetch_id"],
-                            "basis":"registry_fetch", "evidence":{field:fetch.get(field) for field in ("requested_url", "final_url")}}
-                        if observation not in collection_dates[identity]:
-                            collection_dates[identity].append(observation)
+                collection_fetches.extend(item.get(field) or {} for field in ("fetch", "resolved_fetch"))
                 if key in known:
                     continue
                 observations[identity].append({"kind":"registry_acquisition","observation_id":key,
@@ -567,6 +559,18 @@ def _range_source_read(
                 if published and item.get("publication_date_evidence"):
                     evidence={"date":published,"observation_id":key,"evidence":item["publication_date_evidence"]}
                     publication_dates[identity].append(evidence);evidenced_dates[identity].append(evidence)
+            activated_fetch_ids = {fetch.get("fetch_id") for fetch in collection_fetches}
+            collection_fetches.extend(fetch for fetch in available.get("collection_observations", [])
+                if acquisition_item_ids is None or fetch.get("fetch_id") in activated_fetch_ids)
+            for fetch in collection_fetches:
+                if (available.get("fetch_id") and fetch.get("status") == "success"
+                        and fetch.get("content_version_id") == available.get("content_version_id")
+                        and fetch.get("fetch_id") and fetch.get("requested_url") and fetch.get("fetched_at")):
+                    stamp, day = _collection_timestamp(fetch["fetched_at"])
+                    observation = {"date":day, "collected_at":stamp, "observation_id":fetch["fetch_id"],
+                        "basis":"registry_fetch", "evidence":{field:fetch.get(field) for field in ("requested_url", "final_url")}}
+                    if observation not in collection_dates[identity]:
+                        collection_dates[identity].append(observation)
             if detail.get("collected_at"):
                 stamp,day=_collection_timestamp(detail["collected_at"])
                 exact_fetch = bool(available.get("fetch_id") and available.get("content_version_id") and available.get("requested_url"))

@@ -2820,6 +2820,11 @@ class RegistryReader:
         available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
         available["collected_at"] = selected["fetched_at"]
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
+        available["collection_observations"] = [dict(row) for row in connection.execute(
+            """SELECT fetch_id,fetch_status AS status,fetched_at,content_version_id,requested_url,final_url
+               FROM article_fetches WHERE article_id=? AND content_version_id=?
+                 AND fetch_status='success' AND http_status BETWEEN 200 AND 299
+               ORDER BY fetched_at,fetch_id""", (article_id, content["content_version_id"]))]
         fetch = connection.execute("SELECT requested_url,final_url FROM article_fetches WHERE fetch_id=? AND article_id=? AND content_version_id=? AND fetch_status='success'",
             (selected["fetch_id"], article_id, content["content_version_id"])).fetchone()
         if fetch:
@@ -3239,6 +3244,11 @@ class RegistryReader:
         available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
         available["collected_at"] = selected["fetched_at"]
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
+        available["collection_observations"] = [{key:row.get(key) for key in (
+            "fetch_id", "fetched_at", "content_version_id", "requested_url", "final_url")} | {"status":row["fetch_status"]}
+            for row in sorted(fetches.values(), key=lambda row:(row.get("fetched_at") or "", row.get("fetch_id") or ""))
+            if row.get("article_id") == article_id and row.get("content_version_id") == content["content_version_id"]
+            and row.get("fetch_status") == "success" and 200 <= (row.get("http_status") or 0) <= 299]
         fetch = fetches.get(selected["fetch_id"], {})
         if fetch.get("fetch_status") == "success" and fetch.get("content_version_id") == content["content_version_id"]:
             available.update(requested_url=fetch.get("requested_url"), final_url=fetch.get("final_url"))
