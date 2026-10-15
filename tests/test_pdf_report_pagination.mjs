@@ -104,3 +104,15 @@ resolveOld({report_title: 'Stale report'});
 await old;
 assert.equal(els.registryReportTitle.textContent, 'Report');
 console.log('PDF summary disclosure, page jump, pagination, numbering, meetings and stale requests passed');
+
+const reviewedReport = element();
+context.appendRegistryPdfOccurrences(reviewedReport, [{
+  source_document: 'reviewed.pdf', report_date: '2026-09-14', page: 13,
+  raw_url: 'https://example.org/article', summary: 'Mixed raw PDF passage.',
+  display_summary: 'Reviewed report summary.', display_summary_provenance: 'owner_reviewed_source_evidence',
+  verified_information: { summary: 'Outdated checked summary.', keywords: ['insurance'] },
+}]);
+assert.ok(texts(reviewedReport).includes('Reviewed report summary.'));
+assert.ok(texts(reviewedReport).includes('Approved reviewed summary'));
+assert.ok(!texts(reviewedReport).includes('Mixed raw PDF passage.'));
+assert.ok(texts(reviewedReport).includes('reviewed.pdf · Report date 2026-09-14 · page 13'));

@@ -655,6 +655,8 @@ def _range_source_read(
                 continue
             observations[article_id].append(observation)
         pdf_details = {article["article_id"]: article for article in reader.pdf_articles_all(include_linked=True)} if has_pdf or reader.static_snapshot is not None else {}
+        pdf_occurrence_displays = {item["occurrence_id"]: item for article in pdf_details.values()
+            for item in article.get("occurrences", [])}
         if reader.static_snapshot is not None:
             for article in pdf_details.values():
                 for item in article["occurrences"]:
@@ -1036,6 +1038,10 @@ def _range_source_read(
                     "url": item["url"],
                 }],
             }
+            reviewed = pdf_occurrence_displays.get(item["observation_id"], {})
+            if reviewed.get("display_summary") and reviewed.get("display_summary_provenance"):
+                update.update(summary=reviewed["display_summary"],
+                    summary_provenance=reviewed["display_summary_provenance"])
             update["publisher"] = publisher_name(
                 update.get("publisher"), [update.get("canonical_url"), update.get("url")],
             )

@@ -52,7 +52,7 @@ def _pdf_heading(occurrence: dict) -> str:
 
 def _verified_information_blocks(occurrence: dict) -> list[str]:
     information = occurrence.get("verified_information")
-    return ["", "### Verified information", "", information["summary"],
+    return ["", "### Verified information", "", "" if occurrence.get("display_summary") else information["summary"],
         "", "Categories: " + ", ".join(information["categories"]),
         "Keywords: " + ", ".join(information["keywords"]),
         f"Website evidence: {information['source_url']}; checked {information['generated_at']}"] if information else []
@@ -202,8 +202,9 @@ def _render_registry_article(article: dict) -> str | None:
                     "",
                     f"## {_pdf_heading(occurrence)}",
                     "",
-                    occurrence["summary"],
+                    occurrence.get("display_summary") or occurrence["summary"],
                     "",
+                    "Approved reviewed summary." if occurrence.get("display_summary") else "",
                     _citation(occurrence),
                 ]
             )
@@ -289,7 +290,8 @@ def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
             filename = _citation(occurrence).split("; SHA-256:", 1)[0].removeprefix("PDF: ")
             title = f"PDF source observation: {filename} (page {occurrence.get('page', 'unknown')})"
         blocks = [f"# {title}", "",
-            f"## {_pdf_heading(occurrence)}", "", occurrence["summary"], "",
+            f"## {_pdf_heading(occurrence)}", "", occurrence.get("display_summary") or occurrence["summary"], "",
+            "Approved reviewed summary." if occurrence.get("display_summary") else
             "Report-provided summary; article details are unconfirmed.", _citation(occurrence)]
         blocks.extend(_verified_information_blocks(occurrence))
         pages[name] = "\n".join([*blocks, ""])
@@ -315,7 +317,10 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
     for item in meetings:
         if item.get("origin") == "pdf_import":
             blocks += ["## " + str(item.get("name") or "Key date"), str(item.get("raw_date") or "Date not provided"),
-                item.get("summary") or "", _citation(item), "Provenance: PDF observed record; " + item.get("verification_status", "unchecked"), ""]
+                "Provenance: PDF observed record; " + item.get("verification_status", "unchecked")]
+            for observation in item.get("pdf_observations") or [item]:
+                blocks += ["PDF observation: " + str(observation.get("summary") or ""), _citation(observation)]
+            blocks.append("")
         else:
             blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
                 item.get("relevance_reason") or "", "Status: " + str(item.get("status") or "Unknown")]
@@ -924,27 +929,8 @@ def _registry_pages_read(
     with reader.connect() as connection:
         if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
             meetings = reader.meetings_all(base_date="1900-01-01")
-            blocks = ["# Meetings and key dates", ""]
-            for item in meetings:
-                if item.get("origin")=="pdf_import":
-                    blocks += ["## " + str(item.get("name") or "Key date"), str(item.get("raw_date") or "Date not provided"),
-                        item.get("summary") or "", _citation(item), "Provenance: PDF observed record; " + item.get("verification_status", "unchecked"), ""]
-                else:
-                    blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
-                        item.get("relevance_reason") or "", "Status: " + str(item.get("status") or "Unknown")]
-                    blocks += [label + ": " + str(item[field]) for field, label in (
-                        ("end_date", "End date"), ("deadline_date", "Deadline"), ("deadline_type", "Deadline type"),
-                        ("organizer", "Host"), ("location", "Location"), ("timezone", "Timezone"),
-                        ("online_url", "Online URL")) if item.get(field)]
-                    for source in item.get("sources", []):
-                        url = source.get("source_url")
-                        if url:
-                            blocks.append("Source: [" + url + "](" + url + ")")
-                    for observation in item.get("pdf_observations",[]):
-                        blocks += ["PDF observation: " + str(observation.get("summary") or ""), _citation(observation)]
-                    blocks.append("")
             if meetings:
-                pages["registry-meetings.md"] = "\n".join(blocks).rstrip("\n") + "\n"
+                pages["registry-meetings.md"] = _render_registry_meetings(meetings)
             by_date = defaultdict(list)
             for row in connection.execute("""SELECT r.report_date,r.filename,r.report_sha256,ra.article_id,av.observed_title,av.observed_summary,a.canonical_url
                 FROM report_appearances ra JOIN reports r ON r.report_id=ra.report_id JOIN articles a ON a.article_id=ra.article_id

@@ -3152,9 +3152,16 @@ function appendVerifiedInformation(container, information) {
 
 function appendPdfVerifiedInformation(container, occurrence) {
   const information = occurrence.verified_information;
+  const displaySummary = occurrence.display_summary;
+  if (displaySummary) {
+    const block = registryElement("section", "registry-detail-section");
+    block.append(registryElement("h4", "", "Summary"), registryElement("p", "", displaySummary),
+      registryElement("p", "muted registry-provenance", "Approved reviewed summary"));
+    container.append(block);
+  }
   if (information) {
     const block = registryElement("section", "registry-detail-section");
-    if (information.summary) {
+    if (information.summary && !displaySummary) {
       const summary = registryElement("div", "registry-summary");
       summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", information.summary));
       block.append(summary);
@@ -3174,7 +3181,7 @@ function appendPdfVerifiedInformation(container, occurrence) {
     }
     container.append(block);
   }
-  if (!information?.summary && occurrence.summary) {
+  if (!displaySummary && !information?.summary && occurrence.summary) {
     const block = registryElement("section", "registry-detail-section");
     const summary = registryElement("div", "registry-summary");
     summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", occurrence.summary));
@@ -3370,7 +3377,7 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       registryElement("strong", "", `${sourceName} · ${date}${page}`),
     );
     appendInformationCheck(information, occurrence);
-    item.append(registryElement("p", "registry-pdf-history__summary", occurrence.summary || "No article context was captured."));
+    item.append(registryElement("p", "registry-pdf-history__summary", occurrence.display_summary || occurrence.summary || "No article context was captured."));
     const sourceUrl = safeSourceUrl(occurrence.raw_url);
     if (sourceUrl) {
       const link = registryElement("a", "registry-source-link", "Open source link");
@@ -3380,7 +3387,11 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       item.append(link);
     }
     item.append(information);
-    appendVerifiedInformation(item, occurrence.verified_information);
+    if (occurrence.display_summary) {
+      item.append(registryElement("p", "muted registry-provenance", "Approved reviewed summary"));
+    }
+    appendVerifiedInformation(item, occurrence.display_summary && occurrence.verified_information
+      ? { ...occurrence.verified_information, summary: null } : occurrence.verified_information);
     list.append(item);
   });
   block.append(list);
