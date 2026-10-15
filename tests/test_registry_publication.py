@@ -3452,10 +3452,12 @@ def test_historical_empty_t1_with_path_remains_audit_only_after_storage_upgrade(
         assert database.read_bytes()==before
 
 
-def _approved_pdf_pair(tmp_path, monkeypatch):
+def _approved_pdf_pair(tmp_path, monkeypatch, *, legacy_target_state=None):
     from test_issue136_meetings import _candidate
+    from climate_registry.information_checks import source_revision
     import test_issue113_range_reports as fixtures
     database = _database(tmp_path)
+    old_source_revision = None
     with sqlite3.connect(database) as db:
         _pdf(db, identity="pdf-article", url="https://example.org/pdf")
         db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/second.pdf','second.pdf','application/pdf',1,?,'{}','2026-08-02')", ("a"*64,"b"*64))
@@ -3466,14 +3468,33 @@ def _approved_pdf_pair(tmp_path, monkeypatch):
                 "start_date": "2027-06-10", "end_date": "2027-06-12", "summary": event+" original observation",
                 "page": page, "source_urls": [url], "source_document_sha256": document,
                 "canonical_pdf_event_id": "target"}  # Raw aliases alone are not authorization.
+            if event == "source" and legacy_target_state is not None:
+                old_source_revision = source_revision("meetings", item)
+                item.update(location="Legacy unchecked location", online_url="https://legacy.test/", event_timezone="UTC",
+                    deadline_type="registration", deadline_date="2099-01-01", relevance_reason="Legacy unchecked relevance",
+                    raw_time_text="Old clock", raw_date="Old source date", start_date="1900-01-01", end_date="1900-01-01",
+                    source_urls=["https://example.org/", "https://legacy.test/"], status="cancelled")
+                if legacy_target_state != "verified":
+                    item.update(start_date="2099-01-01", end_date="2099-01-01", raw_date="Future unchecked source", status="scheduled")
             db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'day',?,?,?, ?,NULL,?)",
                 (occurrence,event,document,page,item["name"],item["raw_date"],item["start_date"],item["end_date"],item["summary"],"c"*64,json.dumps(item)))
     monkeypatch.setattr(fixtures, "_reader", lambda db, root: RegistryReader(db, repository_root=db.parent/"application", public=False))
     for event, occurrence, url in (("target","z-target","https://example.org/exact-event"), ("source","a-source","https://example.org/")):
-        fixtures._insert_meeting_check(database, occurrence,
-            website_candidate=_candidate(name="IAIS Annual Conference 2027", location=event+" verified location",
-                deadline_type=None,deadline_date=None,deadline_evidence=None),
-            canonical_event_id="non-native-"+event, run_id="run-"+event, attempt_id="check-"+event, source_url=url)
+        candidate = _candidate(name="IAIS Annual Conference 2027", location=event+" verified location",
+            deadline_type=None,deadline_date=None,deadline_evidence=None)
+        verification_status = "verified"
+        if event == "target" and legacy_target_state is not None:
+            candidate.update(location=None, online_url=None, timezone=None, raw_time_text=None,
+                deadline_type=None, deadline_date=None, deadline_evidence=None, relevance_reason=None)
+            if legacy_target_state == "cancelled":
+                candidate["status"] = "cancelled"
+            if legacy_target_state == "expired":
+                candidate.update(start_date="2020-01-01", end_date="2020-01-02")
+            if legacy_target_state == "unverified":
+                verification_status, candidate = "partial", None
+        fixtures._insert_meeting_check(database, occurrence, website_candidate=candidate,
+            canonical_event_id="non-native-"+event, run_id="run-"+event, attempt_id="check-"+event, source_url=url,
+            verification_status=verification_status, source_revision_sha256=old_source_revision if event == "source" else None)
     with sqlite3.connect(database) as db:
         for sha in stage_entities(db):
             _approve(db,sha,{"basis":"explicit exact PDF fixture approval"},status="accepted_legacy")
@@ -3665,29 +3686,8 @@ def test_range_reports_keep_approved_pdf_summary_and_source_evidence(tmp_path, d
 
 
 def _approved_legacy_pdf_pair(tmp_path, monkeypatch, *, target_state="verified"):
-    from climate_registry.information_checks import _sha
-    database = _approved_pdf_pair(tmp_path, monkeypatch)
+    database = _approved_pdf_pair(tmp_path, monkeypatch, legacy_target_state=target_state)
     with sqlite3.connect(database) as db:
-        raw = json.loads(db.execute("SELECT item_json FROM pdf_intake_calendar_items WHERE event_id='source'").fetchone()[0])
-        raw.update(location="Legacy unchecked location", online_url="https://legacy.test/", event_timezone="UTC",
-            deadline_type="registration", deadline_date="2099-01-01", relevance_reason="Legacy unchecked relevance",
-            raw_time_text="Old clock", raw_date="Old source date", start_date="1900-01-01", end_date="1900-01-01",
-            source_urls=["https://example.org/", "https://legacy.test/"], status="cancelled")
-        if target_state != "verified":
-            raw.update(start_date="2099-01-01", end_date="2099-01-01", raw_date="Future unchecked source", status="scheduled")
-        db.execute("UPDATE pdf_intake_calendar_items SET item_json=? WHERE event_id='source'", (json.dumps(raw),))
-        packet = json.loads(db.execute("SELECT packet_json FROM meeting_check_attempts WHERE attempt_id='check-target'").fetchone()[0])
-        packet["website_candidate"].update(location=None, online_url=None, timezone=None, raw_time_text=None,
-            deadline_type=None, deadline_date=None, deadline_evidence=None, relevance_reason=None)
-        if target_state == "cancelled":
-            packet["website_candidate"]["status"] = "cancelled"
-        if target_state == "expired":
-            packet["website_candidate"].update(start_date="2020-01-01", end_date="2020-01-02")
-        if target_state == "unverified":
-            packet.update(verification_status="partial", website_candidate=None)
-        db.execute("UPDATE meeting_check_attempts SET packet_json=?,packet_sha256=? WHERE attempt_id='check-target'", (json.dumps(packet), _sha(packet)))
-        for sha in stage_entities(db):
-            _approve(db, sha, {"basis": "explicit legacy observation fixture approval"}, status="accepted_legacy")
         snapshot = snapshot_entity(db, "pdf_meeting", "source")
         snapshot["derived_display"] = {"canonical_pdf_event_id": "target"}
         sha = stage_snapshot(db, snapshot)
