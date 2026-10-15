@@ -979,7 +979,8 @@ class EvidenceTurn:
         if RECENT.search(self.question):
             # The committee is the new article query's audience, not a prior source identity.
             reference_question = re.sub(r"\b(?:this|that)\s+(?:climate\s+)?committee\b", "", reference_question, flags=re.I)
-        ordinal = re.search(r"\b(first|second|third)\b|\b(?:meeting|conference|event|item)\s+(?:number\s+|#\s*)?(\d+)\b|\b(\d+)(?:st|nd|rd|th)?\s+(?:meeting|conference|event|item|one)\b|(?<!\w)#(\d+)\b", reference_question, re.I)
+        # A bare four-digit year belongs to a meeting name; explicit number/# references remain ordinal.
+        ordinal = re.search(r"\b(first|second|third)\b|\b(?:meeting|conference|event|item)\s*(?:number\s+|#\s*|(?!\d{4}\b))(\d+)\b|\b(\d+)(?:st|nd|rd|th)?\s+(?:meeting|conference|event|item|one)\b|(?<!\w)#(\d+)\b", reference_question, re.I)
         previous_web = [source for source in self.previous.get("sources", []) if source.get("heading") == "web"]
         page_reference = bool(re.search(r"\b(the|this|that)\s+(page|webpage|website)\b", self.question, re.I))
         page_followup = False

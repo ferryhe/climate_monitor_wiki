@@ -3704,3 +3704,37 @@ def test_missing_reader_policy_result_reaches_provider_honestly(tmp_path, monkey
     assert result["agent_mode"] == provider and not result["sources"] and "could not be read" in result["text"]
     assert any(row["tool"] == "read_url" and row["status"] == "unavailable" for row in evidence_trace(result))
     assert not chat.frames.get(result["context"])["web"]
+
+
+def test_named_iais_conference_year_reads_only_its_approved_dates_with_citations(tmp_path):
+    chat = owner(tmp_path)
+    target = meeting("iais-2027", "IAIS Annual Conference 2027", "Rabat, Morocco")
+    target.update(start_date="2027-11-11", end_date="2027-11-12", verification_status="verified",
+        source_urls=["https://www.iais.org/events/iais-annual-conference-2027/"], pdf_observations=[])
+    chat.reader_factory = lambda: MeetingsReader([meeting("other", "Other conference", "Paris"), target])
+    previous = chat.answer("Other conference")
+    question = "What are the confirmed dates for the IAIS Annual Conference 2027? Cite sources."
+    for context in (None, previous["context"]):
+        result = chat.answer(question, context=context, history=[{"role": "assistant", "content": previous["text"]}])
+        assert not result["needs_clarification"]
+        assert [source["evidence_id"] for source in result["sources"]] == ["iais-2027"]
+        assert "start_date: 2027-11-11" in result["text"] and "end_date: 2027-11-12" in result["text"]
+        assert "verification_status: verified" in result["text"] and "[1]" in result["text"]
+        assert result["sources"][0]["url"] == "https://www.iais.org/events/iais-annual-conference-2027/"
+        assert "Other conference" not in result["text"]
+
+
+@pytest.mark.parametrize("reference,expected", [("meeting number 2", "two"), ("meeting #2", "two"),
+    ("#2", "two"), ("first meeting", "one"), ("meeting 2", "two"), ("meeting2", "two")])
+def test_explicit_meeting_ordinals_keep_prior_identity_and_source_only_boundary(tmp_path, reference, expected):
+    chat = owner(tmp_path)
+    chat.reader_factory = lambda: MeetingsReader([meeting("one", "Alpha conference", "Paris"), meeting("two", "Beta conference", "London")])
+    previous = chat.answer("List upcoming conferences")
+    question = "Tell me more about the " + reference
+    chat.responder.client = object()
+    turn = EvidenceTurn(chat, question, previous["context"], [])
+    turn.initial(None)
+    assert [source["evidence_id"] for source in turn.sources] == [expected]
+    chat.responder.client = None
+    fallback = chat.answer(question, context=previous["context"], history=[{"role": "assistant", "content": previous["text"]}])
+    assert fallback["needs_clarification"] and not fallback["sources"]
