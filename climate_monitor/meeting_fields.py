@@ -66,7 +66,7 @@ def collected_pdf_meeting(item: dict[str, Any]) -> dict[str, Any]:
         check.get("source_url") for check in item.get("checks", [])
         if check.get("verification_status") == "verified" and check.get("website_candidate") == candidate
     ), None)
-    return {**item, **candidate, "event_id": item.get("canonical_event_id") or item["event_id"], "pdf_event_id": item["event_id"],
+    return {**item, **candidate, "event_id": item.get("canonical_event_id") or item.get("canonical_pdf_event_id") or item["event_id"], "pdf_event_id": item["event_id"],
         "event_timezone": candidate.get("timezone"), "pdf_observations": [dict(item)],
         "collected_candidate_source_url": source_url,
         "relevance_reason": item.get("relevance_reason"), "website_relevance_reason": candidate.get("relevance_reason")}
@@ -78,12 +78,17 @@ def merge_meeting_observations(records: list[dict[str, Any]]) -> list[dict[str, 
     for raw in records:
         item = dict(raw)
         imported = bool(item.get("source_document_sha256"))
-        identity = (item.get("canonical_event_id") or item.get("occurrence_id")) if imported else item.get("event_id")
+        identity = (item.get("canonical_event_id") or item.get("canonical_pdf_event_id") or item.get("occurrence_id")) if imported else item.get("event_id")
         identity = identity or str(len(merged))
         if identity not in merged:
             merged[identity] = item
             continue
         existing = merged[identity]
+        # A reviewed PDF target supplies the global display; both observations stay local.
+        target = item.get("canonical_pdf_event_id")
+        if target and item.get("pdf_event_id") == target and existing.get("pdf_event_id") != target:
+            existing, item = item, existing
+            merged[identity] = existing
         for field in MEETING_FIELDS:
             if field not in {"source_urls", "relevance_reason"} and not existing.get(field):
                 existing[field] = item.get(field)

@@ -3450,3 +3450,213 @@ def test_historical_empty_t1_with_path_remains_audit_only_after_storage_upgrade(
         with pytest.raises(ValueError,match="source/version binding"):
             run_checks(database,kind="articles",backup_dir=tmp_path/"backups",**{option:"old-empty"},fetcher=lambda *_:pytest.fail("old audit reached fetch"))
         assert database.read_bytes()==before
+
+
+def _approved_pdf_pair(tmp_path, monkeypatch):
+    from test_issue136_meetings import _candidate
+    import test_issue113_range_reports as fixtures
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-article", url="https://example.org/pdf")
+        db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/second.pdf','second.pdf','application/pdf',1,?,'{}','2026-08-02')", ("a"*64,"b"*64))
+        for event, occurrence, document, page, url in (("target", "z-target", "f"*64, 9, "https://example.org/exact-event"),
+                ("source", "a-source", "a"*64, 12, "https://example.org/")):
+            item = {"event_id": event, "occurrence_id": occurrence, "name": "IAIS Annual Conference 2027",
+                "kind": "event", "raw_date": "June 10–12, 2027", "date_precision": "day",
+                "start_date": "2027-06-10", "end_date": "2027-06-12", "summary": event+" original observation",
+                "page": page, "source_urls": [url], "source_document_sha256": document,
+                "canonical_pdf_event_id": "target"}  # Raw aliases alone are not authorization.
+            db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'day',?,?,?, ?,NULL,?)",
+                (occurrence,event,document,page,item["name"],item["raw_date"],item["start_date"],item["end_date"],item["summary"],"c"*64,json.dumps(item)))
+    monkeypatch.setattr(fixtures, "_reader", lambda db, root: RegistryReader(db, repository_root=db.parent/"application", public=False))
+    for event, occurrence, url in (("target","z-target","https://example.org/exact-event"), ("source","a-source","https://example.org/")):
+        fixtures._insert_meeting_check(database, occurrence,
+            website_candidate=_candidate(name="IAIS Annual Conference 2027", location=event+" verified location",
+                deadline_type=None,deadline_date=None,deadline_evidence=None),
+            canonical_event_id="non-native-"+event, run_id="run-"+event, attempt_id="check-"+event, source_url=url)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db,sha,{"basis":"explicit exact PDF fixture approval"},status="accepted_legacy")
+    return database
+
+
+def test_reviewed_pdf_identity_merges_global_but_keeps_both_report_observations(tmp_path, monkeypatch):
+    from climate_registry.publication import export_public_snapshot
+    database = _approved_pdf_pair(tmp_path, monkeypatch)
+    reader = _reader(database,tmp_path)
+    assert len(reader.meetings_all(base_date="1900-01-01")) == 2
+    assert all("canonical_pdf_event_id" not in item for item in reader.pdf_calendar_items_all())
+    with sqlite3.connect(database) as db:
+        snapshot = snapshot_entity(db,"pdf_meeting","source")
+        snapshot["derived_display"] = {"canonical_pdf_event_id":"target"}
+        approved_sha = stage_snapshot(db,snapshot)
+        _approve(db,approved_sha,{"basis":"owner reviewed PDF identity fixture"},status="accepted_legacy")
+        pending = json.loads(json.dumps(snapshot))
+        pending["derived_display"] = {"canonical_pdf_event_id":"pending-target"}
+        pending_sha = stage_snapshot(db,pending)
+        raw_before = db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+    rows = reader.meetings_all(base_date="1900-01-01")
+    assert len(rows) == 1
+    merged = rows[0]
+    assert merged["event_id"] == "target" and merged["pdf_event_id"] == "target"
+    assert merged["location"] == "target verified location"
+    assert merged["collected_candidate_source_url"] == "https://example.org/exact-event"
+    assert {row["occurrence_id"] for row in merged["pdf_observations"]} == {"a-source","z-target"}
+    for document, occurrence in (("f"*64,"z-target"),("a"*64,"a-source")):
+        report = reader.pdf_report(document)
+        assert report["calendar_count"] == 1
+        assert [row["occurrence_id"] for row in report["calendar_items"]] == [occurrence]
+        assert report["calendar_items"][0]["event_id"] == ("target" if occurrence=="z-target" else "source")
+    assert len(reader.pdf_calendar_items_all()) == 2
+    with reader.public_snapshot():
+        assert reader.meetings_all(base_date="1900-01-01") == rows
+    wiki = tmp_path/"application/wiki"; wiki.mkdir(parents=True)
+    output = wiki/"public-registry.json"
+    export_public_snapshot(database,output)
+    artifact=json.loads(output.read_text(encoding="utf-8"))
+    assert len(artifact["meeting_records"]) == 1 and len(artifact["meetings"]) == 2
+    assert artifact["meeting_records"][0]["collected_candidate_source_url"] == "https://example.org/exact-event"
+    markdown=artifact["wiki_pages"]["registry-meetings.md"]
+    assert markdown.count("## IAIS Annual Conference 2027\n") == 1
+    for document,page in (("f"*64,9),("a"*64,12)):
+        assert "SHA-256: "+document+"; page "+str(page) in markdown
+    monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT","1")
+    static = _reader(database,tmp_path)
+    assert static.meetings_all(base_date="1900-01-01") == artifact["meeting_records"]
+    assert static.resolve_pdf_meeting_identities(artifact["meetings"]) == artifact["meetings"]
+    monkeypatch.delenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT")
+    import api_server
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api_server,"_registry_reader",lambda: _reader(database,tmp_path))
+    monkeypatch.setattr(api_server,"_range_report_overlay",lambda:(None,None,None))
+    client=TestClient(api_server.app)
+    assert client.get("/api/registry/meetings?base_date=1900-01-01").json()["items"] == artifact["meeting_records"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT published_candidate_sha256,latest_candidate_sha256 FROM registry_publication WHERE entity_kind='pdf_meeting' AND entity_id='source'").fetchone() == (approved_sha,pending_sha)
+        assert db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == raw_before
+    for hidden, survivor in (("source","target"),("target","source")):
+        set_visibility(database,"pdf_meeting",hidden,False)
+        for projected in (False,True):
+            if projected:
+                with reader.public_snapshot():
+                    remaining=reader.meetings_all(base_date="1900-01-01")
+            else:
+                remaining=reader.meetings_all(base_date="1900-01-01")
+            assert len(remaining)==1 and remaining[0]["event_id"]==survivor
+            assert "canonical_pdf_event_id" not in remaining[0]
+        set_visibility(database,"pdf_meeting",hidden,True)
+
+
+def test_pending_or_unpublished_pdf_target_cannot_authorize_alias(tmp_path,monkeypatch):
+    database=_approved_pdf_pair(tmp_path,monkeypatch)
+    with sqlite3.connect(database) as db:
+        snapshot=snapshot_entity(db,"pdf_meeting","source")
+        snapshot["derived_display"]={"canonical_pdf_event_id":"target"}
+        stage_snapshot(db,snapshot)
+    reader=_reader(database,tmp_path)
+    assert len(reader.meetings_all(base_date="1900-01-01"))==2
+    with sqlite3.connect(database) as db:
+        sha=db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='pdf_meeting' AND entity_id='source'").fetchone()[0]
+        _approve(db,sha,{"basis":"explicit alias fixture"},status="accepted_legacy")
+        db.execute("UPDATE registry_publication SET published_candidate_sha256=NULL WHERE entity_kind='pdf_meeting' AND entity_id='target'")
+    for projected in (False,True):
+        if projected:
+            with reader.public_snapshot(): rows=reader.meetings_all(base_date="1900-01-01")
+        else: rows=reader.meetings_all(base_date="1900-01-01")
+        assert len(rows)==1 and rows[0]["event_id"]=="source"
+        assert "canonical_pdf_event_id" not in rows[0]
+
+
+@pytest.mark.parametrize("linked", [False,True])
+def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pending(tmp_path,monkeypatch,linked):
+    from climate_registry.publication import export_public_snapshot
+    from climate_registry.wiki import _registry_source_observation_pages, _render_registry_article
+    database=_database(tmp_path)
+    identity="a" if linked else "pdf-only"
+    url="https://example.org/a" if linked else "https://example.org/pdf-only"
+    with sqlite3.connect(database) as db:
+        _pdf(db,identity=identity,url=url)
+        for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit fixture approval"},status="accepted_legacy")
+        kind="article" if linked else "pdf_article"
+        snapshot=snapshot_entity(db,kind,identity)
+        snapshot["derived_display"]={"summary":"Reviewed source summary", "summary_provenance":"owner_reviewed_source_evidence"}
+        sha=stage_snapshot(db,snapshot)
+        _approve(db,sha,{"basis":"owner reviewed source passage"},status="accepted_legacy")
+        snapshot["derived_display"]["summary"]="Pending mixed summary"
+        stage_snapshot(db,snapshot)
+    reader=_reader(database,tmp_path)
+    def verify(current):
+        detail=current.pdf_article(identity)
+        occurrence=detail["occurrences"][0]
+        assert occurrence["summary"]=="Original PDF observation"
+        assert occurrence["display_summary"]=="Reviewed source summary"
+        assert occurrence["display_summary_provenance"]=="owner_reviewed_source_evidence"
+        assert current.pdf_report("f"*64)["articles"][0]["occurrences"][0]["display_summary"]=="Reviewed source summary"
+        pages=_registry_source_observation_pages([detail])
+        markdown=next(iter(pages.values()))
+        assert "Reviewed source summary" in markdown and "Approved reviewed summary." in markdown
+        assert "Original PDF observation" not in markdown and "Pending mixed summary" not in markdown
+        if linked:
+            article=current.article(identity)
+            assert article["pdf_occurrences"][0]["display_summary"]=="Reviewed source summary"
+            rendered=_render_registry_article(article)
+            assert "Reviewed source summary" in rendered and "Original PDF observation" not in rendered
+    verify(reader)
+    with reader.public_snapshot():verify(reader)
+    output=tmp_path/"public.json";export_public_snapshot(database,output)
+    artifact=json.loads(output.read_text(encoding="utf-8"))
+    occurrence=artifact["pdf_articles"][0]["occurrences"][0]
+    assert occurrence["summary"]=="Original PDF observation" and occurrence["display_summary"]=="Reviewed source summary"
+    assert "Pending mixed summary" not in output.read_text(encoding="utf-8")
+    import api_server
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api_server,"_registry_reader",lambda: _reader(database,tmp_path))
+    monkeypatch.setattr(api_server,"_range_report_overlay",lambda:(None,None,None))
+    response=TestClient(api_server.app).get("/api/registry/pdf-intake/articles/"+identity)
+    assert response.status_code==200
+    public=response.json()["occurrences"][0]
+    assert public["summary"]=="Original PDF observation" and public["display_summary"]=="Reviewed source summary"
+
+
+@pytest.mark.parametrize("display", [None, {"summary": "Unmarked entity summary"},
+    {"summary": "Reviewed source summary", "summary_provenance": "owner_reviewed_source_evidence"}])
+def test_range_reports_keep_approved_pdf_summary_and_source_evidence(tmp_path, display):
+    from climate_registry import range_reports
+    from climate_registry.publication import export_public_snapshot
+    from pypdf import PdfReader
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-only", url="https://example.org/pdf-only", period=("2026-08-01", "2026-08-10"))
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit range fixture approval"}, status="accepted_legacy")
+        if display:
+            snapshot = snapshot_entity(db, "pdf_article", "pdf-only")
+            snapshot["derived_display"] = display
+            sha = stage_snapshot(db, snapshot)
+            _approve(db, sha, {"basis": "explicit summary fixture approval"}, status="accepted_legacy")
+        snapshot = snapshot_entity(db, "pdf_article", "pdf-only")
+        snapshot["derived_display"] = {"summary": "Pending summary", "summary_provenance": "owner_reviewed_source_evidence"}
+        stage_snapshot(db, snapshot)
+        raw_before = db.execute("SELECT occurrence_json,content_sha256 FROM pdf_intake_article_occurrences").fetchall()
+    reader = _reader(database, tmp_path)
+    expected = "Reviewed source summary" if display and display.get("summary_provenance") else "Original PDF observation"
+    output = tmp_path/"application/wiki/public-registry.json"; output.parent.mkdir(parents=True)
+    export_public_snapshot(database, output)
+    static = RegistryReader.from_public_export(tmp_path/"application")
+    for current in (reader, static):
+        source = range_reports._range_source(current, "2026-08-01", "2026-08-10")
+        assert [item["summary"] for item in source["pdf_source_updates"]] == [expected]
+        occurrence = current.pdf_article("pdf-only")["occurrences"][0]
+        assert occurrence["summary"] == "Original PDF observation"
+        assert occurrence["content_sha256"] == raw_before[0][1]
+    report = range_reports.freeze_range_report(reader, tmp_path/"range-output", start_date="2026-08-01", end_date="2026-08-10")
+    html = range_reports.render_range_report_html(report)
+    pdf = range_reports.pdf_path(tmp_path/"range-output", report["snapshot_id"])
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(pdf).pages)
+    for rendered in (html, pdf_text):
+        assert expected in rendered and "Pending summary" not in rendered
+        if expected != "Original PDF observation":
+            assert "Original PDF observation" not in rendered
+        assert "source.pdf" in rendered
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT occurrence_json,content_sha256 FROM pdf_intake_article_occurrences").fetchall() == raw_before

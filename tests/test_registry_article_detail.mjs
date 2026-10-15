@@ -184,3 +184,17 @@ await context.loadRegistryArticle('absent-legacy-registry');
 assert.equal(rootTags(enrichment, 'Categories').length, 1);
 assert.match(text(enrichment), /Stale Registry category/);
 console.log('PASS full Registry/PDF detail render: reviewed PDF tags and field sources, occurrence website values, missing tags, legacy provenance hiding, Registry values, summaries, links, and appearances');
+
+// Reviewed presentation never rewrites the retained PDF or website evidence.
+const curated = { children: [], append(...items) { this.children.push(...items); } };
+context.appendPdfVerifiedInformation(curated, {
+  display_summary: 'Reviewed source summary.', display_summary_provenance: 'owner_reviewed_source_evidence',
+  summary: 'Mixed PDF passage.', verification_status: 'partial', checked_at: '2026-10-15',
+  verified_information: { summary: 'Retained check summary.', keywords: ['insurance'], source_url: 'https://example.org/checked' },
+});
+assert.match(text(curated), /Reviewed source summary\./);
+assert.match(text(curated), /Approved reviewed summary/);
+assert.match(text(curated), /Website verification: partial/);
+assert.match(text(curated), /Keywords insurance/);
+assert.doesNotMatch(text(curated), /Mixed PDF passage|Retained check summary/);
+assert.equal(curated.children.at(-1).children.at(-1).href, 'https://example.org/checked');

@@ -1784,6 +1784,17 @@ class RegistryReader:
             entity_ids=entity_ids)
 
     @staticmethod
+    def _apply_pdf_display_summary(value, snapshot):
+        value.pop("display_summary", None)
+        value.pop("display_summary_provenance", None)
+        if snapshot is not None:
+            from .publication import approved_display
+            display = approved_display(snapshot)
+            if display.get("summary") and display.get("summary_provenance"):
+                value["display_summary"] = display["summary"]
+                value["display_summary_provenance"] = display["summary_provenance"]
+
+    @staticmethod
     def _pdf_occurrences(
         connection: sqlite3.Connection, article_id: str, canonical_url: str,
         *, pdf_article_id: str | None = None,
@@ -1793,14 +1804,14 @@ class RegistryReader:
             return []
         if pdf_article_id is not None:
             rows = connection.execute(
-                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.article_id, o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    WHERE o.article_id=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
                 (pdf_article_id,),
             ).fetchall()
         elif RegistryReader._has_pdf_article_links(connection):
             rows = connection.execute(
-                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.article_id, o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
                    WHERE a.core_article_id=? OR (a.canonical_url=? AND ?)
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -1808,7 +1819,7 @@ class RegistryReader:
             ).fetchall()
         else:
             rows = connection.execute(
-                """SELECT o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
+                """SELECT o.article_id, o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
                    WHERE a.canonical_url=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
@@ -1834,7 +1845,10 @@ class RegistryReader:
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
             from climate_monitor.pdf_intake import report_update_fields
             documents={sha:dict(connection.execute("SELECT filename,period_start,period_end,imported_at,document_json FROM pdf_intake_documents WHERE document_sha256=?",(sha,)).fetchone()) for sha in sources}
+            from .publication import snapshot_metadata
             for row,value in zip(rows,values):
+                snapshot = snapshot_metadata(connection, "article", article_id) or snapshot_metadata(connection, "pdf_article", row["article_id"])
+                RegistryReader._apply_pdf_display_summary(value, snapshot)
                 document=documents[row["source_document_sha256"]]
                 parsed=json.loads(document["document_json"])
                 value.update(source_filename=document["filename"],period_start=document["period_start"],period_end=document["period_end"],imported_at=document["imported_at"],
@@ -2192,13 +2206,47 @@ class RegistryReader:
 
     @_direct_public_read
     def resolve_pdf_meeting_identities(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Bind verified overlays to identities in this reader's native event history."""
+        """Bind overlays to public native events and explicitly approved PDF identities."""
         from climate_monitor.meetings import resolve_event_identity
         result = []
+        if self.static_snapshot is not None:
+            approved = {item["occurrence_id"]: item for item in self.static_snapshot.get("meetings", [])}
+            for raw in items:
+                item = dict(raw)
+                published = approved.get(item.get("occurrence_id"), {})
+                for field in ("canonical_event_id", "canonical_pdf_event_id"):
+                    item.pop(field, None)
+                    if (published.get(field) and item.get("event_id") == published.get("event_id")
+                            and item.get("source_document_sha256") == published.get("source_document_sha256")):
+                        item[field] = published[field]
+                result.append(item)
+            return result
         with self.connect() as connection:
+            if self.public and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                if getattr(self, "_snapshot_direct", False):
+                    approved = self._public_candidates("meeting", "pdf_meeting")
+                else:
+                    approved = {(kind, identity): json.loads(encoded) for kind, identity, encoded in
+                        connection.execute("SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
+                pdf_occurrences = {identity: {row["occurrence_id"]
+                    for row in snapshot.get("tables", {}).get("pdf_intake_calendar_items", [])
+                    if row.get("event_id") == identity and row.get("occurrence_id")}
+                    for (kind, identity), snapshot in approved.items() if kind == "pdf_meeting"}
+                pdf_ids = {identity for identity, occurrences in pdf_occurrences.items() if occurrences}
+                aliases = {}
+                for (kind, identity), snapshot in approved.items():
+                    target = snapshot.get("derived_display", {}).get("canonical_pdf_event_id")
+                    if kind == "pdf_meeting" and identity in pdf_ids and target in pdf_ids:
+                        aliases[identity] = target
+                        aliases.setdefault(target, target)
+                items = [dict(item) for item in items]
+                for item in items:
+                    item.pop("canonical_pdf_event_id", None)
+                    identity = item.get("pdf_event_id") or item.get("event_id")
+                    if identity in aliases and item.get("occurrence_id") in pdf_occurrences[identity]:
+                        item["canonical_pdf_event_id"] = aliases[identity]
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                native = self._public_candidates("meeting")
-                visible_ids = set(native)
+                visible_ids = set(approved)
                 for raw in items:
                     item = dict(raw)
                     candidate_id = item.get("canonical_event_id")
@@ -2299,7 +2347,7 @@ class RegistryReader:
             end = _calendar_end_date(item)
             if end is not None and end < date.fromisoformat(base_date):
                 continue
-            candidate, identity = item.get("collected_candidate"), item.get("canonical_event_id")
+            candidate, identity = item.get("collected_candidate"), item.get("canonical_event_id") or item.get("canonical_pdf_event_id")
             if candidate and identity:
                 if candidate.get("status") in {"cancelled", "retrospective"}:
                     continue
@@ -2410,7 +2458,7 @@ class RegistryReader:
             if end is not None and end < date.fromisoformat(base_date):
                 continue
             candidate = item.get("collected_candidate")
-            identity = item.get("canonical_event_id")
+            identity = item.get("canonical_event_id") or item.get("canonical_pdf_event_id")
             if candidate and identity:
                 if candidate.get("status") in {"cancelled", "retrospective"}:
                     continue
@@ -3144,6 +3192,7 @@ class RegistryReader:
                 packet_cache=getattr(self, "_pdf_check_packet_cache", None),
                 candidate_binding=(snapshot.get("_approved_candidate_sha256")
                     or self._published_candidate_sha(snapshot))))
+            self._apply_pdf_display_summary(value, snapshot)
             # report_date is the legacy ordering key, but it was never added
             # to the public occurrence DTO from the storage row.
             values.append(((row.get("report_date") or "", row.get("page") or -1,

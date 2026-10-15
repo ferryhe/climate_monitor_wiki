@@ -1239,3 +1239,47 @@ def test_prior_shared_template_download_link_survives_new_default(tmp_path, monk
     assert api_server.registry_range_report_pdf(snapshot["snapshot_id"], old_version).body == old_bytes
     assert old_version in api_server.registry_range_report(snapshot["snapshot_id"], old_version).body.decode()
     assert old.read_bytes() == old_bytes
+
+
+def test_reviewed_pdf_meeting_aliases_follow_their_merged_pdf_and_html_row(tmp_path):
+    from climate_delivery.templates.adapters import adapt_range_report
+    snapshot = range_fixture()
+    snapshot["meeting"]["records"] = []
+    records = []
+    for identity, occurrence, document, name in (("source", "source-occ", "a"*64, "IAIS 2027"),
+            ("target", "target-occ", "b"*64, "IAIS 2027"),
+            ("unrelated", "other-occ", "c"*64, "Other meeting")):
+        observation = {"event_id": identity, "occurrence_id": occurrence, "name": name,
+            "source_document_sha256": document, "source_filename": identity+".pdf", "page": 1,
+            "source_urls": [], "start_date": "2026-10-05", "end_date": "2026-10-05", "date_precision": "day"}
+        item = dict(observation)
+        if identity != "unrelated":
+            item.update(event_id="target", pdf_event_id=identity, canonical_pdf_event_id="target",
+                pdf_observations=[observation])
+        records.append(item)
+    snapshot["pdf_calendar"]["records"] = records
+    _refresh_snapshot_identity(snapshot)
+    snapshot["executive_narrative"] = {"status": "available", "evidence": [
+        {"id": "C1", "name": "Source evidence", "date": "2026-10-05"},
+        {"id": "C2", "name": "Target evidence", "date": "2026-10-05"},
+        {"id": "C3", "name": "Other evidence", "date": "2026-10-05"}],
+        "sections": [{"heading": "Most important developments", "items": ["Source [C1], target [C2], other [C3]."]}]}
+    frozen = copy.deepcopy(snapshot)
+    report = adapt_range_report(snapshot)
+    assert dict(report.calendar_targets) == {"C1": "calendar-record-1", "C2": "calendar-record-1", "C3": "calendar-record-2"}
+    assert {row[0]: row[3:5] for row in report.executive_citations} == {
+        "C1": ("calendar-record-1", "calendar-record-1"), "C2": ("calendar-record-1", "calendar-record-1"),
+        "C3": ("calendar-record-2", "calendar-record-2")}
+    html = range_reports.render_range_report_html(snapshot)
+    assert 'href="#calendar-record-1">[Calendar: Source evidence' in html
+    assert 'href="#calendar-record-1">[Calendar: Target evidence' in html
+    assert 'href="#calendar-record-2">[Calendar: Other evidence' in html
+    output = tmp_path/"reviewed-pdf-alias-citations.pdf"
+    range_reports.render_range_report_pdf(snapshot, output)
+    reader, text = text_of(output)
+    destinations = [ref.get_object()["/Dest"] for ref in reader.pages[2].get("/Annots", []) if ref.get_object().get("/Dest")]
+    assert len(destinations) == 3
+    assert destinations[0] == destinations[1] and destinations[2] != destinations[1]
+    for name in ("IAIS 2027", "Other meeting"):
+        assert name in text
+    assert snapshot == frozen

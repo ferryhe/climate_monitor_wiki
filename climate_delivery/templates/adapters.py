@@ -286,7 +286,7 @@ def _calendar_source_alias_groups(records: list[dict[str, Any]]) -> tuple[tuple[
     groups: dict[str, list[str]] = {}
     for source_index, item in enumerate(records, 1):
         imported = bool(item.get("source_document_sha256"))
-        identity = ((item.get("canonical_event_id") or item.get("occurrence_id"))
+        identity = ((item.get("canonical_event_id") or item.get("canonical_pdf_event_id") or item.get("occurrence_id"))
             if imported else item.get("event_id"))
         identity = identity or str(len(groups))
         groups.setdefault(identity, []).append(f"C{source_index}")
