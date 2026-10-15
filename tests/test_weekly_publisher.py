@@ -484,6 +484,13 @@ def test_pending_report_gate_uses_registry_history_but_not_historical_titles(tmp
     database = tmp_path / "registry.sqlite3"
     build_audit_registry(sources, database, tmp_path / "audit")
 
+    from verified_fixtures import seed_verified_articles
+    from climate_registry.publication import stage_entities, _approve
+    with sqlite3.connect(database) as connection:
+        seed_verified_articles(connection)
+        for sha in stage_entities(connection):
+            _approve(connection,sha,{'basis':'source-bound historical fixture review'},status='accepted_legacy')
+
     repeated = _candidate_report(
         tmp_path / "climate-monitor-2026-08-10.md",
         "2026-08-10",
@@ -2140,9 +2147,16 @@ def _approved_history_registry(tmp_path,production):
     update_registry(production/"sources",database,tmp_path/"registry-backups")
     with sqlite3.connect(database) as db:
         identity=db.execute("SELECT article_id FROM articles WHERE canonical_url='https://example.com/reports/2026-08-03'").fetchone()[0]
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit published history fixture"}, status="accepted_legacy")
+        version = db.execute("SELECT current_version_id FROM articles WHERE article_id=?", (identity,)).fetchone()[0]
+        improved = "improved-"+version
+        db.execute("INSERT INTO article_versions SELECT ?,article_id,observed_title,canonical_title,?,?,content_basis,first_seen,last_seen FROM article_versions WHERE version_id=?",
+            (improved, "Approved improved summary", hashlib.sha256(b"Approved improved summary").hexdigest(), version))
+        db.execute("UPDATE articles SET current_version_id=? WHERE article_id=?", (improved, identity))
+        seed_verified_articles(db, occurrence_ids={"core:"+identity})
         snapshot=snapshot_entity(db,"article",identity)
-        snapshot["derived_display"]={"summary":"Approved improved summary"}
         sha=stage_snapshot(db,snapshot)
         _approve(db,sha,{"basis":"explicit approved improvement fixture"}, status="accepted_legacy")
     return database,identity
@@ -2201,7 +2215,7 @@ def test_registry_publisher_rejects_changes_not_proven_by_its_frozen_artifact(lo
                 target=cwd/path
                 target.write_text((target.read_text(encoding="utf-8") if target.is_file() else "")+"\nUnapproved text.\n",encoding="utf-8",newline="\n")
             return result
-    with pytest.raises(publisher.PublishError,match="artifact|approved Registry"):
+    with pytest.raises(publisher.PublishError,match="artifact|approved Registry|existing source may not be modified"):
         publisher.publish(production_repo=production,report_dir=reports,today=date(2026,8,10),
             runner=TamperRunner(),verifier=lambda _checkout,_runner:None,registry_database=database)
     assert _git(remote,"rev-parse","main")==before and _remote_ref_missing(remote,publisher.BRANCH)

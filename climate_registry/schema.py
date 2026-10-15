@@ -1546,6 +1546,25 @@ def reconcile_pdf_article_links(
             )
 
 
+MIGRATIONS += ((23, "original_pdf_summary_adoptions", """
+    CREATE TABLE pdf_intake_summary_adoptions (
+        adoption_id TEXT PRIMARY KEY,
+        document_sha256 TEXT NOT NULL REFERENCES pdf_intake_documents(document_sha256),
+        executive_summary_sha256 TEXT NOT NULL,
+        adopted_at TEXT NOT NULL,
+        adoption_basis TEXT NOT NULL,
+        receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
+        UNIQUE(document_sha256, executive_summary_sha256)
+    );
+    CREATE TRIGGER pdf_intake_summary_adoptions_append_only_update BEFORE UPDATE ON pdf_intake_summary_adoptions BEGIN
+        SELECT RAISE(ABORT, 'PDF summary adoptions are append-only');
+    END;
+    CREATE TRIGGER pdf_intake_summary_adoptions_append_only_delete BEFORE DELETE ON pdf_intake_summary_adoptions BEGIN
+        SELECT RAISE(ABORT, 'PDF summary adoptions are append-only');
+    END;
+"""),)
+
+
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""
 

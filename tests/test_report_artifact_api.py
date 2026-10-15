@@ -74,7 +74,7 @@ def test_report_endpoint_adds_null_fields_without_changing_existing_payload(tmp_
         "report_title": report.title,
         "cadence": "weekly",
         "report_format": "weekly-pillars-v1",
-        "executive_summary": list(report.monitoring_notes),
+        "executive_summary": [],
         "monitoring": {
             "status": "complete",
             "sites_checked": 57,
@@ -113,22 +113,14 @@ def test_report_endpoint_projects_valid_artifact_without_sensitive_manifest_data
     assert len(fixture.summary["executive_summary"]) == 4
     assert len(fixture.summary["monitoring_notes"]) == 3
     assert body["report_title"] == fixture.report.title
-    assert body["report_briefing"] == {
-        "executive_summary": fixture.summary["executive_summary"],
-        "monitoring_snapshot": {
-            "sites_checked": 57,
-            "sites_succeeded": 57,
-            "sites_failed": 0,
-            "pillar_a_updates": 9,
-            "pillar_b_updates": 17,
-            "notes": fixture.summary["monitoring_notes"],
-        },
-    }
+    # A valid source/manifest/PDF hash chain does not verify generated narrative facts.
+    assert body["report_briefing"] is None
+    assert all(item not in response.text for item in fixture.summary["executive_summary"])
     assert body["report_pdf"] == {
         "filename": PDF_FILENAME,
         "download_url": f"/api/registry/reports/{REPORT_DATE}/pdf",
     }
-    assert body["executive_summary"] == list(fixture.report.monitoring_notes)
+    assert body["executive_summary"] == []
     assert body["articles"] == []
     assert REPORT_SHA256 not in response.text
     assert "artifact-only" not in response.text

@@ -267,16 +267,7 @@ def test_generated_artifact_is_projected_and_downloaded_by_registry_api(
 
     detail = client.get("/api/registry/reports/2026-08-10")
     assert detail.status_code == 200
-    assert detail.json()["report_briefing"]["monitoring_snapshot"] == {
-        "sites_checked": 8,
-        "sites_succeeded": 7,
-        "sites_failed": 1,
-        "pillar_a_updates": 1,
-        "pillar_b_updates": 1,
-        "notes": [
-            "Monitoring remained focused on source-backed actuarial developments."
-        ],
-    }
+    assert detail.json()["report_briefing"] is None
     assert detail.json()["report_pdf"]["download_url"] == (
         "/api/registry/reports/2026-08-10/pdf"
     )

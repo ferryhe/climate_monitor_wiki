@@ -623,7 +623,9 @@ def _merge_pdf_article_payloads(
     if runtime and runtime.get("type_safe_classification") is not None:
         merged["type_safe_classification"] = runtime["type_safe_classification"]
     if merged["occurrences"]:
-        latest = merged["occurrences"][0]
+        latest = next((item for item in merged["occurrences"] if not item.get("metadata_only")), None)
+        if latest is None:
+            return merged if public and all(item.get("metadata_only") for item in merged["occurrences"]) else None
         summary = latest.get("display_summary")
         if isinstance(summary, str) and summary.strip() and latest.get("display_summary_provenance"):
             merged["summary"] = summary
@@ -962,7 +964,9 @@ def registry_pdf_report(document_sha256: str, page: str | None = None, page_size
         calendars = [_calendar_dto(item) for item in report["calendar_items"]]
         if parsed_page is not None:
             fields = {"name", "kind", "raw_date", "start_date", "end_date", "deadline_date",
-                "organizer", "publisher", "relevance", "relevance_reason", "location", "source_urls", "online_url"}
+                "organizer", "publisher", "relevance", "relevance_reason", "location", "source_urls", "online_url",
+                "metadata_only", "verified_primary_display", "verified_primary_reference", "page", "source_filename",
+                "source_document_sha256", "occurrence_id", "event_id", "canonical_pdf_event_id"}
             calendars = [{key: value for key, value in item.items() if key in fields} for item in calendars]
         return {**report, "articles": [_pdf_dto(item) for item in report["articles"]],
             "calendar_items": calendars}
@@ -997,7 +1001,7 @@ def registry_report(report_date: str) -> dict:
             # off-cycle report remain loadable via the API.
             allow_offcycle=True,
         )
-        report["report_briefing"] = artifact.briefing if artifact else None
+        report["report_briefing"] = None  # Delivery integrity is not factual verification.
         report["report_pdf"] = (
             {
                 "filename": artifact.pdf_filename,

@@ -18,7 +18,7 @@ from climate_registry.read_api import RegistryNotFoundError, RegistryReader
 from climate_registry.schema import apply_migrations
 
 
-def _database(tmp_path, version=22):
+def _database(tmp_path, version=22, *, verified=True):
     database = tmp_path / "external" / "registry.sqlite3"
     database.parent.mkdir()
     with sqlite3.connect(database) as db:
@@ -28,6 +28,9 @@ def _database(tmp_path, version=22):
             db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES(?,?, 's','2026-09-01','2026-09-01')", (identity, "https://example.org/" + identity))
             db.execute("INSERT INTO article_versions VALUES(?,?,?,?,?,?,?,'2026-09-01','2026-09-01')", ("v-"+identity, identity, "Title "+identity, "Title "+identity, "Observed summary", "f-"+identity, "report-title-summary"))
             db.execute("UPDATE articles SET current_version_id=? WHERE article_id=?", ("v-"+identity, identity))
+        if verified:
+            from verified_fixtures import seed_verified_articles
+            seed_verified_articles(db)
     return database
 
 
@@ -64,6 +67,8 @@ def test_public_connection_streams_approved_snapshots_without_bulk_fetch(tmp_pat
         db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('c','https://example.org/c','s','2026-09-01','2026-09-01')")
         db.execute("INSERT INTO article_versions VALUES('v-c','c','Title c','Title c','Observed summary','f-c','report-title-summary','2026-09-01','2026-09-01')")
         db.execute("UPDATE articles SET current_version_id='v-c' WHERE article_id='c'")
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db, occurrence_ids={"core:c"})
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
         approved = {row[0] for row in db.execute("""SELECT c.snapshot_json FROM registry_publication p
@@ -122,7 +127,7 @@ def test_public_connection_streams_approved_snapshots_without_bulk_fetch(tmp_pat
         assert len(approved) >= 3
         assert load_counts == {encoded: 2 for encoded in approved}
         assert max_live_snapshots <= 2
-        assert {row[0] for row in projection.execute("SELECT snapshot_json FROM public_snapshot_metadata")} == approved
+        assert {json.loads(row[0])["_approved_candidate_sha256"] for row in projection.execute("SELECT snapshot_json FROM public_snapshot_metadata")} == {digest(json.loads(value)) for value in approved}
         assert [tuple(row) for row in projection.execute("""SELECT a.article_id,v.observed_title FROM articles a
             JOIN article_versions v ON v.version_id=a.current_version_id ORDER BY a.article_id""")] == [
                 ("a", "Title a"), ("b", "Title b"), ("c", "Title c")]
@@ -226,6 +231,8 @@ def test_direct_public_snapshot_keeps_approval_and_visibility_from_one_sqlite_tr
         with sqlite3.connect(database) as writer:
             writer.execute("BEGIN IMMEDIATE")
             writer.execute("UPDATE article_versions SET observed_title='Title a v2' WHERE version_id='v-a'")
+            from verified_fixtures import seed_verified_articles
+            seed_verified_articles(writer, occurrence_ids={"core:a"})
             changed = stage_snapshot(writer, snapshot_entity(writer, "article", "a"))
             _approve(writer, changed, {"basis": "same-transaction approval"}, status="accepted_legacy")
             writer.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='article' AND entity_id='b'")
@@ -249,6 +256,8 @@ def test_exact_raw_body_changes_even_when_display_text_matches(tmp_path):
             sha = hashlib.sha256(body.encode()).hexdigest()
             db.execute("INSERT INTO article_content_versions VALUES(?,?,?,?,?,'text/markdown',?,'test','v1','2026-09-01T00:00:00Z')", (version, "a", sha, body, sha, len(body)))
             db.execute("UPDATE articles SET current_content_version_id=? WHERE article_id='a'", (version,))
+            from verified_fixtures import seed_verified_articles
+            seed_verified_articles(db, occurrence_ids={"core:a"})
             candidate = stage_snapshot(db, snapshot_entity(db, "article", "a"))
             if version == "c1":
                 first = candidate
@@ -275,7 +284,7 @@ def test_legacy_migration_backup_and_idempotency(tmp_path):
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT * FROM registry_publication ORDER BY entity_id").fetchall() == before
         assert db.execute("SELECT count(*) FROM registry_candidates").fetchone()[0] == candidates
-    assert _reader(database, tmp_path).articles()["pagination"]["total"] == 2
+    assert _reader(database, tmp_path).articles()["pagination"]["total"] == 0  # Legacy approval has no source-bound verification.
 
 
 @pytest.mark.parametrize("version",range(3,21))
@@ -287,14 +296,14 @@ def test_every_legacy_publication_preview_preserves_file_then_explicitly_migrate
             db.execute("DELETE FROM article_versions");db.execute("DELETE FROM articles");db.execute("DELETE FROM sources")
     before=database.read_bytes();inode=database.stat().st_ino
     result=migrate_publication(database,tmp_path/"backups")
-    assert result=={"status":"dry_run","schema_version":version,"target_version":22,"core_articles":2 if populated else 0,"pdf_articles":0}
+    assert result=={"status":"dry_run","schema_version":version,"target_version":23,"core_articles":2 if populated else 0,"pdf_articles":0}
     assert database.read_bytes()==before and database.stat().st_ino==inode and not (tmp_path/"backups").exists()
     migrated=migrate_publication(database,tmp_path/"backups",apply=True)
     assert migrated["accepted_legacy"]==(2 if populated else 0)
     assert Path(migrated["backup"]).read_bytes()==before
-    assert _reader(database,tmp_path).articles()["pagination"]["total"]==(2 if populated else 0)
+    assert _reader(database,tmp_path).articles()["pagination"]["total"]==0  # Legacy acceptance is not factual verification.
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==22 and db.execute("PRAGMA foreign_key_check").fetchall()==[]
+        assert validate_registry_contract(db)==23 and db.execute("PRAGMA foreign_key_check").fetchall()==[]
         publications=db.execute("SELECT * FROM registry_publication ORDER BY entity_id").fetchall()
     repeated=migrate_publication(database,tmp_path/"backups",apply=True)
     assert repeated["accepted_legacy"]==0 and repeated["manual_materialized"]==0
@@ -314,7 +323,7 @@ def test_existing_legacy_writers_require_explicit_publication_migration(tmp_path
         with sqlite3.connect(database) as db:
             for sha in stage_entities(db):_approve(db,sha,{"basis":"original21 accepted public fixture"},status="accepted_legacy")
     reader=_reader(database,tmp_path)
-    assert reader.articles()["pagination"]["total"]==2
+    assert reader.articles()["pagination"]["total"]==(2 if version < 21 else 0)
     before=database.read_bytes()
     backups=tmp_path/"writer-backups"
     sources=tmp_path/"sources";sources.mkdir()
@@ -330,15 +339,15 @@ def test_existing_legacy_writers_require_explicit_publication_migration(tmp_path
     }
     with pytest.raises(RegistryInputError,match="migrate-publication --apply"):
         operations[writer]()
-    assert database.read_bytes()==before and reader.articles()["pagination"]["total"]==2
+    assert database.read_bytes()==before and reader.articles()["pagination"]["total"]==(2 if version < 21 else 0)
     assert not backups.exists() and not calls
     assert not list(database.parent.glob("*.candidate")) and not list(database.parent.glob("*.semantic-candidate"))
     applied=migrate_publication(database,tmp_path/"migration-backups",apply=True)
-    assert applied["accepted_legacy"]==(2 if version==19 else 0) and reader.articles()["pagination"]["total"]==2
+    assert applied["accepted_legacy"]==(2 if version==19 else 0) and reader.articles()["pagination"]["total"]==0
     assert migrate_publication(database,tmp_path/"migration-backups",apply=True)["accepted_legacy"]==0
     result=run_checks(database,kind="articles",backup_dir=backups,occurrence_ids=set(),fetcher=unexpected,verifier=unexpected)
     assert result["item_count"]==0 and result["status"]=="complete" and not calls
-    assert reader.articles()["pagination"]["total"]==2
+    assert reader.articles()["pagination"]["total"]==0
 
 
 def test_resume_checks_configured_database_but_explicit_rehearsal_is_supported(tmp_path, monkeypatch):
@@ -473,10 +482,14 @@ def test_native_review_requires_actual_full_snapshot_inspection(tmp_path, monkey
     assert _reader(database, tmp_path).articles()["pagination"]["total"] == 1
 
 
-def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, period=(None,None), run_date=None, document=None):
+def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, period=(None,None), run_date=None, document=None, verified=True):
+    occurrence = {"title": "Original PDF title", **(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})}
     db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,period_start,period_end,date_of_run) VALUES('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','/evidence/source.pdf','source.pdf','application/pdf',1,'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',?,'2026-08-01T00:00:00Z',?,?,?)",(json.dumps(document or {}),*period,run_date))
     db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES(?,?, 'Original PDF title','2026-08-01T00:00:00Z')", (identity,url))
     db.execute("INSERT INTO pdf_intake_article_occurrences VALUES('occurrence',?,'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',2,?,'2026-08-01',NULL,'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',?)", (identity,url,json.dumps(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})))
+    if verified:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db, occurrence_ids={"occurrence"})
 
 
 def test_shared_core_pdf_identity_has_one_visibility_and_version(tmp_path):
@@ -490,7 +503,7 @@ def test_shared_core_pdf_identity_has_one_visibility_and_version(tmp_path):
         db.execute("UPDATE pdf_intake_articles SET title='Pending PDF title' WHERE article_id='a'")
         stage_entities(db)
     reader = _reader(database, tmp_path)
-    assert reader.pdf_article("a")["title"] == "Original PDF title"
+    assert reader.pdf_article("a")["title"] == "Title a"
     assert reader.article("a")["published_candidate_sha256"] == first
     set_visibility(database,"pdf_article","a",False)
     assert reader.articles()["items"] == []
@@ -498,7 +511,7 @@ def test_shared_core_pdf_identity_has_one_visibility_and_version(tmp_path):
     with pytest.raises(RegistryNotFoundError):
         reader.pdf_article("a")
     set_visibility(database,"article","a",True)
-    assert reader.pdf_article("a")["title"] == "Original PDF title"
+    assert reader.pdf_article("a")["title"] == "Title a"
 
 
 def test_shared_url_with_different_pdf_id_is_one_canonical_flag(tmp_path):
@@ -525,8 +538,9 @@ def test_approved_annotations_are_frozen_until_new_approval(tmp_path):
         _approve(db,sha,{"basis":"explicit fixture approval"}, status="accepted_legacy")
         stage_snapshot(db,snapshot_entity(db,"article","a",annotations={}))
     detail = _reader(database,tmp_path).article("a")
-    assert detail["title"] == "Approved title"
-    assert detail["summary"] == "Approved summary"
+    assert detail["title"] == "Title a"
+    assert detail["report_summary"] == "Observed summary"
+    assert "Approved summary" not in json.dumps(detail)  # Unchecked report fallback is not a fact source.
 
 
 def test_render_keeps_committed_wiki_body_and_exports_stable_public_data(tmp_path,monkeypatch):
@@ -538,12 +552,10 @@ def test_render_keeps_committed_wiki_body_and_exports_stable_public_data(tmp_pat
     install_git_snapshot(database,wiki)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT","1")
-    assert public_wiki_pages(database,wiki_dir=wiki)["article-a.md"] == body
-    reader=_reader(database,tmp_path)
-    assert reader.article("a")["available_content"]["markdown"] == body
-    from agentic_wiki.wiki_agent import WikiKnowledgeBase
-    kb=WikiKnowledgeBase(wiki,tmp_path/"sources")
-    assert any("glacier insurance" in chunk.text for chunk in kb.chunks)
+    assert public_wiki_pages(database,wiki_dir=wiki) == {}
+    assert (wiki/"article-a.md").read_text(encoding="utf-8") == body
+    with pytest.raises(RegistryNotFoundError):
+        _reader(database,tmp_path).article("a")
     monkeypatch.delenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT")
     one=export_public_snapshot(database,tmp_path/"one.json")
     two=export_public_snapshot(database,tmp_path/"two.json")
@@ -554,7 +566,7 @@ def test_render_keeps_committed_wiki_body_and_exports_stable_public_data(tmp_pat
 
 
 def _complete_fixture_information(database,*,entity_ids=()):
-    """Real T1 path, with honest unavailable fixture sources; never a native production pass."""
+    """Complete only missing fixture checks with the real source-bound evaluator."""
     from climate_registry.information_checks import run_checks
     from climate_registry.publication import _information_groups,information_ready
     migrate_publication(database,database.parent/"fixture-publication-backups",apply=True)
@@ -570,13 +582,11 @@ def _complete_fixture_information(database,*,entity_ids=()):
                 key=(snapshot["entity_kind"],snapshot["entity_id"])
                 waiting.extend(target for target in snapshot["information_targets"] if not information_ready(db,
                     {**snapshot,"information_targets":[target]},information_groups={key:[target]}))
-    def unavailable(*_):
-        raise RuntimeError("explicit test fixture source unavailable")
-    for kind in ("articles","meetings"):
-        ids = {target["occurrence_id"] for target in waiting if target["check_kind"]==kind}
-        if ids:
-            result = run_checks(database,kind=kind,backup_dir=database.parent/"fixture-t1-backups",occurrence_ids=ids,fetcher=unavailable)
-            assert result["status"]=="partial" and result["completed_count"]==result["item_count"]
+    from verified_fixtures import seed_verified_articles, seed_verified_native_meetings
+    with sqlite3.connect(database) as db:
+        seed_verified_articles(db, occurrence_ids={target["occurrence_id"] for target in waiting if target["check_kind"]=="articles"})
+        seed_verified_native_meetings(db, occurrence_ids={target["occurrence_id"] for target in waiting if target["check_kind"]=="meetings"})
+        stage_entities(db)
 
 
 def test_public_candidates_include_only_visible_exact_approved_versions(tmp_path):
@@ -646,7 +656,7 @@ def test_current_acquisition_writers_require_explicit_publication_migration(tmp_
     migrate_publication(database,tmp_path/"backups",apply=True)
     store_acquisition_batch(database,payload)
     freeze_acquisition_for_report(database,"batch-112",report_date="2026-09-10")
-    assert _reader(database,tmp_path).articles()["pagination"]["total"]==2  # New intake is pending.
+    assert _reader(database,tmp_path).articles()["pagination"]["total"]==0  # Neither legacy acceptance nor new pending intake proves facts.
 
 
 @pytest.mark.skipif(os.name == "nt", reason="management locking requires POSIX fcntl")
@@ -735,6 +745,10 @@ def test_new_web_and_search_writer_wait_for_native_approval(tmp_path,monkeypatch
     pending=writer.process_next()
     assert pending["stage"] == "pending_review" and not pending["chat_ready"]
     assert _reader(database,tmp_path).articles()["items"] == []
+    with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+        stage_entities(db)
     _approve_native_packet(database,runs/"registry-review",tmp_path/"hermes.sqlite3","cron_"+source_kind)
     ready=writer.process_next()
     assert ready["chat_ready"] is True
@@ -917,7 +931,8 @@ def test_bound_legacy_web_queue_after_migration_uses_current_public_projection(t
     else:
         assert result["stage"]=="pending_review" and not result["chat_ready"] and not reloads
         assert not list(runtime.rglob("*.md"))
-        assert _reader(database,tmp_path).article(identity)["summary"]!="Unapproved pending correction"
+        with pytest.raises(RegistryNotFoundError):
+            _reader(database,tmp_path).article(identity)  # Legacy acceptance has no verified old primary.
 
 
 def test_already_frozen_legacy_acquisition_verification_does_not_open_a_writer(tmp_path):
@@ -1031,6 +1046,10 @@ def test_imported_pdf_continuation_rejects_another_database_without_mutation(tmp
     pending=writer.process_next()
     assert pending["stage"]=="pending_review" and pending["imported"]
     assert pending["registry_database"]==str(database.resolve())
+    with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+        stage_entities(db)
     _approve_native_packet(database,runs/"registry-review",tmp_path/"hermes.sqlite3","cron_pdf_bound")
     gc.collect()
     if retry:
@@ -1150,7 +1169,14 @@ def test_manual_migration_cannot_approve_a_later_automated_change(tmp_path):
             fields={"summary":"Owner-approved observed summary"}, evidence={"pending_enrichment":{"summary":"Owner-approved observed summary"},"source_row_sha256":"f"*64},recorded_at="2026-09-01T00:00:00Z")
     first=migrate_publication(database,tmp_path/"backups",apply=True)
     assert first["manual_published"] == 1
-    assert _reader(database,tmp_path).article("a")["summary"] == "Owner-approved observed summary"
+    with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+        for sha in stage_entities(db):
+            _approve(db,sha,{"basis":"explicit verified manual fixture"},status="accepted_legacy")
+    assert _reader(database,tmp_path).article("a")["summary"] == "Observed summary"
+    with sqlite3.connect(database) as db:
+        assert 'Owner-approved observed summary' in db.execute("SELECT evidence_json FROM knowledge_versions WHERE source_ref='registry-supplement:a'").fetchone()[0]
     with sqlite3.connect(database) as db:
         db.execute("UPDATE sources SET display_name='New unreviewed publisher' WHERE source_id='s'")
         stage_entities(db)
@@ -1187,10 +1213,15 @@ def test_once_only_supplement_preserves_baseline_and_later_approved_primary(tmp_
         originals={table:db.execute("SELECT * FROM "+table).fetchall() for table in ("article_content_versions","knowledge_versions")}
     applied=migrate_publication(database,tmp_path/"backups",apply=True)
     assert applied["manual_materialized"]==int(materialized) and applied["manual_published"]==1
+    with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+        for sha in stage_entities(db):
+            _approve(db,sha,{"basis":"explicit verified manual fixture"},status="accepted_legacy")
     reader=_reader(database,tmp_path)
     old=reader.article("a")
-    assert (old["title"],old["summary"],old["categories"],old["keywords"])==("Owner curated title","Owner-approved initial summary",["Old category"],["old"])
-    assert old["summary_provenance"]=="source_report" and old["supplement_generator"]["kind"]=="manual"
+    assert (old["title"],old["summary"],old["categories"],old["keywords"])==("Title a","Observed summary",["Old category"],["old"])
+    assert old["summary_provenance"]=="verified_source_evidence" and old["supplement_generator"]["kind"]=="manual"
     if materialized:assert old["enrichment"]["generator"]["kind"]=="manual"
     with sqlite3.connect(database) as db:
         content_id="old-body"
@@ -1203,21 +1234,23 @@ def test_once_only_supplement_preserves_baseline_and_later_approved_primary(tmp_
             db.execute("UPDATE articles SET current_version_id='new-version' WHERE article_id='a'")
         if change!="explicit":
             db.execute("INSERT INTO article_enrichments(enrichment_id,content_version_id,status,summary,categories_json,keywords_json,language,generator_kind,generator_name,generator_version,generated_at) VALUES('new-enrichment',?,'complete','Approved new primary','[\"New category\"]','[\"new\"]','en',?,'fixture','v2','2026-09-04T00:00:00Z')",(content_id,"manual" if change=="manual" else "model"))
+        seed_verified_articles(db, occurrence_ids={"core:a"})
         candidate=snapshot_entity(db,"article","a")
         if change=="explicit":candidate["derived_display"]={"summary":"Approved new primary","categories":["New category"],"keywords":["new"]}
         current=stage_snapshot(db,candidate)
     assert reader.article("a")==old
     with sqlite3.connect(database) as db:_approve(db,current,{"basis":"explicit complete changed-candidate fixture approval"}, status="accepted_legacy")
     detail=reader.article("a")
-    assert (detail["summary"],detail["categories"],detail["keywords"])==("Approved new primary",["New category"],["new"])
-    assert detail["title"]==("New observed title" if change=="version" else "Owner curated title")
+    assert (detail["summary"],detail["categories"],detail["keywords"])==("New observed summary" if change=="version" else "Observed summary",["New category"],["new"])
+    assert detail["title"]==("New observed title" if change=="version" else "Title a")
     assert detail["date_observations"]==old["date_observations"] and detail["canonical_url"]==old["canonical_url"] and detail["publisher"]==old["publisher"]
     path=tmp_path/"public.json";export_public_snapshot(database,path)
     artifact=json.loads(path.read_text(encoding="utf-8"))
     assert next(item for item in artifact["articles"] if item["article_id"]=="a")["summary"]==detail["summary"]
-    assert "Approved new primary" in artifact["wiki_pages"]["article-a.md"] and "Owner-approved initial summary" not in artifact["wiki_pages"]["article-a.md"]
-    ranged=_range_source(reader,"2026-09-01","2026-09-04")["articles"]
-    assert next(item for item in ranged if item["article_id"]=="a")["summary"]==detail["summary"]
+    assert detail['summary'] in artifact["wiki_pages"]["article-a.md"] and "Owner-approved initial summary" not in artifact["wiki_pages"]["article-a.md"]
+    ranged=_range_source(reader,"2026-09-01","2026-09-04")
+    assert 'a' in ranged['unknown_publication_date_article_ids']
+    assert not any(item['article_id']=='a' for item in ranged['articles'])
     with sqlite3.connect(database) as db:
         previous=json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?",(old["published_candidate_sha256"],)).fetchone()[0])
         from climate_registry.publication import approved_display
@@ -1230,11 +1263,16 @@ def test_export_install_round_trip_keeps_public_date_observation_shape(tmp_path,
     database=_database(tmp_path)
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO article_date_observations VALUES('date-a','a','https://example.org/a','page_information','2026-08-31','publisher_page','private/raw.json','dates','row-a',?,'2026-09-01')", (json.dumps({"date_kind":"updated","match_basis":"publisher_date_field","debug":"private"}),))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit fixture approval"}, status="accepted_legacy")
     wiki=tmp_path/"application"/"wiki";wiki.mkdir(parents=True)
     export_public_snapshot(database,wiki/"public-registry.json")
     exported=json.loads((wiki/"public-registry.json").read_text(encoding="utf-8"))
-    observation=next(item for item in exported["articles"] if item["article_id"]=="a")["date_observations"][0]
+    assert next(item for item in exported["articles"] if item["article_id"]=="a")["date_observations"]==[]
+    observation=RegistryReader(database,repository_root=tmp_path/'application',public=False).article('a')["date_observations"][0]
+    from climate_registry.publication import _public_dto
+    observation=_public_dto({'date_observations':[observation]})['date_observations'][0]
     assert observation["kind"] == "page_information" and observation["evidence"]["date_kind"] == "updated"
     assert "debug" not in observation["evidence"]
     target=tmp_path/"render.sqlite3"
@@ -1243,7 +1281,7 @@ def test_export_install_round_trip_keeps_public_date_observation_shape(tmp_path,
     install_git_snapshot(target,wiki)
     monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT","1")
     reader=_reader(target,tmp_path)
-    assert reader.article("a")["date_observations"] == [observation]
+    assert reader.article("a")["date_observations"] == []
 
 
 def test_publisher_source_rebuild_exports_only_the_exact_public_version(tmp_path):
@@ -1395,6 +1433,8 @@ def test_meeting_model_work_can_replace_pdf_database_without_losing_meeting_writ
     assert snapshot["records"]
     from climate_registry.publication import export_public_snapshot,install_git_snapshot
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit fixture approval"}, status="accepted_legacy")
     wiki=tmp_path/"application"/"wiki";wiki.mkdir(parents=True)
     exported=wiki/"public-registry.json"
@@ -1582,6 +1622,9 @@ def test_current_api_startup_and_reload_ignore_retired_projection(tmp_path, runt
     if approved:
         database = _database(tmp_path)
         with sqlite3.connect(database) as db:
+            db.execute("UPDATE article_versions SET observed_title='Approved startup title',canonical_title='Approved startup title',observed_summary='Approved startup summary' WHERE article_id='a'")
+            from verified_fixtures import seed_verified_articles
+            seed_verified_articles(db,occurrence_ids={'core:a'})
             candidate = snapshot_entity(db, "article", "a")
             candidate["derived_display"] = {"title":"Approved startup title", "summary":"Approved startup summary"}
             _approve(db, stage_snapshot(db, candidate), {"basis":"explicit exact startup fixture approval"}, status="accepted_legacy")
@@ -1735,11 +1778,12 @@ def test_public_api_matches_git_dto_and_keeps_raw_evidence_immutable(tmp_path, m
     monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
     client = TestClient(api_server.app)
     raw = _reader(database, tmp_path).article("a")
-    assert raw["date_observations"][0]["evidence"]["database"] == "/private/upstream.sqlite3"
+    assert raw["date_observations"] == []
+    assert RegistryReader(database,repository_root=tmp_path/'application',public=False).article('a')["date_observations"][0]["evidence"]["database"] == "/private/upstream.sqlite3"
     assert raw["pdf_occurrences"][0]["source_observations"][0]["path"] == "/evidence/source.pdf"
     public = client.get("/api/registry/articles/a")
     assert public.status_code == 200 and public.json() == _public_dto(raw)
-    assert public.json()["date_observations"][0]["evidence"]["date_basis"] == evidence["date_basis"]
+    assert public.json()["date_observations"] == []
     assert public.json()["pdf_occurrences"][0]["summary"] == "Approved PDF summary"
     for url in ("/api/registry/articles/a", "/api/registry/articles?include_pdf=true", "/api/registry/pdf-intake/articles?include_linked=true", "/api/registry/pdf-intake/articles/a"):
         response = client.get(url)
@@ -1768,6 +1812,8 @@ def test_combined_publisher_response_uses_one_public_snapshot(tmp_path, monkeypa
         _pdf(db, identity="linked", url="https://old.example/a")
         db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES('standalone','https://pdf.example/c','Standalone PDF','2026-08-01T00:00:00Z')")
         db.execute("INSERT INTO pdf_intake_article_occurrences SELECT 'standalone-occurrence','standalone',source_document_sha256,page,'https://pdf.example/c',report_date,publication_date,content_sha256,page_sha256,occurrence_json FROM pdf_intake_article_occurrences WHERE occurrence_id='occurrence'")
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         stage_entities(db)
         for kind, identity in (("article", "a"), ("pdf_article", "standalone")):
             sha = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", (kind, identity)).fetchone()[0]
@@ -1960,6 +2006,8 @@ def test_article_category_cache_keeps_pending_candidate_private_until_approval(t
 
         with sqlite3.connect(database) as db:
             db.execute("UPDATE article_versions SET observed_title='Pending article title' WHERE version_id='v-a'")
+            from verified_fixtures import seed_verified_articles
+            seed_verified_articles(db)
             stage_entities(db)
             pending = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='a'").fetchone()[0]
         pending_response = client.get("/api/registry/article-categories")
@@ -2199,6 +2247,8 @@ def test_combined_status_current_count_uses_its_public_snapshot(tmp_path, monkey
         db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('c','https://example.org/c','s','2026-09-02','2026-09-02')")
         db.execute("INSERT INTO article_versions VALUES('v-c','c','New title','New title','New summary','f-c','report-title-summary','2026-09-02','2026-09-02')")
         db.execute("UPDATE articles SET current_version_id='v-c' WHERE article_id='c'")
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         stage_entities(db)
         new_sha = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='c'").fetchone()[0]
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
@@ -2315,7 +2365,9 @@ def test_pdf_approved_before_core_inherits_visibility_without_inheriting_pass(tm
     else:
         assert reader.pdf_articles_all(include_linked=True)==[]
     with sqlite3.connect(database) as db:_approve(db,newest,{"basis":"explicit new full core approval"}, status="accepted_legacy")
-    if visible:assert reader.article("later")["title"]=="Pending core title"
+    if visible:
+        assert reader.article("later")["title"]=="Original PDF title"
+        assert "Pending core" not in json.dumps(reader.article("later"))  # Only the verified PDF source supplies facts.
     else:
         with pytest.raises(RegistryNotFoundError):reader.article("later")
         assert reader.pdf_articles_all(include_linked=True)==[]
@@ -2378,6 +2430,9 @@ def test_pdf_report_git_projection_keeps_partial_linked_visibility_and_archive_m
         monkeypatch.delenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT")
     set_visibility(database,"article","a",True)
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db, occurrence_ids={"pending-occ"})
+        stage_entities(db)
         sha=db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_id='pdf-pending'").fetchone()[0]
         _approve(db,sha,{"basis":"explicit second PDF fixture approval"}, status="accepted_legacy")
     export_public_snapshot(database,path);artifact=json.loads(path.read_text())
@@ -2442,6 +2497,8 @@ def test_hidden_pdf_meeting_stays_hidden_after_native_identity_is_approved(tmp_p
         packet=json.dumps({"canonical_event_id":event})
         db.execute("INSERT INTO meeting_check_runs VALUES('check','{}',?,'2026-09-01','2026-09-01','complete',1,1,NULL)",("a"*64,))
         db.execute("INSERT INTO meeting_check_attempts(attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256) VALUES('attempt','check','pdf-meeting-first','https://example.com/register',?,'2026-09-01','accessible','verified',?,?)",("b"*64,packet,hashlib.sha256(packet.encode()).hexdigest()))
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         stage_entities(db)
         native=db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='meeting' AND entity_id=?",(event,)).fetchone()[0]
         assert db.execute("SELECT is_visible FROM registry_publication WHERE entity_kind='meeting' AND entity_id=?",(event,)).fetchone()[0]==0
@@ -2482,6 +2539,10 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
     import test_issue113_range_reports as range_report_fixtures
     from climate_registry.read_api import RegistryReader
     monkeypatch.setattr(range_report_fixtures, "_reader", lambda db, root: RegistryReader(db, repository_root=db.parent/"application", public=False))
+    for occurrence,name in (("pdf-shared","World Climate Summit 2027"),("pdf-standalone","Standalone PDF meeting")):
+        range_report_fixtures._insert_meeting_check(database, occurrence,
+            website_candidate=_candidate(name=name,deadline_type=None,deadline_date=None,deadline_evidence=None),
+            run_id="initial-"+occurrence,attempt_id="initial-attempt-"+occurrence)
     range_report_fixtures._insert_meeting_check(database, "pdf-standalone-pending", website_candidate=_candidate(name="Pending PDF meeting"),
         canonical_event_id="pending-native-meeting")
     with sqlite3.connect(database) as db:
@@ -2490,6 +2551,8 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
         website_candidate=_candidate(deadline_type=None,deadline_date=None,deadline_evidence=None),
         canonical_event_id=native_event,run_id="fixture-shared-run",attempt_id="fixture-shared-attempt")
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit separate native/PDF fixture approval"}, status="accepted_legacy")
         previous = db.execute("SELECT entity_kind,entity_id,published_candidate_sha256 FROM registry_publication WHERE entity_kind IN ('meeting','pdf_meeting') ORDER BY entity_kind,entity_id").fetchall()
     reader=_reader(database,tmp_path)
@@ -2501,13 +2564,15 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
     assert "canonical_event_id" not in pending
     def fetcher(identity,url):
         return {"article_id":identity,"requested_url":url,"final_url":url,"status":"ok","content":body,"content_hash":hashlib.sha256(body.encode()).hexdigest(),"content_ref":None}
-    information_checks.run_checks(database,kind="meetings",backup_dir=tmp_path/"backups",occurrence_ids={"pdf-shared"},fetcher=fetcher,
+    information_checks.run_checks(database,kind="meetings",backup_dir=tmp_path/"backups",occurrence_ids={"pdf-shared"},fetcher=fetcher,reverify_all=True,
         verifier=lambda kind,fields,content:{"comparisons":{key:{"status":"supported"} for key in fields},"website_candidate":_candidate(deadline_type=None,deadline_date=None,deadline_evidence=None)})
     # The real check stages a merged candidate; it cannot rewrite the old public relation.
     assert reader.meetings_all(base_date="1900-01-01")==before
     assert len(reader.pdf_calendar_items_all())==4
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT entity_kind,entity_id,published_candidate_sha256 FROM registry_publication WHERE entity_kind IN ('meeting','pdf_meeting') ORDER BY entity_kind,entity_id").fetchall()==previous
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit unified meeting fixture approval"}, status="accepted_legacy")
     reader=_reader(database,tmp_path)
     meetings=reader.meetings_all(base_date="1900-01-01")
@@ -2546,9 +2611,11 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
     merged=next(item for item in artifact["meeting_records"] if item["name"]=="World Climate Summit 2027")
     observation=merged["pdf_observations"][0]
     assert observation["source_document_sha256"]=="f"*64 and observation["page"]==2
-    assert observation["raw_date"]=="June 10–12, 2027" and observation["summary"]=="Original PDF meeting"
+    assert observation["raw_date"]=="June 10–12, 2027" and not observation["summary"]
     assert observation["source_urls"]==["https://example.com/register"]
-    assert "PDF observation: Original PDF meeting" in markdown
+    assert "PDF observation: Original PDF meeting" not in markdown
+    with sqlite3.connect(database) as db:
+        assert any(json.loads(row[0]).get('summary')=='Original PDF meeting' for row in db.execute('SELECT item_json FROM pdf_intake_calendar_items'))
     event=merged["event_id"]
     set_visibility(database,"meeting",event,False)
     assert len(reader.meetings_all(base_date="1900-01-01"))==3
@@ -2596,6 +2663,8 @@ def test_approved_native_meeting_wiki_and_live_render_rag_keep_fields_with_pendi
     processed=process_batch(database,"batch",prompt_text="source evidence",prompt_version="v1",provider="test",model="test",extractor=lambda request:{"events":[_candidate(deadline_evidence="World Climate Summit 2027 registration closes May 1, 2027")]})
     assert processed["status"]=="succeeded"
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         stage_entities(db)
         sha=db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='meeting'").fetchone()[0]
         _approve(db,sha,{"basis":"explicit exact native meeting fixture approval; article remains pending"}, status="accepted_legacy")
@@ -2641,6 +2710,8 @@ def test_approved_meeting_query_availability_matches_render_and_preserves_covera
     assert pending["records"]==[] and pending["status"]=="empty"
     assert pending["coverage"]=={"status":"processed","records_scope":"approved_versions","returned_record_count":0}
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit approved meeting fixture"}, status="accepted_legacy")
         event=db.execute("SELECT event_id FROM climate_events").fetchone()[0]
     live=range_reports.freeze_range_report(reader,tmp_path/"live-reports",start_date="2026-09-01",end_date="2026-09-01",generated_at=datetime(2027,1,1,tzinfo=timezone.utc))
@@ -2703,6 +2774,8 @@ def test_approved_meeting_queries_preserve_partial_and_failed_source_coverage(tm
     assert result["status"]=="partial"
     assert meeting_status(database,batch_id="batch")["status"]=="partial"
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit approved partial meeting fixture"}, status="accepted_legacy")
     reader=_reader(database,tmp_path)
     public=reader.meetings(base_date="2027-01-01")
@@ -2782,12 +2855,16 @@ def test_explicit_meeting_snapshot_requires_the_current_approved_full_record(tmp
     reader=_reader(database,tmp_path)
     assert _meeting_payload(reader,frozen["snapshot_id"],base_date="2027-01-01")["records"]==[]
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit approved meeting fixture"}, status="accepted_legacy")
         event=db.execute("SELECT event_id FROM climate_events").fetchone()[0]
     approved=_meeting_payload(reader,frozen["snapshot_id"],base_date="2027-01-01")
     assert approved["records"]==frozen["records"] and approved["coverage"]=={**frozen["coverage"],"excluded_unapproved_count":0}
     with sqlite3.connect(database) as db:
         db.execute("UPDATE climate_events SET location='Pending new location' WHERE event_id=?",(event,))
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         stage_entities(db)
     newer=freeze_snapshot(database,base_date="2027-01-01",timezone_name="UTC")
     assert _meeting_payload(reader,newer["snapshot_id"],base_date="2027-01-01")["records"]==[]
@@ -2809,7 +2886,9 @@ def test_archived_executive_summary_keeps_exact_source_sha_when_all_articles_hid
         identity=db.execute("SELECT article_id FROM articles").fetchone()[0]
     reader=RegistryReader(database,repository_root=tmp_path/"application",source_dir=source)
     baseline=reader.report("2026-09-07")["executive_summary"]
-    assert baseline[-1]=="Immutable historical executive claim."
+    assert baseline==[]  # A raw archive summary has no original-PDF adoption.
+    private=RegistryReader(database,repository_root=tmp_path/"application",source_dir=source,public=False)
+    assert private.report("2026-09-07")["executive_summary"][-1]=="Immutable historical executive claim."
     set_visibility(database,"article",identity,False)
     assert reader.report("2026-09-07")["executive_summary"]==baseline
     assert reader.articles()["items"]==[]
@@ -2923,8 +3002,15 @@ def test_new_range_uses_approved_annotations_dates_and_render_public_dto(tmp_pat
     from climate_registry.range_reports import _range_source,freeze_range_report
     database=_database(tmp_path)
     with sqlite3.connect(database) as db:
+        body='Title a. Observed summary. Retained approved source body.'
+        body_sha=hashlib.sha256(body.encode()).hexdigest()
+        db.execute("INSERT INTO article_content_versions VALUES('range-body','a',?,?,?,'text/markdown',?,'fixture','v1','2026-08-31T12:00:00Z')",(body_sha,body,body_sha,len(body)))
+        db.execute("UPDATE articles SET current_content_version_id='range-body' WHERE article_id='a'")
+        db.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,final_url,fetched_at,fetch_status,http_status,content_version_id) VALUES('range-fetch','a','https://example.org/a','https://example.org/a','2026-08-31T12:00:00Z','success',200,'range-body')")
         db.execute("INSERT INTO article_date_observations VALUES('date-a','a','https://example.org/a','page_information','2026-08-31','test','test.db','articles','a',?,'2026-09-01T00:00:00Z')",(json.dumps({"date_basis":"publisher_page","text":"Updated 31 August 2026"}),))
         annotation=ArticleAnnotation("https://example.org/a","https://example.org/a","Approved title","original_content","Approved summary",("Climate Risk",),("insurance",),"2026-09-01")
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         first=stage_snapshot(db,snapshot_entity(db,"article","a",annotations={"https://example.org/a":annotation}))
         _approve(db,first,{"basis":"explicit approved annotation fixture"}, status="accepted_legacy")
         # A later candidate retains the old published DTO while pending.
@@ -2936,8 +3022,10 @@ def test_new_range_uses_approved_annotations_dates_and_render_public_dto(tmp_pat
     assert expected["publisher"] == "Publisher"
     expected_display = {key: expected[key] for key in ("title","summary","categories","keywords","publisher")}
     expected_display["publisher"] = "example.org"
+    expected_display["summary"] = expected["summary"] or expected["report_summary"]
     assert {key:ranged[key] for key in ("title","summary","categories","keywords","publisher")} == expected_display
-    assert ranged["range_date"]=="2026-08-31" and ranged["date_basis"]=="information_date"
+    assert ranged["range_date"]=="2026-08-31" and ranged["date_basis"]=="collection_time"
+    assert expected['date_observations']==[]
     assert ranged["provenance"]["summary"]["candidate_sha256"]==first
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True)
     export_public_snapshot(database,wiki/"public-registry.json")
@@ -2964,6 +3052,8 @@ def test_export_and_wiki_include_all_approved_meetings_beyond_first_page(tmp_pat
     assert result["status"]=="succeeded"
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT count(*) FROM climate_events").fetchone()[0]==101
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit all-meeting fixture approval"}, status="accepted_legacy")
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True)
     export_public_snapshot(database,wiki/"public-registry.json")
@@ -3069,8 +3159,15 @@ def test_public_dto_range_keeps_collection_priority_over_in_range_page_date(tmp_
     from climate_registry.publication import export_public_snapshot,install_git_snapshot
     database=_database(tmp_path)
     with sqlite3.connect(database) as db:
+        body='Title a. Observed summary. Retained approved source body.'
+        body_sha=hashlib.sha256(body.encode()).hexdigest()
+        db.execute("INSERT INTO article_content_versions VALUES('collection-body','a',?,?,?,'text/markdown',?,'fixture','v1','2026-09-01T12:00:00Z')",(body_sha,body,body_sha,len(body)))
+        db.execute("UPDATE articles SET current_content_version_id='collection-body' WHERE article_id='a'")
+        db.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,final_url,fetched_at,fetch_status,http_status,content_version_id) VALUES('collection-fetch','a','https://example.org/a','https://example.org/a','2026-09-01T12:00:00Z','success',200,'collection-body')")
         for identity,kind,stamp in (("page","page_information","2026-08-31"),("collection","collection","2026-09-01T12:00:00Z")):
             db.execute("INSERT INTO article_date_observations VALUES(?,'a','https://example.org/a',?,?,'test','test.db','articles','a',?,'2026-09-01T00:00:00Z')",(identity,kind,stamp,json.dumps({"text":stamp})))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit date priority fixture"}, status="accepted_legacy")
     live=_reader(database,tmp_path)
     assert _range_source(live,"2026-08-31","2026-08-31")["articles"]==[]
@@ -3096,6 +3193,8 @@ def test_new_range_live_and_render_use_the_same_approved_body(tmp_path,monkeypat
         db.execute("UPDATE articles SET current_content_version_id='body-a',display_policy='full_markdown' WHERE article_id='a'")
         db.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,final_url,fetched_at,fetch_status,http_status,content_type,content_version_id) VALUES('fetch-body-a','a','https://example.org/a','https://example.org/a','2026-09-01T00:00:00Z','success',200,'text/markdown','body-a')")
         db.execute("INSERT INTO article_date_observations VALUES('date-a','a','https://example.org/a','page_information','2026-08-31','test','test.db','articles','a','{}','2026-09-01T00:00:00Z')")
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for candidate in stage_entities(db):_approve(db,candidate,{"basis":"explicit body fixture approval"}, status="accepted_legacy")
     reader=_reader(database,tmp_path)
     live=_range_source(reader,"2026-09-01","2026-09-01")["articles"]
@@ -3109,7 +3208,7 @@ def test_new_range_live_and_render_use_the_same_approved_body(tmp_path,monkeypat
     assert static[0]["content_version_id"]==live[0]["content_version_id"]=="body-a"
 
 
-def test_current_dated_wiki_uses_approved_dto_and_keeps_source_report_identity(tmp_path):
+def test_current_dated_wiki_uses_approved_dto_and_keeps_source_report_identity(tmp_path, monkeypatch):
     from climate_registry.annotations import ArticleAnnotation
     from climate_registry.persistent import initialize_registry,update_registry
     from climate_registry.publication import public_wiki_pages,export_public_snapshot
@@ -3120,20 +3219,47 @@ def test_current_dated_wiki_uses_approved_dto_and_keeps_source_report_identity(t
     database=tmp_path/"registry.sqlite3";initialize_registry(database);update_registry(source,database,tmp_path/"backups")
     annotation=ArticleAnnotation("https://example.org/a","https://example.org/a","Approved title","original_content","Approved summary",("Climate Risk",),("insurance",),"2026-09-01")
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db,annotations={"https://example.org/a":annotation},source_dir=source):
             _approve(db,sha,{"basis":"explicit weekly annotation fixture"}, status="accepted_legacy")
         db.execute("UPDATE article_versions SET observed_title='Pending title',observed_summary='Pending summary'")
         stage_entities(db,annotations={},source_dir=source)
     current=public_wiki_pages(database)[report.name]
-    assert "## Approved title\nApproved summary" in current
+    assert "## Observed title\nOriginal observed summary." in current
     assert "Source report: "+report.name+"; SHA-256: "+report_sha in current
-    assert "Observed title" not in current and "Pending title" not in current
+    assert "Approved title" not in current and "Pending title" not in current
+    assert "Approved summary" not in current and "Pending summary" not in current
     assert current.endswith("\n") and not current.endswith("\n\n")
     path=tmp_path/"public.json";export_public_snapshot(database,path,source_dir=source)
     exported=json.loads(path.read_text(encoding="utf-8"))["wiki_pages"][report.name]
-    assert "## Approved title\nApproved summary" in exported and report_sha in exported
+    assert "## Observed title\nOriginal observed summary." in exported and report_sha in exported
     assert exported.endswith("\n") and not exported.endswith("\n\n")
     assert report.read_bytes()==original
+    # Native report counts and detail must use the same gated export on Render.
+    root=tmp_path/"static-app";wiki=root/"wiki";wiki.mkdir(parents=True)
+    shutil.copyfile(path,wiki/"public-registry.json")
+    direct=RegistryReader(database,repository_root=tmp_path/"application",source_dir=source)
+    expected=direct.report_with_identity("2026-09-07")
+    assert expected[0]["articles"][0]["report_summary"] == "Original observed summary."
+    assert "Approved summary" not in json.dumps(expected[0]) and "Pending summary" not in json.dumps(expected[0])
+    for article in expected[0]["articles"]:
+        article.pop("record_reference",None);article.pop("current_version_id",None)
+    static=RegistryReader.from_public_export(root)
+    assert static.status()==direct.status()
+    assert static.reports()==direct.reports()
+    assert static.report_with_identity("2026-09-07")==expected
+    assert static.reports()["items"][0]["article_count"]==1
+    assert static.report("2026-09-07")["executive_summary"]==[]
+    from climate_registry.publication import install_git_snapshot
+    rendered=tmp_path/"render.sqlite3"
+    with sqlite3.connect(rendered) as db: apply_migrations(db)
+    install_git_snapshot(rendered,wiki)
+    monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT","1")
+    installed=RegistryReader(rendered,repository_root=root)
+    assert installed.status()==direct.status()
+    assert installed.reports()==direct.reports()
+    assert installed.report_with_identity("2026-09-07")==expected
 
 
 def test_render_real_audit_seed_reuses_existing_hostname_for_new_git_article(tmp_path,monkeypatch):
@@ -3149,6 +3275,8 @@ def test_render_real_audit_seed_reuses_existing_hostname_for_new_git_article(tmp
         db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES(?,?,?,'2026-09-08','2026-09-08')",(identity,url,existing))
         db.execute("INSERT INTO article_versions VALUES('new-version',?,'New approved title','New approved title','New approved summary','new-fingerprint','report-title-summary','2026-09-08','2026-09-08')",(identity,))
         db.execute("UPDATE articles SET current_version_id='new-version' WHERE article_id=?",(identity,))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db,source_dir=source):_approve(db,sha,{"basis":"explicit approved startup fixture"}, status="accepted_legacy")
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True);export_public_snapshot(database,wiki/"public-registry.json",source_dir=source)
     rendered=tmp_path/"render.sqlite3";build_audit_registry(source,rendered,tmp_path/"render-audit")
@@ -3176,6 +3304,8 @@ def test_article_information_date_never_manufactures_report_coverage(tmp_path,mo
         (sources/"climate-monitor-2026-09-14.md").write_text("# Weekly Climate Monitor\n**Report Date:** 2026-09-14\n## Executive Summary\n- Sites checked: **1**, succeeded: **1**, failed: **0**\n## Pillar A — Changes\n- **Observed title**\n  - Actual report observation.\n  🔗 https://report.example/a\n## Pillar B — Intelligence\n## Original Links\n- https://report.example/a\n",encoding="utf-8")
         update_registry(sources,database,tmp_path/"backups")
     with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit report/date fixture approval"}, status="accepted_legacy")
         snapshot=snapshot_entity(db,"article","a")
         snapshot["derived_display"]={"title":"Climate evidence updated 2026-09-01","summary":"Approved article evidence."}
@@ -3198,11 +3328,11 @@ def test_article_information_date_never_manufactures_report_coverage(tmp_path,mo
 def test_terminal_partial_t1_is_per_item_and_running_missing_or_stale_evidence_waits(tmp_path,monkeypatch):
     from climate_registry.information_checks import run_checks
     from climate_registry.publication import prepare_review,information_ready
-    database=_database(tmp_path)
+    database=_database(tmp_path, verified=False)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     with sqlite3.connect(database) as db:
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit preexisting public fixture"},status="accepted_legacy")
-        _pdf(db,identity="pdf-one",url="https://pdf.example/one")
+        _pdf(db, verified=False,identity="pdf-one",url="https://pdf.example/one")
         db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES('pdf-two','https://pdf.example/two','Second PDF','2026-08-01T00:00:00Z')")
         db.execute("""INSERT INTO pdf_intake_article_occurrences SELECT 'second-occurrence','pdf-two',source_document_sha256,page,
             'https://pdf.example/two',report_date,publication_date,content_sha256,page_sha256,occurrence_json
@@ -3238,7 +3368,7 @@ def test_terminal_partial_t1_is_per_item_and_running_missing_or_stale_evidence_w
     packet=prepare_review(database,root)
     statuses={item["entity_id"]:"pass" if item["entity_id"]=="pdf-one" else "needs_correction" for item in packet["candidates"]}
     _approve_native_packet(database,root,tmp_path/"hermes.sqlite3","cron_terminal_partial",statuses=statuses)
-    assert {item["article_id"] for item in _reader(database,tmp_path).pdf_articles_all()}=={"pdf-one"}
+    assert _reader(database,tmp_path).pdf_articles_all()==[]  # A T10 PASS with failed T1 remains hidden.
     assert len(prepare_review(database,root)["candidates"])==1
 
 
@@ -3262,10 +3392,10 @@ def test_storage_only_21_to_22_preserves_pdf_rows_packets_and_every_public_point
     before=database.read_bytes()
     public=_reader(database,tmp_path).articles()
     result=migrate_publication(database,tmp_path/"backups",apply=True)
-    assert result["schema_version"]==22 and result["accepted_legacy"]==result["manual_materialized"]==result["manual_published"]==result["staged"]==0
+    assert result["schema_version"]==23 and result["accepted_legacy"]==result["manual_materialized"]==result["manual_published"]==result["staged"]==0
     assert Path(result["backup"]).read_bytes()==before
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==22
+        assert validate_registry_contract(db)==23
         assert db.execute("PRAGMA foreign_key_check").fetchall()==[]
         for table,rows in immutable.items():assert db.execute('SELECT * FROM '+table).fetchall()==rows
         migrated=db.execute("SELECT rowid,* FROM article_check_attempts").fetchall()
@@ -3300,7 +3430,7 @@ def test_21_storage_upgrade_failure_rolls_back_without_changing_public_data(tmp_
         for sha in stage_entities(db):_approve(db,sha,{"basis":"prior published fixture"},status="accepted_legacy")
     before=database.read_bytes()
     old=schema.MIGRATIONS
-    monkeypatch.setattr(schema,"MIGRATIONS",old[:-1]+((22,old[-1][1],old[-1][2]+"SELECT * FROM missing_migration_table;"),))
+    monkeypatch.setattr(schema,"MIGRATIONS",tuple((v,n,sql+"SELECT * FROM missing_migration_table;" if v==22 else sql) for v,n,sql in old))
     with pytest.raises(sqlite3.OperationalError):migrate_publication(database,tmp_path/"backups",apply=True)
     assert database.read_bytes()==before
     with sqlite3.connect(database) as db:assert validate_registry_contract(db)==21
@@ -3309,7 +3439,7 @@ def test_21_storage_upgrade_failure_rolls_back_without_changing_public_data(tmp_
 def test_default_core_t1_freezes_real_sources_and_body_change_requires_new_improvement(tmp_path,monkeypatch):
     from climate_registry.information_checks import run_checks,attempt_identity
     from climate_registry.publication import prepare_review,information_ready
-    database=_database(tmp_path)
+    database=_database(tmp_path, verified=False)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     calls=[]
     def unavailable(identity,url):
@@ -3328,14 +3458,20 @@ def test_default_core_t1_freezes_real_sources_and_body_change_requires_new_impro
             actual=json.loads(row["packet_json"])
             assert actual["source_binding"]["article_id"]==actual["entity_id"]==row["core_article_id"]
     _approve_native_packet(database,root,tmp_path/"hermes.sqlite3","cron_core_improved")
-    old=_reader(database,tmp_path).article("a")
+    with pytest.raises(RegistryNotFoundError):
+        _reader(database,tmp_path).article("a")
+    with sqlite3.connect(database) as db:
+        old=db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_id='a'").fetchone()[0]
     with sqlite3.connect(database) as db:
         body="New actual source body";sha=hashlib.sha256(body.encode()).hexdigest()
         db.execute("INSERT INTO article_content_versions VALUES('new-body','a',?,?,?,'text/markdown',?,'test','v1','2026-09-03T00:00:00Z')",(sha,body,sha,len(body)))
         db.execute("UPDATE articles SET current_content_version_id='new-body' WHERE article_id='a'")
         stage_entities(db)
     assert prepare_review(database,root)["candidates"]==[]
-    assert _reader(database,tmp_path).article("a")==old
+    with pytest.raises(RegistryNotFoundError):
+        _reader(database,tmp_path).article("a")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_id='a'").fetchone()[0]==old
     run_checks(database,kind="articles",backup_dir=tmp_path/"backups",occurrence_ids={"core:a"},fetcher=unavailable)
     assert {item["entity_id"] for item in prepare_review(database,root)["candidates"]}=={"a"}
 
@@ -3362,10 +3498,10 @@ def test_normal_native_meeting_waits_for_matching_actual_t1_source_attempt(tmp_p
     assert attempts[0]["event_source_id"]==snapshot["information_targets"][0]["occurrence_id"]==calls[0][0]
     assert json.loads(attempts[0]["packet_json"])["entity_id"]==meeting["entity_id"]
     approved=approve("native_t1_source","2026-10-10T12:00:00Z")
-    record=_reader(database,tmp_path).meetings_all(base_date="1900-01-01")[0]
+    assert _reader(database,tmp_path).meetings_all(base_date="1900-01-01")==[]  # Failed T1 never publishes facts.
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='meeting'").fetchone()[0]==approved
-    assert record["sources"][0]["source_url"]==calls[0][1]
+    assert snapshot["tables"]["climate_event_sources"][0]["source_url"]==calls[0][1]
 
 
 @pytest.mark.skipif(os.name=="nt",reason="real governed acquisition persistence requires POSIX fcntl")
@@ -3414,7 +3550,7 @@ def test_final_prepare_keeps_the_native_owner_packet_and_stale_receipt_cannot_pu
     from climate_registry.acquisition_review import claim_review
     from climate_registry.publication import prepare_review,review_candidates
     from climate_registry.information_checks import run_checks
-    database=_database(tmp_path)
+    database=_database(tmp_path, verified=False)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     _complete_fixture_information(database)
     root=tmp_path/"runs/registry-review";packet=prepare_review(database,root)
@@ -3425,7 +3561,7 @@ def test_final_prepare_keeps_the_native_owner_packet_and_stale_receipt_cannot_pu
         _native_read(hermes,session,path,path.read_text(),"snapshot-"+str(index))
     claim=claim_review(root,packet,session_id=session,execution_id=session,hermes_database=hermes,reviewer="actual fixture owner")
     original={str(path):path.read_bytes() for path in root.rglob("*") if path.is_file()}
-    run_checks(database,kind="articles",backup_dir=tmp_path/"backups",fetcher=lambda *_:(_ for _ in ()).throw(RuntimeError("new actual terminal source check")))
+    run_checks(database,kind="articles",backup_dir=tmp_path/"backups",fetcher=lambda *_:(_ for _ in ()).throw(RuntimeError("new actual terminal source check")), reverify_all=True)
     before=database.read_bytes()
     assert prepare_review(database,root)==packet
     assert database.read_bytes()==before and original=={str(path):path.read_bytes() for path in root.rglob("*") if path.is_file()}
@@ -3439,7 +3575,7 @@ def test_final_prepare_keeps_the_native_owner_packet_and_stale_receipt_cannot_pu
 
 def test_historical_empty_t1_with_path_remains_audit_only_after_storage_upgrade(tmp_path,monkeypatch):
     from climate_registry.information_checks import run_checks
-    database=_database(tmp_path)
+    database=_database(tmp_path, verified=False)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     frozen={"schema_version":"information-check.v1","kind":"articles","targets":[],"retry_of":None,"registry_database":str(database)}
     encoded=json.dumps(frozen,ensure_ascii=False,sort_keys=True,separators=(",",":"))
@@ -3458,6 +3594,7 @@ def _approved_pdf_pair(tmp_path, monkeypatch, *, legacy_target_state=None):
     import test_issue113_range_reports as fixtures
     database = _database(tmp_path)
     old_source_revision = None
+    old_source_item = None
     with sqlite3.connect(database) as db:
         _pdf(db, identity="pdf-article", url="https://example.org/pdf")
         db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/second.pdf','second.pdf','application/pdf',1,?,'{}','2026-08-02')", ("a"*64,"b"*64))
@@ -3468,7 +3605,12 @@ def _approved_pdf_pair(tmp_path, monkeypatch, *, legacy_target_state=None):
                 "start_date": "2027-06-10", "end_date": "2027-06-12", "summary": event+" original observation",
                 "page": page, "source_urls": [url], "source_document_sha256": document,
                 "canonical_pdf_event_id": "target"}  # Raw aliases alone are not authorization.
+            if event == "target" and legacy_target_state == "cancelled":
+                item["status"] = "cancelled"
+            if event == "target" and legacy_target_state == "expired":
+                item.update(start_date="2020-01-01", end_date="2020-01-02", raw_date="January 1–2, 2020")
             if event == "source" and legacy_target_state is not None:
+                old_source_item = dict(item)
                 old_source_revision = source_revision("meetings", item)
                 item.update(location="Legacy unchecked location", online_url="https://legacy.test/", event_timezone="UTC",
                     deadline_type="registration", deadline_date="2099-01-01", relevance_reason="Legacy unchecked relevance",
@@ -3487,14 +3629,15 @@ def _approved_pdf_pair(tmp_path, monkeypatch, *, legacy_target_state=None):
             candidate.update(location=None, online_url=None, timezone=None, raw_time_text=None,
                 deadline_type=None, deadline_date=None, deadline_evidence=None, relevance_reason=None)
             if legacy_target_state == "cancelled":
-                candidate["status"] = "cancelled"
+                candidate.update(status="cancelled", status_evidence="IAIS Annual Conference 2027 is cancelled.")
             if legacy_target_state == "expired":
-                candidate.update(start_date="2020-01-01", end_date="2020-01-02")
+                candidate.update(start_date="2020-01-01", end_date="2020-01-02", date_evidence="January 1–2, 2020")
             if legacy_target_state == "unverified":
                 verification_status, candidate = "partial", None
         fixtures._insert_meeting_check(database, occurrence, website_candidate=candidate,
             canonical_event_id="non-native-"+event, run_id="run-"+event, attempt_id="check-"+event, source_url=url,
-            verification_status=verification_status, source_revision_sha256=old_source_revision if event == "source" else None)
+            verification_status=verification_status, source_revision_sha256=old_source_revision if event == "source" else None,
+            prior_source_item=old_source_item if event == "source" else None)
     with sqlite3.connect(database) as db:
         for sha in stage_entities(db):
             _approve(db,sha,{"basis":"explicit exact PDF fixture approval"},status="accepted_legacy")
@@ -3588,6 +3731,25 @@ def test_pending_or_unpublished_pdf_target_cannot_authorize_alias(tmp_path,monke
         assert "canonical_pdf_event_id" not in rows[0]
 
 
+def _reviewed_pdf_summary_receipt(snapshot, sha, *, browser=False):
+    from climate_registry.verification import evaluate_snapshot
+    verdict = evaluate_snapshot(snapshot)
+    checks = [{key: source[key] for key in ("attempt_id", "run_id", "source_url", "source_revision_sha256", "packet_sha256")}
+        | {"body_sha256": source["reader_body_sha256"]}
+        for observation in verdict["observations"].values() if observation["entity_kind"] == "pdf_article" and observation["verified"]
+        for source in observation["sources"] if source["reason"] is None]
+    assert checks
+    receipt = {"schema_version": "owner-authorized-agent-review.v1", "candidate_sha256": sha,
+        "authorization": {"source": "direct_owner_message", "scope": "exact isolated reviewed source summary"},
+        "conclusion": {"status": "pass"}, "display_correction": snapshot["derived_display"], "source_checks": checks}
+    if browser:
+        receipt.update(schema_version="owner-reviewed-display-summary.v1", conclusion="Pass: exact browser-reviewed source summary.",
+            browser_evidence={"readable_without_challenge": True, "observed_facts": ["Exact isolated correction"],
+                "page_title": "Original PDF title", "url": checks[0]["source_url"]})
+        receipt.pop("display_correction")
+    return receipt
+
+
 @pytest.mark.parametrize("linked", [False,True])
 def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pending(tmp_path,monkeypatch,linked):
     from climate_registry.publication import export_public_snapshot
@@ -3602,7 +3764,7 @@ def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pendin
         snapshot=snapshot_entity(db,kind,identity)
         snapshot["derived_display"]={"summary":"Reviewed source summary", "summary_provenance":"owner_reviewed_source_evidence"}
         sha=stage_snapshot(db,snapshot)
-        _approve(db,sha,{"basis":"owner reviewed source passage"},status="accepted_legacy")
+        _approve(db,sha,_reviewed_pdf_summary_receipt(snapshot,sha))
         snapshot["derived_display"]["summary"]="Pending mixed summary"
         stage_snapshot(db,snapshot)
     reader=_reader(database,tmp_path)
@@ -3641,6 +3803,41 @@ def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pendin
     assert public["summary"]=="Original PDF observation" and public["display_summary"]=="Reviewed source summary"
 
 
+@pytest.mark.parametrize("browser", [False, True])
+@pytest.mark.parametrize("broken", [None, "candidate", "review_id", "decision", "display", "attempt_id", "run_id", "source_revision_sha256", "packet_sha256", "body_sha256", "source_url"])
+def test_reviewed_pdf_summary_requires_exact_receipt_and_actual_frozen_checks(tmp_path, browser, broken):
+    from copy import deepcopy
+    from climate_registry.verification import evaluate_snapshot, public_snapshot_view
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-only", url="https://example.org/pdf-only")
+        snapshot = snapshot_entity(db, "pdf_article", "pdf-only")
+    snapshot["derived_display"] = {"summary": "Reviewed source summary", "summary_provenance": "owner_reviewed_source_evidence"}
+    sha = digest(snapshot)
+    receipt = _reviewed_pdf_summary_receipt(snapshot, sha, browser=browser)
+    if broken == "candidate": receipt["candidate_sha256"] = "0"*64
+    elif broken == "decision":
+        receipt["schema_version"] = "unrecognized-review.v1"
+    elif broken == "display":
+        if browser: receipt["browser_evidence"]["readable_without_challenge"] = False
+        else: receipt["display_correction"] = {**receipt["display_correction"], "summary": "Different summary"}
+    elif broken in {"attempt_id", "run_id", "source_revision_sha256", "packet_sha256", "body_sha256", "source_url"}:
+        receipt["source_checks"][0][broken] = "wrong"
+    review = {"candidate_sha256": sha, "status": "pass", "receipt_json": json.dumps(receipt),
+        "review_id": "wrong" if broken == "review_id" else digest([sha, "pass", receipt])}
+    original = deepcopy(snapshot)
+    verdict = evaluate_snapshot(snapshot, reviews=[review])
+    assert verdict["eligible"]
+    view = public_snapshot_view(snapshot, verdict)
+    assert snapshot == original
+    assert view["derived_display"]["summary"] == ("Original PDF observation" if broken else "Reviewed source summary")
+    assert bool(verdict["reviewed_summary"]) is (broken is None)
+    if broken:
+        assert "reviewed_summary_receipt_missing" in view["_hidden_factual_fields"]["occurrence"]
+    # A marker or accepted legacy publication has no independent display authority.
+    assert evaluate_snapshot(snapshot)["reviewed_summary"] is None
+
+
 @pytest.mark.parametrize("display", [None, {"summary": "Unmarked entity summary"},
     {"summary": "Reviewed source summary", "summary_provenance": "owner_reviewed_source_evidence"}])
 def test_range_reports_keep_approved_pdf_summary_and_source_evidence(tmp_path, display):
@@ -3656,7 +3853,7 @@ def test_range_reports_keep_approved_pdf_summary_and_source_evidence(tmp_path, d
             snapshot = snapshot_entity(db, "pdf_article", "pdf-only")
             snapshot["derived_display"] = display
             sha = stage_snapshot(db, snapshot)
-            _approve(db, sha, {"basis": "explicit summary fixture approval"}, status="accepted_legacy")
+            _approve(db, sha, _reviewed_pdf_summary_receipt(snapshot, sha) if display.get("summary_provenance") else {"basis": "unmarked display fixture"})
         snapshot = snapshot_entity(db, "pdf_article", "pdf-only")
         snapshot["derived_display"] = {"summary": "Pending summary", "summary_provenance": "owner_reviewed_source_evidence"}
         stage_snapshot(db, snapshot)

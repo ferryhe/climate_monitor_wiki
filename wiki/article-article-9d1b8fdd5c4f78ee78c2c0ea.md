@@ -1,46 +1,44 @@
 # High temperatures linked to increased mortality among workers in Colombia
 
 Canonical article: [https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
-Collected at: 2026-09-28T12:08:27Z
+Collected at: 2026-08-19T02:10:59.014460Z
 
-## Date observations
-
-- Collection time: 2026-08-17T12:22:10.990472Z; source record: web_listening.site_snapshots 699; match: snapshot_link; source URL: https://www.ilo.org/; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-08-17T12:22:11.012942Z; source record: web_listening.changes 263; match: exact_change_url; source URL: https://www.ilo.org/; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-08-17T12:22:11.023047Z; source record: web_listening.changes 264; match: exact_change_url; source URL: https://www.ilo.org/; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-08-19T02:10:59.014460Z; source record: climate_registry.article_fetches fetch-934813112c6947f8b26cc078c84564fb; match: successful_article_fetch; source URL: https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-08-24T08:04:44.145562Z; source record: web_listening.site_snapshots 755; match: snapshot_link; source URL: https://www.ilo.org/; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-08-24T08:04:44.168830Z; source record: web_listening.changes 317; match: exact_change_url; source URL: https://www.ilo.org/; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-09-01T23:35:15.669004Z; source record: web_listening.changes 379; match: exact_change_url; source URL: https://www.ilo.org/; evidence imported at: 2026-10-05T01:16:09.466136Z
-- Collection time: 2026-09-28T12:08:27Z; source record: web_listening.observations observation-048bcfb867e444a5876830386364bd1a; match: artifact_source_link; source URL: https://www.ilo.org/publications/climate-related-heat-stress-and-occupational-mortality-colombia; evidence imported at: 2026-10-05T01:16:09.466136Z
-
-Categories: insurance
+Categories: Climate & Health, Physical Risk, Actuarial Modelling
 
 Keywords: workers, occupational, temperatures, health, mortality, per, working, colombia, associated, paper, professionals, among
 
-## Verified article content
-
-Agricultural workers, assemblers and health and teaching professionals are among the occupational groups facing the greatest mortality risks associated with high temperatures, according to a new ILO working paper. Climate-Related Heat Stress and Occupational Mortality in Colombia ILO Working Paper 178 Read the paper Content also available in: español français GENEVA (ILO News): Elevated temperatures are associated with a significant increase in mortality among workers in Colombia, with some occu
-
-Article citation: [https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
-Registry content version: content-d5794ab700ef69b4bfc612ab6215b06a
-
 ## Article semantic summary
-
-Agricultural workers, assemblers and health and teaching professionals are among the occupational groups facing the greatest mortality risks associated with high temperatures, according to a new ILO working paper. Climate-Related Heat Stress and Occupational Mortality in Colombia ILO Working Paper 178 Read the paper Content also available in: español français GENEVA (ILO News): Elevated temperatures are associated with a significant increase in mortality among workers in Colombia, with some occupational groups facing substantially greater risks than others, according to new research from the I
-
-Provenance: content_enrichment; content version: content-d5794ab700ef69b4bfc612ab6215b06a; article citation: [https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
-
-## Registry article-version summary
 
 ILO reports rising temperatures linked to higher worker mortality in Colombia — concrete evidence for health and life actuaries calibrating heat-mortality assumptions under climate scenarios and occupational-exposure models.
 
-Provenance: Registry article version; Registry article version: version-27a73eca025644d023fc1cf9; Article citation: [https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
+Provenance: verified_source_evidence; content version: content-d5794ab700ef69b4bfc612ab6215b06a; article citation: [https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
 
 ## Report observation: climate-monitor-2026-08-17.md
 
-An ILO working paper finds that high temperatures are associated with greater mortality risk among workers in Colombia. Agricultural workers, assemblers, and health and teaching professionals are among the occupational groups identified as facing elevated exposure.
+ILO reports rising temperatures linked to higher worker mortality in Colombia — concrete evidence for health and life actuaries calibrating heat-mortality assumptions under climate scenarios and occupational-exposure models.
 
 Report citation: climate-monitor-2026-08-17.md; SHA-256: ed19d7b8c8fbe99a5f66b333b5e2d5fbee63c3f41cf927d79d812888fc333972; [original link](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
 
-Updated (source observation): 2026-09-28
+## PDF report observation: pdf-article-occurrence-2c5f619f3ee4d5e228191353
+
+High temperatures linked to increased mortality among workers in Colombia, ILO study finds
+IN WINDOW 17 AUG 2026 PRESS RELEASE
+Above 32 °C, excess mortality reaches 0.09 deaths per 1,000 workers overall, rising to 1.33 for assemblers, 0.40 for
+health associate professionals, 0.26 for agricultural workers and 0.21 for teaching professionals; between 26 and 32 °C
+the excess is 0.04 per 1,000. These are directly applicable occupational heat-mortality loadings for life, disability and
+workers' compensation pricing, and the finding that only 53% of Colombia's workforce held occupational-risk cover in
+December 2024 quantifies the associated protection gap.
+📎  Source: ilo.org — heat and worker mortality in Colombia
+
+
+PDF: IAA_CSC_Climate_Report_2026_08_2.pdf; SHA-256: 590ea3595a1ec209940b5c34b1cb036892fd07dc0b95fa6908245221e8b1bc17; page 15; [original link](https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo)
+
+### Verified information
+
+GENEVA (ILO News): Elevated temperatures are associated with a significant increase in mortality among workers in Colombia, with some occupational groups facing substantially greater risks than others, according to new research from the International Labour Organization. The working paper, Climate-Related Heat Stress and Occupational Mortality in Colombia, combines death records for people aged 15 to 59 from Colombia’s vital statistics system between 2017 and 2021 with temperature measurements from meteorological stations and labour force data. Its final dataset covers 297 municipalities, repr
+
+Categories: insurance
+Keywords: workers, temperatures, occupational, per, health, mortality, colombia, associated, working, deaths, among, risks
+Website evidence: https://www.ilo.org/resource/news/high-temperatures-linked-increased-mortality-among-workers-colombia-ilo; checked 2026-10-15T03:49:47.028318+00:00
+
+Updated (source observation): 2026-08-19

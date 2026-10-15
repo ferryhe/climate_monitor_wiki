@@ -94,24 +94,35 @@ def test_untitled_observation_has_readable_citation_title():
 
 
 
-def test_real_directory_page_keeps_pdf_passage_also_projected_into_article(monkeypatch):
+def test_real_directory_page_keeps_pdf_passage_also_projected_into_article(tmp_path, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from api_server import WikiStaticFiles
+    from climate_registry.read_api import RegistryReader
+    from climate_registry.wiki import _render_registry_article
 
     monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
-    wiki = Path(__file__).resolve().parents[1] / "wiki"
-    filename = "registry-source-observation-pdf-article-occurrence-79311091c7319e201be9bae5.md"
-    expected = (wiki / filename).read_text(encoding="utf-8")
-    assert filename.removesuffix(".md") in (wiki / "registry-source-observations.md").read_text(encoding="utf-8")
-    article = (wiki / "article-article-03c3752c72830e638093f6c3.md").read_text(encoding="utf-8")
-    passage = "USD 7.3 trillion flowed to nature-negative activities in 2023"
+    repo = Path(__file__).resolve().parents[1]
+    reader = RegistryReader.from_public_export(repo)
+    identity = "pdf-article-occurrence-1fc489650a4fe34013f68e6f"
+    source = next(article for article in reader.pdf_articles_all()
+        if any(item["occurrence_id"] == identity for item in article["occurrences"]))
+    occurrence = next(item for item in source["occurrences"] if item["occurrence_id"] == identity)
+    filename = "registry-source-observation-" + identity + ".md"
+    expected = (repo/"wiki"/filename).read_text(encoding="utf-8")
+    assert filename.removesuffix(".md") in (repo/"wiki/registry-source-observations.md").read_text(encoding="utf-8")
+    article = _render_registry_article({"article_id":"fixture", "canonical_url":source["canonical_url"],
+        "title":source["title"], "pdf_occurrences":[occurrence]})
+    passage = "Estimates 775,000 jobs from nature tourism and agribusiness in Colombia by 2035"
     assert passage in expected and passage in article
+    wiki = tmp_path/"wiki"; wiki.mkdir()
+    (wiki/filename).write_text(expected, encoding="utf-8")
+    (wiki/"article-fixture.md").write_text(article, encoding="utf-8")
     app = FastAPI()
     app.mount("/wiki", WikiStaticFiles(directory=str(wiki)))
     response = TestClient(app).get("/wiki/" + filename)
     assert response.status_code == 200 and response.text == expected
     assert passage in response.text and "IAA_CSC_Climate_Report_20260928.pdf" in response.text
-    assert "c4cebda1bafb1cfd2c0e9c178db8b53b69f2b746cae543231603475ca6a66abc" in response.text
-    assert "page 33" in response.text
-    assert "https://www.weforum.org/stories/climate-action/healthy-landscapes-and-seascapes-need-more-than-finance/" in response.text
+    assert occurrence["source_document_sha256"] in response.text
+    assert "page 36" in response.text
+    assert "https://www.wri.org/insights/colombia-green-jobs-growth" in response.text

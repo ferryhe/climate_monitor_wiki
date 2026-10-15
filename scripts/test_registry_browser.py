@@ -98,6 +98,7 @@ window.fetch = (input, options = {}) => {
       truncated: window.__publisherTruncated});
   }
   if (url.pathname === "/api/registry/reports/2026-08-10") {
+    // Renderer-only compatibility fixture; the public native-report API returns null.
     const defaultBriefing = {
       executive_summary: [
         "Pricing pressure increased across exposed markets.",

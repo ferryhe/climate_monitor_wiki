@@ -23,6 +23,7 @@ def _stub_sha_binding(monkeypatch):
             "database_sha256": "c" * 64,
             "target_article_count": 1,
             "target_article_ids": ["article-safe"],
+            "target_latest_fetches": {"article-safe": {"fetch_status": "success"}},
         },
     )
 
@@ -118,17 +119,7 @@ def _api_payload(url, *, method="GET", headers=None, timeout):
     if url.endswith(f"/api/registry/reports/{TARGET}"):
         return {
             "report_date": TARGET,
-            "report_briefing": {
-                "executive_summary": ["Weekly narrative."],
-                "monitoring_snapshot": {
-                    "sites_checked": 1,
-                    "sites_succeeded": 1,
-                    "sites_failed": 0,
-                    "pillar_a_updates": 1,
-                    "pillar_b_updates": 0,
-                    "notes": [],
-                },
-            },
+            "report_briefing": None,
             "report_pdf": {
                 "filename": f"climate-monitor-{TARGET}.pdf",
                 "download_url": f"/api/registry/reports/{TARGET}/pdf",
@@ -210,8 +201,8 @@ def test_draft_job_runs_dry_live_reload_and_complete_api_verification(
         "verification": {
             "latest_report_date": TARGET,
             "source_registry_artifact_sha_match": True,
-            "briefing": True,
-            "monitoring_snapshot": True,
+            "briefing": False,
+            "monitoring_snapshot": False,
             "pdf": True,
             "article_count": 1,
                 "sample_article_id": "article-safe",
@@ -532,3 +523,26 @@ def test_same_count_wrong_api_membership_is_rejected(tmp_path, capsys, monkeypat
 
     assert code == 1
     assert payload["kind"] == "report_verification_failed"
+
+
+@pytest.mark.parametrize("metadata", ["content_enrichment", "publisher_excerpt_annotation"])
+def test_verified_factual_summary_keeps_independent_taxonomy_and_fetch_gates(metadata):
+    detail = _api_payload("https://climate.example/api/registry/articles/article-safe", timeout=1)
+    detail["summary_provenance"] = "verified_source_evidence"
+    detail["metadata_provenance"] = {"categories": metadata, "keywords": metadata}
+    fallback = frozenset()
+    if metadata != "content_enrichment":
+        detail["enrichment"] = {"summary": None, "categories": [], "keywords": [], "language": None, "generator": None}
+        detail["latest_fetch"] = {"fetch_status": "failed", "http_status": 403, "error_code": "http_error"}
+        fallback = frozenset({"article-safe"})
+    refresh._verify_article(detail, article_id="article-safe", target_date=TARGET, fallback_article_ids=fallback)
+    from copy import deepcopy
+    for field, value in (("metadata_provenance", {"categories": "unknown", "keywords": "unknown"}),
+                         ("latest_fetch", {"fetch_status": "failed", "http_status": 500, "error_code": "http_error"}),
+                         ("appearances", []), ("article_id", "another-article")):
+        invalid = deepcopy(detail); invalid[field] = value
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._verify_article(invalid, article_id="article-safe", target_date=TARGET, fallback_article_ids=fallback)
+    if fallback:
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._verify_article(detail, article_id="article-safe", target_date=TARGET, fallback_article_ids=frozenset())

@@ -3248,7 +3248,8 @@ async function loadImportedRegistryReport(documentId, page = 1) {
     content.append(information);
     if ((report.pagination?.page ?? page) === 1 && report.executive_summary?.length) {
       const executive = registryElement("details", "registry-imported-summary meeting-entry");
-      executive.append(registryElement("summary", "meeting-entry__summary", "Executive Summary"));
+      executive.append(registryElement("summary", "meeting-entry__summary",
+        report.executive_summary_label ? `Executive Summary · ${report.executive_summary_label}` : "Executive Summary"));
       const body = registryElement("div", "meeting-entry__body");
       report.executive_summary.forEach((summary) => body.append(registryElement("p", "", summary)));
       executive.append(body);
@@ -3261,14 +3262,26 @@ async function loadImportedRegistryReport(documentId, page = 1) {
       const block = registryElement("section", "registry-detail-section");
       const button = registryElement("button", "registry-article-link", `${(report.article_offset || 0) + index + 1}. ${article.title || article.canonical_url}`);
       button.type = "button";
-      button.dataset.articleId = article.article_id;
-      button.dataset.articleSource = "pdf";
+      const reference = article.metadata_only ? article.verified_primary_reference : null;
+      button.dataset.articleId = reference?.entity_id || article.article_id;
+      button.dataset.articleSource = reference?.entity_kind === "article" ? "registry" : "pdf";
       block.append(button);
       appendRegistryPdfOccurrences(block, article.occurrences);
       modules.append(block);
     });
     if (report.calendar_items?.length) modules.append(registryElement("h4", "", "Meetings & Key Dates"));
     (report.calendar_items || []).forEach((item) => {
+      if (item.metadata_only) {
+        const block = registryElement("section", "registry-detail-section");
+        const reference = item.verified_primary_display || {};
+        const link = registryElement("a", "registry-source-link", reference.name || "Verified meeting reference");
+        const safe = safeSourceUrl(reference.source_url);
+        if (safe) { link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer"; }
+        block.append(link, registryElement("p", "", "Reference to a verified meeting; this report observation is unverified."),
+          registryElement("p", "", [item.source_filename || report.filename, item.page ? `page ${item.page}` : ""].filter(Boolean).join(" · ")));
+        modules.append(block);
+        return;
+      }
       const block = registryElement("details", "meeting-entry");
       const summary = registryElement("summary", "meeting-entry__summary");
       summary.append(registryElement("span", "meeting-entry__name", item.name || "Calendar item"),

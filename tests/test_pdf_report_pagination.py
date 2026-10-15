@@ -30,6 +30,8 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
                 "page,raw_url,report_date,content_sha256,page_sha256,occurrence_json) VALUES(?,?,?,1,?,'2026-09-01',?,?,?)",
                 (f"occ-{index}", f"pdf-{index}", document, f"https://example.org/pdf-{index}", "d" * 64,
                  "c" * 64, json.dumps({"summary": f"Summary {index}", "summary_basis": "verbatim_pdf_article_row"})))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         _approve_all(connection)
 
     calls = []
@@ -95,6 +97,8 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
             (document, "d" * 64, "c" * 64, json.dumps({"summary_basis": "verbatim_pdf_calendar_row"})))
     assert runtime.pdf_report_module_catalog(document) == catalog
     with sqlite3.connect(database) as connection:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         _approve_all(connection)
     published = reader.pdf_report(document, page=1, page_size=5)
     assert len(published["articles"]) == 5
@@ -146,6 +150,8 @@ def test_same_core_article_keeps_approved_occurrences_in_each_pdf_report(tmp_pat
                 (occurrence_id, "pdf-a-shared", document, "https://example.org/a", "d" * 64, "c" * 64,
                  json.dumps({"summary": f"Approved observation in {occurrence_id}",
                              "summary_basis": "verbatim_pdf_article_row"})))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         _approve_all(connection)
 
     reader = _reader(database, tmp_path)

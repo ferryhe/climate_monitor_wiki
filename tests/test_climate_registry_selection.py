@@ -609,3 +609,26 @@ def test_2026_08_17_regression_selects_a9_and_only_five_new_b_items(tmp_path):
     assert sum(item["disposition"] == "selected" for item in b) == 5
     assert sum(item["disposition"] == "rejected" for item in b) == 12
     assert _reasons(plan)["item-22"] == ("rejected", "publication_ineligible")
+
+
+def test_selection_url_history_keeps_visible_approval_without_exposing_unverified_facts(tmp_path):
+    from climate_registry.selection import load_registry_selection_snapshot
+    from climate_registry.publication import set_visibility
+    from climate_registry.persistent import update_registry
+    from climate_registry.read_api import RegistryReader
+    sources = tmp_path/"sources"
+    _write_report(sources, "2026-08-03", _item("Old", "Old", "https://old.example/item"),
+        _item("Hidden", "Hidden", "https://hidden.example/item"))
+    database = _registry(tmp_path, sources)
+    with sqlite3.connect(database) as db:
+        hidden = db.execute("SELECT article_id FROM articles WHERE canonical_url='https://hidden.example/item'").fetchone()[0]
+    db.close()
+    set_visibility(database, "article", hidden, False)
+    _write_report(sources, "2026-08-10", _item("Changed pending", "Pending text", "https://old.example/item"),
+        _item("New pending", "New pending", "https://pending.example/item"))
+    update_registry(sources, database, tmp_path/"backups")
+    before = database.read_bytes()
+    snapshot = load_registry_selection_snapshot(database, sources)
+    assert snapshot.canonical_urls == frozenset({"https://old.example/item"})
+    assert RegistryReader(database, repository_root=tmp_path/"app").articles()["items"] == []
+    assert database.read_bytes() == before

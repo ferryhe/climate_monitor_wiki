@@ -15,9 +15,10 @@ def test_cached_candidate_query_omits_large_json_but_checks_current_binding(tmp_
         first = published_snapshots(db, ("article",), candidate_cache=cache)
         returned_json = []
         class ObservedConnection:
-            def execute(self, sql, parameters):
+            def execute(self, sql, parameters=()):
                 for row in db.execute(sql, parameters):
-                    returned_json.append(row[7])
+                    if "snapshot_json" in sql:
+                        returned_json.append(row[7])
                     yield row
         second = published_snapshots(ObservedConnection(), ("article",), candidate_cache=cache)
         assert second == first

@@ -53,8 +53,8 @@ def _pdf_heading(occurrence: dict) -> str:
 def _verified_information_blocks(occurrence: dict) -> list[str]:
     information = occurrence.get("verified_information")
     return ["", "### Verified information", "", "" if occurrence.get("display_summary") else information["summary"],
-        "", "Categories: " + ", ".join(information["categories"]),
-        "Keywords: " + ", ".join(information["keywords"]),
+        *( ["", "Categories: " + ", ".join(information["categories"])] if information["categories"] else []),
+        *( ["Keywords: " + ", ".join(information["keywords"])] if information["keywords"] else []),
         f"Website evidence: {information['source_url']}; checked {information['generated_at']}"] if information else []
 
 
@@ -313,13 +313,19 @@ def _render_registry_source_observations(items: list[dict]) -> str | None:
 def _render_registry_meetings(meetings: list[dict]) -> str | None:
     if not meetings:
         return None
+    def observation_blocks(observation):
+        if observation.get("metadata_only"):
+            name = (observation.get("verified_primary_display") or {}).get("name") or "Meeting"
+            return ["Report reference to verified meeting: " + name + "; this report observation is unverified.", _citation(observation)]
+        summary = observation.get("summary")
+        return (["PDF observation: " + str(summary)] if summary else []) + [_citation(observation)]
     blocks = ["# Meetings and key dates", ""]
     for item in meetings:
         if item.get("origin") == "pdf_import":
             blocks += ["## " + str(item.get("name") or "Key date"), str(item.get("raw_date") or "Date not provided"),
                 "Provenance: PDF observed record; " + item.get("verification_status", "unchecked")]
             for observation in item.get("pdf_observations") or [item]:
-                blocks += ["PDF observation: " + str(observation.get("summary") or ""), _citation(observation)]
+                blocks += observation_blocks(observation)
             blocks.append("")
         else:
             blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
@@ -333,7 +339,7 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
                 if url:
                     blocks.append("Source: [" + url + "](" + url + ")")
             for observation in item.get("pdf_observations", []):
-                blocks += ["PDF observation: " + str(observation.get("summary") or ""), _citation(observation)]
+                blocks += observation_blocks(observation)
             blocks.append("")
     return "\n".join(blocks).rstrip("\n") + "\n"
 
@@ -402,8 +408,20 @@ def _render_registry_report_page(reader: RegistryReader, report_date: str, sourc
     return _registry_report_markdown(report_date, report["filename"], report["report_sha256"], articles)
 
 
+def _adopted_original_pages(reader):
+    pages = {}
+    for item in reader.adopted_pdf_summaries():
+        identity = item["document_sha256"]
+        pages["registry-pdf-report-" + identity + ".md"] = "\n".join([
+            "# " + (item.get("filename") or "Original PDF report"), "", "## Executive Summary · 采用原文", "",
+            "Provenance: adopted original PDF text; independent factual verification is not asserted.", "",
+            *item["executive_summary"], "",
+            "Source PDF: [" + (item.get("filename") or "Download") + "](/api/registry/pdf-intake/reports/" + identity + "/pdf)", ""])
+    return pages
+
+
 def _registry_page_index(reader: RegistryReader) -> str:
-    names = set()
+    names = set(_adopted_original_pages(reader))
     for snapshot in reader._public_candidates("article").values():
         tables = snapshot.get("tables", {})
         article = snapshot.get("static_payload") or next(iter(tables.get("articles", [])), {})
@@ -456,13 +474,15 @@ def _registry_page_index(reader: RegistryReader) -> str:
         names.add("registry-source-observations.md")
     if reader.meetings_all(base_date="1900-01-01"):
         names.add("registry-meetings.md")
-    return "# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(names)) + "\n"
+    return ("# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(names))).rstrip("\n") + "\n"
 
 
 def render_registry_page(database: Path, page: str, *, reader: RegistryReader, source_dir=None) -> str | None:
     """Render one requested public page from exact approved candidate snapshots."""
     if page == "index.md":
         return _registry_page_index(reader)
+    if re.fullmatch(r"registry-pdf-report-[a-f0-9]{64}\.md", page):
+        return _adopted_original_pages(reader).get(page)
     match = re.fullmatch(r"article-([A-Za-z0-9_-]+)\.md", page)
     if match:
         article = reader.article(match.group(1))
@@ -840,7 +860,7 @@ def _registry_pages_read(
     reader: RegistryReader | None = None,
 ) -> dict[str, str]:
     reader = reader or RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
-    pages: dict[str, str] = {}
+    pages: dict[str, str] = _adopted_original_pages(reader)
     article_details = {}
     if getattr(reader, "_snapshot_direct", False):
         with reader.connect() as connection:

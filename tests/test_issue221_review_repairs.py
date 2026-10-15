@@ -29,6 +29,9 @@ def _insert_fixture_rows(connection, table, rows):
 
 
 def _approve_all(connection, **kwargs):
+    from verified_fixtures import seed_verified_articles, seed_verified_native_meetings
+    seed_verified_articles(connection)
+    seed_verified_native_meetings(connection)
     for candidate in stage_entities(connection, **kwargs):
         _approve(connection, candidate, {"basis": "Issue #221 approved fixture"}, status="accepted_legacy")
 
@@ -204,7 +207,7 @@ def test_pdf_wiki_index_selects_page_names_without_rendering_bodies(tmp_path, mo
     assert "registry-source-observations.md" in index
 
 
-def test_installed_static_payload_content_is_listed_in_wiki_index(tmp_path):
+def test_installed_static_payload_content_is_listed_in_wiki_index(tmp_path, monkeypatch):
     database = _database(tmp_path)
     with sqlite3.connect(database) as connection:
         content_hash = "a" * 64
@@ -225,11 +228,10 @@ def test_installed_static_payload_content_is_listed_in_wiki_index(tmp_path):
         apply_migrations(connection)
     install_git_snapshot(installed, wiki)
 
+    monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT", "1")
     reader = RegistryReader(installed, repository_root=application)
-    with reader.public_snapshot(direct=True):
-        from climate_registry.wiki import render_registry_page
-        target = render_registry_page(installed, "article-a.md", reader=reader)
-        index = render_registry_page(installed, "index.md", reader=reader)
+    target = public_wiki_pages(installed, wiki_dir=wiki, reader=reader, page="article-a.md")["article-a.md"]
+    index = public_wiki_pages(installed, wiki_dir=wiki, reader=reader, page="index.md")["index.md"]
     assert target and "Article body" in target
     assert "article-a.md" in index
 
@@ -278,12 +280,13 @@ def test_incomplete_source_report_bundle_keeps_report_summary_but_not_search_sem
         card = next(item for item in cards if item["article_id"] == article_id)
         detail = reader.article(article_id)
         filtered = reader.articles(query="Reference observed summary")
-    assert card["summary"] is detail["summary"] is None
+    assert card["summary"] == detail["summary"] == "Reference observed summary."
+    assert card["summary_provenance"] == detail["summary_provenance"] == "verified_source_evidence"
     assert card["report_summary"] == detail["report_summary"] == "Reference observed summary."
     assert card.get("metadata_provenance") == {"categories": None, "keywords": None}
     response = TestClient(api_server.app).get("/api/registry/articles", params={"query": "Reference observed summary"})
     assert response.status_code == 200
-    assert response.json()["pagination"]["total"] == filtered["pagination"]["total"] == 0
+    assert response.json()["pagination"]["total"] == filtered["pagination"]["total"] == 1
 
 
 def test_pdf_approved_occurrences_keep_legacy_latest_order_in_http_search(tmp_path, monkeypatch):
@@ -366,7 +369,7 @@ def test_duplicate_pdf_observation_target_keeps_first_identity_for_get_and_head(
             assert method("/wiki/registry-source-observation-z-duplicate.md").status_code == 404
 
 
-def test_git_wiki_only_body_is_listed_without_rendering_it_for_index(tmp_path):
+def test_unmarked_git_wiki_body_stays_hidden_from_index_and_target(tmp_path):
     import climate_registry.wiki as wiki
 
     database = _database(tmp_path)
@@ -381,10 +384,12 @@ def test_git_wiki_only_body_is_listed_without_rendering_it_for_index(tmp_path):
     reader = RegistryReader(database, repository_root=application)
     with reader.public_snapshot(direct=True):
         index = wiki.render_registry_page(database, "index.md", reader=reader)
-        target = wiki.render_registry_page(database, "article-a.md", reader=reader)
-    assert "article-a.md" in index
+        from climate_registry.read_api import RegistryNotFoundError
+        with pytest.raises(RegistryNotFoundError):
+            wiki.render_registry_page(database, "article-a.md", reader=reader)
+    assert "article-a.md" not in index
     assert "Only installed Git Wiki content is available." not in index
-    assert target and "Only installed Git Wiki content is available." in target
+    assert (pages / "article-a.md").read_text(encoding="utf-8") == body
 
 
 def test_evidence_turn_meeting_pages_reuse_one_merged_collection_and_keep_scope(tmp_path, monkeypatch):
@@ -439,7 +444,7 @@ def test_recent_pdf_evidence_verifies_one_packet_per_direct_request(tmp_path, mo
     occurrence = {"title": "Climate evidence article", "summary": "Recent climate evidence for insurance risk.",
         "summary_basis": "verbatim_pdf_article_row", "raw_url": "https://pdf.example/recent"}
     with sqlite3.connect(database) as connection:
-        _pdf(connection, identity="pdf-recent", url="https://pdf.example/recent", occurrence=occurrence)
+        _pdf(connection, identity="pdf-recent", url="https://pdf.example/recent", occurrence=occurrence, verified=False)
         connection.execute("INSERT INTO knowledge_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             ("knowledge-pdf", "article", "pdf-recent", "pdf", "pdf:recent", "b" * 64, "{}", "{}",
              "2026-09-30T12:00:00Z", "2026-09-30T12:00:00Z", "2026-09-30T12:00:00Z", "approved_pdf"))
@@ -450,15 +455,18 @@ def test_recent_pdf_evidence_verifies_one_packet_per_direct_request(tmp_path, mo
         for field in ("page", "raw_url", "publication_date", "content_sha256", "report_date"):
             item[field] = row.get(field)
         revision = checks.source_revision("articles", item)
-        packet = {"issue221_packet_marker": "recent-pdf-check", "checked_at": "2026-09-30T12:00:00Z",
-            "access_status": "accessible", "verification_status": "verified",
-            "website_candidate": {"title": occurrence["title"], "summary": occurrence["summary"]},
-            "reader": {"content_hash": "c" * 64, "final_url": "https://pdf.example/recent"},
-            "verified_information": {"summary": occurrence["summary"]}}
-        packet_json = json.dumps(packet, sort_keys=True, separators=(",", ":"))
-        packet_sha = checks._sha(packet)
-        connection.execute("INSERT INTO article_check_runs VALUES('run-one','{}',?,'2026-09-30T12:00:00Z',?,'complete',1,1,NULL)",
-            (__import__("hashlib").sha256(b"{}").hexdigest(), "2026-09-30T12:00:00Z"))
+        target=next(target for target in checks.information_targets(connection,"articles") if target["occurrence_id"]=="occurrence")
+        body=occurrence["title"]+". "+occurrence["summary"]
+        packet=checks.evaluate(target,"articles",{"article_id":"occurrence","requested_url":target["source_url"],
+            "final_url":target["source_url"],"status":"ok","content":body,"content_ref":None,
+            "content_hash":__import__("hashlib").sha256(body.encode()).hexdigest()},
+            lambda kind,fields,content:{"comparisons":{key:{"status":"supported"} for key in fields}})
+        assert packet["verification_status"]=="verified",packet
+        packet.update(issue221_packet_marker="recent-pdf-check",checked_at="2026-09-30T12:00:00Z")
+        packet_json=checks._json(packet);packet_sha=checks._sha(packet)
+        frozen=checks._json({"schema_version":checks.CHECK_VERSION,"kind":"articles","targets":[target],"retry_of":None,"registry_database":str(database.resolve())})
+        connection.execute("INSERT INTO article_check_runs VALUES('run-one',?,?,'2026-09-30T12:00:00Z',?,'complete',1,1,NULL)",
+            (frozen,__import__("hashlib").sha256(frozen.encode()).hexdigest(),"2026-09-30T12:00:00Z"))
         connection.execute("""INSERT INTO article_check_attempts(attempt_id,run_id,occurrence_id,source_url,
             source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256)
             VALUES(?,?,?,?,?,?,?,?,?,?)""",
@@ -531,6 +539,8 @@ def test_pdf_source_cache_stays_bound_to_each_approved_candidate(tmp_path):
         occurrence = {"summary": "Second observation", "summary_basis": "verbatim_pdf_article_row"}
         connection.execute("INSERT INTO pdf_intake_article_occurrences VALUES('occ-b','pdf-b',?,3,?,'2026-09-01',NULL,?,?,?)",
             ("f" * 64, "https://pdf.example/b", "d" * 64, "c" * 64, json.dumps(occurrence)))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         candidate = stage_snapshot(connection, snapshot_entity(connection, "pdf_article", "pdf-b"))
         _approve(connection, candidate, {"basis": "second frozen dependency"}, status="accepted_legacy")
 
@@ -569,12 +579,12 @@ def test_report_summary_provenance_comes_from_approved_summary_field(tmp_path, m
     monkeypatch.setattr(api_server, "_registry_reader", lambda: reader)
     report_article = next(item for item in reader.report("2026-09-07")["articles"] if item["article_id"] == identity)
     detail = reader.article(identity)
-    assert report_article["summary_provenance"] == detail["summary_provenance"] == "source_report"
+    assert report_article["summary_provenance"] == detail["summary_provenance"] == "verified_source_evidence"
     assert report_article["metadata_provenance"]["categories"] == "manual_supplement"
     response = TestClient(api_server.app).get("/api/registry/reports/2026-09-07")
     assert response.status_code == 200
     http_article = next(item for item in response.json()["articles"] if item["article_id"] == identity)
-    assert http_article["summary_provenance"] == "source_report"
+    assert http_article["summary_provenance"] == "verified_source_evidence"
 
 
 def test_linked_core_pdf_observation_has_no_target_wiki_page(tmp_path, monkeypatch):
@@ -668,21 +678,24 @@ def test_calendar_alias_and_check_reuse_one_verified_packet_per_request(tmp_path
         "kind": "event", "raw_date": "June 10–12, 2027", "date_precision": "day", "start_date": "2027-06-10",
         "end_date": "2027-06-12", "summary": "Original PDF meeting", "page": 2,
         "source_urls": ["https://example.com/register"], "source_document_sha256": "f" * 64}
-    packet = {"review3_packet_marker": "calendar-check", "checked_at": "2026-09-30T12:00:00Z",
-        "access_status": "accessible", "verification_status": "verified", "website_candidate": _candidate(),
-        "reader": {"content_hash": "c" * 64, "final_url": item["source_urls"][0]},
-        "verified_information": {"summary": item["summary"]}}
-    packet_json = json.dumps(packet, sort_keys=True, separators=(",", ":"))
     with sqlite3.connect(database) as connection:
         _pdf(connection, identity="pdf-independent", url="https://example.org/independent")
         connection.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,2,?,'event',?,'day',?,?,?, ?,NULL,?)",
             (item["occurrence_id"], item["event_id"], "f" * 64, item["name"], item["raw_date"],
              item["start_date"], item["end_date"], item["summary"], "c" * 64, json.dumps(item)))
-        connection.execute("INSERT INTO meeting_check_runs VALUES('check','{}',?,'2026-09-30','2026-09-30','complete',1,1,NULL)",
-            (hashlib.sha256(b"{}").hexdigest(),))
+        target=next(target for target in checks.information_targets(connection,"meetings") if target["occurrence_id"]=="calendar-occ")
+        body="World Climate Summit 2027 meets June 10–12, 2027 in New York. Registration deadline May 1, 2027. Register https://example.com/register."
+        packet=checks.evaluate(target,"meetings",{"article_id":"calendar-occ","requested_url":target["source_url"],
+            "final_url":target["source_url"],"status":"ok","content":body,"content_ref":None,"content_hash":hashlib.sha256(body.encode()).hexdigest()},
+            lambda kind,fields,content:{"comparisons":{key:{"status":"supported"} for key in fields},"website_candidate":_candidate()})
+        assert packet["verification_status"]=="verified",packet
+        packet.update(review3_packet_marker="calendar-check",checked_at="2026-09-30T12:00:00Z")
+        packet_json=checks._json(packet)
+        frozen=checks._json({"schema_version":checks.CHECK_VERSION,"kind":"meetings","targets":[target],"retry_of":None,"registry_database":str(database.resolve())})
+        connection.execute("INSERT INTO meeting_check_runs VALUES('check',?,?,'2026-09-30','2026-09-30','complete',1,1,NULL)",
+            (frozen,hashlib.sha256(frozen.encode()).hexdigest()))
         connection.execute("INSERT INTO meeting_check_attempts(attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256) VALUES('attempt','check',?,?,?,'2026-09-30T12:00:00Z','accessible','verified',?,?)",
-            (item["occurrence_id"], item["source_urls"][0], checks.source_revision("meetings", item),
-             packet_json, checks._sha(packet)))
+            (item["occurrence_id"], item["source_urls"][0], target["source_revision_sha256"],packet_json,checks._sha(packet)))
         _approve_all(connection)
 
     calls = {"decode": 0, "hash": 0}
@@ -705,7 +718,7 @@ def test_calendar_alias_and_check_reuse_one_verified_packet_per_request(tmp_path
     assert calls == {"decode": 2, "hash": 2}, "the same packet is verified once in each independent request"
 
 
-def test_historical_meeting_candidate_bulk_loads_missing_frozen_batch_metadata(tmp_path, monkeypatch):
+def test_unverified_historical_meeting_candidate_stays_hidden(tmp_path, monkeypatch):
     from climate_registry.publication import _approve, stage_snapshot
     from climate_registry.schema import apply_migrations
 
@@ -735,15 +748,12 @@ def test_historical_meeting_candidate_bulk_loads_missing_frozen_batch_metadata(t
         records, _coverage = reader._approved_meeting_records(
             base_date="2027-01-01", timezone_name="America/New_York", include_unknown=True)
 
-    sources = records[0]["sources"]
-    assert [source["is_current"] for source in sources] == [0, 1]
-    assert [source["collected_at"] for source in sources] == ["2026-09-07T08:00:00Z", "2026-09-14T08:00:00Z"]
-    batch_reads = [statement for statement in statements
-        if "FROM acquisition_batches WHERE batch_id IN" in statement]
-    assert len(batch_reads) == 1, "historic run batch metadata is fetched in one bounded lookup"
+    assert records == []
+    assert not [statement for statement in statements if "FROM acquisition_batches WHERE batch_id IN" in statement]
+    from climate_registry.acquisition_review import digest
+    assert digest(snapshot)==fixture["meeting_candidate_sha256"]
 
-
-def test_historical_article_candidate_restores_search_origin_in_one_lookup(tmp_path, monkeypatch):
+def test_unverified_historical_article_candidate_stays_hidden(tmp_path, monkeypatch):
     from climate_registry.publication import _approve, stage_snapshot
     from climate_registry.schema import apply_migrations
 
@@ -770,14 +780,12 @@ def test_historical_article_candidate_restores_search_origin_in_one_lookup(tmp_p
             yield connection
 
     monkeypatch.setattr(reader, "_source_connection", traced_source)
-    detail = reader.article(snapshot["entity_id"])
-    origin = detail["acquisition_observations"][0]["origins"][0]
-    assert origin["search"] == {key: fixture["article_search_rows"][0][key]
-        for key in ("batch_id", "search_ref", "search_id", "query", "engine", "status", "attempted_at")}
-    search_reads = [statement for statement in statements
-        if "FROM acquisition_searches WHERE" in statement and "search_ref" in statement]
-    assert len(search_reads) == 1, "historic search provenance is fetched by batch/search reference in one lookup"
-
+    from climate_registry.read_api import RegistryNotFoundError
+    with pytest.raises(RegistryNotFoundError):
+        reader.article(snapshot["entity_id"])
+    assert not [statement for statement in statements if "FROM acquisition_searches WHERE" in statement]
+    from climate_registry.acquisition_review import digest
+    assert digest(snapshot)==fixture["article_candidate_sha256"]
 
 def test_installed_static_payload_priority_is_shared_by_index_and_target(tmp_path, monkeypatch):
     from climate_registry.publication import export_public_snapshot, install_git_snapshot
@@ -806,15 +814,14 @@ def test_installed_static_payload_priority_is_shared_by_index_and_target(tmp_pat
     with sqlite3.connect(installed) as connection:
         connection.execute("UPDATE articles SET document_kind='landing_page',publication_eligible=0 WHERE article_id='a'")
     install_git_snapshot(installed, wiki)
-    monkeypatch.delenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT", raising=False)
+    monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT", "1")
 
     reader = RegistryReader(installed, repository_root=application)
     with reader.public_snapshot(direct=True):
-        from climate_registry.wiki import render_registry_page
-        target = render_registry_page(installed, "article-a.md", reader=reader)
+        target = public_wiki_pages(installed, wiki_dir=wiki, reader=reader, page="article-a.md")["article-a.md"]
         monkeypatch.setattr("climate_registry.wiki._render_registry_article",
             lambda _article: pytest.fail("index page names must not render article bodies"))
-        index = render_registry_page(installed, "index.md", reader=reader)
+        index = public_wiki_pages(installed, wiki_dir=wiki, reader=reader, page="index.md")["index.md"]
     assert target and "Approved body" in target
     assert "article-a.md" in index
 
@@ -889,7 +896,7 @@ def test_registry_index_uses_approved_annotation_display_and_pdf_summaries(tmp_p
             pytest.fail("Wiki index must not render article bodies"))
         with reader.public_snapshot(direct=True):
             index = wiki.render_registry_page(database, "index.md", reader=reader)
-        assert "article-a.md" in index, f"{scenario} summary must make the approved target available"
+        assert ("article-a.md" in index) == (scenario == "pdf"), "only independently verified source facts can make a public target available"
 
 
 def test_unlinked_same_url_pdf_remains_in_collection_and_wiki_sources(tmp_path, monkeypatch):
@@ -962,7 +969,7 @@ def test_article_category_collection_carries_approved_content_version_reference(
     with sqlite3.connect(installed) as connection:
         apply_migrations(connection)
     install_git_snapshot(installed, wiki)
-    static_reader = RegistryReader(installed, repository_root=application)
+    static_reader = RegistryReader.from_public_export(application)
     with static_reader.public_snapshot(direct=True):
         static = next(item for item in static_reader.articles()["items"] if item["article_id"] == "a")
     assert static["content_version_id"] == direct["content_version_id"]

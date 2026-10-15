@@ -767,6 +767,7 @@ def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(
         connection.execute("DROP TABLE pdf_intake_calendar_items")
         connection.execute("DROP TABLE pdf_intake_article_occurrences")
         connection.execute("DROP TABLE pdf_intake_articles")
+        connection.execute("DROP TABLE pdf_intake_summary_adoptions")
         connection.execute("DROP TABLE pdf_intake_documents")
         connection.execute("DROP TABLE acquisition_items")
         connection.execute("DROP TABLE acquisition_searches")
@@ -866,17 +867,18 @@ def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(
     ).status()["schema_version"] == 3
     assert [item["article_id"] for item in api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).articles()["items"]] == legacy_ids
+    ).articles()["items"]] == []
+    assert legacy_ids  # Migration approval alone is not factual verification.
     migrated_bytes = weekly_fixture.database.read_bytes()
     result = weekly.weekly_sync(**weekly_fixture.arguments())
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 22
+    ).status()["schema_version"] == 23
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 22
+    ).status()["schema_version"] == 23
     assert backup.read_bytes() == migrated_bytes
 
 
@@ -1003,14 +1005,25 @@ def _approve_weekly_fixture(database,source_dir,metadata_dir):
     from climate_registry.annotations import load_article_annotations
     from climate_registry.publication import stage_entities,_approve
     with sqlite3.connect(database) as connection:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         for sha in stage_entities(connection,annotations=load_article_annotations(metadata_dir),source_dir=source_dir):
             _approve(connection,sha,{"basis":"explicit captured weekly fixture approval"},status="accepted_legacy")
 
 
+@pytest.mark.parametrize("use_fallback", (False, True))
 def test_full_monday_sync_reload_and_read_only_api_contract(
-    weekly_fixture, monkeypatch
+    weekly_fixture, monkeypatch, use_fallback
 ):
-    result = weekly.weekly_sync(**weekly_fixture.arguments())
+    metadata_dir = weekly_fixture.repository / "article_metadata"
+    if use_fallback:
+        _write_target_annotation(metadata_dir)
+        _run("git", "add", "article_metadata", cwd=weekly_fixture.repository)
+        _run("git", "commit", "-qm", "validated article metadata", cwd=weekly_fixture.repository)
+    else:
+        metadata_dir.mkdir()
+    result = weekly.weekly_sync(**weekly_fixture.arguments(metadata_dir=metadata_dir,
+        transport=ForbiddenTransport() if use_fallback else FakeTransport()))
     assert result["status"] == "ok"
     binding = refresh._verify_sha_binding(
         SimpleNamespace(
@@ -1026,7 +1039,13 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
         "database_sha256": result["database_sha256_after"],
         "target_article_count": 1,
         "target_article_ids": result["target_article_ids"],
+        "target_latest_fetches": {result["target_article_ids"][0]: {
+            "fetch_status": "failed" if use_fallback else "success",
+            "http_status": 403 if use_fallback else 200,
+            "error_code": "http_error" if use_fallback else None,
+        }},
     }
+    assert result["promotion"] == "performed"
     wrong_membership = {**result, "target_article_ids": ["article-wrong"]}
     with pytest.raises(refresh._JobError, match="sha_verification_failed"):
         refresh._verify_sha_binding(
@@ -1053,16 +1072,18 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
         )
     weekly_fixture.source.write_bytes(source_bytes)
 
-    empty_metadata = weekly_fixture.repository / "article_metadata"
-    empty_metadata.mkdir()
-    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,empty_metadata)
+    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,metadata_dir)
+    result = {**result, "database_sha256_after": refresh._stream_sha256(weekly_fixture.database)}
+    binding_args = SimpleNamespace(date=TARGET, source_dir=weekly_fixture.source_dir,
+        database=weekly_fixture.database, artifact_root=weekly_fixture.artifact_root)
+    binding = refresh._verify_sha_binding(binding_args, result)
     before_api = weekly_fixture.database.read_bytes()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(weekly_fixture.database))
     monkeypatch.setenv(
         "CLIMATE_DELIVERY_OUTPUT_DIR", str(weekly_fixture.artifact_root)
     )
     monkeypatch.setattr(api_server, "SOURCE_DIR", weekly_fixture.source_dir)
-    monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", empty_metadata)
+    monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", metadata_dir)
     monkeypatch.setattr(api_server, "RELOAD_TOKEN", "test-reload-token")
     client = TestClient(app)
 
@@ -1079,8 +1100,7 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
     report_payload = report.json()
     assert report_payload["report_date"] == TARGET
     assert len(report_payload["articles"]) == 1
-    assert report_payload["report_briefing"]["executive_summary"]
-    assert report_payload["report_briefing"]["monitoring_snapshot"] is not None
+    assert report_payload["report_briefing"] is None
     assert report_payload["report_pdf"] == {
         "filename": f"climate-monitor-{TARGET}.pdf",
         "download_url": f"/api/registry/reports/{TARGET}/pdf",
@@ -1090,10 +1110,10 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
     detail = client.get(f"/api/registry/articles/{article_id}")
     assert detail.status_code == 200
     payload = detail.json()
-    assert payload["summary_provenance"] == "content_enrichment"
+    assert payload["summary_provenance"] == "verified_source_evidence"
     assert payload["metadata_provenance"] == {
-        "categories": "content_enrichment",
-        "keywords": "content_enrichment",
+        "categories": "publisher_excerpt_annotation" if use_fallback else "content_enrichment",
+        "keywords": "publisher_excerpt_annotation" if use_fallback else "content_enrichment",
     }
     assert payload["original_url"] == "https://example.com/target"
     assert payload["appearances"][0]["report_date"] == TARGET
@@ -1101,13 +1121,60 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
     assert "latest_fetch" not in payload
     from climate_registry.read_api import RegistryReader
     raw = RegistryReader(weekly_fixture.database,repository_root=weekly_fixture.repository,public=False)
-    assert raw.article(article_id)["latest_fetch"]["fetch_status"] == "success"
-    assert payload["enrichment"]["generator"]["name"] == "climate-registry-rules"
-    assert payload["source_annotation"] is None
+    assert raw.article(article_id)["latest_fetch"]["fetch_status"] == ("failed" if use_fallback else "success")
+    if not use_fallback:
+        assert payload["enrichment"]["generator"]["name"] == "climate-registry-rules"
+        assert payload["source_annotation"] is None
 
     pdf = client.get(report_payload["report_pdf"]["download_url"])
     assert pdf.status_code == 200
     assert pdf.content.startswith(b"%PDF-")
+
+    # Drive the reload verifier with real API responses, including its withheld briefing.
+    from urllib.parse import urlsplit
+    monkeypatch.setenv("RELOAD_TOKEN", "test-reload-token")
+    def api_request(url, *, method="GET", headers=None, timeout):
+        response = client.request(method, urlsplit(url).path, headers=headers or {})
+        assert response.status_code == 200
+        return response.json()
+    monkeypatch.setattr(refresh, "_request_json", api_request)
+    verification = refresh._reload_and_verify(SimpleNamespace(date=TARGET, request_timeout=1),
+        base_url="http://testserver", sync_result=result, sha_binding=binding)
+    assert verification["briefing"] is False and verification["monitoring_snapshot"] is False
+    assert verification["pdf"] is True and verification["verified_eligible_article_count"] == 1
+    assert verification["sample_article_id"] == article_id
+    for invalid_fetch in (None, {"fetch_status":"failed", "http_status":500, "error_code":"http_error"}):
+        invalid_binding = {**binding, "target_latest_fetches": {article_id: invalid_fetch}}
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._reload_and_verify(SimpleNamespace(date=TARGET, request_timeout=1),
+                base_url="http://testserver", sync_result=result, sha_binding=invalid_binding)
+    if use_fallback:
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._reload_and_verify(SimpleNamespace(date=TARGET, request_timeout=1),
+                base_url="http://testserver", sync_result={**result,"fallback_article_ids":[]}, sha_binding=binding)
+    for invalid in ("missing_briefing", "missing_pdf", "wrong_target"):
+        def invalid_api_request(url, **kwargs):
+            payload = api_request(url, **kwargs)
+            if urlsplit(url).path == f"/api/registry/reports/{TARGET}":
+                if invalid == "missing_briefing": payload.pop("report_briefing")
+                elif invalid == "missing_pdf": payload.pop("report_pdf")
+                else: payload["articles"] = [{"article_id":"wrong-target"}]
+            return payload
+        monkeypatch.setattr(refresh, "_request_json", invalid_api_request)
+        with pytest.raises(refresh._JobError, match="report_verification_failed"):
+            refresh._reload_and_verify(SimpleNamespace(date=TARGET, request_timeout=1),
+                base_url="http://testserver", sync_result=result, sha_binding=binding)
+    for field in ("summary", "metadata_provenance", "appearances"):
+        def incomplete_api_request(url, **kwargs):
+            payload = api_request(url, **kwargs)
+            if urlsplit(url).path == f"/api/registry/articles/{article_id}":
+                payload.pop(field)
+            return payload
+        monkeypatch.setattr(refresh, "_request_json", incomplete_api_request)
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._reload_and_verify(SimpleNamespace(date=TARGET, request_timeout=1),
+                base_url="http://testserver", sync_result=result, sha_binding=binding)
+    assert refresh._verify_sha_binding(binding_args, result) == binding
     assert weekly_fixture.database.read_bytes() == before_api
 
 
@@ -1735,7 +1802,7 @@ def test_twenty_five_article_coverage_promotes_only_when_fully_resolved(
         detail = reader.article(article["article_id"])
         assert detail["summary"] and detail["categories"] and detail["keywords"]
         provenances.append(detail["summary_provenance"])
-        if detail["summary_provenance"] != "content_enrichment":
+        if detail["canonical_url"] in fallback_urls:
             assert detail["latest_fetch"] == {
                 "fetched_at": NOW.isoformat().replace("+00:00", "Z"),
                 "fetch_status": "failed",
@@ -1743,8 +1810,14 @@ def test_twenty_five_article_coverage_promotes_only_when_fully_resolved(
                 "content_type": "text/html",
                 "error_code": "http_error",
             }
-    assert provenances.count("content_enrichment") == 25 - fallback_count
-    assert provenances.count("publisher_excerpt_annotation") == fallback_count
+    assert provenances.count("verified_source_evidence") == 25
+    private=api_server.RegistryReader(weekly_fixture.database,repository_root=weekly_fixture.repository,
+        source_dir=weekly_fixture.source_dir,metadata_dir=metadata_dir,public=False)
+    for identity in result['fallback_article_ids']:
+        detail=private.article(identity)
+        assert detail['summary'] and detail['summary_provenance']=='publisher_excerpt_annotation'
+        public=reader.article(identity)
+        assert public['summary']!=detail['summary']  # Annotation facts were not part of the T1 fields.
 
 
 @pytest.mark.parametrize("failure_kind", ("http_503", "dns", "blocked_response"))
@@ -2219,3 +2292,31 @@ def test_errors_and_results_do_not_disclose_paths_urls_or_delivery_state(
     assert str(weekly_fixture.artifact_root) not in message
     assert "https://" not in message
     assert "recipient" not in message
+
+
+@pytest.mark.parametrize("invalid", ["unknown_counts", "boolean_count", "negative_count", "empty_narratives", "blank_note"])
+def test_weekly_private_artifact_rejects_incomplete_monitoring_without_public_narrative(weekly_fixture, invalid):
+    result = weekly.weekly_sync(**weekly_fixture.arguments())
+    manifest_path = next(weekly_fixture.artifact_root.rglob("manifest.json"))
+    summary_path = manifest_path.parent/"summary.json"
+    summary = json.loads(summary_path.read_bytes())
+    if invalid == "unknown_counts":
+        summary["report"]["sites"] = {"checked":None, "succeeded":None, "failed":None}
+    elif invalid == "boolean_count": summary["report"]["sites"]["checked"] = True
+    elif invalid == "negative_count": summary["report"]["sites"]["checked"] = -1
+    elif invalid == "empty_narratives": summary["executive_summary"] = []
+    else: summary["monitoring_notes"] = [" "]
+    summary_path.write_bytes(json.dumps(summary).encode())
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["artifacts"]["summary"]["sha256"] = hashlib.sha256(summary_path.read_bytes()).hexdigest()
+    manifest_path.write_bytes(json.dumps(manifest).encode())
+    report = parse_weekly_report(weekly_fixture.source)
+    artifact = refresh.load_report_artifact(weekly_fixture.artifact_root,
+        report_date=report.report_date, report_filename=report.filename, report_title=report.title,
+        report_sha256=report.sha256, include_pdf_bytes=False)
+    assert (artifact is not None) == (invalid in {"unknown_counts", "blank_note"})
+    before = weekly_fixture.database.read_bytes()
+    with pytest.raises(refresh._JobError, match="sha_verification_failed"):
+        refresh._verify_sha_binding(SimpleNamespace(date=TARGET, source_dir=weekly_fixture.source_dir,
+            database=weekly_fixture.database, artifact_root=weekly_fixture.artifact_root), result)
+    assert weekly_fixture.database.read_bytes() == before

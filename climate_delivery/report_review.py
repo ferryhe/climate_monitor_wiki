@@ -269,7 +269,7 @@ def _freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pd
                     if digest(packet)!=check["packet_sha256"] or packet.get("verified_information")!=information or check["source_url"]!=evidence.get("source_url"):
                         continue
                     selected_summaries.append({"summary":information["summary"],"provenance":{
-                        "basis":"approved_source_verification","candidate_sha256":digest(snapshot),
+                        "basis":"approved_source_verification","candidate_sha256":snapshot.get("_approved_candidate_sha256") or digest(snapshot),
                         "occurrence_id":version["source_ref"],"dto_field":("pdf_occurrences" if kind=="article" else "occurrences")+"[occurrence_id="+version["source_ref"]+"].verified_information.summary",
                         "source_url":information["source_url"],"body_sha256":information["body_sha256"],"generated_at":information["generated_at"],
                         "knowledge_id":version["knowledge_id"],"material_sha256":version["material_sha256"],
@@ -302,7 +302,7 @@ def _freeze_biweekly(reader, root: Path, *, occurrence: str, web_reader=None, pd
                     from climate_registry.publication import snapshot_metadata
                     with reader.connect() as connection:
                         approved=snapshot_metadata(connection,"meeting",item["event_id"])
-                    record["material_provenance"]={"basis":"approved_public_version","candidate_sha256":digest(approved)}
+                    record["material_provenance"]={"basis":"approved_public_version","candidate_sha256":approved.get("_approved_candidate_sha256") or digest(approved)}
                 meeting_records.append(record)
         meeting["records"]=meeting_records
         calendar = _pdf_calendar_payload(reader, base_date=day.isoformat(), overlay_reader=pdf_reader,
