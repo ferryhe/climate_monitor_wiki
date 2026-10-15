@@ -8,36 +8,51 @@ from pathlib import Path
 
 from climate_delivery.io import atomic_write_bytes, atomic_write_json
 from .acquisition_review import digest, now_stamp
+from .pdf_summary import ORIGINAL_SUMMARY_LABEL
 from .verification import PUBLICATION_POLICY, evaluate_snapshot, canonical_target, review_context, public_snapshot_view
 
 REASONS = {
-    "reviewed_summary_receipt_missing": "额外展示摘要缺少精确来源核验及审核凭据，已回退至核验原文摘要",
-    "no_check": "没有核验记录", "stale_revision": "核验绑定的原文版本已不匹配", "failed_access": "源网页读取失败",
-    "conflict": "核验发现事实冲突", "partial": "部分字段未获支持", "unchecked": "尚未有效核验",
-    "invalid_check_packet": "核验包或哈希无效", "invalid_source_binding": "核验缺少准确来源绑定",
-    "no_native_binding": "缺少原生文章或会议的真实来源绑定", "incomplete_t1": "T1 未完整结束",
-    "invalid_reader_evidence": "缺少真实完整网页内容或内容哈希不符", "unsupported_fields": "事实字段缺少来源支持",
-    "no_publication": "没有已批准公开版本", "pending_review": "新候选待审核", "owner_hidden": "所有者已隐藏",
-    "manual_source_access_unavailable": "原网页无法直接读取；仅公开独立人工核验支持的范围",
-    "manual_packet_invalid": "人工核验格式无效", "manual_source_binding_invalid": "人工核验来源绑定不匹配",
-    "manual_run_binding_invalid": "人工核验运行记录不匹配", "manual_review_binding_missing": "缺少精确候选的独立人工审查凭据",
-    "manual_review_binding_invalid": "人工审查凭据绑定无效", "manual_identity_evidence_missing": "缺少人工核验身份日期证据",
-    "unverified_date_observation": "该项核验字段可公开，未获核验的额外页面日期已隐藏",
-    "unverified_acquisition_date": "该项核验字段可公开，未获核验的额外采集条目日期已隐藏",
-    "reader_body_mismatch": "该项核验字段可公开，保留正文与核验网页内容不同，正文已隐藏",
-    "missing_ineligible_target": "关联目标不存在或没有有效核验", "metadata_only": "仅保留已批准的报告页码关联，原文事实不公开"}
+    "reviewed_summary_receipt_missing": "The additional display summary lacks exact source verification and review receipts; using the verified source summary",
+    "no_check": "No verification record",
+    "stale_revision": "The verified source revision no longer matches",
+    "failed_access": "Source webpage access failed",
+    "conflict": "Verification found conflicting facts",
+    "partial": "Some fields lack source support",
+    "unchecked": "Effective verification is missing",
+    "invalid_check_packet": "The verification packet or hash is invalid",
+    "invalid_source_binding": "Exact source binding is missing",
+    "no_native_binding": "Genuine native article or meeting source binding is missing",
+    "incomplete_t1": "T1 did not complete",
+    "invalid_reader_evidence": "Complete webpage evidence is missing or its content hash differs",
+    "unsupported_fields": "Factual fields lack source support",
+    "no_publication": "No approved public version",
+    "pending_review": "The new candidate awaits review",
+    "owner_hidden": "Hidden by the owner",
+    "manual_source_access_unavailable": "The original webpage is unavailable; only the scope supported by independent manual verification is public",
+    "manual_packet_invalid": "Invalid manual verification format",
+    "manual_source_binding_invalid": "Manual verification source binding differs",
+    "manual_run_binding_invalid": "Manual verification run binding differs",
+    "manual_review_binding_missing": "Exact candidate independent manual review receipts are missing",
+    "manual_review_binding_invalid": "Invalid manual review receipt binding",
+    "manual_identity_evidence_missing": "Manual identity or date evidence is missing",
+    "unverified_date_observation": "Verified fields may be public; additional unverified webpage dates are hidden",
+    "unverified_acquisition_date": "Verified fields may be public; additional unverified acquisition dates are hidden",
+    "reader_body_mismatch": "Verified fields may be public; the retained body differs from the verified webpage and is hidden",
+    "missing_ineligible_target": "The linked target is missing or lacks effective verification",
+    "metadata_only": "Only the approved report/page reference is retained; source facts are hidden"
+}
 
 
 def reason_explanation(code):
     kind, _, field = code.partition(":")
     if kind == "field_outside_verification":
-        return "该项核验字段可公开，额外字段未获核验，已隐藏："+field
+        return "Verified fields may be public; additional unverified fields are hidden: "+field
     if kind == "manual_field_outside_reviewed_scope":
-        return "字段未在人工核验范围内，已隐藏："+field
+        return "Fields outside the manually verified scope are hidden: "+field
     if kind == "manual_date_outside_evidence":
-        return "原日期超出人工证据，仅显示可证日期："+field
+        return "The original date exceeds manual evidence; only supported dates are shown: "+field
     if kind == "manual_field_value_mismatch":
-        return "人工字段证据值不匹配："+field
+        return "The manually verified field value differs: "+field
     return REASONS.get(code, code)
 
 
@@ -163,10 +178,10 @@ def write_verification_report(database, root):
         for outcome in state.get("packet", {}).get("source_outcomes", []):
             outcomes.append({"run": path.parent.parent.name, "source_outcome": outcome, "review_state": state.get("sources", {}).get(outcome.get("source"), {})})
     totals = dict(Counter(row["version"] + ":" + row["entity_kind"] + ":" + row["verification_status"] for row in rows))
-    report = {"schema_version": "t10-verification-report.v1", "generated_at": now_stamp(), "database": str(database),
+    report = {"schema_version": "t10-verification-report.v1", "language": "en", "generated_at": now_stamp(), "database": str(database),
         "publication_policy": PUBLICATION_POLICY, "public_revision": revision, "totals": totals, "rows": rows,
         "source_outcomes": outcomes, "retained_verified_public_versions": retained,
-        "original_summary_adoptions": [{**row, "label": "采用原文", "fact_verification": "not_asserted"} for row in adoptions]}
+        "original_summary_adoptions": [{**row, "label": ORIGINAL_SUMMARY_LABEL, "fact_verification": "not_asserted"} for row in adoptions]}
     semantic_sha = digest({key: value for key, value in report.items() if key != "generated_at"})
     directory = Path(root) / "registry-review" / "verification-reports"
     latest_path = directory / "latest.json"
@@ -185,20 +200,20 @@ def write_verification_report(database, root):
     atomic_write_json(json_path, {**report, "report_sha256": sha})
     def cell(value):
         return str(value or "—").replace("|", r"\|").replace("\n", " ")
-    lines = ["# T10 核验与公开清单", "", "本报告只列实际状态，不代替人工审核，也不产生 PASS。原文采用不代表独立事实核验。", "",
-        "版本：current 为库内当前记录，latest 为最新候选，published 为已批准版本。同一对象可有多行；待审核的新候选可以与旧的已核验公开版本并存。", "",
-        "历史人工核验仅按保留的精确独立审核凭据及范围使用；本次未重读其外部原件。", "",
-        "生成：" + report["generated_at"], "数据库：" + str(database), "政策：" + PUBLICATION_POLICY, "", "## 逐项清单（无截断）", "",
-        "|版本|类型 / 身份|标题|来源 / 报告页|核验|实际公开角色|原因 / 审核|", "|---|---|---|---|---|---|---|"]
+    lines = ["# T10 verification and publication inventory", "", "This report records actual states. It does not replace human review or produce a PASS. Original-text adoption does not assert independent fact verification.", "",
+        "Versions: current is the current database record; latest is the newest candidate; published is the approved version. An entity may have multiple rows. A pending candidate can coexist with an older verified public version.", "",
+        "Historical manual verification is used only within the retained exact independent review receipts and scope; external originals were not reread for this report.", "",
+        "Generated: " + report["generated_at"], "Database: " + str(database), "Policy: " + PUBLICATION_POLICY, "", "## Complete item inventory", "",
+        "|Version|Type / identity|Title|Source / report page|Verification|Actual public role|Reason / review|", "|---|---|---|---|---|---|---|"]
     for row in rows:
         sources = "; ".join(s["source_url"] + ("; " + str(s.get("error")) if s.get("error") else "") for s in row["sources"])
         source = sources + ("; " + str((row["source_report"] or {}).get("filename") or "PDF") + " " + str(row["document_sha256"]) + " page " + str(row["page"]) if row["document_sha256"] else "")
         disposition = "; ".join(r["status"] + ": " + json.dumps(r["disposition"], ensure_ascii=False) for r in row["reviews"])
         lines.append("|" + "|".join(cell(x) for x in (row["version"],row["entity_kind"]+" / "+row["entity_id"], row["title"], source,
             row["verification_status"]+" / "+row["access_status"], row["public_role"], "; ".join(reason_explanation(reason)+" ("+reason+")" for reason in row["reason_codes"])+"; "+disposition)) + "|")
-    lines.extend(["", "## 读取失败及零候选来源", "", *["- " + json.dumps(row, ensure_ascii=False) for row in outcomes],
-        "", "## 保留的旧核验公开版本", "", *["- " + json.dumps(row, ensure_ascii=False) for row in retained],
-        "", "## 原文采用（不代表事实核验）", "", *["- " + json.dumps(row, ensure_ascii=False) for row in report["original_summary_adoptions"]]])
+    lines.extend(["", "## Failed and zero-candidate sources", "", *["- " + json.dumps(row, ensure_ascii=False) for row in outcomes],
+        "", "## Retained older verified public versions", "", *["- " + json.dumps(row, ensure_ascii=False) for row in retained],
+        "", "## Original-text adoption (not fact verification)", "", *["- " + json.dumps(row, ensure_ascii=False) for row in report["original_summary_adoptions"]]])
     human_bytes = ("\n".join(lines)+"\n").encode()
     atomic_write_bytes(markdown_path, human_bytes)
     receipt = {"status": "written", "json_path": str(json_path), "human_report_path": str(markdown_path), "report_sha256": sha,

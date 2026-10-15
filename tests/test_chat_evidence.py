@@ -1723,7 +1723,7 @@ def test_natural_insurer_question_reuses_retained_consultation_body(tmp_path, mo
 
 
 def test_matched_seven_starters_and_pdf_boundary(monkeypatch):
-    expected = ["Generate PDF", "Key dates & opportunities", "New reports & articles", "Insurance implications",
+    expected = ["Generate PDF report", "Key dates & opportunities", "New reports & articles", "Insurance implications",
         "Regulation & disclosure", "Physical risks", "Transition risks"]
     assert [item["label"] for item in PROMPT_STARTERS] == expected
     source = Path("showcase/app.js").read_text()

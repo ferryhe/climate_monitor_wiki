@@ -1379,7 +1379,7 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
     assert updates["pdf-only"]["core_article_id"] is None
     assert "article-b" not in snapshot["unknown_publication_date_article_ids"]
     example = updates["pdf-only"]
-    assert example["publication_date_label"] == "文章发布日期未确认"
+    assert example["publication_date_label"] == "Article publication date unconfirmed"
     assert example["coverage_period"] == {"start": "2026-09-14", "end": "2026-09-27"}
     assert example["filename"] == "IAA_CSC_Climate_Report_20260928.pdf"
     assert example["page"] == 4 and example["document_sha256"] == overlap_sha
@@ -1409,7 +1409,7 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
     assert "https://pdf.example/only" in {
         annotation.get("/A", {}).get("/URI") for annotation in pdf_annotations
     }
-    assert "文章发布日期未确认" in html_report
+    assert "Article publication date unconfirmed" in html_report
     assert overlap_sha not in html_report and overlap_sha not in pdf_text
     assert "PDF Source Updates" in pdf_text
     assert "Article publication date unconfirmed" in pdf_text
@@ -1684,7 +1684,7 @@ def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_p
     assert "summary.pdf, page 5" in html_report and document_sha not in html_report
     assert "PDF import" not in html_report
     assert "article publication date unconfirmed; coverage period" not in html_report
-    assert "文章发布日期未确认" in html_report
+    assert "Article publication date unconfirmed" in html_report
     assert 'href="#publisher-1">example.org</a>' in html_report
 
 

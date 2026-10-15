@@ -248,7 +248,7 @@ def test_api_config_exposes_graph_and_dataview_fields(monkeypatch):
     assert payload["prompt_starters"]
     assert payload["prompt_starters"][0]["answer_mode"] == "executive"
     assert [item["label"] for item in payload["prompt_starters"]] == [
-        "Generate PDF",
+        "Generate PDF report",
         "Key dates & opportunities",
         "New reports & articles",
         "Insurance implications",

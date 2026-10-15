@@ -1,8 +1,6 @@
 # IAA_CSC_Climate_Report_20260928.pdf
 
-## Executive Summary · 采用原文
-
-Provenance: adopted original PDF text; independent factual verification is not asserted.
+## Executive Summary
 
 Three developments dominate this fortnight. The World Trade Organization's Dispute Settlement Body established
 a panel on 25 September to adjudicate the European Union's Carbon Border Adjustment Mechanism, the first
@@ -210,5 +208,7 @@ roughly twelve days, that content is now permanently lost to this series. Items 
 date confirmed only to the month, a figure taken from secondary reporting, a landing page that rendered no
 abstract — are flagged in place rather than silently upgraded. Appendix A records the basis for every one of the
 42; Appendix B records what broke and what was fixed.
+
+Note: Adopted from the original PDF. Independent factual verification is not asserted.
 
 Source PDF: [IAA_CSC_Climate_Report_20260928.pdf](/api/registry/pdf-intake/reports/c4cebda1bafb1cfd2c0e9c178db8b53b69f2b746cae543231603475ca6a66abc/pdf)

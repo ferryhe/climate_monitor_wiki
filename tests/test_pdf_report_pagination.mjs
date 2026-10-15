@@ -35,7 +35,7 @@ const context = vm.createContext({
         verified_primary_display: {name: 'IAIS Annual Conference 2027', source_url: 'https://example.org/target'}}],
       pagination: {page: 1, pages: 1, total: 2}};
     const second = path.includes('page=2');
-    return { report_title: 'Report', filename: 'report.pdf', executive_summary: ['Complete summary'],
+    return { report_title: 'Report', filename: 'report.pdf', executive_summary: ['Complete summary'], executive_summary_label: 'Adopted from the original PDF',
       articles: [{article_id: 'a', title: 'Article', occurrences: [{source_document: 'report.pdf',
         report_date: '2026-09-28', page: 19, raw_url: 'https://example.org/a', summary: 'Real summary'}]}],
       calendar_items: second ? [{name: 'Meeting', kind: 'event', raw_date: 'October 20', organizer: 'Host',
@@ -56,6 +56,12 @@ assert.equal(executive.open, false);
 assert.equal(executive.children[0].tag, 'summary');
 assert.equal(executive.children[0].text, 'Executive Summary');
 assert.ok(texts(executive).includes('Complete summary'));
+const executiveBody = executive.children[1];
+assert.equal(executiveBody.children.at(-1).text, 'Adopted from the original PDF');
+assert.equal(executiveBody.children.at(-1).className, 'muted registry-provenance');
+assert.ok(executiveBody.children.findIndex((node) => node.text === 'Complete summary') <
+  executiveBody.children.findIndex((node) => node.text === 'Adopted from the original PDF'));
+
 const list = firstNodes.find((node) => node.className === 'registry-pdf-history__list');
 assert.equal(list.tag, 'ul');
 const occurrence = list.children[0];

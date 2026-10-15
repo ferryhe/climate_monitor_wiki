@@ -9,6 +9,9 @@ from pathlib import Path
 from .acquisition_review import digest, now_stamp
 from .errors import RegistryInputError
 
+ORIGINAL_SUMMARY_LABEL = "Adopted from the original PDF"
+_LEGACY_SUMMARY_LABEL = "采用原文"
+
 
 def original_summary(document):
     text = document.get("executive_summary")
@@ -36,10 +39,10 @@ def adopted_summary(connection, document_sha256, document):
     if not isinstance(receipt, dict):
         return empty
     if (digest(receipt) != row[0] or receipt.get("document_sha256") != document_sha256
-            or receipt.get("executive_summary_sha256") != sha or receipt.get("display_label") != "采用原文"):
+            or receipt.get("executive_summary_sha256") != sha or receipt.get("display_label") not in (ORIGINAL_SUMMARY_LABEL, _LEGACY_SUMMARY_LABEL)):
         return empty
     return {"executive_summary": [text], "executive_summary_basis": "adopted_original_pdf",
-        "executive_summary_label": "采用原文", "executive_summary_reference": {
+        "executive_summary_label": ORIGINAL_SUMMARY_LABEL, "executive_summary_reference": {
             "document_sha256": document_sha256, "executive_summary_sha256": sha, "adoption_id": row[0]}}
 
 
@@ -47,15 +50,15 @@ def public_adopted_summary(payload):
     """Validate the exact original-text exception when reading a public artifact."""
     parts, reference = payload.get("executive_summary"), payload.get("executive_summary_reference")
     if (payload.get("executive_summary_basis") != "adopted_original_pdf"
-            or payload.get("executive_summary_label") != "采用原文"
+            or payload.get("executive_summary_label") not in (ORIGINAL_SUMMARY_LABEL, _LEGACY_SUMMARY_LABEL)
             or not isinstance(parts, list) or len(parts) != 1 or not isinstance(parts[0], str)
             or not parts[0].strip() or not isinstance(reference, dict)
             or reference.get("document_sha256") != payload.get("document_sha256")
             or hashlib.sha256(parts[0].encode()).hexdigest() != reference.get("executive_summary_sha256")
             or not reference.get("adoption_id")):
         return {"executive_summary": []}
-    return {key: payload[key] for key in ("executive_summary", "executive_summary_basis",
-        "executive_summary_label", "executive_summary_reference")}
+    return {"executive_summary": parts, "executive_summary_basis": "adopted_original_pdf",
+        "executive_summary_reference": reference, "executive_summary_label": ORIGINAL_SUMMARY_LABEL}
 
 
 def adopt_pdf_summary(database, document_sha256, expected_summary_sha256, *, actor, reason, backup_dir, apply=False):
@@ -80,7 +83,7 @@ def adopt_pdf_summary(database, document_sha256, expected_summary_sha256, *, act
                 return {"status": "no-op", "adoption_id": existing[0]}
             receipt = {"document_sha256": document_sha256, "executive_summary_sha256": sha,
                 "adopted_at": now_stamp(), "actor": actor, "authorization_reason": reason,
-                "display_label": "采用原文", "basis": "adopted_original_pdf"}
+                "display_label": ORIGINAL_SUMMARY_LABEL, "basis": "adopted_original_pdf"}
             identity = digest(receipt)
             if apply:
                 backup_root = Path(backup_dir); backup_root.mkdir(parents=True, exist_ok=True)
@@ -91,4 +94,4 @@ def adopt_pdf_summary(database, document_sha256, expected_summary_sha256, *, act
                     (identity, document_sha256, sha, receipt["adopted_at"], receipt["basis"], json.dumps(receipt, ensure_ascii=False, sort_keys=True)))
             return {"status": "adopted" if apply else "dry_run", "adoption_id": identity,
                 "document_sha256": document_sha256, "executive_summary_sha256": sha,
-                "display_label": "采用原文", "fact_verification": "not_asserted"}
+                "display_label": ORIGINAL_SUMMARY_LABEL, "fact_verification": "not_asserted"}

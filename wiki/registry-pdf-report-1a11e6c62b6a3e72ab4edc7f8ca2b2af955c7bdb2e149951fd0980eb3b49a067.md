@@ -1,8 +1,6 @@
 # IAA_CSC_Climate_Report_2026_09.pdf
 
-## Executive Summary · 采用原文
-
-Provenance: adopted original PDF text; independent factual verification is not asserted.
+## Executive Summary
 
 The most consequential development of this cycle is that the official temperature baseline moved: UNEP's
 Limiting Overshoot, published 2 September, is its first formal acknowledgement that exceeding 1.5  °C is
@@ -155,5 +153,7 @@ content across four entry points, and UN-Water, whose article pages now return H
 is a partial gap: its RSS feed is the only working route and this cycle it reached back only to 9 September, so
 anything it published between 24 August and 8 September has rolled off and is unrecoverable. The WTO was
 retrieved successfully through a browser session on a connected computer.
+
+Note: Adopted from the original PDF. Independent factual verification is not asserted.
 
 Source PDF: [IAA_CSC_Climate_Report_2026_09.pdf](/api/registry/pdf-intake/reports/1a11e6c62b6a3e72ab4edc7f8ca2b2af955c7bdb2e149951fd0980eb3b49a067/pdf)

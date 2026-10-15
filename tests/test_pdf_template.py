@@ -1283,3 +1283,21 @@ def test_reviewed_pdf_meeting_aliases_follow_their_merged_pdf_and_html_row(tmp_p
     for name in ("IAIS 2027", "Other meeting"):
         assert name in text
     assert snapshot == frozen
+
+
+def test_legacy_frozen_pdf_context_renders_english_controlled_labels(tmp_path):
+    snapshot = range_fixture()
+    before = copy.deepcopy(snapshot)
+    html = range_reports.render_range_report_html(snapshot)
+    chat = range_reports.render_range_report_chat(snapshot, web_url='https://example.test/report', pdf_url='https://example.test/report.pdf')
+    assert '<h2>PDF Source Updates</h2>' in html
+    assert 'Article publication date unconfirmed' in html
+    assert '文章发布日期未确认' not in html and 'PDF 来源更新' not in html
+    assert 'Publication Date Unconfirmed' in chat
+    assert '文章发布日期未确认' not in chat and 'PDF 来源更新' not in chat
+    output = tmp_path/'legacy-context.pdf'
+    range_reports.render_range_report_pdf(snapshot, output)
+    _, pdf_text = text_of(output)
+    assert 'Article publication date unconfirmed' in pdf_text
+    assert '文章发布日期未确认' not in pdf_text and 'PDF 来源更新' not in pdf_text
+    assert snapshot == before  # The frozen legacy label and source text are retained.
