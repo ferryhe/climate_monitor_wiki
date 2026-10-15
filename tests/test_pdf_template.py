@@ -1255,7 +1255,7 @@ def test_reviewed_pdf_meeting_aliases_follow_their_merged_pdf_and_html_row(tmp_p
         item = dict(observation)
         if identity != "unrelated":
             item.update(event_id="target", pdf_event_id=identity, canonical_pdf_event_id="target",
-                pdf_observations=[observation])
+                verification_status="verified", collected_candidate={"name": name}, pdf_observations=[observation])
         records.append(item)
     snapshot["pdf_calendar"]["records"] = records
     _refresh_snapshot_identity(snapshot)

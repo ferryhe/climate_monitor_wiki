@@ -1295,8 +1295,10 @@ def _pdf_calendar_payload(
             "base_date": base_date, "records": [],
         }
     base = date.fromisoformat(base_date)
-    from climate_monitor.meeting_fields import collected_pdf_meeting
+    from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations
     records = [collected_pdf_meeting(item) for item in items]
+    records = [item for item in records if not item.get("canonical_pdf_event_id")] + merge_meeting_observations(
+        [item for item in records if item.get("canonical_pdf_event_id")])
     records = [item for item in records if (end := _calendar_end_date(item)) is not None and end >= base]
     records = [item for item in records if item.get("status") not in {"cancelled", "retrospective"}]
     return {

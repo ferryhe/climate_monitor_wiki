@@ -283,10 +283,13 @@ def _key_date_rows(item: dict[str, Any], run_date: str | None = None) -> tuple[t
 
 def _calendar_source_alias_groups(records: list[dict[str, Any]]) -> tuple[tuple[str, ...], ...]:
     """Mirror the meeting merge identity so each source citation follows its row."""
+    pdf_targets = {item.get("canonical_pdf_event_id") for item in records
+        if item.get("canonical_pdf_event_id") == (item.get("pdf_event_id") or item.get("event_id"))
+        and item.get("verification_status") == "verified" and item.get("collected_candidate")}
     groups: dict[str, list[str]] = {}
     for source_index, item in enumerate(records, 1):
         imported = bool(item.get("source_document_sha256"))
-        identity = ((item.get("canonical_event_id") or item.get("canonical_pdf_event_id") or item.get("occurrence_id"))
+        identity = ((item.get("canonical_event_id") or (item.get("canonical_pdf_event_id") if item.get("canonical_pdf_event_id") in pdf_targets else None) or item.get("occurrence_id"))
             if imported else item.get("event_id"))
         identity = identity or str(len(groups))
         groups.setdefault(identity, []).append(f"C{source_index}")

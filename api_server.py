@@ -623,7 +623,14 @@ def _merge_pdf_article_payloads(
     if runtime and runtime.get("type_safe_classification") is not None:
         merged["type_safe_classification"] = runtime["type_safe_classification"]
     if merged["occurrences"]:
-        merged["summary"] = merged["occurrences"][0].get("summary")
+        latest = merged["occurrences"][0]
+        summary = latest.get("display_summary")
+        if isinstance(summary, str) and summary.strip() and latest.get("display_summary_provenance"):
+            merged["summary"] = summary
+            merged["summary_provenance"] = latest["display_summary_provenance"]
+        else:
+            merged["summary"] = latest.get("summary")
+            merged.pop("summary_provenance", None)
     return merged
 
 

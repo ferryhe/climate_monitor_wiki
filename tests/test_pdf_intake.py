@@ -1212,3 +1212,37 @@ def test_input_directory_finds_uppercase_pdf_suffix(tmp_path, monkeypatch):
 
     assert _input_pdfs([tmp_path]) == [source.resolve()]
     assert import_pdf_reports([tmp_path])["documents"][0]["source"]["filename"] == "Report.PDF"
+
+
+def test_reviewed_legacy_pdf_observation_never_supplies_target_facts():
+    from climate_monitor.meeting_fields import MEETING_FIELDS, collected_pdf_meeting, merge_meeting_observations
+    from climate_delivery.templates.adapters import _calendar_source_alias_groups
+    source = {"event_id": "source", "canonical_pdf_event_id": "target", "occurrence_id": "legacy",
+        "source_document_sha256": "a"*64, "verification_status": "partial", "access_status": "accessible",
+        "collection_status": "pending", "collected_candidate": None, "summary": "Legacy PDF text",
+        "name": "Old name", "location": "Unverified venue", "event_timezone": "UTC", "online_url": "https://old.test/",
+        "deadline_type": "registration", "deadline_date": "2099-01-01", "raw_time_text": "Old time",
+        "relevance_reason": "Old reason", "raw_date": "Old date", "source_urls": ["https://old.test/"]}
+    candidate = {"name": "Target", "timezone": None, "location": None, "online_url": None,
+        "deadline_type": None, "deadline_date": None, "raw_time_text": None, "status": "scheduled"}
+    target = {"event_id": "target", "canonical_pdf_event_id": "target", "occurrence_id": "current",
+        "source_document_sha256": "b"*64, "verification_status": "verified", "collected_candidate": candidate,
+        "summary": "Target PDF text", "source_urls": ["https://current.test/"], "checks": [{"verification_status": "verified",
+            "website_candidate": candidate, "source_url": "https://current.test/exact"}]}
+    original = deepcopy((source, target))
+    wrapped, primary = collected_pdf_meeting(source), collected_pdf_meeting(target)
+    assert wrapped["event_id"] == wrapped["pdf_event_id"] == "source"
+    assert wrapped["collected_candidate"] is None and wrapped["verification_status"] == "partial"
+    assert wrapped["pdf_observations"] == [source]
+    results = []
+    for records in ([wrapped, primary], [primary, wrapped]):
+        merged = merge_meeting_observations(records)
+        assert len(merged) == 1
+        result = merged[0]
+        assert {key: result.get(key) for key in MEETING_FIELDS} == {key: primary.get(key) for key in MEETING_FIELDS}
+        for key in ("event_id", "summary", "verification_status", "checks", "collected_candidate", "collected_candidate_source_url"):
+            assert result.get(key) == primary.get(key)
+        assert result["pdf_observations"] == [target, source]
+        assert _calendar_source_alias_groups(records) == (("C1", "C2"),)
+        results.append(result)
+    assert results[0] == results[1] and (source, target) == original
