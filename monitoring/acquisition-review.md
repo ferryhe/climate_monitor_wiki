@@ -3,7 +3,7 @@
 Run one native agent cron with `no_agent=false`, fresh context, no background
 reviewer. Read-only pre-script:
 `python scripts/review_pipeline.py peek --kind acquisition --root "$CLIMATE_ACQUISITION_RUN_DIR"`.
-Consume the returned `verification_report` JSON/Chinese Markdown artifact paths,
+Consume the returned `verification_report` JSON/English Markdown artifact paths,
 including the automatically emitted inventory when no action is selected. The
 complete inventory distinguishes unverified reasons and reader failures,
 metadata-only report references, and older verified versions retained publicly.
@@ -85,5 +85,5 @@ T10 approval does not substitute for effective source-bound T1 verification.
 Only the exact verified published primary supplies public facts; unchecked sibling
 observations keep metadata references only. Copying an original PDF Executive
 Summary requires actual owner authorization and the exact original-adoption path,
-with label `采用原文`. It is not independent fact verification or a native PASS.
+with label `Adopted from the original PDF`. It is not independent fact verification or a native PASS.
 See the existing deployment runbook for schema 23 and adoption commands.

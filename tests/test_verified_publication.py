@@ -76,7 +76,7 @@ def test_frozen_verified_primary_gate_direct_projection_and_pending(tmp_path):
     assert failed[0]['public_role'] == 'hidden_facts'
     assert 'failed_access' in failed[0]['reason_codes']
     assert any(row['entity_id'] == 'unchecked' and row['public_role'] == 'hidden_facts' for row in inventory['rows'])
-    assert '源网页读取失败' in Path(receipt['human_report_path']).read_text(encoding='utf-8')
+    assert 'Source webpage access failed' in Path(receipt['human_report_path']).read_text(encoding='utf-8')
 
 
 def test_original_summary_adoption_exact_text_and_archive_independence(tmp_path):
@@ -91,7 +91,7 @@ def test_original_summary_adoption_exact_text_and_archive_independence(tmp_path)
     with pytest.raises(RegistryInputError, match='hash differs'):
         adopt_pdf_summary(database, DOC, '0'*64, actor='owner', reason='explicit adoption', backup_dir=tmp_path/'backups', apply=True)
     result = adopt_pdf_summary(database, DOC, sha, actor='owner', reason='explicit exact original adoption', backup_dir=tmp_path/'backups', apply=True)
-    assert result['status'] == 'adopted'
+    assert result['status'] == 'adopted' and result['display_label'] == 'Adopted from the original PDF'
     with sqlite3.connect(database) as db:
         with pytest.raises(sqlite3.IntegrityError, match='append-only'):
             db.execute("UPDATE pdf_intake_summary_adoptions SET adoption_basis='rewritten'")
@@ -100,14 +100,16 @@ def test_original_summary_adoption_exact_text_and_archive_independence(tmp_path)
     assert adopt_pdf_summary(database, DOC, sha, actor='owner', reason='same adoption', backup_dir=tmp_path/'backups', apply=True)['status'] == 'no-op'
     payload = reader.pdf_report(DOC, page=1)
     assert payload['executive_summary'] == [TEXT]
-    assert payload['executive_summary_label'] == '采用原文'
+    assert payload['executive_summary_label'] == 'Adopted from the original PDF'
     assert reader.pdf_report(DOC, page=2)['executive_summary'] == []
     with reader.public_snapshot():
         assert reader.pdf_report(DOC)['executive_summary'] == [TEXT]
     from climate_registry.publication import public_wiki_pages, export_public_snapshot
     pages = public_wiki_pages(database, reader=reader)
     page = pages['registry-pdf-report-' + DOC + '.md']
-    assert TEXT in page and '采用原文' in page and '/pdf' in page
+    assert TEXT in page and '/pdf' in page
+    assert '## Executive Summary\n' in page and '## Executive Summary ·' not in page
+    assert page.index(TEXT) < page.index('Note: Adopted from the original PDF')
     root = tmp_path/'static'; (root/'wiki').mkdir(parents=True)
     export_public_snapshot(database, root/'wiki/public-registry.json', reader=reader)
     static = RegistryReader.from_public_export(root)
@@ -122,6 +124,60 @@ def test_original_summary_adoption_exact_text_and_archive_independence(tmp_path)
         RegistryReader.from_public_export(root)
 
 
+@pytest.mark.parametrize("static_label", ["采用原文", "Adopted from the original PDF"])
+def test_legacy_original_adoption_receipts_keep_ids_and_normalize_public_labels(tmp_path, static_label):
+    from climate_registry.acquisition_review import digest
+    from climate_registry.publication import export_public_snapshot, public_wiki_pages
+    database = _database(tmp_path)
+    documents = [DOC, '1'*64, '2'*64]
+    expected = {}
+    with sqlite3.connect(database) as db:
+        for identity in documents:
+            if identity != DOC:
+                db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,date_of_run,original_pdf) SELECT ?,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,date_of_run,original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (identity, DOC))
+            receipt = {"document_sha256": identity, "executive_summary_sha256": hashlib.sha256(TEXT.encode()).hexdigest(),
+                "adopted_at": "2026-10-15T00:00:00Z", "actor": "owner", "authorization_reason": "exact original adoption",
+                "display_label": "采用原文", "basis": "adopted_original_pdf"}
+            adoption_id = digest(receipt)
+            raw = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+            expected[identity] = (adoption_id, raw)
+            db.execute("INSERT INTO pdf_intake_summary_adoptions VALUES(?,?,?,?,?,?)", (adoption_id, identity,
+                receipt['executive_summary_sha256'], receipt['adopted_at'], receipt['basis'], raw))
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    reader = _reader(database, tmp_path)
+    def verify(current):
+        for identity in documents:
+            report = current.pdf_report(identity)
+            assert report['executive_summary'] == [TEXT]
+            assert report['executive_summary_label'] == 'Adopted from the original PDF'
+            assert report['executive_summary_reference']['adoption_id'] == expected[identity][0]
+    verify(reader)
+    with reader.public_snapshot():
+        verify(reader)
+    pages = public_wiki_pages(database, reader=reader)
+    for identity in documents:
+        page = pages['registry-pdf-report-' + identity + '.md']
+        assert '## Executive Summary\n' in page and '## Executive Summary ·' not in page
+        assert page.index(TEXT) < page.index('Note: Adopted from the original PDF')
+    root = tmp_path/'static'; (root/'wiki').mkdir(parents=True)
+    output = root/'wiki/public-registry.json'
+    export_public_snapshot(database, output, reader=reader)
+    artifact = json.loads(output.read_text(encoding='utf-8'))
+    for payload in artifact['pdf_report_details'].values():
+        payload['executive_summary_label'] = static_label
+    artifact.pop('artifact_sha256'); artifact['artifact_sha256'] = digest(artifact)
+    output.write_text(json.dumps(artifact), encoding='utf-8')
+    verify(RegistryReader.from_public_export(root))
+    from climate_registry.verification_report import write_verification_report
+    report = write_verification_report(database, tmp_path/'runs')
+    inventory = json.loads(Path(report['json_path']).read_text(encoding='utf-8'))
+    assert {row['adoption_id'] for row in inventory['original_summary_adoptions']} == {row[0] for row in expected.values()}
+    assert all(row['label'] == 'Adopted from the original PDF' for row in inventory['original_summary_adoptions'])
+    with sqlite3.connect(database) as db:
+        assert {row[0]:(row[1],row[2]) for row in db.execute('SELECT document_sha256,adoption_id,receipt_json FROM pdf_intake_summary_adoptions')} == expected
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+
+
 def test_t10_peek_emits_report_without_claiming_review(tmp_path, capsys):
     database = _database(tmp_path)
     _approve_all(database)
@@ -130,7 +186,16 @@ def test_t10_peek_emits_report_without_claiming_review(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert not result['wakeAgent']
     assert result['verification_report']['status'] == 'written'
-    assert Path(result['verification_report']['human_report_path']).is_file()
+    human = Path(result['verification_report']['human_report_path']).read_text(encoding='utf-8')
+    assert human.startswith('# T10 verification and publication inventory')
+    assert not any('\u4e00' <= char <= '\u9fff' for char in human)
+    inventory = json.loads(Path(result['verification_report']['json_path']).read_text(encoding='utf-8'))
+    assert inventory['language'] == 'en'
+    from climate_registry.verification_report import REASONS, reason_explanation
+    assert all(text.isascii() for text in REASONS.values())
+    for code in ('field_outside_verification:summary', 'manual_field_outside_reviewed_scope:summary',
+                 'manual_date_outside_evidence:start_date', 'manual_field_value_mismatch:location'):
+        assert reason_explanation(code).isascii()
     assert result['verification_report']['report_sha256'][:12] in Path(result['verification_report']['json_path']).name
     directory = Path(result['verification_report']['json_path']).parent
     before = {path.name: path.read_bytes() for path in directory.iterdir()}
@@ -143,6 +208,27 @@ def test_t10_peek_emits_report_without_claiming_review(tmp_path, capsys):
     changed = json.loads(capsys.readouterr().out)['verification_report']
     assert not changed['reused'] and changed['report_sha256'] != unchanged['report_sha256']
     assert len(list(directory.glob('*.md'))) == 2
+
+
+def test_t10_rebuilds_cached_legacy_language_report(tmp_path):
+    from climate_registry.acquisition_review import digest
+    from climate_registry.verification_report import write_verification_report
+    database = _database(tmp_path)
+    root = tmp_path/'runs'
+    receipt = write_verification_report(database, root)
+    json_path, human_path = Path(receipt['json_path']), Path(receipt['human_report_path'])
+    old = json.loads(json_path.read_text(encoding='utf-8'))
+    old.pop('report_sha256'); old.pop('language')
+    receipt['semantic_sha256'] = digest({key:value for key,value in old.items() if key != 'generated_at'})
+    receipt['report_sha256'] = digest(old)
+    json_path.write_text(json.dumps({**old, 'report_sha256':receipt['report_sha256']}), encoding='utf-8')
+    human_path.write_text('# T10 核验与公开清单\n', encoding='utf-8')
+    receipt['human_report_sha256'] = hashlib.sha256(human_path.read_bytes()).hexdigest()
+    (json_path.parent/'latest.json').write_text(json.dumps(receipt), encoding='utf-8')
+    updated = write_verification_report(database, root)
+    assert not updated['reused'] and updated['report_sha256'] != receipt['report_sha256']
+    assert Path(updated['human_report_path']).read_text(encoding='utf-8').startswith('# T10 verification and publication inventory')
+    assert human_path.read_text(encoding='utf-8') == '# T10 核验与公开清单\n'  # Historical output is retained.
 
 
 def _pdf_pair(database, *, target_extra=None):
@@ -238,7 +324,7 @@ def test_api_pdf_report_and_article_use_verified_gate_and_original_adoption(tmp_
     monkeypatch.setattr(api_server, '_range_report_overlay', lambda: (None, None, None))
     client = TestClient(api_server.app)
     report = client.get('/api/registry/pdf-intake/reports/' + DOC).json()
-    assert report['executive_summary'] == [TEXT] and report['executive_summary_label'] == '采用原文'
+    assert report['executive_summary'] == [TEXT] and report['executive_summary_label'] == 'Adopted from the original PDF'
     assert client.get('/api/registry/articles/unchecked').status_code == 404
     report = client.get('/api/registry/pdf-intake/reports/' + 'a'*64).json()
     assert report['calendar_count'] == 1 and report['calendar_items'][0]['metadata_only']
@@ -412,7 +498,7 @@ def test_native_verified_summary_does_not_publish_unchecked_generated_facts(tmp_
     assert published['factual_public'] and published['public_role']=='verified_primary'
     assert {'field_outside_verification:enrichment.summary','unverified_date_observation'} <= set(published['reason_codes'])
     assert not any('category' in code or 'keyword' in code for code in published['reason_codes'])
-    assert '额外字段未获核验，已隐藏' in Path(receipt['human_report_path']).read_text(encoding='utf-8')
+    assert 'additional unverified fields are hidden' in Path(receipt['human_report_path']).read_text(encoding='utf-8')
     assert hashlib.sha256(database.read_bytes()).hexdigest()==before
 
 

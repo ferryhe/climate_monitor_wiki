@@ -1196,13 +1196,13 @@ python scripts/review_pipeline.py peek --kind acquisition --root /external/runs 
 ```
 
 The JSON response contains `verification_report.json_path` and
-`verification_report.human_report_path`. Full JSON and a Chinese human-readable
+`verification_report.human_report_path`. Full JSON and a English human-readable
 Markdown table live under `ROOT/registry-review/verification-reports/`; its
 `latest.json` points to the newest pair. An unchanged complete inventory reuses
 the same verified artifacts; changes to any version, source outcome or adoption
 produce a new pair. They list current/latest/published
 versions, actual public roles, source URLs and PDF pages, checks and English
-reason codes with Chinese explanations, real review dispositions, retained good
+reason codes with English explanations, real review dispositions, retained good
 older versions, and source failures with zero candidates. Report generation is
 read-only with respect to the Registry and does not claim a native Hermes review
 ran or grant PASS. Terminal failed checks remain reviewable but do not publish
@@ -1222,7 +1222,8 @@ python -m climate_registry adopt-pdf-summary --database /external/registry.sqlit
 Each applied adoption takes the existing full backup, records the actual receipt,
 and binds both document and exact UTF-8 summary hashes. Do not normalize whitespace
 or fabricate adoption receipts in a copied database. Public report page 1 and Wiki
-show the original text labeled **采用原文**, attributed to its source PDF; later
+show the exact original text, followed by the note **Adopted from the original PDF**,
+attributed to its source PDF; later
 pages omit the summary. Unadopted or mismatched text stays hidden.
 
 Rebuild `wiki/public-registry.json` and derived Wiki pages through the existing

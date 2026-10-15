@@ -257,7 +257,7 @@ def answer_mode_instruction(answer_mode: AnswerMode) -> str:
 
 PROMPT_STARTERS: tuple[dict[str, str], ...] = (
     {
-        "label": "Generate PDF",
+        "label": "Generate PDF report",
         "prompt": "Generate a monitoring PDF report for the last 14 days.",
         "answer_mode": "executive",
         "description": "Creates an on-demand PDF with its actual date basis and citations; it does not approve a formal report or send email."

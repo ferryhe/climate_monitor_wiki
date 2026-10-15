@@ -16,7 +16,7 @@ assert.equal(messageToApi({ role: 'assistant', content: fullReport, context: 'op
 assert.equal(messageToApi({ role: 'assistant', content: 'legacy' }).context, null);
 const starters = JSON.parse(source.match(/const DEFAULT_PROMPT_STARTERS = ([\s\S]*?);\n\nconst GRAPH_COLORS/)?.[1]);
 assert.equal(starters.length, 7);
-assert.equal(starters[0].label, 'Generate PDF');
+assert.equal(starters[0].label, 'Generate PDF report');
 const plugin = readFileSync(new URL('../.obsidian/plugins/climate-agent-chat/main.js', import.meta.url), 'utf8');
 assert.ok(plugin.includes('context: message.context || null'));
 assert.ok(plugin.includes('context: payload.context || null'));

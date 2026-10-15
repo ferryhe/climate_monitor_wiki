@@ -413,9 +413,9 @@ def _adopted_original_pages(reader):
     for item in reader.adopted_pdf_summaries():
         identity = item["document_sha256"]
         pages["registry-pdf-report-" + identity + ".md"] = "\n".join([
-            "# " + (item.get("filename") or "Original PDF report"), "", "## Executive Summary · 采用原文", "",
-            "Provenance: adopted original PDF text; independent factual verification is not asserted.", "",
+            "# " + (item.get("filename") or "Original PDF report"), "", "## Executive Summary", "",
             *item["executive_summary"], "",
+            "Note: " + item["executive_summary_label"] + ". Independent factual verification is not asserted.", "",
             "Source PDF: [" + (item.get("filename") or "Download") + "](/api/registry/pdf-intake/reports/" + identity + "/pdf)", ""])
     return pages
 

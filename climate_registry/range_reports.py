@@ -1051,7 +1051,7 @@ def _range_source_read(
                 **item,
                 **(fields or {}),
                 "publication_date": published,
-                "publication_date_label": "PDF-stated publication date" if published else "文章发布日期未确认",
+                "publication_date_label": "PDF-stated publication date" if published else "Article publication date unconfirmed",
                 "coverage_period": {"start": period_start, "end": period_end},
                 "citations": [{
                     "kind": "pdf_page",
@@ -1879,7 +1879,7 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
         published = _day_precision_publication_date(item.get("publication_date"))
         if (
             (item.get("publication_date_label") != "PDF-stated publication date" if published
-             else item.get("publication_date_label") != "文章发布日期未确认")
+             else item.get("publication_date_label") not in ("Article publication date unconfirmed", "文章发布日期未确认"))
             or (published is not None and (not start <= date.fromisoformat(published) <= end
                 or not item.get("publication_date_evidence")))
             or period_start > period_end
@@ -2384,14 +2384,14 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
                 blocks.append("</ul></article>")
     pdf_updates = snapshot.get("pdf_source_updates", [])
     if pdf_updates:
-        blocks.append("<h2>PDF 来源更新 / PDF Source Updates</h2>")
+        blocks.append("<h2>PDF Source Updates</h2>")
     for index, item in enumerate(pdf_updates, start=1):
         display_number = update_number_by_target.get(f"pdf-update-{index}", 0)
         publisher = publisher_name(item.get("publisher"), [item.get("url")])
         blocks.extend([
             f'<article id="pdf-update-{index}"><h2>{display_number}. {esc(item["title"])}</h2>',
             f"<p><strong>Publisher / Institution:</strong> {esc(publisher)}</p>",
-            f"<p><strong>{esc(item.get('publication_date') or item['publication_date_label'])}</strong></p>",
+            f"<p><strong>{esc(item.get('publication_date') or 'Article publication date unconfirmed')}</strong></p>",
         ])
         topic = (", ".join(item["categories"]) or "PDF Source Updates") if "categories" in item else item.get("topic") or "PDF Source Updates"
         blocks.append(f"<p><strong>Topic:</strong> {esc(topic)}</p>")

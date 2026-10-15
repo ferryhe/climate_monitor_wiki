@@ -2,7 +2,7 @@ const STORAGE_KEY = "climate-monitor-agent-thread";
 
 const DEFAULT_PROMPT_STARTERS = [
   {
-    "label": "Generate PDF",
+    "label": "Generate PDF report",
     "prompt": "Generate a monitoring PDF report for the last 14 days.",
     "answer_mode": "executive",
     "description": "Creates an on-demand PDF with its actual date basis and citations; it does not approve a formal report or send email."
@@ -3248,10 +3248,12 @@ async function loadImportedRegistryReport(documentId, page = 1) {
     content.append(information);
     if ((report.pagination?.page ?? page) === 1 && report.executive_summary?.length) {
       const executive = registryElement("details", "registry-imported-summary meeting-entry");
-      executive.append(registryElement("summary", "meeting-entry__summary",
-        report.executive_summary_label ? `Executive Summary · ${report.executive_summary_label}` : "Executive Summary"));
+      executive.append(registryElement("summary", "meeting-entry__summary", "Executive Summary"));
       const body = registryElement("div", "meeting-entry__body");
       report.executive_summary.forEach((summary) => body.append(registryElement("p", "", summary)));
+      if (report.executive_summary_label) {
+        body.append(registryElement("p", "muted registry-provenance", report.executive_summary_label));
+      }
       executive.append(body);
       content.append(executive);
     }
