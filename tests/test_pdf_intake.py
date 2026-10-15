@@ -1246,3 +1246,37 @@ def test_reviewed_legacy_pdf_observation_never_supplies_target_facts():
         assert _calendar_source_alias_groups(records) == (("C1", "C2"),)
         results.append(result)
     assert results[0] == results[1] and (source, target) == original
+
+
+def test_verified_pdf_target_wins_over_unchecked_same_event_occurrence_in_every_order():
+    from itertools import permutations
+    from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations, pdf_meeting_fields
+    from climate_registry.read_api import RegistryReader
+    from climate_registry.range_reports import _pdf_calendar_payload
+    def extract(sha, day, url):
+        return _extract_calendar_items({"source": {"sha256": sha*64}, "pages": [{"page": 8,
+            "text": f"Key Dates\nDATE(S) EVENT HOST RELEVANCE\n{day}\nEVENT\nClimate conference\nFor insurers.",
+            "links": [{"url": url, "anchor_text": "Climate conference"}]}]})[0]
+    old = extract("b", "4 September 2026", "https://example.org/event")
+    new = extract("c", "5 September 2026", "https://EXAMPLE.ORG/event/?utm_source=pdf")
+    source = extract("a", "4 September 2026", "https://example.org/legacy")
+    assert old["event_id"] == new["event_id"] and old["occurrence_id"] != new["occurrence_id"]
+    for item in (source, old, new):
+        item.update(canonical_pdf_event_id=new["event_id"], verification_status="unchecked", collected_candidate=None)
+    candidate = {"event_type": "event", "name": "Climate conference", "date_precision": "day",
+        "start_date": "2026-09-05", "end_date": "2026-09-05", "status": "scheduled", "timezone": None}
+    new.update(verification_status="verified", collected_candidate=candidate,
+        checks=[{"verification_status": "verified", "website_candidate": candidate, "source_url": "https://example.org/event"}])
+    original = deepcopy((source, old, new))
+    primary = collected_pdf_meeting(pdf_meeting_fields(new))
+    for values in permutations((source, old, new)):
+        rows = [pdf_meeting_fields(item) for item in values]
+        merged = merge_meeting_observations([collected_pdf_meeting(item) for item in rows])
+        assert len(merged) == 1
+        assert {key: value for key, value in merged[0].items() if key != "pdf_observations"} == {
+            key: value for key, value in primary.items() if key != "pdf_observations"}
+        assert {item["occurrence_id"]: item for item in merged[0]["pdf_observations"]} == {item["occurrence_id"]: item for item in rows}
+        reader = RegistryReader.__new__(RegistryReader)
+        reader.database, reader.public, reader.static_snapshot = None, True, {"meetings": rows}
+        assert len(_pdf_calendar_payload(reader, base_date="2026-09-05")["records"]) == 1
+    assert (source, old, new) == original

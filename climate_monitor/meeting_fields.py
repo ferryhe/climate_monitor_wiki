@@ -95,7 +95,10 @@ def merge_meeting_observations(records: list[dict[str, Any]]) -> list[dict[str, 
         existing = merged[identity]
         # A reviewed PDF target supplies the global display; both observations stay local.
         target = item.get("canonical_pdf_event_id")
-        if target and item.get("pdf_event_id") == target and existing.get("pdf_event_id") != target:
+        if (target and (item.get("pdf_event_id") or item.get("event_id")) == target
+                and item.get("verification_status") == "verified" and item.get("collected_candidate")
+                and ((existing.get("pdf_event_id") or existing.get("event_id")) != target
+                    or existing.get("verification_status") != "verified" or not existing.get("collected_candidate"))):
             existing, item = item, existing
             merged[identity] = existing
         if target and target in pdf_targets:

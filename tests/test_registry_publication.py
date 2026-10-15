@@ -3801,3 +3801,54 @@ def test_pdf_api_raw_latest_observation_does_not_inherit_older_reviewed_summary_
     assert merged["occurrences"][0]["summary"] == latest["summary"]
     assert merged["occurrences"][1]["display_summary"] == "Older approved summary"
     assert public["summary_provenance"] == "owner_reviewed_source_evidence"
+
+
+def test_repeated_target_report_keeps_verified_primary_across_public_consumers(tmp_path, monkeypatch):
+    from climate_registry.publication import export_public_snapshot
+    from climate_registry.range_reports import _pdf_calendar_payload
+    database = _approved_legacy_pdf_pair(tmp_path, monkeypatch)
+    with sqlite3.connect(database) as db:
+        document = "b"*64
+        db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/old-target.pdf','old-target.pdf','application/pdf',1,?,'{}','2026-07-01')", (document,"c"*64))
+        item = json.loads(db.execute("SELECT item_json FROM pdf_intake_calendar_items WHERE event_id='target'").fetchone()[0])
+        item.update(occurrence_id="0-old-target", source_document_sha256=document, page=8,
+            start_date="1900-01-01", end_date="1900-01-01", raw_date="1 January 1900", summary="Unchecked older target observation")
+        db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'day',?,?,?, ?,NULL,?)",
+            (item["occurrence_id"],item["event_id"],document,item["page"],item["name"],item["raw_date"],item["start_date"],item["end_date"],item["summary"],"d"*64,json.dumps(item)))
+        snapshot = snapshot_entity(db, "pdf_meeting", "target")
+        sha = stage_snapshot(db, snapshot)
+        _approve(db, sha, {"basis": "explicit repeated target report fixture approval"}, status="accepted_legacy")
+        raw_before = db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+    reader = _reader(database, tmp_path)
+    observations = reader.pdf_calendar_items_all()
+    old = next(item for item in observations if item["occurrence_id"] == "0-old-target")
+    assert old["collected_candidate"] is None and old["verification_status"] != "verified"
+    records = reader.meetings_all(base_date="2026-01-01")
+    assert len(records) == 1
+    merged = records[0]
+    assert merged["occurrence_id"] == "z-target" and merged["verification_status"] == "verified"
+    assert merged["collected_candidate"] and merged["collected_candidate_source_url"] == "https://example.org/exact-event"
+    assert {item["occurrence_id"]: item for item in merged["pdf_observations"]} == {item["occurrence_id"]: item for item in observations}
+    with reader.public_snapshot():
+        assert reader.meetings_all(base_date="2026-01-01") == records
+    root = tmp_path/"application"; (root/"wiki").mkdir(parents=True)
+    output = root/"wiki/public-registry.json"; export_public_snapshot(database, output)
+    artifact = json.loads(output.read_text(encoding="utf-8"))
+    assert len(artifact["meeting_records"]) == 1 and len(artifact["meetings"]) == 3
+    markdown = artifact["wiki_pages"]["registry-meetings.md"]
+    assert markdown.count("## IAIS Annual Conference 2027\n") == 1
+    for document, page, occurrence in (("f"*64,9,"z-target"),("a"*64,12,"a-source"),("b"*64,8,"0-old-target")):
+        assert "SHA-256: "+document+"; page "+str(page) in markdown
+        assert [item["occurrence_id"] for item in reader.pdf_report(document)["calendar_items"]] == [occurrence]
+    static = RegistryReader.from_public_export(root)
+    for current in (reader, static):
+        result = _pdf_calendar_payload(current, base_date="2026-01-01")
+        assert len(result["records"]) == 1 and result["records"][0]["occurrence_id"] == "z-target"
+        assert len(result["records"][0]["pdf_observations"]) == 3
+    import api_server
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None,None,None))
+    assert TestClient(api_server.app).get("/api/registry/meetings?base_date=2026-01-01").json()["items"] == artifact["meeting_records"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == raw_before
