@@ -599,6 +599,17 @@ def public_connection(source):
             cursor = source.execute(f'SELECT * FROM "{table}"')
             if cursor.description:
                 projection.executemany(f'INSERT INTO "{table}" VALUES({",".join("?" for _ in cursor.description)})', cursor)
+        # PDF archive metadata is independent of whether any extracted item is public.
+        if source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_documents'").fetchone():
+            cursor = source.execute("SELECT * FROM pdf_intake_documents")
+            columns = [item[0] for item in cursor.description]
+            for row in cursor:
+                values = dict(zip(columns, row))
+                values["original_pdf"] = None
+                projection.execute(
+                    f'INSERT OR REPLACE INTO pdf_intake_documents ({",".join(columns)}) VALUES({",".join("?" for _ in columns)})',
+                    tuple(values[column] for column in columns),
+                )
         selected_sql = """SELECT c.candidate_sha256,c.snapshot_json FROM registry_publication p
             JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
             WHERE p.is_visible=1 AND EXISTS(SELECT 1 FROM registry_reviews r

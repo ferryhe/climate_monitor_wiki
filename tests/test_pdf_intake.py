@@ -386,6 +386,30 @@ def test_collected_pdf_location_keeps_source_url_of_matching_verified_candidate(
     assert collected["pdf_observations"][0]["location"] == "London"
 
 
+@pytest.mark.parametrize("canonical_event_id", [None, ...])
+def test_collected_pdf_meeting_falls_back_to_pdf_identity_without_public_native_link(canonical_event_id):
+    from climate_monitor.meeting_fields import collected_pdf_meeting
+
+    candidate = {"name": "IAIS Annual Conference 2027", "timezone": None}
+    item = {
+        "event_id": "event-pdf", "verification_status": "verified",
+        "collected_candidate": candidate,
+    }
+    if canonical_event_id is not ...:
+        item["canonical_event_id"] = canonical_event_id
+
+    collected = collected_pdf_meeting(item)
+
+    assert collected["event_id"] == "event-pdf"
+    assert collected["pdf_event_id"] == "event-pdf"
+    assert collected["name"] == "IAIS Annual Conference 2027"
+    assert collected["pdf_observations"] == [item]
+    if canonical_event_id is ...:
+        assert "canonical_event_id" not in collected
+    else:
+        assert collected["canonical_event_id"] is None
+
+
 def test_article_context_is_bounded_to_its_record_and_keeps_publication_date(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     path = tmp_path / "two-articles.pdf"
