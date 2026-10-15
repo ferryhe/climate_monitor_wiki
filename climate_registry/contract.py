@@ -194,10 +194,15 @@ REQUIRED_TABLE_COLUMNS.update({
     "registry_publication": {"entity_kind", "entity_id", "is_visible", "published_candidate_sha256", "latest_candidate_sha256"},
 })
 V21_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)
+REQUIRED_TABLE_COLUMNS["pdf_intake_summary_adoptions"] = {"adoption_id", "document_sha256",
+    "executive_summary_sha256", "adopted_at", "adoption_basis", "receipt_json"}
+V23_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 23:
+        return V23_TABLES
     if version >= 21:
         return V21_TABLES
     if version >= 19:
@@ -544,6 +549,8 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version >= 23:
+        names |= {"pdf_intake_summary_adoptions_append_only_update", "pdf_intake_summary_adoptions_append_only_delete"}
     if version >= 21:
         names |= {"registry_candidates_immutable_update", "registry_candidates_immutable_delete",
             "registry_reviews_immutable_update", "registry_reviews_immutable_delete",
@@ -637,6 +644,8 @@ def _required_foreign_keys(
     table: str, version: int
 ) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
     keys = set(REQUIRED_FOREIGN_KEYS.get(table, set()))
+    if table == "pdf_intake_summary_adoptions":
+        keys.add(("pdf_intake_documents", ("document_sha256",), ("document_sha256",)))
     if version >= 22 and table in {"article_check_attempts","meeting_check_attempts"}:
         keys.add(("articles",("core_article_id",),("article_id",)) if table=="article_check_attempts" else ("climate_event_sources",("event_source_id",),("event_source_id",)))
     if table == "article_enrichments" and version < 20:

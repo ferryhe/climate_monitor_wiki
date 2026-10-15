@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from climate_delivery.errors import ClimateDeliveryError
 from climate_monitor.dedupe import canonical_url
 from climate_monitor.publisher_mapping import publisher_name
+from .pdf_summary import adopted_summary
 
 from .annotations import ArticleAnnotation, load_article_annotations
 from .capture import article_body_markdown, article_preview
@@ -66,11 +67,13 @@ def select_snapshot_article_content(snapshot, article_id, current_version_id):
         resolved = fetches.get(row.get("resolved_by_fetch_id"), {})
         version_id = fetch.get("content_version_id") if fetch.get("fetch_status") == "success" else None
         fetched_at = fetch.get("fetched_at") if version_id else None
+        fetch_id = row.get("fetch_id")
         if version_id is None and resolved.get("fetch_status") == "success":
             version_id, fetched_at = resolved.get("content_version_id"), resolved.get("fetched_at")
+            fetch_id = row.get("resolved_by_fetch_id")
         if version_id and row.get("material_status") == "full_content" and row.get("processing_status") == "complete":
             candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
-                "fetch_id": row.get("fetch_id"), "acquisition_item_id": row.get("acquisition_item_id")})
+                "fetch_id": fetch_id, "acquisition_item_id": row.get("acquisition_item_id")})
     if current_version_id:
         current = max((row for row in tables.get("article_fetches", []) if row.get("article_id") == article_id
             and row.get("content_version_id") == current_version_id and row.get("fetch_status") == "success"),
@@ -323,11 +326,12 @@ class RegistryReader:
     def from_public_export(cls, repository_root: str | Path):
         """Read a verified committed export without provisioning a business DB."""
         from .acquisition_review import digest
+        from .verification import PUBLICATION_POLICY
         root = Path(repository_root)
         try:
             artifact = json.loads((root / "wiki/public-registry.json").read_text(encoding="utf-8"))
             sha = artifact.pop("artifact_sha256")
-            if artifact.get("schema_version") != "climate-public-snapshot.v1" or digest(artifact) != sha:
+            if artifact.get("schema_version") != "climate-public-snapshot.v1" or artifact.get("publication_policy") != PUBLICATION_POLICY or digest(artifact) != sha:
                 raise RegistryContractError("Git public snapshot identity differs")
         except (OSError, ValueError, KeyError) as exc:
             raise RegistryUnavailableError("approved Git export is unavailable") from exc
@@ -370,7 +374,8 @@ class RegistryReader:
             from .acquisition_review import digest
             artifact = json.loads(static_path.read_text(encoding="utf-8"))
             sha = artifact.pop("artifact_sha256")
-            if digest(artifact) != sha:
+            from .verification import PUBLICATION_POLICY
+            if artifact.get("publication_policy") != PUBLICATION_POLICY or digest(artifact) != sha:
                 raise RegistryContractError("Git public snapshot identity differs")
             self.static_snapshot = artifact
         self.source_dir = Path(source_dir).resolve(strict=False) if source_dir is not None else None
@@ -571,12 +576,14 @@ class RegistryReader:
         return cached
 
     def _published_candidate_sha(self, snapshot: dict[str, Any]) -> str:
+        if snapshot.get("_approved_candidate_sha256"):
+            return snapshot["_approved_candidate_sha256"]
         key = (snapshot.get("entity_kind"), snapshot.get("entity_id"))
         cached = getattr(self, "_approved_candidate_sha_by_entity", {}).get(key)
         if cached:
             return cached
         from .publication import digest
-        return digest(snapshot)
+        return snapshot.get("_approved_candidate_sha256") or digest(snapshot)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -639,6 +646,8 @@ class RegistryReader:
 
     @_direct_public_read
     def status(self) -> dict[str, Any]:
+        if self.static_snapshot is not None:
+            return deepcopy(self.static_snapshot.get("registry_status", {"available": True, "schema_version": None, "reports": 0, "articles": 0, "discoveries": 0, "latest_report_date": None}))
         with self.connect() as connection:
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                 candidates = self._public_candidates("article")
@@ -682,7 +691,7 @@ class RegistryReader:
                     if payload_url:
                         urls.add(payload_url)
                 eligible_pdf_articles = {row.get("article_id") for row in tables.get("pdf_intake_article_occurrences", [])
-                    if row.get("summary_basis") != "verbatim_pdf_calendar_row"}
+                    if json.loads(row["occurrence_json"]).get("summary_basis") != "verbatim_pdf_calendar_row"}
                 for article in tables.get("pdf_intake_articles", []):
                     article_id = article.get("article_id")
                     if ((kind == "pdf_article" and article_id != identity)
@@ -695,6 +704,9 @@ class RegistryReader:
     @_direct_public_read
     def reports(self, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         page, page_size = validate_page(page, page_size)
+        if self.static_snapshot is not None:
+            items = self.static_snapshot.get("registry_reports", [])
+            return {"items": deepcopy(items[(page - 1) * page_size:page * page_size]), "pagination": _pagination(page, page_size, len(items))}
         with self.connect() as connection:
             direct_published = (self.public and getattr(self, "_snapshot_direct", False)
                 and connection.execute("PRAGMA user_version").fetchone()[0] >= 21)
@@ -881,7 +893,7 @@ class RegistryReader:
                 for (_kind, _identity), snapshot in candidates.items():
                     for table in ("pdf_intake_article_occurrences",):
                         for row in snapshot.get("tables", {}).get(table, []):
-                            if row.get("summary_basis") == "verbatim_pdf_calendar_row":
+                            if json.loads(row["occurrence_json"]).get("summary_basis") == "verbatim_pdf_calendar_row":
                                 continue
                             occurrence_id = row.get("occurrence_id")
                             if allowed_occurrence_ids is None or occurrence_id in allowed_occurrence_ids:
@@ -1091,6 +1103,7 @@ class RegistryReader:
                 calendar.update(latest_checks_from_attempts("meetings", calendar, attempts,
                     packet_cache=self._pdf_check_packet_cache,
                     candidate_binding=self._published_candidate_sha(snapshot)))
+                calendar.update(snapshot.get("_manual_public_verifications", {}).get(occurrence_id, {}))
                 from climate_monitor.meeting_fields import pdf_meeting_fields
                 calendars_by_id[occurrence_id] = pdf_meeting_fields(calendar)
         calendars = list(calendars_by_id.values())
@@ -1101,7 +1114,7 @@ class RegistryReader:
             value.get("occurrence_id") or ""))
         item.update({"edition": document.get("edition"), "reporting_period": document.get("reporting_period"),
             "period_start": document_row.get("period_start"), "period_end": document_row.get("period_end"),
-            "executive_summary": [],
+            **adopted_summary(connection, document_sha256, document),
             "pdf_metadata": (document.get("source") or {}).get("pdf_metadata") or {},
             "pdf_created_at": document_row.get("pdf_created_at"),
             "pdf_modified_at": document_row.get("pdf_modified_at"), "imported_at": document_row.get("imported_at"),
@@ -1118,6 +1131,8 @@ class RegistryReader:
         for occurrence in [value for article in articles for value in article["occurrences"]] + calendars:
             occurrence["source_observations"] = [{key: value for key, value in observation.items() if key != "path"}
                 for observation in occurrence.get("source_observations", [])]
+        if page is not None and page > 1:
+            item["executive_summary"] = []
         return item
 
     @staticmethod
@@ -1131,6 +1146,8 @@ class RegistryReader:
             calendar_items=calendars[max(0, offset - len(articles)):max(0, end - len(articles))],
             article_offset=min(offset, len(articles)),
             pagination=_pagination(page, page_size, len(articles) + len(calendars)))
+        if page > 1:
+            payload["executive_summary"] = []
         return payload
 
     def pdf_report_module_catalog(self, document_sha256: str, *, allowed_occurrence_ids=None,
@@ -1156,6 +1173,24 @@ class RegistryReader:
             if allowed_calendar_ids is None or row[0] in allowed_calendar_ids]
 
     @_direct_public_read
+    def adopted_pdf_summaries(self):
+        """Archive summaries have their own explicit adoption, independent of item gates."""
+        if self.static_snapshot is not None:
+            from .pdf_summary import public_adopted_summary
+            return [dict(item, **public_adopted_summary(item)) for item in self.static_snapshot.get("pdf_report_details", {}).values()
+                if public_adopted_summary(item).get("executive_summary")]
+        with self.connect() as connection:
+            rows = connection.execute("SELECT document_sha256,filename,date_of_run,document_json FROM pdf_intake_documents ORDER BY document_sha256").fetchall()
+            result = []
+            for row in rows:
+                document = json.loads(row["document_json"])
+                summary = adopted_summary(connection, row["document_sha256"], document)
+                if summary.get("executive_summary"):
+                    result.append({"document_sha256": row["document_sha256"], "filename": row["filename"],
+                        "report_date": row["date_of_run"], **summary})
+            return result
+
+    @_direct_public_read
     def pdf_report(self, document_sha256: str, *, allowed_occurrence_ids: set[str] | None = None,
         allowed_calendar_ids: set[str] | None = None, include_bytes: bool = False,
         page: int | None = None, page_size: int = 5,
@@ -1178,6 +1213,8 @@ class RegistryReader:
                 raise RegistryNotFoundError("PDF source is not available in the Git snapshot")
             from copy import deepcopy
             payload = deepcopy(stored)
+            from .pdf_summary import public_adopted_summary
+            payload.update(public_adopted_summary(payload))
             if allowed_occurrence_ids is not None:
                 for article in payload["articles"]:
                     article["occurrences"] = [row for row in article["occurrences"] if row["occurrence_id"] in allowed_occurrence_ids]
@@ -1187,7 +1224,8 @@ class RegistryReader:
             if module_keys is not None:
                 payload["articles"] = [row for row in payload["articles"] if ("article", row["canonical_url"]) in module_keys]
                 payload["calendar_items"] = [row for row in payload["calendar_items"] if ("calendar", row["occurrence_id"]) in module_keys]
-            return {**payload,**item,"report_pdf":None}
+            payload = {**payload,**item,"report_pdf":None}
+            return self.paginate_pdf_report(payload, page, page_size) if page is not None else payload
         with self.connect() as connection:
             if module_keys is not None:
                 occurrence_ids = {row[1] for row in connection.execute(
@@ -1243,7 +1281,7 @@ class RegistryReader:
                 source = document.get("source") or {}
                 item.update({"edition": document.get("edition"), "reporting_period": document.get("reporting_period"),
                     "period_start": document_row.get("period_start"), "period_end": document_row.get("period_end"),
-                    "executive_summary": [],
+                    **adopted_summary(connection, document_sha256, document),
                     "pdf_metadata": source.get("pdf_metadata") or {}, "pdf_created_at": document_row.get("pdf_created_at"),
                     "pdf_modified_at": document_row.get("pdf_modified_at"), "imported_at": document_row.get("imported_at"),
                     "source_filenames": sorted(source_filenames),
@@ -1278,7 +1316,7 @@ class RegistryReader:
             source = document.get("source") or {}
             item.update({"edition": document.get("edition"), "reporting_period": document.get("reporting_period"),
                 "period_start": row["period_start"], "period_end": row["period_end"],
-                "executive_summary": [],
+                **adopted_summary(connection, document_sha256, document),
                 "pdf_metadata": source.get("pdf_metadata") or {}, "pdf_created_at": row.get("pdf_created_at"),
                 "pdf_modified_at": row.get("pdf_modified_at"), "imported_at": row["imported_at"],
                 "source_filenames": sorted({value["filename"] for value in self._pdf_document_sources(connection, document_sha256)}),
@@ -1306,6 +1344,11 @@ class RegistryReader:
         self, report_date: str
     ) -> tuple[dict[str, Any], RegistryReportIdentity]:
         validate_report_date(report_date)
+        if self.static_snapshot is not None:
+            stored = self.static_snapshot.get("registry_report_details", {}).get(report_date)
+            if stored is None:
+                raise RegistryNotFoundError("report not found")
+            return deepcopy(stored["payload"]), RegistryReportIdentity(**stored["identity"])
         with self.connect() as connection:
             report = connection.execute(
                 """
@@ -1350,7 +1393,7 @@ class RegistryReader:
                         "record_reference": detail.get("record_reference")})
                 payload = {"report_date": report["report_date"], "report_title": report["report_title"],
                     "cadence": report["cadence"], "report_format": report["report_format"],
-                    "executive_summary": list(source_report.executive_summary) if source_report else [],
+                    "executive_summary": list(source_report.executive_summary) if source_report and not self.public else [],
                     "monitoring": {"status": _monitoring_status(report), "sites_checked": report["sites_checked"],
                         "sites_succeeded": report["sites_succeeded"], "sites_failed": report["sites_failed"],
                         "warning_count": len(_json_string_list(report["parse_warnings_json"]))}, "articles": articles}
@@ -1509,7 +1552,7 @@ class RegistryReader:
             "report_title": report["report_title"],
             "cadence": report["cadence"],
             "report_format": report["report_format"],
-            "executive_summary": list(source_report.executive_summary) if source_report else [],
+            "executive_summary": list(source_report.executive_summary) if source_report and not self.public else [],
             "monitoring": {
                 "status": _monitoring_status(report),
                 "sites_checked": report["sites_checked"],
@@ -1550,7 +1593,8 @@ class RegistryReader:
     def approved_article_cards_all(self) -> list[dict[str, Any]]:
         """Return the full approved core collection once inside a direct read transaction."""
         if self.static_snapshot is not None:
-            return deepcopy(self.static_snapshot.get("articles", []))
+            return [self._article_card_from_snapshot({"entity_id": item["article_id"], "static_payload": deepcopy(item)})
+                for item in self.static_snapshot.get("articles", [])]
         with self.connect() as connection:
             if not (self.public and getattr(self, "_snapshot_direct", False)
                     and connection.execute("PRAGMA user_version").fetchone()[0] >= 21):
@@ -1588,7 +1632,7 @@ class RegistryReader:
         if report_date:
             validate_report_date(report_date)
         if self.static_snapshot is not None:
-            items = [dict(item) for item in self.static_snapshot.get("articles", [])
+            items = [item for item in self.approved_article_cards_all()
                 if (not query or query.casefold() in " ".join(str(item.get(key) or "") for key in
                     ("title", "summary", "canonical_url", "categories", "keywords")).casefold())
                 and (not source or source in {item.get("source"), item.get("publisher")})
@@ -1787,10 +1831,10 @@ class RegistryReader:
     def _apply_pdf_display_summary(value, snapshot):
         value.pop("display_summary", None)
         value.pop("display_summary_provenance", None)
-        if snapshot is not None:
+        if snapshot is not None and not value.get("metadata_only"):
             from .publication import approved_display
             display = approved_display(snapshot)
-            if display.get("summary") and display.get("summary_provenance"):
+            if display.get("summary") and display.get("summary_provenance") == "owner_reviewed_source_evidence":
                 value["display_summary"] = display["summary"]
                 value["display_summary_provenance"] = display["summary_provenance"]
 
@@ -1843,7 +1887,6 @@ class RegistryReader:
                 value[field] = row[field]
             value["source_observations"] = sources[row["source_document_sha256"]]
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
-            from climate_monitor.pdf_intake import report_update_fields
             documents={sha:dict(connection.execute("SELECT filename,period_start,period_end,imported_at,document_json FROM pdf_intake_documents WHERE document_sha256=?",(sha,)).fetchone()) for sha in sources}
             from .publication import snapshot_metadata
             for row,value in zip(rows,values):
@@ -1852,7 +1895,7 @@ class RegistryReader:
                 document=documents[row["source_document_sha256"]]
                 parsed=json.loads(document["document_json"])
                 value.update(source_filename=document["filename"],period_start=document["period_start"],period_end=document["period_end"],imported_at=document["imported_at"],
-                    report_fields=report_update_fields(value,parsed),structured_report=any("IN WINDOW" in page["text"] for page in parsed.get("pages",[])))
+                    report_fields=None if value.get("metadata_only") else value.get("report_fields"),structured_report=any("IN WINDOW" in page["text"] for page in parsed.get("pages",[])))
         from .information_checks import latest_checks
         return [dict(value, **latest_checks(connection, "articles", value)) for value in values
             if value.get("summary_basis") != "verbatim_pdf_calendar_row"
@@ -1870,7 +1913,7 @@ class RegistryReader:
             pdf_article_id=row["article_id"],
             allowed_occurrence_ids=allowed_occurrence_ids,
         )
-        latest = occurrences[0] if occurrences else {}
+        latest = next((item for item in occurrences if not item.get("metadata_only")), {})
         try:
             classification = json.loads(row["type_safe_classification_json"]) if row["type_safe_classification_json"] else None
         except (json.JSONDecodeError, TypeError) as exc:
@@ -1902,10 +1945,17 @@ class RegistryReader:
                 manual_enrichment={**pending, "generator_kind": "manual",
                     "evidence": evidence, "knowledge_id": supplements[-1]["knowledge_id"]})
         if snapshot is not None:
-            payload.update(approved_display(snapshot))
-            payload["published_candidate_sha256"] = digest(snapshot)
+            display = approved_display(snapshot)
+            if display.get("summary_provenance") in {"verified_source_evidence", "verified_pdf_source"}:
+                display = {key: value for key, value in display.items() if key not in {"summary", "summary_provenance"}}
+            payload.update(display)
+            payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
             payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
                 "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
+        if occurrences and all(item.get("metadata_only") for item in occurrences):
+            display = occurrences[0].get("verified_primary_display") or {}
+            payload.update(metadata_only=True, summary=None, title=display.get("title") or payload.get("title"),
+                verified_primary_reference=occurrences[0].get("verified_primary_reference"))
         return payload
 
     @_direct_public_read
@@ -2100,6 +2150,7 @@ class RegistryReader:
                         item.update(latest_checks_from_attempts("meetings", item, attempts,
                             packet_cache=self._pdf_check_packet_cache,
                             candidate_binding=self._published_candidate_sha(snapshot)))
+                        item.update(snapshot.get("_manual_public_verifications", {}).get(occurrence_id, {}))
                         from climate_monitor.meeting_fields import pdf_meeting_fields
                         items_by_id[occurrence_id] = pdf_meeting_fields(item)
                 items = list(items_by_id.values())
@@ -2111,6 +2162,10 @@ class RegistryReader:
                 return items
             if not self._has_pdf_intake(connection):
                 return []
+            manual_states = {}
+            if self.public and connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
+                for (encoded,) in connection.execute("SELECT snapshot_json FROM public_snapshot_metadata"):
+                    manual_states.update(json.loads(encoded).get("_manual_public_verifications", {}))
             rows = connection.execute(
                 """SELECT c.occurrence_id, c.item_json, c.source_document_sha256,
                           c.type_safe_classification_json, d.filename AS source_filename
@@ -2155,10 +2210,13 @@ class RegistryReader:
             from climate_monitor.pdf_intake import recover_calendar_fields
             indexes_by_sha: dict[str, list[int]] = {}
             for index, item in enumerate(items):
-                indexes_by_sha.setdefault(item["source_document_sha256"], []).append(index)
+                if not item.get("metadata_only") and not item.get("manual_verification") and item.get("raw_text"):
+                    indexes_by_sha.setdefault(item["source_document_sha256"], []).append(index)
             for sha, raw in originals.items():
                 if raw is not None:
                     indexes = indexes_by_sha.get(sha, [])
+                    if not indexes:
+                        continue
                     recovered = recover_calendar_fields(raw, [items[index] for index in indexes])
                     by_id = {item["occurrence_id"]: item for item in recovered}
                     for index in indexes:
@@ -2166,7 +2224,7 @@ class RegistryReader:
         from climate_monitor.meeting_fields import pdf_meeting_fields
         from .information_checks import latest_checks
         with self.connect() as connection:
-            items = [dict(pdf_meeting_fields(item), **latest_checks(connection, "meetings", item)) for item in items]
+            items = [dict(pdf_meeting_fields(item), **(manual_states.get(item["occurrence_id"]) or latest_checks(connection, "meetings", item))) for item in items]
         if self.public and items:
             items = self.resolve_pdf_meeting_identities(items)
         items.sort(key=lambda item: (
@@ -2178,7 +2236,7 @@ class RegistryReader:
         """Restore legacy table-cell fields using only bytes pinned by approved snapshots."""
         by_document = {}
         for item in items:
-            if item.get("raw_text") and item.get("source_document_sha256"):
+            if not item.get("metadata_only") and not item.get("manual_verification") and item.get("raw_text") and item.get("source_document_sha256"):
                 by_document.setdefault(item["source_document_sha256"], []).append(item)
         if not by_document:
             return
@@ -2351,8 +2409,11 @@ class RegistryReader:
             if end is not None and end < date.fromisoformat(base_date):
                 continue
             candidate, identity = item.get("collected_candidate"), item.get("canonical_event_id") or item.get("canonical_pdf_event_id")
-            if candidate and identity:
-                if candidate.get("status") in {"cancelled", "retrospective"}:
+            verified_facts = candidate or (item.get("manual_verification") or {}).get("public_facts")
+            if verified_facts and verified_facts.get("status") in {"cancelled", "retrospective"}:
+                continue
+            if identity and (candidate or item.get("canonical_pdf_event_id") and verified_facts):
+                if verified_facts.get("status") in {"cancelled", "retrospective"}:
                     continue
                 if identity in collected:
                     collected[identity] = merge_meeting_observations([collected[identity], item])[0]
@@ -2464,8 +2525,11 @@ class RegistryReader:
                 continue
             candidate = item.get("collected_candidate")
             identity = item.get("canonical_event_id") or item.get("canonical_pdf_event_id")
-            if candidate and identity:
-                if candidate.get("status") in {"cancelled", "retrospective"}:
+            verified_facts = candidate or (item.get("manual_verification") or {}).get("public_facts")
+            if verified_facts and verified_facts.get("status") in {"cancelled", "retrospective"}:
+                continue
+            if identity and (candidate or item.get("canonical_pdf_event_id") and verified_facts):
+                if verified_facts.get("status") in {"cancelled", "retrospective"}:
                     continue
                 if identity in collected:
                     collected[identity] = merge_meeting_observations([collected[identity], item])[0]
@@ -2650,8 +2714,9 @@ class RegistryReader:
                    i.date_status, i.selection_status, i.selection_reason, i.update_status,
                    i.material_status, i.fetch_id, i.content_version_id, i.processing_status,
                    i.processing_error, {resolution} AS resolved_by_fetch_id,
-                   f.fetch_status, f.fetched_at, f.content_version_id AS fetch_content_version_id,
+                   f.fetch_status, f.fetched_at, f.requested_url, f.final_url, f.content_version_id AS fetch_content_version_id,
                    r.fetch_status AS resolved_fetch_status, r.fetched_at AS resolved_fetched_at,
+                   r.requested_url AS resolved_requested_url, r.final_url AS resolved_final_url,
                    r.content_version_id AS resolved_content_version_id
             FROM acquisition_items i
             LEFT JOIN article_fetches f ON f.fetch_id = i.fetch_id
@@ -2701,19 +2766,26 @@ class RegistryReader:
                 "status": row["fetch_status"], "fetched_at": row["fetched_at"],
                 "content_version_id": row["fetch_content_version_id"],
             }
+            if row["fetch_status"] == "success":
+                item["fetch"].update(fetch_id=row["fetch_id"], requested_url=row["requested_url"], final_url=row["final_url"])
             if row["resolved_by_fetch_id"]:
                 item["resolved_fetch"] = {
                     "status": row["resolved_fetch_status"], "fetched_at": row["resolved_fetched_at"],
                     "content_version_id": row["resolved_content_version_id"],
                 }
+                if row["resolved_fetch_status"] == "success":
+                    item["resolved_fetch"].update(fetch_id=row["resolved_by_fetch_id"],
+                        requested_url=row["resolved_requested_url"], final_url=row["resolved_final_url"])
             observations.append(item)
             version_id = row["fetch_content_version_id"] if row["fetch_status"] == "success" else None
             fetched_at = row["fetched_at"] if version_id else None
+            fetch_id = row["fetch_id"]
             if version_id is None and row["resolved_fetch_status"] == "success":
                 version_id, fetched_at = row["resolved_content_version_id"], row["resolved_fetched_at"]
+                fetch_id = row["resolved_by_fetch_id"]
             if version_id and row["material_status"] == "full_content" and row["processing_status"] == "complete":
                 candidates.append({"content_version_id": version_id, "fetched_at": fetched_at,
-                                   "fetch_id": row["fetch_id"], "acquisition_item_id": row["acquisition_item_id"]})
+                                   "fetch_id": fetch_id, "acquisition_item_id": row["acquisition_item_id"]})
         if current_version_id:
             current = connection.execute(
                 """SELECT fetch_id, fetched_at FROM article_fetches
@@ -2743,11 +2815,15 @@ class RegistryReader:
         available = {
             key: content[key]
             for key in content.keys()
-            if key not in {"markdown_content", "content_sha256"}
+            if key != "markdown_content"
         }
         available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
         available["collected_at"] = selected["fetched_at"]
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
+        fetch = connection.execute("SELECT requested_url,final_url FROM article_fetches WHERE fetch_id=? AND article_id=? AND content_version_id=? AND fetch_status='success'",
+            (selected["fetch_id"], article_id, content["content_version_id"])).fetchone()
+        if fetch:
+            available.update(requested_url=fetch["requested_url"], final_url=fetch["final_url"])
         if display_policy == "full_markdown":
             available["markdown"] = article_body_markdown(content["markdown_content"])
         elif display_policy == "summary_excerpt":
@@ -2839,7 +2915,8 @@ class RegistryReader:
             categories = list((annotation.categories if annotation else ()) or source_categories)
             keywords = list((annotation.keywords if annotation else ()) or source_keywords)
             if annotation:
-                item["summary"] = annotation.summary
+                if annotation.summary:
+                    item["summary"] = annotation.summary
                 annotation_summary = annotation_summary or annotation.summary
                 if fallback_provenance is None:
                     fallback_categories = list(annotation.categories)
@@ -3039,7 +3116,8 @@ class RegistryReader:
             if item_annotation and not enrichment:
                 summary, categories, keywords = item_annotation.summary, list(item_annotation.categories), list(item_annotation.keywords)
                 provenance = item_annotation.provenance
-                row["summary"] = item_annotation.summary
+                if item_annotation.summary:
+                    row["summary"] = item_annotation.summary
             row["categories"] = list(item_annotation.categories) if item_annotation else list(source_article.categories) if source_article else []
             row["keywords"] = list(item_annotation.keywords) if item_annotation else list(source_article.keywords) if source_article else []
         appearances.sort(key=lambda item: (item.get("report_date") or "", item.get("ordinal") or 0), reverse=True)
@@ -3052,7 +3130,7 @@ class RegistryReader:
             "title": annotation.title if annotation else version.get("observed_title"),
             "report_summary": version.get("observed_summary"), "summary": summary, "categories": categories, "keywords": keywords,
             "pdf_occurrence_count": sum(1 for row in tables.get("pdf_intake_article_occurrences", [])
-                if row.get("summary_basis") != "verbatim_pdf_calendar_row"),
+                if json.loads(row["occurrence_json"]).get("summary_basis") != "verbatim_pdf_calendar_row"),
             "is_visible": True, "published_candidate_sha256": self._published_candidate_sha(snapshot),
             "current_version_id": article.get("current_version_id"),
             "content_version_id": article.get("current_content_version_id") if enrichment or content else None,
@@ -3082,7 +3160,7 @@ class RegistryReader:
         dates = [item.get("report_date") for item in occurrences if item.get("report_date")]
         payload = {"article_id": row["article_id"], "canonical_url": canonical_url,
             "title": row.get("title") or occurrences[0].get("anchor_text") or occurrences[0].get("title"),
-            "summary": occurrences[0].get("summary"), "source": host, "publisher": host,
+            "summary": next((item.get("display_summary") or item.get("summary") for item in occurrences if not item.get("metadata_only")), None), "source": host, "publisher": host,
             "first_seen": min(dates) if dates else None, "last_seen": max(dates) if dates else None,
             "source_kind": "pdf", "type_safe_classification": classification, "occurrences": occurrences,
             "core_article_id": row.get("core_article_id"), "confirmation_basis": row.get("confirmation_basis")}
@@ -3095,7 +3173,15 @@ class RegistryReader:
             payload.update(categories=pending["categories"], keywords=pending["keywords"],
                 manual_enrichment={**pending, "generator_kind": "manual", "evidence": evidence,
                     "knowledge_id": supplements[-1]["knowledge_id"]})
-        payload.update(approved_display(snapshot))
+        display = approved_display(snapshot)
+        if display.get("summary_provenance") in {"verified_source_evidence", "verified_pdf_source"}:
+            display = {key: value for key, value in display.items() if key not in {"summary", "summary_provenance"}}
+        payload.update(display)
+        if occurrences and all(item.get("metadata_only") for item in occurrences):
+            reference = next((item.get("verified_primary_reference") for item in occurrences if item.get("verified_primary_reference")), None)
+            display = next((item.get("verified_primary_display") for item in occurrences if item.get("verified_primary_display")), {})
+            payload.update(title=display.get("title") or "Verified article reference", summary=None, metadata_only=True,
+                verified_primary_reference=reference)
         payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
         reference_id = (tables["articles"][0]["article_id"]
             if snapshot["entity_kind"] == "article" else row["article_id"])
@@ -3139,16 +3225,23 @@ class RegistryReader:
             selected_fetch = fetch if fetch.get("fetch_status") == "success" else resolved if resolved.get("fetch_status") == "success" else {}
             item["collected_at"] = selected_fetch.get("fetched_at")
             item["fetch"] = {"status": fetch.get("fetch_status"), "fetched_at": fetch.get("fetched_at"), "content_version_id": fetch.get("content_version_id")}
+            if fetch.get("fetch_status") == "success":
+                item["fetch"].update({key:fetch.get(key) for key in ("fetch_id", "requested_url", "final_url")})
             if row.get("resolved_by_fetch_id"):
                 item["resolved_fetch"] = {"status": resolved.get("fetch_status"), "fetched_at": resolved.get("fetched_at"), "content_version_id": resolved.get("content_version_id")}
+                if resolved.get("fetch_status") == "success":
+                    item["resolved_fetch"].update({key:resolved.get(key) for key in ("fetch_id", "requested_url", "final_url")})
             observations.append(item)
         selected, content = select_snapshot_article_content(snapshot, article_id, current_version_id)
         if content is None:
             return observations, {}
-        available = {key: content.get(key) for key in ("content_version_id", "content_type", "source_bytes", "extraction_method", "extraction_version", "first_fetched_at")}
+        available = {key: content.get(key) for key in ("content_version_id", "content_sha256", "content_type", "source_bytes", "extraction_method", "extraction_version", "first_fetched_at")}
         available.update({key: selected[key] for key in ("fetch_id", "acquisition_item_id")})
         available["collected_at"] = selected["fetched_at"]
         available["selection_basis"] = "latest_successful_acquisition_or_current_content"
+        fetch = fetches.get(selected["fetch_id"], {})
+        if fetch.get("fetch_status") == "success" and fetch.get("content_version_id") == content["content_version_id"]:
+            available.update(requested_url=fetch.get("requested_url"), final_url=fetch.get("final_url"))
         if display_policy == "full_markdown":
             available["markdown"] = article_body_markdown(content["markdown_content"])
         elif display_policy == "summary_excerpt":
@@ -3190,7 +3283,7 @@ class RegistryReader:
                         raise RegistryContractError("invalid PDF document data")
                     self._pdf_document_cache[source_sha] = parsed
                 from climate_monitor.pdf_intake import report_update_fields
-                value["report_fields"] = report_update_fields(value, parsed)
+                value["report_fields"] = None if value.get("metadata_only") else (value.get("report_fields") if snapshot.get("_verification") else report_update_fields(value, parsed))
                 value["structured_report"] = any("IN WINDOW" in page.get("text", "") for page in parsed.get("pages", []))
             from .information_checks import latest_checks_from_attempts
             value.update(latest_checks_from_attempts("articles", value, attempts,
@@ -3395,7 +3488,8 @@ class RegistryReader:
             categories = list((annotation.categories if annotation else ()) or source_categories)
             keywords = list((annotation.keywords if annotation else ()) or source_keywords)
             if annotation:
-                item["summary"] = annotation.summary
+                if annotation.summary:
+                    item["summary"] = annotation.summary
                 annotation_summary = annotation_summary or annotation.summary
                 if fallback_provenance is None:
                     fallback_categories = list(annotation.categories)
@@ -3584,7 +3678,7 @@ class RegistryReader:
                     payload.update(source=snapshot["sources"][0]["hostname"], publisher=snapshot["sources"][0]["display_name"])
                 payload["is_visible"] = True
                 from .acquisition_review import digest
-                payload["published_candidate_sha256"] = digest(snapshot)
+                payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
                 payload["record_reference"] = {"entity_kind": "article", "entity_id": article_id,
                     "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
                 if snapshot.get("git_wiki"):

@@ -426,7 +426,7 @@ def _verify_article(
     )
     summary_provenance = detail.get("summary_provenance")
     db_complete = (
-        summary_provenance == "content_enrichment"
+        summary_provenance in {"content_enrichment", "verified_source_evidence"}
         and _nonempty(enrichment.get("summary"))
         and isinstance(enrichment.get("categories"), list)
         and isinstance(enrichment.get("keywords"), list)
@@ -449,11 +449,15 @@ def _verify_article(
     )
     fallback_complete = (
         summary_provenance in {
-            "source_report", "original_content_annotation",
+            "verified_source_evidence", "source_report", "original_content_annotation",
             "official_replacement_annotation", "publisher_excerpt_annotation",
             "report_fallback_annotation",
         }
-        and provenance == {"categories": summary_provenance, "keywords": summary_provenance}
+        and isinstance(provenance, dict)
+        and provenance.get("categories") in {"source_report", "original_content_annotation",
+            "official_replacement_annotation", "publisher_excerpt_annotation", "report_fallback_annotation"}
+        and provenance.get("keywords") == provenance.get("categories")
+        and (summary_provenance == "verified_source_evidence" or summary_provenance == provenance["categories"])
         and bool(detail.get("categories"))
         and bool(detail.get("keywords"))
         and article_id in fallback_article_ids

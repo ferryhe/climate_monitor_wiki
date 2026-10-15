@@ -86,7 +86,22 @@ def main(argv=None):
     root = args.root.resolve()
     if not root.is_absolute() or root.is_relative_to(ROOT):
         parser.error("business state must be external to the checkout")
+    verification_report = None
+    def refresh_verification_report():
+        if args.kind != "acquisition":
+            return None
+        from climate_registry.verification_report import write_verification_report
+        database = args.database or os.getenv("CLIMATE_REGISTRY_DB")
+        if not database:
+            for path in [root / "registry-review/packet.json", *sorted(root.glob("*/acquisition-review/state.json"))]:
+                if path.is_file():
+                    value = json.loads(path.read_text())
+                    database = value.get("registry_database") or value.get("packet", {}).get("registry_database")
+                    if database:
+                        break
+        return write_verification_report(database, root) if database else {"status": "unavailable", "reason": "Registry is not configured"}
     if args.command == "peek":
+        verification_report = refresh_verification_report()
         selected = pending(args.kind, root)
         resolved = {}
         if selected:
@@ -104,7 +119,7 @@ def main(argv=None):
                 resolved = {"registry_snapshots": [c.get("registry_snapshot_path") or c.get("snapshot_path") for c in packet["candidates"] if c.get("registry_snapshot_path") or c.get("snapshot_path")]}
                 if packet["schema_version"] != "registry-final-review.v1":
                     resolved["candidate_bodies"] = [(c.get("readable_text") or {}).get("path") or str((target_root / c["body_path"]).resolve()) for c in packet["candidates"]]
-        print(json.dumps({"wakeAgent": bool(selected), "kind": args.kind,
+        print(json.dumps({"wakeAgent": bool(selected), "kind": args.kind, "verification_report": verification_report,
             **({"target": selected[1].get("occurrence") or selected[1]["packet"]["run_id"],
                 "packet": selected[1]["packet"], "resolved_paths": resolved} if selected else {})}, sort_keys=True))
         return 0
@@ -173,6 +188,8 @@ def main(argv=None):
                 database=database, repository_root=ROOT)
     else:
         result = reports.send_approved(root, args.target, no_send=not args.send, config_path=args.config)
+    if args.command in {"submit", "activate"} and args.kind == "acquisition":
+        result["verification_report"] = refresh_verification_report()
     print(json.dumps(result, sort_keys=True))
     if registry_review and args.command == "activate":
         return int(result["approved_count"] == 0)

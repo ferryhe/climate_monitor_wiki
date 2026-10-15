@@ -39,7 +39,7 @@ knowledge versions; schema 20 adds honest manual enrichments; schema 21 stores
 immutable full candidate snapshots, review receipts and one published pointer/
 visibility flag per canonical entity. `climate_registry/publication.py` supplies
 the common read-only public projection. T5 still reviews generated report PDFs,
-not intake candidates. Schema 22 adds real core/native source FKs to the existing T1 attempts. New automatic candidates require exact terminal T1 evidence before the independent T10 full-snapshot review; terminal partial evidence remains visible to that review. No additional review service or cron is required.
+not intake candidates. Schema 22 adds real core/native source FKs to the existing T1 attempts. New automatic candidates require exact terminal T1 evidence before the independent T10 full-snapshot review; terminal partial evidence remains visible to that review. No additional review service or cron is required. Schema 23 separately records exact original PDF Executive Summary adoptions (label `采用原文`); it does not grant factual verification. Public facts use frozen published verification, and the normal acquisition T10 `peek`/`submit`/`activate` emit complete JSON/Chinese Markdown inventories under `registry-review/verification-reports/`. See [the deployment runbook](docs/deployment.md#verified-public-facts-original-pdf-summaries-and-the-normal-t10-inventory).
 
 Business state lives outside Git: run `acquisition-review/`, per-occurrence
 `reports/DATE/snapshot.json`, immutable `revisions/NNNN/{report-source.json,

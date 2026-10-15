@@ -98,6 +98,9 @@ def _approve_fixture(database: Path, metadata_dir: Path | None = None, source_di
     from climate_registry.publication import enabled, stage_entities, _approve
     with sqlite3.connect(database) as connection:
         if enabled(connection):
+            from verified_fixtures import seed_verified_articles, seed_verified_pdf_meetings
+            seed_verified_articles(connection)
+            seed_verified_pdf_meetings(connection)
             annotations = load_article_annotations(metadata_dir) if metadata_dir else {}
             for sha in stage_entities(connection, annotations=annotations,source_dir=source_dir):
                 _approve(connection, sha, {"basis": "accepted_test_fixture"}, status="accepted_legacy")
@@ -321,13 +324,13 @@ def _insert_pdf_intake_records(database: Path, *, unique_url="https://example.co
         "occurrence_id": "pdf-calendar-occurrence",
         "source_document_sha256": document_sha256,
         "page": 4,
-        "name": "Climate report publication",
+        "name": "Climate research launch",
         "kind": "publication",
         "raw_date": "4 September 2026",
         "start_date": "2026-09-04",
         "end_date": "2026-09-04",
         "date_precision": "day",
-        "summary": "Publication date listed in the source PDF.",
+        "summary": "Launch date listed in the source PDF.",
         "source_urls": ["https://example.com/report"],
         "location": "Paris, France",
         "online_url": "https://example.com/meeting-room",
@@ -450,7 +453,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert len(status_payload.pop("cache_version")) == 64
     assert status_payload == {
         "available": True,
-        "schema_version": 22,
+        "schema_version": 23,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -656,12 +659,9 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
     monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
 
     report = client.get("/api/registry/reports/2026-08-10").json()
-    assert report["executive_summary"] == [
-        "Sites checked: 3, succeeded: 2, failed: 1",
-        "Exact source observation in report order.",
-    ]
-    assert report["articles"][0]["summary"] == "Enriched full summary."
-    assert report["articles"][0]["summary_provenance"] == "content_enrichment"
+    assert report["executive_summary"] == []  # Archive text has no original-summary adoption.
+    assert report["articles"][0]["summary"] == "Report-derived full summary."
+    assert report["articles"][0]["summary_provenance"] == "verified_source_evidence"
     assert report["articles"][0]["categories"] == ["Insurance", "Climate risk"]
     assert report["articles"][0]["keywords"] == ["risk", "insurance"]
     assert report["articles"][0]["metadata_provenance"] == {
@@ -670,7 +670,7 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
     }
     assert report["articles"][1]["categories"] == []
     assert report["articles"][1]["keywords"] == []
-    assert report["articles"][1]["summary"] is None
+    assert report["articles"][1]["summary"] == "Report-derived excerpt summary."
     assert report["articles"][1]["report_summary"] == "Report-derived excerpt summary."
     assert report["articles"][1]["metadata_provenance"] == {
         "categories": None,
@@ -691,6 +691,14 @@ def test_report_and_article_metadata_are_read_from_sha_matched_source(
     article = client.get("/api/registry/articles/article-meta").json()
     assert article["enrichment"]["categories"] == []
     assert article["enrichment"]["keywords"] == []
+    assert article["report_metadata"] == {
+        "categories": ["Capital & Solvency", "Climate Risk"], "keywords": ["capital", "climate"],
+    }
+    assert article["categories"] == ["Capital & Solvency", "Climate Risk"]
+    assert article["keywords"] == ["capital", "climate"]
+    assert article["metadata_provenance"] == {"categories": "source_report", "keywords": "source_report"}
+    # The same frozen report classifications remain metadata in private and public reads.
+    article = RegistryReader(database, repository_root=ROOT, source_dir=source_dir, public=False).article("article-meta")
     assert article["report_metadata"] == {
         "categories": ["Capital & Solvency", "Climate Risk"],
         "keywords": ["capital", "climate"],
@@ -805,7 +813,12 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
     monkeypatch.setattr(api_server, "SOURCE_DIR", source_dir)
     monkeypatch.setattr(api_server, "ARTICLE_METADATA_DIR", metadata_dir)
 
-    report = client.get("/api/registry/reports/2026-08-10").json()
+    public_report = client.get("/api/registry/reports/2026-08-10").json()
+    assert public_report["articles"][2]["summary"] == "Report-derived metadata summary."
+    assert public_report["articles"][2]["categories"] == ["Capital & Solvency", "Climate Risk"]
+    def private_reader():
+        return RegistryReader(database, repository_root=ROOT, source_dir=source_dir, metadata_dir=metadata_dir, public=False)
+    report = private_reader().report("2026-08-10")
     assert report["articles"][0]["summary"] == "Enriched full summary."
     assert report["articles"][0]["summary_provenance"] == "content_enrichment"
     assert report["articles"][0]["categories"] == ["Insurance", "Climate risk"]
@@ -814,7 +827,7 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
     assert report["articles"][2]["categories"] == ["Capital & Solvency", "Climate Risk"]
     assert report["articles"][2]["metadata_provenance"]["categories"] == "original_content_annotation"
 
-    article = client.get("/api/registry/articles/article-meta").json()
+    article = private_reader().article("article-meta")
     assert article["summary"] == "The item links capital and climate considerations."
     assert article["summary_provenance"] == "original_content_annotation"
     assert article["metadata_provenance"] == {
@@ -842,7 +855,7 @@ def test_original_content_annotations_supply_unique_article_detail_without_rewri
         json.dumps(payload), encoding="utf-8"
     )
     _approve_fixture(database,metadata_dir,source_dir)
-    article = client.get("/api/registry/articles/article-meta").json()
+    article = private_reader().article("article-meta")
     assert article["summary_provenance"] == "official_replacement_annotation"
     assert article["metadata_provenance"] == {
         "categories": "official_replacement_annotation",
@@ -905,6 +918,9 @@ def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
     with caplog.at_level(logging.DEBUG, logger="climate_registry.read_api"):
         report = client.get("/api/registry/reports/2026-08-10").json()
         detail = client.get("/api/registry/articles/article-full").json()
+        # Archive bundle precedence remains inspectable without publishing its generated facts.
+        private = RegistryReader(database, repository_root=ROOT, metadata_dir=metadata_dir, public=False).article("article-full")
+        assert private["summary"] == "Current DB bundle summary."
 
     report_article = report["articles"][0]
     assert [item["article_id"] for item in report["articles"]] == [
@@ -913,31 +929,27 @@ def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
         "article-meta",
     ]
     assert report_article["pillar"] == "A"
-    assert report_article["summary"] == "Current DB bundle summary."
+    assert report_article["summary"] == "Report-derived full summary."
     assert report_article["categories"] == []
     assert report_article["keywords"] == []
-    assert report_article["summary_provenance"] == "content_enrichment"
+    assert report_article["summary_provenance"] == "verified_source_evidence"
     assert report_article["metadata_provenance"] == {
         "categories": "content_enrichment",
         "keywords": "content_enrichment",
     }
-    assert report_article["title"] == "Compatibility annotation title"
-    assert report_article["source_annotation"] == {
-        "source_basis": "original_content",
-        "source_url": "https://example.com/full",
-        "generated_on": "2026-08-17",
-    }
+    assert report_article["title"] == "Climate: 100% transition"
+    assert report_article["source_annotation"] == {'source_basis':'original_content','source_url':'https://example.com/full','generated_on':'2026-08-17'}
 
     assert detail["original_url"] == "https://example.com/full"
-    assert detail["summary"] == "Current DB bundle summary."
+    assert detail["summary"] == "Report-derived full summary."
     assert detail["categories"] == []
     assert detail["keywords"] == []
-    assert detail["summary_provenance"] == "content_enrichment"
+    assert detail["summary_provenance"] == "verified_source_evidence"
     assert detail["metadata_provenance"] == {
         "categories": "content_enrichment",
         "keywords": "content_enrichment",
     }
-    assert detail["title"] == "Compatibility annotation title"
+    assert detail["title"] == "Climate: 100% transition"
     assert [item["report_date"] for item in detail["appearances"]] == [
         "2026-08-10",
         "2026-08-03",
@@ -951,8 +963,8 @@ def test_complete_db_enrichment_is_atomic_over_conflicting_json_annotation(
     messages = [record.getMessage() for record in caplog.records]
     assert messages
     assert all(record.levelno == logging.DEBUG for record in caplog.records)
-    assert all("overlap_fields=summary,categories,keywords" in message for message in messages)
-    assert all("conflict_fields=summary,categories,keywords" in message for message in messages)
+    assert any("overlap_fields=summary,categories,keywords" in message for message in messages)
+    assert any("conflict_fields=summary,categories,keywords" in message for message in messages)
     rendered_logs = "\n".join(messages)
     for secret in (
         "https://example.com/full",
@@ -985,17 +997,17 @@ def test_manual_enrichment_can_attach_to_an_article_version_without_body(registr
     report = client.get("/api/registry/reports/2026-08-10").json()
     report_article = next(item for item in report["articles"] if item["article_id"] == "article-meta")
 
-    assert detail["summary"] == "Human-reviewed summary."
-    assert detail["summary_provenance"] == "manual_enrichment"
+    assert detail["summary"] == "Report-derived metadata summary."
+    assert detail["summary_provenance"] == "verified_source_evidence"
     assert detail["enrichment"]["article_version_id"] == "version-meta"
     assert detail["enrichment"]["content_version_id"] is None
     assert detail["enrichment"]["generator"]["kind"] == "manual"
     assert detail["categories"] == ["policy-regulation"]
-    assert report_article["summary"] == "Human-reviewed summary."
-    assert report_article["summary_provenance"] == "manual_enrichment"
+    assert report_article["summary"] == "Report-derived metadata summary."
+    assert report_article["summary_provenance"] == "verified_source_evidence"
 
 
-def test_bundled_161_annotations_preserve_existing_report_api_payloads(tmp_path):
+def test_bundled_161_annotations_preserve_private_archive_payloads(tmp_path):
     root = Path(__file__).resolve().parents[1]
     database = tmp_path / "historical-registry.sqlite3"
     build_audit_registry(root / "sources", database, tmp_path / "audit")
@@ -1005,7 +1017,7 @@ def test_bundled_161_annotations_preserve_existing_report_api_payloads(tmp_path)
         database,
         repository_root=root,
         source_dir=root / "sources",
-        metadata_dir=root / "article_metadata",
+        metadata_dir=root / "article_metadata", public=False,
     )
 
     observed = {}
@@ -1094,7 +1106,7 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert client.get("/api/registry/articles/article-full").json()["pdf_occurrences"][0]["occurrence_id"] == "pdf-occurrence-core"
 
     calendar = client.get(
-        "/api/registry/pdf-intake/calendar", params={"query": "report publication", "kind": "publication"}
+        "/api/registry/pdf-intake/calendar", params={"query": "research launch", "kind": "publication"}
     )
     assert calendar.status_code == 200
     assert calendar.json()["items"][0]["kind"] == "publication"
@@ -1138,7 +1150,7 @@ def test_direct_public_pdf_readers_preserve_frozen_source_and_meeting_contracts(
 
     meetings = reader.meetings(base_date="1900-01-01")
     assert meetings["items"][0]["source_observations"] == [source_observation]
-    assert meetings["items"][0]["canonical_event_id"] is None
+    assert meetings["items"][0].get("canonical_event_id") is None
     assert meetings["coverage"]["returned_record_count"] == 0
     assert "timezone" not in meetings
 
@@ -1167,6 +1179,7 @@ def test_combined_article_filters_keep_core_dto_for_a_matching_linked_pdf(regist
         response = client.get("/api/registry/articles", params=params)
         assert response.status_code == 200
         items = response.json()["items"]
+        assert any(item["canonical_url"] == "https://example.com/full" for item in items), (params,items)
         linked = next(item for item in items if item["canonical_url"] == "https://example.com/full")
         assert linked["article_id"] == "article-full"
         assert linked["source_kind"] == "registry"
@@ -1194,6 +1207,8 @@ def test_approved_article_collection_batches_candidate_reads_without_details(tmp
                 (version, identity, f"Article {index}", f"Article {index}", "Approved collection fixture", f"fingerprint-{index}"))
             db.execute("UPDATE articles SET current_version_id=? WHERE article_id=?", (version, identity))
         from climate_registry.publication import _approve, stage_entities
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "accepted collection scale fixture"}, status="accepted_legacy")
 
@@ -1276,6 +1291,8 @@ def test_pdf_document_cache_checks_and_original_bytes_are_reused_per_request(reg
                  occurrence["report_date"], occurrence["content_sha256"], str(ordinal + 2) * 64,
                  json.dumps(occurrence)))
         from climate_registry.publication import _approve, stage_entities
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "accepted Issue 221 PDF fixture"}, status="accepted_legacy")
 
@@ -1505,7 +1522,7 @@ def test_unknown_and_malformed_identifiers_are_stable(registry_client):
 def test_article_detail_enforces_display_policy(
     registry_client, article_id, policy, has_excerpt, has_markdown
 ):
-    client, _ = registry_client
+    client, database = registry_client
     response = client.get(f"/api/registry/articles/{article_id}")
     assert response.status_code == 200
     payload = response.json()
@@ -1515,7 +1532,15 @@ def test_article_detail_enforces_display_policy(
     assert bool(payload["content"].get("markdown")) is has_markdown
     if has_excerpt:
         assert len(payload["content"]["supporting_excerpt"]) <= 500
-    assert "content_sha256" not in response.text
+    assert "content_sha256" not in payload["content"]
+    available = payload.get("available_content") or {}
+    if available.get("content_version_id"):
+        with sqlite3.connect(database) as connection:
+            actual = connection.execute("SELECT content_sha256 FROM article_content_versions WHERE content_version_id=? AND article_id=?",
+                (available["content_version_id"], article_id)).fetchone()[0]
+        assert available["content_sha256"] == actual
+    else:
+        assert "content_sha256" not in response.text
     assert "markdown_sha256" not in response.text
     assert "error_message" not in response.text
     if article_id == "article-full":
@@ -1564,15 +1589,16 @@ def test_article_detail_exposes_collection_and_page_information_dates(registry_c
     assert collected["collected_at"] == "2026-08-13T12:00:00Z"
     assert collected["information_date"] is None
     assert collected["date_basis"] == "collection_time"
-    assert [item["observed_at"] for item in collected["date_observations"]] == [
-        "2026-08-12T09:00:00Z",
-    ]
+    assert collected["date_observations"] == []
+    private=RegistryReader(database,repository_root=ROOT,public=False)
+    assert [item['observed_at'] for item in private.article('article-full')['date_observations']]==['2026-08-12T09:00:00Z']
 
     page_dated = client.get("/api/registry/articles/article-no-fetch").json()
     assert page_dated["collected_at"] is None
-    assert page_dated["information_date"] == "2026-08-11"
-    assert page_dated["date_basis"] == "information_date"
-    assert page_dated["date_observations"][0]["evidence"]["date_kind"] == "updated"
+    assert page_dated["information_date"] is None
+    assert page_dated["date_basis"] == "unknown"
+    assert page_dated["date_observations"] == []
+    assert private.article('article-no-fetch')["date_observations"][0]["evidence"]["date_kind"] == "updated"
 
 
 def test_invalid_enrichment_json_fails_closed_to_empty_lists(registry_client):

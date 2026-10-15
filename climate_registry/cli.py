@@ -139,6 +139,14 @@ def _parser() -> argparse.ArgumentParser:
     export = subcommands.add_parser("export-public-snapshot")
     export.add_argument("--database", type=Path)
     export.add_argument("--output", type=Path, required=True)
+    adoption = subcommands.add_parser("adopt-pdf-summary")
+    adoption.add_argument("--database", type=Path)
+    adoption.add_argument("--document-sha256", required=True)
+    adoption.add_argument("--expected-summary-sha256", required=True)
+    adoption.add_argument("--actor", required=True)
+    adoption.add_argument("--reason", required=True)
+    adoption.add_argument("--backup-dir", required=True, type=Path)
+    adoption.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -175,7 +183,11 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command == "migrate-publication":
+        if args.command == "adopt-pdf-summary":
+            from .pdf_summary import adopt_pdf_summary
+            result = adopt_pdf_summary(args.database, args.document_sha256, args.expected_summary_sha256,
+                actor=args.actor, reason=args.reason, backup_dir=args.backup_dir, apply=args.apply)
+        elif args.command == "migrate-publication":
             from .publication import migrate_publication
             result = migrate_publication(args.database, args.backup_dir, apply=args.apply)
         elif args.command == "set-visibility":

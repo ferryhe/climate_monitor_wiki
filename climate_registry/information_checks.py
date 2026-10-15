@@ -382,8 +382,11 @@ def _check_state(checks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def merge_checked_observation(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
     """Merge duplicate PDF copies without letting an unchecked copy erase valid checks."""
-    merged = {**first, **second}
+    manual = next((item for item in (first, second) if item.get("manual_verification") and item.get("verification_status") == "verified"), None)
+    merged = dict(manual) if manual else {**first, **second}
     for key in ("source_observations", "checks"):
+        if manual and key == "checks":
+            continue
         values = []
         seen = set()
         for value in first.get(key, []) + second.get(key, []):
@@ -393,7 +396,7 @@ def merge_checked_observation(first: dict[str, Any], second: dict[str, Any]) -> 
                 values.append(value)
         if values or key in first or key in second:
             merged[key] = values
-    if merged.get("checks"):
+    if merged.get("checks") and not manual:
         merged.update(_check_state(merged["checks"]))
     return merged
 
@@ -465,6 +468,8 @@ def verified_packet_from_attempt(row: dict[str, Any], *, packet_cache: dict | No
 def latest_checks_from_attempts(kind: str, item: dict[str, Any], attempts: list[dict[str, Any]],
     *, packet_cache: dict | None = None, candidate_binding: str | None = None) -> dict[str, Any]:
     """Reduce the same frozen check packets after a candidate batch read."""
+    if item.get("metadata_only"):
+        return _check_state([])
     revision = source_revision(kind, item)
     urls = item.get("source_urls") if kind == "meetings" else [item.get("raw_url")]
     checks = []
@@ -582,11 +587,11 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
         raise ValueError("invalid check options")
     from .publication import resolve_database
     database = resolve_database(database)
-    prepare_database(database, backup_dir)
     original = None
     if resume_run_id or retry_run_id:
         with _writer(database) as connection:
             original = _check_run_input(connection, prefix, resume_run_id or retry_run_id, database)
+    prepare_database(database, backup_dir)
     if resume_run_id:
         run_id = resume_run_id
         frozen = original

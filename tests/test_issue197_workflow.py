@@ -65,7 +65,7 @@ def _queue_after_actual_information(binding_path,binding,payload,**kwargs):
 def test_transaction_times_ignore_retries_and_check_metadata():
     db = sqlite3.connect(":memory:")
     apply_migrations(db)
-    assert validate_registry_contract(db) == 22
+    assert validate_registry_contract(db) == 23
     for ref, when, text in (("first", "2026-09-29T02:00:00Z", "same"),
                            ("retry", "2026-10-02T02:00:00Z", "same"),
                            ("check", "2026-10-04T02:00:00Z", "changed")):
@@ -699,7 +699,7 @@ def test_information_check_requires_explicit_v18_migration_with_exact_backup(tmp
     result = run_checks(database, kind="articles", backup_dir=backups, fetcher=unexpected, verifier=unexpected)
     assert result["status"] == "complete" and result["item_count"] == 0 and not calls
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db) == 22
+        assert validate_registry_contract(db) == 23
         assert db.execute("SELECT count(*) FROM knowledge_versions").fetchone()[0] == 0
     saved = list(backups.glob("*.bak"))
     assert len(saved) == 1
@@ -797,8 +797,11 @@ def test_verified_pdf_material_is_rendered_and_only_current_version_archived(tmp
     summary = next(o for o in reader.pdf_article("pdf-a")["occurrences"] if o["occurrence_id"] == "pdf-check-a")["verified_information"]["summary"]
     assert "Flood insurance losses" in summary
     canonical=reader.article("article-a")
-    if primary_change=="derived":assert canonical["summary"]=="Native approved corrected summary"
-    if primary_change=="model":assert canonical["summary"]=="Approved new canonical model summary"
+    # Approval does not verify a separately generated or corrected factual summary.
+    if primary_change=="derived":assert canonical["summary"]=="Observed summary"
+    if primary_change=="model":assert canonical["summary"]=="PDF observation"
+    assert "Native approved corrected summary" not in json.dumps(canonical)
+    assert "Approved new canonical model summary" not in json.dumps(canonical)
     with sqlite3.connect(database) as db:
         material = dict(zip([d[0] for d in db.execute("SELECT * FROM knowledge_versions LIMIT 0").description],
             db.execute("SELECT * FROM knowledge_versions WHERE source_ref='pdf-check-a' ORDER BY rowid DESC LIMIT 1").fetchone()))
@@ -1505,7 +1508,8 @@ def test_legacy_native_meeting_original_time_is_read_only_and_survives_new_impro
     reader=RegistryReader(legacy,repository_root=tmp_path/"application")
     before=legacy.read_bytes()
     state=report_review.freeze_biweekly(reader,tmp_path/"legacy-reports",occurrence="2026-10-12",generated_at=datetime(2026,10,12,12,tzinfo=timezone.utc))
-    assert state["status"]==("pending_review" if known else "no_eligible_information")
+    assert state["status"]=="no_eligible_information"
+    # The pre-ledger archive has no source-bound T1; its dates remain private.
     assert legacy.read_bytes()==before
     clock[0]="2026-10-13T12:00:00Z"
     result=meetings.process_batch(legacy,"batch",prompt_text="improve supported facts",prompt_version="improved",provider="test",model="test",
@@ -1554,7 +1558,7 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
         apply_migrations(db,target_version=20)
         assert validate_registry_contract(db)==20
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==22
+        assert validate_registry_contract(db)==23
     public_before=public.read_bytes()
     reader=RegistryReader(public,repository_root=tmp_path/"application");artifacts=tmp_path/"artifacts"
     inactive={"web_items":[],"pdf_occurrence_ids":[],"pdf_calendar_occurrence_ids":[]}

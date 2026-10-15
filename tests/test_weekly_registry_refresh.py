@@ -532,3 +532,26 @@ def test_same_count_wrong_api_membership_is_rejected(tmp_path, capsys, monkeypat
 
     assert code == 1
     assert payload["kind"] == "report_verification_failed"
+
+
+@pytest.mark.parametrize("metadata", ["content_enrichment", "publisher_excerpt_annotation"])
+def test_verified_factual_summary_keeps_independent_taxonomy_and_fetch_gates(metadata):
+    detail = _api_payload("https://climate.example/api/registry/articles/article-safe", timeout=1)
+    detail["summary_provenance"] = "verified_source_evidence"
+    detail["metadata_provenance"] = {"categories": metadata, "keywords": metadata}
+    fallback = frozenset()
+    if metadata != "content_enrichment":
+        detail["enrichment"] = {"summary": None, "categories": [], "keywords": [], "language": None, "generator": None}
+        detail["latest_fetch"] = {"fetch_status": "failed", "http_status": 403, "error_code": "http_error"}
+        fallback = frozenset({"article-safe"})
+    refresh._verify_article(detail, article_id="article-safe", target_date=TARGET, fallback_article_ids=fallback)
+    from copy import deepcopy
+    for field, value in (("metadata_provenance", {"categories": "unknown", "keywords": "unknown"}),
+                         ("latest_fetch", {"fetch_status": "failed", "http_status": 500, "error_code": "http_error"}),
+                         ("appearances", []), ("article_id", "another-article")):
+        invalid = deepcopy(detail); invalid[field] = value
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._verify_article(invalid, article_id="article-safe", target_date=TARGET, fallback_article_ids=fallback)
+    if fallback:
+        with pytest.raises(refresh._JobError, match="article_detail_incomplete"):
+            refresh._verify_article(detail, article_id="article-safe", target_date=TARGET, fallback_article_ids=frozenset())

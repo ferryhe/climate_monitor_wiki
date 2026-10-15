@@ -379,7 +379,7 @@ def _range_source_read(
     all_identities: set[str] = set()
     pdf_observations: list[dict[str, Any]] = []
 
-    static_only = reader.database is None and reader.static_snapshot is not None
+    static_only = reader.static_snapshot is not None
     with (nullcontext(None) if static_only else reader.connect()) as connection:
         manual_enrichments = False
         public_details = {}
@@ -482,6 +482,8 @@ def _range_source_read(
                     continue
                 if row["article_id"] not in article_rows:
                     continue
+                if row["article_id"] in public_details:
+                    continue  # Public collection provenance is rebuilt from the selected body's DTO below.
                 collected_at, collected_date = _collection_timestamp(row["fetched_at"])
                 collection_dates[row["article_id"]].append({
                     "date": collected_date,
@@ -536,31 +538,45 @@ def _range_source_read(
         # Render stores the approved DTO, without private capture/check rows.
         # Fill only public evidence absent from SQL; never invent source facts.
         for identity,detail in public_details.items():
+            available = detail.get("available_content") or {}
             known={item["observation_id"] for item in observations[identity]}
-            for item in detail.get("acquisition_observations",[]):
-                key=item["acquisition_item_id"]
-                if key in known or item.get("processing_status","complete")!="complete" or item.get("selection_status","selected")!="selected":
+            for item in detail.get("acquisition_observations", []):
+                key = item["acquisition_item_id"]
+                if item.get("processing_status", "complete") != "complete" or item.get("selection_status", "selected") != "selected":
                     continue
                 if acquisition_item_ids is not None and key not in acquisition_item_ids:
+                    continue
+                for field in ("fetch", "resolved_fetch"):
+                    fetch = item.get(field) or {}
+                    if (available.get("fetch_id") and fetch.get("status") == "success"
+                            and fetch.get("content_version_id") == available.get("content_version_id")
+                            and fetch.get("fetch_id") and fetch.get("requested_url") and fetch.get("fetched_at")):
+                        stamp, day = _collection_timestamp(fetch["fetched_at"])
+                        observation = {"date":day, "collected_at":stamp, "observation_id":fetch["fetch_id"],
+                            "basis":"registry_fetch", "evidence":{field:fetch.get(field) for field in ("requested_url", "final_url")}}
+                        if observation not in collection_dates[identity]:
+                            collection_dates[identity].append(observation)
+                if key in known:
                     continue
                 observations[identity].append({"kind":"registry_acquisition","observation_id":key,
                     "url":item["raw_url"],"title":item.get("title"),"summary":item.get("summary"),
                     "observed_at":item.get("discovered_at"),"content_version_id":item.get("content_version_id"),
                     "publication_date":item.get("publication_date"),"publication_date_evidence":item.get("publication_date_evidence"),
                     "source_name":item.get("source_name"),"origins":item.get("origins",[])})
-                if item.get("collected_at"):
-                    stamp,day=_collection_timestamp(item["collected_at"])
-                    collection_dates[identity].append({"date":day,"collected_at":stamp,"observation_id":key,"basis":"registry_fetch","evidence":{"requested_url":item["raw_url"]}})
                 published=_day_precision_publication_date(item.get("publication_date"))
                 if published and item.get("publication_date_evidence"):
                     evidence={"date":published,"observation_id":key,"evidence":item["publication_date_evidence"]}
                     publication_dates[identity].append(evidence);evidenced_dates[identity].append(evidence)
-            if not collection_dates[identity] and detail.get("collected_at"):
+            if detail.get("collected_at"):
                 stamp,day=_collection_timestamp(detail["collected_at"])
-                available=detail.get("available_content") or {}
-                collection_dates[identity].append({"date":day,"collected_at":stamp,
-                    "observation_id":available.get("fetch_id") or available.get("content_version_id") or identity,"basis":"approved_public_content",
-                    "evidence":{"source_url":detail["canonical_url"]}})
+                exact_fetch = bool(available.get("fetch_id") and available.get("content_version_id") and available.get("requested_url"))
+                if exact_fetch or not collection_dates[identity]:
+                    observation = {"date":day,"collected_at":stamp,
+                        "observation_id":available.get("fetch_id") or available.get("content_version_id") or identity,
+                        "basis":"registry_fetch" if exact_fetch else "approved_public_content",
+                        "evidence":{key:available.get(key) for key in ("requested_url", "final_url")} if exact_fetch else {"source_url":detail["canonical_url"]}}
+                    if observation not in collection_dates[identity]:
+                        collection_dates[identity].append(observation)
 
         has_pdf = connection is not None and connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'"
@@ -591,10 +607,11 @@ def _range_source_read(
             if isinstance(article_id, str):
                 all_identities.add(article_id)
             raw = _json_object(row["occurrence_json"], "PDF occurrence") or {}
-            if raw.get("summary_basis") == "verbatim_pdf_calendar_row":
+            if raw.get("metadata_only") or raw.get("summary_basis") == "verbatim_pdf_calendar_row":
                 continue
             document = pdf_documents[row["source_document_sha256"]]
-            report_fields = report_update_fields(dict(raw, raw_url=row["raw_url"], page=row["page"]), document)
+            report_fields = (raw.get("report_fields") if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone()
+                else report_update_fields(dict(raw, raw_url=row["raw_url"], page=row["page"]), document))
             evidence_text = raw.get("publication_date_evidence")
             evidence = (
                 {"kind": "pdf_text", "text": evidence_text,
@@ -660,6 +677,8 @@ def _range_source_read(
         if reader.static_snapshot is not None:
             for article in pdf_details.values():
                 for item in article["occurrences"]:
+                    if item.get("metadata_only"):
+                        continue
                     if pdf_occurrence_ids is not None and item["occurrence_id"] not in pdf_occurrence_ids:
                         continue
                     evidence_text=item.get("publication_date_evidence")
@@ -922,7 +941,7 @@ def _range_source_read(
                 version_id=available.get("content_version_id") or version_id
                 content=connection.execute("SELECT content_version_id,content_sha256,extraction_method,extraction_version FROM article_content_versions WHERE article_id=? AND content_version_id=?",(article_id,version_id)).fetchone() if version_id and connection is not None else None
                 if content is None and version_id:
-                    metadata=detail.get("content") or {}
+                    metadata={**available, **(detail.get("content") or {})}
                     if metadata.get("content_version_id")!=version_id:
                         metadata=available
                     content={key:metadata.get(key) for key in ("content_sha256","extraction_method","extraction_version")}

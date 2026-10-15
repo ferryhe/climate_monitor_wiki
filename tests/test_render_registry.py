@@ -29,12 +29,17 @@ def test_actual_render_startup_keeps_approved_report_fields_and_pdf_public_metad
     original=ROOT/"sources/climate-monitor-2026-09-14.md";report=sources/original.name;shutil.copyfile(original,report)
     source_bytes=report.read_bytes();source_sha=hashlib.sha256(source_bytes).hexdigest()
     database=tmp_path/"live.sqlite3";build_audit_registry(sources,database,tmp_path/"audit")
+    with sqlite3.connect(database) as db:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+        for sha in stage_entities(db):_approve(db,sha,{"basis":"verified report fixture"},status="accepted_legacy")
     live=RegistryReader(database,repository_root=application,source_dir=sources)
     article=live.articles()["items"][0];identity=article["article_id"];url=article["canonical_url"]
     annotation=ArticleAnnotation(url,url,"Approved curated title","original_content","Approved curated summary",("Climate Risk",),("insurance",),"2026-09-14")
     pdf=tmp_path/"source.pdf";_report_pdf_with_two_articles(pdf);monkeypatch.delenv("TYPESAFE_API_KEY",raising=False)
     bundle=import_pdf_reports([pdf]);persist_pdf_intake(database,tmp_path/"pdf-backups",bundle)
     with sqlite3.connect(database) as db:
+        seed_verified_articles(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit exact PDF/report fixture approval"}, status="accepted_legacy")
         sha=stage_snapshot(db,snapshot_entity(db,"article",identity,annotations={url:annotation},source_dir=sources))
         _approve(db,sha,{"basis":"explicit approved curated report fixture"}, status="accepted_legacy")
@@ -81,10 +86,8 @@ def test_render_blueprint_uses_registry_bootstrap_runner():
 
 def test_render_runner_builds_ephemeral_registry_before_starting(monkeypatch):
     observed: dict[str, object] = {}
-    expected_latest = max(
-        path.stem.removeprefix("climate-monitor-")
-        for path in (ROOT / "sources").glob("climate-monitor-*.md")
-    )
+    artifact=json.loads((ROOT/'wiki/public-registry.json').read_text())
+    expected_latest=artifact['registry_status']['latest_report_date']
     monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
     monkeypatch.setenv("PORT", "9876")
     monkeypatch.setattr(run_render_web, "load_dotenv", lambda *_args: False)
@@ -102,7 +105,7 @@ def test_render_runner_builds_ephemeral_registry_before_starting(monkeypatch):
         assert status.status_code == 200
         assert status.json()["latest_report_date"] == expected_latest
         assert reports.status_code == 200
-        assert reports.json()["items"][0]["report_date"] == expected_latest
+        assert reports.json()['items']==artifact['registry_reports'][:1]
         assert articles.status_code == 200
         assert articles.json()["pagination"]["total"] > 0
 

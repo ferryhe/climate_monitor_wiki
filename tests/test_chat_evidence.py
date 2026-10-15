@@ -1527,10 +1527,27 @@ def test_review20_current_named_page_is_independent_of_prior_turn(tmp_path, prio
         assert ambiguous["needs_clarification"] and not ambiguous["sources"]
 
 
-def test_real_approved_article_offline_distinguishes_publication_from_collection(monkeypatch):
+def test_real_approved_article_offline_distinguishes_publication_from_collection(monkeypatch,tmp_path):
     for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLIMATE_CHAT_PROVIDER", "CLIMATE_REGISTRY_DB"):
         monkeypatch.delenv(key, raising=False)
-    responder = AgenticWikiResponder()
+    from test_verified_publication import _database,_check,_approve_all
+    import hashlib,sqlite3
+    database=_database(tmp_path)
+    title='Leaders should plan for colliding risks, not isolated crises'
+    summary='Risks interact and compound across financial and climate systems.'
+    body=title+'. '+summary
+    body_sha=hashlib.sha256(body.encode()).hexdigest()
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE articles SET article_id='article-good' WHERE article_id='good'")
+        connection.execute("UPDATE article_versions SET article_id='article-good' WHERE article_id='good'")
+        connection.execute("UPDATE article_versions SET observed_title=?,canonical_title=?,observed_summary=? WHERE article_id='article-good'",(title,title,summary))
+        connection.execute("INSERT INTO article_content_versions VALUES('actual-body','article-good',?,?,?,'text/markdown',?,'fixture','v1','2026-10-07T22:14:35.367266Z')",(body_sha,body,body_sha,len(body)))
+        connection.execute("UPDATE articles SET current_content_version_id='actual-body' WHERE article_id='article-good'")
+        connection.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,final_url,fetched_at,fetch_status,http_status,content_version_id) VALUES('actual-fetch','article-good','https://example.org/good','https://example.org/good','2026-10-07T22:14:35.367266Z','success',200,'actual-body')")
+    assert _check(database,tmp_path,ids={'core:article-good'},body=body)['unverified_count']==0
+    _approve_all(database)
+    monkeypatch.setenv('CLIMATE_REGISTRY_DB',str(database))
+    responder = AgenticWikiResponder(wiki_dir=tmp_path/'wiki',source_dir=tmp_path/'sources')
     result = responder.answer(
         "For the article Leaders should plan for colliding risks, not isolated crises, "
         "what is its publication date and what are its key findings?")
@@ -1544,9 +1561,9 @@ def test_real_approved_article_offline_distinguishes_publication_from_collection
     assert "publication date" in guidance and "publisher" in guidance
     assert "participation" not in guidance and "event organizer" not in guidance
     source = result["sources"][0]
-    assert source["evidence_id"] == "article-00de8b1c45986f255c385eb6"
+    assert 'good' in source["evidence_id"]
     assert source["url"] in result["text"]
-    assert source["url"] == "https://www.weforum.org/stories/geo-economics-and-politics/how-leaders-anticipate-risks-govern-boards-avoid-crises"
+    assert source["url"] == "https://example.org/good"
 
 
 def test_offline_named_article_keeps_sourced_publication_date(tmp_path):
@@ -1834,6 +1851,8 @@ def test_approved_chronology_survives_export_and_pending_changes(tmp_path, monke
             fields={"summary": "baseline"}, evidence={}, recorded_at="2026-09-20T12:00:00Z")
         record_knowledge(db, kind="article", entity_id="a", source_kind="information_check", source_ref="same",
             fields={"summary": "baseline"}, evidence={}, recorded_at="2026-10-01T12:00:00Z")
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "fixture approval"}, status="accepted_legacy")
     reader = _reader(database, tmp_path)
@@ -2021,7 +2040,8 @@ def test_unconfigured_database_uses_verified_static_export(tmp_path):
     from climate_registry.read_api import RegistryReader, RegistryContractError
     wiki = tmp_path / "wiki"
     wiki.mkdir()
-    artifact = {"schema_version": "climate-public-snapshot.v1", "articles": [{"article_id": "old",
+    from climate_registry.verification import PUBLICATION_POLICY
+    artifact = {"schema_version": "climate-public-snapshot.v1", "publication_policy": PUBLICATION_POLICY, "articles": [{"article_id": "old",
         "title": "Archived approved report", "summary": "Insurers face physical risk", "publisher": "Publisher",
         "publication_date": "2001-01-01", "last_seen": "2026-10-08", "canonical_url": "https://example.org/old"}],
         "meeting_records": [meeting("one", "Approved conference", "Paris")], "meeting_coverage": {"status": "partial"}}
@@ -2941,6 +2961,8 @@ def test_recent_standalone_pdf_approved_projection_and_followup(tmp_path, static
             record_knowledge(db, kind="article", entity_id="standalone", source_kind="pdf", source_ref="fixture",
                 fields={"summary": "standalone insurance findings"}, evidence={}, recorded_at="2026-10-08T12:00:00Z")
             assert db.execute("SELECT count(*) FROM knowledge_versions WHERE entity_id='standalone'").fetchone()[0] == 1
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
         for sha in stage_entities(db):
             kind, key = db.execute("SELECT entity_kind,entity_id FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()
             if kind != "pdf_article" or key != "pending":

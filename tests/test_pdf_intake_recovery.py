@@ -165,11 +165,9 @@ def test_full_calendar_read_recovers_only_allow_listed_pdfs_once(tmp_path, monke
     calls.clear()
     direct_reader = RegistryReader(database, repository_root=tmp_path / "application")
     direct_items = direct_reader.pdf_calendar_items_all()
-    assert {item["occurrence_id"]: {key: item.get(key) for key in expected_fields}
-        for item in direct_items} == expected
-    assert len(calls) == 3
-    assert len({document_sha for document_sha, _items in calls}) == 3
-    assert sum(len(items) for _document_sha, items in calls) == 103
+    assert len(expected) == 103  # Full immutable archive recovery remains available privately.
+    assert direct_items == []  # Accepted legacy rows without T1 cannot recover facts into public DTOs.
+    assert calls == []
 
 
 def test_update_fields_keep_summary_and_caveat_but_remove_report_badges():

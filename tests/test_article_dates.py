@@ -103,6 +103,8 @@ def _report_day(value="2026-09-18", record_id="report-18"):
 def _approve_fixture(database):
     from climate_registry.publication import stage_entities, _approve
     with sqlite3.connect(database) as connection:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         for sha in stage_entities(connection, annotations={}):
             _approve(connection, sha, {"basis":"explicit historical date fixture"}, status="accepted_legacy")
 
@@ -219,6 +221,9 @@ def test_approved_date_dto_api_git_render_wiki_and_frontend_share_precision(tmp_
     from climate_registry.publication import export_public_snapshot,install_git_snapshot,_public_dto
     from climate_registry.publication import public_wiki_pages
     database = _database(tmp_path / "registry.sqlite3")
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO article_versions VALUES('version-a','article-a','Verified article','Verified article','Verified summary','fixture','report-title-summary','2026-01-01','2026-01-01')")
+        connection.execute("UPDATE articles SET current_version_id='version-a' WHERE article_id='article-a'")
     _approve_fixture(database)
     item = _report_day()
     assert import_observations(database,_payload(item),write=True)["inserted"] == 1
@@ -229,29 +234,30 @@ def test_approved_date_dto_api_git_render_wiki_and_frontend_share_precision(tmp_
     before = database.read_bytes(), database.stat().st_ino
     reader = RegistryReader(database,repository_root=tmp_path / "application")
     detail = reader.article("article-a")
-    expected_basis = {None:"report_date","collection":"collection_time","page_information":"information_date"}[more_precise]
+    private=RegistryReader(database,repository_root=tmp_path/'application',public=False).article('article-a')
+    assert private['date_basis']=={None:'report_date','collection':'collection_time','page_information':'information_date'}[more_precise]
+    assert next(o for o in private['date_observations'] if o['observed_at']=='2026-09-18')['evidence']==item['evidence']
+    expected_basis = 'unknown'
     assert detail["date_basis"] == expected_basis
-    assert detail["report_date"] == "2026-09-18"
-    assert detail["collected_at"] == ("2026-09-10T12:00:00Z" if more_precise == "collection" else None)
-    assert detail["information_date"] == ("2026-09-20" if more_precise == "page_information" else None)
+    assert detail["report_date"] is detail["collected_at"] is detail["information_date"] is None
     assert detail["publication_date"] is None
-    assert next(o for o in detail["date_observations"] if o["observed_at"]=="2026-09-18")["evidence"] == item["evidence"]
+    assert detail["date_observations"] == []
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     with TestClient(api_server.app) as client:
         response = client.get("/api/registry/articles/article-a")
         assert response.status_code == 200
         assert response.json()["date_basis"] == expected_basis and response.json()["collected_at"] == detail["collected_at"]
-    wiki = tmp_path / "wiki";wiki.mkdir()
+    wiki = tmp_path / "application/wiki";wiki.mkdir(parents=True)
     exported = export_public_snapshot(database,wiki / "public-registry.json")
     assert exported["articles"] == 1
     artifact = json.loads((wiki / "public-registry.json").read_text())
     assert artifact["articles"][0] == _public_dto(detail)
     with reader.public_snapshot():
         markdown = public_wiki_pages(database,reader=reader)["article-article-a.md"]
-    label = {None:"Report date: 2026-09-18", "collection":"Collected at: 2026-09-10T12:00:00Z", "page_information":"Information date: 2026-09-20"}[more_precise]
-    assert label in markdown
+    assert 'Verified summary' in markdown
     assert "Collected at: 2026-09-18" not in markdown
-    assert "Report observation date: 2026-09-18" in markdown
+    assert "Report observation date: 2026-09-18" not in markdown
+    assert "Information date: 2026-09-20" not in markdown
     restored = tmp_path / "render.sqlite3"
     with sqlite3.connect(restored) as connection:apply_migrations(connection)
     install_git_snapshot(restored,wiki)
@@ -265,9 +271,7 @@ def test_approved_date_dto_api_git_render_wiki_and_frontend_share_precision(tmp_
     end = javascript.index('    const summaryPresentation =',start)
     program = 'const article='+json.dumps(_public_dto(detail))+';const pdfSource=false;const seen=[];const els={registryArticleMeta:{append:(...rows)=>seen.push(...rows)}};const registryMetric=(label,value)=>({label,value});'+javascript[start:end]+';console.log(JSON.stringify(seen));'
     metrics = json.loads(subprocess.run(["node","-e",program],check=True,capture_output=True,text=True).stdout)
-    date_label = {None:"Report date (publication unconfirmed)","collection":"Collected at","page_information":"Information date"}[more_precise]
-    assert any(m["label"] == date_label and m["value"] == ("2026-09-18" if more_precise is None else value) for m in metrics)
-    if more_precise != "collection":assert not any(m["label"] == "Collected at" for m in metrics)
+    assert not any(m['label'] in {'Report date (publication unconfirmed)','Collected at','Information date','Publication date'} for m in metrics)
     assert (database.read_bytes(),database.stat().st_ino) == before
 
 

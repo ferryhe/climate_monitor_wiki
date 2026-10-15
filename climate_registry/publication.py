@@ -70,8 +70,8 @@ def _load_snapshot_json(encoded, strings):
 
 
 def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=None, candidate_sha_out=None,
-    packet_cache=None):
-    """Return exact visible approved snapshots without restoring business rows."""
+    packet_cache=None, apply_policy=True):
+    """Return permitted projections bound to exact visible approved snapshots."""
     kinds = tuple(sorted(set(kinds)))
     if not kinds:
         return {}
@@ -196,6 +196,22 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
         }
         if observed <= canonical_observed:
             del snapshots[key]
+    if apply_policy:
+        from .verification import evaluate_snapshot, canonical_target, permitted_view, review_context
+        reviews = review_context(connection)
+        verdicts = {key: evaluate_snapshot(value, reviews=reviews.get(candidate_bindings[key], ()), packet_cache=packet_cache, candidate_binding=candidate_bindings.get(key)) for key, value in snapshots.items()}
+        permitted = {}
+        for key, snapshot in snapshots.items():
+            target = canonical_target(snapshot)
+            target_snapshot = snapshots.get(target)
+            if target and target_snapshot is None:
+                target_snapshot = published_snapshots(connection, (target[0],), entity_ids={target[0]: [target[1]]},
+                    candidate_cache=candidate_cache, apply_policy=False).get(target)
+            target_verdict = verdicts.get(target) or (evaluate_snapshot(target_snapshot, reviews=reviews.get(digest(target_snapshot), ()), packet_cache=packet_cache, candidate_binding=digest(target_snapshot)) if target_snapshot else None)
+            view = permitted_view(snapshot, verdicts[key], target_snapshot, target_verdict)
+            if view is not None:
+                permitted[key] = view
+        return permitted
     return snapshots
 
 
@@ -617,11 +633,16 @@ def public_connection(source):
         projection.execute("CREATE TEMP TABLE public_snapshot_metadata(entity_kind TEXT,entity_id TEXT,snapshot_json TEXT)")
         projection.execute("CREATE TEMP TABLE approved_public_reviews(entity_kind TEXT,entity_id TEXT,approved_at TEXT)")
         projection.executemany("INSERT INTO approved_public_reviews VALUES(?,?,?)", source.execute("SELECT p.entity_kind,p.entity_id,min(r.reviewed_at) FROM registry_publication p JOIN registry_reviews r ON r.candidate_sha256=p.published_candidate_sha256 WHERE p.is_visible=1 AND r.status='pass' GROUP BY p.entity_kind,p.entity_id").fetchall())
-        published_occurrences = {}
+        from .verification import evaluate_snapshot, canonical_target, permitted_view, review_context
+        published_occurrences, verdicts, references = {}, {}, {}
+        reviews = review_context(source)
         for sha, encoded in source.execute(selected_sql):
             snapshot = _load_snapshot_json(encoded, {})
             if digest(snapshot) != sha:
                 raise ValueError("published Registry snapshot hash differs")
+            key = (snapshot["entity_kind"], snapshot["entity_id"])
+            verdicts[key] = evaluate_snapshot(snapshot, reviews=reviews.get(sha, ()))
+            references[key] = {"entity_kind": key[0], "entity_id": key[1], "_approved_candidate_sha256": sha}
             kind = snapshot["entity_kind"]
             table = "pdf_intake_article_occurrences" if kind in {"article", "pdf_article"} else "pdf_intake_calendar_items"
             published_occurrences[(kind, snapshot["entity_id"])] = {
@@ -642,7 +663,12 @@ def public_connection(source):
                 absorbed = canonical_occurrences is not None and bool(observations) and observations <= canonical_occurrences
                 if state and (not state[0] or absorbed):
                     continue
-            projection.execute("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", (snapshot["entity_kind"], snapshot["entity_id"], encoded))
+            key = (snapshot["entity_kind"], snapshot["entity_id"])
+            target = canonical_target(snapshot)
+            snapshot = permitted_view(snapshot, verdicts[key], references.get(target), verdicts.get(target))
+            if snapshot is None:
+                continue
+            projection.execute("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", (snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, ensure_ascii=False)))
             for row in snapshot["sources"]:
                 projection.execute("UPDATE sources SET hostname=?,display_name=?,first_seen=?,last_seen=? WHERE source_id=?",
                     (row["hostname"], row["display_name"], row["first_seen"], row["last_seen"], row["source_id"]))
@@ -803,7 +829,7 @@ def migrate_publication(database, backup_dir, *, apply=False):
     """One-time schema migration: accept the actual legacy view, then stage updates."""
     from .persistent import _exclusive_database_lock, _backup_name, _sqlite_sidecars
     from .schema import apply_migrations
-    from .contract import validate_registry_contract
+    from .contract import validate_registry_contract, SCHEMA_VERSION
     database = resolve_database(database)
     with _exclusive_database_lock(database):
         with sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True) as connection:
@@ -811,10 +837,10 @@ def migrate_publication(database, backup_dir, *, apply=False):
             version = validate_registry_contract(connection)
             if not apply:
                 has_pdf = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_articles'").fetchone() is not None
-                return {"status": "dry_run", "schema_version": version, "target_version": 22,
+                return {"status": "dry_run", "schema_version": version, "target_version": SCHEMA_VERSION,
                     "core_articles": connection.execute("SELECT count(*) FROM articles").fetchone()[0],
                     "pdf_articles": connection.execute("SELECT count(*) FROM pdf_intake_articles").fetchone()[0] if has_pdf else 0}
-            if version < 22:
+            if version < SCHEMA_VERSION:
                 backup_dir = Path(backup_dir)
                 backup_dir.mkdir(parents=True, exist_ok=True)
                 backup = backup_dir / _backup_name(database)
@@ -829,7 +855,7 @@ def migrate_publication(database, backup_dir, *, apply=False):
             else:
                 backup = None
             if version >= 21:
-                return {"status":"migrated","schema_version":22,"accepted_legacy":0,"manual_materialized":0,
+                return {"status":"migrated","schema_version":SCHEMA_VERSION,"accepted_legacy":0,"manual_materialized":0,
                     "manual_published":0,"staged":0,
                     "core_supplements":connection.execute("SELECT count(*) FROM knowledge_versions WHERE source_ref LIKE 'registry-supplement:%'").fetchone()[0],
                     "pdf_classifications":connection.execute("SELECT count(*) FROM knowledge_versions WHERE source_ref LIKE 'pdf-classification:%'").fetchone()[0],
@@ -872,7 +898,7 @@ def migrate_publication(database, backup_dir, *, apply=False):
                         _approve(connection, row[0], {"basis": "owner-approved historical manual supplement",
                             "source_rows": [json.loads(item["evidence_json"])["source_row_sha256"] for item in snapshot["supplements"]]}, status="accepted_legacy")
                         supplemented += 1
-            return {"status": "migrated", "schema_version": 22, "accepted_legacy": accepted,
+            return {"status": "migrated", "schema_version": SCHEMA_VERSION, "accepted_legacy": accepted,
                 "manual_materialized": materialized, "manual_published": supplemented,
                 "staged": len(staged), "core_supplements": connection.execute("SELECT count(*) FROM knowledge_versions WHERE source_ref LIKE 'registry-supplement:%'").fetchone()[0],
                 "pdf_classifications": connection.execute("SELECT count(*) FROM knowledge_versions WHERE source_ref LIKE 'pdf-classification:%'").fetchone()[0],
@@ -966,7 +992,9 @@ def public_revision(database, *, connection=None):
     if connection is not None:
         if not enabled(connection):
             return None
-        return digest([tuple(row) for row in connection.execute("SELECT entity_kind,entity_id,is_visible,published_candidate_sha256 FROM registry_publication ORDER BY entity_kind,entity_id")])
+        from .verification import PUBLICATION_POLICY
+        adoptions = [tuple(row) for row in connection.execute("SELECT adoption_id FROM pdf_intake_summary_adoptions ORDER BY adoption_id")] if connection.execute("PRAGMA user_version").fetchone()[0] >= 23 else []
+        return digest({"policy": PUBLICATION_POLICY, "adoptions": adoptions, "publications": [tuple(row) for row in connection.execute("SELECT entity_kind,entity_id,is_visible,published_candidate_sha256 FROM registry_publication ORDER BY entity_kind,entity_id")]})
     from .read_api import RegistryReader
     with RegistryReader(database, repository_root=Path(__file__).resolve().parents[1], public=False).connect() as connection:
         return public_revision(database, connection=connection)
@@ -995,12 +1023,12 @@ def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None, 
         if static_path.is_file():
             artifact = json.loads(static_path.read_text(encoding="utf-8"))
             sha = artifact.pop("artifact_sha256")
-            if digest(artifact) != sha:
+            from .verification import PUBLICATION_POLICY
+            if artifact.get("publication_policy") != PUBLICATION_POLICY or digest(artifact) != sha:
                 raise ValueError("Git public Wiki snapshot identity differs")
             pages = artifact["wiki_pages"]
             return pages if page is None else ({page: pages[page]} if page in pages else {})
-        pages = {path.name: path.read_text(encoding="utf-8") for path in sorted(static_dir.glob("*.md"))}
-        return pages if page is None else ({page: pages[page]} if page in pages else {})
+        return {}
     if page is not None:
         from .read_api import RegistryNotFoundError, RegistryReader
         selected = reader or RegistryReader(database, repository_root=Path(__file__).resolve().parents[1], source_dir=source_dir)
@@ -1072,7 +1100,7 @@ def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None, 
                         from .wiki import _registry_report_markdown
                         pages[report.path.name]=_registry_report_markdown(report.report_date, report.path.name,
                             report.sha256, articles, approved_versions=True, include_top_source=True)
-        pages["index.md"] = "# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(pages)) + "\n"
+        pages["index.md"] = ("# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(pages))).rstrip("\n") + "\n"
         return pages
 
 
@@ -1107,13 +1135,29 @@ def export_public_snapshot(database, output, *, reader=None, source_dir=None):
             except RegistryNotFoundError:
                 # Preserve the full-source archive gate when only some observations are public.
                 pass
-        value = {"schema_version": "climate-public-snapshot.v1",
+        registry_reports, registry_details = [], {}
+        page = 1
+        while True:
+            result = reader.reports(page=page, page_size=100)
+            registry_reports.extend(result["items"])
+            if len(registry_reports) >= result["pagination"]["total"]:
+                break
+            page += 1
+        for report in registry_reports:
+            payload, identity = reader.report_with_identity(report["report_date"])
+            payload["articles"] = [_public_dto(item) for item in payload.get("articles", [])]
+            registry_details[report["report_date"]] = {"payload": payload, "identity": {
+                key: getattr(identity, key) for key in ("report_date", "filename", "report_title", "report_sha256")}}
+        from .verification import PUBLICATION_POLICY
+        value = {"schema_version": "climate-public-snapshot.v1", "publication_policy": PUBLICATION_POLICY,
             "knowledge_chronology": reader.knowledge_chronology(),
             "articles": [_public_dto(reader.article(identity)) for identity in ids],
             "pdf_articles": [_pdf_dto(item) for item in reader.pdf_articles_all(include_linked=True)],
             "meetings": [_calendar_dto(item) for item in reader.pdf_calendar_items_all()], "meeting_records": [_calendar_dto(item) for item in reader.meetings_all(base_date="1900-01-01")],
             "meeting_coverage": public_meeting_coverage(reader.meetings(base_date="1900-01-01", page_size=1)["coverage"]),
             "pdf_reports": pdf_reports, "pdf_report_details": pdf_details,
+            "registry_status": reader.status(), "registry_reports": registry_reports,
+            "registry_report_details": registry_details,
             "wiki_pages": public_wiki_pages(database,reader=reader,source_dir=source_dir)}
     value["artifact_sha256"] = digest(value)
     atomic_write_json(Path(output), value)
@@ -1127,9 +1171,12 @@ def install_git_snapshot(database, wiki_dir):
     wiki_dir = Path(wiki_dir)
     path = wiki_dir / "public-registry.json"
     artifact = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    if artifact is None:
+        return None
     if artifact:
         sha = artifact.pop("artifact_sha256")
-        if artifact.get("schema_version") != "climate-public-snapshot.v1" or digest(artifact) != sha:
+        from .verification import PUBLICATION_POLICY
+        if artifact.get("schema_version") != "climate-public-snapshot.v1" or artifact.get("publication_policy") != PUBLICATION_POLICY or digest(artifact) != sha:
             raise ValueError("Git public snapshot identity differs")
         artifact["artifact_sha256"] = sha
     with _writer(Path(database)) as connection:
@@ -1175,9 +1222,13 @@ def _public_dto(payload):
     if "acquisition_observations" in payload:
         value["acquisition_observations"] = [{key: item for key, item in row.items() if key in {
             "acquisition_item_id", "batch_id", "raw_url", "source_name", "title", "summary", "discovered_at",
-            "discovery_kind", "discovery_ref", "publication_date", "publication_date_evidence", "date_status", "collected_at", "content_version_id", "origins"}}
+            "discovery_kind", "discovery_ref", "publication_date", "publication_date_evidence", "date_status", "collected_at", "content_version_id", "origins", "fetch", "resolved_fetch"}}
             for row in payload.get("acquisition_observations", []) if row.get("processing_status", "complete") == "complete" and row.get("selection_status", "selected") == "selected"]
         for row in value["acquisition_observations"]:
+            for key in ("fetch", "resolved_fetch"):
+                fetch = row.pop(key, None) or {}
+                if fetch.get("status") == "success":
+                    row[key] = {field:fetch.get(field) for field in ("fetch_id", "status", "fetched_at", "content_version_id", "requested_url", "final_url")}
             if "publication_date_evidence" in row:
                 row["publication_date_evidence"] = _date_evidence_dto(row["publication_date_evidence"])
     if "date_observations" in payload:
@@ -1241,7 +1292,8 @@ def _pdf_report_dto(item):
     value = {key: field for key, field in item.items() if key in fields}
     value["articles"] = [_pdf_dto(article) for article in item.get("articles",[])]
     value["calendar_items"] = [_calendar_dto(meeting) for meeting in item.get("calendar_items",[])]
-    value["executive_summary"] = []
+    from .pdf_summary import public_adopted_summary
+    value.update(public_adopted_summary(item))
     value["pages"] = []
     value["report_pdf"] = None  # Git provides metadata, never a PDF download.
     return value

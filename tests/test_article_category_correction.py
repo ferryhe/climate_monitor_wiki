@@ -10,6 +10,7 @@ from climate_registry.errors import RegistryInputError
 from climate_registry.publication import _approve, stage_entities, stage_snapshot, snapshot_entity, digest, export_public_snapshot
 from climate_registry.read_api import RegistryReader
 from test_registry_publication import _database, _pdf, _reader
+from verified_fixtures import seed_verified_articles
 
 
 def fixture(tmp_path, *, large=False, period=(None, None), linked_pdf=False):
@@ -25,6 +26,7 @@ def fixture(tmp_path, *, large=False, period=(None, None), linked_pdf=False):
                 ("f" * 64, "b" * 64, "c" * 64, json.dumps({"summary": "Linked PDF observation", "summary_basis": "verbatim_pdf_article_row"})))
         db.execute("INSERT INTO pdf_intake_document_sources VALUES(?,?,?,?)", (
             "f" * 64, "/archive/source.pdf", "source.pdf", "2026-08-01T00:00:00Z"))
+        seed_verified_articles(db)
         for sha in stage_entities(db):
             _approve(db, sha, {"basis": "fixture"}, status="accepted_legacy")
         db.execute("UPDATE article_versions SET observed_title='Pending title' WHERE version_id='v-a'")
@@ -119,6 +121,7 @@ def test_captured_stored_content_switch_does_not_reuse_another_bodys_categories(
         _, solar = capture_body(db, "solar", 1)
         _, flood = capture_body(db, "flood", 2)
         assert solar != flood
+        seed_verified_articles(db, occurrence_ids={"core:a"})
         approved = stage_snapshot(db, snapshot_entity(db, "article", "a", annotations={}, source_dir=tmp_path / "sources"))
         _approve(db, approved, {"basis": "Current flood body"}, status="accepted_legacy")
         plan["records"][0]["expected_binding"] = {"is_visible": 1,
@@ -135,6 +138,7 @@ def test_captured_stored_content_switch_does_not_reuse_another_bodys_categories(
         assert pointer == (solar if returned_body == "solar" else flood)
         assert {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table}")]
             for table in before} == before
+        seed_verified_articles(db, occurrence_ids={"core:a"})
         snapshot = snapshot_entity(db, "article", "a", annotations={}, source_dir=tmp_path / "sources")
         candidate = stage_snapshot(db, snapshot)
         if returned_body == "solar":
@@ -168,6 +172,7 @@ def test_managed_available_content_controls_category_carry(tmp_path, has_current
         identity, = db.execute("SELECT article_id FROM articles").fetchone()
         pointer = db.execute("SELECT content_version_id FROM article_content_versions").fetchone()[0] if has_current_pointer else None
         db.execute("UPDATE articles SET display_policy='full_markdown',current_content_version_id=? WHERE article_id=?", (pointer, identity))
+        seed_verified_articles(db)
         original = snapshot_entity(db, "article", identity, annotations={}, source_dir=tmp_path / "sources")
         original["derived_display"] = {"categories": ["Physical Risk", "Insurance Risk"],
             "metadata_provenance": {"categories": "reviewed_category_correction"}}
@@ -182,7 +187,9 @@ def test_managed_available_content_controls_category_carry(tmp_path, has_current
         assert db.execute("SELECT current_content_version_id FROM articles").fetchone()[0] == pointer
         latest, published = db.execute("SELECT latest_candidate_sha256,published_candidate_sha256 FROM registry_publication WHERE entity_id=?", (identity,)).fetchone()
         assert published == approved and latest != approved
-        snapshot = json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (latest,)).fetchone()[0])
+        seed_verified_articles(db)
+        snapshot = snapshot_entity(db, "article", identity, annotations={}, source_dir=tmp_path / "sources")
+        latest = stage_snapshot(db, snapshot)
         detail = reader._article_from_snapshot(snapshot)
         assert detail["available_content"]["markdown"] == body
         assert ("derived_display" in snapshot) == (not changed_body)

@@ -28,6 +28,12 @@ const context = vm.createContext({
   registryFetch: async (path) => {
     calls.push(path);
     if (path.includes('old')) return new Promise((resolve) => { resolveOld = resolve; });
+    if (path.includes('reference')) return {report_title: 'Reference report', filename: 'second.pdf',
+      articles: [{article_id: 'alias-article', title: 'Verified canonical article title', metadata_only: true,
+        verified_primary_reference: {entity_kind: 'article', entity_id: 'canonical-article'}, occurrences: []}],
+      calendar_items: [{metadata_only: true, page: 12, source_filename: 'second.pdf',
+        verified_primary_display: {name: 'IAIS Annual Conference 2027', source_url: 'https://example.org/target'}}],
+      pagination: {page: 1, pages: 1, total: 2}};
     const second = path.includes('page=2');
     return { report_title: 'Report', filename: 'report.pdf', executive_summary: ['Complete summary'],
       articles: [{article_id: 'a', title: 'Article', occurrences: [{source_document: 'report.pdf',
@@ -120,3 +126,14 @@ assert.ok(!texts(reviewedReport).includes('Verified information'));
 assert.ok(!texts(reviewedReport).includes('Outdated checked summary.'));
 assert.ok(texts(reviewedReport).includes('PDF import · URL accessible'));
 assert.ok(texts(reviewedReport).includes('Open source link'));
+
+await context.load('reference');
+const references = nodes(els.registryImportedReport);
+assert.ok(texts(els.registryImportedReport).includes('IAIS Annual Conference 2027'));
+assert.ok(texts(els.registryImportedReport).includes('second.pdf · page 12'));
+assert.ok(texts(els.registryImportedReport).includes('Reference to a verified meeting; this report observation is unverified.'));
+assert.ok(!texts(els.registryImportedReport).includes('Calendar item'));
+assert.equal(references.find((node) => node.text === 'IAIS Annual Conference 2027').href, 'https://example.org/target');
+const articleReference = references.find((node) => node.className === 'registry-article-link');
+assert.equal(articleReference.dataset.articleId, 'canonical-article');
+assert.equal(articleReference.dataset.articleSource, 'registry');

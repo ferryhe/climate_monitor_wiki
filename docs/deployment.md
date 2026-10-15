@@ -1166,3 +1166,68 @@ do not change the global timezone or preserve an obsolete job merely by its ID.
 Stage the replacement disabled, then switch the unique schedule under the owner's
 cutover authorization after validation. Observe a normal Monday cycle before
 claiming production completion.
+
+
+### Verified public facts, original PDF summaries, and the normal T10 inventory
+
+Schema 23 adds only the append-only `pdf_intake_summary_adoptions` receipt table.
+Run the existing `migrate-publication` dry run and `--apply` against the canonical
+external Registry, retaining its full backup. Migration does not turn legacy
+approval into factual verification. Public readers now require effective,
+source-bound verification inside the exact visible published candidate. A newer
+pending or failed check does not erase an older verified published version.
+Approved sibling report/page references may remain as metadata only; their
+unchecked text, dates and venues are private. PDF downloads remain independent.
+Retained `manual-website-verification.v1` meeting evidence is accepted only with
+its exact source/run bindings and independent review receipt. It exposes the
+reviewed identity/date and explicitly confirmed fields; other PDF descriptions,
+organizers and relevance text remain private. Missing years stay unknown unless
+the same reviewed title supplies the year. Historical failed webpage access is
+preserved even when the independent review used a source index. Native article
+summaries come from the actual checked fields; unverified generated enrichment
+and native dates cannot ride on a verified linked PDF observation.
+
+The existing T10 entrypoint emits the complete private verification inventory on
+acquisition `peek`, `submit` and `activate`, including when `peek` has no review
+to wake:
+
+```bash
+python scripts/review_pipeline.py peek --kind acquisition --root /external/runs --database /external/registry.sqlite3
+```
+
+The JSON response contains `verification_report.json_path` and
+`verification_report.human_report_path`. Full JSON and a Chinese human-readable
+Markdown table live under `ROOT/registry-review/verification-reports/`; its
+`latest.json` points to the newest pair. An unchanged complete inventory reuses
+the same verified artifacts; changes to any version, source outcome or adoption
+produce a new pair. They list current/latest/published
+versions, actual public roles, source URLs and PDF pages, checks and English
+reason codes with Chinese explanations, real review dispositions, retained good
+older versions, and source failures with zero candidates. Report generation is
+read-only with respect to the Registry and does not claim a native Hermes review
+ran or grant PASS. Terminal failed checks remain reviewable but do not publish
+facts.
+
+An owner can separately adopt the **exact stored original PDF Executive Summary**.
+This accepts no replacement prose and is not independent fact verification:
+
+```bash
+python -m climate_registry adopt-pdf-summary --database /external/registry.sqlite3 \
+  --document-sha256 DOCUMENT_SHA --expected-summary-sha256 EXACT_TEXT_SHA \
+  --actor ACTUAL_OWNER --reason 'Actual owner authorization to copy original text' \
+  --backup-dir /external/backups
+# Inspect the dry run, then repeat the same command with --apply.
+```
+
+Each applied adoption takes the existing full backup, records the actual receipt,
+and binds both document and exact UTF-8 summary hashes. Do not normalize whitespace
+or fabricate adoption receipts in a copied database. Public report page 1 and Wiki
+show the original text labeled **采用原文**, attributed to its source PDF; later
+pages omit the summary. Unadopted or mismatched text stays hidden.
+
+Rebuild `wiki/public-registry.json` and derived Wiki pages through the existing
+Registry export/sync flow after the policy change, then again after actual canonical
+adoptions. Old or missing policy-marked artifacts fail closed. Render consumes the
+new export; it never treats arbitrary committed Markdown as newly verified facts.
+Use separate render and activation processes and the existing publication/reload
+gates; do not run another production responder to prepare the content.

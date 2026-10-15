@@ -37,8 +37,10 @@ NOW = "2026-09-30T12:00:00Z"
 
 def test_approved_export_pdf_uses_same_date_projection_without_database(tmp_path, monkeypatch):
     from climate_registry.publication import _approve, export_public_snapshot, stage_entities
-    database = _database(tmp_path, target_version=21)
+    database = _database(tmp_path, target_version=23)
     with sqlite3.connect(database) as connection:
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         for candidate in stage_entities(connection):
             _approve(connection, candidate, {"basis": "explicit PDF parity fixture"}, status="accepted_legacy")
     live = _reader(database, tmp_path)
@@ -288,6 +290,8 @@ def _approve_public_fixture(database: Path) -> None:
     with sqlite3.connect(database) as connection:
         if connection.execute("PRAGMA user_version").fetchone()[0] < 21:
             return
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(connection)
         for sha in stage_entities(connection, annotations={}):
             _approve(connection, sha, {"basis":"accepted report fixture"}, status="accepted_legacy")
 
@@ -302,6 +306,7 @@ def _insert_pdf_calendar(
     source_url: str | None = None,
 ) -> str:
     occurrence_id = "calendar-" + _sha(name)[:12]
+    source_url = source_url or "https://example.org/meeting"
     with sqlite3.connect(database) as connection:
         document_sha = connection.execute(
             "SELECT document_sha256 FROM pdf_intake_documents LIMIT 1"
@@ -360,33 +365,40 @@ def _insert_meeting_check(
     database: Path, occurrence_id: str, *, website_candidate: dict | None = None,
     canonical_event_id: str | None = None, verification_status: str = "verified",
     checked_at: str = NOW, run_id: str = "fixture-run", attempt_id: str = "fixture-attempt",
-    source_url: str | None = None, source_revision_sha256: str | None = None,
+    source_url: str | None = None, source_revision_sha256: str | None = None, prior_source_item: dict | None = None,
 ) -> None:
-    from climate_registry.information_checks import _sha as check_sha, source_revision
-
-    reader = _reader(database, database.parent)
-    item = next(item for item in reader.pdf_calendar_items_all() if item["occurrence_id"] == occurrence_id)
-    source_url = source_url if source_url is not None else next(iter(item.get("source_urls") or [""]))
-    packet = {
-        "checked_at": checked_at, "access_status": "accessible", "verification_status": verification_status,
-        "reader": {"content_hash": "a" * 64, "final_url": "https://example.org/calendar"},
-        "website_candidate": website_candidate, "canonical_event_id": canonical_event_id,
-    }
-    packet_json = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    from climate_registry.information_checks import _sha as check_sha, information_targets, evaluate, _json
+    from climate_monitor.meetings import EXTRACTION_FIELDS
     with sqlite3.connect(database) as connection:
-        connection.execute(
-            """INSERT INTO meeting_check_runs(
-                   run_id, input_json, input_sha256, created_at, completed_at, status,
-                   item_count, completed_count, error_message)
-               VALUES (?, '{}', ?, ?, ?, 'complete', 1, 1, NULL)""",
-            (run_id, check_sha({}), checked_at, checked_at),
-        )
-        connection.execute(
-            """INSERT INTO meeting_check_attempts(attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256) VALUES
-               (?, ?, ?, ?, ?, ?, 'accessible', ?, ?, ?)""",
-            (attempt_id, run_id, occurrence_id, source_url, source_revision_sha256 or source_revision("meetings", item),
-             checked_at, verification_status, packet_json, check_sha(packet)),
-        )
+        target = next(target for target in information_targets(connection, "meetings")
+            if target["occurrence_id"] == occurrence_id and (source_url is None or target["source_url"] == source_url))
+        if prior_source_item is not None:
+            from climate_registry.information_checks import source_fields
+            target["fields"] = source_fields("meetings", prior_source_item)
+            target["source_binding"]["source_payload_sha256"] = check_sha(prior_source_item)
+        if source_revision_sha256:
+            target["source_revision_sha256"] = source_revision_sha256  # Deliberately stale source fixtures stay stale.
+        candidate = {key: website_candidate.get(key) for key in EXTRACTION_FIELDS} if website_candidate else None
+        evidence = []
+        if candidate:
+            evidence.append(f"{candidate['name']} meets {candidate['date_evidence'] or ''}.")
+            if candidate.get("deadline_evidence"):
+                evidence.append(f"{candidate['name']} {candidate['deadline_type']} deadline: {candidate['deadline_evidence']}.")
+        body = "\n".join(evidence + [str(value) for value in [*target["fields"].values(), *(candidate or {}).values()] if value is not None])
+        packet = evaluate(target, "meetings", {"article_id": occurrence_id, "requested_url": target["source_url"],
+            "final_url": target["source_url"], "status": "ok", "content": body, "content_ref": None,
+            "content_hash": hashlib.sha256(body.encode()).hexdigest()},
+            lambda kind, fields, content: {"comparisons": {key: {"status": "supported"} for key in fields}, "website_candidate": candidate})
+        if verification_status == "verified":
+            assert packet["verification_status"] == "verified", json.dumps(packet)
+        packet.update(checked_at=checked_at, verification_status=verification_status, canonical_event_id=canonical_event_id)
+        frozen = _json({"schema_version": "information-check.v2", "kind": "meetings", "targets": [target],
+            "retry_of": None, "registry_database": str(database.resolve())})
+        connection.execute("INSERT INTO meeting_check_runs VALUES(?,?,?,?,?,'complete',1,1,NULL)",
+            (run_id, frozen, hashlib.sha256(frozen.encode()).hexdigest(), checked_at, checked_at))
+        connection.execute("INSERT INTO meeting_check_attempts(attempt_id,run_id,occurrence_id,source_url,source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (attempt_id,run_id,occurrence_id,target["source_url"],target["source_revision_sha256"],checked_at,
+             packet["access_status"],verification_status,_json(packet),check_sha(packet)))
 
 
 def test_chat_date_routing_is_bounded_and_server_validated(monkeypatch):
@@ -655,7 +667,7 @@ def test_t4_current_registry_ignores_unused_legacy_projection(
         with sqlite3.connect(database) as connection:
             apply_migrations(connection)
     else:
-        database = _database(tmp_path, target_version=21)
+        database = _database(tmp_path, target_version=23)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     original = database.read_bytes(), database.stat().st_ino
     arguments = _t4_arguments(database, tmp_path / "artifacts", branch)
@@ -964,9 +976,9 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
 
     public_calendar = {
         _insert_pdf_calendar(public_database, "Public PDF meeting"),
-        _insert_pdf_calendar(public_database, "Shared PDF meeting"),
+        _insert_pdf_calendar(public_database, "Shared PDF meeting", raw_date="10-11 October 2026", start_date="2026-10-10", end_date="2026-10-11"),
     }
-    shared_calendar = _insert_pdf_calendar(runtime_database, "Shared PDF meeting")
+    shared_calendar = _insert_pdf_calendar(runtime_database, "Shared PDF meeting", raw_date="10-11 October 2026", start_date="2026-10-10", end_date="2026-10-11")
     runtime_calendar = _insert_pdf_calendar(runtime_database, "Runtime PDF meeting")
     _insert_pdf_calendar(runtime_database, "Inactive PDF meeting")
     with sqlite3.connect(runtime_database) as connection:
@@ -978,7 +990,7 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
             (document_sha, NOW),
         )
     checked_candidate = {
-        "name": "Shared PDF meeting", "event_type": "event", "organizer": "Example Institute",
+        "name": "Shared PDF meeting", "event_type": "meeting", "organizer": "Example Institute",
         "status": "scheduled", "date_precision": "day", "start_date": "2026-10-10",
         "end_date": "2026-10-11", "date_evidence": "10-11 October 2026",
         "timezone": None, "location": None, "online_url": None, "deadline_type": None,
@@ -1087,9 +1099,15 @@ def test_pdf_rechecks_select_latest_source_in_api_and_range(tmp_path, monkeypatc
     source_url = "https://example.org/meeting"
     occurrence_id = _insert_pdf_calendar(
         public_database, "Rechecked climate meeting", source_url=source_url,
+        raw_date="2026-10-20" if newer_copy == "public" else "2026-10-10",
+        start_date="2026-10-20" if newer_copy == "public" else "2026-10-10",
+        end_date="2026-10-20" if newer_copy == "public" else "2026-10-10",
     )
     assert occurrence_id == _insert_pdf_calendar(
         runtime_database, "Rechecked climate meeting", source_url=source_url,
+        raw_date="2026-10-20" if newer_copy == "runtime" else "2026-10-10",
+        start_date="2026-10-20" if newer_copy == "runtime" else "2026-10-10",
+        end_date="2026-10-20" if newer_copy == "runtime" else "2026-10-10",
     )
     older_database, newer_database = (
         (runtime_database, public_database) if newer_copy == "public"
@@ -1102,7 +1120,7 @@ def test_pdf_rechecks_select_latest_source_in_api_and_range(tmp_path, monkeypatc
         _insert_meeting_check(
             database, occurrence_id,
             website_candidate={
-                "name": "Rechecked climate meeting", "event_type": "event",
+                "name": "Rechecked climate meeting", "event_type": "meeting",
                 "organizer": "Example Institute", "status": "scheduled",
                 "date_precision": "day", "start_date": day, "end_date": day,
                 "date_evidence": day,
@@ -1154,8 +1172,8 @@ def test_range_merges_calendar_checks_before_expiry_and_cancellation_filters(tmp
     runtime_root.mkdir()
     public_database = _database(public_root, include_article_a_acquisitions=False)
     runtime_database = _database(runtime_root, include_article_a_acquisitions=False)
-    expired_public = _insert_pdf_calendar(public_database, "Expired conflicting event")
-    expired_runtime = _insert_pdf_calendar(runtime_database, "Expired conflicting event")
+    expired_public = _insert_pdf_calendar(public_database, "Expired conflicting event", raw_date="1-2 October 2026", start_date="2026-10-01", end_date="2026-10-02")
+    expired_runtime = _insert_pdf_calendar(runtime_database, "Expired conflicting event", raw_date="1-2 October 2026", start_date="2026-10-01", end_date="2026-10-02")
     cancelled_public = _insert_pdf_calendar(
         public_database, "Future cancelled event", raw_date="15 Oct 2026",
         start_date="2026-10-15", end_date="2026-10-15",
@@ -1172,9 +1190,9 @@ def test_range_merges_calendar_checks_before_expiry_and_cancellation_filters(tmp
         else (runtime_database, public_database)
     )
     candidate = {
-        "name": "Website event", "event_type": "event", "organizer": "Example Institute",
-        "status": "scheduled", "date_precision": "day", "start_date": "2026-10-10",
-        "end_date": "2026-10-11", "date_evidence": "10-11 October 2026",
+        "name": "Website event", "event_type": "meeting", "organizer": "Example Institute",
+        "status": "scheduled", "date_precision": "day", "start_date": "2026-10-01",
+        "end_date": "2026-10-02", "date_evidence": "1-2 October 2026",
     }
     _insert_meeting_check(
         checked_database, expired_public, website_candidate=candidate,
@@ -1188,6 +1206,8 @@ def test_range_merges_calendar_checks_before_expiry_and_cancellation_filters(tmp
     )
     cancelled_candidate = {
         **candidate, "name": "Website cancelled event", "status": "cancelled",
+        "start_date": "2026-10-15", "end_date": "2026-10-15", "date_evidence": "15 October 2026",
+        "status_evidence": "Website cancelled event is cancelled.",
     }
     _insert_meeting_check(
         checked_database, cancelled_public, website_candidate=cancelled_candidate,
@@ -1501,46 +1521,34 @@ def _report_day_observation(database, identity="article-month", observed="2026-0
 
 
 def test_report_day_fallback_keeps_original_precision_and_unknown_publication(tmp_path):
-    database = _database(tmp_path, target_version=21)
+    database = _database(tmp_path, target_version=23)
     evidence = _report_day_observation(database)
     reader = _reader(database, tmp_path)
     original = database.read_bytes(), database.stat().st_ino
     root = tmp_path / "report-day"
     snapshot = freeze_range_report(reader, root, start_date="2026-09-18", end_date="2026-09-18")
-    article = next(item for item in snapshot["articles"] if item["article_id"] == "article-month")
-    assert article["date_basis"] == "report_date"
-    assert article["range_date"] == "2026-09-18"
-    assert article["collected_at"] is article["publication_date"] is article["information_date"] is None
-    observation = article["provenance"]["report_date"]["selected"]
-    assert observation["evidence"] == evidence
-    assert observation["date"] == "2026-09-18"
-    assert observation["basis"] == "daily_or_weekly_report_date"
-    assert "collected_at" not in observation
-    assert article["provenance"]["collection_time"]["selected"] is None
-    assert article["provenance"]["collection_time"]["all"] == []
-    assert article["provenance"]["publication_date"]["selected"] is None
+    assert not any(item['article_id']=='article-month' for item in snapshot['articles'])
+    private=RegistryReader(database,repository_root=tmp_path/'application',public=False).article('article-month')
+    assert private['date_basis']=='report_date' and private['report_date']=='2026-09-18'
+    assert any(row['evidence']==evidence for row in private['date_observations'])
     assert "article-month" in snapshot["unknown_publication_date_article_ids"]
-    assert "article-month" not in snapshot["date_unknown_article_ids"]
+    assert "article-month" in snapshot["date_unknown_article_ids"]
     assert load_range_report(root, snapshot["snapshot_id"])["articles"] == snapshot["articles"]
     html = render_range_report_html(snapshot)
     pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(ensure_range_report_pdf(snapshot, root)).pages)
     from climate_registry.range_reports import render_range_report_chat
     markdown = render_range_report_chat(snapshot, web_url="https://example.org/report", pdf_url="https://example.org/report.pdf")
     for output in (html, pdf_text, markdown):
-        assert "2026-09-18" in output
-        assert "report date" in output.lower()
-    assert "article publication date unconfirmed" in html.lower()
-    assert "article publication date unconfirmed" in pdf_text.lower()
-    assert "**Report date:** 2026-09-18" in markdown
+        assert "daily_or_weekly_report_date" not in output
+    assert "**Report date:** 2026-09-18" not in markdown
     assert "**Collected at:**" not in markdown and "**Publication date:**" not in markdown
-    assert "daily_or_weekly_report_date" in html
     assert "2026-09-18T00:00" not in html + markdown + pdf_text
     assert (database.read_bytes(), database.stat().st_ino) == original
 
 
 @pytest.mark.parametrize("priority", ["collection", "page_information", "publication"])
 def test_report_day_is_only_a_fallback_for_more_precise_approved_evidence(tmp_path, priority):
-    database = _database(tmp_path, target_version=21)
+    database = _database(tmp_path, target_version=23)
     identity = "article-a" if priority == "collection" else "article-month"
     _report_day_observation(database, identity)
     if priority == "publication":
@@ -1571,11 +1579,16 @@ def test_report_day_is_only_a_fallback_for_more_precise_approved_evidence(tmp_pa
     reader = _reader(database, tmp_path)
     before = database.read_bytes()
     snapshot = freeze_range_report(reader, tmp_path / "priority", start_date="2026-09-18", end_date="2026-09-30")
+    if priority=='page_information':
+        assert not any(item['article_id']==identity for item in snapshot['articles'])
+        assert RegistryReader(database,repository_root=tmp_path/'application',public=False).article(identity)['information_date']=='2026-09-20'
+        assert database.read_bytes()==before
+        return
     article = next(item for item in snapshot["articles"] if item["article_id"] == identity)
     assert article["date_basis"] == {"collection":"collection_time", "page_information":"information_date", "publication":"publication_date"}[priority]
     assert article["range_date"] == ("2026-09-30" if priority == "collection" else "2026-09-20")
-    assert article["provenance"]["report_date"]["selected"] is None
-    assert article["provenance"]["report_date"]["all"][0]["date"] == "2026-09-18"
+    assert not article['provenance'].get('report_date')
+    assert RegistryReader(database,repository_root=tmp_path/'application',public=False).article(identity)['report_date']=='2026-09-18'
     assert database.read_bytes() == before
 
 
@@ -1587,18 +1600,20 @@ def test_report_day_is_only_a_fallback_for_more_precise_approved_evidence(tmp_pa
 ])
 def test_ambiguous_report_days_and_naive_instants_still_fail_closed(tmp_path, observed, evidence):
     from climate_registry.read_api import RegistryContractError
-    database = _database(tmp_path, target_version=21)
+    database = _database(tmp_path, target_version=23)
     _report_day_observation(database, observed=observed, evidence=evidence)
     before = database.read_bytes()
     with pytest.raises(RegistryContractError):
-        freeze_range_report(_reader(database, tmp_path), tmp_path / "invalid-day",
-            start_date="2026-09-01", end_date="2026-09-30")
+        RegistryReader(database,repository_root=tmp_path/'application',public=False).article('article-month')
+    snapshot=freeze_range_report(_reader(database, tmp_path), tmp_path / "invalid-day",
+        start_date="2026-09-01", end_date="2026-09-30")
+    assert not any(item['article_id']=='article-month' for item in snapshot['articles'])
     assert database.read_bytes() == before
 
 
 def test_report_day_does_not_fabricate_biweekly_material_ingestion_time(tmp_path):
     from climate_delivery.report_review import freeze_biweekly
-    database = _database(tmp_path, target_version=21)
+    database = _database(tmp_path, target_version=23)
     _report_day_observation(database, observed="2026-09-01")
     before = database.read_bytes()
     reader = _reader(database, tmp_path)
@@ -2070,10 +2085,16 @@ def test_freeze_range_report_uses_one_database_snapshot_across_all_reads(
 def test_schema21_freeze_reuses_one_public_view(tmp_path, monkeypatch):
     import climate_registry.publication as publication
 
-    database = _database(tmp_path, target_version=21)
+    database = _database(tmp_path, target_version=23)
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA journal_mode=WAL")
-    _insert_pdf_calendar(database, "Stable public event")
+    def checked_calendar(name):
+        occurrence = _insert_pdf_calendar(database, name)
+        _insert_meeting_check(database, occurrence, website_candidate={"name": name, "event_type": "meeting", "status": "scheduled",
+            "date_precision": "day", "start_date": "2026-10-02", "end_date": "2026-10-02", "date_evidence": "2 October 2026"},
+            run_id="run-"+occurrence, attempt_id="attempt-"+occurrence)
+        _approve_public_fixture(database)
+    checked_calendar("Stable public event")
     reader = _reader(database, tmp_path)
     original_public_connection = publication.public_connection
     projection_calls = 0
@@ -2083,7 +2104,7 @@ def test_schema21_freeze_reuses_one_public_view(tmp_path, monkeypatch):
         projection = original_public_connection(source)
         projection_calls += 1
         if projection_calls == 1:
-            _insert_pdf_calendar(database, "Late public event")
+            checked_calendar("Late public event")
         return projection
 
     monkeypatch.setattr(publication, "public_connection", build_view_then_publish_late_event)
