@@ -263,13 +263,17 @@ def test_happy_path_renders_verified_semantics_into_pdf(tmp_path, monkeypatch):
     pdf_path = _artifact_dir(output, result) / "climate-monitor-2026-08-10.pdf"
     text = _pdf_text(pdf_path)
 
-    # Distinctive verified tokens must appear in the rendered PDF text.
-    assert "categories:" in text
-    assert "keywords:" in text
-    assert "flood" in text
-    assert "resilience" in text
-    assert "physical risk" in text
-    assert "supervision" in text
+    # Verified semantics remain frozen in the sidecar, while operational
+    # category/keyword metadata is omitted from the reader-facing PDF.
+    summary = json.loads((_artifact_dir(output, result) / "summary.json").read_text(encoding="utf-8"))
+    assert summary["article_semantics"]["https://example.test/first"]["categories"] == [
+        "Physical Risk", "Insurance Risk",
+    ]
+    assert summary["article_semantics"]["https://example.test/first"]["keywords"]
+    assert "categories:" not in text
+    assert "keywords:" not in text
+    assert "first supporting sentence" in text
+    assert "second supporting sentence" in text
 
 
 def test_pdf_renders_markdown_summary_body_not_sidecar_semantic_summary(tmp_path, monkeypatch):

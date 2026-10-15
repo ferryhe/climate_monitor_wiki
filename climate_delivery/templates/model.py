@@ -49,3 +49,8 @@ class Report:
     route_corrections: tuple[tuple[str, str], ...] = ()
     glossary: tuple[tuple[str, str], ...] = ()
     cross_cutting_watch: tuple[str, ...] = ()
+    executive_citations: tuple[tuple[str, str, str | None, str | None, str | None, str | None], ...] = ()
+    executive_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    reader_update_targets: tuple[tuple[str, int], ...] = ()
+    calendar_targets: tuple[tuple[str, str], ...] = ()
+    calendar_row_targets: tuple[tuple[int, str], ...] = ()

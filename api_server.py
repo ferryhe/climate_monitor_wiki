@@ -99,6 +99,7 @@ from climate_registry.range_reports import (
     load_active_range_overlay,
     render_range_report_html,
     render_range_report_chat,
+    report_renderer_version,
     resolve_report_followup,
     resolve_report_route,
 )
@@ -1463,6 +1464,7 @@ def _chat_answer(request: ChatRequest, messages: list[dict], question: str) -> d
                 overlay_reader=overlay_reader,
                 pdf_overlay_reader=pdf_overlay_reader,
                 overlay_manifest=overlay_manifest,
+                executive_responder=responder,
             )
         except (RegistryUnavailableError, RegistryContractError) as exc:
             raise HTTPException(status_code=503, detail="Article registry is unavailable.") from exc
@@ -1477,7 +1479,8 @@ def _chat_answer(request: ChatRequest, messages: list[dict], question: str) -> d
                 detail="The report could not be saved. Please retry.",
             ) from exc
         snapshot_id = snapshot["snapshot_id"]
-        web_url = f"/api/registry/range-reports/{snapshot_id}/{RENDERER_VERSION}"
+        renderer_version = report_renderer_version(snapshot)
+        web_url = f"/api/registry/range-reports/{snapshot_id}/{renderer_version}"
         pdf_url = web_url + "/pdf"
         text = render_range_report_chat(snapshot, web_url=web_url, pdf_url=pdf_url)
         return {
@@ -1490,7 +1493,7 @@ def _chat_answer(request: ChatRequest, messages: list[dict], question: str) -> d
             "range_report": {
                 "snapshot_id": snapshot_id,
                 "snapshot_sha256": snapshot["snapshot_sha256"],
-                "renderer_version": RENDERER_VERSION,
+                "renderer_version": renderer_version,
                 "rendering": rendering_metadata(),
                 "date_range": snapshot["date_range"],
                 "article_count": len(snapshot["articles"]),
@@ -1528,7 +1531,7 @@ def _load_range_report_or_http(snapshot_id: str, renderer_version: str) -> dict[
         ).is_file():
             raise HTTPException(status_code=404, detail="Report renderer not found.")
     try:
-        return load_range_report(RANGE_REPORT_DIR, snapshot_id)
+        return load_range_report(RANGE_REPORT_DIR, snapshot_id, renderer_version)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Range report not found.") from exc
     except RangeReportError as exc:

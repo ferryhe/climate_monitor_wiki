@@ -505,17 +505,27 @@ def test_registry_snapshot_dedupes_and_freezes_evidenced_provenance(tmp_path):
     )
     assert repeated["created_at"] == snapshot["created_at"]
     page = render_range_report_html(loaded)
-    assert "Article ID:</strong> <code>article-a</code>" in page
-    assert "content-article-a" in page and "https://example.org/a.pdf" in page
+    assert "Article ID" not in page and "article-a" not in page
+    assert "content-article-a" not in page and "https://example.org/a.pdf" in page
     pdf_text = "\n".join(
         value.extract_text() or "" for value in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
     )
     assert "article-a" not in pdf_text and "content-article-a" not in pdf_text
     assert article["article_id"] == "article-a" and article["content_version_id"] == "content-article-a"
-    assert "Long persisted climate evidence" in pdf_text and "PDF import" in pdf_text
-    assert "https://example.org/a.pdf" in pdf_text
+    assert article["summary"] in pdf_text and "Long persisted climate evidence" not in pdf_text
+    assert "PDF import" not in pdf_text
+    pdf_annotations = [ref.get_object() for page in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
+        for ref in page.get("/Annots", [])]
+    assert "https://example.org/a.pdf" in {
+        annotation.get("/A", {}).get("/URI") for annotation in pdf_annotations
+    }
     escaped = dict(loaded)
     escaped["articles"] = [dict(loaded["articles"][0], title="<script>alert(1)</script>")]
+    escaped.pop("executive_narrative", None)
+    escaped_frozen = {key: value for key, value in escaped.items()
+        if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    escaped["snapshot_sha256"] = range_reports._digest(escaped_frozen)
+    escaped["snapshot_id"] = "range-report-" + escaped["snapshot_sha256"][:24]
     escaped_page = render_range_report_html(escaped)
     assert "<script>" not in escaped_page and "&lt;script&gt;" in escaped_page
     assert RENDERER_VERSION not in json.loads(
@@ -791,8 +801,10 @@ def test_active_web_identity_survives_linked_pdf_overlay_merge(tmp_path):
     )
     for rendered in (html, pdf_text):
         assert "https://example.org/a?source=site" in rendered
-        assert "report.pdf, page 7" not in rendered and "PDF import" in rendered
-    assert "content-article-a" in html and "content-article-a" not in pdf_text
+        assert "report.pdf, page 7" in rendered and "PDF import" not in rendered
+    assert "content-article-a" not in html and "content-article-a" not in pdf_text
+    assert article["summary"] in html and article["summary"] in pdf_text
+    assert "Long persisted climate evidence" not in html and "Long persisted climate evidence" not in pdf_text
     assert later_body not in html and later_body not in pdf_text
 
     pdf_only = freeze_range_report(
@@ -854,8 +866,8 @@ def test_pdf_overlay_preserves_authorized_public_article_facts_across_databases(
 
     html = render_range_report_html(snapshot)
     assert writer_body not in html
-    assert "content-article-a" in html
-    assert "report.pdf, page 7" not in html and "PDF import" in html
+    assert "content-article-a" not in html
+    assert "report.pdf, page 7" in html and "PDF import" not in html
 
 
 def test_public_pdf_only_article_and_calendar_survive_runtime_modes(tmp_path):
@@ -1366,12 +1378,17 @@ def test_pdf_source_updates_use_coverage_without_claiming_publication_dates(tmp_
     )
     for rendered in (html_report, pdf_text):
         assert "PDF Source Updates" in rendered
-        assert "IAA_CSC_Climate_Report_20260928.pdf" not in rendered
-        assert "page 4" not in rendered
-        assert "PDF import" in rendered
+        assert "PDF import" not in rendered
         assert "2026-09-14 through 2026-09-27" in rendered
         assert "Regional stress tests require updated scenarios." in rendered
-        assert "https://pdf.example/only" in rendered
+    for item in snapshot["pdf_source_updates"]:
+        assert f"{item['filename']}, page {item['page']}" in html_report
+        assert item["url"] in html_report
+    pdf_annotations = [ref.get_object() for page in PdfReader(pdf_path(root, snapshot["snapshot_id"])).pages
+        for ref in page.get("/Annots", [])]
+    assert "https://pdf.example/only" in {
+        annotation.get("/A", {}).get("/URI") for annotation in pdf_annotations
+    }
     assert "文章发布日期未确认" in html_report
     assert overlap_sha not in html_report and overlap_sha not in pdf_text
     assert "PDF Source Updates" in pdf_text
@@ -1649,9 +1666,10 @@ def test_executive_summary_is_frozen_from_selected_summaries_with_locators(tmp_p
     html_report = render_range_report_html(snapshot)
     assert "Stored PDF-only summary." in html_report
     assert "Publication date:" in html_report
-    assert "summary.pdf" not in html_report and document_sha not in html_report
-    assert "PDF import" in html_report
-    assert "article publication date unconfirmed; coverage period 2026-09-01 through 2026-09-30" in html_report
+    assert "summary.pdf, page 5" in html_report and document_sha not in html_report
+    assert "PDF import" not in html_report
+    assert "article publication date unconfirmed; coverage period" not in html_report
+    assert "文章发布日期未确认" in html_report
     assert 'href="#publisher-1">example.org</a>' in html_report
 
 
@@ -1668,26 +1686,29 @@ def test_executive_summary_states_when_selected_updates_have_no_stored_summary()
         "unknown_publication_date_count": 0,
         "executive_summary": [],
     }
-    assert range_reports._executive_summary(snapshot) == [
-        "1 evidenced Registry article(s) were published from 2026-09-01 through 2026-09-30.",
-        "No stored Registry article summaries are available for the selected range.",
-        "1 PDF source update(s) overlap the range; their article publication dates are unconfirmed.",
-        "No stored PDF source summaries are available for the selected range.",
-        "PDF source observations excluded: 0 with unknown coverage; 0 with non-overlapping coverage.",
-    ]
+    fallback = range_reports._executive_summary(snapshot)
+    assert fallback[0] == "Reporting window: 2026-09-01 through 2026-09-30 (inclusive)."
+    assert fallback[1] == "Selected updates: 1 Registry articles and 1 imported PDF updates."
+    assert "PDF publication dates: 0 recorded; 1 unconfirmed." in fallback
+    assert "LLM narrative status: offline" in fallback[-1]
 
 
 def test_empty_range_and_legacy_key_dates_have_accurate_saved_snapshot_status():
     snapshot = {
-        "snapshot_id": "range-report-" + "a" * 24,
+        "schema_version": "climate-range-report-snapshot.v1",
+        "timezone": "UTC",
         "date_range": {"start": "2026-09-01", "end": "2026-09-30", "inclusive": True},
+        "created_at": NOW,
         "articles": [], "pdf_source_updates": [],
         "unknown_publication_date_count": 0,
         "unknown_publication_date_article_ids": [],
         "meeting": {"status": "not_requested", "snapshot_id": None, "snapshot_sha256": None, "records": []},
     }
+    frozen = {key: value for key, value in snapshot.items() if key != "created_at"}
+    snapshot["snapshot_sha256"] = range_reports._digest(frozen)
+    snapshot["snapshot_id"] = "range-report-" + snapshot["snapshot_sha256"][:24]
     html_report = render_range_report_html(snapshot)
-    assert "No selected Registry articles or PDF source updates matched this range." in html_report
+    assert "No selected Registry articles or imported PDF updates matched this range." in html_report
     assert '<a href="#key-dates">Key Dates</a>' in html_report
     assert '<h2 id="key-dates">Key Dates</h2>' in html_report
     assert "Key dates were not captured in this snapshot." in html_report
@@ -1757,6 +1778,7 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
         key: value for key, value in current.items()
         if key not in {
             "snapshot_id", "snapshot_sha256", "created_at",
+            "executive_narrative",
             "schema_version", "pdf_source_updates", "pdf_source_exclusion_counts", "pdf_calendar",
             "executive_summary", "date_unknown_count", "date_unknown_article_ids",
         }
@@ -1797,10 +1819,11 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
     assert html_response.status_code == 200
     assert "Registry-only climate article" in html_response.text
     assert "PDF Source Updates" not in html_response.text
-    assert "PDF source observations excluded" in html_response.text
+    assert "Selected updates:" in html_response.text
+    assert "PDF import" not in html_response.text
     assert pdf_response.status_code == 200 and pdf_response.content.startswith(b"%PDF-")
     assert legacy_html_response.status_code == 200
-    assert "Date used for range:</strong> collection time" in html_response.text
+    assert range_reports._range_date_label(current["articles"][0]) in html_response.text
     assert legacy_current_renderer_response.status_code == 200
     assert "Date used for range:</strong> collection time" not in legacy_current_renderer_response.text
     assert "PDF source observations excluded" not in legacy_current_renderer_response.text
@@ -1812,7 +1835,7 @@ def test_pre_change_v1_snapshot_still_loads_and_serves_html_and_pdf(tmp_path, mo
     )
     assert "Registry-only climate article" in pdf_text
     assert "PDF Source Updates" not in pdf_text
-    assert "PDF source observations excluded" in pdf_text
+    assert "PDF observations excluded" not in pdf_text
 
 
 def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path, monkeypatch):
@@ -1882,24 +1905,27 @@ def test_default_meeting_query_and_pdf_calendar_are_frozen_and_grouped(tmp_path,
     assert "Future meeting" in rerendered_text and "Changed live meeting" not in rerendered_text
     assert before_pdf != b""
     assert "PDF Calendar Dates" in before_html and "PDF Deadlines" in before_html
-    assert "calendar.pdf" not in before_html and "a" * 64 not in before_html
-    assert "PDF import" in before_html
-    assert "Meeting source:</strong> query" in before_html
-    assert snapshot["meeting"]["query_id"] in before_html
-    assert snapshot["meeting"]["query_sha256"] in before_html
-    assert "Meeting query base date:</strong> 2026-09-30" in before_html
-    assert "Meeting query timezone:</strong> UTC" in before_html
-    assert "Meeting coverage:</strong> complete" in before_html
+    assert "calendar.pdf, page" in before_html and "a" * 64 not in before_html
+    assert "PDF import" not in before_html
+    assert "Meeting source:</strong> query" not in before_html
+    assert snapshot["meeting"]["query_id"] not in before_html
+    assert snapshot["meeting"]["query_sha256"] not in before_html
+    assert "Meeting query base date:</strong> 2026-09-30" not in before_html
+    assert "Meeting query timezone:</strong> UTC" not in before_html
+    assert "Meeting coverage:</strong> complete" not in before_html
     empty_snapshot = {**snapshot, "meeting": {**snapshot["meeting"], "status": "empty", "records": []}}
     # A different frozen input has its own identity before direct rendering.
-    frozen_empty = {key: value for key, value in empty_snapshot.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
+    frozen_empty = {key: value for key, value in empty_snapshot.items()
+        if key not in {"snapshot_id", "snapshot_sha256", "created_at", "executive_narrative"}}
     empty_digest = range_reports._digest(frozen_empty)
     empty_snapshot = {**empty_snapshot, "snapshot_id": "range-report-" + empty_digest[:24], "snapshot_sha256": empty_digest}
     empty_html = render_range_report_html(empty_snapshot)
     empty_path = tmp_path / "empty-meetings.pdf"
     render_range_report_pdf(empty_snapshot, empty_path)
     empty_pdf = "\n".join(page.extract_text() or "" for page in PdfReader(empty_path).pages)
-    assert "No future meetings." in empty_html and "No future meetings." in empty_pdf
+    assert "No future meetings were recorded in the frozen snapshot." not in empty_html
+    assert "No future meetings were recorded in the frozen snapshot." not in empty_pdf
+    assert "PDF event" in empty_html and "PDF event" in empty_pdf
     tampered = json.loads(json.dumps(snapshot))
     tampered["meeting"]["query_payload"]["records"] = []
     frozen = {key: value for key, value in tampered.items() if key not in {"snapshot_id", "snapshot_sha256", "created_at"}}
@@ -2160,10 +2186,10 @@ def test_meeting_snapshot_coverage_states_are_distinct(tmp_path):
             pdf_text = "\n".join(
                 page.extract_text() or "" for page in PdfReader(pdf_path(tmp_path / marker, snapshot["snapshot_id"])).pages
             )
-            assert snapshot["meeting"]["snapshot_id"] in rendered and snapshot["meeting"]["snapshot_id"] not in pdf_text
+            assert snapshot["meeting"]["snapshot_id"] not in rendered and snapshot["meeting"]["snapshot_id"] not in pdf_text
             from climate_delivery.templates.adapters import adapt_range_report
-            assert snapshot["meeting"]["snapshot_id"] in str(adapt_range_report(snapshot).date_notes)
-            assert "Meeting source:</strong> snapshot" in rendered
+            assert snapshot["meeting"]["snapshot_id"] not in str(adapt_range_report(snapshot).date_notes)
+            assert "Meeting source:</strong> snapshot" not in rendered
 
     missing = freeze_range_report(
         reader, tmp_path / "missing", start_date="2026-09-17", end_date="2026-09-30",
@@ -2363,7 +2389,7 @@ def test_same_publisher_updates_are_grouped_by_frozen_topic_in_html_and_pdf(tmp_
     assert "Physical risk" in outline_titles and "Transition risk" in outline_titles
 
 
-@pytest.mark.parametrize(("count", "repeat", "minimum_pages"), [(1, 2, 3), (8, 90, 10)])
+@pytest.mark.parametrize(("count", "repeat", "minimum_pages"), [(1, 2, 3), (8, 90, 5)])
 def test_short_and_long_pdf_fixtures_have_toc_bookmarks_pages_unicode_and_citations(
     tmp_path, count, repeat, minimum_pages,
 ):
@@ -2376,7 +2402,9 @@ def test_short_and_long_pdf_fixtures_have_toc_bookmarks_pages_unicode_and_citati
     assert "Contents" in text
     assert "Page 1" in text and f"Page {len(reader.pages)}" in text
     assert "café μ" in text
-    assert "Long persisted climate evidence" in text
+    assert "Evidence summary — café μ." in text
+    assert "Long persisted climate evidence" not in text
+    assert all("Long persisted climate evidence" in item["content"] for item in snapshot["articles"])
     assert "very-long-segment" in text
     assert snapshot["snapshot_id"] not in text
     from climate_delivery.templates.adapters import adapt_range_report

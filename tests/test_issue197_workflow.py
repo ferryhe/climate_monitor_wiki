@@ -1024,8 +1024,13 @@ def test_first_ingestion_in_window_survives_current_update_after_cutoff(tmp_path
     assert {key: calendar.get(key) for key in MEETING_FIELDS} == meeting_fields
     assert all(value in text for value in ("Climate risk conference", "Example Institute", "Singapore", "GMT+8"))
     assert any("Singapore" in str(value) for value in rendered["key_dates"] + rendered["date_notes"])
-    assert rendered["key_dates"][0][:3] == ["20–23 October 2026\n09:00–10:30\nGMT+8",
-        meeting_fields["name"], meeting_fields["organizer"]]
+    displayed_date = rendered["key_dates"][0][0]
+    assert "2026-10-20 through 2026-10-23" in displayed_date
+    assert "20–23 October 2026" in displayed_date
+    assert "Precision: day" in displayed_date
+    assert "09:00–10:30" in displayed_date and "GMT+8" in displayed_date
+    assert rendered["key_dates"][0][1].startswith(meeting_fields["name"])
+    assert rendered["key_dates"][0][2] == meeting_fields["organizer"]
 
     native = tmp_path / "hermes.db"
     _native(native, "cron_t5_current", state["packet"])

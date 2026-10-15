@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             web_reader=overlay_reader, pdf_reader=pdf_overlay_reader, manifest=manifest)
         print(json.dumps(state, sort_keys=True))
         return 0
+    from agentic_wiki.wiki_agent import AgenticWikiResponder
     snapshot = freeze_range_report(
         reader,
         args.artifact_root,
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         overlay_reader=overlay_reader,
         pdf_overlay_reader=pdf_overlay_reader,
         overlay_manifest=manifest,
+        executive_responder=AgenticWikiResponder(),
     )
     pdf = ensure_range_report_pdf(snapshot, args.artifact_root)
     print(json.dumps({
