@@ -20,8 +20,9 @@ from urllib.parse import quote, urlsplit
 from climate_delivery.templates import render_identity, rendering_metadata, is_render_identity
 from climate_delivery.templates.adapters import (
     adapt_range_report, range_executive_summary as _executive_summary,
-    meeting_metadata as _meeting_metadata, _date_basis, _range_date_label,
+    _date_basis, _range_date_label,
     _caveats, _key_date_rows, calendar_date_bounds, calendar_details,
+    _calendar_source_alias_groups, _paragraphs,
 )
 from climate_delivery.templates.iaa_csc import render_report
 from climate_delivery.errors import GenerationError
@@ -1182,6 +1183,29 @@ def _calendar_end_date(item: dict[str, Any]) -> date | None:
     return max(ends, default=None)
 
 
+def _calendar_intersects_next_14_days(item: dict[str, Any], start: date, end: date) -> bool:
+    """Use only recorded event bounds or its independent verified deadline."""
+    from climate_monitor.meetings import _date_bounds
+    deadline = item.get("deadline_date")
+    if isinstance(deadline, str):
+        try:
+            verified_deadline = date.fromisoformat(deadline)
+            if verified_deadline.isoformat() == deadline and start <= verified_deadline <= end:
+                return True
+        except ValueError:
+            pass
+    lower_value, upper_value = item.get("start_date"), item.get("end_date") or item.get("start_date")
+    precision = item.get("date_precision") or item.get("precision")
+    if not isinstance(lower_value, str) or not isinstance(upper_value, str):
+        return False
+    try:
+        lower = _date_bounds(lower_value, precision, end=False)
+        upper = _date_bounds(upper_value, precision, end=True)
+    except (TypeError, ValueError):
+        return False
+    return lower <= end and upper >= start
+
+
 def _pdf_calendar_available(reader: RegistryReader) -> bool:
     if reader.database is None and reader.static_snapshot is not None:
         return "meetings" in reader.static_snapshot
@@ -1492,6 +1516,7 @@ def freeze_range_report(
     overlay_reader: RegistryReader | None = None,
     pdf_overlay_reader: RegistryReader | None = None,
     overlay_manifest: dict[str, Any] | None = None,
+    executive_responder: Any | None = None,
 ) -> dict[str, Any]:
     schema_version = None
     if reader.database is not None:
@@ -1668,6 +1693,7 @@ def freeze_range_report(
                 "created_at": generated.isoformat(),
             }
             atomic_write_json(target, payload)
+    payload = ensure_range_executive_narrative(payload, root, executive_responder)
     ensure_range_report_pdf(payload, root)
     return payload
 
@@ -1884,7 +1910,7 @@ def _validate_snapshot(value: Any, snapshot_id: str) -> dict[str, Any]:
     return value
 
 
-def load_range_report(artifact_root: str | Path, snapshot_id: str) -> dict[str, Any]:
+def load_range_report(artifact_root: str | Path, snapshot_id: str, renderer_version: str | None = None) -> dict[str, Any]:
     if _SNAPSHOT_ID.fullmatch(snapshot_id) is None:
         raise RangeReportError("invalid range report id")
     path = Path(artifact_root).resolve(strict=False) / snapshot_id / "snapshot.json"
@@ -1894,11 +1920,202 @@ def load_range_report(artifact_root: str | Path, snapshot_id: str) -> dict[str, 
         raise KeyError(snapshot_id) from exc
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RangeReportError("invalid range report snapshot") from exc
-    return _validate_snapshot(value, snapshot_id)
+    value = _validate_snapshot(value, snapshot_id)
+    if renderer_version and re.search(r"-n([0-9a-f]{12})$", renderer_version):
+        digest = re.search(r"-n([0-9a-f]{12})$", renderer_version)[1]
+        narrative_path = path.with_name("executive-narrative-missing.json")
+        for candidate in path.parent.glob("executive-narrative-*.json"):
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+                if hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()[:12] == digest:
+                    narrative_path = candidate
+                    break
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+    elif renderer_version == render_identity():
+        narrative_path = path.with_name("executive-narrative-offline.json")
+    elif renderer_version is None:
+        narrative_path = path.with_name("executive-narrative.json")
+    else:
+        narrative_path = None
+    if narrative_path is not None and narrative_path.is_file():
+        try:
+            narrative = json.loads(narrative_path.read_text(encoding="utf-8"))
+            value["executive_narrative"] = _validate_executive_narrative(narrative, value)
+        except (OSError, UnicodeError, json.JSONDecodeError, RangeReportError):
+            logger.warning("Ignoring invalid frozen executive narrative for %s", snapshot_id)
+    return value
 
 
-def pdf_path(artifact_root: str | Path, snapshot_id: str, renderer_version: str | None = None) -> Path:
-    version = renderer_version or render_identity()
+def _validate_executive_narrative(value: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    if (not isinstance(value, dict) or value.get("schema_version") != "climate-range-executive.v1"
+            or value.get("snapshot_id") != snapshot["snapshot_id"]
+            or value.get("snapshot_sha256") != snapshot["snapshot_sha256"]
+            or value.get("status") not in {"available", "offline", "failed", "malformed"}
+            or not isinstance(value.get("provider"), str) or not isinstance(value.get("model"), str)
+            or not isinstance(value.get("sections"), list)
+            or not isinstance(value.get("evidence_ids"), list)
+            or not isinstance(value.get("evidence"), list)):
+        raise RangeReportError("invalid frozen executive narrative")
+    sections = value["sections"]
+    if value["status"] == "available":
+        if (not all(isinstance(row, dict) for row in sections)
+                or [row.get("heading") for row in sections] != [
+                "Most important developments", "Actuarial implications", "Next 14 days"]):
+            raise RangeReportError("invalid frozen executive narrative")
+        known_ids = set(value.get("evidence_ids", []))
+        next_14_ids = set(value.get("next_14_calendar_ids", []))
+        if not known_ids or any(not isinstance(row.get("items"), list) or not row["items"] for row in sections):
+            raise RangeReportError("invalid frozen executive narrative")
+        for row in sections:
+            for item in row["items"]:
+                if (not isinstance(item, str) or not item.strip()
+                        or not re.search(r"(?:\[[APC]\d+\])+$", item.strip())
+                        or not set(re.findall(r"\[([A-Z]\d+)\]", item))
+                        or not set(re.findall(r"\[([A-Z]\d+)\]", item)) <= known_ids):
+                    raise RangeReportError("invalid frozen executive narrative")
+                if row["heading"] == "Next 14 days" and any(
+                        ref.startswith("C") and ref not in next_14_ids
+                        for ref in re.findall(r"\[([A-Z]\d+)\]", item)):
+                    raise RangeReportError("invalid frozen executive calendar reference")
+    return value
+
+
+def ensure_range_executive_narrative(
+    snapshot: dict[str, Any], artifact_root: str | Path, responder: Any | None = None,
+) -> dict[str, Any]:
+    """Persist one source-bound narrative alongside the immutable source snapshot."""
+    root = Path(artifact_root).resolve(strict=False)
+    owner = getattr(responder, "chat_evidence", None)
+    client = getattr(owner, "client", None)
+    provider = getattr(owner, "provider", "offline") if owner else "offline"
+    model = getattr(owner, "model", "offline-extractive") if owner else "offline-extractive"
+    variant = "offline" if not client else f"{provider}-{hashlib.sha256(str(model).encode()).hexdigest()[:12]}"
+    sidecar = root / snapshot["snapshot_id"] / f"executive-narrative-{variant}.json"
+    cache_candidates = [sidecar, *sorted(sidecar.parent.glob(sidecar.stem + "-*.json"), reverse=True)]
+    for cached_path in cache_candidates:
+        if not cached_path.is_file():
+            continue
+        try:
+            saved = _validate_executive_narrative(json.loads(cached_path.read_text(encoding="utf-8")), snapshot)
+            # Offline and successful narratives are stable inputs. A failed
+            # configured-provider request can be retried on the next explicit
+            # user request, while its content-addressed old variant remains
+            # available to archived PDFs.
+            if saved.get("status") not in {"failed", "malformed"} or not client:
+                frozen = dict(snapshot)
+                frozen["executive_narrative"] = saved
+                return frozen
+        except (OSError, UnicodeError, json.JSONDecodeError, RangeReportError):
+            pass
+    evidence = []
+    for index, item in enumerate(snapshot.get("articles", []), 1):
+        evidence.append({"id": f"A{index}", "type": "article", "title": item.get("title"),
+            "article_id": item.get("article_id"), "article_index": index,
+            "date": item.get("range_date"), "range_date": item.get("range_date"),
+            "date_basis": item.get("date_basis"), "information_date": item.get("information_date"),
+            "collected_at": item.get("collected_at"),
+            "publication_date": item.get("publication_date"), "summary": item.get("summary"),
+            "citations": [citation.get("url") for citation in item.get("citations", []) if citation.get("url")]})
+    for index, item in enumerate(snapshot.get("pdf_source_updates", []), 1):
+        evidence.append({"id": f"P{index}", "type": "pdf source update", "title": item.get("title"),
+            "article_id": item.get("core_article_id") or item.get("pdf_article_id"), "pdf_index": index,
+            "publication_date": item.get("publication_date"), "coverage_period": item.get("coverage_period"),
+            "summary": item.get("summary"), "url": item.get("url"),
+            "citations": [citation.get("url") for citation in item.get("citations", []) if citation.get("url")],
+            "citation": f"{item.get('filename')}, page {item.get('page')}"})
+    calendar = snapshot.get("pdf_calendar") or {}
+    records = [*snapshot.get("meeting", {}).get("records", []), *calendar.get("records", [])]
+    for index, item in enumerate(records, 1):
+        sources = [item.get("url"), item.get("source_url"), item.get("online_url"), *(item.get("source_urls") or [])]
+        sources.extend(source.get("source_url") for source in item.get("sources", []) if source.get("source_url"))
+        evidence.append({"id": f"C{index}", "type": "calendar", "name": item.get("name"),
+            "date": item.get("raw_date") or item.get("start_date"), "time": item.get("raw_time_text"),
+            "timezone": item.get("event_timezone") or item.get("timezone"),
+            "start_date": item.get("start_date"), "end_date": item.get("end_date"),
+            "date_precision": item.get("date_precision"),
+            "deadline_date": item.get("deadline_date"), "location": item.get("location"),
+            "summary": item.get("summary"), "sources": list(dict.fromkeys(url for url in sources if url))})
+    result: dict[str, Any] = {"schema_version": "climate-range-executive.v1",
+        "snapshot_id": snapshot["snapshot_id"], "snapshot_sha256": snapshot["snapshot_sha256"],
+        "status": "offline", "provider": provider, "model": model, "evidence_ids": [], "evidence": [],
+        "next_14_calendar_ids": [], "sections": []}
+    if client:
+        known_ids = [row["id"] for row in evidence]
+        as_of = datetime.fromisoformat(snapshot["created_at"].replace("Z", "+00:00")).date()
+        eligible_calendar = []
+        for row in evidence:
+            if row["type"] != "calendar":
+                continue
+            if _calendar_intersects_next_14_days(row, as_of, as_of + timedelta(days=13)):
+                eligible_calendar.append(row["id"])
+        prompt = ("Write a concise climate-risk monitoring executive summary grounded only in the supplied JSON evidence. "
+            "Return JSON with exactly these keys, each a list of 1-5 short strings: "
+            '{"Most important developments":[],"Actuarial implications":[],"Next 14 days":[]}. '
+            "Every string must end with one or more evidence IDs in square brackets, such as [A1] or [A1][C2]. "
+            "Use only supplied IDs; never invent facts, dates, venues, registrations, hosts, or citations. "
+            f"As of {as_of.isoformat()}, the next 14 days are {as_of.isoformat()} through {(as_of + timedelta(days=13)).isoformat()}. "
+            f"Calendar IDs that fall in that interval: {', '.join(eligible_calendar) or 'none'}. "
+            "Do not assign a date to an action unless its evidence states the date. Distinguish collection, information and publication dates; never describe a collection or information date as a newly published date. "
+            "Keep uncertainty explicit. Evidence JSON: " + _canonical(evidence))
+        try:
+            request_client = client.with_options(timeout=20, max_retries=0) if hasattr(client, "with_options") else client
+            if provider == "anthropic":
+                response = request_client.messages.create(model=model, max_tokens=1800,
+                    messages=[{"role": "user", "content": prompt}])
+                raw = "\n".join(block.text for block in response.content if getattr(block, "type", "") == "text")
+            elif provider == "openai":
+                response = request_client.chat.completions.create(model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    reasoning_effort="none", max_completion_tokens=1800)
+                raw = response.choices[0].message.content or ""
+            else:
+                raw = ""
+            parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
+            headings = ["Most important developments", "Actuarial implications", "Next 14 days"]
+            if not isinstance(parsed, dict) or set(parsed) != set(headings) or any(
+                    not isinstance(parsed[key], list) or not 1 <= len(parsed[key]) <= 5
+                    or any(not isinstance(line, str) for line in parsed[key]) for key in headings):
+                raise ValueError("invalid narrative shape")
+            candidate = {**result, "status": "available", "evidence_ids": known_ids,
+                "next_14_calendar_ids": eligible_calendar,
+                "evidence": [{"id": row["id"], "title": row.get("title"), "name": row.get("name"),
+                    "article_id": row.get("article_id"), "article_index": row.get("article_index"),
+                    "pdf_index": row.get("pdf_index"), "date": row.get("date"),
+                    "url": row.get("url"), "citation": row.get("citation"),
+                    "citations": row.get("citations"), "sources": row.get("sources")} for row in evidence],
+                "sections": [{"heading": heading, "items": parsed[heading]} for heading in headings]}
+            result = _validate_executive_narrative(candidate, snapshot)
+        except Exception:
+            result["status"] = "malformed" if "parsed" in locals() else "failed"
+    with exclusive_lock(root, snapshot["snapshot_id"]):
+        saved_path = sidecar
+        if sidecar.exists():
+            digest = hashlib.sha256(_canonical(result).encode("utf-8")).hexdigest()[:12]
+            saved_path = sidecar.with_name(sidecar.stem + "-" + digest + sidecar.suffix)
+        if not saved_path.exists():
+            atomic_write_json(saved_path, result)
+        else:
+            try:
+                result = _validate_executive_narrative(json.loads(saved_path.read_text(encoding="utf-8")), snapshot)
+            except (OSError, UnicodeError, json.JSONDecodeError, RangeReportError):
+                atomic_write_json(saved_path, result)
+        atomic_write_json(sidecar.with_name("executive-narrative.json"), result)
+    frozen = dict(snapshot)
+    frozen["executive_narrative"] = result
+    return frozen
+
+
+def report_renderer_version(snapshot: dict[str, Any]) -> str:
+    narrative = snapshot.get("executive_narrative")
+    if isinstance(narrative, dict) and narrative.get("provider") != "offline":
+        return render_identity() + "-n" + hashlib.sha256(_canonical(narrative).encode("utf-8")).hexdigest()[:12]
+    return render_identity()
+
+
+def pdf_path(artifact_root: str | Path, snapshot_id: str, renderer_version: str | None = None,
+    *, snapshot: dict[str, Any] | None = None) -> Path:
+    version = renderer_version or report_renderer_version(snapshot or {})
     if version not in LEGACY_RENDERER_VERSIONS and not is_render_identity(version):
         raise RangeReportError("unknown report renderer")
     return Path(artifact_root).resolve(strict=False) / snapshot_id / f"{snapshot_id}-{version}.pdf"
@@ -1906,17 +2123,21 @@ def pdf_path(artifact_root: str | Path, snapshot_id: str, renderer_version: str 
 
 def ensure_range_report_pdf(snapshot: dict[str, Any], artifact_root: str | Path, renderer_version: str | None = None) -> Path:
     """Reuse exact archived bytes; render only a missing artifact from frozen input."""
-    target = pdf_path(artifact_root, snapshot["snapshot_id"], renderer_version)
+    version = renderer_version or report_renderer_version(snapshot)
+    target = pdf_path(artifact_root, snapshot["snapshot_id"], version, snapshot=snapshot)
     if not target.is_file():
-        if renderer_version and renderer_version not in LEGACY_RENDERER_VERSIONS | {render_identity()}:
+        if renderer_version and renderer_version not in LEGACY_RENDERER_VERSIONS and not is_render_identity(renderer_version):
             raise RangeReportError("archived report renderer is unavailable")
-        current = pdf_path(artifact_root, snapshot["snapshot_id"])
+        current = pdf_path(artifact_root, snapshot["snapshot_id"], report_renderer_version(snapshot), snapshot=snapshot)
+        if renderer_version and renderer_version not in LEGACY_RENDERER_VERSIONS and renderer_version != report_renderer_version(snapshot):
+            raise RangeReportError("archived report renderer is unavailable")
         if not current.is_file():
             render_range_report_pdf(snapshot, current)
             atomic_write_json(current.with_suffix(".render.json"), {
                 "schema_version": "climate-pdf-render.v1",
                 "input": {"snapshot_id": snapshot["snapshot_id"], "snapshot_sha256": snapshot["snapshot_sha256"]},
                 "rendering": rendering_metadata(),
+                "executive_narrative_sha256": _digest(snapshot.get("executive_narrative", {})),
                 "pdf": {"path": current.name, "sha256": hashlib.sha256(current.read_bytes()).hexdigest()},
             })
         if target != current:
@@ -1966,8 +2187,49 @@ def _articles_by_publisher_topic(snapshot: dict[str, Any]) -> dict[str, dict[str
 
 def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str | None = None) -> str:
     esc = lambda value: html.escape(str(value), quote=True)
+    def event_markup(event: str, source: str) -> str:
+        urls = re.findall(r"https?://[^\s<>]+", source)
+        parts = event.split("\n")
+        title = esc(parts[0])
+        if urls:
+            title = f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{title}</a>'
+        details = []
+        for part in parts[1:]:
+            pieces, offset = [], 0
+            for match in re.finditer(r"https?://[^\s<>()]+", part):
+                pieces.append(esc(part[offset:match.start()]))
+                url = match[0]
+                suffix = ""
+                while url and url[-1] in ".,;:":
+                    suffix = url[-1] + suffix
+                    url = url[:-1]
+                pieces.append(f'<a href="{esc(url)}" rel="noopener noreferrer">{esc(url)}</a>{esc(suffix)}')
+                offset = match.end()
+            pieces.append(esc(part[offset:]))
+            details.append("".join(pieces))
+        return "<br>".join([title, *details])
     start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
     grouped_articles = _articles_by_publisher_topic(snapshot)
+    narrative = snapshot.get("executive_narrative") or {}
+    report = adapt_range_report(snapshot)
+    source_labels = {}
+    for identity, label, url, _pdf_target, html_target, source_citation in report.executive_citations:
+        source_labels[identity] = (label, url, html_target, source_citation)
+    update_number_by_target = dict(report.reader_update_targets)
+    def executive_html_line(line: str) -> str:
+        rendered = esc(line)
+        for identity, (label, url, target, citation) in source_labels.items():
+            internal = (f'<a href="#{esc(target)}">[{esc(label)}]</a>' if target else f"[{esc(label)}]")
+            external = f' <a href="{esc(url)}" rel="noopener noreferrer">[original source]</a>' if url else ""
+            source_note = f" ({esc(citation)})" if citation else ""
+            replacement = internal + external + source_note
+            rendered = rendered.replace(esc(f"[{identity}]"), replacement)
+        return rendered
+    if narrative.get("status") == "available":
+        executive_html = "".join(f"<h3>{esc(row['heading'])}</h3><ul>" + "".join(
+            f"<li>{executive_html_line(line)}</li>" for line in row["items"]) + "</ul>" for row in narrative["sections"])
+    else:
+        executive_html = "".join(f"<p>{esc(line)}</p>" for line in _executive_summary(snapshot))
     contents_groups = "".join(
         f'<li><a href="#publisher-{group_index}">{esc(publisher)}</a><ol>' + "".join(
             f'<li><a href="#publisher-{group_index}-topic-{topic_index}">{esc(topic)}</a><ol>' + "".join(
@@ -1996,87 +2258,67 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
             f'<li><a href="#pdf-update-{index}">{esc(item["title"])}</a></li>'
             for index, item in enumerate(snapshot.get("pdf_source_updates", []), start=1)
         ) + "</ol>",
-        '<h2 id="executive-summary">Executive Summary</h2>' + "".join(
-            f"<p>{esc(line)}</p>" for line in _executive_summary(snapshot)
-        ),
+        '<h2 id="executive-summary">Executive Summary</h2>' + executive_html,
     ]
     meeting = snapshot["meeting"]
     pdf_calendar = snapshot.get("pdf_calendar")
     from climate_monitor.meeting_fields import merge_meeting_observations
-    calendar_records = merge_meeting_observations(
-        meeting["records"] + (pdf_calendar["records"] if pdf_calendar else []))
+    calendar_source_records = meeting["records"] + (pdf_calendar["records"] if pdf_calendar else [])
+    calendar_alias_groups = _calendar_source_alias_groups(calendar_source_records)
+    calendar_records = merge_meeting_observations(calendar_source_records)
+    calendar_anchor_by_alias = dict(report.calendar_targets)
     is_pdf = lambda item: bool(item.get("source_document_sha256") or item.get("pdf_observations"))
     run_date = datetime.fromisoformat(snapshot["created_at"].replace("Z", "+00:00")).date().isoformat() if snapshot.get("created_at") else None
     blocks.append('<h2 id="key-dates">Key Dates</h2>')
     if meeting["status"] == "not_requested" and pdf_calendar is None:
         blocks.append("<p>Key dates were not captured in this snapshot.</p>")
     if meeting["status"] != "not_requested":
-        label = "Meeting query" if meeting.get("source") == "query" else "Meeting snapshot"
-        metadata = "<br>".join(
-            f"<strong>{esc(key)}:</strong> {esc(value)}" for key, value in _meeting_metadata(meeting)
-        )
-        blocks.append(f"<p>{label} status: {esc(meeting['status'])}.<br>{metadata}</p>")
-        if meeting["status"] == "empty":
-            blocks.append("<p>No future meetings.</p>")
-        for record in calendar_records:
+        coverage_status = (meeting.get("coverage") or {}).get("status")
+        if meeting["status"] in {"partial", "failed", "unavailable"} or coverage_status in {"partial", "failed", "unavailable"}:
+            blocks.append(f"<p>Meeting coverage is {esc(coverage_status or meeting['status'])}; listed entries may be incomplete.</p>")
+        elif meeting["status"] == "empty" and not (pdf_calendar or {}).get("records"):
+            blocks.append("<p>No future meetings were recorded in the frozen snapshot.</p>")
+        for group_index, record in enumerate(calendar_records, 1):
             if is_pdf(record):
                 continue
-            for when, event, institution, relevance, source in _key_date_rows(record, run_date):
-                urls = re.findall(r"https?://[^\s]+", source)
-                event_html = (
-                    f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{esc(event)}</a>'
-                    if urls else esc(event)
-                )
-                details = calendar_details(record)
-                details_html = (
-                    "<br><strong>Calendar details:</strong> " + "<br>".join(esc(value) for value in details)
-                    if details else ""
-                )
-                marker = " · PDF import" if "PDF import" in source else ""
+            anchor = calendar_anchor_by_alias.get(calendar_alias_groups[group_index - 1][0]) if group_index <= len(calendar_alias_groups) and calendar_alias_groups[group_index - 1] else None
+            for row_index, (when, event, institution, relevance, source) in enumerate(_key_date_rows(record, run_date)):
+                event_html = event_markup(event, source)
+                anchor_attr = f' id="{esc(anchor)}"' if row_index == 0 and anchor else ""
                 blocks.append(
-                    f"<p><strong>{event_html}</strong>: {esc(when)}<br>"
-                    f"Institution: {esc(institution)}; Relevance: {esc(relevance)}{esc(marker)}{details_html}</p>"
+                    f"<p{anchor_attr}><strong>{event_html}</strong>: {esc(when)}<br>"
+                    f"Institution: {esc(institution)}; Relevance: {esc(relevance)}</p>"
                 )
     if pdf_calendar is not None:
-        blocks.append(f"<p>PDF calendar status: {esc(pdf_calendar['status'])}. Coverage: {esc(pdf_calendar['coverage'].get('status', 'unavailable'))}.</p>")
-        records = [item for item in calendar_records if is_pdf(item)]
+        if pdf_calendar["status"] == "unavailable" or pdf_calendar.get("coverage", {}).get("status") in {"partial", "failed", "unavailable"}:
+            status = pdf_calendar.get("coverage", {}).get("status") or pdf_calendar["status"]
+            blocks.append(f"<p>Imported PDF calendar coverage is {esc(status)}; listed entries may be incomplete.</p>")
         calendar_kind = lambda item: item.get("kind") or next(
             (source.get("kind") for source in item.get("pdf_observations", []) if source.get("kind")), None)
         for heading, kinds in (("PDF Calendar Dates", {"event"}), ("PDF Deadlines", {"deadline"}), ("Other PDF Key Dates", None)):
-            selected = [item for item in records if (calendar_kind(item) in kinds if kinds else calendar_kind(item) not in {"event", "deadline"})]
+            selected = [(group_index, item) for group_index, item in enumerate(calendar_records, 1)
+                if is_pdf(item) and (calendar_kind(item) in kinds if kinds else calendar_kind(item) not in {"event", "deadline"})]
             if selected:
                 blocks.append(f"<h3>{heading}</h3><ul>")
-                for item in selected:
-                    for when, event, institution, relevance, source in _key_date_rows(item, run_date):
-                        urls = re.findall(r"https?://[^\s]+", source)
-                        event_html = (
-                            f'<a href="{esc(urls[0])}" rel="noopener noreferrer">{esc(event)}</a>'
-                            if urls else esc(event)
-                        )
-                        details = calendar_details(item)
-                        details_html = (
-                            "<br><strong>Calendar details:</strong> " + "<br>".join(esc(value) for value in details)
-                            if details else ""
-                        )
-                        marker = " · PDF import" if "PDF import" in source else ""
+                for group_index, item in selected:
+                    anchor = calendar_anchor_by_alias.get(calendar_alias_groups[group_index - 1][0]) if group_index <= len(calendar_alias_groups) and calendar_alias_groups[group_index - 1] else None
+                    for row_index, (when, event, institution, relevance, source) in enumerate(_key_date_rows(item, run_date)):
+                        event_html = event_markup(event, source)
+                        anchor_attr = f' id="{esc(anchor)}"' if row_index == 0 and anchor else ""
                         blocks.append(
-                            f"<li><strong>{event_html}</strong>: {esc(when)}<br>"
-                            f"Institution: {esc(institution)}; Relevance: {esc(relevance)}{esc(marker)}{details_html}</li>"
+                            f"<li{anchor_attr}><strong>{event_html}</strong>: {esc(when)}<br>"
+                            f"Institution: {esc(institution)}; Relevance: {esc(relevance)}</li>"
                         )
                 blocks.append("</ul>")
     blocks.append('<h2 id="updates">Updates by Publisher / Institution</h2>')
-    display_number = 0
     for group_index, (publisher, topics) in enumerate(grouped_articles.items(), start=1):
         blocks.append(f'<h3 id="publisher-{group_index}">{esc(publisher)}</h3>')
         for topic_index, (topic, items) in enumerate(topics.items(), start=1):
             blocks.append(f'<h4 id="publisher-{group_index}-topic-{topic_index}">{esc(topic)}</h4>')
             for index, item in items:
-                display_number += 1
-                date_label = (
-                    _range_date_label(item)
-                    if item.get("date_basis")
-                    else f"publication date {item.get('publication_date') or 'unconfirmed'}"
-                )
+                display_number = update_number_by_target.get(f"article-{index}", 0)
+                date_label = (_range_date_label(item) if item.get("date_basis")
+                    else f"publication date {item.get('publication_date') or 'unconfirmed'}")
                 other_dates = []
                 if item.get("publication_date") and item.get("date_basis") != "publication_date":
                     other_dates.append(f"Publication date: {item['publication_date']}")
@@ -2090,67 +2332,61 @@ def render_range_report_html(snapshot: dict[str, Any], *, renderer_version: str 
                     date_details += other_dates_html + "<br>"
                 blocks.extend([
                     f'<article id="article-{index}"><h5>{display_number}. {esc(item["title"])}</h5>',
-                    f"<p>{date_details}"
-                    f"<strong>Article ID:</strong> <code>{esc(item['article_id'])}</code><br>"
-                    f"<strong>Content version:</strong> <code>{esc(item['content_version_id'] or 'none')}</code></p>",
+                    f"<p>{date_details}</p>",
                 ])
                 for _key, value in _date_basis(item.get("provenance", {}).get("publication_date")):
                     blocks.append(f"<p><strong>Publication date provenance:</strong> {esc(value)}</p>")
                 for _key, value in _date_basis(item.get("provenance", {}).get("report_date")):
                     blocks.append(f"<p><strong>Report date provenance:</strong> {esc(value)}</p>")
-                content_sha = item.get("provenance", {}).get("content_version", {}).get("content_sha256")
-                if content_sha:
-                    blocks.append(f"<p><strong>Content SHA-256:</strong> <code>{esc(content_sha)}</code></p>")
-                if item.get("summary"):
-                    blocks.append(f"<p>{esc(item['summary'])}</p>")
-                if item.get("content"):
-                    blocks.append("".join(f"<p>{esc(part)}</p>" for part in item["content"].split("\n\n") if part.strip()))
-                blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
-                if item["categories"]:
-                    blocks.append(f"<p><strong>Categories:</strong> {esc(', '.join(item['categories']))}</p>")
-                if item["keywords"]:
-                    blocks.append(f"<p><strong>Keywords:</strong> {esc(', '.join(item['keywords']))}</p>")
+                paragraphs = _paragraphs(item.get("summary"), item.get("content"))
+                paragraphs += tuple("Source verification summary: " + value["summary"]
+                    for value in item.get("selected_material_summaries", []))
+                paragraphs += tuple(_caveats(item))
+                blocks.extend(f"<p>{esc(paragraph)}</p>" for paragraph in paragraphs)
                 blocks.append("<h6>Sources</h6><ul>")
                 citations = item["citations"] or ([{"kind": "url", "url": item["canonical_url"]}] if item.get("canonical_url") else [])
                 for url in dict.fromkeys(c["url"] for c in citations if c.get("url")):
                     url = esc(url)
                     blocks.append(f'<li><a href="{url}" rel="noopener noreferrer">{url}</a></li>')
-                if any(c["kind"] in {"pdf", "pdf_page"} for c in citations):
-                    blocks.append("<li>PDF import</li>")
+                blocks.extend(f"<li>{esc(c['filename'])}, page {c['page']}</li>" for c in citations
+                    if c.get("kind") in {"pdf", "pdf_page"} and c.get("filename") and c.get("page"))
                 blocks.append("</ul></article>")
     pdf_updates = snapshot.get("pdf_source_updates", [])
     if pdf_updates:
         blocks.append("<h2>PDF 来源更新 / PDF Source Updates</h2>")
     for index, item in enumerate(pdf_updates, start=1):
-        display_number += 1
+        display_number = update_number_by_target.get(f"pdf-update-{index}", 0)
         publisher = publisher_name(item.get("publisher"), [item.get("url")])
         blocks.extend([
             f'<article id="pdf-update-{index}"><h2>{display_number}. {esc(item["title"])}</h2>',
             f"<p><strong>Publisher / Institution:</strong> {esc(publisher)}</p>",
             f"<p><strong>{esc(item.get('publication_date') or item['publication_date_label'])}</strong></p>",
         ])
-        if item.get("summary"):
-            blocks.append(f"<p>{esc(item['summary'])}</p>")
-        if item.get("categories"):
-            blocks.append(f"<p><strong>Categories:</strong> {esc(', '.join(item['categories']))}</p>")
+        topic = (", ".join(item["categories"]) or "PDF Source Updates") if "categories" in item else item.get("topic") or "PDF Source Updates"
+        blocks.append(f"<p><strong>Topic:</strong> {esc(topic)}</p>")
+        blocks.extend(f"<p>{esc(paragraph)}</p>" for paragraph in _paragraphs(item.get("summary"), item.get("content")))
         blocks.extend(f"<p>{esc(caveat)}</p>" for caveat in _caveats(item))
         url = esc(item["url"])
-        blocks.append(
-            f'<h3>Source</h3><p><a href="{url}" rel="noopener noreferrer">{url}</a> · PDF import</p></article>'
-        )
+        source_citation = f"{item['filename']}, page {item['page']}"
+        blocks.append(f"<h3>Source</h3><p>{esc(source_citation)}</p>"
+            f'<p><a href="{url}" rel="noopener noreferrer">{url}</a></p></article>')
     if snapshot.get("cross_cutting_watch"):
         blocks.append("<h2>Cross-Cutting Watch</h2>")
         blocks.extend(f"<p>{esc(line)}</p>" for line in snapshot["cross_cutting_watch"])
     for title, field, columns in (
         ("Appendix A — Source Coverage", "coverage", ("institution", "status", "detail")),
-        ("Appendix B — Access / Route Corrections", "route_corrections", ("source", "detail")),
-        ("Appendix C — Glossary", "glossary", ("term", "definition")),
+        ("Glossary", "glossary", ("term", "definition")),
     ):
         if snapshot.get(field):
             blocks.append(f"<h2>{esc(title)}</h2><table><thead><tr>" + "".join(f"<th>{esc(column)}</th>" for column in columns) + "</tr></thead><tbody>")
             for row in snapshot[field]:
                 blocks.append("<tr>" + "".join(f"<td>{esc(row.get(column) or 'Not provided')}</td>" for column in columns) + "</tr>")
             blocks.append("</tbody></table>")
+    if snapshot.get("route_corrections"):
+        blocks.append("<h3>Access / Route Corrections</h3><table><thead><tr><th>Source</th><th>Correction</th></tr></thead><tbody>")
+        blocks.extend("<tr><td>" + esc(row.get("source") or "Not provided") + "</td><td>" + esc(row.get("detail") or "Not provided") + "</td></tr>"
+            for row in snapshot["route_corrections"])
+        blocks.append("</tbody></table>")
     blocks.append("</body></html>")
     return "".join(blocks)
 
@@ -2170,11 +2406,31 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
     def sources(citations):
         return "; ".join(link(url, url) for url in dict.fromkeys(c.url for c in citations if c.url)) or "URL not provided"
 
+    executive_sources = {identity: (label, url, html_target, source_citation)
+        for identity, label, url, _pdf_target, html_target, source_citation in report.executive_citations}
+    def executive_line(value):
+        for identity, (label, url, target, citation) in executive_sources.items():
+            replacement = link(label, web_url + ("#" + target if target else "")) if target else plain(label)
+            if url:
+                replacement += " " + link("original source", url)
+            if citation:
+                replacement += " (" + plain(citation) + ")"
+            value = value.replace("[" + identity + "]", replacement)
+        return value
+
+    executive_lines = []
+    if report.executive_sections:
+        for heading, items in report.executive_sections:
+            executive_lines += ["### " + heading, *("- " + executive_line(item) for item in items)]
+    else:
+        executive_lines = list(report.executive_summary)
+
     lines = ["# Climate Risk Intelligence Report", f"**Reporting period:** {report.window}",
         f"**Calendar as at:** {report.run_date} (UTC)",
         link("Open web report", web_url) + " · " + link("Download PDF", pdf_url),
-        "## Executive Summary", *report.executive_summary, "## Projects in the Reporting Period"]
-    number = 0
+        "## Executive Summary", *executive_lines, "## Projects in the Reporting Period"]
+    number_by_object = {id(update): number for number, update in enumerate(
+        sorted(report.updates, key=lambda update: (update.institution.casefold(), update.topic.casefold())), 1)}
     for pdf_context in (False, True):
         updates = sorted((u for u in report.updates
                           if (u.date_basis is None and u.imported_from_pdf and u.publication_date is None) == pdf_context),
@@ -2191,11 +2447,12 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
             if update.institution != previous:
                 lines.append("### " + plain(update.institution))
                 previous = update.institution
-            number += 1
+            number = number_by_object[id(update)]
             url = next((c.url for c in update.citations if c.url), None)
             title = link(update.title, url) if url else plain(update.title)
             if update.date_basis == "collection_time":
-                date_label = "**Collected at:** " + (update.collected_at or "Not recorded")
+                date = (update.collected_at or "").split("T", 1)[0]
+                date_label = "**Newly collected in this reporting period**" + (": " + date if date else "")
             elif update.date_basis == "information_date":
                 date_label = "**Information date:** " + (update.information_date or "Not recorded")
             elif update.date_basis == "publication_date":
@@ -2213,17 +2470,13 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
             if update.coverage_period and not update.imported_from_pdf:
                 lines.append("**PDF coverage:** " + " through ".join(update.coverage_period))
             lines += [plain(part) for part in update.paragraphs]
-            lines.append("**Source:** " + sources(update.citations) + (" · PDF import" if update.imported_from_pdf else ""))
+            lines.append("**Source:** " + sources(update.citations))
 
     lines += ["## Current Meetings and Key Dates",
         "Current and future calendar entries are listed as at the date above, independently of the historical project window."]
     lines += [plain(line) for line in report.date_notes
         if not line.startswith("Calendar details: ")
         and not any(token in line for token in (" ID:", "SHA-256:", "timezone:", "base date:"))]
-    calendar_sources = [
-        "- " + plain(line.removeprefix("Calendar details: "))
-        for line in report.date_notes if line.startswith("Calendar details: ")
-    ]
     for precise in (True, False):
         rows = [(i, row) for i, row in enumerate(report.key_dates, 1)
             if (calendar_date_bounds(row[0])[2] == "day") == precise]
@@ -2235,14 +2488,12 @@ def render_range_report_chat(snapshot: dict[str, Any], *, web_url: str, pdf_url:
         for index, (when, event, host, relevance, raw_sources) in sorted(rows, key=lambda pair: calendar_date_bounds(pair[1][0])[0] or "9999"):
             urls = re.findall(r"https?://[^\s]+", raw_sources)
             event_text = link(event, urls[0]) if urls else plain(event)
-            if "PDF import" in raw_sources:
-                event_text += " · PDF import"
             table.append("| " + " | ".join((plain(when), event_text, plain(host), plain(relevance))) + " |")
         lines.append("\n".join(table))
     if not report.key_dates:
         lines.append("No current calendar entries are available in this snapshot; see the coverage status above.")
     lines.append("## Source Notes")
-    lines += list(report.coverage_notes) + calendar_sources
+    lines += list(report.coverage_notes)
     lines.append("Dates, summaries and citations are retained from stored evidence. Consult the original sources before relying on individual statements.")
     return "\n\n".join(lines)
 

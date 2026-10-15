@@ -464,8 +464,13 @@ def test_verified_reschedule_keeps_native_identity_across_all_readers(tmp_path, 
         overlay_manifest={"pdf_occurrence_ids": [], "pdf_calendar_occurrence_ids": ["pdf-moved"]})
     assert snapshot["pdf_calendar"]["records"][0]["canonical_event_id"] == identity
     model = adapt_range_report(snapshot)
-    assert len(model.key_dates) == 1 and model.key_dates[0][0] == item["raw_date"]
-    assert model.key_dates[0][4].count("PDF import") == 1
+    assert len(model.key_dates) == 1
+    # The reader shows sortable verified bounds and retains the imported wording.
+    assert "2027-07-01 through 2027-07-02" in model.key_dates[0][0]
+    assert item["raw_date"] in model.key_dates[0][0]
+    assert "Precision: day" in model.key_dates[0][0]
+    assert "PDF import" not in model.key_dates[0][4]
+    assert url in model.key_dates[0][4]
     html = render_range_report_html(snapshot)
     assert html.count("World Climate Summit 2027") == 1
     assert f'href="{url}"' in html

@@ -514,7 +514,8 @@ def test_active_pdf_only_article_excludes_unactivated_core_content_from_wiki_and
             "Approved PDF evidence for transition stress tests. "
             "Published 14 September 2026."
         ) in normalized
-        assert "approved-confirmed.pdf, page 2" not in normalized
+        # Retained PDF provenance remains visible alongside the selected summary.
+        assert "approved-confirmed.pdf, page 2" in normalized
 
 
 def test_active_untitled_pdf_source_ignores_failed_aggregate_title(tmp_path):

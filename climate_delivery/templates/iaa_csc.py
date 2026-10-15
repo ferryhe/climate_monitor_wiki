@@ -14,6 +14,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, IndexingFlowable,
     NextPageTemplate, PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
+from reportlab.platypus.tableofcontents import TableOfContents
 
 from climate_delivery.errors import GenerationError
 from climate_delivery.io import atomic_write_bytes
@@ -129,11 +130,25 @@ class _Circle(Flowable):
         self.canv.drawCentredString(11.5, 9.3, str(self.number))
 
 
+class _Bookmark(Flowable):
+    def __init__(self, key, title, level):
+        super().__init__()
+        self.key, self.title, self.outline_level = key, title, level
+        self.keepWithNext = True
+    def wrap(self, width, height):
+        return 0, 0
+    def draw(self):
+        pass
+
+
 class _Document(BaseDocTemplate):
     def afterFlowable(self, flowable):
         if key := getattr(flowable, "key", None):
             self.canv.bookmarkPage(key)
-            self.canv.addOutlineEntry(flowable.title, key, level=getattr(flowable, "outline_level", 0), closed=False)
+            level = getattr(flowable, "outline_level", 0)
+            self.canv.addOutlineEntry(flowable.title, key, level=level, closed=False)
+            if key != "toc" and level <= 1:
+                self.notify("TOCEntry", (level, flowable.title, self.page, key))
 
 
 def render_report(report: Report, output: str | Path) -> None:
@@ -163,6 +178,32 @@ def render_report(report: Report, output: str | Path) -> None:
         return Paragraph(value if raw else _markup(value, bold=bold), styles[style])
     def link(label, url, bold=False):
         return f'<link href="{html.escape(url, quote=True)}" color="#003366"><u>{_markup(label, bold=bold)}</u></link>'
+    def linked_prose(value):
+        pieces, offset = [], 0
+        for match in re.finditer(r"https?://[^\s<>()]+", str(value)):
+            pieces.append(_markup(value[offset:match.start()]))
+            url = match[0]
+            suffix = ""
+            while url and url[-1] in ".,;:":
+                suffix = url[-1] + suffix
+                url = url[:-1]
+            pieces.append(link(url, url) + _markup(suffix))
+            offset = match.end()
+        pieces.append(_markup(value[offset:]))
+        return "".join(pieces)
+    executive_sources = {identity: (label, url, pdf_target, source_citation)
+        for identity, label, url, pdf_target, _html_target, source_citation in report.executive_citations}
+    def executive_line(value):
+        text = _markup(value)
+        for identity, (label, url, pdf_target, source_citation) in executive_sources.items():
+            reference = html.escape(f"[{identity}]")
+            label_link = (f'<link href="#{html.escape(pdf_target, quote=True)}" color="#003366">'
+                f'<u>{_markup("[" + label + "]")}</u></link>') if pdf_target else _markup("[" + label + "]")
+            source_link = (" " + link("[original source]", url)) if url else ""
+            citation = (" (" + _markup(source_citation) + ")") if source_citation else ""
+            rendered = label_link + source_link + citation
+            text = text.replace(reference, rendered)
+        return p(text, raw=True)
     def banner(title, key):
         return _Banner(title, key, styles["banner"])
     def table(headers, rows, widths, highlights=()):
@@ -176,15 +217,21 @@ def render_report(report: Report, output: str | Path) -> None:
         result.setStyle(TableStyle(commands))
         return result
     def citations(values, style="small", imported=False):
+        if not values:
+            return []
         result = []
-        urls = tuple(dict.fromkeys(citation.url for citation in values if citation.url))
-        for index, url in enumerate(urls):
-            text = link(url, url)
-            if imported and index == len(urls) - 1:
-                text += " | PDF import"
+        rendered = set()
+        for citation in values:
+            if citation.label == "Source URL not provided":
+                continue
+            label = citation.label or citation.url
+            if not label or (label, citation.url) in rendered:
+                continue
+            rendered.add((label, citation.url))
+            text = link(label, citation.url) if citation.url else _markup(label)
             result.append(p("Source: " + text, style, raw=True))
-        if not urls:
-            result.append(p("Source URL not provided" + (" | PDF import" if imported else ""), style))
+        if not rendered:
+            result.append(p("Source URL not provided", style))
         return result
 
     groups = [(name, tuple(items)) for name, items in groupby(
@@ -193,11 +240,10 @@ def render_report(report: Report, output: str | Path) -> None:
     sections += [(name, f"org{i}") for i, (name, _) in enumerate(groups)]
     if report.cross_cutting_watch:
         sections.append(("Cross-Cutting Watch", "watch"))
-    if report.coverage:
+    if report.coverage or report.route_corrections:
         sections.append(("Appendix A - Source Coverage", "coverage"))
-    sections.append(("Appendix B - Source Notes", "notes"))
     if report.glossary:
-        sections.append(("Appendix C - Glossary", "glossary"))
+        sections.append(("Glossary", "glossary"))
     buffer = io.BytesIO()
     document = _Document(buffer, pagesize=(W, H), leftMargin=LEFT, rightMargin=LEFT,
         topMargin=TOP, bottomMargin=57, title=report.title, author="IAA Weekly Climate Newsletter", initialFontName="IAARegular")
@@ -215,9 +261,9 @@ def render_report(report: Report, output: str | Path) -> None:
         c.drawRightString(W - LEFT, 17, f"Page {doc.page} of {total.total}")
         if doc.pageTemplate.id == "toc":
             c.setFillColor(PALE)
-            c.rect(LEFT, 110, WIDTH, H - TOP - 110, fill=1, stroke=0)
+            c.rect(LEFT, 57, WIDTH, H - TOP - 57, fill=1, stroke=0)
             c.setFillColor(GOLD)
-            c.rect(LEFT, 110, 7.5, H - TOP - 110, fill=1, stroke=0)
+            c.rect(LEFT, 57, 7.5, H - TOP - 57, fill=1, stroke=0)
         if doc.page != 1:
             c.restoreState()
             return
@@ -276,21 +322,22 @@ def render_report(report: Report, output: str | Path) -> None:
         c.restoreState()
 
     body_frame = Frame(LEFT, 57, WIDTH, H - TOP - 57, id="body", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-    toc_frame = Frame(72.75, 125, 450.72, H - 68.25 - 125, id="tocbody", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
+    toc_frame = Frame(72.75, 83, 450.72, H - 68.25 - 83, id="tocbody", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     document.addPageTemplates([PageTemplate(id="main", frames=body_frame, onPage=on_page), PageTemplate(id="toc", frames=toc_frame, onPage=on_page)])
-    story = [total, Spacer(1, 1), NextPageTemplate("toc"), PageBreak(), banner("Table of Contents", "toc"), Spacer(1, 8)]
-    def toc_lines(items):
-        return [p(f'<link href="#{key}">{_markup(title)}</link>', "toc", raw=True) for title, key in items]
-    story += toc_lines(sections[:3]) + [p("ORGANISATION SECTIONS (A-Z)", "label", True)]
-    org_sections = sections[3:3 + len(groups)]
-    midpoint = (len(groups) + 1) // 2
-    if org_sections:
-        columns = Table([[toc_lines(org_sections[:midpoint]), toc_lines(org_sections[midpoint:])]], colWidths=[225.36, 225.36], splitInRow=1, hAlign="LEFT")
-        columns.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 17)]))
-        story.append(columns)
-    story += [p("APPENDICES / WATCH", "label", True)] + toc_lines(sections[3 + len(groups):])
+    toc_styles = [ParagraphStyle("toc0", fontName="IAABold", fontSize=9, leading=13, leftIndent=0, textColor=NAVY),
+        ParagraphStyle("toc1", fontName="IAARegular", fontSize=8.1, leading=10.2, leftIndent=14, textColor=NAVY)]
+    toc = TableOfContents(levelStyles=toc_styles, dotsMinLevel=1)
+    toc.addEntries([(1 if key.startswith("org") else 0, title, 1, key) for title, key in sections])
+    story = [total, Spacer(1, 1), NextPageTemplate("toc"), PageBreak(), banner("Table of Contents", None), Spacer(1, 6), toc]
     story += [NextPageTemplate("main"), PageBreak(), banner("Executive Summary", "executive")]
-    story += [p(_prose(line)) for line in report.executive_summary] or [p("Executive summary not provided in frozen input.")]
+    if report.title:
+        story.append(p(report.title, "label", True))
+    if report.executive_sections:
+        for heading, items in report.executive_sections:
+            story.append(p(heading, "label", True))
+            story.extend(executive_line("• " + item) for item in items)
+    else:
+        story += [p(_prose(line)) for line in report.executive_summary] or [p("Executive summary not provided in frozen input.")]
     tiles = []
     for count, label in [(len(report.updates), "Numbered source updates"),
         (sum(u.publication_date is not None for u in report.updates), "Publication day recorded"),
@@ -309,11 +356,12 @@ def render_report(report: Report, output: str | Path) -> None:
     if report.statistics:
         story += [p("MONITORING SNAPSHOT", "label", True), table(["MEASURE", "FROZEN VALUE"], [[p(a, "cell"), p(b, "cell")] for a, b in report.statistics], [WIDTH * .6, WIDTH * .4])]
     story += [p(_prose(line)) for line in report.coverage_notes] + citations(report.summary_citations)
-    story += [PageBreak(), banner("Key Dates", "calendar"), p("Calendar as at " + (report.run_date or "date unavailable") +
+    story += [banner("Key Dates", "calendar"), p("Calendar as at " + (report.run_date or "date unavailable") +
         ". Dates within the next 14 days receive a gold rule. Broader windows retain their recorded precision.", "italic")]
     reader_date_notes = [line for line in report.date_notes
         if not any(token in line for token in (" ID:", "SHA-256:", "timezone:", "base date:"))]
     story += [p(line, "small") for line in reader_date_notes]
+    calendar_anchor_by_row = dict(report.calendar_row_targets)
     for precise in (True, False):
         selected = [(i, row) for i, row in enumerate(report.key_dates, 1)
             if (calendar_date_bounds(row[0])[2] == "day") == precise]
@@ -325,9 +373,12 @@ def render_report(report: Report, output: str | Path) -> None:
         rows, highlights = [], []
         for index, (number, (when, event, host, relevance, sources)) in enumerate(selected):
             urls = re.findall(r"https?://[^\s]+", sources)
-            title = link(event, urls[0]) if urls else _markup(event)
-            if "PDF import" in sources:
-                title += "<br/>PDF import"
+            event_parts = event.split("\n")
+            title = link(event_parts[0], urls[0]) if urls else _markup(event_parts[0])
+            if anchor := calendar_anchor_by_row.get(number):
+                title = f'<a name="{html.escape(anchor, quote=True)}"/>' + title
+            if len(event_parts) > 1:
+                title += "<br/>" + "<br/>".join(linked_prose(value) for value in event_parts[1:])
             rows.append([p(when, "cell", True), p(title, "cell", raw=True), p(host, "cell"), p(relevance, "cell")])
             lower, upper, _ = calendar_date_bounds(when)
             if precise and lower and upper and report.run_date and "End date unconfirmed" not in when:
@@ -335,14 +386,16 @@ def render_report(report: Report, output: str | Path) -> None:
                 if date.fromisoformat(upper) >= base and date.fromisoformat(lower) <= base + timedelta(days=13):
                     highlights.append(index)
         story.append(table(["DATE(S)", "EVENT", "HOST", "RELEVANCE"], rows, [93, 147.74, 67.5, 196.48], highlights))
-    story += [PageBreak(), banner("Updates by Publisher / Institution", "updates")]
+    story += [banner("Updates by Publisher / Institution", "updates")]
     if not report.updates:
         story.append(p("No selected updates in the frozen input."))
     numbered = []
     for index, (institution, updates) in enumerate(groups):
         heading = p(institution, "org", True)
         heading.key, heading.title, heading.outline_level = f"org{index}", institution, 1
-        story += [heading, p(f"{len(updates)} source update(s) retained in the frozen input.", "italic")]
+        count = p(f"{len(updates)} source update(s) retained in the frozen input.", "italic")
+        count.keepWithNext = True
+        story += [heading, count]
         previous_topic = None
         for update in updates:
             number = len(numbered) + 1
@@ -355,8 +408,10 @@ def render_report(report: Report, output: str | Path) -> None:
             if update.topic != previous_topic:
                 row.key, row.title, row.outline_level = f"topic-{number}", update.topic, 2
                 previous_topic = update.topic
+            update_bookmark = _Bookmark(f"update-{number}", f"Update {number}: {update.title}", 2)
             if update.date_basis == "collection_time":
-                labels = ["Collected at: " + (update.collected_at or "Not recorded")]
+                collected_date = (update.collected_at or "").split("T", 1)[0]
+                labels = ["Newly collected in this reporting period" + (f": {collected_date}" if collected_date else "")]
                 if update.publication_date:
                     labels.append("Publication date: " + update.publication_date)
                 if update.information_date:
@@ -373,27 +428,23 @@ def render_report(report: Report, output: str | Path) -> None:
             else:
                 labels = [update.publication_date or "Article publication date unconfirmed"]
             labels.append(update.topic)
-            labels.extend(f"{key}: {value}" for key, value in update.metadata if key in {"Categories", "Keywords"})
             if update.coverage_period and not update.imported_from_pdf:
                 labels.append("PDF coverage: " + " through ".join(update.coverage_period))
-            story += [row, p(" | ".join(labels), "badge")]
+            story += [update_bookmark, row, p(" | ".join(labels), "badge")]
             story += [p(_prose(part), "caveat" if _prose(part).lower().startswith("caveat") else "bodyupdate") for part in update.paragraphs]
             if not update.paragraphs:
                 story.append(p("Stored summary/body not provided.", "bodyupdate"))
             story += citations(update.citations, style="smallupdate", imported=update.imported_from_pdf) + [Spacer(1, 14)]
     if report.cross_cutting_watch:
-        story += [PageBreak(), banner("Cross-Cutting Watch", "watch")] + [p(_prose(line)) for line in report.cross_cutting_watch]
-    if report.coverage:
-        story += [PageBreak(), banner("Appendix A - Source Coverage", "coverage"), table(["INSTITUTION", "STATUS", "EVIDENCE / LIMITATION"], [[p(v, "cell") for v in row] for row in report.coverage], [126, 101, WIDTH - 227])]
-    story += [PageBreak(), banner("Appendix B - Source Notes", "notes"), p(report.title, "label", True)]
-    story += [p(line, "small") for line in [*report.coverage_notes, *reader_date_notes]]
-    for number, update in enumerate(numbered, 1):
-        story.append(p(f"{number}. " + update.title, "label", True))
-        story += citations(update.citations, imported=update.imported_from_pdf)
-    if report.route_corrections:
-        story += [p("ACCESS / ROUTE CORRECTIONS", "label", True), table(["SOURCE", "CORRECTION"], [[p(a, "cell"), p(b, "cell")] for a, b in report.route_corrections], [151, WIDTH - 151])]
+        story += [banner("Cross-Cutting Watch", "watch")] + [p(_prose(line)) for line in report.cross_cutting_watch]
+    if report.coverage or report.route_corrections:
+        story.append(banner("Appendix A - Source Coverage", "coverage"))
+        if report.coverage:
+            story.append(table(["INSTITUTION", "STATUS", "EVIDENCE / LIMITATION"], [[p(v, "cell") for v in row] for row in report.coverage], [126, 101, WIDTH - 227]))
+        if report.route_corrections:
+            story += [p("ACCESS / ROUTE CORRECTIONS", "label", True), table(["SOURCE", "CORRECTION"], [[p(a, "cell"), p(b, "cell")] for a, b in report.route_corrections], [151, WIDTH - 151])]
     if report.glossary:
-        story += [PageBreak(), banner("Appendix C - Glossary", "glossary"), table(["TERM", "DEFINITION"], [[p(a, "cell", True), p(b, "cell")] for a, b in report.glossary], [151, WIDTH - 151])]
+        story += [banner("Glossary", "glossary"), table(["TERM", "DEFINITION"], [[p(a, "cell", True), p(b, "cell")] for a, b in report.glossary], [151, WIDTH - 151])]
     try:
         def deterministic_canvas(*args, **kwargs):
             kwargs["invariant"] = 1

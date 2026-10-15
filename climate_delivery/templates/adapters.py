@@ -55,7 +55,36 @@ def _citations(values: list[dict]) -> tuple[Citation, ...]:
 
 
 def _paragraphs(*values: str | None) -> tuple[str, ...]:
-    return tuple(part for value in values if value for part in value.split("\n\n") if part.strip())
+    # Stored summaries are the reader-facing excerpt. The full captured body
+    # remains frozen for provenance and is only displayed when no summary was
+    # supplied; concatenating both commonly repeats the lead paragraph.
+    value = next((value for value in values if value and value.strip()), None)
+    if value is None:
+        return ()
+    parts = [_reader_text(part) for part in value.split("\n\n")]
+    if value == values[0] and len(values) > 1 and values[1]:
+        repeated_title = re.match(r"^(.{24,120}?)\s+\1(?=\s|$)", parts[0] if parts else "")
+        if repeated_title:
+            parts[0] = parts[0][:repeated_title.end(1)] + parts[0][repeated_title.end():]
+    return tuple(part for part in parts if part)
+
+
+def _reader_text(value: str) -> str:
+    """Remove navigation/formatting noise while retaining source prose."""
+    value = re.sub(r"!\[[^]]*\]\([^)]*\)", "", value)
+    value = re.sub(r"\[([^]]+)\]\((https?://[^ )]+)\)", r"\1 (\2)", value)
+    value = re.sub(r"^\s{0,3}#{1,6}\s*", "", value, flags=re.M)
+    value = re.sub(r"<!--.*?-->|</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^<>]*?)?\s*/?>", " ", value, flags=re.S)
+    value = re.sub(r"(?im)^\s*(?:skip to content|menu|navigation|accept all cookies|cookie settings)\s*$", "", value)
+    value = re.sub(r"(?i)cookies?\s*[🍪]?\s*This site uses cookies that need consent\.\s*(?:Accept all\s*)?(?:Accept selected\s*)?Reject all\s*", "", value)
+    value = re.sub(r"(?i)Our work\s+Get involved\s+Resources\s+About Ceres\s+Donate\s+Search\s+Search Issues we work on", "", value)
+    value = re.sub(r"(?i)About\s+News\s+Events\s+Programmes\s+Help centre\s+Skip navigation", "", value)
+    value = re.sub(r"(?i)\bSkip (?:to content|navigation)\b|\bOpen main menu\b", "", value)
+    value = re.sub(r"(?i)PERSONAL\s*BUSINESS\s*ABOUT\s*AXA\s*BetterMe\s*Blog\s*CONTACT\s*US\s*LOGIN\s*OUR\s*COMPANY\s*NEWS\s*ROOM\s*JOIN\s*US\s*News\s*Room", "", value)
+    value = re.sub(r"(?i)PERSONAL\s*BUSINESS\s*ABOUT(?:\s+US)?\s*CONTACT\s*US\s*LOGIN", "", value)
+    value = re.sub(r"\*{1,3}|_{1,3}|`{1,3}", "", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
 
 def _material_summary_paragraphs(item):
@@ -75,13 +104,26 @@ def _caveats(item: dict) -> tuple[str, ...]:
     return tuple(caveats)
 
 
+def _precision_date(value: str, precision: str | None) -> str:
+    """Keep partial dates partial when showing or calculating their interval."""
+    if precision == "month" and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return value[:7]
+    if precision == "quarter" and re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", value):
+        year, month = map(int, value[:7].split("-"))
+        return f"{year}-Q{(month - 1) // 3 + 1}"
+    if precision == "year" and re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", value):
+        return value[:4]
+    return value
+
+
 def _range_date_label(item: dict[str, Any]) -> str:
     if item.get("material_versions"):
         value = max(item["material_versions"], key=lambda v: v["original_period_time"])
-        return value["selection_reason"].replace("_", " ") + " " + value["original_period_time"]
+        return value["selection_reason"].replace("_", " ") + " " + value["original_period_time"].split("T", 1)[0]
     basis = item.get("date_basis")
     if basis == "collection_time":
-        return f"collection time {item.get('collected_at') or 'not recorded'}"
+        collected = (item.get("collected_at") or "").split("T", 1)[0]
+        return "newly collected" + (f" {collected}" if collected else "; date not recorded")
     if basis == "information_date":
         return f"information date {item.get('information_date') or item.get('range_date') or 'not recorded'}"
     if basis == "publication_date":
@@ -108,67 +150,39 @@ def _range_selection_summary(articles: list[dict[str, Any]], start: str, end: st
 
 
 def range_executive_summary(snapshot: dict[str, Any]) -> list[str]:
-    """Existing range narrative: copied stored summaries, never regenerated."""
+    """Show the frozen synthesis or explain its statistical fallback."""
     articles = snapshot["articles"]
     pdf_updates = snapshot.get("pdf_source_updates", [])
     exclusions = snapshot.get("pdf_source_exclusion_counts", {})
     start, end = snapshot["date_range"]["start"], snapshot["date_range"]["end"]
-    summary = [_range_selection_summary(articles, start, end)]
-    points = snapshot.get("executive_summary")
-    if points is None:
-        points = [dict(item, kind="registry_article", text=item.get("summary")) for item in articles if isinstance(item.get("summary"), str) and item["summary"].strip()]
-        points += [dict(item, kind="pdf_source", text=item.get("summary")) for item in pdf_updates if isinstance(item.get("summary"), str) and item["summary"].strip()]
-    article_points = [point for point in points if point["kind"] == "registry_article"]
-    pdf_points = [point for point in points if point["kind"] == "pdf_source"]
+    narrative = snapshot.get("executive_narrative")
+    if isinstance(narrative, dict) and narrative.get("status") == "available":
+        return [f"{row['heading']}: {text}" for row in narrative["sections"] for text in row["items"]]
+    basis_counts = {basis: sum(item.get("date_basis") == basis for item in articles)
+                    for basis in ("collection_time", "information_date", "publication_date", "report_date")}
+    summary = [f"Reporting window: {start} through {end} (inclusive).",
+        f"Selected updates: {len(articles)} Registry articles and {len(pdf_updates)} imported PDF updates.",
+        "Selection dates: " + ("; ".join(f"{count} {basis.replace('_', ' ')}" for basis, count in basis_counts.items() if count)
+            or "no dated Registry records") + "."]
     if not articles and not pdf_updates:
-        summary.append("No selected Registry articles or PDF source updates matched this range.")
-    if article_points:
-        summary.extend(
-            f"{point['title']}: {point['text']} ({_range_date_label(point)})."
-            for point in article_points
-        )
-    elif articles:
-        summary.append("No stored Registry article summaries are available for the selected range.")
-    if "pdf_source_updates" in snapshot:
-        dated = sum(bool(item.get("publication_date")) for item in pdf_updates)
-        if dated:
-            summary.append(f"{dated} update(s) carry publication dates stated in the imported PDF inside the requested range.")
-        unknown = len(pdf_updates) - dated
-        if unknown or not pdf_updates:
-            summary.append(f"{unknown} PDF source update(s) overlap the range; their article publication dates are unconfirmed.")
-        if pdf_points:
-            for item in pdf_updates:
-                if item.get("summary"):
-                    basis = (f"PDF-stated publication date {item['publication_date']}" if item.get("publication_date")
-                        else f"article publication date unconfirmed; coverage period {item['coverage_period']['start']} through {item['coverage_period']['end']}")
-                    summary.append(f"{item['summary']} ({basis}).")
-        elif pdf_updates:
-            summary.append("No stored PDF source summaries are available for the selected range.")
-        summary.append(f"PDF source observations excluded: {exclusions.get('unknown_coverage', 0)} with unknown coverage; {exclusions.get('non_overlapping_coverage', 0)} with non-overlapping coverage.")
+        summary.append("No selected Registry articles or imported PDF updates matched this range.")
+    dated = sum(bool(item.get("publication_date")) for item in pdf_updates)
+    if pdf_updates:
+        summary.append(f"PDF publication dates: {dated} recorded; {len(pdf_updates) - dated} unconfirmed.")
+        summary.append(f"PDF observations excluded: {exclusions.get('unknown_coverage', 0)} unknown coverage; {exclusions.get('non_overlapping_coverage', 0)} outside the window.")
     if snapshot.get("date_unknown_count", 0):
-        summary.append(f"{snapshot['date_unknown_count']} Registry article(s) with no reliable collection or information date were excluded.")
+        summary.append(f"Registry articles excluded for missing reliable dates: {snapshot['date_unknown_count']}.")
     elif "date_unknown_count" not in snapshot and snapshot["unknown_publication_date_count"]:
-        summary.append(f"{snapshot['unknown_publication_date_count']} Registry article(s) with unknown publication dates were excluded.")
+        summary.append(f"Registry articles excluded for unknown publication dates: {snapshot['unknown_publication_date_count']}.")
+    narrative_status = (narrative or {}).get("status", "offline")
+    summary.append(f"LLM narrative status: {narrative_status}; this summary contains snapshot statistics only.")
     return summary
-
-
-def meeting_metadata(meeting: dict[str, Any]) -> list[tuple[str, Any]]:
-    source = meeting.get("source") or ("snapshot" if meeting.get("snapshot_id") else "unavailable")
-    metadata = [("Meeting source", source)]
-    if meeting.get("snapshot_id"):
-        metadata.append(("Meeting snapshot ID", meeting["snapshot_id"]))
-    elif meeting.get("query_id"):
-        metadata.extend([("Meeting query ID", meeting["query_id"]), ("Meeting query SHA-256", meeting.get("query_sha256") or "unavailable")])
-    metadata.extend([("Meeting query base date", meeting.get("base_date") or "unavailable"),
-                     ("Meeting query timezone", meeting.get("timezone") or "unavailable"),
-                     ("Meeting coverage", (meeting.get("coverage") or {}).get("status", "unavailable"))])
-    return metadata
 
 
 def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, str, str, str, str]:
     start, end = item.get("start_date"), item.get("end_date")
     precision = item.get("date_precision") or item.get("precision")
-    dates = list(dict.fromkeys(value for value in (start, end) if value))
+    dates = list(dict.fromkeys(_precision_date(value, precision) for value in (start, end) if value))
     parts = [" through ".join(dates)] if dates else []
     parts.extend(value for value in (item.get("raw_date"), item.get("raw_time_text")) if value and value not in parts)
     if precision:
@@ -180,8 +194,8 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
         # Import at use: meetings imports the delivery package while starting up.
         from climate_monitor.meetings import _date_bounds
         try:
-            lower = _date_bounds(start or end, precision or "day", end=False)
-            upper = _date_bounds(end or start, precision or "day", end=True)
+            lower = _date_bounds(_precision_date(start or end, precision or "day"), precision or "day", end=False)
+            upper = _date_bounds(_precision_date(end or start, precision or "day"), precision or "day", end=True)
             base = date.fromisoformat(run_date)
             if lower <= upper:
                 marker = "past" if upper < base else "future" if lower > base else "current"
@@ -190,8 +204,10 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
             pass  # Unknown precision/raw dates have no invented calendar bounds.
     when = "\n".join(parts) or "date unavailable"
     citations = []
-    if item.get("source_filename"):
-        citations.append(f"{item['source_filename']}, page {item.get('page')}")
+    source_locators = [(item.get("source_filename"), item.get("page"))]
+    source_locators.extend((observation.get("source_filename"), observation.get("page"))
+        for observation in item.get("pdf_observations", []))
+    citations.extend(f"{filename}, page {page}" for filename, page in dict.fromkeys(source_locators) if filename and page)
     if item.get("source_document_sha256"):
         citations.append("SHA-256: " + item["source_document_sha256"])
     citations.extend(url for url in (item.get("url"), item.get("source_url")) if url)
@@ -202,13 +218,19 @@ def _key_date(item: dict[str, Any], run_date: str | None = None) -> tuple[str, s
     citation = "\n".join(dict.fromkeys(citations)) or "Source not provided"
     imported = item.get("source_kind") == "pdf" or bool(item.get("source_document_sha256"))
     if imported and item.get("raw_date"):
-        when = item["raw_date"]
+        # Retain the source wording while sorting/highlighting from recorded bounds.
+        bounded_date = " through ".join(dates) if dates else None
+        when = "\n".join(value for value in (bounded_date,
+            item["raw_date"] if item["raw_date"] != bounded_date else None,
+            f"Precision: {precision}" if precision else None,
+            "End date unconfirmed" if unresolved_end else None) if value)
     for detail in (item.get("raw_time_text"), item.get("event_timezone") or item.get("timezone")):
         if detail and detail not in when:
             when += "\n" + detail
     event = item.get("name") or "Key date"
-    if imported:
-        citation = "\n".join(dict.fromkeys(value for value in citations if value.startswith(("https://", "http://")))) + "\nPDF import"
+    details = calendar_details(item)
+    if details:
+        event += "\n" + "\n".join(details)
     host = str(item.get("publisher") or item.get("institution") or item.get("organizer") or item.get("source") or "Not provided")
     return (str(when), str(event),
             host,
@@ -224,25 +246,20 @@ def calendar_details(item: dict[str, Any]) -> tuple[str, ...]:
     source_urls.extend(item.get("source_urls") or [])
     source_urls.extend(source["source_url"] for source in item.get("sources", []) if source.get("source_url"))
     online_url = item.get("online_url")
-    if online_url and source_urls and online_url not in source_urls:
-        details.append("Online event: " + str(online_url))
+    if online_url and online_url not in source_urls:
+        details.append("Registration / event link: " + str(online_url))
     if item.get("deadline_type"):
         details.append("Deadline type: " + str(item["deadline_type"]))
+    source_locators = [(item.get("source_filename"), item.get("page"))]
+    source_locators.extend((observation.get("source_filename"), observation.get("page"))
+        for observation in item.get("pdf_observations", []))
+    for filename, page in dict.fromkeys(source_locators):
+        if filename and page:
+            details.append(f"Source: {filename}, page {page}")
     source_urls = list(dict.fromkeys(source_urls))[1:]
     if source_urls:
-        details.append("Additional sources: " + ", ".join(source_urls))
-    if item.get("summary") and item.get("calendar_field_basis") != "pdf_table_cells":
-        details.append("Verbatim context: " + str(item["summary"]))
+        details.append("Additional source: " + ", ".join(source_urls))
     return tuple(details)
-
-
-def calendar_detail_notes(items: list[dict[str, Any]]) -> tuple[str, ...]:
-    notes = []
-    for item in items:
-        details = calendar_details(item)
-        if details:
-            notes.append("Calendar details: " + str(item.get("name") or "Key date") + " — " + "; ".join(details))
-    return tuple(notes)
 
 
 def _key_date_rows(item: dict[str, Any], run_date: str | None = None) -> tuple[tuple[str, str, str, str, str], ...]:
@@ -264,13 +281,60 @@ def _key_date_rows(item: dict[str, Any], run_date: str | None = None) -> tuple[t
     return tuple(rows)
 
 
+def _calendar_source_alias_groups(records: list[dict[str, Any]]) -> tuple[tuple[str, ...], ...]:
+    """Mirror the meeting merge identity so each source citation follows its row."""
+    groups: dict[str, list[str]] = {}
+    for source_index, item in enumerate(records, 1):
+        imported = bool(item.get("source_document_sha256"))
+        identity = ((item.get("canonical_event_id") or item.get("occurrence_id"))
+            if imported else item.get("event_id"))
+        identity = identity or str(len(groups))
+        groups.setdefault(identity, []).append(f"C{source_index}")
+    return tuple(tuple(aliases) for aliases in groups.values())
+
+
 def calendar_date_bounds(when: str) -> tuple[str | None, str | None, str]:
     from climate_monitor.pdf_intake import _parse_calendar_date
     from climate_monitor.meeting_fields import TIME_TEXT, TIMEZONE_TEXT
-    if re.match(r"^\d{4}-\d{2}-\d{2}(?:\n| through |$)", when):
-        dates = re.findall(r"\d{4}-\d{2}-\d{2}", when.split("\n")[0])
-        precision = re.search(r"Precision: (\w+)", when)
-        return dates[0], dates[-1], precision[1] if precision else "day"
+    precision = re.search(r"Precision: (\w+)", when)
+    recorded_precision = precision[1].casefold() if precision else None
+    if recorded_precision in {"time", "hour", "minute", "datetime"}:
+        recorded_precision = "day"
+    date_text = when.split("Precision:", 1)[0].strip()
+    if recorded_precision in {"quarter", "year"}:
+        partial = re.search(r"\b\d{4}-Q[1-4]\b|\b\d{4}\b", date_text)
+        if partial:
+            from climate_monitor.meetings import _date_bounds
+            try:
+                return (_date_bounds(partial[0], recorded_precision, end=False).isoformat(),
+                        _date_bounds(partial[0], recorded_precision, end=True).isoformat(),
+                        recorded_precision)
+            except ValueError:
+                pass
+    iso_dates = re.findall(r"\b\d{4}-\d{2}(?:-\d{2})?\b", date_text)
+    if recorded_precision and iso_dates:
+        from climate_monitor.meetings import _date_bounds
+        try:
+            lower = _date_bounds(iso_dates[0], recorded_precision, end=False).isoformat()
+            upper = _date_bounds(iso_dates[-1], recorded_precision, end=True).isoformat()
+            return lower, upper, recorded_precision
+        except ValueError:
+            pass
+    if re.match(r"^\d{4}-\d{2}-\d{2}(?:\n| through |$)", date_text):
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", date_text.split("\n")[0])
+        return dates[0], dates[-1], recorded_precision or "day"
+    if recorded_precision:
+        from climate_monitor.meetings import _date_bounds
+        parsed_text = date_text.splitlines()[-1] if len(date_text.splitlines()) > 1 else date_text
+        parsed_raw = _parse_calendar_date(parsed_text)
+        candidate = parsed_raw.get("start_date")
+        if candidate:
+            try:
+                lower = _date_bounds(candidate, recorded_precision, end=False).isoformat()
+                upper = _date_bounds(candidate, recorded_precision, end=True).isoformat()
+                return lower, upper, recorded_precision
+            except ValueError:
+                pass
     parsed = _parse_calendar_date(when)
     if parsed["date_precision"] == "unknown":
         suffixes = [match.start() for pattern in (TIME_TEXT, TIMEZONE_TEXT) if (match := pattern.search(when))]
@@ -293,7 +357,7 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
     prefix = "biweekly-" if snapshot.get("schema_version") == "climate-biweekly-report.v1" else "range-report-"
     if snapshot["snapshot_id"] != prefix + identity[:24]:
         raise ValueError("range report identity is invalid")
-    excluded = {"snapshot_id", "snapshot_sha256"} if prefix == "biweekly-" else {"snapshot_id", "snapshot_sha256", "created_at"}
+    excluded = {"snapshot_id", "snapshot_sha256", "executive_narrative"} if prefix == "biweekly-" else {"snapshot_id", "snapshot_sha256", "created_at", "executive_narrative"}
     frozen = {key: value for key, value in snapshot.items() if key not in excluded}
     if hashlib.sha256(json.dumps(frozen, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest() != identity:
         raise ValueError("range report input sha256 does not match frozen content")
@@ -302,7 +366,9 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         raise ValueError("report date window is invalid")
     run_date = datetime.fromisoformat(snapshot["created_at"].replace("Z", "+00:00")).date().isoformat()
     updates = []
-    for item in snapshot["articles"]:
+    article_update_refs = {}
+    pdf_update_refs = {}
+    for item_index, item in enumerate(snapshot["articles"], 1):
         basis = item.get("date_basis")
         date_metadata = (("Date basis", _range_date_label(item)),)
         if basis == "report_date":
@@ -314,17 +380,19 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
             date_metadata += (("Information date", item["information_date"]),)
         citations = _citations(item["citations"] or ([{"kind": "url", "url": item["canonical_url"]}] if item.get("canonical_url") else []))
         institution = publisher_name(item.get("publisher"), [citation.url for citation in citations if citation.url])
-        updates.append(Update(_title(item["title"]), institution,
+        update = Update(_title(item["title"]), institution,
             ", ".join(item.get("categories", [])) or "Topic not recorded", _title(item["article_id"]),
             item.get("content_version_id"), _date(item["publication_date"]) if item.get("publication_date") else None, None,
             _paragraphs(item.get("summary"), item.get("content")) + _material_summary_paragraphs(item) + _caveats(item),
-            date_metadata + tuple((label, ", ".join(item[field])) for label, field in (("Categories", "categories"), ("Keywords", "keywords")) if item.get(field)),
+            date_metadata,
             citations,
             content_sha256=item.get("provenance", {}).get("content_version", {}).get("content_sha256"),
             imported_from_pdf=any(c.get("kind") in {"pdf", "pdf_page"} for c in item["citations"]),
             date_basis=basis, information_date=item.get("information_date"), collected_at=item.get("collected_at"),
-            report_date=item.get("range_date") if basis == "report_date" else None))
-    for item in snapshot.get("pdf_source_updates", []):
+            report_date=item.get("range_date") if basis == "report_date" else None)
+        updates.append(update)
+        article_update_refs[item_index] = update
+    for item_index, item in enumerate(snapshot.get("pdf_source_updates", []), 1):
         coverage = (_date(item["coverage_period"]["start"]), _date(item["coverage_period"]["end"]))
         if coverage[0] > coverage[1]:
             raise ValueError("PDF coverage dates are invalid")
@@ -336,33 +404,47 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
         topic = (", ".join(item["categories"]) or "PDF Source Updates") if "categories" in item else item.get("topic") or "PDF Source Updates"
         category_metadata = (("Categories", ", ".join(item["categories"])),) if item.get("categories") else ()
         source_topic = (("Source topic", item["topic"]),) if "categories" in item and item.get("topic") else ()
-        updates.append(Update(_title(item["title"]), institution, topic,
+        update = Update(_title(item["title"]), institution, topic,
             item.get("core_article_id") or item["pdf_article_id"], None,
             _date(item["publication_date"]) if item.get("publication_date") else None, coverage,
             _paragraphs(item.get("summary")) + _material_summary_paragraphs(item) + _caveats(item), (("File", f"{item['filename']}, page {item['page']}"), ("SHA-256", item["document_sha256"])) +
             ((("PDF article ID", item["pdf_article_id"]),) if item.get("core_article_id") else ()) + category_metadata + source_topic, _citations(citations),
             content_sha256=item.get("content_sha256"),
             article_id_label="Core article ID" if item.get("core_article_id") else "PDF article ID",
-            imported_from_pdf=True))
+            imported_from_pdf=True)
+        updates.append(update)
+        pdf_update_refs[item_index] = update
     meeting = snapshot["meeting"]
     notes = []
     records = []
     if meeting["status"] == "not_requested":
         notes.append("Key dates were not captured in this snapshot.")
     else:
-        label = "Meeting query" if meeting.get("source") == "query" else "Meeting snapshot"
-        notes.append(f"{label} status: {meeting['status']}.")
-        notes.extend(f"{key}: {value}" for key, value in meeting_metadata(meeting))
-        if meeting["status"] == "empty":
-            notes.append("No future meetings.")
+        coverage = (meeting.get("coverage") or {}).get("status")
+        if meeting["status"] in {"partial", "failed", "unavailable"} or coverage in {"partial", "failed", "unavailable"}:
+            notes.append(f"Meeting coverage is {coverage or meeting['status']}; listed entries may be incomplete.")
+        elif meeting["status"] == "empty" and not (snapshot.get("pdf_calendar") or {}).get("records"):
+            notes.append("No future meetings were recorded in the frozen snapshot.")
         records.extend(meeting["records"])
     calendar = snapshot.get("pdf_calendar")
     if calendar is not None:
-        notes.append(f"PDF calendar status: {calendar['status']}. Coverage: {calendar['coverage'].get('status', 'unavailable')}.")
+        if calendar["status"] == "unavailable" or calendar.get("coverage", {}).get("status") in {"partial", "unavailable", "failed"}:
+            status = calendar.get("coverage", {}).get("status") or calendar["status"]
+            notes.append(f"Imported PDF calendar coverage is {status}; listed entries may be incomplete.")
         records.extend(calendar["records"])
     from climate_monitor.meeting_fields import merge_meeting_observations
+    calendar_alias_groups = _calendar_source_alias_groups(records)
     records = merge_meeting_observations(records)
-    notes.extend(calendar_detail_notes(records))
+    calendar_targets = []
+    calendar_row_targets = []
+    key_dates = []
+    for group_index, item in enumerate(records, 1):
+        row_start = len(key_dates) + 1
+        target = f"calendar-record-{group_index}"
+        calendar_row_targets.append((row_start, target))
+        key_dates.extend(_key_date_rows(item, run_date))
+        if group_index <= len(calendar_alias_groups):
+            calendar_targets.extend((alias, target) for alias in calendar_alias_groups[group_index - 1])
     # The full stored summaries appear once in the numbered updates. The
     # executive page states selection facts, without repeating raw PDF rows.
     executive = [_range_selection_summary(snapshot["articles"], start, end)]
@@ -390,11 +472,60 @@ def adapt_range_report(snapshot: dict[str, Any]) -> Report:
             executive.append(f"{delayed} previously unreported material version(s) were carried forward after delayed activation.")
         if snapshot.get("coverage_gaps"):
             executive.append(f"{len(snapshot['coverage_gaps'])} material version(s) lack reliable legacy ingestion times and remain a coverage gap.")
+    if snapshot.get("schema_version") != "climate-biweekly-report.v1":
+        executive = range_executive_summary(snapshot)
+    narrative = snapshot.get("executive_narrative") or {}
+    # The PDF groups by institution while preserving source order inside each
+    # institution. Keep evidence labels aligned with those printed numbers.
+    ordered_updates = sorted(updates, key=lambda update: (update.institution.casefold(), update.topic.casefold()))
+    update_number_by_object = {}
+    reader_update_targets = []
+    for number, update in enumerate(ordered_updates, 1):
+        update_number_by_object[id(update)] = number
+    for source_index, update in article_update_refs.items():
+        reader_update_targets.append((f"article-{source_index}", update_number_by_object[id(update)]))
+    for source_index, update in pdf_update_refs.items():
+        reader_update_targets.append((f"pdf-update-{source_index}", update_number_by_object[id(update)]))
+    source_rows = {row.get("id"): row for row in narrative.get("evidence", []) if isinstance(row, dict)}
+    citation_rows = []
+    for evidence_id, row in source_rows.items():
+        title = str(row.get("title") or row.get("name") or evidence_id)
+        source_url = next((url for url in [row.get("url"), row.get("citation"),
+            *(row.get("citations") or []), *(row.get("sources") or [])]
+            if isinstance(url, str) and url.startswith(("http://", "https://"))), None)
+        if evidence_id.startswith(("A", "P")):
+            linked_update = (article_update_refs.get(row.get("article_index")) if evidence_id.startswith("A")
+                else pdf_update_refs.get(row.get("pdf_index")))
+            if linked_update is None:
+                matches = [update for update in ordered_updates if update.article_id == row.get("article_id")]
+                linked_update = matches[0] if len(matches) == 1 else None
+            update_number = update_number_by_object.get(id(linked_update)) if linked_update else None
+            if update_number is not None:
+                label = f"Update {update_number}: {title}"
+                pdf_target = f"update-{update_number}"
+            else:
+                label, pdf_target = title, None
+            html_target = (f"article-{row['article_index']}" if evidence_id.startswith("A") and row.get("article_index")
+                else f"pdf-update-{row['pdf_index']}" if evidence_id.startswith("P") and row.get("pdf_index") else None)
+        else:
+            label = "Calendar: " + title
+            if row.get("date"):
+                label += " — " + str(row["date"])
+            pdf_target = html_target = dict(calendar_targets).get(evidence_id, "calendar")
+        source_citation = str(row.get("citation")) if row.get("citation") and not source_url else None
+        citation_rows.append((evidence_id, label, source_url, pdf_target, html_target, source_citation))
+    executive_citations = tuple(citation_rows)
+    executive_sections = tuple((row["heading"], tuple(row["items"]))
+                               for row in narrative.get("sections", [])) if narrative.get("status") == "available" else ()
+    if executive_sections:
+        executive = []
     return Report("range", snapshot["snapshot_id"], identity, f"Climate Registry report {start} to {end}",
         "Range report", f"{start} through {end} (inclusive, {snapshot['timezone']})", run_date,
         tuple(executive), (),
-        tuple(updates), key_dates=tuple(row for item in records for row in _key_date_rows(item, run_date)), date_notes=tuple(notes),
-        **_optional_tables(snapshot))
+        tuple(updates), key_dates=tuple(key_dates), date_notes=tuple(notes),
+        **_optional_tables(snapshot), executive_citations=executive_citations,
+        executive_sections=executive_sections, reader_update_targets=tuple(reader_update_targets),
+        calendar_targets=tuple(calendar_targets), calendar_row_targets=tuple(calendar_row_targets))
 
 
 def adapt_weekly_report(summary: dict[str, Any]) -> Report:
@@ -428,5 +559,5 @@ def adapt_weekly_report(summary: dict[str, Any]) -> Report:
         run_date,
         tuple(summary["executive_summary"]), tuple(c for update in updates for c in update.citations),
         tuple(updates), key_dates=tuple(row for item in summary.get("key_dates", []) for row in _key_date_rows(item, run_date)),
-        date_notes=calendar_detail_notes(summary.get("key_dates", [])) if summary.get("key_dates") else ("Key dates were not provided in the frozen summary.",),
+        date_notes=() if summary.get("key_dates") else ("Key dates were not provided in the frozen summary.",),
         statistics=statistics, coverage_notes=tuple(summary.get("monitoring_notes", [])), **_optional_tables(summary))

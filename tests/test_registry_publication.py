@@ -2586,7 +2586,8 @@ def test_approved_meeting_query_availability_matches_render_and_preserves_covera
     assert meeting["status"]=="included" and len(meeting["records"])==1
     assert meeting["coverage"]=={"status":"processed","records_scope":"approved_versions","returned_record_count":1}
     html=range_reports.render_range_report_html(live)
-    assert "Meeting query status: included" in html and "Meeting coverage:</strong> processed" in html
+    assert "Meeting query status" not in html and "Meeting coverage:</strong>" not in html
+    assert "Meeting coverage is" not in html
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True)
     export_public_snapshot(database,wiki/"public-registry.json")
     rendered=tmp_path/"render.sqlite3"
@@ -2598,7 +2599,8 @@ def test_approved_meeting_query_availability_matches_render_and_preserves_covera
     assert restored["meeting"]["coverage"]=={**meeting["coverage"],"source":"approved_git_snapshot"}
     assert [{key:record[key] for key in meeting["records"][0]} for record in restored["meeting"]["records"]]==meeting["records"]
     html=range_reports.render_range_report_html(restored)
-    assert "Meeting query status: included" in html and "Meeting coverage:</strong> processed" in html
+    assert "Meeting query status" not in html and "Meeting coverage:</strong>" not in html
+    assert "Meeting coverage is" not in html
     monkeypatch.delenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT")
     set_visibility(database,"meeting",event,False)
     empty=range_reports._meeting_payload(reader,None,base_date="2027-01-01")
@@ -2647,7 +2649,8 @@ def test_approved_meeting_queries_preserve_partial_and_failed_source_coverage(tm
     frozen=range_reports.freeze_range_report(reader,tmp_path/"reports",start_date="2026-09-01",end_date="2026-09-01",generated_at=datetime(2027,1,1,tzinfo=timezone.utc))
     assert frozen["meeting"]["status"]=="partial" and len(frozen["meeting"]["records"])==1
     html=range_reports.render_range_report_html(frozen)
-    assert "Meeting query status: partial" in html and "Meeting coverage:</strong> partial" in html
+    assert "Meeting query status" not in html and "Meeting coverage:</strong>" not in html
+    assert "Meeting coverage is partial; listed entries may be incomplete." in html
     assert "private model failure" not in json.dumps(public) and "/evidence/source.pdf" not in json.dumps(public)
     assert set(public["coverage"])=={"status","records_scope","returned_record_count"}
     from climate_registry.publication import export_public_snapshot,install_git_snapshot
@@ -2665,7 +2668,9 @@ def test_approved_meeting_queries_preserve_partial_and_failed_source_coverage(tm
     assert static["coverage"]=={**public["coverage"],"source":"approved_git_snapshot"}
     restored=range_reports.freeze_range_report(static_reader,tmp_path/"static-reports",start_date="2026-09-01",end_date="2026-09-01",generated_at=datetime(2027,1,1,tzinfo=timezone.utc))
     assert restored["meeting"]["status"]=="partial" and len(restored["meeting"]["records"])==1
-    assert "Meeting query status: partial" in range_reports.render_range_report_html(restored)
+    restored_html = range_reports.render_range_report_html(restored)
+    assert "Meeting query status" not in restored_html
+    assert "Meeting coverage is partial; listed entries may be incomplete." in restored_html
     assert static["items"]==artifact["meeting_records"]
     # Older trusted Git artifacts have no claim about source coverage.
     artifact.pop("meeting_coverage");artifact.pop("artifact_sha256")

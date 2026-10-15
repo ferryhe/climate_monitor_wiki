@@ -990,12 +990,15 @@ def test_empty_activated_title_falls_back_to_canonical_url_not_unactivated_title
     article = snapshot["articles"][0]
     assert article["title"] == "https://web.example/article"
     assert article["content_version_id"] == "content-pinned"
+    assert "Pinned web evidence says coastal resilience funding" in article["content"]
+    assert article["summary"] == "Web acquisition summary"
     assert article["provenance"]["title"] == {
         "basis": "canonical_url", "observation_id": None,
     }
     html = render_range_report_html(snapshot)
     assert "UNACTIVATED TITLE" not in html
-    assert "Pinned web evidence says coastal resilience funding" in html
+    assert "Web acquisition summary" in html
+    assert "Pinned web evidence says coastal resilience funding" not in html
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")

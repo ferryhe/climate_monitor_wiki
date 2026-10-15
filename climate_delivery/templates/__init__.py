@@ -7,8 +7,8 @@ import reportlab
 import re
 
 TEMPLATE_ID = "iaa-csc"
-TEMPLATE_VERSION = "9"
-RENDERER_VERSION = "reportlab-2"
+TEMPLATE_VERSION = "10"
+RENDERER_VERSION = "reportlab-3"
 
 
 def rendering_metadata() -> dict[str, str]:
@@ -23,4 +23,4 @@ def render_identity() -> str:
 
 def is_render_identity(value: str) -> bool:
     """Recognize retained render paths, including earlier default versions."""
-    return re.fullmatch(r"iaa-csc-v[1-9][0-9]*-reportlab-[1-9][0-9]*-rl[0-9][0-9A-Za-z.]*", value) is not None
+    return re.fullmatch(r"iaa-csc-v[1-9][0-9]*-reportlab-[1-9][0-9]*-rl[0-9][0-9A-Za-z.]*(-n[0-9a-f]{12})?", value) is not None
