@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from climate_registry.read_api import RegistryQueryError, RegistryReader
+from climate_registry.read_api import RegistryNotFoundError, RegistryQueryError, RegistryReader
 from test_issue221_review_repairs import _approve_all
 from test_registry_publication import _database, _reader
 
@@ -44,7 +44,7 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
     first = reader.pdf_report(document, page=1, page_size=5)
     assert [item["article_id"] for item in first["articles"]] == [f"pdf-{i}" for i in range(5)]
     assert set(calls) == {f"pdf-{i}" for i in range(5)}
-    assert first["executive_summary"] == ["Complete summary"]
+    assert first["executive_summary"] == []
     assert first["article_count"] == 7
     assert "pages" not in first
     assert first["pagination"] == {"page": 1, "page_size": 5, "total": 7, "pages": 2}
@@ -105,7 +105,9 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
     assert client.get("/api/registry/reports?include_pdf=true").status_code == 200
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='pdf_article' AND entity_id='pdf-0'")
-    assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=1").status_code == 404
+    hidden_page = client.get(f"/api/registry/pdf-intake/reports/{document}?page=1")
+    assert hidden_page.status_code == 200
+    assert [row["article_id"] for row in hidden_page.json()["articles"]] == [f"pdf-{i}" for i in range(1, 6)]
     assert api_server._REGISTRY_LIST_CACHE is None
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE registry_publication SET is_visible=1 WHERE entity_kind='pdf_article' AND entity_id='pdf-0'")
@@ -117,6 +119,96 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
             "WHERE entity_kind='pdf_article' AND entity_id='pdf-0')")
     assert client.get(f"/api/registry/pdf-intake/reports/{document}?page=1").status_code == 503
     assert api_server._REGISTRY_LIST_CACHE is None
+
+
+def test_same_core_article_keeps_approved_occurrences_in_each_pdf_report(tmp_path):
+    database = _database(tmp_path)
+    first_document, second_document = "f" * 64, "9" * 64
+    with sqlite3.connect(database) as connection:
+        for document, filename, report_date in (
+            (first_document, "first.pdf", "2026-09-01"),
+            (second_document, "second.pdf", "2026-09-02"),
+        ):
+            connection.execute(
+                "INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,"
+                "extracted_text_sha256,document_json,imported_at) VALUES(?,?,?,'application/pdf',1,?,?,?)",
+                (document, f"/evidence/{filename}", filename, "e" * 64, "{}", report_date))
+        connection.execute(
+            "INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES(?,?,?,?)",
+            ("pdf-a-shared", "https://example.org/a", "Shared PDF article", "2026-09-01"))
+        for document, occurrence_id in (
+            (first_document, "occ-first"),
+            (second_document, "occ-second"),
+        ):
+            connection.execute(
+                "INSERT INTO pdf_intake_article_occurrences(occurrence_id,article_id,source_document_sha256,"
+                "page,raw_url,report_date,content_sha256,page_sha256,occurrence_json) VALUES(?,?,?,1,?,'2026-09-01',?,?,?)",
+                (occurrence_id, "pdf-a-shared", document, "https://example.org/a", "d" * 64, "c" * 64,
+                 json.dumps({"summary": f"Approved observation in {occurrence_id}",
+                             "summary_basis": "verbatim_pdf_article_row"})))
+        _approve_all(connection)
+
+    reader = _reader(database, tmp_path)
+    reports = {item["document_sha256"]: item for item in reader.pdf_reports_all()}
+    assert set(reports) == {first_document, second_document}
+    assert all(item["article_count"] == 1 for item in reports.values())
+    for document, occurrence_id in ((first_document, "occ-first"), (second_document, "occ-second")):
+        detail = reader.pdf_report(document)
+        assert len(detail["articles"]) == 1
+        article = detail["articles"][0]
+        assert article["canonical_url"] == "https://example.org/a"
+        assert [row["occurrence_id"] for row in article["occurrences"]] == [occurrence_id]
+        assert article["occurrences"][0]["summary"] == f"Approved observation in {occurrence_id}"
+
+
+def test_unreviewed_pdf_archive_is_listed_and_downloadable_without_extracted_items(tmp_path, monkeypatch):
+    import hashlib
+
+    database = _database(tmp_path)
+    body = b"retained original PDF bytes"
+    document = hashlib.sha256(body).hexdigest()
+    missing_document = "1" * 64
+    corrupt_document = hashlib.sha256(b"expected bytes").hexdigest()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,"
+            "extracted_text_sha256,document_json,imported_at,original_pdf) VALUES(?,?,?,'application/pdf',?,?,?, ?,?)",
+            (document, "/evidence/unreviewed.pdf", "unreviewed.pdf", len(body), "e" * 64,
+             json.dumps({"title": "Archived PDF", "executive_summary": "Unreviewed summary",
+                         "pages": [{"page": 1, "text": "Unreviewed page text"}]}), "2026-09-01", body))
+        connection.execute(
+            "INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,"
+            "extracted_text_sha256,document_json,imported_at) VALUES(?,?,?,'application/pdf',1,?,?,?)",
+            (missing_document, "/evidence/missing.pdf", "missing.pdf", "e" * 64, "{}", "2026-09-02"))
+        connection.execute(
+            "INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,"
+            "extracted_text_sha256,document_json,imported_at,original_pdf) VALUES(?,?,?,'application/pdf',?,?,?, ?,?)",
+            (corrupt_document, "/evidence/corrupt.pdf", "corrupt.pdf", len(b"corrupt"), "e" * 64,
+             "{}", "2026-09-03", b"corrupt"))
+
+    reader = _reader(database, tmp_path)
+    assert reader.pdf_reports_all()[0]["article_count"] == 0
+    report = reader.pdf_report(document)
+    assert report["articles"] == [] and report["calendar_items"] == []
+    assert report["executive_summary"] == [] and report["pages"] == []
+
+    import api_server
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: reader)
+    client = TestClient(api_server.app)
+    detail = client.get(f"/api/registry/pdf-intake/reports/{document}")
+    assert detail.status_code == 200
+    assert detail.json()["report_pdf"]["download_url"].endswith("/pdf")
+    assert "Unreviewed summary" not in detail.text and "Unreviewed page text" not in detail.text
+    download = client.get(f"/api/registry/pdf-intake/reports/{document}/pdf")
+    assert download.status_code == 200 and download.content == body
+    assert download.headers["Content-Disposition"].endswith("filename*=UTF-8''unreviewed.pdf")
+    assert download.headers["X-Content-Type-Options"] == "nosniff"
+    with pytest.raises(RegistryNotFoundError):
+        reader.pdf_report(missing_document, include_bytes=True)
+    missing_download = client.get(f"/api/registry/pdf-intake/reports/{missing_document}/pdf")
+    assert missing_download.status_code == 404, missing_download.text
+    assert client.get(f"/api/registry/pdf-intake/reports/{corrupt_document}/pdf").status_code == 503
 
 
 def test_legacy_pagination_crosses_article_calendar_boundary():

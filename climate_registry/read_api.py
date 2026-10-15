@@ -871,15 +871,14 @@ class RegistryReader:
                 sha = item["source_document_sha256"]
                 calendars[sha] = calendars.get(sha,0) + 1
             return [{**item,"article_count":len(articles.get(item["document_sha256"],[])),"calendar_count":calendars.get(item["document_sha256"],0)}
-                for item in items if item["document_sha256"] in articles or item["document_sha256"] in calendars]
+                for item in items]
         with self.connect() as connection:
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                if not self._has_pdf_intake(connection):
+                    return []
                 candidates = self._public_candidates("article", "pdf_article", "meeting", "pdf_meeting")
-                documents, article_ids, calendar_ids = {}, {}, {}
+                article_ids, calendar_ids = {}, {}
                 for (_kind, _identity), snapshot in candidates.items():
-                    dependencies = snapshot.get("dependencies", {})
-                    for row in dependencies.get("pdf_intake_documents", []):
-                        documents[row.get("document_sha256")] = row
                     for table in ("pdf_intake_article_occurrences",):
                         for row in snapshot.get("tables", {}).get(table, []):
                             if row.get("summary_basis") == "verbatim_pdf_calendar_row":
@@ -892,15 +891,14 @@ class RegistryReader:
                         if allowed_calendar_ids is None or occurrence_id in allowed_calendar_ids:
                             calendar_ids[row.get("source_document_sha256")] = calendar_ids.get(row.get("source_document_sha256"), 0) + 1
                 items = []
-                for sha, row in documents.items():
+                for row in connection.execute("SELECT document_sha256,filename,date_of_run,document_json FROM pdf_intake_documents"):
+                    sha = row["document_sha256"]
                     article_count = len(article_ids.get(sha, set()))
                     calendar_count = calendar_ids.get(sha, 0)
-                    if not article_count and not calendar_count:
-                        continue
-                    document = self._pdf_document_json(row.get("document_json"), document_sha256=sha)
+                    document = self._pdf_document_json(row["document_json"], document_sha256=sha)
                     items.append({"report_id": sha, "document_sha256": sha, "source_kind": "pdf",
-                        "report_title": document.get("title") or row.get("filename"), "filename": row.get("filename"),
-                        "report_date": row.get("date_of_run"), "article_count": article_count,
+                        "report_title": document.get("title") or row["filename"], "filename": row["filename"],
+                        "report_date": row["date_of_run"], "article_count": article_count,
                         "calendar_count": calendar_count, "page_count": document.get("page_count"),
                         "monitoring_status": "not_reported", "source_label": "PDF import"})
                 items.sort(key=lambda item: (item.get("report_date") or "", item["document_sha256"]), reverse=True)
@@ -924,8 +922,6 @@ class RegistryReader:
             items = []
             for row in connection.execute("SELECT document_sha256,filename,date_of_run,document_json FROM pdf_intake_documents"):
                 sha = row["document_sha256"]
-                if (allowed_occurrence_ids is not None or connection.execute("PRAGMA user_version").fetchone()[0] >= 21) and sha not in articles and sha not in calendars:
-                    continue
                 document = self._pdf_document_json(row["document_json"])
                 items.append({"report_id": sha, "document_sha256": sha, "source_kind": "pdf",
                     "report_title": document.get("title") or row["filename"], "filename": row["filename"],
@@ -953,9 +949,10 @@ class RegistryReader:
         allowed_occurrence_ids: set[str] | None, allowed_calendar_ids: set[str] | None,
         include_bytes: bool, page: int | None = None, page_size: int = 5) -> dict[str, Any]:
         candidates = self._pdf_document_candidates(connection, document_sha256)
-        document_row = next((row for snapshot in candidates.values()
-            for row in snapshot.get("dependencies", {}).get("pdf_intake_documents", [])
-            if row.get("document_sha256") == document_sha256), None)
+        document_row = connection.execute(
+            "SELECT * FROM pdf_intake_documents WHERE document_sha256=?", (document_sha256,)
+        ).fetchone()
+        document_row = dict(document_row) if document_row is not None else None
         if document_row is None:
             raise RegistryNotFoundError("PDF report not found")
 
@@ -979,13 +976,6 @@ class RegistryReader:
             for row in snapshot.get("tables", {}).get("pdf_intake_calendar_items", []):
                 if row.get("source_document_sha256") == document_sha256:
                     approved_calendar_ids.add(row.get("occurrence_id"))
-        source_ids = {row[0] for row in connection.execute(
-            "SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE source_document_sha256=? "
-            "UNION SELECT occurrence_id FROM pdf_intake_calendar_items WHERE source_document_sha256=?",
-            (document_sha256, document_sha256))}
-        if source_ids != approved_article_ids | approved_calendar_ids:
-            raise RegistryNotFoundError("PDF source contains unapproved or invisible observations")
-
         document = self._pdf_document_json(document_row.get("document_json"), document_sha256=document_sha256)
         document_sources = self._snapshot_pdf_document_sources({
             "pdf_intake_documents": [document_row],
@@ -1105,16 +1095,18 @@ class RegistryReader:
                 calendars_by_id[occurrence_id] = pdf_meeting_fields(calendar)
         calendars = list(calendars_by_id.values())
         self._restore_approved_calendar_fields(connection, calendars, approved_documents)
+        if calendars:
+            calendars = self.resolve_pdf_meeting_identities(calendars)
         calendars.sort(key=lambda value: (value.get("start_date") or "9999", value.get("name") or "",
             value.get("occurrence_id") or ""))
         item.update({"edition": document.get("edition"), "reporting_period": document.get("reporting_period"),
             "period_start": document_row.get("period_start"), "period_end": document_row.get("period_end"),
-            "executive_summary": [document["executive_summary"]] if document.get("executive_summary") else [],
+            "executive_summary": [],
             "pdf_metadata": (document.get("source") or {}).get("pdf_metadata") or {},
             "pdf_created_at": document_row.get("pdf_created_at"),
             "pdf_modified_at": document_row.get("pdf_modified_at"), "imported_at": document_row.get("imported_at"),
             "source_filenames": source_filenames,
-            "pages": [{"page": page.get("page"), "text": page.get("text")} for page in document.get("pages", [])],
+            "pages": [],
             "articles": articles, "calendar_items": calendars,
             "report_pdf": {"filename": document_row["filename"],
                 "download_url": f"/api/registry/pdf-intake/reports/{document_sha256}/pdf"}
@@ -1227,12 +1219,6 @@ class RegistryReader:
                     for row in snapshot.get("tables", {}).get("pdf_intake_calendar_items", []):
                         if row.get("source_document_sha256") == document_sha256:
                             approved_calendar_ids.add(row.get("occurrence_id"))
-                source_ids = {row[0] for row in connection.execute(
-                    "SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE source_document_sha256=? "
-                    "UNION SELECT occurrence_id FROM pdf_intake_calendar_items WHERE source_document_sha256=?",
-                    (document_sha256, document_sha256))}
-                if source_ids != approved_article_ids | approved_calendar_ids:
-                    raise RegistryNotFoundError("PDF source contains unapproved or invisible observations")
                 if include_bytes:
                     row = connection.execute("SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (document_sha256,)).fetchone()
                     body = row[0] if row is not None else None
@@ -1257,11 +1243,11 @@ class RegistryReader:
                 source = document.get("source") or {}
                 item.update({"edition": document.get("edition"), "reporting_period": document.get("reporting_period"),
                     "period_start": document_row.get("period_start"), "period_end": document_row.get("period_end"),
-                    "executive_summary": [document["executive_summary"]] if document.get("executive_summary") else [],
+                    "executive_summary": [],
                     "pdf_metadata": source.get("pdf_metadata") or {}, "pdf_created_at": document_row.get("pdf_created_at"),
                     "pdf_modified_at": document_row.get("pdf_modified_at"), "imported_at": document_row.get("imported_at"),
                     "source_filenames": sorted(source_filenames),
-                    "pages": [{"page": page.get("page"), "text": page.get("text")} for page in document.get("pages", [])],
+                    "pages": [],
                     "articles": articles, "calendar_items": calendars,
                     "report_pdf": {"filename": document_row["filename"],
                         "download_url": f"/api/registry/pdf-intake/reports/{document_sha256}/pdf"}
@@ -1270,12 +1256,6 @@ class RegistryReader:
                     occurrence["source_observations"] = [{key: value for key, value in observation.items() if key != "path"}
                         for observation in occurrence.get("source_observations", [])]
                 return item
-            if self.public and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                visible_ids = {row[0] for row in connection.execute("SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE source_document_sha256=? UNION SELECT occurrence_id FROM pdf_intake_calendar_items WHERE source_document_sha256=?", (document_sha256, document_sha256))}
-                original = self._snapshot_source_connection
-                source_ids = {row[0] for row in original.execute("SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE source_document_sha256=? UNION SELECT occurrence_id FROM pdf_intake_calendar_items WHERE source_document_sha256=?", (document_sha256, document_sha256))}
-                if visible_ids != source_ids:
-                    raise RegistryNotFoundError("PDF source contains unapproved or invisible observations")
             row = dict(connection.execute("SELECT * FROM pdf_intake_documents WHERE document_sha256=?", (document_sha256,)).fetchone())
             if include_bytes:
                 body = row.get("original_pdf")
@@ -1298,11 +1278,11 @@ class RegistryReader:
             source = document.get("source") or {}
             item.update({"edition": document.get("edition"), "reporting_period": document.get("reporting_period"),
                 "period_start": row["period_start"], "period_end": row["period_end"],
-                "executive_summary": [document["executive_summary"]] if document.get("executive_summary") else [],
+                "executive_summary": [],
                 "pdf_metadata": source.get("pdf_metadata") or {}, "pdf_created_at": row.get("pdf_created_at"),
                 "pdf_modified_at": row.get("pdf_modified_at"), "imported_at": row["imported_at"],
                 "source_filenames": sorted({value["filename"] for value in self._pdf_document_sources(connection, document_sha256)}),
-                "pages": [{"page": page.get("page"), "text": page.get("text")} for page in document.get("pages", [])],
+                "pages": [],
                 "articles": articles,
                 "report_pdf": {"filename": row["filename"], "download_url": f"/api/registry/pdf-intake/reports/{document_sha256}/pdf"}
                     if row.get("original_pdf") is not None else None})
@@ -2110,6 +2090,8 @@ class RegistryReader:
                         items_by_id[occurrence_id] = pdf_meeting_fields(item)
                 items = list(items_by_id.values())
                 self._restore_approved_calendar_fields(connection, items, approved_documents)
+                if items:
+                    items = self.resolve_pdf_meeting_identities(items)
                 items.sort(key=lambda item: (item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or ""))
                 self._pdf_calendar_collection_cache[cache_key] = items
                 return items
@@ -2171,6 +2153,8 @@ class RegistryReader:
         from .information_checks import latest_checks
         with self.connect() as connection:
             items = [dict(pdf_meeting_fields(item), **latest_checks(connection, "meetings", item)) for item in items]
+        if self.public and items:
+            items = self.resolve_pdf_meeting_identities(items)
         items.sort(key=lambda item: (
             item.get("start_date") or "9999", item.get("name") or "", item.get("occurrence_id") or "",
         ))
@@ -2223,8 +2207,27 @@ class RegistryReader:
                     else:
                         if candidate_id:
                             item.pop("canonical_event_id", None)
-                        else:
-                            item.setdefault("canonical_event_id", None)
+                    result.append(item)
+                return result
+            if self.public and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                visible_ids = {row[0] for row in connection.execute("SELECT event_id FROM climate_events")}
+                for raw in items:
+                    item = dict(raw)
+                    candidate_id = item.get("canonical_event_id")
+                    if candidate_id and candidate_id in visible_ids:
+                        item["canonical_event_id"] = candidate_id
+                        result.append(item)
+                        continue
+                    if candidate_id:
+                        item.pop("canonical_event_id", None)
+                    if item.get("verification_status") == "verified" and item.get("collected_candidate"):
+                        body_hash = next((check.get("body_sha256") for check in item.get("checks", [])
+                            if check.get("verification_status") == "verified"), None)
+                        if body_hash:
+                            from climate_monitor.meetings import resolve_event_identity
+                            identity = resolve_event_identity(connection, item["collected_candidate"], body_hash)
+                            if identity in visible_ids:
+                                item["canonical_event_id"] = identity
                     result.append(item)
                 return result
             has_events = connection.execute(

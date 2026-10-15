@@ -76,7 +76,7 @@ def test_imported_pdf_history_retains_structure_original_download_and_one_copy(t
     sha = bundle["documents"][0]["source"]["sha256"]
     detail = client.get(f"/api/registry/pdf-intake/reports/{sha}").json()
     assert detail["edition"] == 9 and detail["reporting_period"]
-    assert detail["executive_summary"] and detail["pages"] and detail["pdf_metadata"]
+    assert detail["executive_summary"] == [] and detail["pages"] == [] and detail["pdf_metadata"]
     assert detail["articles"] and detail["calendar_items"]
     assert item["article_count"] == len(detail["articles"]) == 1
     assert detail["source_filenames"] == ["renamed.pdf", "report.pdf"]
@@ -103,7 +103,17 @@ def test_published_pdf_report_deduplicates_exact_passages_only():
             occurrence_id TEXT, event_id TEXT, source_document_sha256 TEXT
         );
         CREATE TABLE pdf_intake_articles (article_id TEXT);
+        CREATE TABLE pdf_intake_documents (
+            document_sha256 TEXT, filename TEXT, date_of_run TEXT, document_json TEXT,
+            period_start TEXT, period_end TEXT, pdf_created_at TEXT, pdf_modified_at TEXT,
+            imported_at TEXT, original_pdf BLOB
+        );
     """)
+    connection.execute(
+        "INSERT INTO pdf_intake_documents VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (document_sha, "report.pdf", "2026-09-28", json.dumps({"title": "Report"}),
+         None, None, None, None, "2026-09-28T00:00:00Z", None),
+    )
     rows = [
         {"occurrence_id": "first-copy", "article_id": "article-a", "source_document_sha256": document_sha,
          "report_date": "2026-09-28", "page": 2, "raw_url": "https://example.org/report?a=1#top",
@@ -174,7 +184,7 @@ def test_unified_articles_share_pagination_and_keep_linked_pdf_details(tmp_path,
     assert client.get("/api/registry/status?include_pdf=true").json()["articles"] == 2
 
 
-def test_pdf_history_and_downloads_only_include_active_runtime_documents(tmp_path, monkeypatch):
+def test_pdf_history_lists_archives_and_downloads_both_while_filtering_extracted_content(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     public, runtime = tmp_path / "public.sqlite3", tmp_path / "runtime.sqlite3"
     initialize_registry(public)
@@ -193,11 +203,20 @@ def test_pdf_history_and_downloads_only_include_active_runtime_documents(tmp_pat
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(public))
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, reader, manifest))
     client = TestClient(api_server.app)
-    assert client.get("/api/registry/reports?include_pdf=true").json()["pagination"]["total"] == 1
+    history = client.get("/api/registry/reports?include_pdf=true").json()
+    assert history["pagination"]["total"] == 2
     pending_sha = bundles[1]["documents"][0]["source"]["sha256"]
-    assert client.get(f"/api/registry/pdf-intake/reports/{pending_sha}/pdf").status_code == 404
+    pending_detail = client.get(f"/api/registry/pdf-intake/reports/{pending_sha}")
+    assert pending_detail.status_code == 200
+    assert pending_detail.json()["articles"] == [] and pending_detail.json()["calendar_items"] == []
+    assert pending_detail.json()["executive_summary"] == [] and pending_detail.json()["pages"] == []
+    pending_download = client.get(f"/api/registry/pdf-intake/reports/{pending_sha}/pdf")
+    assert pending_download.status_code == 200
+    assert hashlib.sha256(pending_download.content).hexdigest() == pending_sha
     active_sha = active["documents"][0]["source"]["sha256"]
-    assert client.get(f"/api/registry/pdf-intake/reports/{active_sha}/pdf").status_code == 200
+    active_download = client.get(f"/api/registry/pdf-intake/reports/{active_sha}/pdf")
+    assert active_download.status_code == 200
+    assert hashlib.sha256(active_download.content).hexdigest() == active_sha
     with sqlite3.connect(public) as connection:
         # Migrated Public documents can predate retained original PDF bytes.
         connection.execute("ATTACH DATABASE ? AS imported", (str(runtime),))
@@ -210,7 +229,7 @@ def test_pdf_history_and_downloads_only_include_active_runtime_documents(tmp_pat
     overlapping = client.get(f"/api/registry/pdf-intake/reports/{active_sha}").json()
     downloaded = client.get(overlapping["report_pdf"]["download_url"])
     assert downloaded.status_code == 200 and hashlib.sha256(downloaded.content).hexdigest() == active_sha
-    assert client.get("/api/registry/reports?include_pdf=true").json()["pagination"]["total"] == 1
+    assert client.get("/api/registry/reports?include_pdf=true").json()["pagination"]["total"] == 2
 
 
 def test_active_web_article_excludes_pending_pdf_until_separately_activated(tmp_path, monkeypatch):

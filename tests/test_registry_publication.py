@@ -1704,14 +1704,18 @@ def test_combined_reports_and_status_share_pdf_visibility_snapshot(tmp_path, mon
     monkeypatch.setattr(RegistryReader, read_method, read)
     if endpoint == "status":
         first = api_server.registry_status(include_pdf=True)
-        assert (first["articles"], first["reports"], first["latest_report_date"]) == (2, 0, None)
+        assert (first["articles"], first["reports"], first["latest_report_date"]) == (2, 1, "2026-09-03")
         later = api_server.registry_status(include_pdf=True)
-        assert (later["articles"], later["reports"], later["latest_report_date"]) == (2, 0, None)
+        assert (later["articles"], later["reports"], later["latest_report_date"]) == (2, 1, "2026-09-03")
     else:
         first = api_server.registry_reports(page="1", page_size="1", include_pdf=True)
-        assert first["pagination"]["total"] == 0 and first["items"] == []
+        assert first["pagination"]["total"] == 1
+        assert first["items"][0]["report_date"] == "2026-09-03"
+        assert first["items"][0]["article_count"] == 0
         later = api_server.registry_reports(page="1", page_size="1", include_pdf=True)
-        assert later["pagination"]["total"] == 0 and later["items"] == []
+        assert later["pagination"]["total"] == 1
+        assert later["items"][0]["report_date"] == "2026-09-03"
+        assert later["items"][0]["article_count"] == 0
 
 
 @pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
@@ -2335,7 +2339,7 @@ def test_core_pdf_export_uses_curated_occurrences_and_preserves_public_fields(tm
     assert article["pdf_occurrences"][0]["summary"]=="Original PDF observation"
 
 
-def test_pdf_report_git_projection_keeps_partial_linked_visibility_and_archive_gate(tmp_path,monkeypatch):
+def test_pdf_report_git_projection_keeps_partial_linked_visibility_and_archive_metadata(tmp_path,monkeypatch):
     from climate_registry.publication import export_public_snapshot,install_git_snapshot
     database=_database(tmp_path);document="f"*64
     with sqlite3.connect(database) as db:
@@ -2347,7 +2351,10 @@ def test_pdf_report_git_projection_keeps_partial_linked_visibility_and_archive_g
         _approve(db,sha,{"basis":"explicit linked PDF/core fixture approval"}, status="accepted_legacy")
     live=_reader(database,tmp_path)
     assert live.pdf_reports_all()[0]["article_count"]==1
-    with pytest.raises(RegistryNotFoundError):live.pdf_report(document)
+    report=live.pdf_report(document)
+    assert report["article_count"]==1 and report["pages"]==[] and report["executive_summary"]==[]
+    assert [row["article_id"] for row in report["articles"]]==["a"]
+    assert "Pending PDF source text" not in json.dumps(report)
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True)
     path=wiki/"public-registry.json"
     rendered=tmp_path/"render.sqlite3"
@@ -2357,12 +2364,17 @@ def test_pdf_report_git_projection_keeps_partial_linked_visibility_and_archive_g
         if not visible:set_visibility(database,"article","a",False)
         export_public_snapshot(database,path)
         artifact=json.loads(path.read_text())
-        assert len(artifact["pdf_reports"])==(1 if visible else 0) and artifact["pdf_report_details"]=={}
+        assert len(artifact["pdf_reports"])==1
+        assert artifact["pdf_reports"][0]["article_count"]==(1 if visible else 0)
+        assert document in artifact["pdf_report_details"]
         assert "Pending PDF source text" not in path.read_text() and "Raw full report marker" not in path.read_text()
         install_git_snapshot(rendered,wiki);monkeypatch.setenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT","1")
         static=_reader(rendered,tmp_path)
         assert static.pdf_reports_all()==artifact["pdf_reports"]
-        with pytest.raises(RegistryNotFoundError):static.pdf_report(document)
+        detail=static.pdf_report(document)
+        assert detail["pages"]==[] and detail["executive_summary"]==[]
+        assert detail["article_count"]==(1 if visible else 0)
+        with pytest.raises(RegistryNotFoundError):static.pdf_report(document,include_bytes=True)
         monkeypatch.delenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT")
     set_visibility(database,"article","a",True)
     with sqlite3.connect(database) as db:
@@ -2452,36 +2464,66 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
     assert processed["status"]=="succeeded",processed
     with sqlite3.connect(database) as db:
         _pdf(db,identity="pdf-independent",url="https://example.org/independent")
-        for identity,name in (("shared","World Climate Summit 2027"),("standalone","Standalone PDF meeting")):
+        second_document="a"*64
+        db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at) VALUES(?, '/evidence/second.pdf','second.pdf','application/pdf',1,?,'{}','2026-08-02')",(second_document,"b"*64))
+        for identity,name in (("shared","World Climate Summit 2027"),("standalone","Standalone PDF meeting"),
+                ("standalone-pending","Pending PDF meeting")):
             item={"event_id":identity,"occurrence_id":"pdf-"+identity,"name":name,"kind":"event","raw_date":"June 10–12, 2027",
                 "date_precision":"day","start_date":"2027-06-10","end_date":"2027-06-12","summary":"Original PDF meeting", "page":2,
                 "source_urls":["https://example.com/register"],"source_document_sha256":"f"*64}
             db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,2,?,'event',?,'day',?,?,?, ?,NULL,?)",
                 (item["occurrence_id"],identity,"f"*64,name,item["raw_date"],item["start_date"],item["end_date"],item["summary"],"c"*64,json.dumps(item)))
+        second_item={"event_id":"shared-second","occurrence_id":"pdf-shared-second","name":"World Climate Summit 2027","kind":"event",
+            "raw_date":"June 10–12, 2027","date_precision":"day","start_date":"2027-06-10","end_date":"2027-06-12",
+            "summary":"Second PDF observation","page":3,"source_urls":["https://example.com/register"],"source_document_sha256":second_document}
+        db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,3,?,'event',?,'day',?,?,?, ?,NULL,?)",
+            (second_item["occurrence_id"],"shared-second",second_document,second_item["name"],second_item["raw_date"],
+             second_item["start_date"],second_item["end_date"],second_item["summary"],"d"*64,json.dumps(second_item)))
+    import test_issue113_range_reports as range_report_fixtures
+    from climate_registry.read_api import RegistryReader
+    monkeypatch.setattr(range_report_fixtures, "_reader", lambda db, root: RegistryReader(db, repository_root=db.parent/"application", public=False))
+    range_report_fixtures._insert_meeting_check(database, "pdf-standalone-pending", website_candidate=_candidate(name="Pending PDF meeting"),
+        canonical_event_id="pending-native-meeting")
+    with sqlite3.connect(database) as db:
+        native_event=db.execute("SELECT event_id FROM climate_events WHERE name='World Climate Summit 2027'").fetchone()[0]
+    range_report_fixtures._insert_meeting_check(database, "pdf-shared-second",
+        website_candidate=_candidate(deadline_type=None,deadline_date=None,deadline_evidence=None),
+        canonical_event_id=native_event,run_id="fixture-shared-run",attempt_id="fixture-shared-attempt")
+    with sqlite3.connect(database) as db:
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit separate native/PDF fixture approval"}, status="accepted_legacy")
         previous = db.execute("SELECT entity_kind,entity_id,published_candidate_sha256 FROM registry_publication WHERE entity_kind IN ('meeting','pdf_meeting') ORDER BY entity_kind,entity_id").fetchall()
     reader=_reader(database,tmp_path)
     before=reader.meetings_all(base_date="1900-01-01")
-    assert len(before)==4 and len(reader.pdf_calendar_items_all())==2
+    assert len(before)==5 and len(reader.pdf_calendar_items_all())==4
+    pending=next(item for item in before if item["name"]=="Pending PDF meeting")
+    assert pending["event_id"]=="standalone-pending"
+    assert pending["pdf_event_id"]=="standalone-pending"
+    assert "canonical_event_id" not in pending
     def fetcher(identity,url):
         return {"article_id":identity,"requested_url":url,"final_url":url,"status":"ok","content":body,"content_hash":hashlib.sha256(body.encode()).hexdigest(),"content_ref":None}
     information_checks.run_checks(database,kind="meetings",backup_dir=tmp_path/"backups",occurrence_ids={"pdf-shared"},fetcher=fetcher,
         verifier=lambda kind,fields,content:{"comparisons":{key:{"status":"supported"} for key in fields},"website_candidate":_candidate(deadline_type=None,deadline_date=None,deadline_evidence=None)})
     # The real check stages a merged candidate; it cannot rewrite the old public relation.
     assert reader.meetings_all(base_date="1900-01-01")==before
-    assert len(reader.pdf_calendar_items_all())==2
+    assert len(reader.pdf_calendar_items_all())==4
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT entity_kind,entity_id,published_candidate_sha256 FROM registry_publication WHERE entity_kind IN ('meeting','pdf_meeting') ORDER BY entity_kind,entity_id").fetchall()==previous
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit unified meeting fixture approval"}, status="accepted_legacy")
     reader=_reader(database,tmp_path)
     meetings=reader.meetings_all(base_date="1900-01-01")
-    assert len(meetings)==3
+    assert len(meetings)==4
+    report_meetings={document:{item["occurrence_id"] for item in reader.pdf_report(document)["calendar_items"]}
+        for document in ("f"*64,"a"*64)}
+    assert "pdf-shared" in report_meetings["f"*64]
+    assert "pdf-shared-second" in report_meetings["a"*64]
+    assert "pdf-shared-second" not in report_meetings["f"*64]
+    assert "pdf-shared" not in report_meetings["a"*64]
     wiki=tmp_path/"application/wiki";wiki.mkdir(parents=True)
     path=wiki/"public-registry.json";export_public_snapshot(database,path)
     artifact=json.loads(path.read_text(encoding="utf-8"))
     markdown=artifact["wiki_pages"]["registry-meetings.md"]
     assert markdown.count("\n## ")==len(meetings)
-    for name in ("World Climate Summit 2027","Independent Climate Summit","Standalone PDF meeting"):
+    for name in ("World Climate Summit 2027","Independent Climate Summit","Standalone PDF meeting","Pending PDF meeting"):
         assert markdown.count("## "+name+"\n")==1
     assert "SHA-256: "+"f"*64 in markdown and "page 2" in markdown
     def private_keys(value):
@@ -2493,6 +2535,14 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
             for item in value:private_keys(item)
     private_keys(artifact)
     assert "/evidence/source.pdf" not in path.read_text(encoding="utf-8")
+    exported_pending=next(item for item in artifact["meeting_records"] if item["name"]=="Pending PDF meeting")
+    assert exported_pending["event_id"]=="standalone-pending"
+    assert exported_pending["pdf_event_id"]=="standalone-pending"
+    assert "canonical_event_id" not in exported_pending
+    for public_rows in (artifact["meetings"], artifact["pdf_report_details"]["f"*64]["calendar_items"]):
+        exported_source=next(item for item in public_rows if item["occurrence_id"]=="pdf-standalone-pending")
+        assert exported_source["event_id"]=="standalone-pending"
+        assert exported_source.get("canonical_event_id") != "pending-native-meeting"
     merged=next(item for item in artifact["meeting_records"] if item["name"]=="World Climate Summit 2027")
     observation=merged["pdf_observations"][0]
     assert observation["source_document_sha256"]=="f"*64 and observation["page"]==2
@@ -2501,8 +2551,9 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
     assert "PDF observation: Original PDF meeting" in markdown
     event=merged["event_id"]
     set_visibility(database,"meeting",event,False)
-    assert len(reader.meetings_all(base_date="1900-01-01"))==2
-    assert {item["occurrence_id"] for item in reader.pdf_calendar_items_all()}=={"pdf-standalone"}
+    assert len(reader.meetings_all(base_date="1900-01-01"))==3
+    assert {item["occurrence_id"] for item in reader.pdf_calendar_items_all()}=={"pdf-standalone","pdf-standalone-pending"}
+    assert "pdf-shared-second" not in {item["occurrence_id"] for item in reader.pdf_report("a"*64)["calendar_items"]}
     set_visibility(database,"pdf_meeting","shared",True)
     assert reader.meetings_all(base_date="1900-01-01")==meetings
     import api_server
@@ -2515,6 +2566,17 @@ def test_meeting_wiki_renders_unified_native_pdf_and_verified_alias_once(tmp_pat
         assert response.status_code==200
         private_keys(response.json())
         assert "/evidence/source.pdf" not in response.text
+    calendar_response=client.get("/api/registry/pdf-intake/calendar")
+    public_calendar=next(item for item in calendar_response.json()["items"]
+        if item["occurrence_id"]=="pdf-standalone-pending")
+    assert public_calendar["event_id"]=="standalone-pending"
+    assert public_calendar.get("canonical_event_id") != "pending-native-meeting"
+    report_response=client.get("/api/registry/pdf-intake/reports/"+"f"*64)
+    assert report_response.status_code==200
+    public_report_meeting=next(item for item in report_response.json()["calendar_items"]
+        if item["occurrence_id"]=="pdf-standalone-pending")
+    assert public_report_meeting["event_id"]=="standalone-pending"
+    assert public_report_meeting.get("canonical_event_id") != "pending-native-meeting"
     assert client.get("/api/registry/meetings?base_date=1900-01-01").json()["items"]==artifact["meeting_records"]
     from climate_registry.publication import install_git_snapshot
     rendered=tmp_path/"render.sqlite3"
