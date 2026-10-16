@@ -57,6 +57,68 @@ def _review(database, tmp_path, sha):
     return review
 
 
+def _seed_native_article_report_context(database, tmp_path, monkeypatch):
+    """Provide real schema-23 report and annotation inputs for JSON round-trip checks."""
+    from climate_registry.reports import parse_historical_report
+
+    report_date = "2026-09-14"
+    filename = f"climate-monitor-{report_date}.md"
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    report_path = source_dir / filename
+    report_path.write_bytes((Path(__file__).parents[1] / "sources" / filename).read_bytes())
+    parsed = parse_historical_report(report_path, allow_offcycle=True)
+    monkeypatch.setenv("SOURCE_DIR", str(source_dir))
+
+    metadata_dir = tmp_path / "article-metadata"
+    metadata_dir.mkdir()
+    metadata = {
+        "schema_version": 1,
+        "annotation_method": "subagent-original-content-v1",
+        "source_scope": "linked-original-content-with-report-fallback",
+        "generated_on": "2026-08-17",
+        "articles": [{
+            "canonical_url": "https://example.org/good",
+            "source_url": "https://example.org/good",
+            "title": "Climate risk findings",
+            "source_basis": "original_content",
+            "summary": "Insurers reviewed flood pricing.",
+            "categories": ["Physical Risk", "Insurance Risk"],
+            "keywords": ["flood", "pricing", "insurers"],
+        }],
+    }
+    metadata_path = metadata_dir / "articles-001-001.json"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setenv("ARTICLE_METADATA_DIR", str(metadata_dir))
+
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO reports VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+            "owner-report", report_date, filename, parsed.title, parsed.sha256, parsed.cadence,
+            parsed.report_format, parsed.sites_checked, parsed.sites_succeeded, parsed.sites_failed,
+            json.dumps(list(parsed.warnings)),
+        ))
+        db.execute("INSERT INTO discoveries VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (
+            "owner-discovery", "owner-report", 1, "Pillar A", "A", "good", "v-good",
+            "https://example.org/good", "Climate risk findings", "Flood exposure increased in the study region.", 1, None,
+        ))
+        db.execute("INSERT INTO report_appearances(report_id,article_id,version_id,discovery_id,section,pillar,ordinal,disposition) VALUES(?,?,?,?,?,?,?,?)", (
+            "owner-report", "good", "v-good", "owner-discovery", "Pillar A", "A", 1, "new",
+        ))
+    return report_path, metadata_path
+
+
+def _mutate_native_article_context(database, report_path, metadata_path, mutation):
+    if mutation == "source":
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE article_versions SET observed_summary='Changed source summary' WHERE version_id='v-good'")
+    elif mutation == "report_fallback":
+        report_path.write_text(report_path.read_text(encoding="utf-8") + "\nChanged report source evidence.\n", encoding="utf-8")
+    else:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["articles"][0]["summary"] = "Insurers reviewed changed flood pricing."
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
 def test_owner_correction_requires_distinct_new_candidate_review_and_projects_every_reader(tmp_path):
     database = _database(tmp_path)
     manifest = _manifest(database)
@@ -107,6 +169,60 @@ def test_owner_correction_requires_distinct_new_candidate_review_and_projects_ev
     published = next(row for row in rows if row["entity_id"] == "good" and row["version"] == "published")
     assert published["owner_agent_verification"]["original_verification_status"] == "conflict"
     assert published["owner_agent_verification"]["excluded_fields"] == ["summary", "title"]
+
+
+def test_native_article_report_json_roundtrip_survives_ingest_and_independent_review(tmp_path, monkeypatch):
+    from climate_registry.publication import snapshot_entity
+
+    database = _database(tmp_path)
+    _seed_native_article_report_context(database, tmp_path, monkeypatch)
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 23
+        current = snapshot_entity(db, "article", "good")
+    assert current["report_fallbacks"]["2026-09-14"]["articles"]
+    assert current["fallback_annotations"]["https://example.org/good"]["categories"] == ("Physical Risk", "Insurance Risk")
+
+    manifest = _manifest(database)
+    staged = _ingest(database, tmp_path, manifest)
+    assert staged["status"] == "staged"
+    with sqlite3.connect(database) as db:
+        candidate_row = db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?",
+            (staged["candidate_sha256"],)).fetchone()
+    persisted = json.loads(candidate_row[0])
+    assert persisted["fallback_annotations"]["https://example.org/good"]["categories"] == ["Physical Risk", "Insurance Risk"]
+    assert _ingest(database, tmp_path, manifest)["status"] == "no-op"
+
+    # The reviewer identity and receipt content are test fixtures, bound to the actual candidate template.
+    review = _review(database, tmp_path, staged["candidate_sha256"])
+    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue")["status"] == "dry_run"
+    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "no-op"
+
+
+@pytest.mark.parametrize("mutation", ["source", "report_fallback", "annotation"])
+@pytest.mark.parametrize("operation", ["repeat_ingest", "approval"])
+def test_native_article_json_guards_reject_real_live_drift_before_writes(tmp_path, monkeypatch, mutation, operation):
+    database = _database(tmp_path)
+    report_path, metadata_path = _seed_native_article_report_context(database, tmp_path, monkeypatch)
+    manifest = _manifest(database)
+    staged = _ingest(database, tmp_path, manifest)
+    review = _review(database, tmp_path, staged["candidate_sha256"])
+    with sqlite3.connect(database) as db:
+        latest_before = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0]
+    _mutate_native_article_context(database, report_path, metadata_path, mutation)
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    backups_before = set((tmp_path/"backups").glob("*"))
+
+    with pytest.raises(RegistryInputError, match="changed live|live source changed"):
+        if operation == "repeat_ingest":
+            ingest_owner_check(database, manifest, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        else:
+            approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+    assert set((tmp_path/"backups").glob("*")) == backups_before
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0] == latest_before
 
 
 @pytest.mark.parametrize("change", ["bytes", "page", "field", "actor", "authorization", "state", "source", "evidence"])

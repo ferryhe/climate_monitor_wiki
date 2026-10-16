@@ -233,7 +233,7 @@ def _ingest_one(connection, database, manifest, apply):
         row = connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (latest[0],)).fetchone()
         current = snapshot_entity(connection, plan["entity_kind"], plan["entity_id"])
         previous = json.loads(row[0]); previous.pop("derived_display", None)
-        if current != previous or not any(value["run_id"] == run_id for value in previous["dependencies"].get(prefix + "_check_runs", [])):
+        if digest(current) != digest(previous) or not any(value["run_id"] == run_id for value in previous["dependencies"].get(prefix + "_check_runs", [])):
             raise ValueError("owner check repeat has changed live sources or candidate")
         return {"status": "no-op", "run_id": run_id, "candidate_sha256": latest[0]}
     current = _plan(connection, database, plan["entity_kind"], plan["entity_id"])
@@ -455,7 +455,7 @@ def _approve_one(connection, database, receipt, apply):
     # A new live write cannot be hidden by a still-current latest pointer.
     current = snapshot_entity(connection, snapshot["entity_kind"], snapshot["entity_id"])
     candidate = dict(snapshot); candidate.pop("derived_display", None)
-    if current != candidate:
+    if digest(current) != digest(candidate):
         raise ValueError("owner review live source changed; stage and review again")
     review_id = digest([sha, "pass", receipt])
     proof = {"review_id": review_id, "candidate_sha256": sha, "status": "pass", "receipt_json": _json(receipt)}
