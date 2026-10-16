@@ -802,6 +802,10 @@ def _canonical_article_host(markdown: str) -> str | None:
     return host.removeprefix("www.") if host else None
 
 
+def _checked_source_original(match: re.Match[str]) -> str:
+    return match.groupdict().get("original_link") or match.groupdict()["original_code"]
+
+
 def _document_display_title(doc: WikiDocument) -> str:
     heading = re.search(r"(?m)^#\s+(.+?)\s*$", doc.markdown)
     raw_title = heading.group(1).strip() if heading else doc.title
@@ -920,6 +924,9 @@ class WikiChunk:
     corpus: CorpusType
     document_title: str | None = None
     canonical_url: str | None = None
+    checked_source_url: str | None = None
+    original_source_url: str | None = None
+    checked_source_provenance: str | None = None
     tokens: list[str] = field(default_factory=list)
     urls: list[str] = field(default_factory=list)
 
@@ -942,6 +949,10 @@ class SearchHit:
             "heading": self.chunk.heading,
             "url": url,
             "canonical_url": self.chunk.canonical_url,
+            **({"checked_source_url": self.chunk.checked_source_url,
+                "original_source_url": self.chunk.original_source_url,
+                "checked_source_provenance": self.chunk.checked_source_provenance}
+                if self.chunk.checked_source_url else {}),
             **({"score": round(self.score, 3)} if self.ranked else {}),
             "snippet": _evidence_excerpt(
                 self.chunk.text, 420, citation_text=self.chunk.markdown
@@ -1208,8 +1219,40 @@ class WikiKnowledgeBase:
         text = _strip_markdown(markdown)
         if not text:
             return None
+        is_registry_article = doc.corpus == "wiki" and Path(doc.path).name.startswith(("article-", "pdf-article-"))
         canonical = (re.search(r"(?m)^Canonical article:\s*\[[^\]]*\]\((https?://[^)\s]+)\)", doc.markdown)
-            if Path(doc.path).name.startswith(("article-", "pdf-article-")) else None)
+            if is_registry_article else None)
+        checked_roles = None
+        if is_registry_article:
+            checked_roles = re.search(
+                r"(?m)^Canonical article: \[checked source\]\((https?://[^)\s]+)\)\s*$\n"
+                r"^Original canonical/PDF source link \(provenance\): "
+                r"(?:\[(?P<original_link>https?://[^)\s]+)\]\((?P=original_link)\)|"
+                r"`(?P<original_code>https?://[^`\s]+)`)\s*$\n"
+                r"^Source verification: owner_agent_verified_source; independently reviewed\.\s*$",
+                doc.markdown,
+            )
+        is_source_observation = (doc.corpus == "wiki" and
+            Path(doc.path).name.startswith("registry-source-observation-pdf-article-occurrence-"))
+        if not checked_roles and is_source_observation:
+            checked_roles = re.search(
+                r"(?m)^Checked source: \[checked source\]\((https?://[^)\s]+)\)\s*$\n"
+                r"^Original PDF/source link \(provenance\): "
+                r"(?:\[(?P<original_link>https?://[^)\s]+)\]\((?P=original_link)\)|"
+                r"`(?P<original_code>https?://[^`\s]+)`)\s*$\n"
+                r"^Source verification: owner_agent_verified_source; independently reviewed\.\s*$",
+                markdown,
+            )
+        is_registry_report = (doc.corpus == "wiki" and
+            re.fullmatch(r"climate-monitor-\d{4}-\d{2}-\d{2}\.md", Path(doc.path).name))
+        if not checked_roles and is_registry_report:
+            checked_roles = re.search(
+                r"(?m)^Report article citation: \[checked source\]\((https?://[^)\s]+)\); "
+                r"original canonical/source link \(provenance\): "
+                r"(?:\[(?P<original_link>https?://[^)\s]+)\]\((?P=original_link)\)|"
+                r"`(?P<original_code>https?://[^`\s]+)`)\s*$",
+                markdown,
+            )
 
         return WikiChunk(
             id=f"{doc.file}:{doc.corpus}:{index}",
@@ -1223,7 +1266,10 @@ class WikiKnowledgeBase:
             markdown=markdown,
             links=doc.links,
             corpus=doc.corpus,
-            canonical_url=canonical[1] if canonical else None,
+            canonical_url=checked_roles[1] if checked_roles else canonical[1] if canonical else None,
+            checked_source_url=checked_roles[1] if checked_roles else None,
+            original_source_url=_checked_source_original(checked_roles) if checked_roles else None,
+            checked_source_provenance="owner_agent_verified_source" if checked_roles else None,
             tokens=_tokens(f"{doc.title} {heading} {text}"),
             urls=URL_RE.findall(markdown),
         )

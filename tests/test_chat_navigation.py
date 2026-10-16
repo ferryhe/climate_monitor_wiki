@@ -16,7 +16,7 @@ def test_later_direct_article_navigation_wins_over_pending_web_lookup():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("beginEvidenceNavigation", "openRegistryArticleEvidence", "comparableSourceUrl", "openWebEvidence"):
+    for name in ("reviewedCheckedSourceUrl", "reviewedSourceRoles", "beginEvidenceNavigation", "openRegistryArticleEvidence", "comparableSourceUrl", "openWebEvidence"):
         start = source.index(f"function {name}(") if name != "openWebEvidence" else source.index(f"async function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -50,6 +50,81 @@ __FUNCTIONS__
     assert result.returncode == 0, result.stderr
 
 
+def test_reviewed_chat_article_navigation_retains_checked_and_original_roles():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable")
+    source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
+    names = ("escapeHtml", "safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "sourceNavigationTarget", "sourceNavigationAttributes",
+        "sourceNavigationHref", "sourceNavigationFromHash", "beginEvidenceNavigation", "openRegistryArticleEvidence",
+        "attachSourceCardClickHandler")
+    functions = []
+    for name in names:
+        start = source.index(f"function {name}(")
+        end = source.index("\n}", start) + 2
+        functions.append(source[start:end])
+    script = r'''
+const assert = require("node:assert/strict");
+const original = "https://example.org/good", checked = "https://example.org/articles/current";
+const state = {activeView: "chatView", registry: {evidenceNavigationSequence: 0}};
+const window = {location: {hash: ""}, history: {pushState(_state, _title, hash) { window.location.hash = hash; }}};
+const loaded = [];
+let clickHandler;
+class Element {}
+const document = {addEventListener(type, handler) { if (type === "click") clickHandler = handler; }};
+const setWorkspaceView = value => { state.activeView = value; };
+const setRegistryMode = () => {};
+const loadRegistryArticle = (...args) => loaded.push(args);
+__FUNCTIONS__
+const receipt = {verification_status: "verified", review_id: "review-1", reviewer: {id: "reviewer"}, final_url: checked};
+const approved = {path: "wiki/article-good.md", canonical_url: original, url: checked, source_urls: [checked],
+  checked_source_url: checked, owner_agent_verification: receipt};
+const target = sourceNavigationTarget(approved);
+assert.deepEqual(target, {kind: "article", id: "good", source: "registry", url: checked,
+  checkedSourceUrl: checked, originalUrl: original});
+assert.match(sourceNavigationAttributes(approved), /data-source-url="https:\/\/example.org\/articles\/current"/);
+assert.match(sourceNavigationAttributes(approved), /data-source-checked="true"/);
+assert.match(sourceNavigationAttributes(approved), /data-original-url="https:\/\/example.org\/good"/);
+const href = sourceNavigationHref(approved);
+assert.match(href, /url=https%3A%2F%2Fexample.org%2Farticles%2Fcurrent&checked=1&original=https%3A%2F%2Fexample.org%2Fgood/);
+window.location.hash = href;
+assert.deepEqual(sourceNavigationFromHash(), target);
+attachSourceCardClickHandler();
+const card = new Element();
+card.dataset = {sourceNavigation: "article", articleId: target.id, articleSource: target.source,
+  sourceUrl: target.url, sourceChecked: "true", originalUrl: target.originalUrl};
+card.closest = selector => selector === "[data-source-navigation]" ? card : null;
+clickHandler({target: card, button: 0, preventDefault() {}});
+assert.equal(window.location.hash, href);
+assert.deepEqual(loaded, [["good", "registry", checked, true, original]]);
+const wikiDerived = {path: "wiki/article-good.md", canonical_url: checked, source_urls: [checked],
+  checked_source_url: checked, original_source_url: original,
+  checked_source_provenance: "owner_agent_verified_source"};
+const wikiTarget = sourceNavigationTarget(wikiDerived);
+assert.deepEqual(wikiTarget, {kind: "article", id: "good", source: "registry", url: checked,
+  checkedSourceUrl: checked, originalUrl: original});
+window.location.hash = sourceNavigationHref(wikiDerived);
+assert.deepEqual(sourceNavigationFromHash(), wikiTarget);
+const wikiAttrs = sourceNavigationAttributes(wikiDerived);
+assert.match(wikiAttrs, /data-source-checked="true"/);
+assert.match(wikiAttrs, /data-original-url="https:\/\/example.org\/good"/);
+const wikiCard = new Element();
+wikiCard.dataset = {sourceNavigation: "article", articleId: "good", articleSource: "registry",
+  sourceUrl: checked, sourceChecked: "true", originalUrl: original};
+wikiCard.closest = selector => selector === "[data-source-navigation]" ? wikiCard : null;
+clickHandler({target: wikiCard, button: 0, preventDefault() {}});
+assert.deepEqual(loaded[1], ["good", "registry", checked, true, original]);
+const untrustedWiki = {...wikiDerived, checked_source_provenance: "unreviewed", canonical_url: original};
+assert.equal(reviewedCheckedSourceUrl(untrustedWiki), "");
+assert.equal(sourceNavigationTarget(untrustedWiki).url, original);
+const pending = sourceNavigationTarget({...approved, owner_agent_verification: {...receipt, review_id: null}});
+assert.deepEqual(pending, {kind: "article", id: "good", source: "registry", url: original});
+assert.doesNotMatch(sourceNavigationHref({...approved, owner_agent_verification: {...receipt, review_id: null}}), /checked=1|original=/);
+'''.replace("__FUNCTIONS__", "\n".join(functions))
+    result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_report_source_survives_hash_navigation_and_failed_registry_detail():
     node = shutil.which("node")
     if not node:
@@ -59,7 +134,7 @@ def test_report_source_survives_hash_navigation_and_failed_registry_detail():
         ("escapeHtml", "function"), ("safeSourceUrl", "function"), ("safeReportSourceUrl", "function"),
         ("sourceNavigationTarget", "function"), ("sourceNavigationAttributes", "function"),
         ("sourceNavigationHref", "function"), ("sourceNavigationFromHash", "function"),
-        ("sourceCitationHref", "function"), ("renderSourceCards", "function"),
+        ("reviewedCheckedSourceUrl", "function"), ("reviewedSourceRoles", "function"), ("sourceCitationHref", "function"), ("renderSourceCards", "function"),
         ("historicalReportDateFromHash", "function"), ("beginEvidenceNavigation", "function"),
         ("openHistoricalReport", "function"), ("showMobileDetail", "function"), ("loadRegistryReport", "async function"),
         ("attachSourceCardClickHandler", "function"),
@@ -158,7 +233,7 @@ def test_matched_web_evidence_passes_original_url_to_registry_detail_fallback():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("safeSourceUrl", "beginEvidenceNavigation", "comparableSourceUrl", "openWebEvidence"):
+    for name in ("safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "beginEvidenceNavigation", "comparableSourceUrl", "openWebEvidence"):
         start = source.index(f"async function {name}(" if name == "openWebEvidence" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -192,7 +267,7 @@ def test_web_registry_search_normalizes_equivalent_urls_without_matching_other_p
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("safeSourceUrl", "beginEvidenceNavigation", "comparableSourceUrl", "openWebEvidence"):
+    for name in ("safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "beginEvidenceNavigation", "comparableSourceUrl", "openWebEvidence"):
         start = source.index(f"async function {name}(" if name == "openWebEvidence" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -240,7 +315,7 @@ def test_registry_mode_click_invalidates_pending_web_fallback():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("safeSourceUrl", "beginEvidenceNavigation", "comparableSourceUrl", "openWebEvidence"):
+    for name in ("safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "beginEvidenceNavigation", "comparableSourceUrl", "openWebEvidence"):
         start = source.index(f"async function {name}(" if name == "openWebEvidence" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -285,7 +360,7 @@ def test_real_meetings_hashchange_cancels_pending_web_match_or_fallback():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name, prefix in (("safeSourceUrl", "function"), ("beginEvidenceNavigation", "function"),
+    for name, prefix in (("safeSourceUrl", "function"), ("reviewedCheckedSourceUrl", "function"), ("reviewedSourceRoles", "function"), ("beginEvidenceNavigation", "function"),
                          ("comparableSourceUrl", "function"), ("sourceNavigationFromHash", "function"),
                          ("openWebEvidence", "async function")):
         start = source.index(f"{prefix} {name}(")
@@ -344,7 +419,7 @@ def test_pdf_observation_preserves_full_id_and_detail_recovers_after_missing_mat
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("showMobileDetail", "safeSourceUrl", "beginEvidenceNavigation", "resetRegistryArticleDetail", "sourceNavigationFromHash", "openPdfObservationEvidence"):
+    for name in ("showMobileDetail", "safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "beginEvidenceNavigation", "resetRegistryArticleDetail", "sourceNavigationFromHash", "openPdfObservationEvidence"):
         start = source.index(f"async function {name}(") if name == "openPdfObservationEvidence" else source.index(f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -472,7 +547,7 @@ def test_stale_pdf_lookup_cannot_replace_a_later_direct_article_navigation():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("showMobileDetail", "safeSourceUrl", "beginEvidenceNavigation", "resetRegistryArticleDetail", "openRegistryArticleEvidence", "openPdfObservationEvidence"):
+    for name in ("showMobileDetail", "safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "beginEvidenceNavigation", "resetRegistryArticleDetail", "openRegistryArticleEvidence", "openPdfObservationEvidence"):
         start = source.index(f"async function {name}(" if name == "openPdfObservationEvidence" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])
@@ -542,7 +617,8 @@ assert.equal(prevent.count, 0);
 assert.equal(calls.length, 0, "middle click retains the browser's native open-in-new-tab behavior");
 dispatch({});
 assert.equal(prevent.count, 1);
-assert.deepEqual(calls, [["article-404", "registry", {fallbackSourceUrl: "https://publisher.example/original"}]]);
+assert.deepEqual(calls, [["article-404", "registry", {fallbackSourceUrl: "https://publisher.example/original",
+  fallbackSourceIsChecked: false, originalSourceUrl: ""}]]);
 '''.replace("__HANDLER__", handler)
     subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, check=True)
 
@@ -729,7 +805,7 @@ def test_focused_dates_load_unknown_precision_record_by_stable_id():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("meetingDateGroup", "loadRegistryMeetings"):
+    for name in ("reviewedCheckedSourceUrl", "meetingDateGroup", "loadRegistryMeetings"):
         start = source.index(f"async function {name}(" if name == "loadRegistryMeetings" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])

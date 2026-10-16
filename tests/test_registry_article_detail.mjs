@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -40,6 +40,7 @@ for (const name of names) {
 }
 const text = (node) => [node.textContent, ...(node.children || []).map(text)].filter(Boolean).join(' ');
 const rootTags = (node, label) => node.children.filter((child) => child.children?.[0]?.textContent === label);
+const anchors = (node) => [...(node.tag === 'a' ? [{ label: node.textContent, href: node.href }] : []), ...(node.children || []).flatMap(anchors)];
 
 const verified = { children: [], append(...items) { this.children.push(...items); } };
 context.appendPdfVerifiedInformation(verified, {
@@ -206,3 +207,35 @@ assert.match(text(curated), /Website verification: partial/);
 assert.match(text(curated), /Keywords insurance/);
 assert.doesNotMatch(text(curated), /Mixed PDF passage|Retained check summary/);
 assert.equal(curated.children.at(-1).children.at(-1).href, 'https://example.org/checked');
+
+const originalUrl = 'https://example.org/pdf-only';
+const checkedUrl = 'https://example.org/articles/current';
+const ownerReview = { verification_status: 'verified', review_id: 'review-1', reviewer: { id: 'reviewer' }, final_url: checkedUrl };
+const occurrence = { raw_url: originalUrl, checked_source_url: checkedUrl, owner_agent_verification: ownerReview,
+  verification_status: 'verified', summary: 'Supported summary.' };
+for (const articleSource of ['pdf', 'registry']) {
+  context.registryFetch = async () => ({ article_id: 'pdf-only', title: 'Reviewed article', canonical_url: originalUrl,
+    original_url: originalUrl, source_kind: articleSource === 'pdf' ? 'pdf' : 'registry', checked_source_url: checkedUrl,
+    owner_agent_verification: ownerReview, occurrences: [occurrence], pdf_occurrences: [occurrence], appearances: [] });
+  await context.loadRegistryArticle('pdf-only', articleSource);
+  assert.equal(originalLink.href, checkedUrl);
+  assert.equal(originalLink.textContent, 'Open checked source');
+  const detailLinks = anchors(enrichment), appearanceLinks = anchors(appearancesEl);
+  assert.ok(detailLinks.some((link) => link.href === checkedUrl && link.label === 'Open checked source'));
+  assert.ok(detailLinks.some((link) => link.href === originalUrl && link.label === 'Open original source'));
+  assert.ok(appearanceLinks.some((link) => link.href === checkedUrl && link.label === 'Open checked source'));
+  assert.ok(appearanceLinks.some((link) => link.href === originalUrl && link.label === 'Open original source'));
+}
+context.registryFetch = async () => ({ article_id: 'pending', title: 'Pending article', canonical_url: originalUrl,
+  checked_source_url: checkedUrl, owner_agent_verification: { ...ownerReview, review_id: null }, occurrences: [], pdf_occurrences: [] });
+await context.loadRegistryArticle('pending');
+assert.equal(originalLink.href, originalUrl, 'unreviewed checked URL fields cannot replace the original destination');
+assert.equal(originalLink.textContent, 'Open original source');
+
+enrichment.replaceChildren();
+context.registryFetch = async () => { throw new Error('Registry unavailable'); };
+await context.loadRegistryArticle('good', 'registry', checkedUrl, true, originalUrl);
+assert.equal(originalLink.href, checkedUrl, 'a detail failure keeps the approved checked destination as primary');
+assert.equal(originalLink.textContent, 'Open checked source');
+assert.ok(anchors(enrichment).some((link) => link.href === originalUrl && link.label === 'Open original source'),
+  'a differing canonical URL remains separately labeled as provenance after a detail failure');

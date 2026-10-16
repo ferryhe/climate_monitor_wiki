@@ -45,7 +45,9 @@ const context = vm.createContext({
       pages: [{page: 1, text: 'Extracted text should never render'}] };
   },
 });
-vm.runInContext(source.match(/function showMobileDetail\([^]*?\n\}/)[0] + '\n' + source.slice(start, end) + '\nglobalThis.load = loadImportedRegistryReport;', context);
+vm.runInContext(source.match(/function showMobileDetail\([^]*?\n\}/)[0] + '\n' +
+  source.match(/function reviewedCheckedSourceUrl\([^]*?\n\}/)[0] + '\n' +
+  source.match(/function reviewedSourceRoles\([^]*?\n\}/)[0] + '\n' + source.slice(start, end) + '\nglobalThis.load = loadImportedRegistryReport;', context);
 await context.load('document');
 assert.equal(calls[0], '/api/registry/pdf-intake/reports/document?page=1&page_size=5');
 assert.ok(texts(els.registryImportedReport).includes('1. Article'));

@@ -108,6 +108,24 @@ def validate_page(page: int, page_size: int) -> tuple[int, int]:
     return page, page_size
 
 
+def _attach_reviewed_meeting_source(record: dict[str, Any], owner: dict[str, Any]) -> None:
+    """Expose a receipt-bound meeting source without changing retained source rows."""
+    if (owner.get("verification_status") != "verified" or not owner.get("review_id")
+            or not owner.get("reviewer")):
+        return
+    checked = owner.get("final_url") or owner.get("source_url")
+    original = owner.get("source_url")
+    if not checked:
+        return
+    record["owner_agent_verification"] = owner
+    record["checked_source_url"] = checked
+    record["source_urls"] = [checked]
+    if original and original != checked:
+        record["original_source_url"] = original
+    else:
+        record.pop("original_source_url", None)
+
+
 def validate_article_id(article_id: str) -> str:
     if not article_id or len(article_id) > 128 or any(
         char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id
@@ -1380,7 +1398,7 @@ class RegistryReader:
                         if item.get("report_id") == report["report_id"]), None)
                     if appearance is None or frozen is None:
                         continue
-                    articles.append({"ordinal": frozen.get("ordinal"), "section": frozen.get("section"),
+                    report_article = {"ordinal": frozen.get("ordinal"), "section": frozen.get("section"),
                         "pillar": frozen.get("pillar"), "observation_status": frozen.get("observation_status"),
                         "article_id": article_id, "canonical_url": detail["canonical_url"],
                         "title": detail.get("title"), "summary": detail.get("summary"),
@@ -1390,7 +1408,12 @@ class RegistryReader:
                         "metadata_provenance": detail.get("metadata_provenance"),
                         "source_annotation": detail.get("source_annotation"),
                         "current_version_id": detail.get("current_version_id"),
-                        "record_reference": detail.get("record_reference")})
+                        "record_reference": detail.get("record_reference")}
+                    if detail.get("owner_agent_verification") and detail.get("checked_source_url"):
+                        report_article.update({"checked_source_url": detail["checked_source_url"],
+                            "original_source_url": detail.get("original_source_url"),
+                            "owner_agent_verification": detail["owner_agent_verification"]})
+                    articles.append(report_article)
                 payload = {"report_date": report["report_date"], "report_title": report["report_title"],
                     "cadence": report["cadence"], "report_format": report["report_format"],
                     "executive_summary": list(source_report.executive_summary) if source_report and not self.public else [],
@@ -2512,7 +2535,7 @@ class RegistryReader:
                     snapshot = snapshot_metadata(connection, "meeting", record["event_id"]) or {}
                     owner = snapshot.get("derived_display", {}).get("owner_agent_verification")
                     if owner:
-                        record["owner_agent_verification"] = owner
+                        _attach_reviewed_meeting_source(record, owner)
         collected = {record["event_id"]: dict(record, origin="web_collection", collection_status="collected",
             verification_status="verified", access_status="accessible") for record in payload["records"] + (additional_events or [])}
         from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations
@@ -2593,7 +2616,7 @@ class RegistryReader:
                 raise RegistryContractError("published meeting snapshot has no event row")
             owner = snapshot.get("derived_display", {}).get("owner_agent_verification")
             if owner:
-                event["owner_agent_verification"] = owner
+                _attach_reviewed_meeting_source(event, owner)
             if event.get("status") == "cancelled" or event.get("event_type") == "retrospective":
                 continue
             for run in dependencies.get("meeting_runs", []):
@@ -2638,6 +2661,8 @@ class RegistryReader:
                 "candidate_json", "candidate_sha256", "event_id", "meeting_run_id",
                 "markdown_content", "first_fetched_at", "report_date", "batch_started_at", "batch_id"}}
                 | {"collected_at": source.get("first_fetched_at")} for source in source_rows]
+            if owner:
+                _attach_reviewed_meeting_source(event, owner)
             records.append(event)
         records.sort(key=lambda item: ((item.get("start_date") or item.get("deadline_date")) is None,
             item.get("start_date") or item.get("deadline_date") or "9999", item.get("name", "").casefold(), item.get("event_id", "")))

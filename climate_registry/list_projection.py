@@ -11,7 +11,8 @@ from .read_api import RegistryQueryError, _pagination, filter_pdf_articles, vali
 
 ARTICLE_FIELDS = {
     "article_id", "canonical_url", "title", "publisher", "source", "source_kind", "source_label",
-    "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count",
+    "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
+    "original_source_url", "owner_agent_verification",
 }
 REPORT_FIELDS = {
     "report_id", "document_sha256", "source_kind", "report_title", "report_date", "filename",

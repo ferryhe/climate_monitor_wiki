@@ -145,7 +145,23 @@ def online_format(item):
     return False
 
 
+def reviewed_checked_source_url(item):
+    for value in (item, *(item.get("occurrences") or []), *(item.get("pdf_occurrences") or [])):
+        url = value.get("checked_source_url")
+        owner = value.get("owner_agent_verification") or {}
+        if (url and owner.get("verification_status") == "verified" and owner.get("review_id")
+                and owner.get("reviewer") and owner.get("final_url") == url):
+            return url
+        if (url and value.get("checked_source_provenance") == "owner_agent_verified_source"
+                and value.get("original_source_url")):
+            return url
+    return None
+
+
 def source_urls(item):
+    checked = reviewed_checked_source_url(item)
+    if checked:
+        return [checked]
     urls = list(item.get("source_urls") or [])
     for row in item.get("sources") or []:
         if row.get("source_url"):
@@ -340,6 +356,9 @@ class EvidenceTurn:
         return max(0, self.remaining() - (0 if self.source_only else FINAL_RESERVE_SECONDS))
 
     def wiki_source_urls(self, item, chunk, document=None):
+        checked = reviewed_checked_source_url(item)
+        if checked:
+            return [checked]
         urls = item.get("source_urls") or [item.get("url", "")]
         if not self.source_only and chunk.corpus == "wiki":
             document = document or next((doc for doc in self.owner.responder.kb.documents if doc.path == chunk.path), None)
@@ -403,6 +422,19 @@ class EvidenceTurn:
             "corpus": item.get("corpus") or ("wiki" if kind == "wiki" else "source"), "matched_section": item.get("heading"), "evidence_id": stable,
             "version": version, "retrieved_at": item.get("retrieved_at"), "truncated": len(body) < len(text) or item.get("truncated", False)
                 or (kind == "web" and len(body) < len(item["body"]))}
+        checked = reviewed_checked_source_url(item)
+        if checked:
+            source["checked_source_url"] = checked
+            owner = item.get("owner_agent_verification") or next((
+                row.get("owner_agent_verification") for row in [*(item.get("occurrences") or []), *(item.get("pdf_occurrences") or [])]
+                if reviewed_checked_source_url(row)), None)
+            if owner:
+                source["owner_agent_verification"] = owner
+            if item.get("checked_source_provenance") == "owner_agent_verified_source":
+                source["checked_source_provenance"] = item["checked_source_provenance"]
+            original = item.get("original_source_url") or (owner or {}).get("source_url")
+            if original:
+                source["original_source_url"] = original
         if isinstance(item.get("score"), (int, float)) and not isinstance(item.get("score"), bool):
             source["score"] = item["score"]
         if kind == "meeting":

@@ -41,7 +41,7 @@ Object.assign(els, { workspaceTabs: tabs, registryMeetingSearch: { value: '' }, 
   registryPublisherCustom: { value: '' } });
 const calls = [];
 let evidenceNavigationCount = 0;
-const context = vm.createContext({ state, els, URLSearchParams,
+const context = vm.createContext({ state, els, URL, URLSearchParams,
   loadRegistry: () => calls.push('registry'), stopGraphAnimation() {}, renderCurrentGraph() {},
   handleGraphKeydown() {},
   beginEvidenceNavigation: () => { evidenceNavigationCount += 1; },
@@ -51,7 +51,8 @@ const context = vm.createContext({ state, els, URLSearchParams,
     return { items: [], pagination: { total: 0 }, base_date: '2026-10-04', verification_counts: {} };
   },
 });
-for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'closeNavigation', 'setWorkspaceView', 'loadRegistryMeetings', 'loadRegistryArticles']) {
+for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'closeNavigation', 'setWorkspaceView',
+  'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles', 'meetingDateGroup', 'meetingInstitution', 'loadRegistryMeetings', 'loadRegistryArticles']) {
   const fn = source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
   assert.ok(fn, name);
   vm.runInContext(fn, context);
@@ -69,7 +70,7 @@ assert.match(els.registryMeetingCounts.textContent, /As of 2026-10-04 \(UTC\)/);
 
 const created = [];
 const document = { createElement(tag) {
-  const element = { tag, children: [], append(...items) { this.children.push(...items); } };
+  const element = { tag, children: [], dataset: {}, append(...items) { this.children.push(...items); } };
   created.push(element);
   return element;
 } };
@@ -201,4 +202,34 @@ assert.equal(state.registry.articlePage, 1);
 assert.match(pending.at(-1).url, /page=1&page_size=20&include_pdf=true&query=flood\+risk&source=publisher\.example/);
 assert.match(source, /registrySearchForm\.addEventListener\("submit"/);
 assert.match(source, /registryMeetingSearchForm\?\.addEventListener\("submit"/);
+els.registryMeetings = { children: [], replaceChildren(...items) { this.children = [...items]; }, append(...items) { this.children.push(...items); } };
+const checked = 'https://example.org/events/current', original = 'https://example.org/events/landing';
+const receipt = { verification_status: 'verified', review_id: 'review-1', reviewer: { id: 'reviewer' },
+  source_url: original, final_url: checked };
+context.registryFetch = async () => ({ items: [{ event_id: 'native-1', name: 'World Climate Summit', origin: 'web_collection',
+  verification_status: 'verified', access_status: 'accessible', start_date: '2027-06-10', date_precision: 'day',
+  checked_source_url: checked, original_source_url: original, source_urls: [checked],
+  sources: [{ source_url: original }], owner_agent_verification: receipt }],
+  pagination: { total: 1, pages: 1 }, base_date: '2026-10-04', verification_counts: { verified: 1 } });
+context.registryElement = (tag, className = '', textContent = '') => {
+  const element = document.createElement(tag);
+  element.className = className;
+  if (textContent !== '') element.textContent = textContent;
+  return element;
+};
+context.registryFetch = async url => {
+  assert.match(url, /api\/registry\/meetings/);
+  return { items: [{ event_id: 'native-1', name: 'World Climate Summit', origin: 'web_collection',
+    verification_status: 'verified', access_status: 'accessible', start_date: '2027-06-10', date_precision: 'day',
+    checked_source_url: checked, original_source_url: original, source_urls: [checked],
+    sources: [{ source_url: original }], owner_agent_verification: receipt }],
+    pagination: { total: 1, pages: 1 }, base_date: '2026-10-04', verification_counts: { verified: 1 } };
+};
+await context.loadRegistryMeetings();
+const links = [];
+const collectLinks = node => { if (node.tag === 'a') links.push(node); (node.children || []).forEach(collectLinks); };
+collectLinks(els.registryMeetings);
+assert.deepEqual(links.map(link => [link.textContent, link.href]), [
+  ['Open checked source', checked], ['Original source link (provenance)', original],
+]);
 console.log('PASS: default Chat, Dates copy, concise status, immediate page-one filters, stale response guard and search forms');

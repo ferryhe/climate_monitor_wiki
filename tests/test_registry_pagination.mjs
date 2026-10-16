@@ -20,7 +20,7 @@ const context = vm.createContext({state, els, URLSearchParams,
     return new Promise((resolve, reject) => requests.push({path, resolve, reject}));
   },
 });
-for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage',
+for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
   'loadRegistryReports', 'loadRegistryArticles']) {
   const body = source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
   assert.ok(body, name);
