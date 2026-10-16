@@ -147,6 +147,19 @@ def _parser() -> argparse.ArgumentParser:
     adoption.add_argument("--reason", required=True)
     adoption.add_argument("--backup-dir", required=True, type=Path)
     adoption.add_argument("--apply", action="store_true")
+    for name in ("plan-owner-check", "plan-owner-review", "ingest-owner-check", "approve-owner-check"):
+        owner = subcommands.add_parser(name)
+        owner.add_argument("--database", required=True, type=Path)
+        if name == "plan-owner-check":
+            owner.add_argument("--kind", required=True, choices=["article", "pdf_article", "meeting", "pdf_meeting"])
+            owner.add_argument("--id", required=True)
+        elif name == "plan-owner-review":
+            owner.add_argument("--candidate-sha256", required=True)
+        else:
+            owner.add_argument("--input", required=True, type=Path)
+            owner.add_argument("--queue-dir", required=True, type=Path)
+            owner.add_argument("--backup-dir", type=Path)
+            owner.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -183,7 +196,20 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command == "adopt-pdf-summary":
+        if args.command in {"plan-owner-check", "plan-owner-review", "ingest-owner-check", "approve-owner-check"}:
+            from .owner_checks import plan_owner_check, owner_review_template, ingest_owner_check, approve_owner_check
+            try:
+                if args.command == "plan-owner-check":
+                    result = plan_owner_check(args.database, args.kind, args.id)
+                elif args.command == "plan-owner-review":
+                    result = owner_review_template(args.database, args.candidate_sha256)
+                else:
+                    operation = ingest_owner_check if args.command == "ingest-owner-check" else approve_owner_check
+                    result = operation(args.database, json.loads(args.input.read_text(encoding="utf-8")),
+                        queue_dir=args.queue_dir, backup_dir=args.backup_dir, apply=args.apply)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise RegistryInputError(str(exc)) from exc
+        elif args.command == "adopt-pdf-summary":
             from .pdf_summary import adopt_pdf_summary
             result = adopt_pdf_summary(args.database, args.document_sha256, args.expected_summary_sha256,
                 actor=args.actor, reason=args.reason, backup_dir=args.backup_dir, apply=args.apply)

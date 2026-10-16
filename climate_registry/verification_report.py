@@ -41,12 +41,18 @@ REASONS = {
     "missing_ineligible_target": "The linked target is missing or lacks effective verification",
     "metadata_only": "Only the approved report/page reference is retained; source facts are hidden"
 }
+REASONS.update(owner_independent_review_missing="The new owner-agent source check awaits independent exact-candidate review",
+    owner_public_scope_unsupported="The owner-agent capture does not support a complete public factual scope")
 
 
 def reason_explanation(code):
     kind, _, field = code.partition(":")
     if kind == "field_outside_verification":
         return "Verified fields may be public; additional unverified fields are hidden: "+field
+    if kind == "owner_field_excluded":
+        return "The original claim is excluded from the independently verified owner-agent public scope: "+field
+    if kind == "owner_original_status":
+        return "The original observation retains its separate verification disposition: "+field
     if kind == "manual_field_outside_reviewed_scope":
         return "Fields outside the manually verified scope are hidden: "+field
     if kind == "manual_date_outside_evidence":
@@ -139,7 +145,11 @@ def write_verification_report(database, root):
                 observations = list(verdict["observations"].values()) or [{"occurrence_id": None, "fields": {}, "source_binding": {}, "sources": [], "reasons": ["no_check"], "verification_status": "unchecked"}]
                 for observation in observations:
                     manual = observation.get("manual_verification") or {}
+                    owner = observation.get("owner_agent_verification") or {}
                     reasons = list(observation["reasons"]) + manual.get("excluded_fields", []) + hidden_fields.get(observation["occurrence_id"], [])
+                    if owner:
+                        reasons.extend(["owner_original_status:"+owner["original_verification_status"],
+                            *["owner_field_excluded:"+field for field in owner["excluded_fields"]]])
                     if manual and manual.get("access_status") != "accessible":
                         reasons.append("manual_source_access_unavailable")
                     if not state.get("published_candidate_sha256"):
@@ -167,6 +177,10 @@ def write_verification_report(database, root):
                         "verification_status": observation["verification_status"], "access_status": observation.get("access_status", "unchecked"),
                         "collection_status": observation.get("collection_status", "pending"), "sources": observation["sources"],
                         "manual_verification": manual or None,
+                        "owner_agent_verification": owner or None,
+                        "verification_scope": "owner_agent_public_fields" if owner else "source_observation",
+                        "original_verification_status": owner.get("original_verification_status"),
+                        "original_fields": observation.get("original_fields"),
                         "reason_codes": sorted(set(reasons)), "reason_explanations": [reason_explanation(r) for r in sorted(set(reasons))], "reviews": reviews})
             if public and public["actually_public"] and latest_sha != state.get("published_candidate_sha256"):
                 retained.append({"entity_kind": key[0], "entity_id": key[1], "published_candidate_sha256": state["published_candidate_sha256"], "latest_candidate_sha256": latest_sha})

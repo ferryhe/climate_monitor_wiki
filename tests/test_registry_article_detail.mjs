@@ -70,6 +70,14 @@ assert.match(text(pdfProvided), /Summary Passage summary from the PDF\./);
 assert.match(text(pdfProvided), /PDF-provided · Verification: partial · checked 2026-08-12/);
 assert.equal(pdfProvided.children[0].children.at(-1).href, 'https://example.org/original.pdf');
 
+const ownerChecked = { children: [], append(...items) { this.children.push(...items); } };
+context.appendPdfVerifiedInformation(ownerChecked, {
+  verification_status: 'verified', summary: 'Supported corrected summary.',
+  owner_agent_verification: { verification_basis: 'owner-agent-information-check.v1' },
+});
+assert.match(text(ownerChecked), /Owner-agent source verification · Independently reviewed · Verification: verified/);
+assert.doesNotMatch(text(ownerChecked), /PDF-provided/);
+
 const missing = { children: [], append(...items) { this.children.push(...items); } };
 context.appendPdfVerifiedInformation(missing, { verification_status: 'unchecked' });
 assert.equal(missing.children.length, 0);

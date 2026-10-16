@@ -292,6 +292,7 @@ def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
         blocks = [f"# {title}", "",
             f"## {_pdf_heading(occurrence)}", "", occurrence.get("display_summary") or occurrence["summary"], "",
             "Approved reviewed summary." if occurrence.get("display_summary") else
+            "Owner-agent source-supported public summary; independently reviewed. Original PDF claims retain their separate disposition." if occurrence.get("owner_agent_verification") else
             "Report-provided summary; article details are unconfirmed.", _citation(occurrence)]
         blocks.extend(_verified_information_blocks(occurrence))
         pages[name] = "\n".join([*blocks, ""])
@@ -310,6 +311,22 @@ def _render_registry_source_observations(items: list[dict]) -> str | None:
     return "\n".join([*blocks, ""])
 
 
+def _meeting_date_text(item, missing):
+    if item.get("raw_date"):
+        return str(item["raw_date"])
+    dates = []
+    if item.get("start_date"):
+        interval = str(item["start_date"])
+        if item.get("end_date"):
+            interval += " to " + str(item["end_date"])
+        if item.get("date_precision"):
+            interval += " (precision: " + str(item["date_precision"]) + ")"
+        dates.append(interval)
+    if item.get("deadline_date"):
+        dates.append("Deadline: " + str(item["deadline_date"]))
+    return "; ".join(dates) or missing
+
+
 def _render_registry_meetings(meetings: list[dict]) -> str | None:
     if not meetings:
         return None
@@ -322,14 +339,18 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
     blocks = ["# Meetings and key dates", ""]
     for item in meetings:
         if item.get("origin") == "pdf_import":
-            blocks += ["## " + str(item.get("name") or "Key date"), str(item.get("raw_date") or "Date not provided"),
+            blocks += ["## " + str(item.get("name") or "Key date"), _meeting_date_text(item, "Date not provided"),
                 "Provenance: PDF observed record; " + item.get("verification_status", "unchecked")]
+            if item.get("owner_agent_verification"):
+                blocks.append("Public facts: owner-agent source verification; independently reviewed. Original PDF claims retain their separate disposition.")
             for observation in item.get("pdf_observations") or [item]:
                 blocks += observation_blocks(observation)
             blocks.append("")
         else:
             blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
                 item.get("relevance_reason") or "", "Status: " + str(item.get("status") or "Unknown")]
+            if item.get("owner_agent_verification"):
+                blocks.append("Public facts: owner-agent source verification; independently reviewed.")
             blocks += [label + ": " + str(item[field]) for field, label in (
                 ("end_date", "End date"), ("deadline_date", "Deadline"), ("deadline_type", "Deadline type"),
                 ("organizer", "Host"), ("location", "Location"), ("timezone", "Timezone"),
@@ -835,7 +856,7 @@ def render_runtime_registry(
             candidate = item.get("collected_candidate") or {}
             blocks.extend([f"## {item['name']}", _citation(item),
                 "PDF calendar observation: " + item["occurrence_id"],
-                "Date(s): " + str(item.get("raw_date") or "Not provided"),
+                "Date(s): " + _meeting_date_text(item, "Not provided"),
                 "Host: " + str(item.get("organizer") or "Not provided"),
                 "Relevance (PDF author): " + str(item.get("relevance_reason") or "Not provided"),
                 "Verification: " + item["verification_status"],

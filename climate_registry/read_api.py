@@ -2504,6 +2504,13 @@ class RegistryReader:
             payload = query_events(self.database, base_date=base_date, timezone_name=timezone_name,
                 include_deadlines=True, include_unknown=include_unknown,
                 **({"registry_connection": connection, "coverage_connection": getattr(self, "_snapshot_source_connection", connection)} if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else {}))
+            if self.public and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
+                from .publication import snapshot_metadata
+                for record in payload["records"]:
+                    snapshot = snapshot_metadata(connection, "meeting", record["event_id"]) or {}
+                    owner = snapshot.get("derived_display", {}).get("owner_agent_verification")
+                    if owner:
+                        record["owner_agent_verification"] = owner
         collected = {record["event_id"]: dict(record, origin="web_collection", collection_status="collected",
             verification_status="verified", access_status="accessible") for record in payload["records"] + (additional_events or [])}
         from climate_monitor.meeting_fields import collected_pdf_meeting, merge_meeting_observations
@@ -2580,6 +2587,9 @@ class RegistryReader:
             event = next((dict(row) for row in tables.get("climate_events", []) if row.get("event_id") == identity), None)
             if event is None:
                 raise RegistryContractError("published meeting snapshot has no event row")
+            owner = snapshot.get("derived_display", {}).get("owner_agent_verification")
+            if owner:
+                event["owner_agent_verification"] = owner
             if event.get("status") == "cancelled" or event.get("event_type") == "retrospective":
                 continue
             for run in dependencies.get("meeting_runs", []):

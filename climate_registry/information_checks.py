@@ -422,6 +422,9 @@ def deduplicate_pdf_occurrences(
 
 
 def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any]) -> dict[str, Any]:
+    if item.get("owner_agent_verification"):
+        from .owner_checks import public_check_state
+        return public_check_state(kind, item["owner_agent_verification"])
     prefix = KINDS[kind]
     if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (prefix + "_check_attempts",)).fetchone():
         return {"access_status": "unchecked", "verification_status": "unchecked", "collection_status": "pending", "checks": []}
@@ -470,6 +473,9 @@ def latest_checks_from_attempts(kind: str, item: dict[str, Any], attempts: list[
     """Reduce the same frozen check packets after a candidate batch read."""
     if item.get("metadata_only"):
         return _check_state([])
+    if item.get("owner_agent_verification"):
+        from .owner_checks import public_check_state
+        return public_check_state(kind, item["owner_agent_verification"])
     revision = source_revision(kind, item)
     urls = item.get("source_urls") if kind == "meetings" else [item.get("raw_url")]
     checks = []

@@ -20,6 +20,11 @@ TIME_TEXT = re.compile(
 
 def pdf_meeting_fields(item: dict[str, Any]) -> dict[str, Any]:
     """Normalize aliases without inventing event kind, status, venue or timezone."""
+    if item.get("owner_agent_verification"):
+        result = dict(item, origin="pdf_import", collection_status=item.get("collection_status") or "collected")
+        for field in MEETING_FIELDS:
+            result.setdefault(field, [] if field == "source_urls" else None)
+        return result
     result = dict(item)
     result.update(
         event_type=item.get("event_type"), organizer=item.get("organizer") or item.get("publisher"),
@@ -105,6 +110,14 @@ def merge_meeting_observations(records: list[dict[str, Any]]) -> list[dict[str, 
             existing, item = item, existing
             merged[identity] = existing
         if target and target in pdf_targets:
+            existing["pdf_observations"] = existing.get("pdf_observations", []) + item.get("pdf_observations", [])
+            continue
+        if existing.get("owner_agent_verification") or item.get("owner_agent_verification"):
+            if item.get("owner_agent_verification") and not existing.get("owner_agent_verification"):
+                existing, item = item, existing
+                merged[identity] = existing
+            # A separately supported observation may retain its own facts, but it
+            # cannot fill fields excluded from the designated owner-reviewed scope.
             existing["pdf_observations"] = existing.get("pdf_observations", []) + item.get("pdf_observations", [])
             continue
         if existing.get("manual_verification") or item.get("manual_verification"):
