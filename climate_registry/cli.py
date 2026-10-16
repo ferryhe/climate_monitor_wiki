@@ -153,6 +153,8 @@ def _parser() -> argparse.ArgumentParser:
         if name == "plan-owner-check":
             owner.add_argument("--kind", required=True, choices=["article", "pdf_article", "meeting", "pdf_meeting"])
             owner.add_argument("--id", required=True)
+            owner.add_argument("--with-editorial-metadata", action="store_true",
+                help="Plan an explicitly versioned v2 article metadata scope")
         elif name == "plan-owner-review":
             owner.add_argument("--candidate-sha256", required=True)
         else:
@@ -200,7 +202,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .owner_checks import plan_owner_check, owner_review_template, ingest_owner_check, approve_owner_check
             try:
                 if args.command == "plan-owner-check":
-                    result = plan_owner_check(args.database, args.kind, args.id)
+                    result = plan_owner_check(args.database, args.kind, args.id,
+                        with_editorial_metadata=args.with_editorial_metadata)
                 elif args.command == "plan-owner-review":
                     result = owner_review_template(args.database, args.candidate_sha256)
                 else:
