@@ -179,6 +179,12 @@ def read_evidence(events, path: Path, *, text: str | None = None, image=False):
             if tool == "read_file" and isinstance(decoded, dict) and decoded.get("total_lines") == len(expected_lines):
                 rows = [re.fullmatch(r"\s*(\d+)\|(.*)", line) for line in str(body).splitlines()]
                 offset = args.get("offset", 1)
+                limit = args.get("limit", 2000)
+                # Hermes' shell reader numbers the empty item after its trailing newline.
+                if (rows and all(rows) and rows[-1][2] == "" and decoded.get("truncated_by") != "bytes"
+                    and (int(rows[-1][1]) == len(expected_lines) + 1
+                        or isinstance(limit, int) and int(rows[-1][1]) == offset + limit)):
+                    rows.pop()
                 if (decoded.get("truncated_lines") or not rows or not all(rows)
                     or [int(row[1]) for row in rows] != list(range(offset, offset + len(rows)))
                     or decoded.get("truncated_by") == "bytes" and decoded.get("next_offset") != offset + len(rows)):

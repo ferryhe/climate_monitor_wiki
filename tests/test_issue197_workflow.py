@@ -354,6 +354,35 @@ def test_native_full_text_chunks_require_actual_content_and_complete_coverage(tm
         read_evidence([chunk(1, "1|first\n2|second\n3|third\n4|fourth", truncated_lines=[2])], path, text=text)
 
 
+@pytest.mark.parametrize("chunks", [
+    [(1, 2, "1|first\n2|second\n3|"), (3, 2, "3|third\n4|fourth\n5|")],
+    [(1, 2000, "1|first\n2|second\n3|third\n4|fourth\n5|")],
+])
+def test_native_shell_read_trailing_empty_row_keeps_real_line_coverage(tmp_path, chunks):
+    path = (tmp_path / "native-read.txt").resolve()
+    events = [{"tool": "read_file", "arguments": {"path": str(path), "offset": offset, "limit": limit},
+        "result": json.dumps({"content": content, "total_lines": 4})}
+        for offset, limit, content in chunks]
+    original = json.dumps(events)
+    result = read_evidence(events, path, text="first\nsecond\nthird\nfourth\n")
+    assert result["line_count"] == 4 and result["events"] == events
+    assert json.dumps(events) == original
+
+
+@pytest.mark.parametrize("text, first, second", [
+    ("first\nsecond\n\nfourth\n", "1|first\n2|second\n3|", "4|fourth\n5|"),
+    ("first\nsecond\nthird\nfourth\n", "1|first\n2|incorrect\n3|", "3|third\n4|fourth\n5|"),
+])
+def test_native_shell_read_synthetic_row_does_not_verify_missing_or_wrong_text(tmp_path, text, first, second):
+    path = (tmp_path / "native-read.txt").resolve()
+    second_offset = 4 if "\n\n" in text else 3
+    events = [{"tool": "read_file", "arguments": {"path": str(path), "offset": offset, "limit": limit},
+        "result": json.dumps({"content": content, "total_lines": 4})}
+        for offset, limit, content in [(1, 2, first), (second_offset, 2, second)]]
+    with pytest.raises(ValueError, match="full text"):
+        read_evidence(events, path, text=text)
+
+
 def test_native_claim_waits_for_owner_completion_and_retains_failure(tmp_path):
     from climate_registry.acquisition_review import claim_review
     native = tmp_path / "hermes.db"

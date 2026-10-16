@@ -1278,6 +1278,27 @@ def test_v3_date_is_derived_only_from_one_complete_unambiguous_result_date(
         }, "https://wmo.int/article")
 
 
+def test_v3_site_observation_timestamp_is_not_a_publication_date():
+    import scripts.run_agent_acquisition as runner
+
+    row = {"url": "https://example.org/article", "source": "wef",
+        "title": "Sustainability claims guidance", "summary": "How to communicate claims",
+        "discovery_ref": "site-item-1", "observed_at": "2026-10-15T20:29:14Z"}
+    assert runner._trusted_result_publication_date(row, row["url"]) == (None, None, "unknown")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("summary", "Published 1 October 2026"), ("published_date", "2026-10-01"),
+])
+def test_v3_publication_date_is_not_conflicted_by_later_site_observation(field, value):
+    import scripts.run_agent_acquisition as runner
+
+    row = {"url": "https://example.org/article", "observed_at": "2026-10-15T20:29:14Z", field: value}
+    published, evidence, kind = runner._trusted_result_publication_date(row, row["url"])
+    assert published == "2026-10-01" and kind == "known"
+    assert evidence["text"] in value
+
+
 def test_v3_unlimited_unknown_reads_and_failed_read_can_retry_without_tool_double_count(
     tmp_path, monkeypatch,
 ):

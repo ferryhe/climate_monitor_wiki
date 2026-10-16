@@ -1785,7 +1785,8 @@ def _trusted_result_publication_date(
         raise ValueError("candidate date row URL differs from its result handle")
     found: list[tuple[str, str]] = []
     for key, value in result_row.items():
-        if key == "url" or not isinstance(value, str):
+        # Governed-site observed_at records collection, not publication.
+        if key in {"url", "observed_at"} or not isinstance(value, str):
             continue
         found.extend(_complete_dates_in_text(value))
     dates = {date for date, _text in found}
