@@ -257,7 +257,7 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
                     reason = "invalid_check_packet"
                 elif packet.get("schema_version") == "manual-website-verification.v1":
                     reason, manual = _manual_public_facts(snapshot, target, row, packet, reviews)
-                elif packet.get("schema_version") == "owner-agent-information-check.v1":
+                elif packet.get("schema_version") in {"owner-agent-information-check.v1", "owner-agent-information-check.v2"}:
                     from .owner_checks import public_owner_verification
                     reason, owner = public_owner_verification(snapshot, target, row, packet, reviews)
                 elif row["source_revision_sha256"] != target["source_revision_sha256"] or packet.get("fields") != target["fields"]:
@@ -648,6 +648,17 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
             "checked_source_url", "original_source_url"}}
         if snapshot["entity_kind"] in {"article", "pdf_article"}:
             view["derived_display"].update(categories=[], keywords=[], metadata_provenance={})
+            metadata = owner.get("editorial_metadata") if owner.get("verification_basis") == "owner-agent-information-check.v2" else None
+            if isinstance(metadata, dict):
+                view["derived_display"].update(categories=list(metadata["categories"]), keywords=list(metadata["keywords"]),
+                    metadata_provenance={"categories": "owner_reviewed_editorial_classification",
+                        "keywords": "owner_reviewed_editorial_classification"})
+                view["derived_display"]["editorial_metadata_provenance"] = {
+                    "taxonomy_id": owner["taxonomy_id"], "taxonomy_sha256": owner["taxonomy_sha256"],
+                    "editorial_metadata_sha256": owner["editorial_metadata_sha256"],
+                    "capture_sha256": owner["capture_sha256"],
+                    "public_fields_sha256": owner["public_fields_sha256"],
+                    "review_id": owner["review_id"]}
             view["derived_display"]["checked_source_url"] = owner.get("final_url") or owner["source_url"]
             if owner["public_fields"].get("publication_date"):
                 view["derived_display"].update(publication_date=owner["public_fields"]["publication_date"],

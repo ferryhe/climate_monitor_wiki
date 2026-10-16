@@ -18,6 +18,28 @@ old bindings in an audit result without rechecking it.
 python -m climate_registry plan-owner-check --database /data/registry.sqlite3 --kind pdf_meeting --id EVENT_ID > check.json
 ```
 
+For article classification that is independently reviewed with corrected source
+facts, request the explicit v2 scope:
+
+```sh
+python -m climate_registry plan-owner-check --database /data/registry.sqlite3 --kind article --id ARTICLE_ID --with-editorial-metadata > check-v2.json
+```
+
+The v2 plan freezes the current article taxonomy. Each article observation must
+include `editorial_metadata`: either `null` (an explicit source-only hold) or a
+scope bound to that observation's capture SHA and corrected public-fields SHA.
+Every category and keyword needs its own literal excerpt, record context, and
+editorial reason from that same capture. The current taxonomy limits output to
+1–4 exact categories and 3–8 specific keywords; unsupported labels, generic
+padding, and evidence copied from another observation are rejected. A source-only
+hold remains visibly uncategorized and must not inherit legacy enrichment.
+
+V2 uses a separate `owner-agent-information-review.v2` receipt with the explicit
+`source_fields_and_article_editorial_metadata` review scope. A v1 receipt cannot
+approve v2 metadata. V1 plans, packet hashes, receipts, and their intentionally
+empty owner classification projection keep their existing behavior. The flag is
+not available for meeting records.
+
 Fill the exported object with actual `actor: {id, task_id}`,
 `authorization_reference`, `audit_reference`, UTC `checked_at`, and `observations`.
 Each observation has:

@@ -23,8 +23,11 @@ from .persistent import _backup_connection, _backup_name, _exclusive_database_lo
 from .publication import canonical_entity, require_publication_migration, resolve_database, snapshot_entity, stage_snapshot
 
 CHECK_VERSION = "owner-agent-information-check.v1"
+EDITORIAL_CHECK_VERSION = "owner-agent-information-check.v2"
 PLAN_VERSION = "owner-agent-information-plan.v1"
 REVIEW_VERSION = "owner-agent-information-review.v1"
+EDITORIAL_REVIEW_VERSION = "owner-agent-information-review.v2"
+EDITORIAL_BASIS = "source_capture_editorial_classification"
 
 
 def _nonempty(value):
@@ -55,15 +58,59 @@ def _plan(connection, database, kind, identity):
         "source_snapshot_sha256": digest(snapshot), "targets": snapshot["information_targets"]}
 
 
-def plan_owner_check(database, kind, identity):
+def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False):
     """Read-only live binding; observations are templates, never a factual PASS."""
     database = resolve_database(database)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         require_publication_migration(connection)
         connection.execute("BEGIN")
         plan = _plan(connection, database, kind, identity)
+    if with_editorial_metadata:
+        if kind not in {"article", "pdf_article"}:
+            raise ValueError("editorial metadata is available only for article sources")
+        from climate_monitor.taxonomy import load_article_taxonomy
+        selected = load_article_taxonomy()
+        return {"schema_version": EDITORIAL_CHECK_VERSION, "taxonomy": {
+            "schema_version": selected.schema_version, "taxonomy_id": selected.taxonomy_id,
+            "sha256": selected.sha256, "definition_yaml": selected.definition_yaml},
+            "plan": plan, "actor": {"id": "", "task_id": ""},
+            "authorization_reference": "", "audit_reference": "", "checked_at": "", "observations": []}
     return {"schema_version": CHECK_VERSION, "plan": plan, "actor": {"id": "", "task_id": ""},
         "authorization_reference": "", "audit_reference": "", "checked_at": "", "observations": []}
+
+
+def _editorial_metadata_sha256(value, taxonomy):
+    return digest({"taxonomy": taxonomy, "editorial_metadata": value})
+
+
+def _validate_editorial_metadata(value, *, taxonomy_identity, public_fields, capture):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"basis", "capture_sha256", "public_fields_sha256", "categories", "keywords", "evidence"}:
+        raise ValueError("editorial metadata must have the exact v2 scope")
+    from climate_monitor.taxonomy import frozen_article_taxonomy, validate_semantic_bundle
+    taxonomy = frozen_article_taxonomy(taxonomy_identity)
+    if (value["basis"] != EDITORIAL_BASIS or value["capture_sha256"] != capture["sha256"]
+            or value["public_fields_sha256"] != digest(public_fields)):
+        raise ValueError("editorial metadata source binding differs")
+    evidence = value["evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != {"categories", "keywords"}:
+        raise ValueError("editorial metadata evidence must cover categories and keywords")
+    text = capture["text"]
+    for key, values in (("categories", value["categories"]), ("keywords", value["keywords"])):
+        proofs = evidence[key]
+        if not isinstance(values, list) or not isinstance(proofs, list) or len(values) != len(proofs):
+            raise ValueError("each editorial value needs one source-bound evidence item")
+        for expected, proof in zip(values, proofs):
+            if (not isinstance(proof, dict) or set(proof) != {"value", "excerpt", "record_context", "reason"}
+                    or proof["value"] != expected or not _nonempty(proof.get("excerpt"))
+                    or proof["excerpt"] not in text or not _nonempty(proof.get("record_context"))
+                    or proof["record_context"] not in text or not _nonempty(proof.get("reason"))):
+                raise ValueError("editorial evidence must be literal and bound to the same capture")
+    validate_semantic_bundle({"schema_version": "article-semantic-bundle.v1", "taxonomy_id": taxonomy.taxonomy_id,
+        "taxonomy_sha256": taxonomy.sha256, "summary": public_fields.get("summary", ""),
+        "categories": value["categories"], "keywords": value["keywords"]}, taxonomy=taxonomy)
+    return value
 
 
 def _dates(text):
@@ -168,11 +215,22 @@ def validate_observation(target, entry):
         "verification_status": "verified" if fields else "conflict" if original == "conflict" else "unchecked"}
 
 
-def validate_manifest(manifest):
+def validate_manifest(manifest, *, require_current_taxonomy=True):
     if not isinstance(manifest, dict) or not isinstance(manifest.get("plan"), dict):
         raise ValueError("owner check and plan must be objects")
-    if manifest.get("schema_version") != CHECK_VERSION or manifest["plan"].get("schema_version") != PLAN_VERSION:
+    version = manifest.get("schema_version")
+    if version not in {CHECK_VERSION, EDITORIAL_CHECK_VERSION} or manifest["plan"].get("schema_version") != PLAN_VERSION:
         raise ValueError("unsupported owner-agent check format")
+    taxonomy = manifest.get("taxonomy") if version == EDITORIAL_CHECK_VERSION else None
+    if version == EDITORIAL_CHECK_VERSION:
+        if manifest["plan"].get("entity_kind") not in {"article", "pdf_article"} or not isinstance(taxonomy, dict):
+            raise ValueError("editorial metadata checks require an article and frozen taxonomy")
+        from climate_monitor.taxonomy import frozen_article_taxonomy, load_article_taxonomy
+        frozen = frozen_article_taxonomy(taxonomy)
+        if require_current_taxonomy:
+            current = load_article_taxonomy()
+            if (frozen.taxonomy_id, frozen.sha256) != (current.taxonomy_id, current.sha256):
+                raise ValueError("new editorial metadata must use the current article taxonomy")
     _actor(manifest["actor"])
     for key in ("authorization_reference", "audit_reference"):
         if not _nonempty(manifest.get(key)):
@@ -192,6 +250,11 @@ def validate_manifest(manifest):
             raise ValueError("owner check contains a duplicate or unplanned target")
         seen.add(key)
         validate_observation(target, entry)
+        if version == EDITORIAL_CHECK_VERSION:
+            _validate_editorial_metadata(entry.get("editorial_metadata"), taxonomy_identity=taxonomy,
+                public_fields=entry["public_fields"], capture=entry["capture"])
+            if "editorial_metadata" not in entry:
+                raise ValueError("v2 observation must explicitly include editorial_metadata or null")
         if timestamp(entry["capture"]["captured_at"]) > timestamp(manifest["checked_at"]):
             raise ValueError("source capture is later than its check")
 
@@ -225,6 +288,8 @@ def _ingest_one(connection, database, manifest, apply):
     plan = manifest["plan"]
     kind = manifest["observations"][0]["target"]["check_kind"]
     prefix = KINDS[kind]
+    schema_version = manifest["schema_version"]
+    review_version = EDITORIAL_REVIEW_VERSION if schema_version == EDITORIAL_CHECK_VERSION else REVIEW_VERSION
     repeat = connection.execute(f"SELECT input_json FROM {prefix}_check_runs WHERE run_id=?", (run_id,)).fetchone()
     if repeat:
         if json.loads(repeat[0]).get("owner_manifest") != manifest:
@@ -242,7 +307,7 @@ def _ingest_one(connection, database, manifest, apply):
     if not apply:
         return {"status": "dry_run", "run_id": run_id, "observation_count": len(manifest["observations"])}
     targets = [{k: v for k, v in entry["target"].items() if k != "check_kind"} for entry in manifest["observations"]]
-    frozen = {"schema_version": CHECK_VERSION, "registry_database": str(database), "kind": kind,
+    frozen = {"schema_version": schema_version, "registry_database": str(database), "kind": kind,
         "targets": targets, "owner_manifest": manifest}
     encoded = _json(frozen)
     outcomes = [validate_observation(entry["target"], entry) for entry in manifest["observations"]]
@@ -250,9 +315,15 @@ def _ingest_one(connection, database, manifest, apply):
     connection.execute(f"INSERT INTO {prefix}_check_runs(run_id,input_json,input_sha256,created_at,completed_at,status,item_count,completed_count) VALUES(?,?,?,?,?,?,?,?)",
         (run_id, encoded, hashlib.sha256(encoded.encode()).hexdigest(), manifest["checked_at"], manifest["checked_at"], status, len(targets), len(targets)))
     for target, entry, outcome in zip(targets, manifest["observations"], outcomes):
-        packet = {"schema_version": CHECK_VERSION, **target, **outcome, "checked_at": manifest["checked_at"],
+        packet = {"schema_version": schema_version, **target, **outcome, "checked_at": manifest["checked_at"],
             "access_status": entry["access_status"], "actor": manifest["actor"], "authorization_reference": manifest["authorization_reference"],
             "audit_reference": manifest["audit_reference"], "baseline": plan, "owner_observation": entry}
+        if schema_version == EDITORIAL_CHECK_VERSION:
+            packet["taxonomy"] = manifest["taxonomy"]
+            packet["taxonomy_id"] = manifest["taxonomy"]["taxonomy_id"]
+            packet["taxonomy_sha256"] = manifest["taxonomy"]["sha256"]
+            packet["editorial_metadata"] = entry["editorial_metadata"]
+            packet["editorial_metadata_sha256"] = _editorial_metadata_sha256(entry["editorial_metadata"], manifest["taxonomy"])
         packet["reader"] = {"content_hash": entry["capture"]["sha256"], "final_url": entry["capture"]["final_url"]}
         packet["website_candidate"] = outcome["public_fields"] if prefix == "meeting" and outcome["verification_status"] == "verified" else None
         native = not target["entity_kind"].startswith("pdf_")
@@ -265,7 +336,7 @@ def _ingest_one(connection, database, manifest, apply):
         connection.execute(f"INSERT INTO {prefix}_check_attempts({columns}) VALUES({','.join('?' for _ in values)})", values)
     sha = stage_snapshot(connection, snapshot_entity(connection, plan["entity_kind"], plan["entity_id"]))
     return {"status": "staged", "run_id": run_id, "candidate_sha256": sha,
-        "review_schema_version": REVIEW_VERSION, "fact_publication": "awaiting_independent_owner_review"}
+        "review_schema_version": review_version, "fact_publication": "awaiting_independent_owner_review"}
 
 def ingest_owner_check(database, manifest, *, queue_dir, backup_dir=None, apply=False):
     """One object or a bounded list: preflight all, one backup, atomic writes."""
@@ -315,17 +386,29 @@ def owner_packet(snapshot, target, row, packet):
         raise ValueError("owner check run is incomplete")
     frozen = json.loads(run["input_json"])
     manifest = frozen["owner_manifest"]
-    validate_manifest(manifest)
+    validate_manifest(manifest, require_current_taxonomy=False)
     frozen_targets = [{key: value for key, value in entry["target"].items() if key != "check_kind"} for entry in manifest["observations"]]
     if frozen.get("targets") != frozen_targets or run["created_at"] != manifest["checked_at"]:
         raise ValueError("owner frozen run targets differ")
-    if frozen.get("schema_version") != CHECK_VERSION or frozen.get("registry_database") != manifest["plan"]["registry_database"] or row["run_id"] != "owner-check-" + digest(manifest) or frozen.get("kind") != target["check_kind"] or run["item_count"] != len(manifest["observations"]) or run["completed_count"] != run["item_count"]:
+    version = manifest["schema_version"]
+    if (frozen.get("schema_version") != version or packet.get("schema_version") != version
+            or frozen.get("registry_database") != manifest["plan"]["registry_database"]
+            or row["run_id"] != "owner-check-" + digest(manifest) or frozen.get("kind") != target["check_kind"]
+            or run["item_count"] != len(manifest["observations"]) or run["completed_count"] != run["item_count"]):
         raise ValueError("owner run identity differs")
     entry = packet["owner_observation"]
     bound = dict(expected, check_kind=target["check_kind"])
     if entry not in manifest["observations"] or entry["target"] != bound or packet["baseline"] != manifest["plan"] or snapshot.get("information_targets") != manifest["plan"]["targets"]:
         raise ValueError("owner frozen plan differs")
     outcome = validate_observation(bound, entry)
+    if version == EDITORIAL_CHECK_VERSION:
+        metadata = _validate_editorial_metadata(entry["editorial_metadata"], taxonomy_identity=manifest["taxonomy"],
+            public_fields=entry["public_fields"], capture=entry["capture"])
+        metadata_sha = _editorial_metadata_sha256(metadata, manifest["taxonomy"])
+        if packet.get("taxonomy") != manifest["taxonomy"] or packet.get("editorial_metadata") != metadata or packet.get("editorial_metadata_sha256") != metadata_sha:
+            raise ValueError("owner editorial metadata packet differs from its frozen scope")
+        outcome = {**outcome, "editorial_metadata": metadata, "editorial_metadata_sha256": metadata_sha,
+            "taxonomy_id": manifest["taxonomy"]["taxonomy_id"], "taxonomy_sha256": manifest["taxonomy"]["sha256"]}
     if any(packet.get(key) != value for key, value in outcome.items()) or any(packet.get(key) != manifest[key] for key in ("actor", "authorization_reference", "audit_reference", "checked_at")) or packet["access_status"] != entry["access_status"]:
         raise ValueError("owner packet conclusion differs")
     return outcome
@@ -335,12 +418,24 @@ def public_owner_verification(snapshot, target, row, packet, reviews):
     outcome = owner_packet(snapshot, target, row, packet)
     candidate = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
     capture = packet["owner_observation"]["capture"]
-    verification = {**outcome, "verification_basis": CHECK_VERSION, "actor": packet["actor"],
+    version = packet["schema_version"]
+    review_version = EDITORIAL_REVIEW_VERSION if version == EDITORIAL_CHECK_VERSION else REVIEW_VERSION
+    verification = {**outcome, "verification_basis": version, "actor": packet["actor"],
         "checked_at": row["checked_at"], "source_url": target["source_url"], "final_url": capture["final_url"],
         "capture_sha256": capture["sha256"]}
+    if version == EDITORIAL_CHECK_VERSION:
+        metadata = packet["editorial_metadata"]
+        public_metadata = None if metadata is None else {"categories": list(metadata["categories"]), "keywords": list(metadata["keywords"])}
+        verification.update(editorial_metadata=public_metadata,
+            editorial_metadata_sha256=packet["editorial_metadata_sha256"], taxonomy_id=packet["taxonomy_id"],
+            taxonomy_sha256=packet["taxonomy_sha256"],
+            public_fields_sha256=packet["editorial_metadata"]["public_fields_sha256"] if metadata else digest(outcome["public_fields"]))
     for review in reviews:
         receipt = json.loads(review["receipt_json"])
-        if (receipt.get("schema_version") == REVIEW_VERSION and review.get("status") == "pass" and review.get("candidate_sha256") == candidate
+        accepted_versions = {review_version}
+        if version == CHECK_VERSION:
+            accepted_versions.add(EDITORIAL_REVIEW_VERSION)
+        if (receipt.get("schema_version") in accepted_versions and review.get("status") == "pass" and review.get("candidate_sha256") == candidate
                 and review.get("review_id") == digest([candidate, "pass", receipt])):
             validate_review(snapshot, receipt)
             if outcome["verification_status"] != "verified":
@@ -365,22 +460,28 @@ def review_bindings(snapshot):
         if row is None:
             continue
         packet = verified_packet_from_attempt(row)
-        if packet.get("schema_version") != CHECK_VERSION:
+        if packet.get("schema_version") not in {CHECK_VERSION, EDITORIAL_CHECK_VERSION}:
             continue
         outcome = owner_packet(snapshot, target, row, packet)
-        if outcome["public_fields"]:
-            previous = scopes.setdefault(target["occurrence_id"], outcome["public_fields"])
-            if previous != outcome["public_fields"]:
-                raise ValueError("owner sources disagree on the public scope of one observation")
-        values.append({"attempt_id": row["attempt_id"], "packet_sha256": row["packet_sha256"], "capture_sha256": packet["owner_observation"]["capture"]["sha256"],
-            "public_fields_sha256": digest(packet["public_fields"]), "actor": packet["actor"]})
+        editorial_metadata = packet.get("editorial_metadata") if packet.get("schema_version") == EDITORIAL_CHECK_VERSION else None
+        if outcome["public_fields"] or editorial_metadata is not None:
+            scope = {"public_fields": outcome["public_fields"], "editorial_metadata": editorial_metadata}
+            previous = scopes.setdefault(target["occurrence_id"], scope)
+            if previous != scope:
+                raise ValueError("owner sources disagree on the public or editorial scope of one observation")
+        binding = {"attempt_id": row["attempt_id"], "packet_sha256": row["packet_sha256"], "capture_sha256": packet["owner_observation"]["capture"]["sha256"],
+            "public_fields_sha256": digest(packet["public_fields"]), "actor": packet["actor"]}
+        if packet["schema_version"] == EDITORIAL_CHECK_VERSION:
+            binding.update(check_schema_version=EDITORIAL_CHECK_VERSION,
+                editorial_metadata_sha256=packet["editorial_metadata_sha256"])
+        values.append(binding)
     return sorted(values, key=digest)
 
 
 def owner_information_ready(snapshot):
     """Scoped owner completion does not invent terminal checks for other targets."""
     try:
-        if not any(CHECK_VERSION in row.get("packet_json", "") for prefix in ("article", "meeting")
+        if not any(any(version in row.get("packet_json", "") for version in (CHECK_VERSION, EDITORIAL_CHECK_VERSION)) for prefix in ("article", "meeting")
                 for row in snapshot.get("tables", {}).get(prefix + "_check_attempts", [])):
             return False
         return bool(review_bindings(snapshot))
@@ -398,7 +499,7 @@ def public_check_state(kind, verification):
         "checked_at": verification["checked_at"], "collected_candidate": candidate, "canonical_event_id": None,
         "checks": [{"source_url": verification["source_url"], "final_url": verification["final_url"],
             "verification_status": "verified", "access_status": "accessible", "checked_at": verification["checked_at"],
-            "website_candidate": candidate, "verification_basis": CHECK_VERSION}]}
+            "website_candidate": candidate, "verification_basis": verification.get("verification_basis", CHECK_VERSION)}]}
 
 
 def owner_review_template(database, candidate_sha256):
@@ -408,21 +509,31 @@ def owner_review_template(database, candidate_sha256):
         if row is None or digest(json.loads(row[0])) != candidate_sha256:
             raise RegistryInputError("owner review candidate not found or hash differs")
         bindings = review_bindings(json.loads(row[0]))
-    return {"schema_version": REVIEW_VERSION, "candidate_sha256": candidate_sha256, "source_checks": bindings,
+    version = EDITORIAL_REVIEW_VERSION if any(binding.get("check_schema_version") == EDITORIAL_CHECK_VERSION for binding in bindings) else REVIEW_VERSION
+    result = {"schema_version": version, "candidate_sha256": candidate_sha256, "source_checks": bindings,
         "actor": {"id": "", "task_id": ""}, "authorization_reference": "", "audit_reference": "",
         "reviewed_at": "", "decision": "", "reason": ""}
+    if version == EDITORIAL_REVIEW_VERSION:
+        result["review_scope"] = "source_fields_and_article_editorial_metadata"
+    return result
 
 
 def validate_review(snapshot, receipt):
     if not isinstance(receipt, dict):
         raise ValueError("owner independent review must be an object")
-    if receipt.get("schema_version") != REVIEW_VERSION or receipt.get("candidate_sha256") != (snapshot.get("_approved_candidate_sha256") or digest(snapshot)) or receipt.get("decision") != "pass":
+    version = receipt.get("schema_version")
+    if version not in {REVIEW_VERSION, EDITORIAL_REVIEW_VERSION} or receipt.get("candidate_sha256") != (snapshot.get("_approved_candidate_sha256") or digest(snapshot)) or receipt.get("decision") != "pass":
         raise ValueError("owner review must pass the exact new candidate")
+    bindings = review_bindings(snapshot)
+    has_editorial = any(binding.get("check_schema_version") == EDITORIAL_CHECK_VERSION for binding in bindings)
+    if (version == EDITORIAL_REVIEW_VERSION) != has_editorial:
+        raise ValueError("review schema does not match selected owner evidence scope")
+    if version == EDITORIAL_REVIEW_VERSION and receipt.get("review_scope") != "source_fields_and_article_editorial_metadata":
+        raise ValueError("v2 review must explicitly cover editorial metadata")
     _actor(receipt["actor"])
     timestamp(receipt["reviewed_at"])
     if not all(_nonempty(receipt.get(key)) for key in ("authorization_reference", "audit_reference", "reason")):
         raise ValueError("owner independent review references and reason are required")
-    bindings = review_bindings(snapshot)
     if not bindings or receipt.get("source_checks") != bindings or any(receipt["actor"][key] == binding["actor"][key] for binding in bindings for key in ("id", "task_id")):
         raise ValueError("independent reviewer and exact evidence bindings are required")
     if any(timestamp(receipt["reviewed_at"]) < timestamp(row["checked_at"]) for prefix in ("article", "meeting")
@@ -448,7 +559,7 @@ def _approve_one(connection, database, receipt, apply):
     for prefix in ("article", "meeting"):
         for row in snapshot["tables"].get(prefix + "_check_attempts", []):
             packet = json.loads(row["packet_json"])
-            if packet.get("schema_version") == CHECK_VERSION and row["attempt_id"] in {item["attempt_id"] for item in receipt["source_checks"]}:
+            if packet.get("schema_version") in {CHECK_VERSION, EDITORIAL_CHECK_VERSION} and row["attempt_id"] in {item["attempt_id"] for item in receipt["source_checks"]}:
                 baseline = packet["baseline"]["expected_state"]
                 if plan["expected_state"]["is_visible"] != baseline["is_visible"] or (not repeat and plan["expected_state"]["published_candidate_sha256"] != baseline["published_candidate_sha256"]):
                     raise ValueError("owner review publication or visibility binding changed")

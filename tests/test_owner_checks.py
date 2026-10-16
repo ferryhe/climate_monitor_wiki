@@ -57,6 +57,31 @@ def _review(database, tmp_path, sha):
     return review
 
 
+def _editorial_manifest(database, *, kind="article", identity="good", occurrence="core:good", disposition="complete", fields=None, body=None):
+    manifest = _manifest(database, kind=kind, identity=identity, occurrence=occurrence, fields=fields, body=body)
+    planned = plan_owner_check(database, kind, identity, with_editorial_metadata=True)
+    manifest["schema_version"] = planned["schema_version"]
+    manifest["taxonomy"] = planned["taxonomy"]
+    entry = manifest["observations"][0]
+    if disposition == "hold":
+        entry["editorial_metadata"] = None
+        return manifest
+    capture = entry["capture"]
+    evidence = "Flood exposure increased in the study region."
+    values = {
+        "categories": ["Physical Risk"],
+        "keywords": ["flood", "exposure", "study region"],
+    }
+    proofs = {key: [{"value": value, "excerpt": evidence, "record_context": "Climate risk findings",
+        "reason": "The exact source sentence describes flood exposure."} for value in seq]
+        for key, seq in values.items()}
+    from climate_registry.acquisition_review import digest
+    entry["editorial_metadata"] = {"basis": "source_capture_editorial_classification",
+        "capture_sha256": capture["sha256"], "public_fields_sha256": digest(entry["public_fields"]),
+        **values, "evidence": proofs}
+    return manifest
+
+
 def _seed_native_article_report_context(database, tmp_path, monkeypatch):
     """Provide real schema-23 report and annotation inputs for JSON round-trip checks."""
     from climate_registry.reports import parse_historical_report
@@ -223,6 +248,127 @@ def test_native_article_json_guards_reject_real_live_drift_before_writes(tmp_pat
     assert set((tmp_path/"backups").glob("*")) == backups_before
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0] == latest_before
+
+
+def test_v2_editorial_metadata_requires_new_review_and_projects_from_exact_capture(tmp_path, monkeypatch):
+    from climate_registry.owner_checks import EDITORIAL_CHECK_VERSION, EDITORIAL_REVIEW_VERSION, validate_manifest
+
+    database = _database(tmp_path)
+    _seed_native_article_report_context(database, tmp_path, monkeypatch)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at,core_article_id) VALUES('linked','https://example.org/good','PRIVATE PDF title','2026-09-14','good')")
+        raw = {"title": "PRIVATE PDF title", "summary": "PRIVATE PDF summary", "report_date": "2026-09-14",
+            "source_document_sha256": DOC, "page": 7, "raw_url": "https://example.org/good", "summary_basis": "verbatim_pdf_article_row"}
+        db.execute("INSERT INTO pdf_intake_article_occurrences VALUES('linked-occ','linked',?,7,'https://example.org/good','2026-09-14',NULL,?,?,?)",
+            (DOC, "d"*64, "c"*64, json.dumps(raw)))
+    manifest = _editorial_manifest(database, fields={"title": "Climate risk findings",
+        "summary": "Flood exposure increased in the study region.", "publication_date": "2026-09-14"},
+        body="Climate risk findings\nFlood exposure increased in the study region.\n2026-09-14\nPRIVATE TOOL FOOTER")
+    assert manifest["schema_version"] == EDITORIAL_CHECK_VERSION
+    validate_manifest(manifest)
+    staged = _ingest(database, tmp_path, manifest)
+    assert staged["status"] == "staged"
+    review = owner_review_template(database, staged["candidate_sha256"])
+    assert review["schema_version"] == EDITORIAL_REVIEW_VERSION
+    assert review["review_scope"] == "source_fields_and_article_editorial_metadata"
+    review.update(actor={"id": "metadata-reviewer", "task_id": "metadata-review-task"},
+        authorization_reference="owner-message-actual-scope", audit_reference="audit/editorial-review",
+        reviewed_at="2026-10-15T23:01:00Z", decision="pass", reason="Reviewed each exact source and metadata value")
+    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue")["status"] == "dry_run"
+    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    article = _reader(database, tmp_path).article("good")
+    assert article["categories"] == ["Physical Risk"]
+    assert article["keywords"] == ["flood", "exposure", "study region"]
+    assert article["metadata_provenance"] == {"categories": "owner_reviewed_editorial_classification",
+        "keywords": "owner_reviewed_editorial_classification"}
+    assert article["editorial_metadata_provenance"]["review_id"] == digest([staged["candidate_sha256"], "pass", review])
+    assert "PRIVATE TOOL FOOTER" not in json.dumps(article)
+    assert "evidence" not in article["owner_agent_verification"]["editorial_metadata"]
+    pdf_article = _reader(database, tmp_path).pdf_report(DOC)["articles"][0]
+    assert pdf_article["categories"] == ["Physical Risk"] and pdf_article["keywords"] == ["flood", "exposure", "study region"]
+    assert "PRIVATE PDF" not in json.dumps(pdf_article)
+    from climate_registry.list_projection import RegistryListProjection
+    list_reader = _reader(database, tmp_path)
+    with list_reader.public_snapshot(direct=True):
+        listing = RegistryListProjection(list_reader)
+        assert b"Physical Risk" in listing.category_body and b"owner_reviewed_editorial_classification" in listing.category_body
+    assert "Physical Risk" in json.dumps(public_wiki_pages(database))
+    from climate_registry.range_reports import _range_source
+    ranged = _range_source(_reader(database, tmp_path), "2026-09-14", "2026-09-14")
+    ranged_article = next(item for item in ranged["articles"] if item.get("article_id") == "good")
+    assert ranged_article["categories"] == ["Physical Risk"] and ranged_article["keywords"] == ["flood", "exposure", "study region"]
+    root = tmp_path/"export-root"
+    (root/"wiki").mkdir(parents=True)
+    export = root/"wiki/public-registry.json"
+    export_public_snapshot(database, export)
+    exported = RegistryReader.from_public_export(root).article("good")
+    assert exported["categories"] == article["categories"] and exported["keywords"] == article["keywords"]
+
+
+def test_v2_null_is_explicit_source_only_and_bad_metadata_bindings_are_rejected(tmp_path, monkeypatch):
+    from climate_registry.owner_checks import validate_manifest
+
+    database = _database(tmp_path)
+    _seed_native_article_report_context(database, tmp_path, monkeypatch)
+    hold = _editorial_manifest(database, disposition="hold")
+    validate_manifest(hold)
+    staged = _ingest(database, tmp_path, hold)
+    review = _review(database, tmp_path, staged["candidate_sha256"])
+    review["schema_version"] = "owner-agent-information-review.v1"
+    review.pop("review_scope")
+    with pytest.raises(RegistryInputError, match="schema does not match"):
+        approve_owner_check(database, review, queue_dir=tmp_path/"queue")
+    v2_review = owner_review_template(database, staged["candidate_sha256"])
+    v2_review.update(actor={"id": "metadata-hold-reviewer", "task_id": "metadata-hold-review-task"},
+        authorization_reference="owner-message-actual-scope", audit_reference="audit/editorial-hold",
+        reviewed_at="2026-10-15T23:01:00Z", decision="pass", reason="Confirmed source-only metadata hold")
+    assert approve_owner_check(database, v2_review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    article = _reader(database, tmp_path).article("good")
+    assert article["categories"] == [] and article["keywords"] == []
+    assert article["owner_agent_verification"]["editorial_metadata"] is None
+
+    bad = _editorial_manifest(database)
+    bad["observations"][0]["editorial_metadata"]["capture_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="source binding differs"):
+        validate_manifest(bad)
+
+    bad = _editorial_manifest(database)
+    bad["observations"][0]["editorial_metadata"]["evidence"]["keywords"][0]["excerpt"] = "unseen evidence phrase"
+    with pytest.raises(ValueError, match="literal"):
+        validate_manifest(bad)
+
+
+def test_v2_pdf_article_primary_projects_reviewed_metadata_to_pdf_report(tmp_path):
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES('pdf-good','https://example.org/pdf-good','PRIVATE PDF title','2026-09-14')")
+        raw = {"title": "PRIVATE PDF title", "summary": "PRIVATE PDF summary", "report_date": "2026-09-14",
+            "source_document_sha256": DOC, "page": 8, "raw_url": "https://example.org/pdf-good", "summary_basis": "verbatim_pdf_article_row"}
+        db.execute("INSERT INTO pdf_intake_article_occurrences VALUES('pdf-occ','pdf-good',?,8,'https://example.org/pdf-good','2026-09-14',NULL,?,?,?)",
+            (DOC, "e"*64, "f"*64, json.dumps(raw)))
+    manifest = _editorial_manifest(database, kind="pdf_article", identity="pdf-good", occurrence="pdf-occ")
+    staged = _ingest(database, tmp_path, manifest)
+    review = owner_review_template(database, staged["candidate_sha256"])
+    review.update(actor={"id": "pdf-metadata-reviewer", "task_id": "pdf-metadata-review-task"},
+        authorization_reference="owner-message-actual-scope", audit_reference="audit/pdf-editorial-review",
+        reviewed_at="2026-10-15T23:01:00Z", decision="pass", reason="Reviewed the exact PDF article source scope")
+    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    item = _reader(database, tmp_path).pdf_report(DOC)["articles"][0]
+    assert item["categories"] == ["Physical Risk"] and item["keywords"] == ["flood", "exposure", "study region"]
+    assert "PRIVATE PDF" not in json.dumps(item)
+
+
+def test_plan_owner_check_cli_can_request_v2_article_scope(tmp_path, capsys):
+    from climate_registry.cli import main
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        stage_entities(db)
+    assert main(["plan-owner-check", "--database", str(database), "--kind", "article", "--id", "good",
+        "--with-editorial-metadata"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["schema_version"] == "owner-agent-information-check.v2"
+    assert plan["taxonomy"]["taxonomy_id"] == "climate-actuarial-v2"
 
 
 @pytest.mark.parametrize("change", ["bytes", "page", "field", "actor", "authorization", "state", "source", "evidence"])
@@ -1390,3 +1536,48 @@ def test_owner_pdf_meeting_scoped_venue_and_evidence_link_survive_retrieval(tmp_
     else:
         assert "Location:" not in chunk.text
     assert "PRIVATE" not in chunk.text and "unvalidated.example" not in chunk.text
+
+
+def test_v1_multisource_review_allows_empty_sibling_but_rejects_conflicting_nonempty_scope(tmp_path):
+    import copy
+
+    def manifest_for(root, *, conflicting=False):
+        root.mkdir()
+        database = _database(root)
+        _pdf_pair(database, target_extra={"source_urls": [
+            "https://example.org/target", "https://example.org/target-secondary"]})
+        fields = {"name": "IAIS Annual Conference 2027", "raw_date": "10–12 June 2027",
+            "start_date": "2027-06-10", "end_date": "2027-06-12", "date_precision": "day"}
+        body = "IAIS Annual Conference 2027\nIAIS Alternate Annual Conference 2027\n10–12 June 2027\nPRIVATE TOOL FOOTER"
+        manifest = _manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ",
+            fields=fields, body=body)
+        assert len(manifest["plan"]["targets"]) == 2
+        second = copy.deepcopy(manifest["observations"][0])
+        second["target"] = next(x for x in manifest["plan"]["targets"] if x["source_url"].endswith("-secondary"))
+        second["capture"]["requested_url"] = second["target"]["source_url"]
+        second["capture"]["final_url"] = second["target"]["source_url"]
+        if conflicting:
+            alternative = "IAIS Alternate Annual Conference 2027"
+            second["public_fields"]["name"] = alternative
+            second["field_evidence"]["name"] = {"value": alternative, "excerpt": alternative,
+                "record_context": alternative}
+            second["excluded_fields"] = sorted(key for key, value in second["target"]["fields"].items()
+                if value is not None and value != "" and key != "source_document_sha256"
+                and second["public_fields"].get(key) != value)
+        else:
+            second["public_fields"] = {}
+            second["field_evidence"] = {}
+            second["excluded_fields"] = sorted(key for key, value in second["target"]["fields"].items()
+                if value is not None and value != "" and key != "source_document_sha256")
+        manifest["observations"].append(second)
+        return database, manifest
+
+    database, manifest = manifest_for(tmp_path / "empty-sibling")
+    staged = _ingest(database, tmp_path / "empty-sibling", manifest)
+    review = owner_review_template(database, staged["candidate_sha256"])
+    assert len(review["source_checks"]) == 2
+
+    database, manifest = manifest_for(tmp_path / "conflicting-sibling", conflicting=True)
+    staged = _ingest(database, tmp_path / "conflicting-sibling", manifest)
+    with pytest.raises(ValueError, match="sources disagree"):
+        owner_review_template(database, staged["candidate_sha256"])
