@@ -12,6 +12,7 @@ import pytest
 
 from climate_registry.acquisition_review import digest
 from climate_registry.errors import RegistryInputError
+from climate_monitor.meeting_fields import MEETING_FIELDS
 from climate_registry.owner_checks import plan_owner_check, ingest_owner_check, approve_owner_check, owner_review_template
 from climate_registry.publication import stage_entities, public_connection, export_public_snapshot, public_wiki_pages
 from climate_registry.read_api import RegistryReader, RegistryNotFoundError
@@ -186,7 +187,7 @@ def test_owner_reviewed_final_url_is_public_meeting_link_and_keeps_requested_url
     assert "https://example.org/target" in markdown
 
 
-def _owner_cop31_with_unchecked_report_reference(tmp_path):
+def _owner_cop31_with_unchecked_report_reference(tmp_path, *, fields=None, final_url=None, body=None):
     database = _database(tmp_path)
     event = "event-bbd46b0b29e416ce0a7aaee3"
     primary = "pdf-event-occurrence-d70e47832e567b739824cbb4"
@@ -203,12 +204,15 @@ def _owner_cop31_with_unchecked_report_reference(tmp_path):
             db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'unknown',NULL,NULL,?,?,NULL,?)",
                 (occurrence, event, document, page, item["name"], item["raw_date"], item["summary"], "c"*64, json.dumps(item)))
         raw = db.execute("SELECT * FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
-    fields = {"name": "COP31", "raw_date": "9 to 20 November 2026", "start_date": "2026-11-09",
+    fields = fields or {"name": "COP31", "raw_date": "9 to 20 November 2026", "start_date": "2026-11-09",
         "end_date": "2026-11-20", "date_precision": "day", "location": "Antalya, Türkiye"}
     manifest = _manifest(database, kind="pdf_meeting", identity=event, occurrence=primary, fields=fields,
-        body="COP31\n9 to 20 November 2026\nAntalya, Türkiye")
+        body=body or "COP31\n9 to 20 November 2026\nAntalya, Türkiye", final_url=final_url)
     for key in ("start_date", "end_date", "date_precision"):
-        manifest["observations"][0]["field_evidence"][key]["excerpt"] = fields["raw_date"]
+        if key in fields:
+            manifest["observations"][0]["field_evidence"][key]["excerpt"] = fields["raw_date"]
+    if "deadline_date" in fields:
+        manifest["observations"][0]["field_evidence"]["deadline_date"]["excerpt"] = "31 October 2026"
     staged = _ingest(database, tmp_path, manifest)
     approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]),
         queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
@@ -267,7 +271,15 @@ def test_owner_meeting_report_reference_is_not_an_extra_global_event(tmp_path):
 def test_owner_meeting_association_api_keeps_report_reference_without_global_duplicate(tmp_path, monkeypatch):
     import api_server
     from fastapi.testclient import TestClient
-    database, event, primary, association, fields, _ = _owner_cop31_with_unchecked_report_reference(tmp_path)
+    fields = {"name": "COP31", "event_type": "conference", "status": "scheduled",
+        "raw_date": "9 to 20 November 2026", "start_date": "2026-11-09", "end_date": "2026-11-20",
+        "date_precision": "day", "raw_time_text": "09:00–09:30", "event_timezone": "UTC+1",
+        "deadline_type": "registration", "deadline_date": "2026-10-31", "location": "Antalya, Türkiye"}
+    body = ("COP31\nconference scheduled 9 to 20 November 2026\n09:00–09:30 UTC+1\n"
+            "registration closes 31 October 2026\nAntalya, Türkiye")
+    final_url = "https://g20.org/events"
+    database, event, primary, association, fields, _ = _owner_cop31_with_unchecked_report_reference(
+        tmp_path, fields=fields, final_url=final_url, body=body)
     monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
     client = TestClient(api_server.app)
@@ -275,11 +287,28 @@ def test_owner_meeting_association_api_keeps_report_reference_without_global_dup
     assert calendar["pagination"]["total"] == 1
     assert calendar["items"][0]["event_id"] == event
     assert {key: calendar["items"][0][key] for key in fields} == fields
+    assert calendar["items"][0]["checked_source_url"] == final_url
+    assert calendar["items"][0]["original_source_url"] == "https://unfccc.int/cop31"
+    unpaginated = client.get("/api/registry/pdf-intake/reports/"+"d"*64).json()
+    paged_approved = client.get("/api/registry/pdf-intake/reports/"+"d"*64+"?page=1&page_size=5").json()
+    assert paged_approved["pagination"]["page"] == 1
+    assert paged_approved["pagination"]["total"] == len(unpaginated["calendar_items"])
+    approved = paged_approved["calendar_items"][0]
+    complete = unpaginated["calendar_items"][0]
+    projected_fields = set(MEETING_FIELDS)
+    projected_fields.update({"checked_source_url", "original_source_url"})
+    assert {key: approved.get(key) for key in projected_fields} == {key: complete.get(key) for key in projected_fields}
+    assert {key: approved[key] for key in fields} == fields
+    assert approved["checked_source_url"] == final_url
+    assert approved["original_source_url"] == "https://unfccc.int/cop31"
+    assert approved["owner_agent_verification"] == complete["owner_agent_verification"]
     report = client.get("/api/registry/pdf-intake/reports/"+"a"*64+"?page=1&page_size=5").json()
     reference = report["calendar_items"][0]
     assert reference["occurrence_id"] == association and reference["page"] == 8 and reference["metadata_only"]
     assert reference["verification_status"] == "unchecked" and reference["verified_primary_display"]["name"] == "COP31"
     assert not reference.get("name") and not reference.get("start_date")
+    assert not reference.get("event_type") and not reference.get("raw_time_text")
+    assert not reference.get("checked_source_url") and not reference.get("original_source_url")
     assert "PRIVATE" not in json.dumps([calendar, report])
 
 
