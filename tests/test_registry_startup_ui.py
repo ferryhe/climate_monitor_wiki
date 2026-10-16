@@ -83,7 +83,8 @@ async function checkRegistryLoading() {
     updateRegistryPagination: (...args) => pagination.push(args),
     loadRegistryArticles: () => { articleCalls += 1; },
   });
-  for (const name of ['registryElement', 'registryErrorMessage', 'renderRegistryNotice',
+  for (const name of ['registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
+    'registryErrorMessage', 'renderRegistryNotice',
     'clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'loadRegistryReports', 'loadRegistryPublishers', 'loadRegistryOnce', 'setRegistryMode']) {
     vm.runInContext(functionSource(name), context);
   }
@@ -145,7 +146,7 @@ async function checkReportFailureDoesNotBlockArticles() {
       registryReportsPanel: element(), registryArticlesPanel: element(), registryModeButtons: [],
       registrySearch: { value: '' },
     },
-    document: { createElement: element }, URLSearchParams,
+    document: { createElement: element }, URL, URLSearchParams,
     registryFetch(url) {
       if (url.startsWith('/api/registry/reports') && ++reportCalls === 1) {
         const error = new Error('Registry request failed (500)');
@@ -172,7 +173,8 @@ async function checkReportFailureDoesNotBlockArticles() {
     },
     updateRegistryPagination() {},
   });
-  for (const name of ['registryElement', 'registryErrorMessage', 'renderRegistryNotice',
+  for (const name of ['registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
+    'registryErrorMessage', 'renderRegistryNotice',
     'clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'loadRegistryReports', 'loadRegistryPublishers', 'loadRegistryOnce', 'loadRegistryArticles', 'setRegistryMode']) {
     vm.runInContext(functionSource(name), context);
   }
