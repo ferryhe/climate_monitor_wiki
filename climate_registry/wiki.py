@@ -290,7 +290,12 @@ def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
             filename = _citation(occurrence).split("; SHA-256:", 1)[0].removeprefix("PDF: ")
             title = f"PDF source observation: {filename} (page {occurrence.get('page', 'unknown')})"
         blocks = [f"# {title}", "",
-            f"## {_pdf_heading(occurrence)}", "", occurrence.get("display_summary") or occurrence["summary"], "",
+            f"## {_pdf_heading(occurrence)}", "", occurrence.get("display_summary") or occurrence["summary"], ""]
+        owner = occurrence.get("owner_agent_verification") or {}
+        publication_date = owner.get("public_fields", {}).get("publication_date")
+        if publication_date:
+            blocks += ["Source publication date: " + publication_date, ""]
+        blocks += [
             "Approved reviewed summary." if occurrence.get("display_summary") else
             "Owner-agent source-supported public summary; independently reviewed. Original PDF claims retain their separate disposition." if occurrence.get("owner_agent_verification") else
             "Report-provided summary; article details are unconfirmed.", _citation(occurrence)]
@@ -343,6 +348,13 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
                 "Provenance: PDF observed record; " + item.get("verification_status", "unchecked")]
             if item.get("owner_agent_verification"):
                 blocks.append("Public facts: owner-agent source verification; independently reviewed. Original PDF claims retain their separate disposition.")
+                owner = item["owner_agent_verification"]
+                location = owner["public_fields"].get("location")
+                if location:
+                    blocks.append("Location: " + location)
+                url = owner.get("source_url")
+                if url:
+                    blocks.append("Source: [" + url + "](" + url + ")")
             for observation in item.get("pdf_observations") or [item]:
                 blocks += observation_blocks(observation)
             blocks.append("")

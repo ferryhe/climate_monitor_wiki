@@ -151,6 +151,103 @@ def test_owner_meeting_does_not_publish_original_extra_facts_and_keeps_report_me
     check(RegistryReader.from_public_export(root))
 
 
+def _owner_cop31_with_unchecked_report_reference(tmp_path):
+    database = _database(tmp_path)
+    event = "event-bbd46b0b29e416ce0a7aaee3"
+    primary = "pdf-event-occurrence-d70e47832e567b739824cbb4"
+    association = "pdf-event-occurrence-78d86d45491aad0088458623"
+    with sqlite3.connect(database) as db:
+        for document, report_date in (("a"*64, "2026-08-24"), ("d"*64, "2026-09-28")):
+            db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,date_of_run) VALUES(?,?,?,'application/pdf',1,?,'{}',?,?)",
+                (document, "/evidence/"+report_date+".pdf", report_date+".pdf", "b"*64, report_date, report_date))
+        for occurrence, document, page in ((association, "a"*64, 8), (primary, "d"*64, 11)):
+            item = {"event_id": event, "occurrence_id": occurrence, "name": "COP31",
+                "source_document_sha256": document, "page": page, "source_urls": ["https://unfccc.int/cop31"],
+                "raw_date": "PRIVATE old PDF date", "date_precision": "unknown", "summary": "PRIVATE unchecked PDF claim",
+                "location": "PRIVATE unsupported venue", "kind": "event"}
+            db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'unknown',NULL,NULL,?,?,NULL,?)",
+                (occurrence, event, document, page, item["name"], item["raw_date"], item["summary"], "c"*64, json.dumps(item)))
+        raw = db.execute("SELECT * FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+    fields = {"name": "COP31", "raw_date": "9 to 20 November 2026", "start_date": "2026-11-09",
+        "end_date": "2026-11-20", "date_precision": "day", "location": "Antalya, Türkiye"}
+    manifest = _manifest(database, kind="pdf_meeting", identity=event, occurrence=primary, fields=fields,
+        body="COP31\n9 to 20 November 2026\nAntalya, Türkiye")
+    for key in ("start_date", "end_date", "date_precision"):
+        manifest["observations"][0]["field_evidence"][key]["excerpt"] = fields["raw_date"]
+    staged = _ingest(database, tmp_path, manifest)
+    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]),
+        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    return database, event, primary, association, fields, raw
+
+
+def test_owner_meeting_report_reference_is_not_an_extra_global_event(tmp_path):
+    from climate_registry.range_reports import _pdf_calendar_payload
+    database, event, primary, association, fields, raw = _owner_cop31_with_unchecked_report_reference(tmp_path)
+    reader = _reader(database, tmp_path)
+    def check(current):
+        rows = current.meetings_all(base_date="2026-01-01", include_unknown=True)
+        assert len(rows) == 1 and rows[0]["event_id"] == event and rows[0]["occurrence_id"] == primary
+        assert {key: rows[0][key] for key in fields} == fields
+        assert rows[0]["verification_status"] == "verified" and not rows[0].get("metadata_only")
+        paged = current.meetings(base_date="2026-01-01", include_unknown=True)
+        assert paged["pagination"]["total"] == 1 and paged["verification_counts"]["unchecked"] == 0
+        assert current.meetings(base_date="2026-01-01", verification_status="unchecked")["items"] == []
+        assert current.meetings_all(base_date="2026-12-01", include_unknown=True) == []
+        assert current.meetings(base_date="2026-12-01", include_unknown=True)["items"] == []
+        observations = {row["occurrence_id"]: row for row in current.pdf_calendar_items_all()}
+        assert set(observations) == {primary, association}
+        reference = current.pdf_report("a"*64)["calendar_items"][0]
+        assert reference["occurrence_id"] == association and reference["page"] == 8
+        assert reference["source_document_sha256"] == "a"*64 and reference["metadata_only"]
+        assert reference["verification_status"] == "unchecked" and not reference.get("name") and not reference.get("start_date")
+        assert reference["verified_primary_reference"]["entity_id"] == event
+        assert reference["verified_primary_display"]["name"] == "COP31"
+        assert current.pdf_report("d"*64)["calendar_items"][0]["occurrence_id"] == primary
+        calendar = _pdf_calendar_payload(current, base_date="2026-01-01")
+        assert len(calendar["records"]) == 1 and calendar["records"][0]["occurrence_id"] == primary
+        assert "PRIVATE" not in json.dumps([rows, observations, reference, calendar])
+    check(reader)
+    with reader.public_snapshot(): check(reader)
+    with reader.public_snapshot(direct=True): check(reader)
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    static = RegistryReader.from_public_export(root)
+    check(static)
+    # A previously exported reference must also stay out of global static lists.
+    static.static_snapshot["meeting_records"].append(static.pdf_report("a"*64)["calendar_items"][0])
+    check(static)
+    pages = public_wiki_pages(database)
+    assert pages["registry-meetings.md"].count("## COP31\n") == 1
+    assert "Location: Antalya, Türkiye" in pages["registry-meetings.md"]
+    assert "Source: [https://unfccc.int/cop31](https://unfccc.int/cop31)" in pages["registry-meetings.md"]
+    assert "PRIVATE" not in json.dumps(pages)
+    kb = _rendered_owner_knowledge_base(tmp_path, pages)
+    chunk = next(chunk for chunk in kb.chunks if chunk.heading == "COP31")
+    assert "Location: Antalya, Türkiye" in chunk.text and "https://unfccc.int/cop31" in chunk.urls
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT * FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == raw
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='API collection requires existing POSIX fcntl')
+def test_owner_meeting_association_api_keeps_report_reference_without_global_duplicate(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+    database, event, primary, association, fields, _ = _owner_cop31_with_unchecked_report_reference(tmp_path)
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    client = TestClient(api_server.app)
+    calendar = client.get("/api/registry/meetings?base_date=2026-01-01&include_unknown=true").json()
+    assert calendar["pagination"]["total"] == 1
+    assert calendar["items"][0]["event_id"] == event
+    assert {key: calendar["items"][0][key] for key in fields} == fields
+    report = client.get("/api/registry/pdf-intake/reports/"+"a"*64+"?page=1&page_size=5").json()
+    reference = report["calendar_items"][0]
+    assert reference["occurrence_id"] == association and reference["page"] == 8 and reference["metadata_only"]
+    assert reference["verification_status"] == "unchecked" and reference["verified_primary_display"]["name"] == "COP31"
+    assert not reference.get("name") and not reference.get("start_date")
+    assert "PRIVATE" not in json.dumps([calendar, report])
+
+
 def test_owner_publication_date_paraphrase_and_range_roundtrip(tmp_path):
     from climate_registry.range_reports import _range_source
     database = _database(tmp_path)
@@ -522,3 +619,98 @@ def test_owner_wiki_uses_supported_structured_dates_without_excluded_raw_text(tm
         assert response.status_code == 200
         item = response.json()["calendar_items"][0]
         assert not item.get("raw_date") and all(item.get(key) == value for key, value in date_scope.items())
+
+
+def _rendered_owner_knowledge_base(tmp_path, pages):
+    from agentic_wiki import WikiKnowledgeBase
+    wiki, sources = tmp_path/"rendered-wiki", tmp_path/"empty-sources"
+    wiki.mkdir(); sources.mkdir()
+    for name, markdown in pages.items():
+        (wiki/name).write_text(markdown, encoding="utf-8")
+    return WikiKnowledgeBase(wiki, sources)
+
+
+@pytest.mark.parametrize("publication_date,quote", [
+    ("2026-08-20", "20-Aug-2026"),
+    ("2026-08-07", "7 August 2026"),
+    ("2026-08-17", "17 August 2026"),
+    (None, ""),
+])
+def test_owner_pdf_publication_date_survives_source_body_and_retrieval_without_redating_catalog(tmp_path, publication_date, quote):
+    from test_registry_publication import _pdf
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-good", verified=False, occurrence={"summary": "PRIVATE last updated 2026-08-19; planned event 2026-09-01",
+            "summary_basis": "verbatim_pdf_article_row"})
+        original = db.execute("SELECT * FROM pdf_intake_article_occurrences").fetchall()
+    fields = {"title": "Climate risk findings", "summary": "Flood exposure increased in the study region."}
+    if publication_date:
+        fields["publication_date"] = publication_date
+    manifest = _manifest(database, kind="pdf_article", identity="pdf-good", occurrence="occurrence", fields=fields,
+        body="Climate risk findings\nFlood exposure increased in the study region.\n"+quote)
+    if publication_date:
+        manifest["observations"][0]["field_evidence"]["publication_date"]["excerpt"] = quote
+    staged = _ingest(database, tmp_path, manifest)
+    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]),
+        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    pages = public_wiki_pages(database)
+    name = "registry-source-observation-occurrence.md"
+    markdown = pages[name]
+    assert fields["title"] in markdown and fields["summary"] in markdown
+    if publication_date:
+        assert "Source publication date: " + publication_date in markdown
+    else:
+        assert "publication date:" not in markdown.lower()
+    assert "PRIVATE" not in markdown and "2026-08-19" not in markdown and "2026-09-01" not in markdown
+    kb = _rendered_owner_knowledge_base(tmp_path, pages)
+    chunks = [chunk for chunk in kb.chunks if chunk.path == "wiki/"+name]
+    assert len(chunks) == 1 and fields["summary"] in chunks[0].text
+    if publication_date:
+        assert "Source publication date: " + publication_date in chunks[0].text
+    else:
+        assert "publication date:" not in chunks[0].text.lower()
+    catalog = next(row for row in kb.document_catalog() if row["path"] == "wiki/"+name)
+    assert catalog["date"] == "-" and catalog["display_date"] is None
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    assert RegistryReader.from_public_export(root).static_snapshot["wiki_pages"][name] == markdown
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT * FROM pdf_intake_article_occurrences").fetchall() == original
+
+
+@pytest.mark.parametrize("name,location,url,dates,pages", [
+    ("Asia-Pacific Social Protection Week 2026: Empowered Lives, Resilient Futures",
+     "Auditorium Halls 1-4, ADB Headquarters, Manila, Philippines",
+     "https://www.adb.org/news/events/asia-pacific-social-protection-week-2026", "6 - 8 October 2026", [7, 9]),
+    ("COP31", "Antalya, Türkiye", "https://unfccc.int/cop31", "9 to 20 November 2026", [11]),
+    ("Pre-COP 31", None, "https://unfccc.int/cop31", "5-8 October 2026", [9]),
+])
+def test_owner_pdf_meeting_scoped_venue_and_evidence_link_survive_retrieval(tmp_path, name, location, url, dates, pages):
+    from climate_registry.wiki import _render_registry_meetings
+    fields = {"name": name, "raw_date": dates}
+    if location:
+        fields["location"] = location
+    observations = [{"occurrence_id": "obs-"+str(index), "source_document_sha256": str(index+1)*64,
+        "source_filename": "report-"+str(index)+".pdf", "page": page, "summary": ""}
+        for index, page in enumerate(pages)]
+    item = {**fields, "origin": "pdf_import", "verification_status": "verified", "pdf_observations": observations,
+        "owner_agent_verification": {"public_fields": fields, "source_url": url},
+        "location": "PRIVATE raw venue", "organizer": "PRIVATE organizer", "event_timezone": "PRIVATE timezone",
+        "raw_time_text": "PRIVATE time", "relevance_reason": "PRIVATE relevance", "source_urls": ["https://unvalidated.example/"]}
+    markdown = _render_registry_meetings([item])
+    assert "Source: ["+url+"]("+url+")" in markdown
+    if location:
+        assert "Location: " + location in markdown
+    else:
+        assert "Location:" not in markdown
+    for observation in observations:
+        assert observation["source_document_sha256"] in markdown and "page "+str(observation["page"]) in markdown
+    assert "PRIVATE" not in markdown and "unvalidated.example" not in markdown
+    kb = _rendered_owner_knowledge_base(tmp_path, {"registry-meetings.md": markdown})
+    chunk = next(chunk for chunk in kb.chunks if chunk.heading == name)
+    assert name in chunk.text and dates in chunk.text and url in chunk.text and url in chunk.urls
+    if location:
+        assert "Location: " + location in chunk.text
+    else:
+        assert "Location:" not in chunk.text
+    assert "PRIVATE" not in chunk.text and "unvalidated.example" not in chunk.text

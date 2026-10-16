@@ -2405,6 +2405,8 @@ class RegistryReader:
         imported = [item for item in imported if not item.get("canonical_pdf_event_id")] + merge_meeting_observations(
             [item for item in imported if item.get("canonical_pdf_event_id")])
         for item in imported:
+            if item.get("metadata_only"):
+                continue
             end = _calendar_end_date(item)
             if end is not None and end < date.fromisoformat(base_date):
                 continue
@@ -2438,7 +2440,7 @@ class RegistryReader:
         if self.static_snapshot is not None:
             from .range_reports import _calendar_end_date
             records = [dict(item) for item in self.static_snapshot.get("meeting_records", [])
-                if (_calendar_end_date(item) is None or _calendar_end_date(item) >= date.fromisoformat(base_date))]
+                if not item.get("metadata_only") and (_calendar_end_date(item) is None or _calendar_end_date(item) >= date.fromisoformat(base_date))]
             if include_metadata:
                 from .publication import public_meeting_coverage
                 coverage = public_meeting_coverage(self.static_snapshot.get("meeting_coverage") or {})
@@ -2478,7 +2480,7 @@ class RegistryReader:
         base_date = validate_report_date(base_date or datetime.now(timezone.utc).date().isoformat())
         if self.static_snapshot is not None:
             records = self.static_snapshot.get("meeting_records",[])
-            current = [item for item in records if (_calendar_end_date(item) is None or _calendar_end_date(item)>=date.fromisoformat(base_date))]
+            current = [item for item in records if not item.get("metadata_only") and (_calendar_end_date(item) is None or _calendar_end_date(item)>=date.fromisoformat(base_date))]
             items=[dict(item) for item in current if (not verification_status or item.get("verification_status")==verification_status)
                 and (not query or query.casefold() in " ".join(str(item.get(key) or "") for key in ("name","organizer","relevance_reason","raw_date")).casefold())]
             items.sort(key=lambda item:(item.get("start_date") or item.get("deadline_date") or "9999",item.get("name") or ""))
@@ -2527,6 +2529,8 @@ class RegistryReader:
         imported = [item for item in imported if not item.get("canonical_pdf_event_id")] + merge_meeting_observations(
             [item for item in imported if item.get("canonical_pdf_event_id")])
         for item in imported:
+            if item.get("metadata_only"):
+                continue
             end = _calendar_end_date(item)
             if end is not None and end < date.fromisoformat(base_date):
                 continue
