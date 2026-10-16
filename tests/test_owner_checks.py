@@ -290,6 +290,60 @@ def test_owner_review_rejects_live_change_without_staging_and_preserves_prior_pu
     assert _reader(database, tmp_path).article("good")["published_candidate_sha256"] == old
 
 
+@pytest.mark.parametrize("excerpt,start,end", [
+    ("Oct 01\n\n- Oct 02, 2026", "2026-10-01", "2026-10-02"),
+    ("Sep 30\n\n- Oct 01, 2026", "2026-09-30", "2026-10-01"),
+    ("Oct 30\n\n- Oct 31, 2026", "2026-10-30", "2026-10-31"),
+    ("Dec 14\n\n- Dec 15, 2026", "2026-12-14", "2026-12-15"),
+    ("Sep\t30\r\n\n—\tOct\u00a001,\n2026", "2026-09-30", "2026-10-01"),
+])
+def test_owner_repeated_month_evidence_preserves_explicit_interval_and_literal_capture(tmp_path, excerpt, start, end):
+    from climate_registry.owner_checks import _dates
+    expected = {"start_date": start, "end_date": end, "date_precision": "day"}
+    assert _dates(excerpt) == expected
+    database = _database(tmp_path); _pdf_pair(database)
+    fields = {"name": "Source conference", **expected}
+    manifest = _manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ", fields=fields,
+        body="Source conference\n" + excerpt)
+    for key in expected:
+        manifest["observations"][0]["field_evidence"][key]["excerpt"] = excerpt
+    original = deepcopy(manifest)
+    assert ingest_owner_check(database, manifest, queue_dir=tmp_path/"queue")["status"] == "dry_run"
+    assert manifest == original
+    normalized = deepcopy(manifest)
+    normalized["observations"][0]["field_evidence"]["start_date"]["excerpt"] = " ".join(excerpt.split())
+    with pytest.raises(RegistryInputError, match="literal record-specific capture"):
+        ingest_owner_check(database, normalized, queue_dir=tmp_path/"queue")
+    shortened = deepcopy(manifest)
+    shortened["observations"][0]["public_fields"].pop("end_date")
+    shortened["observations"][0]["field_evidence"].pop("end_date")
+    with pytest.raises(RegistryInputError, match="retain the explicit source bounds"):
+        ingest_owner_check(database, shortened, queue_dir=tmp_path/"queue")
+
+
+@pytest.mark.parametrize("excerpt,start,end", [
+    ("Oct 01\n\n- Oct 02", "2026-10-01", "2026-10-02"),
+    ("Oct 01 - Oct 02, 26", "2026-10-01", "2026-10-02"),
+    ("Feb 30 - Mar 01, 2026", "2026-02-28", "2026-03-01"),
+    ("Feb 28 - Feb 30, 2026", "2026-02-28", "2026-03-01"),
+    ("Oct 02 - Oct 01, 2026", "2026-10-02", "2026-10-01"),
+    ("Oct 01 - Sep 30, 2026", "2026-10-01", "2026-09-30"),
+    ("Dec 31 - Jan 01, 2026", "2026-12-31", "2027-01-01"),
+])
+def test_owner_repeated_month_evidence_refuses_missing_year_invalid_and_reversed_intervals(tmp_path, excerpt, start, end):
+    database = _database(tmp_path); _pdf_pair(database)
+    fields = {"name": "Source conference", "start_date": start, "end_date": end, "date_precision": "day"}
+    manifest = _manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ", fields=fields,
+        body="Source conference\n" + excerpt)
+    for key in ("start_date", "end_date", "date_precision"):
+        manifest["observations"][0]["field_evidence"][key]["excerpt"] = excerpt
+    original = hashlib.sha256(database.read_bytes()).hexdigest()
+    with pytest.raises(RegistryInputError, match="date|precision|interval"):
+        _ingest(database, tmp_path, manifest)
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == original
+    assert not list((tmp_path/"backups").glob("*"))
+
+
 def test_owner_explicit_to_range_and_no_year_or_end_inference(tmp_path):
     database = _database(tmp_path); _pdf_pair(database)
     fields = {"name": "COP31", "raw_date": "9 to 20 November 2026", "start_date": "2026-11-09", "end_date": "2026-11-20", "date_precision": "day"}

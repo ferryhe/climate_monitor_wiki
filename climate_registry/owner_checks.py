@@ -71,6 +71,13 @@ def _dates(text):
     value = re.sub(r"\s+to\s+", "-", text.strip(), flags=re.I)
     if re.fullmatch(r"\d{1,2}-[A-Za-z]+-\d{4}", value):
         value = value.replace("-", " ")
+    interval = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2})\s*[-–—]\s*([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})", value)
+    if interval:
+        first_month, first_day, last_month, last_day, year = interval.groups()
+        dates = _parse_calendar_date(f"{first_day} {first_month}-{last_day} {last_month} {year}")
+        if not dates["end_date"] or dates["start_date"] > dates["end_date"]:
+            raise ValueError("invalid or reversed owner date interval")
+        return dates
     match = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?,?\s+(\d{4})", value)
     if match:
         month, start, end, year = match.groups()
