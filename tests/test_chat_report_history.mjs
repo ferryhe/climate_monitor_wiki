@@ -21,7 +21,7 @@ const plugin = readFileSync(new URL('../.obsidian/plugins/climate-agent-chat/mai
 assert.ok(plugin.includes('context: message.context || null'));
 assert.ok(plugin.includes('context: payload.context || null'));
 assert.ok(plugin.includes('window.open(source.url'));
-const functionNames = ['escapeHtml', 'inlineFmt', 'safeSourceUrl', 'sourceNavigationTarget', 'sourceNavigationAttributes', 'sourceNavigationHref', 'sourceCitationHref', 'renderSourceCards'];
+const functionNames = ['escapeHtml', 'inlineFmt', 'safeSourceUrl', 'sourceNavigationTarget', 'sourceNavigationAttributes', 'sourceNavigationHref', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles', 'sourceCitationHref', 'renderSourceCards'];
 const helpers = functionNames.map(name => {
   const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
   assert.ok(match, name);

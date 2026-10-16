@@ -452,7 +452,7 @@ function sourceLinkForRow(row) {
 }
 
 function historicalReportDateFromHash() {
-  const match = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&url=[^&]*)?$/.exec(window.location.hash);
+  const match = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&.*)?$/.exec(window.location.hash);
   return match ? match[1] : "";
 }
 
@@ -467,20 +467,23 @@ function beginEvidenceNavigation() {
   return ++state.registry.evidenceNavigationSequence;
 }
 
-function openHistoricalReport(reportDate, { updateHash = true, fallbackSourceUrl = "" } = {}) {
+function openHistoricalReport(reportDate, { updateHash = true, fallbackSourceUrl = "", fallbackSourceIsChecked = false,
+  originalSourceUrl = "" } = {}) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate || "")) {
     return;
   }
   beginEvidenceNavigation();
   const sourceUrl = safeReportSourceUrl(fallbackSourceUrl);
-  const nextHash = `#historical-report=${encodeURIComponent(reportDate)}${sourceUrl ? `&url=${encodeURIComponent(sourceUrl)}` : ""}`;
+  const originalUrl = safeSourceUrl(originalSourceUrl);
+  const checkedRole = fallbackSourceIsChecked && sourceUrl;
+  const nextHash = `#historical-report=${encodeURIComponent(reportDate)}${sourceUrl ? `&url=${encodeURIComponent(sourceUrl)}` : ""}${checkedRole ? `&checked=${encodeURIComponent(sourceUrl)}${originalUrl ? `&original=${encodeURIComponent(originalUrl)}` : ""}` : ""}`;
   if (updateHash && window.location.hash !== nextHash) {
     window.history.pushState(null, "", nextHash);
   }
   state.registry.selectedReportDate = reportDate;
   setRegistryMode("reports");
   setWorkspaceView("registryView");
-  void loadRegistryReport(reportDate, sourceUrl);
+  void loadRegistryReport(reportDate, sourceUrl, Boolean(checkedRole), originalUrl);
 }
 
 function normalizeSearchText(value) {
@@ -1164,6 +1167,12 @@ function sourceNavigationTarget(source) {
   const articleId = source.article_id || (articleMatch
     ? articleMatch[1] && !articleMatch[2].startsWith("article-") ? `article-${articleMatch[2]}` : articleMatch[2]
     : "");
+  const articleTarget = (id, articleSource) => {
+    const roles = reviewedSourceRoles(source);
+    const originalUrl = safeSourceUrl(source.original_source_url || source.canonical_url || source.source_urls?.[0] || source.url);
+    return { kind: "article", id, source: articleSource, url: roles?.checkedSourceUrl || originalUrl,
+      ...(roles ? { checkedSourceUrl: roles.checkedSourceUrl, originalUrl: roles.originalSourceUrl } : {}) };
+  };
   const legacyKind = [source.heading, source.type].find((value) => ["meeting", "article", "pdf_article"].includes(value));
   // Old EvidenceTurn records kept the Registry identity in evidence_id and the
   // entity kind in heading/type. Wiki chunks and web reads also have evidence
@@ -1174,23 +1183,28 @@ function sourceNavigationTarget(source) {
   }
   const legacyArticleId = !path && ["article", "pdf_article"].includes(legacyKind) ? legacyId : "";
   if (!articleId && legacyArticleId) {
-    return { kind: "article", id: legacyArticleId, source: legacyKind === "pdf_article" ? "pdf" : "registry",
-      url: safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url) };
+    return articleTarget(legacyArticleId, legacyKind === "pdf_article" ? "pdf" : "registry");
   }
   if (articleId) {
     const articleSource = source.article_source || (path.includes("pdf-article-") ? "pdf" : "registry");
-    return { kind: "article", id: articleId, source: articleSource,
-      url: safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url) };
+    return articleTarget(articleId, articleSource);
   }
   const pdfObservationMatch = /^(?:wiki\/)?registry-source-observation-pdf-article-occurrence-([A-Za-z0-9_-]+)\.md$/.exec(path);
-  if (pdfObservationMatch) return { kind: "pdf-observation", id: `pdf-article-occurrence-${pdfObservationMatch[1]}`,
-    search: source.matched_section || source.document_title || source.title || "",
-    url: safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url),
-    snippet: source.snippet || "" };
-  const articleUrl = source.type === "web" ? safeSourceUrl(source.canonical_url || source.url) : "";
-  if (articleUrl) return { kind: "article-url", url: articleUrl };
+  if (pdfObservationMatch) {
+    const roles = reviewedSourceRoles(source);
+    return { kind: "pdf-observation", id: `pdf-article-occurrence-${pdfObservationMatch[1]}`,
+      search: source.matched_section || source.document_title || source.title || "",
+      url: roles?.checkedSourceUrl || safeSourceUrl(source.canonical_url || source.source_urls?.[0] || source.url),
+      ...(roles ? { checkedSourceUrl: roles.checkedSourceUrl, originalUrl: roles.originalSourceUrl } : {}),
+      snippet: source.snippet || "" };
+  }
+  const articleRoles = reviewedSourceRoles(source);
+  const articleUrl = source.type === "web" ? safeSourceUrl(source.original_source_url || source.canonical_url || source.url) : "";
+  if (articleUrl) return { kind: "article-url", url: articleUrl,
+    ...(articleRoles ? { checkedSourceUrl: articleRoles.checkedSourceUrl, originalUrl: articleRoles.originalSourceUrl } : {}) };
   const reportMatch = /^(?:wiki|sources)\/climate-monitor-(\d{4}-\d{2}-\d{2})\.md$/.exec(path);
-  if (reportMatch) return { kind: "report", date: reportMatch[1], url: safeReportSourceUrl(sourceCitationHref(source)) };
+  if (reportMatch) return { kind: "report", date: reportMatch[1], url: safeReportSourceUrl(sourceCitationHref(source)),
+    ...(articleRoles ? { checkedSourceUrl: articleRoles.checkedSourceUrl, originalUrl: articleRoles.originalSourceUrl } : {}) };
   return null;
 }
 
@@ -1198,10 +1212,10 @@ function sourceNavigationAttributes(source) {
   const target = sourceNavigationTarget(source);
   if (!target) return "";
   if (target.kind === "meeting") return `data-source-navigation="meeting"${target.id ? ` data-meeting-id="${escapeHtml(target.id)}"` : ""}${target.name ? ` data-meeting-name="${escapeHtml(target.name)}"` : ""}`;
-  if (target.kind === "article") return `data-source-navigation="article" data-article-id="${escapeHtml(target.id)}" data-article-source="${escapeHtml(target.source)}"${target.url ? ` data-original-url="${escapeHtml(target.url)}"` : ""}`;
-  if (target.kind === "article-url") return `data-source-navigation="article-url" data-source-url="${escapeHtml(target.url)}"`;
-  if (target.kind === "pdf-observation") return `data-source-navigation="pdf-observation" data-occurrence-id="${escapeHtml(target.id)}" data-observation-search="${escapeHtml(target.search)}" data-observation-url="${escapeHtml(target.url)}" data-observation-snippet="${escapeHtml(target.snippet)}"`;
-  return `data-source-navigation="report" data-report-date="${target.date}"${target.url ? ` data-report-source-url="${escapeHtml(target.url)}"` : ""}`;
+  if (target.kind === "article") return `data-source-navigation="article" data-article-id="${escapeHtml(target.id)}" data-article-source="${escapeHtml(target.source)}"${target.url ? ` data-source-url="${escapeHtml(target.url)}" data-original-url="${escapeHtml(target.originalUrl || target.url)}"` : ""}${target.checkedSourceUrl ? ` data-source-checked="true"` : ""}`;
+  if (target.kind === "article-url") return `data-source-navigation="article-url" data-source-url="${escapeHtml(target.url)}"${target.checkedSourceUrl ? ` data-source-checked="true" data-checked-url="${escapeHtml(target.checkedSourceUrl)}" data-original-url="${escapeHtml(target.originalUrl || target.url)}"` : ""}`;
+  if (target.kind === "pdf-observation") return `data-source-navigation="pdf-observation" data-occurrence-id="${escapeHtml(target.id)}" data-observation-search="${escapeHtml(target.search)}" data-observation-url="${escapeHtml(target.url)}" data-observation-snippet="${escapeHtml(target.snippet)}"${target.checkedSourceUrl ? ` data-source-checked="true" data-original-url="${escapeHtml(target.originalUrl || target.url)}"` : ""}`;
+  return `data-source-navigation="report" data-report-date="${target.date}"${target.url ? ` data-report-source-url="${escapeHtml(target.url)}"` : ""}${target.checkedSourceUrl ? ` data-source-checked="true" data-original-url="${escapeHtml(target.originalUrl || target.url)}"` : ""}`;
 }
 
 function sourceNavigationHref(source) {
@@ -1210,44 +1224,93 @@ function sourceNavigationHref(source) {
   if (target.kind === "meeting") return target.id
     ? `#meeting=${encodeURIComponent(`id:${target.id}${target.name ? `|name:${target.name}` : ""}`)}`
     : target.name ? `#meeting=${encodeURIComponent(`name:${target.name}`)}` : "#meetings";
-  if (target.kind === "article") return `#registry-article=${encodeURIComponent(target.source)}:${encodeURIComponent(target.id)}${target.url ? `&url=${encodeURIComponent(target.url)}` : ""}`;
-  if (target.kind === "article-url") return `#registry-article-url=${encodeURIComponent(target.url)}`;
+  if (target.kind === "article") return `#registry-article=${encodeURIComponent(target.source)}:${encodeURIComponent(target.id)}${target.url ? `&url=${encodeURIComponent(target.url)}` : ""}${target.checkedSourceUrl ? `&checked=1${target.originalUrl ? `&original=${encodeURIComponent(target.originalUrl)}` : ""}` : ""}`;
+  if (target.kind === "article-url") return `#registry-article-url=${encodeURIComponent(target.url)}${target.checkedSourceUrl ? `&checked=${encodeURIComponent(target.checkedSourceUrl)}&original=${encodeURIComponent(target.originalUrl || target.url)}` : ""}`;
   if (target.kind === "pdf-observation") {
     const params = new URLSearchParams({ search: target.search, url: target.url, snippet: (target.snippet || "").slice(0, 100) });
+    if (target.checkedSourceUrl) {
+      params.set("checked", target.checkedSourceUrl);
+      params.set("original", target.originalUrl || target.url);
+    }
     return `#registry-pdf-occurrence=${encodeURIComponent(target.id)}&${params}`;
   }
-  return `#historical-report=${encodeURIComponent(target.date)}${target.url ? `&url=${encodeURIComponent(target.url)}` : ""}`;
+  return `#historical-report=${encodeURIComponent(target.date)}${target.url ? `&url=${encodeURIComponent(target.url)}` : ""}${target.checkedSourceUrl ? `&checked=${encodeURIComponent(target.checkedSourceUrl)}&original=${encodeURIComponent(target.originalUrl || target.url)}` : ""}`;
 }
 
 function sourceNavigationFromHash() {
   try {
     const rawHash = window.location.hash;
-    const report = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&url=([^&]*))?$/.exec(rawHash);
+    const report = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&.*)?$/.exec(rawHash);
     if (report) {
       const params = new URLSearchParams(rawHash.slice(rawHash.indexOf("&") + 1));
-      return { kind: "report", date: report[1], url: safeReportSourceUrl(params.get("url") || "") };
+      const url = safeReportSourceUrl(params.get("url") || "");
+      const checked = params.get("checked") === url ? safeReportSourceUrl(url) : "";
+      return { kind: "report", date: report[1], url: checked || url,
+        ...(checked ? { checkedSourceUrl: checked, originalUrl: safeSourceUrl(params.get("original") || "") } : {}) };
     }
-    const pdfObservation = /^#registry-pdf-occurrence=([^&]+)(?:&search=([^&]*))?(?:&url=([^&]*))?(?:&snippet=([^&]*))?$/.exec(rawHash);
+    const pdfObservation = /^#registry-pdf-occurrence=([^&]+)(?:&.*)?$/.exec(rawHash);
     if (pdfObservation) {
       const params = new URLSearchParams(rawHash.slice(rawHash.indexOf("&") + 1));
       return { kind: "pdf-observation", id: decodeURIComponent(pdfObservation[1]),
-        search: params.get("search") || "", url: params.get("url") || "", snippet: params.get("snippet") || "" };
+        search: params.get("search") || "", url: params.get("url") || "", snippet: params.get("snippet") || "",
+        ...(params.get("checked") === params.get("url") ? { checkedSourceUrl: safeSourceUrl(params.get("checked") || ""),
+          originalUrl: safeSourceUrl(params.get("original") || "") } : {}) };
     }
     const hash = decodeURIComponent(rawHash);
     const meeting = /^#meeting=(?:id:([^|]+)(?:\|name:(.+))?|name:(.+))$/.exec(hash);
     if (meeting) return { kind: "meeting", id: meeting[1] || "", name: meeting[2] || meeting[3] || "" };
-    const article = /^#registry-article=(registry|pdf):([^&]+)(?:&url=([^&]*))?$/.exec(rawHash);
-    if (article) return { kind: "article", source: article[1], id: decodeURIComponent(article[2]),
-      url: article[3] ? safeSourceUrl(decodeURIComponent(article[3])) : "" };
-    const articleUrl = /^#registry-article-url=(https?:\/\/\S+)$/.exec(hash);
-    if (articleUrl) return { kind: "article-url", url: safeSourceUrl(articleUrl[1]) };
+    const article = /^#registry-article=(registry|pdf):([^&]+)(?:&(.*))?$/.exec(rawHash);
+    if (article) {
+      const params = new URLSearchParams(article[3] || "");
+      const target = { kind: "article", source: article[1], id: decodeURIComponent(article[2]),
+        url: safeSourceUrl(params.get("url") || "") };
+      if (params.get("checked") === "1") {
+        target.checkedSourceUrl = target.url;
+        target.originalUrl = safeSourceUrl(params.get("original") || "");
+      }
+      return target;
+    }
+    const articleUrl = /^#registry-article-url=([^&]+)(?:&(.*))?$/.exec(rawHash);
+    if (articleUrl) {
+      const params = new URLSearchParams(articleUrl[2] || "");
+      const url = safeSourceUrl(decodeURIComponent(articleUrl[1]));
+      const checked = safeSourceUrl(params.get("checked") || "");
+      return { kind: "article-url", url,
+        ...(checked ? { checkedSourceUrl: checked, originalUrl: safeSourceUrl(params.get("original") || "") } : {}) };
+    }
   } catch {
     return null;
   }
   return null;
 }
 
+function reviewedCheckedSourceUrl(source) {
+  const values = [source, source?.latest_occurrence, ...(source?.occurrences || []), ...(source?.pdf_occurrences || [])];
+  for (const value of values) {
+    const url = value?.checked_source_url;
+    const owner = value?.owner_agent_verification;
+    if (url && owner?.verification_status === "verified" && owner.review_id && owner.reviewer
+      && owner.final_url === url) return safeSourceUrl(url);
+    if (url && value?.checked_source_provenance === "owner_agent_verified_source"
+      && value?.original_source_url && value.canonical_url === url) {
+      return safeSourceUrl(url);
+    }
+  }
+  return "";
+}
+
+function reviewedSourceRoles(source) {
+  const checkedSourceUrl = reviewedCheckedSourceUrl(source);
+  if (!checkedSourceUrl) return null;
+  const values = [source, source?.latest_occurrence, ...(source?.occurrences || []), ...(source?.pdf_occurrences || [])];
+  const originalSourceUrl = values.map((value) => safeSourceUrl(value?.original_url || value?.original_source_url
+    || value?.raw_url || value?.owner_agent_verification?.source_url || value?.canonical_url)).find(Boolean);
+  return { checkedSourceUrl, originalSourceUrl: originalSourceUrl || checkedSourceUrl };
+}
+
 function sourceCitationHref(source) {
+  const checked = reviewedCheckedSourceUrl(source);
+  if (checked) return checked;
   const canonical = safeSourceUrl(source.canonical_url);
   if (canonical) return canonical;
   const path = source.path || "";
@@ -2484,7 +2547,7 @@ function appendMeetingLocations(container, item) {
       ? item.checks?.find((check) => check.verification_status === "verified"
         && JSON.stringify(check.website_candidate) === JSON.stringify(candidate))
       : item.checks?.find((check) => check.verification_status === "verified" && check.source_url);
-    const sourceUrl = item.collected_candidate_source_url || sourceCheck?.source_url || (!candidate ? item.source_urls?.[0] : "");
+    const sourceUrl = item.owner_agent_verification?.final_url || item.collected_candidate_source_url || sourceCheck?.source_url || (!candidate ? item.source_urls?.[0] : "");
     locations.push({ source: `Website${sourceUrl ? ` · ${sourceUrl}` : ""}`, value: webLocation });
   }
   if (!locations.length && item.location) locations.push({ source: "Source", value: item.location });
@@ -2561,11 +2624,15 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
         });
         appendMeetingLocations(fields, item);
         body.append(fields);
+        const checkedSourceUrl = reviewedCheckedSourceUrl(item);
+        const originalSourceUrl = safeSourceUrl(item.original_source_url || item.owner_agent_verification?.source_url);
         const urls = [...new Set([...(item.source_urls || []), ...(item.sources || []).map((source) => source.source_url), item.online_url])];
         urls.forEach((url) => {
           const safe = safeSourceUrl(url);
           if (!safe) return;
-          const link = registryElement("a", "registry-source-link", url);
+          const label = checkedSourceUrl && safe === checkedSourceUrl ? "Open checked source"
+            : checkedSourceUrl && originalSourceUrl && safe === originalSourceUrl ? "Original source link (provenance)" : url;
+          const link = registryElement("a", "registry-source-link", label);
           link.href = safe; link.target = "_blank"; link.rel = "noopener noreferrer";
           body.append(link);
         });
@@ -2602,31 +2669,38 @@ function openMeetingEvidence(meetingId, meetingName, { updateHash = true } = {})
   void loadRegistryMeetings({ focusId: meetingId, focusName: meetingName });
 }
 
-function openRegistryArticleEvidence(articleId, articleSource = "registry", { updateHash = true, fallbackSourceUrl = "" } = {}) {
+function openRegistryArticleEvidence(articleId, articleSource = "registry", { updateHash = true, fallbackSourceUrl = "", fallbackSourceIsChecked = false, originalSourceUrl = "" } = {}) {
   if (!articleId) return;
   beginEvidenceNavigation();
   if (updateHash) {
     const safeFallbackUrl = safeSourceUrl(fallbackSourceUrl);
-    const hash = `#registry-article=${encodeURIComponent(articleSource)}:${encodeURIComponent(articleId)}${safeFallbackUrl ? `&url=${encodeURIComponent(safeFallbackUrl)}` : ""}`;
+    const safeOriginalUrl = safeSourceUrl(originalSourceUrl);
+    const checkedSource = fallbackSourceIsChecked && safeFallbackUrl;
+    const hash = `#registry-article=${encodeURIComponent(articleSource)}:${encodeURIComponent(articleId)}${safeFallbackUrl ? `&url=${encodeURIComponent(safeFallbackUrl)}` : ""}${checkedSource ? `&checked=1${safeOriginalUrl && safeOriginalUrl !== safeFallbackUrl ? `&original=${encodeURIComponent(safeOriginalUrl)}` : ""}` : ""}`;
     if (window.location.hash !== hash) window.history.pushState(null, "", hash);
   }
   if (state.activeView !== "registryView") setWorkspaceView("registryView");
   setRegistryMode("articles");
-  void loadRegistryArticle(articleId, articleSource, fallbackSourceUrl);
+  void loadRegistryArticle(articleId, articleSource, fallbackSourceUrl, fallbackSourceIsChecked, originalSourceUrl);
 }
 
-async function openPdfObservationEvidence(occurrenceId, { search = "", url = "", snippet = "", updateHash = true } = {}) {
+async function openPdfObservationEvidence(occurrenceId, { search = "", url = "", snippet = "", updateHash = true,
+  fallbackSourceIsChecked = false, originalSourceUrl = "" } = {}) {
   if (!/^[A-Za-z0-9_-]+$/.test(occurrenceId || "")) return;
   const navigationSequence = beginEvidenceNavigation();
   if (updateHash) {
     const params = new URLSearchParams({ search, url: safeSourceUrl(url), snippet: (snippet || "").slice(0, 100) });
+    if (fallbackSourceIsChecked && safeSourceUrl(url)) {
+      params.set("checked", safeSourceUrl(url));
+      if (safeSourceUrl(originalSourceUrl)) params.set("original", safeSourceUrl(originalSourceUrl));
+    }
     const hash = `#registry-pdf-occurrence=${encodeURIComponent(occurrenceId)}&${params}`;
     if (window.location.hash !== hash) window.history.pushState(null, "", hash);
   }
   if (state.activeView !== "registryView") setWorkspaceView("registryView");
   setRegistryMode("articles");
   showMobileDetail(els.registryArticlesPanel);
-  resetRegistryArticleDetail("Loading PDF observation…", url);
+  resetRegistryArticleDetail("Loading PDF observation…", url, fallbackSourceIsChecked);
   try {
     const queries = [...new Set([search, url, (snippet || "").slice(0, 100)].map((value) => String(value || "").trim()).filter((value) => value.length >= 4))].slice(0, 3);
     const candidateIds = new Set();
@@ -2639,7 +2713,11 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
         if (navigationSequence !== state.registry.evidenceNavigationSequence) return;
         for (const item of payload.items || []) {
           if (item.latest_occurrence?.occurrence_id === occurrenceId) {
-            await loadRegistryArticle(item.article_id, "pdf", url);
+            const roles = reviewedSourceRoles(item.latest_occurrence) || reviewedSourceRoles(item);
+            const checkedUrl = roles?.checkedSourceUrl || (fallbackSourceIsChecked ? safeSourceUrl(url) : "");
+            const originalUrl = roles?.originalSourceUrl || (fallbackSourceIsChecked ? safeSourceUrl(originalSourceUrl) : "");
+            if (checkedUrl) await loadRegistryArticle(item.article_id, "pdf", checkedUrl, true, originalUrl);
+            else await loadRegistryArticle(item.article_id, "pdf", url);
             return;
           }
           if (item.article_id) candidateIds.add(item.article_id);
@@ -2658,7 +2736,12 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
         }
         if (navigationSequence !== state.registry.evidenceNavigationSequence) return;
         if ((article.occurrences || []).some((occurrence) => occurrence.occurrence_id === occurrenceId)) {
-          await loadRegistryArticle(articleId, "pdf", url);
+          const occurrence = article.occurrences.find((item) => item.occurrence_id === occurrenceId);
+          const roles = reviewedSourceRoles(occurrence) || reviewedSourceRoles(article);
+          const checkedUrl = roles?.checkedSourceUrl || (fallbackSourceIsChecked ? safeSourceUrl(url) : "");
+          const originalUrl = roles?.originalSourceUrl || (fallbackSourceIsChecked ? safeSourceUrl(originalSourceUrl) : "");
+          if (checkedUrl) await loadRegistryArticle(articleId, "pdf", checkedUrl, true, originalUrl);
+          else await loadRegistryArticle(articleId, "pdf", url);
           return;
         }
       }
@@ -2666,6 +2749,12 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
     if (navigationSequence === state.registry.evidenceNavigationSequence) {
       els.registryArticleTitle.textContent = "PDF observation unavailable";
       els.registryEnrichment.textContent = "This PDF observation is not available in the public Registry.";
+      if (fallbackSourceIsChecked && safeSourceUrl(originalSourceUrl) !== safeSourceUrl(url)) {
+        const provenance = registryElement("p", "muted registry-provenance", "Original PDF/source link (provenance): ");
+        const link = registryElement("a", "registry-source-link", "Open original source");
+        link.href = safeSourceUrl(originalSourceUrl); link.target = "_blank"; link.rel = "noopener noreferrer";
+        provenance.append(link); els.registryEnrichment.append(provenance);
+      }
       els.registryEnrichment.hidden = false;
       els.registryArticleDetail.setAttribute("aria-busy", "false");
     }
@@ -2673,6 +2762,12 @@ async function openPdfObservationEvidence(occurrenceId, { search = "", url = "",
     if (navigationSequence === state.registry.evidenceNavigationSequence) {
       els.registryArticleTitle.textContent = "Article unavailable";
       els.registryEnrichment.textContent = registryErrorMessage(error);
+      if (fallbackSourceIsChecked && safeSourceUrl(originalSourceUrl) !== safeSourceUrl(url)) {
+        const provenance = registryElement("p", "muted registry-provenance", "Original PDF/source link (provenance): ");
+        const link = registryElement("a", "registry-source-link", "Open original source");
+        link.href = safeSourceUrl(originalSourceUrl); link.target = "_blank"; link.rel = "noopener noreferrer";
+        provenance.append(link); els.registryEnrichment.append(provenance);
+      }
       els.registryEnrichment.hidden = false;
       els.registryArticleDetail.setAttribute("aria-busy", "false");
     }
@@ -2688,13 +2783,16 @@ function comparableSourceUrl(value) {
   return url.href;
 }
 
-async function openWebEvidence(url, { updateHash = true } = {}) {
+async function openWebEvidence(url, { updateHash = true, fallbackSourceIsChecked = false,
+  checkedSourceUrl = "", originalSourceUrl = "" } = {}) {
   const safe = safeSourceUrl(url);
   if (!safe) return;
   const lookup = comparableSourceUrl(safe);
   const navigationSequence = beginEvidenceNavigation();
   if (updateHash) {
-    const hash = `#registry-article-url=${encodeURIComponent(safe)}`;
+    const checked = fallbackSourceIsChecked ? safeSourceUrl(checkedSourceUrl || safe) : "";
+    const original = safeSourceUrl(originalSourceUrl);
+    const hash = `#registry-article-url=${encodeURIComponent(safe)}${checked ? `&checked=${encodeURIComponent(checked)}&original=${encodeURIComponent(original || safe)}` : ""}`;
     if (window.location.hash !== hash) window.history.pushState(null, "", hash);
   }
   if (state.activeView !== "registryView") setWorkspaceView("registryView");
@@ -2706,7 +2804,16 @@ async function openWebEvidence(url, { updateHash = true } = {}) {
       if (navigationSequence !== state.registry.evidenceNavigationSequence) return;
       const match = payload.items.find((article) => comparableSourceUrl(article.canonical_url) === comparableSourceUrl(safe));
       if (match) {
-        await loadRegistryArticle(match.article_id, match.source_kind === "pdf" ? "pdf" : "registry", safe);
+        const roles = reviewedSourceRoles(match);
+        const checkedUrl = roles?.checkedSourceUrl || (fallbackSourceIsChecked ? safeSourceUrl(checkedSourceUrl || safe) : "");
+        const original = roles?.originalSourceUrl || (fallbackSourceIsChecked ? safeSourceUrl(originalSourceUrl) : "");
+        if (updateHash && roles) {
+          const hash = `#registry-article-url=${encodeURIComponent(safe)}&checked=${encodeURIComponent(checkedUrl)}&original=${encodeURIComponent(original)}`;
+          if (window.location.hash !== hash) window.history.pushState(null, "", hash);
+        }
+        if (checkedUrl) await loadRegistryArticle(match.article_id, match.source_kind === "pdf" ? "pdf" : "registry",
+          checkedUrl, true, original);
+        else await loadRegistryArticle(match.article_id, match.source_kind === "pdf" ? "pdf" : "registry", safe);
         return;
       }
       if (page >= payload.pagination.pages) break;
@@ -2714,7 +2821,9 @@ async function openWebEvidence(url, { updateHash = true } = {}) {
   } catch {
     // An unreadable Registry does not change the original web evidence.
   }
-  if (navigationSequence === state.registry.evidenceNavigationSequence) window.location.assign(safe);
+  if (navigationSequence === state.registry.evidenceNavigationSequence) {
+    window.location.assign(fallbackSourceIsChecked ? safeSourceUrl(checkedSourceUrl) || safe : safe);
+  }
 }
 
 async function loadRegistryPublishers() {
@@ -2927,7 +3036,7 @@ function resetHistoricalReportDetail() {
   clearHistoricalReportContent();
 }
 
-async function loadRegistryReport(reportDate, fallbackSourceUrl = "") {
+async function loadRegistryReport(reportDate, fallbackSourceUrl = "", fallbackSourceIsChecked = false, originalSourceUrl = "") {
   showMobileDetail(els.registryReportsPanel);
   const requestToken = ++state.registry.reportRequestSequence;
   const isCurrentRequest = () =>
@@ -3042,6 +3151,12 @@ async function loadRegistryReport(reportDate, fallbackSourceUrl = "") {
       const button = registryElement("button", "registry-article-link", article.title);
       button.type = "button";
       button.dataset.articleId = article.article_id;
+      const roles = reviewedSourceRoles(article);
+      if (roles) {
+        button.dataset.sourceUrl = roles.checkedSourceUrl;
+        button.dataset.sourceChecked = "true";
+        button.dataset.originalUrl = roles.originalSourceUrl;
+      }
       const summaryPresentation = registrySummaryPresentation(article);
       const meta = registryElement(
         "span",
@@ -3074,11 +3189,19 @@ async function loadRegistryReport(reportDate, fallbackSourceUrl = "") {
       els.registryReportTitle.textContent = "Report unavailable";
       const fallbackSource = safeReportSourceUrl(fallbackSourceUrl);
       if (fallbackSource) {
-        const link = registryElement("a", "registry-source-link", "Open original source");
+        const link = registryElement("a", "registry-source-link", fallbackSourceIsChecked ? "Open checked source" : "Open original source");
         link.href = fallbackSource;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
-        els.registryReportMeta.replaceChildren(registryElement("span", "", registryErrorMessage(error)), link);
+        const nodes = [registryElement("span", "", registryErrorMessage(error)), link];
+        const original = safeSourceUrl(originalSourceUrl);
+        if (fallbackSourceIsChecked && original && original !== fallbackSource) {
+          const provenance = registryElement("span", "muted registry-provenance", "Original source link (provenance): ");
+          const originalLink = registryElement("a", "registry-source-link", "Open original source");
+          originalLink.href = original; originalLink.target = "_blank"; originalLink.rel = "noopener noreferrer";
+          provenance.append(originalLink); nodes.push(provenance);
+        }
+        els.registryReportMeta.replaceChildren(...nodes);
       } else {
         els.registryReportMeta.textContent = registryErrorMessage(error);
       }
@@ -3121,6 +3244,12 @@ async function loadRegistryArticles() {
       button.dataset.articleId = article.article_id;
       const pdfSource = article.source_kind === "pdf";
       button.dataset.articleSource = pdfSource ? "pdf" : "registry";
+      const roles = reviewedSourceRoles(article);
+      if (roles) {
+        button.dataset.sourceUrl = roles.checkedSourceUrl;
+        button.dataset.sourceChecked = "true";
+        button.dataset.originalUrl = roles.originalSourceUrl;
+      }
       button.append(
         registryElement("strong", "registry-card__title", article.title || article.canonical_url),
         registryElement(
@@ -3165,13 +3294,22 @@ function appendPdfVerifiedInformation(container, occurrence) {
     const status = occurrence.verification_status || "status unavailable";
     const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
     block.append(registryElement("p", "muted registry-provenance", `Website verification: ${status}${checkedAt}`));
-    const sourceUrl = safeSourceUrl(information.source_url || occurrence.raw_url);
+    const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
+    const originalUrl = safeSourceUrl(information.source_url || occurrence.raw_url);
+    const sourceUrl = safeSourceUrl(checkedSourceUrl || originalUrl);
     if (sourceUrl) {
-      const link = registryElement("a", "registry-source-link", "Open checked source");
+      const link = registryElement("a", "registry-source-link", checkedSourceUrl ? "Open checked source" : "Open source link");
       link.href = sourceUrl;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       block.append(link);
+      if (checkedSourceUrl && originalUrl && checkedSourceUrl !== originalUrl) {
+        const original = registryElement("a", "registry-source-link", "Open original source");
+        original.href = originalUrl;
+        original.target = "_blank";
+        original.rel = "noopener noreferrer";
+        block.append(original);
+      }
     }
     container.append(block);
   }
@@ -3184,13 +3322,22 @@ function appendPdfVerifiedInformation(container, occurrence) {
     const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
     const basis = occurrence.owner_agent_verification ? "Owner-agent source verification · Independently reviewed" : "PDF-provided";
     block.append(registryElement("p", "muted registry-provenance", `${basis} · Verification: ${status}${checkedAt}`));
-    const sourceUrl = safeSourceUrl(occurrence.raw_url);
+    const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
+    const originalUrl = safeSourceUrl(occurrence.raw_url);
+    const sourceUrl = safeSourceUrl(checkedSourceUrl || originalUrl);
     if (sourceUrl) {
-      const link = registryElement("a", "registry-source-link", "Open original source");
+      const link = registryElement("a", "registry-source-link", checkedSourceUrl ? "Open checked source" : "Open source link");
       link.href = sourceUrl;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       block.append(link);
+      if (checkedSourceUrl && originalUrl && checkedSourceUrl !== originalUrl) {
+        const original = registryElement("a", "registry-source-link", "Open original source");
+        original.href = originalUrl;
+        original.target = "_blank";
+        original.rel = "noopener noreferrer";
+        block.append(original);
+      }
     }
     container.append(block);
   }
@@ -3209,13 +3356,22 @@ function appendPdfAppearances(container, occurrences) {
       occurrence.verification_status ? `Verification: ${occurrence.verification_status}` : "",
     ].filter(Boolean).join(" · ");
     if (appearanceMeta) item.append(registryElement("span", "registry-card__meta", appearanceMeta));
-    const sourceUrl = safeSourceUrl(occurrence.raw_url);
+    const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
+    const originalUrl = safeSourceUrl(occurrence.raw_url);
+    const sourceUrl = safeSourceUrl(checkedSourceUrl || originalUrl);
     if (sourceUrl) {
-      const link = registryElement("a", "registry-source-link", "Open original source");
+      const link = registryElement("a", "registry-source-link", checkedSourceUrl ? "Open checked source" : "Open original source");
       link.href = sourceUrl;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       item.append(link);
+      if (checkedSourceUrl && originalUrl && checkedSourceUrl !== originalUrl) {
+        const original = registryElement("a", "registry-source-link", "Open original source");
+        original.href = originalUrl;
+        original.target = "_blank";
+        original.rel = "noopener noreferrer";
+        item.append(original);
+      }
     }
     container.append(item);
   });
@@ -3273,6 +3429,12 @@ async function loadImportedRegistryReport(documentId, page = 1) {
       const reference = article.metadata_only ? article.verified_primary_reference : null;
       button.dataset.articleId = reference?.entity_id || article.article_id;
       button.dataset.articleSource = reference?.entity_kind === "article" ? "registry" : "pdf";
+      const roles = reviewedSourceRoles(article);
+      if (roles) {
+        button.dataset.sourceUrl = roles.checkedSourceUrl;
+        button.dataset.sourceChecked = "true";
+        button.dataset.originalUrl = roles.originalSourceUrl;
+      }
       block.append(button);
       appendRegistryPdfOccurrences(block, article.occurrences);
       modules.append(block);
@@ -3388,13 +3550,20 @@ function appendRegistryPdfOccurrences(container, occurrences) {
     );
     appendInformationCheck(information, occurrence);
     item.append(registryElement("p", "registry-pdf-history__summary", occurrence.display_summary || occurrence.summary || "No article context was captured."));
-    const sourceUrl = safeSourceUrl(occurrence.raw_url);
+    const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
+    const originalSourceUrl = safeSourceUrl(occurrence.raw_url || occurrence.original_source_url);
+    const sourceUrl = safeSourceUrl(checkedSourceUrl || originalSourceUrl);
     if (sourceUrl) {
-      const link = registryElement("a", "registry-source-link", "Open source link");
+      const link = registryElement("a", "registry-source-link", checkedSourceUrl ? "Open checked source" : "Open source link");
       link.href = sourceUrl;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       item.append(link);
+      if (checkedSourceUrl && originalSourceUrl && checkedSourceUrl !== originalSourceUrl) {
+        const original = registryElement("a", "registry-source-link", "Original PDF/source link (provenance)");
+        original.href = originalSourceUrl; original.target = "_blank"; original.rel = "noopener noreferrer";
+        item.append(original);
+      }
     }
     item.append(information);
     if (occurrence.display_summary) {
@@ -3418,7 +3587,7 @@ function appendRegistryTags(container, label, values) {
   container.append(block);
 }
 
-function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {
+function resetRegistryArticleDetail(title, fallbackSourceUrl = "", fallbackSourceIsChecked = false) {
   els.registryArticleDetail.setAttribute("aria-busy", "true");
   els.registryArticleTitle.textContent = title;
   els.registryArticleMeta.replaceChildren();
@@ -3437,12 +3606,13 @@ function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {
   const safeFallbackUrl = safeSourceUrl(fallbackSourceUrl);
   if (safeFallbackUrl) {
     els.registryOriginalLink.href = safeFallbackUrl;
-    els.registryOriginalLink.textContent = "Open original source";
+    els.registryOriginalLink.textContent = fallbackSourceIsChecked ? "Open checked source" : "Open original source";
     els.registryOriginalLink.hidden = false;
   }
 }
 
-async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "") {
+async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "",
+  fallbackSourceIsChecked = false, originalSourceUrl = "") {
   showMobileDetail(els.registryArticlesPanel);
   state.registry.evidenceNavigationSequence += 1;
   const requestSequence = ++state.registry.articleDetailRequestSequence;
@@ -3461,14 +3631,16 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
     const annotationBasis = article.source_annotation?.source_basis;
     const usesAlternatePublisherPage =
       annotationBasis === "official_replacement" || annotationBasis === "publisher_excerpt";
-    const sourceUrl = safeSourceUrl(
+    const checkedSourceUrl = reviewedCheckedSourceUrl(article);
+    const sourceUrl = safeSourceUrl(checkedSourceUrl ||
       (usesAlternatePublisherPage && article.source_annotation?.source_url) ||
         article.original_url ||
-        article.canonical_url,
-    );
+        article.canonical_url);
     if (sourceUrl) {
       els.registryOriginalLink.href = sourceUrl;
-      els.registryOriginalLink.textContent = pdfSource
+      els.registryOriginalLink.textContent = checkedSourceUrl
+        ? "Open checked source"
+        : pdfSource
         ? "Open linked source"
         :
         annotationBasis === "official_replacement"
@@ -3555,6 +3727,20 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
     } else {
       (article.pdf_occurrences || []).forEach((occurrence) => appendPdfVerifiedInformation(els.registryEnrichment, occurrence));
     }
+    if (!pdfSource && !(article.pdf_occurrences || []).length) {
+      const sourceRoles = reviewedSourceRoles(article);
+      const originalSourceUrl = safeSourceUrl(sourceRoles?.originalSourceUrl);
+      if (sourceRoles?.checkedSourceUrl && originalSourceUrl
+        && originalSourceUrl !== sourceRoles.checkedSourceUrl) {
+        const provenance = registryElement("p", "muted registry-provenance", "Original canonical/source link (provenance): ");
+        const link = registryElement("a", "registry-source-link", "Open original source");
+        link.href = originalSourceUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        provenance.append(link);
+        els.registryEnrichment.append(provenance);
+      }
+    }
     els.registryEnrichment.hidden = els.registryEnrichment.childElementCount === 0;
     const appearances = article.appearances || [];
     appearances.forEach((appearance) => {
@@ -3595,11 +3781,21 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
     const fallbackSource = safeSourceUrl(fallbackSourceUrl);
     if (fallbackSource) {
       els.registryOriginalLink.href = fallbackSource;
-      els.registryOriginalLink.textContent = "Open original source";
+      els.registryOriginalLink.textContent = fallbackSourceIsChecked ? "Open checked source" : "Open original source";
       els.registryOriginalLink.hidden = false;
     }
     els.registryEnrichment.append(registryElement("p", "registry-notice",
-      `${registryErrorMessage(error)}${fallbackSource ? " The original cited source is still available below." : ""}`));
+      `${registryErrorMessage(error)}${fallbackSource ? fallbackSourceIsChecked ? " The checked source is still available below." : " The original cited source is still available below." : ""}`));
+    const safeOriginalUrl = safeSourceUrl(originalSourceUrl);
+    if (fallbackSourceIsChecked && safeOriginalUrl && safeOriginalUrl !== fallbackSource) {
+      const provenance = registryElement("p", "muted registry-provenance", "Original canonical/source link (provenance): ");
+      const link = registryElement("a", "registry-source-link", "Open original source");
+      link.href = safeOriginalUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      provenance.append(link);
+      els.registryEnrichment.append(provenance);
+    }
     els.registryEnrichment.hidden = false;
   } finally {
     if (isCurrentRequest()) {
@@ -3619,17 +3815,25 @@ function attachSourceCardClickHandler() {
       openMeetingEvidence(sourceCard.dataset.meetingId || "", sourceCard.dataset.meetingName || "");
     } else if (sourceCard.dataset.sourceNavigation === "article") {
       openRegistryArticleEvidence(sourceCard.dataset.articleId, sourceCard.dataset.articleSource || "registry",
-        { fallbackSourceUrl: sourceCard.dataset.originalUrl || "" });
+        { fallbackSourceUrl: sourceCard.dataset.sourceUrl || sourceCard.dataset.originalUrl || "",
+          fallbackSourceIsChecked: sourceCard.dataset.sourceChecked === "true",
+          originalSourceUrl: sourceCard.dataset.sourceChecked === "true" && sourceCard.dataset.sourceUrl !== sourceCard.dataset.originalUrl
+            ? sourceCard.dataset.originalUrl || "" : "" });
     } else if (sourceCard.dataset.sourceNavigation === "article-url") {
-      void openWebEvidence(sourceCard.dataset.sourceUrl);
+      void openWebEvidence(sourceCard.dataset.sourceUrl, { fallbackSourceIsChecked: sourceCard.dataset.sourceChecked === "true",
+        checkedSourceUrl: sourceCard.dataset.checkedUrl || "",
+        originalSourceUrl: sourceCard.dataset.originalUrl || "" });
     } else if (sourceCard.dataset.sourceNavigation === "pdf-observation") {
       void openPdfObservationEvidence(sourceCard.dataset.occurrenceId, {
         search: sourceCard.dataset.observationSearch,
         url: sourceCard.dataset.observationUrl,
         snippet: sourceCard.dataset.observationSnippet,
+        fallbackSourceIsChecked: sourceCard.dataset.sourceChecked === "true",
+        originalSourceUrl: sourceCard.dataset.originalUrl || "",
       });
     } else if (sourceCard.dataset.sourceNavigation === "report") {
-      openHistoricalReport(sourceCard.dataset.reportDate, { fallbackSourceUrl: sourceCard.dataset.reportSourceUrl || "" });
+      openHistoricalReport(sourceCard.dataset.reportDate, { fallbackSourceUrl: sourceCard.dataset.reportSourceUrl || "",
+        fallbackSourceIsChecked: sourceCard.dataset.sourceChecked === "true", originalSourceUrl: sourceCard.dataset.originalUrl || "" });
     }
   });
 }
@@ -3854,7 +4058,12 @@ function attachEvents() {
       if (state.activeView !== "registryView") setWorkspaceView("registryView");
       setRegistryMode("articles");
       const articleSource = articleCard.dataset.articleSource || "registry";
-      void loadRegistryArticle(articleCard.dataset.articleId, articleSource);
+      if (articleCard.dataset.sourceChecked === "true") {
+        void loadRegistryArticle(articleCard.dataset.articleId, articleSource, articleCard.dataset.sourceUrl || "",
+          true, articleCard.dataset.originalUrl || "");
+      } else {
+        void loadRegistryArticle(articleCard.dataset.articleId, articleSource);
+      }
       return;
     }
 
@@ -3880,16 +4089,20 @@ function attachEvents() {
       return;
     }
     if (sourceTarget?.kind === "article") {
-      openRegistryArticleEvidence(sourceTarget.id, sourceTarget.source, { updateHash: false, fallbackSourceUrl: sourceTarget.url });
+      openRegistryArticleEvidence(sourceTarget.id, sourceTarget.source, { updateHash: false, fallbackSourceUrl: sourceTarget.url,
+        fallbackSourceIsChecked: Boolean(sourceTarget.checkedSourceUrl), originalSourceUrl: sourceTarget.originalUrl || "" });
       return;
     }
     if (sourceTarget?.kind === "article-url") {
-      void openWebEvidence(sourceTarget.url, { updateHash: false });
+      void openWebEvidence(sourceTarget.url, { updateHash: false,
+        fallbackSourceIsChecked: Boolean(sourceTarget.checkedSourceUrl), checkedSourceUrl: sourceTarget.checkedSourceUrl || "",
+        originalSourceUrl: sourceTarget.originalUrl || "" });
       return;
     }
     if (sourceTarget?.kind === "pdf-observation") {
       void openPdfObservationEvidence(sourceTarget.id, { search: sourceTarget.search, url: sourceTarget.url,
-        snippet: sourceTarget.snippet, updateHash: false });
+        snippet: sourceTarget.snippet, updateHash: false, fallbackSourceIsChecked: Boolean(sourceTarget.checkedSourceUrl),
+        originalSourceUrl: sourceTarget.originalUrl || "" });
       return;
     }
     if (window.location.hash === "#meetings") {
@@ -3900,7 +4113,9 @@ function attachEvents() {
     const reportDate = historicalReportDateFromHash();
     if (reportDate) {
       openHistoricalReport(reportDate, { updateHash: false,
-        fallbackSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.url : "" });
+        fallbackSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.url : "",
+        fallbackSourceIsChecked: sourceTarget?.kind === "report" && Boolean(sourceTarget.checkedSourceUrl),
+        originalSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.originalUrl || "" : "" });
     } else {
       resetHistoricalReportDetail();
     }
@@ -3945,15 +4160,21 @@ async function main() {
   if (sourceTarget?.kind === "meeting") {
     openMeetingEvidence(sourceTarget.id, sourceTarget.name, { updateHash: false });
   } else if (sourceTarget?.kind === "article") {
-    openRegistryArticleEvidence(sourceTarget.id, sourceTarget.source, { updateHash: false, fallbackSourceUrl: sourceTarget.url });
+    openRegistryArticleEvidence(sourceTarget.id, sourceTarget.source, { updateHash: false, fallbackSourceUrl: sourceTarget.url,
+      fallbackSourceIsChecked: Boolean(sourceTarget.checkedSourceUrl), originalSourceUrl: sourceTarget.originalUrl || "" });
   } else if (sourceTarget?.kind === "article-url") {
-    void openWebEvidence(sourceTarget.url, { updateHash: false });
+    void openWebEvidence(sourceTarget.url, { updateHash: false,
+      fallbackSourceIsChecked: Boolean(sourceTarget.checkedSourceUrl), checkedSourceUrl: sourceTarget.checkedSourceUrl || "",
+      originalSourceUrl: sourceTarget.originalUrl || "" });
   } else if (sourceTarget?.kind === "pdf-observation") {
     void openPdfObservationEvidence(sourceTarget.id, { search: sourceTarget.search, url: sourceTarget.url,
-      snippet: sourceTarget.snippet, updateHash: false });
+      snippet: sourceTarget.snippet, updateHash: false, fallbackSourceIsChecked: Boolean(sourceTarget.checkedSourceUrl),
+      originalSourceUrl: sourceTarget.originalUrl || "" });
   } else if (reportDate) {
     openHistoricalReport(reportDate, { updateHash: false,
-      fallbackSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.url : "" });
+      fallbackSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.url : "",
+      fallbackSourceIsChecked: sourceTarget?.kind === "report" && Boolean(sourceTarget.checkedSourceUrl),
+      originalSourceUrl: sourceTarget?.kind === "report" ? sourceTarget.originalUrl || "" : "" });
   }
 
   try {

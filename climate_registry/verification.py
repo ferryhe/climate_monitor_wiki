@@ -383,11 +383,16 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                 public.pop("source_urls", None)
                 public.update(owner["public_fields"], owner_agent_verification=owner)
                 if table == "pdf_intake_calendar_items":
-                    public = {**{key: None for key in MEETING_FIELDS}, **public, "source_urls": [owner["source_url"]]}
+                    checked_url = owner.get("final_url") or owner["source_url"]
+                    public["checked_source_url"] = checked_url
+                    if checked_url != owner["source_url"]:
+                        public["original_source_url"] = owner["source_url"]
+                    public = {**{key: None for key in MEETING_FIELDS}, **public, "source_urls": [checked_url]}
                     public["summary"] = ""
                     row.update(name=public["name"], raw_date=public.get("raw_date") or "", start_date=public.get("start_date"),
                         end_date=public.get("end_date"), date_precision=public["date_precision"], summary="", type_safe_classification_json=None)
                 else:
+                    public["checked_source_url"] = owner.get("final_url") or owner["source_url"]
                     public["summary_basis"] = "owner_agent_source_excerpt"
                     public["report_fields"] = None
                     row["publication_date"] = public.get("publication_date")
@@ -592,7 +597,12 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
             "summary_provenance": "owner_agent_verified_source" if native_primary.get("owner_agent_verification") else "verified_source_evidence"}
     if snapshot["entity_kind"] == "meeting" and verdict["primary"] and verdict["primary"].get("owner_agent_verification"):
         fields = verdict["primary"]["fields"]
-        view.setdefault("derived_display", {})["owner_agent_verification"] = verdict["primary"]["owner_agent_verification"]
+        owner = verdict["primary"]["owner_agent_verification"]
+        display = view.setdefault("derived_display", {})
+        display["owner_agent_verification"] = owner
+        display["checked_source_url"] = owner.get("final_url") or owner["source_url"]
+        if owner.get("source_url") != display["checked_source_url"]:
+            display["original_source_url"] = owner["source_url"]
         for row in tables.get("climate_events", []):
             for key in MEETING_FIELDS:
                 if key in row:
@@ -634,9 +644,11 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         view["fallback_annotations"], view["report_fallbacks"], view["supplements"] = {}, {}, []
         display = view.get("derived_display", {})
         view["derived_display"] = {key: value for key, value in display.items() if key in {
-            "title", "summary", "summary_provenance", "canonical_pdf_event_id", "owner_agent_verification"}}
+            "title", "summary", "summary_provenance", "canonical_pdf_event_id", "owner_agent_verification",
+            "checked_source_url", "original_source_url"}}
         if snapshot["entity_kind"] in {"article", "pdf_article"}:
             view["derived_display"].update(categories=[], keywords=[], metadata_provenance={})
+            view["derived_display"]["checked_source_url"] = owner.get("final_url") or owner["source_url"]
             if owner["public_fields"].get("publication_date"):
                 view["derived_display"].update(publication_date=owner["public_fields"]["publication_date"],
                     publication_date_evidence=owner.get("publication_date_evidence"))

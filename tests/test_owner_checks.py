@@ -3,7 +3,10 @@ import base64
 import hashlib
 import json
 import sqlite3
+import shutil
+import subprocess
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +18,7 @@ from climate_registry.read_api import RegistryReader, RegistryNotFoundError
 from test_verified_publication import _database, _reader, _pdf_pair, DOC
 
 
-def _manifest(database, *, kind="article", identity="good", occurrence="core:good", fields=None, body=None):
+def _manifest(database, *, kind="article", identity="good", occurrence="core:good", fields=None, body=None, final_url=None):
     with sqlite3.connect(database) as db:
         stage_entities(db)
     plan = plan_owner_check(database, kind, identity)
@@ -33,7 +36,7 @@ def _manifest(database, *, kind="article", identity="good", occurrence="core:goo
     plan.update(actor={"id": "source-checker", "task_id": "check-task"}, authorization_reference="owner-message-actual-scope",
         audit_reference="audit/capture-record", checked_at="2026-10-15T23:00:00Z", observations=[{
             "target": target, "access_status": "accessible", "capture": {"requested_url": target["source_url"],
-                "final_url": target["source_url"], "title": fields.get("title") or fields["name"],
+                "final_url": final_url or target["source_url"], "title": fields.get("title") or fields["name"],
                 "tool": "browser-rendered-text", "captured_at": "2026-10-15T22:59:00Z", "text": body,
                 "bytes_base64": base64.b64encode(body.encode()).decode(), "sha256": hashlib.sha256(body.encode()).hexdigest()},
             "original_comparisons": {key: {"status": "conflict" if key == "summary" else "missing"} for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256"},
@@ -149,6 +152,38 @@ def test_owner_meeting_does_not_publish_original_extra_facts_and_keeps_report_me
     root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
     export_public_snapshot(database, root/"wiki/public-registry.json")
     check(RegistryReader.from_public_export(root))
+
+
+def test_owner_reviewed_final_url_is_public_meeting_link_and_keeps_requested_url(tmp_path):
+    from climate_registry.publication import public_wiki_pages
+    database = _database(tmp_path)
+    _pdf_pair(database)
+    fields = {"name": "IAIS Annual Conference 2027", "raw_date": "10–12 June 2027", "start_date": "2027-06-10", "end_date": "2027-06-12", "date_precision": "day"}
+    final_url = "https://example.org/events/iais-2027"
+    manifest = _manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ", fields=fields,
+        body="IAIS Annual Conference 2027\n10–12 June 2027", final_url=final_url)
+    result = _ingest(database, tmp_path, manifest)
+    from climate_registry.publication import snapshot_entity
+    from climate_registry.verification import evaluate_snapshot, public_snapshot_view
+    with sqlite3.connect(database) as db:
+        pending = snapshot_entity(db, "pdf_meeting", "target")
+    pending_view = public_snapshot_view(pending, evaluate_snapshot(pending))
+    pending_item = json.loads(next(row["item_json"] for row in pending_view["tables"]["pdf_intake_calendar_items"]
+        if row["occurrence_id"] == "target-occ"))
+    assert not pending_item.get("checked_source_url") and pending_item["source_urls"] == ["https://example.org/target"]
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]),
+        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    reader = _reader(database, tmp_path)
+    meeting = reader.meetings_all(base_date="2026-10-15")[0]
+    assert meeting["source_urls"] == [final_url]
+    assert meeting["checked_source_url"] == final_url
+    assert meeting["owner_agent_verification"]["source_url"] == "https://example.org/target"
+    assert meeting["owner_agent_verification"]["final_url"] == final_url
+    markdown = public_wiki_pages(database)["registry-meetings.md"]
+    assert f"Source: [{final_url}]({final_url})" in markdown
+    assert f"[checked source]({final_url})" in markdown
+    assert "Original PDF/source link: https://example.org/target" in markdown
+    assert "https://example.org/target" in markdown
 
 
 def _owner_cop31_with_unchecked_report_reference(tmp_path):
@@ -446,6 +481,26 @@ def test_owner_linked_core_and_three_reports_keep_unchecked_copies_metadata_only
         assert db.execute("SELECT occurrence_json FROM pdf_intake_article_occurrences ORDER BY occurrence_id").fetchall() == originals
 
 
+def test_owner_reviewed_final_url_drives_article_citation_but_raw_url_stays_provenance(tmp_path):
+    from climate_registry.wiki import _registry_source_observation_pages
+    from test_registry_publication import _pdf
+    database = _database(tmp_path)
+    requested = "https://example.org/pdf-only"
+    final_url = "https://example.org/articles/current"
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-only", url=requested, verified=False)
+    manifest = _manifest(database, kind="pdf_article", identity="pdf-only", occurrence="occurrence",
+        fields={"title": "Climate risk findings", "summary": "Flood exposure increased."},
+        body="Climate risk findings\nFlood exposure increased.", final_url=final_url)
+    result = _ingest(database, tmp_path, manifest)
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]),
+        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    occurrence = _reader(database, tmp_path).pdf_article("pdf-only")["occurrences"][0]
+    assert occurrence["raw_url"] == requested and occurrence["checked_source_url"] == final_url
+    markdown = next(iter(_registry_source_observation_pages([_reader(database, tmp_path).pdf_article("pdf-only")]).values()))
+    assert f"[checked source]({final_url})" in markdown and f"original PDF/source link (provenance): [{requested}]({requested})" in markdown
+
+
 @pytest.mark.skipif(__import__('os').name == 'nt', reason='API imports existing POSIX fcntl management')
 def test_owner_actual_api_chat_and_frozen_range_consume_only_reviewed_scope(tmp_path, monkeypatch):
     import api_server
@@ -529,42 +584,464 @@ def test_native_owner_meeting_keeps_supported_facts_and_truthful_provenance(tmp_
     with sqlite3.connect(database) as db:
         event, source = db.execute("SELECT event_id,event_source_id FROM climate_event_sources").fetchone()
     fields = {"name": "World Climate Summit 2027", "event_type": "conference", "status": "scheduled", "raw_date": "10–12 June 2027", "start_date": "2027-06-10", "end_date": "2027-06-12", "date_precision": "day"}
+    final_url = "https://example.com/events/reviewed-final-page"
     manifest = _manifest(database, kind="meeting", identity=event, occurrence=source, fields=fields,
-        body="World Climate Summit 2027\n10–12 June 2027\nThe conference is scheduled.\nPRIVATE TOOL FOOTER")
+        body="World Climate Summit 2027\n10–12 June 2027\nThe conference is scheduled.\nPRIVATE TOOL FOOTER",
+        final_url=final_url)
     for key in ("event_type", "status"):
         manifest["observations"][0]["field_evidence"][key]["excerpt"] = "The conference is scheduled."
     result = _ingest(database, tmp_path, manifest)
     approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
+    requested_url = manifest["observations"][0]["target"]["source_url"]
     def check(current):
         meetings = current.meetings_all(base_date="2026-10-15")
         assert len(meetings) == 1 and meetings[0]["start_date"] == fields["start_date"]
         assert meetings[0]["owner_agent_verification"]["verification_basis"] == "owner-agent-information-check.v1"
+        assert meetings[0]["checked_source_url"] == final_url
+        assert meetings[0]["source_urls"] == [final_url]
+        assert meetings[0]["original_source_url"] == requested_url
+        assert meetings[0]["sources"][0]["source_url"] == requested_url
         assert not meetings[0].get("relevance_reason") and "PRIVATE" not in json.dumps(meetings)
     check(reader)
     with reader.public_snapshot(): check(reader)
+    from agentic_wiki.chat_evidence import source_urls
+    approved_meeting = reader.meetings_all(base_date="2026-10-15")[0]
+    assert source_urls(approved_meeting) == [final_url]
+    from types import SimpleNamespace
+    from agentic_wiki.chat_evidence import EvidenceTurn
+    turn = object.__new__(EvidenceTurn)
+    turn.source_only = False; turn.sources = []; turn.evidence = []; turn.chars = 0; turn.notes = []
+    turn.question = "When is the World Climate Summit?"
+    turn.owner = SimpleNamespace(responder=SimpleNamespace(kb=SimpleNamespace(documents=[], source_documents=[])))
+    evidence = turn.add(approved_meeting, kind="meeting", text="World Climate Summit 2027", urls=source_urls(approved_meeting))
+    assert evidence["source"]["source_urls"] == [final_url]
+    assert evidence["source"]["original_source_url"] == requested_url
     root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
     export_public_snapshot(database, root/"wiki/public-registry.json")
-    check(RegistryReader.from_public_export(root))
+    static = RegistryReader.from_public_export(root)
+    check(static)
+    static_meeting = static.meetings_all(base_date="2026-10-15")[0]
+    assert static_meeting["checked_source_url"] == final_url and static_meeting["original_source_url"] == requested_url
+    markdown = public_wiki_pages(database)["registry-meetings.md"]
+    assert f"Source: [checked source]({final_url})" in markdown
+    assert f"Original source link (provenance): [{requested_url}]({requested_url})" in markdown
+    assert static.static_snapshot["wiki_pages"]["registry-meetings.md"] == markdown
 
 
-def _owner_article_with_private_metadata(tmp_path, source):
+def _owner_article_with_private_metadata(tmp_path, source, final_url=None, *, report_appearance=False, occurrence_id="occurrence"):
     from test_registry_publication import _pdf
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO article_enrichments(enrichment_id,article_id,article_version_id,status,summary,categories_json,keywords_json,language,generator_kind,generator_name,generator_version,generated_at) VALUES('e-good','good','v-good','complete','PRIVATE original enrichment summary','[\"PRIVATE category\"]','[\"PRIVATE keyword\"]','en','manual','PRIVATE generator','v1','2026-09-01T00:00:00Z')")
         if source != "native":
-            _pdf(db, identity="pdf-good", url="https://example.org/"+("good" if source == "linked" else "pdf-only"), verified=False)
+            _pdf(db, identity="pdf-good", url="https://example.org/"+("good" if source == "linked" else "pdf-only"),
+                occurrence_id=occurrence_id, verified=False)
             db.execute("UPDATE pdf_intake_articles SET type_safe_classification_json=?", (json.dumps({"label": "article", "reason": "PRIVATE classifier reason"}),))
+        if report_appearance:
+            db.execute("INSERT INTO reports VALUES ('review-report','2026-09-28','climate-monitor-2026-09-28.md','Review report',?,'weekly','weekly-pillars-v1',1,1,0,'[]')", ("e" * 64,))
+            db.execute("INSERT INTO discoveries VALUES ('review-discovery','review-report',1,'Pillar A','A','good','v-good','https://example.org/good','Title good','Summary good',1,NULL)")
+            db.execute("INSERT INTO report_appearances(report_id,article_id,version_id,discovery_id,section,pillar,ordinal,disposition) VALUES ('review-report','good','v-good','review-discovery','Pillar A','A',1,'new')")
         originals = {table: db.execute("SELECT * FROM "+table).fetchall() for table in ("article_enrichments", "pdf_intake_articles", "pdf_intake_article_occurrences")}
     fields = {"title": "Climate risk findings", "summary": "Flood exposure increased in the study region.", "publication_date": "2026-10-02"}
     manifest = _manifest(database, kind="article" if source == "native" else "pdf_article",
-        identity="good" if source == "native" else "pdf-good", occurrence="core:good" if source == "native" else "occurrence",
-        fields=fields, body="Climate risk findings\nFlood exposure increased in the study region.\n2 October 2026")
+        identity="good" if source == "native" else "pdf-good", occurrence="core:good" if source == "native" else occurrence_id,
+        fields=fields, body="Climate risk findings\nFlood exposure increased in the study region.\n2 October 2026",
+        final_url=final_url)
     manifest["observations"][0]["field_evidence"]["publication_date"]["excerpt"] = "2 October 2026"
     staged = _ingest(database, tmp_path, manifest)
     approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     return database, originals
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='Actual API imports POSIX management')
+@pytest.mark.parametrize("source", ["pdf", "linked"])
+def test_owner_checked_url_reaches_article_api_wiki_and_chat(tmp_path, monkeypatch, source):
+    from agentic_wiki.chat_evidence import EvidenceTurn, source_urls
+    from climate_registry.publication import public_wiki_pages
+    from fastapi.testclient import TestClient
+    import api_server
+
+    final_url = "https://example.org/articles/current"
+    original = "https://example.org/" + ("pdf-only" if source == "pdf" else "good")
+    database, _ = _owner_article_with_private_metadata(tmp_path, source, final_url=final_url)
+    reader = _reader(database, tmp_path)
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: reader)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    client = TestClient(api_server.app)
+
+    endpoint = "/api/registry/pdf-intake/articles/pdf-good"
+    pdf_detail = client.get(endpoint).json()
+    assert pdf_detail["checked_source_url"] == final_url
+    assert source_urls(pdf_detail) == [final_url]
+    pdf_occurrence = pdf_detail["occurrences"][0]
+    assert pdf_occurrence["raw_url"] == original and pdf_occurrence["checked_source_url"] == final_url
+
+    if source == "linked":
+        from climate_registry.wiki import _registry_report_markdown
+
+        article_detail = client.get("/api/registry/articles/good").json()
+        assert article_detail["checked_source_url"] == final_url
+        assert source_urls(article_detail) == [final_url]
+        assert article_detail["pdf_occurrences"][0]["raw_url"] == original
+        article_list = client.get("/api/registry/articles?page=1&page_size=100&include_pdf=true").json()
+        listed = next(item for item in article_list["items"] if item["article_id"] == "good")
+        assert listed["checked_source_url"] == final_url
+        assert listed["owner_agent_verification"]["final_url"] == final_url
+        node = shutil.which("node")
+        assert node, "Node.js is required for the actual article-card navigation regression"
+        script = Path(__file__).with_name("test_checked_source_article_card.mjs")
+        harness_payload = {"items": [listed], "pagination": article_list["pagination"]}
+        subprocess.run([node, str(script), json.dumps(harness_payload)], cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, check=True)
+        page = public_wiki_pages(database)["article-good.md"]
+        assert f"Canonical article: [checked source]({final_url})" in page
+        assert f"Original canonical/PDF source link (provenance): [{original}]({original})" in page
+        assert "Source verification: owner_agent_verified_source; independently reviewed." in page
+        for label in ("article citation", "Article citation"):
+            lines = [line for line in page.splitlines() if label in line]
+            assert lines and all(f"[checked source]({final_url})" in line for line in lines)
+            assert all(f"original canonical/source link (provenance): [{original}]({original})" in line for line in lines)
+        report = _registry_report_markdown("2026-10-12", "report.md", "f" * 64,
+            [{"article": article_detail, "source_report_article": True}], approved_versions=True)
+        assert f"Report article citation: [checked source]({final_url})" in report
+        assert f"original canonical/source link (provenance): [{original}]({original})" in report
+        turn = object.__new__(EvidenceTurn)
+        turn.source_only = False
+        chunk = type("Chunk", (), {"corpus": "wiki", "path": "wiki/article-good.md"})()
+        document = type("Document", (), {"path": "wiki/article-good.md", "markdown": page})()
+        assert turn.wiki_source_urls({}, chunk, document) == [final_url]
+        from types import SimpleNamespace
+        from agentic_wiki.wiki_agent import AgenticWikiResponder, SearchHit
+        wiki_dir = tmp_path / "wiki-chat"
+        wiki_dir.mkdir()
+        source_dir = tmp_path / "wiki-chat-sources"
+        source_dir.mkdir()
+        for name, content in public_wiki_pages(database).items():
+            (wiki_dir / name).write_text(content, encoding="utf-8")
+        (wiki_dir / "article-manual.md").write_text(
+            "# Manual article\n\nCanonical article: [https://example.org/manual](https://example.org/manual)\n",
+            encoding="utf-8")
+        responder = AgenticWikiResponder(wiki_dir, source_dir)
+        responder.client = None
+        wiki_chunk = next(chunk for chunk in responder.kb.chunks if chunk.path == "wiki/article-good.md")
+        wiki_item = SearchHit(wiki_chunk, 1, "checked source regression").to_source(1)
+        turn = object.__new__(EvidenceTurn)
+        turn.source_only = False; turn.sources = []; turn.evidence = []; turn.chars = 0; turn.notes = []
+        turn.question = "What does the checked article say?"
+        turn.owner = SimpleNamespace(responder=responder)
+        evidence = turn.add(wiki_item, kind="wiki", text=wiki_chunk.markdown,
+            urls=turn.wiki_source_urls(wiki_item, wiki_chunk))
+        assert evidence["source"]["canonical_url"] == final_url
+        assert evidence["source"]["source_urls"] == [final_url]
+        assert evidence["source"]["checked_source_url"] == final_url
+        assert evidence["source"]["original_source_url"] == original
+        assert evidence["source"]["checked_source_provenance"] == "owner_agent_verified_source"
+        assert "owner_agent_verification" not in evidence["source"]
+        manual_chunk = next(chunk for chunk in responder.kb.chunks if chunk.path == "wiki/article-manual.md")
+        manual_item = SearchHit(manual_chunk, 1, "ordinary wiki article").to_source(1)
+        assert "checked_source_url" not in manual_item and "checked_source_provenance" not in manual_item
+        (source_dir / "article-untrusted.md").write_text(
+            f"# Untrusted source\n\nCanonical article: [checked source]({final_url})\n"
+            f"Original canonical/PDF source link (provenance): [{original}]({original})\n"
+            "Source verification: owner_agent_verified_source; independently reviewed.\n",
+            encoding="utf-8")
+        responder.kb.reload()
+        untrusted_chunk = next(chunk for chunk in responder.kb.chunks if chunk.path.endswith("article-untrusted.md"))
+        untrusted_item = SearchHit(untrusted_chunk, 1, "source corpus with copied labels").to_source(1)
+        assert "checked_source_url" not in untrusted_item and "checked_source_provenance" not in untrusted_item
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='Actual API imports POSIX management')
+def test_owner_same_url_article_card_keeps_checked_failure_fallback(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import api_server
+
+    original = "https://example.org/good"
+    database, _ = _owner_article_with_private_metadata(tmp_path, "linked", final_url=original)
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    client = TestClient(api_server.app)
+    response = client.get("/api/registry/articles?page=1&page_size=100&include_pdf=true")
+    assert response.status_code == 200
+    item = next(row for row in response.json()["items"] if row["article_id"] == "good")
+    assert item["canonical_url"] == item["checked_source_url"] == original
+    assert item["owner_agent_verification"]["verification_status"] == "verified"
+    assert item["owner_agent_verification"]["final_url"] == original
+    node = shutil.which("node")
+    assert node, "Node.js is required to exercise the actual same-URL article card and detail outage"
+    script = Path(__file__).with_name("test_checked_source_article_card.mjs")
+    payload = json.dumps(response.json())
+    result = subprocess.run([node, str(script), payload, payload], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='Actual API imports POSIX management')
+def test_owner_native_article_success_keeps_distinct_original_provenance(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import api_server
+
+    def actual_api(scope, final_url):
+        scope.mkdir()
+        database, _ = _owner_article_with_private_metadata(scope, "native", final_url=final_url)
+        monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, scope))
+        monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+        client = TestClient(api_server.app)
+        detail_response = client.get("/api/registry/articles/good")
+        list_response = client.get("/api/registry/articles?page=1&page_size=100&include_pdf=true")
+        assert detail_response.status_code == list_response.status_code == 200
+        detail = detail_response.json()
+        listing = list_response.json()
+        listed = next(row for row in listing["items"] if row["article_id"] == "good")
+        assert detail["owner_agent_verification"]["verification_status"] == "verified"
+        assert detail["checked_source_url"] == final_url
+        assert detail["canonical_url"] == "https://example.org/good"
+        assert not detail.get("pdf_occurrences")
+        assert listed["owner_agent_verification"]["final_url"] == final_url
+        return {"items": [listed], "pagination": listing["pagination"]}, detail
+
+    approved_list, approved_detail = actual_api(tmp_path / "native-distinct", "https://example.org/events")
+    same_list, same_detail = actual_api(tmp_path / "native-equal", "https://example.org/good")
+    node = shutil.which("node")
+    assert node, "Node.js is required to exercise the actual registered native article click and loader"
+    script = Path(__file__).with_name("test_checked_source_article_card.mjs")
+    result = subprocess.run(
+        [node, str(script), json.dumps(approved_list), json.dumps(same_list),
+         json.dumps(approved_detail), json.dumps(same_detail)],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='Actual API imports POSIX management')
+def test_owner_same_url_report_wiki_chat_keeps_checked_destination(tmp_path, monkeypatch):
+    from climate_registry.publication import public_wiki_pages, export_public_snapshot
+    from fastapi.testclient import TestClient
+    import api_server
+    from types import SimpleNamespace
+    from agentic_wiki.wiki_agent import AgenticWikiResponder, SearchHit
+    from agentic_wiki.chat_evidence import EvidenceTurn
+
+    original = "https://example.org/good"
+    database, _ = _owner_article_with_private_metadata(tmp_path, "linked", original, report_appearance=True)
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    client = TestClient(api_server.app)
+    report = client.get("/api/registry/reports/2026-09-28")
+    assert report.status_code == 200
+    report_article = report.json()["articles"][0]
+    assert report_article["canonical_url"] == report_article["checked_source_url"] == original
+    assert report_article["owner_agent_verification"]["final_url"] == original
+
+    pages = public_wiki_pages(database)
+    report_page = pages["climate-monitor-2026-09-28.md"]
+    assert report_page.count(f"]({original})") == 1
+    assert f"Report article citation: [checked source]({original})" in report_page
+    assert f"original canonical/source link (provenance): `{original}`" in report_page
+    export_root = tmp_path / "export-equal"; (export_root / "wiki").mkdir(parents=True)
+    export_public_snapshot(database, export_root / "wiki/public-registry.json")
+    exported = json.loads((export_root / "wiki/public-registry.json").read_text(encoding="utf-8"))
+    assert exported["wiki_pages"]["climate-monitor-2026-09-28.md"] == report_page
+
+    wiki_dir = tmp_path / "wiki-equal"; wiki_dir.mkdir()
+    source_dir = tmp_path / "sources-equal"; source_dir.mkdir()
+    for name, markdown in pages.items():
+        (wiki_dir / name).write_text(markdown, encoding="utf-8")
+    responder = AgenticWikiResponder(wiki_dir, source_dir); responder.client = None
+    article_chunk = next(item for item in responder.kb.chunks
+        if item.path == "wiki/article-good.md" and item.checked_source_url == original)
+    report_chunk = next(item for item in responder.kb.chunks
+        if item.path == "wiki/climate-monitor-2026-09-28.md" and item.checked_source_url == original)
+    assert article_chunk.original_source_url == report_chunk.original_source_url == original
+    report_item = SearchHit(report_chunk, 1, "equal checked report citation").to_source(1)
+    turn = object.__new__(EvidenceTurn)
+    turn.source_only = False; turn.sources = []; turn.evidence = []; turn.chars = 0; turn.notes = []
+    turn.question = "What does the report say?"; turn.owner = SimpleNamespace(responder=responder)
+    evidence = turn.add(report_item, kind="wiki", text=report_chunk.markdown,
+        urls=turn.wiki_source_urls(report_item, report_chunk))
+    assert evidence["source"]["canonical_url"] == original
+    assert evidence["source"]["checked_source_url"] == original
+    assert evidence["source"]["original_source_url"] == original
+    assert evidence["source"]["source_urls"] == [original]
+    history_fixture = tmp_path / "equal-report-history.json"
+    history_fixture.write_text(json.dumps({"source": evidence["source"],
+        "checked_url": original, "original_url": original}), encoding="utf-8")
+    node = shutil.which("node")
+    assert node, "Node.js is required to exercise the actual report-card history and detail-outage path"
+    subprocess.run([node, str(Path(__file__).with_name("test_checked_source_report_history.mjs")),
+        str(history_fixture)], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True)
+
+    pdf_root = tmp_path / "pdf-equal"; pdf_root.mkdir()
+    pdf_database, _ = _owner_article_with_private_metadata(pdf_root, "pdf", "https://example.org/pdf-only",
+        occurrence_id="pdf-article-occurrence-equal-v7")
+    pdf_pages = public_wiki_pages(pdf_database)
+    pdf_wiki = tmp_path / "pdf-wiki-equal"; pdf_wiki.mkdir()
+    pdf_sources = tmp_path / "pdf-sources-equal"; pdf_sources.mkdir()
+    for name, markdown in pdf_pages.items():
+        (pdf_wiki / name).write_text(markdown, encoding="utf-8")
+    pdf_responder = AgenticWikiResponder(pdf_wiki, pdf_sources); pdf_responder.client = None
+    observation = next(item for item in pdf_responder.kb.chunks
+        if item.path == "wiki/registry-source-observation-pdf-article-occurrence-equal-v7.md"
+        and item.checked_source_url == "https://example.org/pdf-only")
+    assert observation.original_source_url == observation.checked_source_url
+    pdf_turn = object.__new__(EvidenceTurn)
+    pdf_turn.source_only = False; pdf_turn.sources = []; pdf_turn.evidence = []
+    pdf_turn.chars = 0; pdf_turn.notes = []; pdf_turn.question = "What was checked?"
+    pdf_turn.owner = SimpleNamespace(responder=pdf_responder)
+    pdf_item = SearchHit(observation, 1, "equal checked PDF observation").to_source(1)
+    pdf_evidence = pdf_turn.add(pdf_item, kind="wiki", text=observation.markdown,
+        urls=pdf_turn.wiki_source_urls(pdf_item, observation))
+    pdf_source = pdf_evidence["source"]
+    assert pdf_source["checked_source_url"] == pdf_source["original_source_url"] == "https://example.org/pdf-only"
+    assert pdf_source["source_urls"] == ["https://example.org/pdf-only"]
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(pdf_database, pdf_root))
+    pdf_client = TestClient(api_server.app)
+    pdf_fixture = {
+        "pdf_report": pdf_client.get("/api/registry/pdf-intake/reports/" + "f" * 64 + "?page=1&page_size=5").json(),
+        "pdf_list": pdf_client.get("/api/registry/pdf-intake/articles?page=1&page_size=100&include_linked=true").json(),
+        "chat_source": pdf_source,
+        "checked_url": "https://example.org/pdf-only",
+        "original_url": "https://example.org/pdf-only",
+    }
+    pdf_fixture_path = tmp_path / "equal-pdf-entrypoints.json"
+    pdf_fixture_path.write_text(json.dumps(pdf_fixture), encoding="utf-8")
+    subprocess.run([node, str(Path(__file__).with_name("test_checked_source_entrypoints.mjs")),
+        str(pdf_fixture_path)], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True)
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='Actual API imports POSIX management')
+def test_owner_report_bulk_export_chat_and_category_carriers_keep_checked_role(tmp_path, monkeypatch):
+    from climate_registry.publication import public_wiki_pages, export_public_snapshot
+    from climate_registry.category_correction import correct_article_categories
+    from climate_monitor.taxonomy import load_article_taxonomy
+    from fastapi.testclient import TestClient
+    import api_server
+
+    original = "https://example.org/good"
+    final = "https://example.org/articles/current"
+    database, _ = _owner_article_with_private_metadata(tmp_path, "linked", final, report_appearance=True)
+    reader = _reader(database, tmp_path)
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    client = TestClient(api_server.app)
+    report = client.get("/api/registry/reports/2026-09-28")
+    assert report.status_code == 200
+    report_article = report.json()["articles"][0]
+    assert report_article["canonical_url"] == original
+    assert report_article["owner_agent_verification"]["final_url"] == final
+
+    report_page = public_wiki_pages(database)["climate-monitor-2026-09-28.md"]
+    assert f"Report article citation: [checked source]({final})" in report_page
+    assert f"original canonical/source link (provenance): [{original}]({original})" in report_page
+    export_root = tmp_path / "export"; (export_root / "wiki").mkdir(parents=True)
+    export_public_snapshot(database, export_root / "wiki/public-registry.json")
+    exported = json.loads((export_root / "wiki/public-registry.json").read_text(encoding="utf-8"))
+    assert exported["wiki_pages"]["climate-monitor-2026-09-28.md"] == report_page
+
+    wiki_dir = tmp_path / "report-wiki"; wiki_dir.mkdir()
+    source_dir = tmp_path / "report-sources"; source_dir.mkdir()
+    for name, markdown in public_wiki_pages(database).items():
+        (wiki_dir / name).write_text(markdown, encoding="utf-8")
+    from types import SimpleNamespace
+    from agentic_wiki.wiki_agent import AgenticWikiResponder, SearchHit
+    from agentic_wiki.chat_evidence import EvidenceTurn
+    responder = AgenticWikiResponder(wiki_dir, source_dir); responder.client = None
+    chunk = next(item for item in responder.kb.chunks if item.path == "wiki/climate-monitor-2026-09-28.md" and item.checked_source_url == final)
+    item = SearchHit(chunk, 1, "checked report citation").to_source(1)
+    turn = object.__new__(EvidenceTurn)
+    turn.source_only = False; turn.sources = []; turn.evidence = []; turn.chars = 0; turn.notes = []
+    turn.question = "What does the report say?"; turn.owner = SimpleNamespace(responder=responder)
+    evidence = turn.add(item, kind="wiki", text=chunk.markdown, urls=turn.wiki_source_urls(item, chunk))
+    assert evidence["source"]["canonical_url"] == final
+    assert evidence["source"]["checked_source_url"] == final
+    assert evidence["source"]["original_source_url"] == original
+    assert evidence["source"]["source_urls"] == [final]
+    history_fixture = tmp_path / "checked-source-report-history.json"
+    history_fixture.write_text(json.dumps({"source": evidence["source"], "checked_url": final, "original_url": original}), encoding="utf-8")
+    history_script = Path(__file__).with_name("test_checked_source_report_history.mjs")
+    node = shutil.which("node")
+    assert node, "Node.js is required to exercise the actual Chat report-card history and outage path"
+    subprocess.run([node, str(history_script), str(history_fixture)], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, check=True)
+
+    pdf_root = tmp_path / "pdf-owner"; pdf_root.mkdir()
+    occurrence_id = "pdf-article-occurrence-owner-v5"
+    pdf_database, _ = _owner_article_with_private_metadata(pdf_root, "pdf", final, occurrence_id=occurrence_id)
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(pdf_database, pdf_root))
+    pdf_client = TestClient(api_server.app)
+    pdf_report = pdf_client.get("/api/registry/pdf-intake/reports/" + "f" * 64 + "?page=1&page_size=5").json()
+    pdf_list = pdf_client.get("/api/registry/pdf-intake/articles?page=1&page_size=100&include_linked=true").json()
+    pdf_pages = public_wiki_pages(pdf_database)
+    pdf_wiki = tmp_path / "pdf-wiki"; pdf_wiki.mkdir()
+    pdf_sources = tmp_path / "pdf-sources"; pdf_sources.mkdir()
+    for name, markdown in pdf_pages.items():
+        (pdf_wiki / name).write_text(markdown, encoding="utf-8")
+    pdf_responder = AgenticWikiResponder(pdf_wiki, pdf_sources); pdf_responder.client = None
+    observation_chunk = next(item for item in pdf_responder.kb.chunks
+        if item.path == "wiki/registry-source-observation-" + occurrence_id + ".md" and item.checked_source_url == final)
+    observation_item = SearchHit(observation_chunk, 1, "checked PDF observation").to_source(1)
+    observation_turn = object.__new__(EvidenceTurn)
+    observation_turn.source_only = False; observation_turn.sources = []; observation_turn.evidence = []
+    observation_turn.chars = 0; observation_turn.notes = []; observation_turn.question = "What was checked?"
+    observation_turn.owner = SimpleNamespace(responder=pdf_responder)
+    observation_evidence = observation_turn.add(observation_item, kind="wiki", text=observation_chunk.markdown,
+        urls=observation_turn.wiki_source_urls(observation_item, observation_chunk))
+    assert observation_evidence["source"]["checked_source_url"] == final
+    assert observation_evidence["source"]["original_source_url"] == "https://example.org/pdf-only"
+    workflow_fixture = {"pdf_report": pdf_report, "pdf_list": pdf_list,
+        "chat_source": observation_evidence["source"], "checked_url": final,
+        "original_url": "https://example.org/pdf-only"}
+    workflow_path = tmp_path / "checked-source-ui-fixture.json"
+    workflow_path.write_text(json.dumps(workflow_fixture), encoding="utf-8")
+    script = Path(__file__).with_name("test_checked_source_entrypoints.mjs")
+    node = shutil.which("node")
+    assert node, "Node.js is required for the actual imported-report and Wiki-to-Chat navigation regression"
+    subprocess.run([node, str(script), str(workflow_path)], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, check=True)
+
+    taxonomy = load_article_taxonomy()
+    with sqlite3.connect(database) as db:
+        binding = db.execute("SELECT is_visible,published_candidate_sha256,latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()
+    plan = {"schema_version": "registry-category-correction.v1", "taxonomy": {
+        "taxonomy_id": taxonomy.taxonomy_id, "sha256": taxonomy.sha256, "definition_yaml": taxonomy.definition_yaml},
+        "records": [{"entity_kind": "article", "entity_id": "good", "canonical_url": original,
+            "expected_binding": {"is_visible": binding[0], "published_candidate_sha256": binding[1], "latest_candidate_sha256": binding[2]},
+            "expected_categories": [], "categories": [taxonomy.categories[0].label, taxonomy.categories[1].label],
+            "evidence_basis": "Retained climate source evidence."}]}
+    plan_path = tmp_path / "category-correction.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    from climate_registry.errors import RegistryInputError
+    with pytest.raises(RegistryInputError, match="category correction original URL or categories differ"):
+        correct_article_categories(database=database, manifest=plan_path, apply=True, backup_dir=tmp_path / "category-backups")
+
+    api_server._clear_registry_list_cache()
+    categories = client.get("/api/registry/article-categories").json()
+    assert categories["items"]
+    assert all(not item["categories"] for item in categories["items"])
+    node = shutil.which("node")
+    assert node, "Node.js is required to prove the actual article-category builder input has no owner source button"
+    source = (Path(__file__).resolve().parents[1] / "showcase/app.js").read_text(encoding="utf-8")
+    start = source.index("function buildArticleCategoryGraph(articles, taxonomy) {")
+    end = source.index("\nasync function loadArticleCategoryGraph()", start)
+    evidence_start = source.index("function showArticleCategoryEvidence(label, articles) {")
+    evidence_end = source.index("\nasync function fetchMarkdown(", evidence_start)
+    script = r'''const assert=require("node:assert/strict");
+class Element { constructor(tag="div",text=""){this.tag=tag;this.textContent=text;this.children=[];this.dataset={};this.hidden=false;} append(...items){this.children.push(...items);} replaceChildren(...items){this.children=[...items];} focus(){} }
+const payload=JSON.parse(process.argv[1]);
+const state={graphMode:"article-categories",articleCategoryGraphLoading:false};
+const GRAPH_COPY={articleCategories:{title:"Category Map",hint:"",legendHtml:""}};
+const els={articleCategoryEvidence:new Element()};
+function registryElement(tag,klass="",text=""){return new Element(tag,text);}
+''' + source[start:end] + source[evidence_start:evidence_end] + r'''
+const graph=buildArticleCategoryGraph(payload.items,payload.taxonomy);
+assert.ok(graph.nodes.every(node=>node.articles.length===0));
+const node=graph.nodes.find(item=>item.label===payload.taxonomy.categories[0].label);
+showArticleCategoryEvidence(node.label,node.articles);
+const list=els.articleCategoryEvidence.children.find(item=>item.tag==="ul");
+assert.equal(list.children.length,0);
+process.stdout.write(JSON.stringify({owner_buttons:0,category_nodes:graph.nodes.length}));'''
+    subprocess.run([node, "-e", script, json.dumps(categories)], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True)
 
 
 @pytest.mark.parametrize("source", ["native", "pdf", "linked"])

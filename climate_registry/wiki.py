@@ -20,6 +20,30 @@ from .information_checks import deduplicate_pdf_occurrences
 OccurrenceFilter = Callable[[dict], bool]
 
 
+def _reviewed_checked_source_url(item: dict) -> str | None:
+    occurrences = [item.get("latest_occurrence") or {}, *(item.get("occurrences") or []), *(item.get("pdf_occurrences") or [])]
+    for value in (item, *occurrences):
+        url = value.get("checked_source_url")
+        owner = value.get("owner_agent_verification") or {}
+        if (url and owner.get("verification_status") == "verified" and owner.get("review_id")
+                and owner.get("reviewer") and owner.get("final_url") == url):
+            return url
+    return None
+
+
+def _source_provenance_value(original_url: str, checked_url: str) -> str:
+    return f"`{original_url}`" if original_url == checked_url else f"[{original_url}]({original_url})"
+
+
+def _article_citation(article: dict, label: str) -> str:
+    original_url = article["canonical_url"]
+    checked_url = _reviewed_checked_source_url(article)
+    if not checked_url:
+        return f"{label}: [{original_url}]({original_url})"
+    return (f"{label}: [checked source]({checked_url}); original canonical/source link "
+            f"(provenance): {_source_provenance_value(original_url, checked_url)}")
+
+
 def _write_if_changed(path: Path, content: str) -> str:
     if path.exists():
         if path.read_text(encoding="utf-8") == content:
@@ -41,8 +65,12 @@ def _citation(occurrence: dict) -> str:
     filename = ", ".join(files) or occurrence.get("source_filename") or occurrence.get("source_document") or "unknown PDF"
     sha256 = occurrence.get("source_document_sha256", "unknown")
     page = occurrence.get("page", "unknown")
-    url = occurrence.get("raw_url", "")
-    link = f"; [original link]({url})" if url else ""
+    url = occurrence.get("raw_url") or occurrence.get("original_source_url", "")
+    checked_url = _reviewed_checked_source_url(occurrence)
+    link = ("" if checked_url and checked_url == url else
+        f"; [checked source]({checked_url}); original PDF/source link (provenance): "
+        f"{_source_provenance_value(url, checked_url)}" if checked_url else
+        f"; [original link]({url})" if url else "")
     return f"PDF: {filename}; SHA-256: {sha256}; page {page}{link}"
 
 
@@ -52,10 +80,13 @@ def _pdf_heading(occurrence: dict) -> str:
 
 def _verified_information_blocks(occurrence: dict) -> list[str]:
     information = occurrence.get("verified_information")
+    if not information:
+        return []
+    checked_url = _reviewed_checked_source_url(occurrence) or information["source_url"]
     return ["", "### Verified information", "", "" if occurrence.get("display_summary") else information["summary"],
         *( ["", "Categories: " + ", ".join(information["categories"])] if information["categories"] else []),
         *( ["Keywords: " + ", ".join(information["keywords"])] if information["keywords"] else []),
-        f"Website evidence: {information['source_url']}; checked {information['generated_at']}"] if information else []
+        f"Website evidence: {checked_url}; checked {information['generated_at']}"]
 
 
 def _registry_article_has_renderable_content(article: dict) -> bool:
@@ -91,11 +122,18 @@ def _render_registry_article(article: dict) -> str | None:
         (item.get("title") for item in acquisition_observations if item.get("title")),
         article["article_id"],
     )
+    checked_source_url = _reviewed_checked_source_url({**article, "pdf_occurrences": pdf_occurrences})
+    original_url = article["canonical_url"]
+    canonical_label = "checked source" if checked_source_url else original_url
     blocks = [
         f"# {title}",
         "",
-        f"Canonical article: [{article['canonical_url']}]({article['canonical_url']})",
+        f"Canonical article: [{canonical_label}]({checked_source_url or original_url})",
     ]
+    if checked_source_url:
+        blocks.append(f"Original canonical/PDF source link (provenance): "
+            f"{_source_provenance_value(original_url, checked_source_url)}")
+        blocks.append("Source verification: owner_agent_verified_source; independently reviewed.")
     if article.get("collected_at"):
         blocks.append(f"Collected at: {article['collected_at']}")
     elif article.get("information_date"):
@@ -143,7 +181,7 @@ def _render_registry_article(article: dict) -> str | None:
                 "",
                 content.get("markdown") or content["supporting_excerpt"],
                 "",
-                f"Article citation: [{article['canonical_url']}]({article['canonical_url']})",
+                _article_citation(article, "Article citation"),
             ]
         )
         if content.get("content_version_id"):
@@ -166,7 +204,7 @@ def _render_registry_article(article: dict) -> str | None:
                 "",
                 f"Provenance: {article.get('summary_provenance') or 'unknown'}; "
                 f"content version: {semantic_content_version or 'unknown'}; "
-                f"article citation: [{article['canonical_url']}]({article['canonical_url']})",
+                + _article_citation(article, "article citation"),
             ]
         )
     if report_summary and not current_version_has_appearance:
@@ -178,8 +216,8 @@ def _render_registry_article(article: dict) -> str | None:
                 report_summary,
                 "",
                 "Provenance: Registry article version; Registry article version: "
-                f"{article.get('current_version_id') or 'unknown'}; Article citation: "
-                f"[{article['canonical_url']}]({article['canonical_url']})",
+                f"{article.get('current_version_id') or 'unknown'}; "
+                + _article_citation(article, "Article citation"),
             ]
         )
     for appearance in appearances:
@@ -299,6 +337,13 @@ def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
             "Approved reviewed summary." if occurrence.get("display_summary") else
             "Owner-agent source-supported public summary; independently reviewed. Original PDF claims retain their separate disposition." if occurrence.get("owner_agent_verification") else
             "Report-provided summary; article details are unconfirmed.", _citation(occurrence)]
+        checked_url = _reviewed_checked_source_url(occurrence)
+        original_url = occurrence.get("raw_url") or occurrence.get("original_source_url")
+        if checked_url and original_url:
+            blocks += [f"Checked source: [checked source]({checked_url})",
+                f"Original PDF/source link (provenance): "
+                f"{_source_provenance_value(original_url, checked_url)}",
+                "Source verification: owner_agent_verified_source; independently reviewed."]
         blocks.extend(_verified_information_blocks(occurrence))
         pages[name] = "\n".join([*blocks, ""])
     return dict(sorted(pages.items()))
@@ -352,9 +397,11 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
                 location = owner["public_fields"].get("location")
                 if location:
                     blocks.append("Location: " + location)
-                url = owner.get("source_url")
+                url = owner.get("final_url") or owner.get("source_url")
                 if url:
                     blocks.append("Source: [" + url + "](" + url + ")")
+                if owner.get("source_url") and owner["source_url"] != url:
+                    blocks.append("Original PDF/source link: " + owner["source_url"])
             for observation in item.get("pdf_observations") or [item]:
                 blocks += observation_blocks(observation)
             blocks.append("")
@@ -367,10 +414,17 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
                 ("end_date", "End date"), ("deadline_date", "Deadline"), ("deadline_type", "Deadline type"),
                 ("organizer", "Host"), ("location", "Location"), ("timezone", "Timezone"),
                 ("online_url", "Online URL")) if item.get(field)]
-            for source in item.get("sources", []):
-                url = source.get("source_url")
-                if url:
-                    blocks.append("Source: [" + url + "](" + url + ")")
+            checked_url = _reviewed_checked_source_url(item)
+            if checked_url:
+                blocks.append("Source: [checked source](" + checked_url + ")")
+                original_url = item.get("original_source_url") or item["owner_agent_verification"].get("source_url")
+                if original_url and original_url != checked_url:
+                    blocks.append("Original source link (provenance): [" + original_url + "](" + original_url + ")")
+            else:
+                for source in item.get("sources", []):
+                    url = source.get("source_url")
+                    if url:
+                        blocks.append("Source: [" + url + "](" + url + ")")
             for observation in item.get("pdf_observations", []):
                 blocks += observation_blocks(observation)
             blocks.append("")
@@ -396,7 +450,11 @@ def _registry_report_markdown(report_date: str, filename: str, report_sha256: st
             blocks.append("Approved Registry version: " + article["published_candidate_sha256"])
         else:
             blocks.append(source_line)
-        blocks += [article["canonical_url"], ""]
+        checked_url = _reviewed_checked_source_url(article)
+        if checked_url:
+            blocks += [_article_citation(article, "Report article citation"), ""]
+        else:
+            blocks += [article["canonical_url"], ""]
     return "\n".join(blocks).rstrip("\n") + "\n"
 
 
@@ -985,15 +1043,21 @@ def _registry_pages_read(
             if meetings:
                 pages["registry-meetings.md"] = _render_registry_meetings(meetings)
             by_date = defaultdict(list)
+            report_identities = {}
             for row in connection.execute("""SELECT r.report_date,r.filename,r.report_sha256,ra.article_id,av.observed_title,av.observed_summary,a.canonical_url
                 FROM report_appearances ra JOIN reports r ON r.report_id=ra.report_id JOIN articles a ON a.article_id=ra.article_id
                 JOIN article_versions av ON av.version_id=ra.version_id WHERE a.publication_eligible=1 ORDER BY r.report_date,ra.ordinal"""):
                 detail=article_details.get(row["article_id"]) or reader.article(row["article_id"])
-                summary=detail.get("summary") if detail.get("summary") is not None else detail.get("report_summary")
-                by_date[row["report_date"]] += ["## " + str(detail.get("title") or detail["canonical_url"]), summary or "",
-                    "Source report: " + row["filename"] + "; SHA-256: " + row["report_sha256"], row["canonical_url"], ""]
-            for report_date, content in by_date.items():
-                pages["climate-monitor-" + report_date + ".md"] = ("# Climate Monitor " + report_date + "\n\n" + "\n".join(content)).rstrip("\n") + "\n"
+                appearance = next((item for item in detail.get("appearances", [])
+                    if item.get("report_date") == row["report_date"]), None)
+                if appearance is None:
+                    appearance = {"summary": row["observed_summary"], "ordinal": None}
+                by_date[row["report_date"]].append({"article": detail, "appearance": appearance})
+                report_identities[row["report_date"]] = (row["filename"], row["report_sha256"])
+            for report_date, entries in by_date.items():
+                filename, sha = report_identities[report_date]
+                pages["climate-monitor-" + report_date + ".md"] = _registry_report_markdown(
+                    report_date, filename, sha, entries)
     states = {name: _write_if_changed(wiki_dir / name, content) for name, content in pages.items()
         if not name.startswith("climate-monitor-") or not (wiki_dir / name).exists()}
     for existing in [*wiki_dir.glob("article-*.md"), *wiki_dir.glob("registry-source-observation-*.md")]:

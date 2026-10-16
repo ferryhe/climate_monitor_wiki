@@ -482,14 +482,14 @@ def test_native_review_requires_actual_full_snapshot_inspection(tmp_path, monkey
     assert _reader(database, tmp_path).articles()["pagination"]["total"] == 1
 
 
-def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, period=(None,None), run_date=None, document=None, verified=True):
+def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, occurrence_id="occurrence", period=(None,None), run_date=None, document=None, verified=True):
     occurrence = {"title": "Original PDF title", **(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})}
     db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,period_start,period_end,date_of_run) VALUES('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','/evidence/source.pdf','source.pdf','application/pdf',1,'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',?,'2026-08-01T00:00:00Z',?,?,?)",(json.dumps(document or {}),*period,run_date))
     db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES(?,?, 'Original PDF title','2026-08-01T00:00:00Z')", (identity,url))
-    db.execute("INSERT INTO pdf_intake_article_occurrences VALUES('occurrence',?,'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',2,?,'2026-08-01',NULL,'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',?)", (identity,url,json.dumps(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})))
+    db.execute("INSERT INTO pdf_intake_article_occurrences VALUES(?,?,'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',2,?,'2026-08-01',NULL,'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',?)", (occurrence_id,identity,url,json.dumps(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})))
     if verified:
         from verified_fixtures import seed_verified_articles
-        seed_verified_articles(db, occurrence_ids={"occurrence"})
+        seed_verified_articles(db, occurrence_ids={occurrence_id})
 
 
 def test_shared_core_pdf_identity_has_one_visibility_and_version(tmp_path):
