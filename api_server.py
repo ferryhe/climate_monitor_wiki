@@ -963,10 +963,11 @@ def registry_pdf_report(document_sha256: str, page: str | None = None, page_size
             report = RegistryReader.paginate_pdf_report(report, parsed_page, parsed_size)
         calendars = [_calendar_dto(item) for item in report["calendar_items"]]
         if parsed_page is not None:
-            fields = {"name", "kind", "raw_date", "start_date", "end_date", "deadline_date",
+            fields = {"name", "kind", "raw_date", "start_date", "end_date", "date_precision", "deadline_date",
                 "organizer", "publisher", "relevance", "relevance_reason", "location", "source_urls", "online_url",
                 "metadata_only", "verified_primary_display", "verified_primary_reference", "page", "source_filename",
-                "source_document_sha256", "occurrence_id", "event_id", "canonical_pdf_event_id"}
+                "source_document_sha256", "occurrence_id", "event_id", "canonical_pdf_event_id",
+                "verification_status", "access_status", "collection_status", "owner_agent_verification"}
             calendars = [{key: value for key, value in item.items() if key in fields} for item in calendars]
         return {**report, "articles": [_pdf_dto(item) for item in report["articles"]],
             "calendar_items": calendars}

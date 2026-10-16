@@ -498,6 +498,9 @@ def information_ready(connection, snapshot, *, information_groups=None):
         (snapshot["entity_kind"],snapshot["entity_id"]),[])
     if not targets or targets != current:
         return False
+    from .owner_checks import owner_information_ready
+    if owner_information_ready(snapshot):
+        return True
     database = Path(connection.execute("PRAGMA database_list").fetchone()[2]).resolve()
     for target in targets:
         prefix = "article" if target["check_kind"]=="articles" else "meeting"

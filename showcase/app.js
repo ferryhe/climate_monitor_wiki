@@ -2332,6 +2332,10 @@ function registryMetric(label, value) {
 }
 
 const REGISTRY_SUMMARY_PRESENTATION = {
+  owner_agent_verified_source: {
+    sourceLabel: "Owner-agent verified source",
+    provenanceCopy: "Source-supported public summary, independently reviewed",
+  },
   content_enrichment: {
     sourceLabel: "Captured content",
     provenanceCopy: "Summary generated from captured article content",
@@ -2416,6 +2420,7 @@ function appendInformationCheck(container, item, concise = false) {
   container.append(registryElement("p", "registry-card__meta", [
     item.origin === "web_collection" ? (item.pdf_observations?.length ? "Web collection · PDF import" : "Web collection") : "PDF import",
     labels[item.access_status] || "URL unchecked", labels[item.verification_status] || "Pending check",
+    item.owner_agent_verification ? "Owner-agent source check · Independently reviewed public scope" : "",
     item.checked_at ? `Checked ${item.checked_at}` : "",
   ].filter(Boolean).join(" · ")));
   if (concise || !item.checks?.length) return;
@@ -3177,7 +3182,8 @@ function appendPdfVerifiedInformation(container, occurrence) {
     block.append(summary);
     const status = occurrence.verification_status || "status unavailable";
     const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
-    block.append(registryElement("p", "muted registry-provenance", `PDF-provided · Verification: ${status}${checkedAt}`));
+    const basis = occurrence.owner_agent_verification ? "Owner-agent source verification · Independently reviewed" : "PDF-provided";
+    block.append(registryElement("p", "muted registry-provenance", `${basis} · Verification: ${status}${checkedAt}`));
     const sourceUrl = safeSourceUrl(occurrence.raw_url);
     if (sourceUrl) {
       const link = registryElement("a", "registry-source-link", "Open original source");
