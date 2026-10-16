@@ -892,10 +892,11 @@ def _document_catalog_presentation(doc: WikiDocument) -> dict[str, str | None]:
             rf"(?im)^\s*-\s*Page information date:\s*{date_pattern}"
             rf"(?![\w-])(?P<rest>[^\n]*)"
         )
-        page_kind_basis = {"published": "publication_date", "updated": "page_update_date"}
+        page_kind_basis = {"published": "publication_date", "publication_date": "publication_date",
+            "updated": "page_update_date"}
         for match in page_information.finditer(doc.markdown):
             kind = re.search(
-                r"\bpage date kind:\s*(published|updated)\b",
+                r"\bpage date kind:\s*(published|publication_date|updated)\b",
                 match.group("rest"),
                 re.IGNORECASE,
             )
