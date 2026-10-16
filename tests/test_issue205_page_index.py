@@ -39,6 +39,12 @@ def test_catalog_uses_same_page_titles_and_only_explicit_content_dates(tmp_path)
             "page date kind: published; source URL: https://example.org/shared; "
             "evidence imported at: 2026-10-05T01:16:09Z\n"
         ),
+        "article-article-page-publication-date.md": (
+            "# Page date publication date\n\n"
+            "- Page information date: 2026-10-13; source record: registry.article_versions 4933; "
+            "page date kind: publication_date; source URL: https://example.org/shared; "
+            "evidence imported at: 2026-10-15T23:00:00Z\n"
+        ),
         "article-article-page-updated.md": (
             "# Page date updated\n\n"
             "- Page information date: 2025-11; source record: source-record; "
@@ -84,6 +90,11 @@ def test_catalog_uses_same_page_titles_and_only_explicit_content_dates(tmp_path)
     published = by_path["wiki/article-article-page-published.md"]
     assert (published["display_date"], published["display_date_basis"]) == (
         "2026-03-26",
+        "publication_date",
+    )
+    owner_publication = by_path["wiki/article-article-page-publication-date.md"]
+    assert (owner_publication["display_date"], owner_publication["display_date_basis"]) == (
+        "2026-10-13",
         "publication_date",
     )
     updated = by_path["wiki/article-article-page-updated.md"]
