@@ -2,7 +2,7 @@
 
 The current deployment target is the `independent-et` profile: eleven Hermes cron
 jobs (T1–T11) plus the existing independent PDF intake writer. Daily site
-rotation, weekly search, acquisition review, daily information checks, biweekly
+rotation, weekly search, acquisition review, incremental information checks, biweekly
 report generation, final native PDF review, exact-file sending and public Git
 snapshot publication run separately. T1 selects bounded incremental changes
 every five minutes; approved public revisions drive existing writer activation.
