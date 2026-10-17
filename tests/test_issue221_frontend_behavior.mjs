@@ -197,15 +197,14 @@ async function articleDetailUsesCurrentCategories() {
   const context = vm.createContext({
     els, state: { registry: { articleDetailRequestSequence: 0, evidenceNavigationSequence: 0 } },
     registryElement: element, registryMetric: element, registryFetch: async () => article,
-    safeSourceUrl: (value) => value || '', registryErrorMessage: String,
+    safeSourceUrl: (value) => value || '', reviewedCheckedSourceUrl: () => '', registryErrorMessage: String,
     registrySummaryPresentation: () => ({}), appendPdfAppearances() {},
   });
   vm.runInContext([
     slice('function showMobileDetail(panel) {', '\nfunction closeMobileDetail('),
-    slice('function appendPdfVerifiedInformation(container, occurrence) {', '\nfunction appendPdfAppearances('),
     slice('function appendRegistryTags(container, label, values) {', '\nasync function loadRegistryArticle('),
-    slice('function resetRegistryArticleDetail(title, fallbackSourceUrl = "") {', '\nasync function loadRegistryArticle('),
-    slice('async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "") {', '\nfunction attachSourceCardClickHandler('),    'globalThis.loadDetail = loadRegistryArticle;',
+    slice('function resetRegistryArticleDetail(title, fallbackSourceUrl = "", fallbackSourceIsChecked = false) {', '\nasync function loadRegistryArticle('),
+    slice('async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "",', '\nfunction attachSourceCardClickHandler('),    'globalThis.loadDetail = loadRegistryArticle;',
   ].join('\n'), context);
   const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
   article = {
@@ -219,12 +218,12 @@ async function articleDetailUsesCurrentCategories() {
   let displayed = texts(els.registryEnrichment);
   assert.equal(displayed.filter((text) => text === 'Categories').length, 1);
   assert.ok(displayed.includes('Food & Water Security'));
-  assert.ok(displayed.includes('Source Categories'));
-  assert.ok(displayed.includes('Old source category'));
+  assert.ok(!displayed.includes('Source Categories'));
+  assert.ok(!displayed.includes('Old source category'));
   const currentCategories = els.registryEnrichment.children.find((block) => block.children[0]?.text === 'Categories');
   assert.ok(!texts(currentCategories).includes('Old source category'), 'source categories do not become article categories');
-  assert.ok(displayed.includes('Checked summary'));
-  assert.ok(displayed.includes('Observed keyword'));
+  assert.ok(!displayed.includes('Checked summary'));
+  assert.ok(!displayed.includes('Observed keyword'));
   article = { title: 'Unclassified article', categories: [], enrichment: { categories: ['Stale category'] } };
   await context.loadDetail('core-article');
   displayed = texts(els.registryEnrichment);

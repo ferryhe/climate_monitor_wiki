@@ -36,8 +36,8 @@ const context = vm.createContext({
       pagination: {page: 1, pages: 1, total: 2}};
     const second = path.includes('page=2');
     return { report_title: 'Report', filename: 'report.pdf', executive_summary: ['Complete summary'], executive_summary_label: 'Adopted from the original PDF',
-      articles: [{article_id: 'a', title: 'Article', occurrences: [{source_document: 'report.pdf',
-        report_date: '2026-09-28', page: 19, raw_url: 'https://example.org/a', summary: 'Real summary'}]}],
+      articles: [{article_id: 'a', title: 'Article', summary: 'Approved article summary', occurrences: [{source_document: 'report.pdf',
+        report_date: '2026-09-28', page: 19, raw_url: 'https://example.org/a', summary: 'Raw occurrence summary'}]}],
       calendar_items: second ? [{name: 'Meeting', kind: 'event', raw_date: 'October 20', organizer: 'Host',
         relevance: 'Climate', location: 'Online', page: 23, date_evidence: 'Internal detail',
         source_urls: ['https://example.org/event']}] : [],
@@ -66,13 +66,16 @@ assert.ok(executiveBody.children.findIndex((node) => node.text === 'Complete sum
 
 const list = firstNodes.find((node) => node.className === 'registry-pdf-history__list');
 assert.equal(list.tag, 'ul');
+assert.equal(firstNodes.filter((node) => node.className === 'registry-pdf-article-summary').length, 1);
+assert.ok(texts(firstNodes.find((node) => node.className === 'registry-pdf-article-summary')).includes('Approved article summary'));
 const occurrence = list.children[0];
 const information = occurrence.children.find((node) => node.tag === 'details');
 assert.equal(information.open, false);
 assert.equal(information.children[0].text, 'Report information');
 assert.ok(texts(information).includes('report.pdf · Report date 2026-09-28 · page 19'));
 assert.ok(texts(information).includes('PDF import · URL accessible'));
-assert.ok(occurrence.children.some((node) => node.text === 'Real summary'));
+assert.ok(!texts(occurrence).includes('Raw occurrence summary'));
+assert.ok(!texts(els.registryImportedReport).includes('Real summary'));
 assert.ok(occurrence.children.findIndex((node) => node.text === 'Open source link') <
   occurrence.children.indexOf(information));
 assert.equal(firstNodes.find((node) => node.text === 'Previous').disabled, true);
@@ -119,14 +122,16 @@ assert.equal(els.registryReportTitle.textContent, 'Report');
 console.log('PDF summary disclosure, page jump, pagination, numbering, meetings and stale requests passed');
 
 const reviewedReport = element();
-context.appendRegistryPdfOccurrences(reviewedReport, [{
+context.appendRegistryPdfOccurrences(reviewedReport, { summary: 'Approved report summary.', occurrences: [{
   source_document: 'reviewed.pdf', report_date: '2026-09-14', page: 13,
   raw_url: 'https://example.org/article', summary: 'Mixed raw PDF passage.',
-  display_summary: 'Reviewed report summary.', display_summary_provenance: 'owner_reviewed_source_evidence',
+  display_summary: 'Occurrence-level reviewed summary.', display_summary_provenance: 'owner_reviewed_source_evidence',
   verified_information: { summary: 'Outdated checked summary.', keywords: ['insurance'] },
-}]);
-assert.ok(texts(reviewedReport).includes('Reviewed report summary.'));
-assert.ok(texts(reviewedReport).includes('Approved reviewed summary'));
+}] });
+assert.equal(nodes(reviewedReport).filter((node) => node.className === 'registry-pdf-article-summary').length, 1);
+assert.ok(texts(reviewedReport).includes('Approved report summary.'));
+assert.ok(!texts(reviewedReport).includes('Occurrence-level reviewed summary.'));
+assert.ok(!texts(reviewedReport).includes('Approved reviewed summary'));
 assert.ok(!texts(reviewedReport).includes('Mixed raw PDF passage.'));
 assert.ok(texts(reviewedReport).includes('reviewed.pdf · Report date 2026-09-14 · page 13'));
 
@@ -134,6 +139,9 @@ assert.ok(!texts(reviewedReport).includes('Verified information'));
 assert.ok(!texts(reviewedReport).includes('Outdated checked summary.'));
 assert.ok(texts(reviewedReport).includes('PDF import · URL accessible'));
 assert.ok(texts(reviewedReport).includes('Open source link'));
+const noRootSummary = element();
+context.appendRegistryPdfOccurrences(noRootSummary, { occurrences: [{ summary: 'Mention-only summary.' }] });
+assert.ok(!texts(noRootSummary).includes('Mention-only summary.'));
 
 await context.load('reference');
 const references = nodes(els.registryImportedReport);

@@ -6,7 +6,7 @@ import sqlite3
 
 from climate_monitor.publisher_mapping import publisher_name
 from climate_monitor.taxonomy import load_article_taxonomy
-from .read_api import RegistryQueryError, _pagination, filter_pdf_articles, validate_page, validate_report_date
+from .read_api import RegistryQueryError, _pagination, _pdf_article_search_text, filter_pdf_articles, validate_page, validate_report_date
 
 
 ARTICLE_FIELDS = {
@@ -45,6 +45,7 @@ class RegistryListProjection:
         reader._public_candidates("article", "pdf_article", "meeting", "pdf_meeting")
         core = reader.approved_article_cards_all()
         pdf = reader.pdf_articles_all(include_linked=True)
+        pdf_search_by_url = {item["canonical_url"]: _pdf_article_search_text(item) for item in pdf}
         reports = reader.approved_reports_all() + reader.pdf_reports_all()
         self.status_core = reader.status()
         self.status_combined = dict(self.status_core, articles=reader.approved_merged_article_count(),
@@ -88,7 +89,7 @@ class RegistryListProjection:
                     core_card["publisher"] = publisher_name(core_card.get("publisher"), [core_card.get("canonical_url")])
                 core_search = " ".join(str(original.get(key) or "") for key in
                     ("title", "summary", "canonical_url", "categories", "keywords")).casefold() if original else None
-                pdf_search = " ".join((imported["title"] or "", imported["summary"] or "", url)).casefold() if imported else None
+                pdf_search = pdf_search_by_url.get(url) if imported else None
                 db.execute("INSERT INTO articles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
                     url, merged["article_id"], merged.get("last_seen") or "", merged.get("first_seen") or "",
                     json.dumps(core_card, ensure_ascii=False) if core_card is not None else None,

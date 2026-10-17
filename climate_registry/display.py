@@ -10,9 +10,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from .list_projection import RegistryListProjection
-from .read_api import RegistryReader, RegistryContractError, RegistryNotFoundError, RegistryQueryError, _pagination, validate_page, validate_report_date, validate_article_id, filter_pdf_articles
+from .read_api import RegistryReader, RegistryContractError, RegistryNotFoundError, RegistryQueryError, _pagination, validate_page, validate_report_date, validate_article_id, filter_pdf_articles, _pdf_article_search_text
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 def _json(value):
@@ -115,7 +115,8 @@ def refresh_display(connection, *, force=False, output_dir=None):
             for original in reader.pdf_articles_all(include_linked=True):
                 item = _merge_pdf_article_payloads(original, None)
                 card = _pdf_dto(filter_pdf_articles([item])[0])
-                search = " ".join((item["title"] or "", item["summary"] or "", item["canonical_url"])).casefold()
+                search_item = {**item, "occurrences": original.get("occurrences", [])}
+                search = _pdf_article_search_text(search_item)
                 connection.execute("INSERT INTO display_pdf_articles VALUES(?,?,?,?,?,?,?)",
                     (item["canonical_url"], item["article_id"], item.get("last_seen") or "", item.get("source"), search,
                         item["canonical_url"] in standalone, _json(card)))

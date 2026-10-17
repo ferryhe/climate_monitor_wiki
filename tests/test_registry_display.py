@@ -17,6 +17,30 @@ def _publish(connection):
     refresh_display(connection)
 
 
+def test_display_searches_pdf_occurrence_text_while_returning_article_summary(tmp_path):
+    from climate_registry.publication import snapshot_entity, stage_snapshot
+    from test_registry_publication import _reviewed_pdf_summary_receipt
+
+    database = _database(tmp_path, version=24)
+    url = "https://pdf.example/wildfire"
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-search", url=url,
+            occurrence={"summary": "Wildfire mention from the PDF page", "summary_basis": "verbatim_pdf_article_row"})
+        _publish(db)
+        snapshot = snapshot_entity(db, "pdf_article", "pdf-search")
+        snapshot["derived_display"] = {"summary": "Approved article summary", "summary_provenance": "owner_reviewed_source_evidence"}
+        sha = stage_snapshot(db, snapshot)
+        _approve(db, sha, _reviewed_pdf_summary_receipt(snapshot, sha))
+        refresh_display(db)
+        result = DisplayReader(db).pdf_articles(page=1, page_size=10, query="wildfire")
+        detail = DisplayReader(db).article("pdf-search", pdf=True)
+
+    assert result["pagination"]["total"] == 1
+    assert result["items"][0]["summary"] == "Approved article summary"
+    assert detail["summary"] == "Approved article summary"
+    assert detail["occurrences"][0]["summary"] == "Wildfire mention from the PDF page"
+
+
 def test_display_web_routes_do_no_source_work_and_sql_page(tmp_path, monkeypatch):
     import api_server
     import climate_registry.publication as publication
