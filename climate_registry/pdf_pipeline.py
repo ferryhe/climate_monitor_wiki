@@ -772,8 +772,10 @@ class PdfIntakePipeline:
         """Refresh the existing writer after exact Registry approval."""
         with exclusive_lock(self.queue_dir, "intake-writer"):
             prior_generation, metadata = self._active_projection()
-            if prior_generation is None or metadata is None:
+            revision = public_revision(self.database)
+            if (prior_generation is None or metadata is None) and revision is None:
                 return {"status": "not_active", "run_id": run_id}
+            metadata = metadata or {"batch_id": "public-registry", "batch_created_at": "", "projection_kind": "pdf"}
             manifest = load_projection_manifest(prior_generation, metadata)
             pdf_ids = _active_pdf_occurrence_ids(prior_generation, manifest)
             calendar_ids = _active_calendar_ids(self.database, manifest, pdf_ids)
@@ -781,9 +783,10 @@ class PdfIntakePipeline:
             generation = self.runtime_wiki_dir / "generations" / generation_id
             snapshot = self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3"
             digest = _snapshot_registry(self.database, snapshot)
+            revision = public_revision(snapshot)
             web_items = list((manifest or {}).get("web_items", []))
             web_snapshot = _active_registry_snapshot(self.runtime_wiki_dir, metadata, "web", required=bool(web_items))
-            generation.mkdir()
+            generation.mkdir(parents=True)
             render_runtime_registry(generation, web_database=snapshot if public_revision(snapshot) is not None else web_snapshot, pdf_database=snapshot,
                 manifest={"web_items": web_items, "pdf_occurrence_ids": sorted(pdf_ids),
                     "pdf_calendar_occurrence_ids": sorted(calendar_ids)})
@@ -791,11 +794,47 @@ class PdfIntakePipeline:
                 pdf_occurrence_ids=pdf_ids, pdf_calendar_occurrence_ids=calendar_ids)
             updated = {**metadata, "generation_id": generation_id, "path": str(generation.resolve()),
                 "pdf_registry_snapshot": str(snapshot.resolve()), "pdf_registry_sha256": digest,
-                "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id}
+                "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id,
+                "public_registry_revision": revision}
             if metadata.get("projection_kind") != "web":
                 updated.update(registry_snapshot=str(snapshot.resolve()), registry_sha256=digest)
             self._activate(updated)
             return {"status": "chat_ready", "generation_id": generation_id, "run_id": run_id}
+
+    def refresh_publication(self) -> dict[str, Any] | None:
+        """The existing writer polls the durable approved revision, including after restart."""
+        revision = public_revision(self.database)
+        if revision is None:
+            return None
+        _, active = self._active_projection()
+        if active is None:
+            with _read_only_connection(self.database) as connection:
+                if not connection.execute("SELECT 1 FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL LIMIT 1").fetchone():
+                    return None
+        active_revision = (active or {}).get("public_registry_revision")
+        if active and active_revision is None:
+            kind = "web" if active.get("projection_kind") == "web" else "pdf"
+            snapshot = _active_registry_snapshot(self.runtime_wiki_dir, active, kind,
+                required=bool(active.get(kind + "_registry_snapshot")))
+            active_revision = public_revision(snapshot) if snapshot else None
+        if active_revision == revision:
+            return None
+        receipt = self.queue_dir / "public-refresh.json"
+        previous = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+        if previous.get("public_registry_revision") == revision and previous.get("retry_after") and _now() < previous["retry_after"]:
+            return None
+        try:
+            result = self.refresh_checks("public-" + revision)
+            result.update(batch_id="public-registry", stage="chat_ready", chat_ready=True,
+                public_registry_revision=self._active_projection()[1]["public_registry_revision"], observed_at=_now())
+        except Exception as exc:
+            from datetime import timedelta
+            result = {"batch_id": "public-registry", "stage": "failed", "status": "failed", "chat_ready": False,
+                "public_registry_revision": revision, "error": type(exc).__name__, "observed_at": _now(),
+                "retry_after": (datetime.fromisoformat(_now()) + timedelta(seconds=60)).isoformat()}
+        # The old active pointer remains authoritative until reload acknowledges this generation.
+        atomic_write_json(receipt, result)
+        return result
 
     def process_next(self) -> dict[str, Any] | None:
         resumable = {"queued", "processing", "imported", "indexed", "activating"}
@@ -805,7 +844,7 @@ class PdfIntakePipeline:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if status.get("stage") in resumable or status.get("stage") == "pending_review":
+            if status.get("registry_database") or status.get("stage") in resumable or status.get("stage") == "pending_review":
                 _validate_pdf_binding(status, self.database)
             ready_review = False
             if status.get("stage") == "pending_review":
@@ -843,7 +882,7 @@ class PdfIntakePipeline:
                     **status, "projection_kind": "web", "status_path": status_path,
                 })
         if not candidates:
-            return None
+            return self.refresh_publication()
         status = min(
             candidates,
             key=lambda item: (str(item.get("created_at", "")), str(item.get("batch_id", ""))),

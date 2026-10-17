@@ -245,12 +245,14 @@ def public_claim_status(value: dict[str, Any]) -> dict[str, Any]:
 
 def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str, Any]:
     current = _aware_utc_now(now)
-    if isinstance(payload, dict) and payload.get("schema_version") == schedule.PIPELINE_SCHEMA:
+    if isinstance(payload, dict) and payload.get("schema_version") in {schedule.PIPELINE_SCHEMA, schedule.LEGACY_PIPELINE_SCHEMA}:
+        historical = payload["schema_version"] == schedule.LEGACY_PIPELINE_SCHEMA
+        slots = schedule.LEGACY_PIPELINE_SLOTS if historical else schedule.PIPELINE_SLOTS
         top = _exact_object(payload, expected=frozenset({"schema_version", "generated_at", "jobs", "business"}), label="snapshot")
         generated = _strict_utc(top["generated_at"], field="generated_at")
-        if generated > current or not isinstance(top["jobs"], dict) or set(top["jobs"]) != set(schedule.PIPELINE_SLOTS):
+        if generated > current or not isinstance(top["jobs"], dict) or set(top["jobs"]) != set(slots):
             raise JobStatusInvalidSnapshotError("invalid independent scheduler observation")
-        if not isinstance(top["business"], dict) or set(top["business"]) - set(schedule.PIPELINE_SLOTS):
+        if not isinstance(top["business"], dict) or set(top["business"]) - set(slots):
             raise JobStatusInvalidSnapshotError("invalid independent business status")
         identities = set()
         for role, block in top["jobs"].items():
@@ -260,7 +262,7 @@ def validate_snapshot(payload: Any, *, now: datetime | None = None) -> dict[str,
                 raise JobStatusInvalidSnapshotError("invalid independent job identity/state")
             identities.add(block["job_id"])
             scheduled = _strict_utc(block["scheduled_for"], field="scheduled_for")
-            if scheduled != schedule.pipeline_occurrence(role, generated):
+            if scheduled != schedule.pipeline_occurrence(role, generated, historical=historical):
                 raise JobStatusInvalidSnapshotError("job occurrence does not match its role")
             for key in _TIME_FIELDS & set(block):
                 value = _strict_utc(block[key], field=key)

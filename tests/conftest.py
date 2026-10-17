@@ -91,7 +91,14 @@ def safe_managed_interpreter(tmp_path_factory):
 def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch, safe_managed_interpreter):
     """Managed starts must never snapshot a test runner's real credentials."""
     from climate_monitor.hermes_identity import BASE_ENV, CREDENTIAL_ENV
+    from climate_monitor import hermes_identity
+    application_runtime = hermes_identity._acquisition_runtime
+    # The host's shared interpreter may be group-writable; use only our private
+    # executable fixture for new frozen application-runtime commitments.
+    monkeypatch.setattr(hermes_identity, "_acquisition_runtime", lambda interpreter=None, version=None:
+        application_runtime(interpreter or safe_managed_interpreter, version))
     monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
+    monkeypatch.delenv("CLIMATE_WEB_LISTENING_DATA_DIR", raising=False)
 
     for key in BASE_ENV | CREDENTIAL_ENV:
         if key not in {'PATH', 'HOME', 'LANG', 'LC_ALL'}:

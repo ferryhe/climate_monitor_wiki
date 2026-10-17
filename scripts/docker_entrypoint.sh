@@ -96,7 +96,7 @@ if [ "${HERMES_DASHBOARD_ENABLED:-}" = "1" ]; then
         HERMES_DASHBOARD_SESSION_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
     fi
     export HERMES_DASHBOARD_SESSION_TOKEN
-    python -m climate_monitor.hermes_dashboard_server &
+    /opt/hermes-venv/bin/python -m climate_monitor.hermes_dashboard_server &
     hermes_pid=$!
     "$@" &
     app_pid=$!

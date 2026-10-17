@@ -974,6 +974,62 @@ def test_rag_pages_and_revision_share_one_visibility_snapshot(tmp_path,monkeypat
         assert responder.kb.public_registry_revision==publication.public_revision(database)
 
 
+def test_existing_writer_polls_approved_revision_and_retries_reload_after_restart(tmp_path, monkeypatch):
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+    from climate_registry.publication import public_revision
+    from climate_delivery.io import atomic_write_json
+    from agentic_wiki import AgenticWikiResponder
+    import climate_registry.pdf_pipeline as pipeline_module
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "approved writer fixture"}, status="accepted_legacy")
+    app = tmp_path / "app"; app.mkdir()
+    sources = tmp_path / "sources"; sources.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    activated = []
+    responders = []
+    def reload(generation):
+        pending = json.loads((queue / "pending.json").read_text())
+        candidate = AgenticWikiResponder(wiki_dir=Path(pending["path"]), source_dir=sources)
+        candidate.client = None
+        responders.append(candidate)
+        atomic_write_json(queue / "active.json", pending)
+        activated.append(generation)
+    def writer(callback=reload):
+        return PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, callback, repository_root=app)
+    first = writer().process_next()
+    assert first["chat_ready"] and len(activated) == 1
+    assert "article-a.md" in {doc.file for doc in responders[-1].kb.documents}
+    old_pointer = (queue / "active.json").read_bytes()
+    revision = public_revision(database)
+    with sqlite3.connect(database) as db:
+        snapshot = snapshot_entity(db, "article", "a")
+        snapshot["derived_display"] = {"summary": "Unapproved correction"}
+        stage_snapshot(db, snapshot)
+        db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('raw-new','https://example.org/raw','s','2026-10-17','2026-10-17')")
+        stage_entities(db)
+    assert public_revision(database) == revision
+    assert writer().process_next() is None and len(activated) == 1
+    assert (queue / "active.json").read_bytes() == old_pointer
+    set_visibility(database, "article", "a", False)
+    clock = ["2026-10-17T12:00:00+00:00"]
+    monkeypatch.setattr(pipeline_module, "_now", lambda: clock[0])
+    def unavailable(generation):
+        raise OSError("reload temporarily unavailable")
+    failed = writer(unavailable).process_next()
+    assert failed["stage"] == "failed" and (queue / "active.json").read_bytes() == old_pointer
+    assert writer().process_next() is None  # Durable backoff survives constructing a new writer.
+    clock[0] = "2026-10-17T12:01:00+00:00"
+    recovered = writer().process_next()
+    assert recovered["chat_ready"] and len(activated) == 2
+    assert "article-a.md" not in {doc.file for doc in responders[-1].kb.documents}
+    assert not any("Unapproved correction" in doc.markdown for doc in responders[-1].kb.documents)
+    assert writer().process_next() is None  # Restart at the same approved revision does no work.
+
+
 def test_new_pdf_writer_waits_for_native_review_and_then_resumes(tmp_path,monkeypatch):
     from reportlab.pdfgen.canvas import Canvas
     from climate_monitor.pdf_intake import import_pdf_reports
@@ -1124,8 +1180,12 @@ def test_pdf_first_write_binding_survives_failed_imported_status_save(tmp_path,m
         assert all_files()==before_files
     if historical_missing_binding in {"processing","queued"}:
         assert retry_pdf_batch(queue,queued["batch_id"])["stage"]==historical_missing_binding  # Read-only, not a retryable failure.
+    elif historical_missing_binding:
+        assert wrong.process_next() is None  # Unbound historical failures still require an explicit retry.
     else:
-        assert wrong.process_next() is None  # Failed batches require an explicit retry.
+        with pytest.raises(ValueError, match="frozen task binding"):
+            wrong.process_next()  # Automatic public refresh must honor existing durable DB bindings too.
+        assert all_files() == before_files
     assert all_files()==before_files and database.read_bytes()==before_a and other.read_bytes()==before_b
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     if historical_missing_binding:

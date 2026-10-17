@@ -33,8 +33,67 @@ The fetcher reads it at request time, including after host CLI dotenv loading.
 Compose forwards `TZ` and `HERMES_TIMEZONE` with `America/New_York` defaults.
 `CLIMATE_SCHEDULE` selects the existing `biweekly-et`, `independent-et` or `weekly-utc` profile.
 These runtime selections do not change the defined ET anchor (2026-09-14), business
-slots, 05:00 ET information checks, Chat's New York day boundaries, or the deliberate
+slots, incremental T1 checks, Chat's New York day boundaries, or the deliberate
 daily library default. Record and preserve actual server values before upgrading.
+
+## Python runtime ownership
+
+Climate and Hermes have separate dependency environments. Host system Python is
+not used to launch Climate jobs, native Hermes sessions, or their package installs.
+
+| Role | Interpreter | Required series |
+|---|---|---|
+| Host Climate scripts and tests | `<repo>/.venv/bin/python`, linked to the external `<ops-root>/runtimes/climate-py312` environment | 3.12 |
+| Host Hermes gateway, native sessions and Dashboard | `<hermes-root>/venv/bin/python` | 3.11 |
+| Host operating-system utilities | `/usr/bin/python3` | 3.14 on the audited host |
+| Container Climate API and intake writer | `/usr/local/bin/python` | 3.12 |
+| Container Hermes CLI and built-in Dashboard | `/opt/hermes-venv/bin/python` | 3.11 |
+
+The 2026-10-17 read-only audit measured host Climate 3.12.13, Hermes 3.11.15,
+and system 3.14.4. The complete `.venv` directory was a link to the external
+Climate environment, including the same `site-packages`; different
+`sys.executable` or `sys.prefix` spellings through that alias do not indicate
+separate dependencies. Inspect the directory link, `pyvenv.cfg`, and resolved
+`site-packages`, rather than only resolving the final Python binary.
+
+The audited external Climate environment also had group-writable configuration
+and interpreter files. Existing frozen-runtime validation rejects those modes.
+Validate the selected executable, its environment configuration and their path
+identities before enabling acquisition; a correct version and directory link
+alone are not evidence that a managed frozen attempt can start. PR tests use
+private interpreter fixtures and do not change the shared host runtime.
+
+At that audit, both running application containers used Python 3.12.15 and also
+installed Hermes into that environment. The Dockerfile change isolates Hermes
+3.11 in its own venv on a Trixie runtime while retaining Climate 3.12 as the
+default. A rebuilt and verified image is required to change running containers;
+updating host `.venv` does not change an image or a container interpreter.
+Do not prepend the Hermes venv to the whole container's `PATH`: `python`,
+`uvicorn`, application tests and health checks must continue using Climate.
+The stable `hermes` command resolves to its native 3.11 console script.
+The image also checks SQLite 3.43 or newer: older SQLite versions reject the
+Registry's JSON checks when read-only API connections disable trusted schemas.
+
+The frozen Hermes acquisition boundary must also preserve these roles. Native
+Hermes runs in 3.11; the existing governed candidate-stage and reader code runs
+in the pinned Climate 3.12 child with its own frozen dependency closure. Never
+add Climate's 3.12 `site-packages` to Hermes' 3.11 import path. Interpreter,
+environment and content identities remain bound to the original attempt.
+
+Read back both container interpreters in the exact candidate image before
+deployment, for both `wiki` and `pdf-intake-writer` where present:
+
+```bash
+docker compose exec -T wiki /usr/local/bin/python -c 'import sys; print(sys.version); print(sys.executable)'
+docker compose exec -T wiki /opt/hermes-venv/bin/python -c 'import sys; print(sys.version); print(sys.executable)'
+docker compose exec -T wiki /opt/hermes-venv/bin/python -c 'import hermes_cli; print(hermes_cli.__file__)'
+```
+
+Version output alone is not a complete runtime check. Verify the frozen native
+3.11 session can stage a candidate through the governed 3.12 reader, with the
+same source scope, session, result handle and evidence identities. External
+host-Dashboard mode continues using its configured socket and host Hermes
+environment; it does not start an additional container Dashboard.
 
 ## Existing-server portability upgrade
 

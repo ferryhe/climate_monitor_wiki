@@ -17,18 +17,32 @@ report from the frozen run evidence; it does not require another acquisition.
 
 ## Independent acquisition, review and reporting
 
-The current target has T1–T10 plus the existing independent PDF writer, all using
+The current target has T1–T11 plus the existing independent PDF writer, all using
 one external `CLIMATE_REGISTRY_DB`. Acquisition writes pending candidates; T1/T10
 improvement/native evidence precedes automatic exact-hash final checks. T2 stores five-site
 candidates and source outcomes; T10 owns native review, governed recovery and
 per-item final checks/publication. T3 is independent weekly search with a real query ledger
 and the same review gate; its old existing_validated activation bypass is removed.
-T1 maintains imported article/calendar information; it cannot approve a report.
+T1 selects bounded incremental article/calendar work every five minutes. It
+freezes exact source versions before processing a batch, resumes interrupted
+work, skips unchanged completed versions, and retries terminal failures with
+backoff. A small terminal batch allows T10 to review its candidates without
+waiting for an entire corpus scan. Native T10 reviews each complete changed
+snapshot independently; T1 cannot approve either candidates or reports.
 T4 reads activated Registry projections only, freezes the New York 14-calendar-day
 window by first ingestion/material update, and renders immutable revisions. T5
 checks saved full PDF text and every PNG in a fresh native cron context. T6 sends
-only the exact approved PDF after 60 minutes. There is no report-triggered
-acquisition, Registry sync or rolling publisher in this profile.
+only the exact approved PDF after 60 minutes. T11 independently synchronizes
+approved Git snapshots through the existing isolated rolling publisher, even
+when there is no report for the current Monday. Report generation does not
+trigger acquisition or Registry re-ingestion.
+
+The publication transaction updates the exact approved pointer and persisted
+`display_*` tables together. The existing writer detects changed public
+revisions, creates Wiki/RAG from the same frozen approved data, and records a
+new active generation only after Chat acknowledges it. Pending candidates do
+not replace approved content. Failed activation remains retryable while the
+previous generation stays active. This adds no service or separate refresh cron.
 
 `climate_registry/acquisition_review.py` adds rotation/material-version receipts
 and review gates around the existing managed runner and sole activation writer.

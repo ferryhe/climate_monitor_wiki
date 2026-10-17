@@ -19,7 +19,9 @@ RUN git init /opt/hermes-agent \
     && cp ui-tui/dist/entry.js hermes_cli/tui_dist/entry.js \
     && rm -rf node_modules ui-tui/node_modules web/node_modules
 
-FROM python:3.12-slim
+FROM python:3.11-slim-trixie AS hermes-python
+
+FROM python:3.12-slim-trixie
 
 WORKDIR /app
 
@@ -44,12 +46,21 @@ RUN git init /opt/web-listening-source \
 
 COPY --from=hermes-dashboard-build /usr/local/bin/node /usr/local/bin/node
 COPY --from=hermes-dashboard-build /opt/hermes-agent /opt/hermes-agent
+COPY --from=hermes-python /usr/local/bin/python3.11 /opt/python311/bin/python3.11
+COPY --from=hermes-python /usr/local/lib/python3.11 /opt/python311/lib/python3.11
+COPY --from=hermes-python /usr/local/lib/libpython3.11.so.1.0 /opt/python311/lib/libpython3.11.so.1.0
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 RUN PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/web-listening-source/src \
     python -c 'import json; from pathlib import Path; from web_listening.tool_registry.runners.browser_acquisition import host_runtime; root=Path("/opt/web-listening-data"); lock=json.loads(Path("/opt/web-listening-source/tools/browser/runtime-lock.json").read_text()); host_runtime(root / "browser-runtimes/playwright", root, lock["tools"]["playwright"])'
-RUN pip install --no-cache-dir --editable '/opt/hermes-agent[web,pty]'
+RUN /opt/python311/bin/python3.11 -m venv /opt/hermes-venv \
+    && /opt/hermes-venv/bin/pip install --no-cache-dir --editable '/opt/hermes-agent[web,pty]' boto3==1.42.89 websockets==15.0.1 \
+    && ln -s /opt/hermes-venv/bin/hermes /usr/local/bin/hermes \
+    && /opt/hermes-venv/bin/python -c 'import sys, hermes_cli, boto3, websockets; assert sys.version_info[:2] == (3,11)' \
+    && /usr/local/bin/python3.12 -c 'import importlib.util, sqlite3, sys; assert sys.version_info[:2] == (3,12); assert importlib.util.find_spec("hermes_cli") is None; assert sqlite3.sqlite_version_info >= (3,43)' \
+    && /usr/local/bin/python3.12 -c 'import sqlite3; db=sqlite3.connect(":memory:"); db.execute("PRAGMA trusted_schema=OFF"); db.execute("CREATE TABLE probe(payload TEXT CHECK(json_valid(payload)))"); db.execute("INSERT INTO probe VALUES(?)", ("{}",)); assert db.execute("PRAGMA trusted_schema").fetchone()[0] == 0' \
+    && test "$(head -n 1 /opt/hermes-venv/bin/hermes)" = '#!/opt/hermes-venv/bin/python3.11'
 
 ARG CLIMATE_REPOSITORY_COMMIT_SHA
 RUN python -c 'import re, sys; value = sys.argv[1]; raise SystemExit(0 if re.fullmatch(r"[0-9a-f]{40}", value) else "repository commit SHA must be a 40-character lowercase hex digest")' "$CLIMATE_REPOSITORY_COMMIT_SHA"
@@ -60,6 +71,8 @@ COPY agentic_wiki ./agentic_wiki
 COPY climate_delivery ./climate_delivery
 COPY climate_monitor ./climate_monitor
 COPY climate_registry ./climate_registry
+RUN /opt/hermes-venv/bin/python -c 'import climate_monitor.hermes_dashboard_server' \
+    && /usr/local/bin/python3.12 -c 'from climate_monitor.hermes_identity import _runtime; interpreter, _ = _runtime("/opt/hermes-venv/bin/hermes"); assert interpreter == "/opt/hermes-venv/bin/python3.11"'
 COPY management_ui ./management_ui
 COPY monitoring/taxonomies ./monitoring/taxonomies
 COPY monitoring/jobs ./monitoring/jobs

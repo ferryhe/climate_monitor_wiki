@@ -1,9 +1,11 @@
 # Pipeline Configuration
 
-The current deployment target is the `independent-et` profile: ten Hermes cron
-jobs (T1–T10) plus the existing independent PDF intake writer. Daily site
+The current deployment target is the `independent-et` profile: eleven Hermes cron
+jobs (T1–T11) plus the existing independent PDF intake writer. Daily site
 rotation, weekly search, acquisition review, daily information checks, biweekly
-report generation, final native PDF review and exact-file sending run separately.
+report generation, final native PDF review, exact-file sending and public Git
+snapshot publication run separately. T1 selects bounded incremental changes
+every five minutes; approved public revisions drive existing writer activation.
 Use the [target task table below](#independent-task-profile) and
 [the deployment runbook](docs/biweekly-et-deployment.md) for cutover. Preparation
 and local tests do not prove deployment or a complete production cycle.
@@ -416,16 +418,51 @@ surviving configured source; repeated occurrences retain their original list.
 
 | Task | UTC ticker | Mode and entry |
 |---|---|---|
-| T1 | `0 9,10 * * *` | Existing information-check wrapper, script-only, NY05 guard |
+| T1 | `*/5 * * * *` | Existing information-check wrapper, script-only, bounded incremental article and meeting batches |
 | T2 | `0 10,11 * * *` | `run_agent_acquisition.py --scheduled-start --ingest-only --acquisition-kind website_rotation --rotation-root EXTERNAL_ROOT`, script-only launcher |
 | T3 | `0 12,13 * * 0` | Same launcher with `--acquisition-kind weekly_search`, script-only |
 | T4 | `0 12,13 * * 1` | `generate_range_report.py --scheduled-biweekly --database PUBLIC_DB --artifact-root REPORT_ROOT --runtime-dir RUNTIME --queue-dir QUEUE`, script-only |
 | T5 | `*/15 * * * *` | Native agent, pre-script `review_pipeline.py peek --kind report --root REPORT_ROOT` |
 | T6 | `*/15 * * * *` | `review_pipeline.py send --kind report --root REPORT_ROOT`; add `--send --config PRIVATE_CONFIG` only after delivery cutover |
-| T7 | `*/5 * * * *` | Existing exporter, script-only, actual ten-ID map and Hermes jobs file |
-| T8 | `0 0 * * 1` | Existing LLM cost job |
+| T7 | `*/5 * * * *` | Existing exporter, script-only, actual eleven-ID map and Hermes jobs file |
+| T8 | `0 0 * * 1` | Existing LLM cost script; retain its configured delivery channels |
 | T9 | `0 8,9 * * *` | Existing Docker cleanup, NY04 guard |
 | T10 | `*/15 * * * *` | Native agent, pre-script `review_pipeline.py peek --kind acquisition --root MANAGED_RUN_ROOT` |
+| T11 | `0 * * * *` | `publish_weekly_reports.py --public-snapshot --scheduled --ledger-dir EXTERNAL_PUBLISHER_ROOT`; no current Monday report prerequisite |
+
+All Climate script commands use the configured Climate 3.12 interpreter. Native
+Hermes sessions use their separate 3.11 environment; the system interpreter is
+not a fallback for either application. See [runtime ownership](docs/deployment.md#python-runtime-ownership).
+
+T1 freezes a bounded set of exact source/version targets before processing it.
+Completed unchanged versions are skipped; interrupted batches resume their
+frozen work, and terminal failures become eligible again only after retry
+backoff. Articles and meetings receive separate bounded work so one kind cannot
+starve the other. A terminal partial batch preserves genuine access failures
+for T10; it never fabricates successful retrieval. T10 independently reviews
+the complete changed candidate snapshot. Existing approved versions stay
+visible while a replacement is pending.
+
+The existing scheduled information wrapper uses incremental mode. Its
+`--limit` defaults to ten targets per kind and `--retry-after-minutes` defaults
+to sixty minutes; manual `--reverify-all` remains explicit. These limits apply
+to target selection before freezing, rather than leaving a corpus-sized run
+unfinished after a small number of attempts.
+The wrapper reads `CLIMATE_CHECK_BATCH_SIZE` (default `10`) and
+`CLIMATE_CHECK_RETRY_AFTER_MINUTES` (default `60`) from the existing env file.
+Its `--preflight` output reports those values and the five-minute interval;
+there is no daily time guard on T1.
+
+Publication refreshes the persisted `display_*` tables in the same write
+transaction. The existing intake writer compares approved public revisions,
+builds Wiki/Chat from the frozen approved snapshot, and activates the generation
+only after the reload handshake. Candidate-only changes do not trigger a
+public refresh, and a failed activation leaves the previous generation usable.
+
+T11 exports only approved public data, including visibility changes, through
+the existing isolated clone, path allowlist, exact lease and rolling PR. It is
+independent of T4 report dates. An unchanged public snapshot is a no-op; human
+merge and deployment remain separate steps.
 
 T5/T10 require `no_agent=false`, fresh context and the repository's native
 [T5](monitoring/report-review.md) / [T10](monitoring/acquisition-review.md) prompts. The pre-script is read-only; `wakeAgent=false` skips model startup
@@ -436,7 +473,14 @@ exact ID and the read-only Hermes `state.db`, never the latest session row.
 Expired claims require native owner completion evidence before reconciliation.
 
 `CLIMATE_REPORT_REVIEW_DIR` configures API/admin report state; share its exact external
-storage with T4–T6. `CLIMATE_INFORMATION_CHECK_DIR` points to the two daily-check results.
+storage with T4–T6. `CLIMATE_INFORMATION_CHECK_DIR` points to the article and
+meeting check results; their historical filenames do not imply a daily scan.
 T7 receives `--jobs-file`, `--report-root`, `--acquisition-root`, `--checks-root`
-and its existing database/map/status arguments. Map T1–T10 to actual installed
+and its existing database/map/status arguments, plus `--queue-root` for writer
+activation and `--publisher-root` for the public snapshot receipt. T11 writes
+`public-snapshot.json` and immutable attempt receipts under its external ledger
+root. Map T1–T11 to actual installed
 IDs only after readback; no prospective ID is an installation record.
+Historical four-slot and ten-role snapshots remain compatibility data. Empty
+queue or wrong-offset checks must be distinguished from actual business
+completion, and must not erase the last failed business result.

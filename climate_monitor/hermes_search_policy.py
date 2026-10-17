@@ -1,5 +1,8 @@
 """Static acquisition plugin, copied before snapshot publication."""
 import json
+import os
+from pathlib import Path
+import subprocess
 from climate_monitor.hermes_attempt_policy import verified_binding
 from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
 from climate_monitor.request_budget import candidate_handle_protocol
@@ -16,10 +19,17 @@ def register(ctx):
         return transform_search_tool_result(current, **kwargs)
     ctx.register_hook("transform_tool_result", transform)
     if candidate_handle_protocol(binding):
-        from scripts.run_agent_acquisition import _stage_candidate_receipt, _finalize_candidate_receipt
+        from scripts.run_agent_acquisition import _finalize_candidate_receipt
         def stage(args, session_id=None, **_kwargs):
-            current, _ = verified_binding()
-            return json.dumps(_stage_candidate_receipt(current, session_id=session_id, **args), sort_keys=True, separators=(',', ':'))
+            verified_binding()
+            root = Path(os.environ['HERMES_HOME']).parent
+            payload = json.loads((root / 'manifest.json').read_text())
+            result = subprocess.run([payload['acquisition_runtime']['interpreter'], '-I', '-S',
+                str(root / 'bootstrap/launcher.py'), '--candidate-stage'],
+                input=json.dumps({**args, 'session_id': session_id}), text=True, capture_output=True)
+            if result.returncode:
+                raise ValueError('frozen candidate stage failed')
+            return json.dumps(json.loads(result.stdout), sort_keys=True, separators=(',', ':'))
         def finalize(args, session_id=None, **_kwargs):
             current, _ = verified_binding()
             return json.dumps(_finalize_candidate_receipt(current, session_id=session_id, **args), sort_keys=True, separators=(',', ':'))

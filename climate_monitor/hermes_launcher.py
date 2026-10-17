@@ -45,6 +45,7 @@ def main():
             raise ValueError()
     args = sys.argv[1:]
     reader_tool = args[:1] == ['--reader-tool']
+    candidate_stage = args == ['--candidate-stage']
     if reader_tool:
         os.environ['HERMES_HOME'] = args[1]
     home = Path(os.environ['HERMES_HOME'])
@@ -79,6 +80,36 @@ def main():
     if reader_tool or os.environ.get('CLIMATE_ACQUISITION_ATTEMPT'):
         import reader_runtime
         reader_runtime.verify(root, payload, read_private, runtime_inventory, bound_files=runtime_files)
+    if candidate_stage or (reader_tool and not (Path(args[2]).parent / 'runtime.json').exists()):
+        runtime = payload['acquisition_runtime']
+        interpreter = Path(sys.executable)
+        actual = str(interpreter.parent.resolve(strict=True) / interpreter.name)
+        link = runtime['interpreter_link']
+        if (actual != runtime['interpreter'] or list(sys.version_info[:2]) != runtime['version']
+                or actual != link['path'] or str(Path(actual).resolve(strict=True)) != link['target']
+                or list(runtime_inventory.signature(Path(actual).lstat())) != link['identity']):
+            raise ValueError()
+        for path, metadata in runtime['files'].items():
+            if runtime_inventory.file_digest(path, tuple(metadata['identity'])) != metadata['sha256']:
+                raise ValueError()
+    if candidate_stage:
+        reader_runtime.verify_attempt(root, home, payload, read_private, runtime_inventory)
+        runtime_files.update(str(root / name) for name in payload['policy'])
+        runtime_inventory.install_origin_guard(runtime_files, stdlib_paths)
+        import acquisition_imports
+        acquisition_imports.install(root / 'acquisition')
+        from climate_monitor.hermes_attempt_policy import verified_binding
+        from scripts.run_agent_acquisition import _stage_candidate_receipt
+        current, _ = verified_binding()
+        request = json.loads(sys.stdin.read(65537))
+        if (not isinstance(request, dict) or set(request) != {'result_handle', 'source_key', 'session_id'}
+                or any(not isinstance(value, str) or not value for value in request.values())):
+            raise ValueError()
+        import contextlib
+        with contextlib.redirect_stdout(sys.stderr):
+            result = _stage_candidate_receipt(current, **request)
+        print(json.dumps(result, sort_keys=True, separators=(',', ':')))
+        return
     if reader_tool:
         reader_runtime.verify_attempt(root, home, payload, read_private, runtime_inventory)
         import runpy
@@ -98,10 +129,9 @@ def main():
                 raise ValueError()
             sys.path.append(str(Path(config['python']).parent.parent / 'lib/python3.12/site-packages'))
         else:
-            if runtime_inventory.inventory(payload['runtime_paths'][1:], bound_files=runtime_files,
-                    commitments=runtime_inventory.decode_commitments(read_private(root / 'bootstrap/runtime-commitments.zlib'))) != payload['runtime']['site_packages']:
-                raise ValueError()
-            sys.path.extend(payload['runtime_paths'])
+            runtime_files.update(str(root / name) for name in payload['policy'])
+            import acquisition_imports
+            acquisition_imports.install(root / 'acquisition')
         runtime_inventory.install_origin_guard(runtime_files, stdlib_paths)
         # Match Python script imports, but only from the inventoried tool tree.
         sys.path.insert(0, str(tool.parent))

@@ -2162,6 +2162,39 @@ def _approved_history_registry(tmp_path,production):
     return database,identity
 
 
+def test_public_snapshot_mode_needs_no_current_report_and_preserves_publication_safety(local_remote, tmp_path):
+    from climate_registry.publication import set_visibility
+    remote, production = local_remote
+    database, identity = _approved_history_registry(tmp_path, production)
+    runner = FakeGhRunner()
+    reports = tmp_path / "absent-reports"
+    (production / "operator-dirty.txt").write_text("leave untouched")
+    before = (_git(production, "rev-parse", "HEAD"), _git(production, "status", "--porcelain"))
+    def publish():
+        return publisher.publish(production_repo=production, report_dir=reports, today=date(2026, 10, 17),
+            registry_database=database, runner=runner, verifier=lambda *_: None, public_snapshot=True)
+    first = publish()
+    assert first.status == "published" and first.report is None and first.reports == () and first.public_revision
+    assert "Approved improved summary" in _git(remote, "show", f"{publisher.BRANCH}:wiki/climate-monitor-2026-08-03.md")
+    head = _git(remote, "rev-parse", publisher.BRANCH)
+    assert publish().status == "unchanged" and _git(remote, "rev-parse", publisher.BRANCH) == head
+    assert runner.create_calls == 1
+    set_visibility(database, "article", identity, False)
+    hidden = publish()
+    assert hidden.status == "published" and hidden.public_revision != first.public_revision
+    public = json.loads(_git(remote, "show", f"{publisher.BRANCH}:wiki/public-registry.json"))
+    assert identity not in {item["article_id"] for item in public["articles"]}
+    assert (_git(production, "rev-parse", "HEAD"), _git(production, "status", "--porcelain")) == before
+    assert _git(remote, "rev-parse", "main") == before[0] and not _candidate_refs(remote)
+    ledger = tmp_path / "ledger"
+    publisher._append_publisher_result(ledger, result=None, report_date="2026-10-12", repository_root=production, public_snapshot=True)
+    publisher._append_publisher_result(ledger, result=publisher.PublishResult("unchanged", first.base_sha,
+        public_revision=first.public_revision), report_date="2026-10-12", repository_root=production, public_snapshot=True)
+    receipt = json.loads((ledger / "public-snapshot.json").read_text())
+    assert receipt["status"] == "skipped" and receipt["last_actual_outcome"]["status"] == "failed"
+    assert len(list((ledger / "public-snapshot-attempts").glob("*.json"))) == 2
+
+
 @pytest.mark.parametrize("use_env",[False,True])
 def test_isolated_publisher_republishes_approved_old_date_hide_and_restore_without_new_sources(local_remote,tmp_path,monkeypatch,use_env):
     from climate_registry.publication import set_visibility

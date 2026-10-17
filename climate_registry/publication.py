@@ -1003,7 +1003,7 @@ def public_revision(database, *, connection=None):
             return None
         from .verification import PUBLICATION_POLICY
         adoptions = [tuple(row) for row in connection.execute("SELECT adoption_id FROM pdf_intake_summary_adoptions ORDER BY adoption_id")] if connection.execute("PRAGMA user_version").fetchone()[0] >= 23 else []
-        return digest({"policy": PUBLICATION_POLICY, "adoptions": adoptions, "publications": [tuple(row) for row in connection.execute("SELECT entity_kind,entity_id,is_visible,published_candidate_sha256 FROM registry_publication ORDER BY entity_kind,entity_id")]})
+        return digest({"policy": PUBLICATION_POLICY, "adoptions": adoptions, "publications": [tuple(row) for row in connection.execute("SELECT entity_kind,entity_id,is_visible,published_candidate_sha256 FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL ORDER BY entity_kind,entity_id")]})
     from .read_api import RegistryReader
     with RegistryReader(database, repository_root=Path(__file__).resolve().parents[1], public=False).connect() as connection:
         return public_revision(database, connection=connection)

@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Hermes ticks at both possible UTC hours; only 05:00 America/New_York runs.
+# Each five-minute tick admits two bounded incremental batches.
 set -euo pipefail
-if [[ "${1:-}" != "--preflight" && "$(TZ=America/New_York date +%H)" != "05" ]]; then
-  exit 0
-fi
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 env_file="${CLIMATE_WIKI_ENV_FILE:-$repo/.env}"
 if [[ ! -f "$env_file" ]]; then
@@ -12,7 +9,7 @@ if [[ ! -f "$env_file" ]]; then
 fi
 env_file="$(cd -- "$(dirname -- "$env_file")" && pwd -P)/$(basename -- "$env_file")"
 cd -- "$repo"
-PY="${PYTHON:-$(command -v python3)}"
+PY="${PYTHON:-$repo/.venv/bin/python}"
 [[ "$PY" = /* && -x "$PY" ]] || exit 2
 # Resolve the full caller model once; sudo must not parse its dotenv again.
 project="$(docker compose --project-directory "$repo" --env-file "$env_file" config --format json | "$PY" -c '
@@ -32,7 +29,7 @@ if [[ "${#writer_ids[@]}" -ne 1 ]]; then
   printf 'Information check requires exactly one running writer for the selected Compose project\n' >&2
   exit 2
 fi
-sudo -n docker exec -i "${writer_ids[0]}" python -c '
+sudo -n docker exec -i "${writer_ids[0]}" /usr/local/bin/python3.12 -c '
 import json
 import os
 import sys
@@ -53,7 +50,9 @@ if check_dependencies() != "available":
     print(json.dumps({"status": "not_configured", "reason": "governed_reader_unavailable"}), flush=True)
     raise SystemExit(2)
 if sys.argv[1] == "--preflight":
-    print(json.dumps({"status": "ready", "timezone": "America/New_York", "hour": 5}), flush=True)
+    print(json.dumps({"status": "ready", "timezone": "America/New_York", "interval_minutes": 5,
+        "batch_size_per_kind": int(configuration.get("CLIMATE_CHECK_BATCH_SIZE") or 10),
+        "retry_after_minutes": int(configuration.get("CLIMATE_CHECK_RETRY_AFTER_MINUTES") or 60)}), flush=True)
     raise SystemExit(0)
 
 from pathlib import Path
@@ -62,5 +61,7 @@ raise SystemExit(run_daily_checks([
     "--database", os.environ["CLIMATE_REGISTRY_DB"],
     "--backup-dir", os.environ["CLIMATE_REGISTRY_BACKUP_DIR"], "--refresh-chat",
     "--data-root", os.getenv("CLIMATE_WEB_LISTENING_DATA_DIR", "/pipeline/web-listening"),
+    "--limit", configuration.get("CLIMATE_CHECK_BATCH_SIZE") or "10",
+    "--retry-after-minutes", configuration.get("CLIMATE_CHECK_RETRY_AFTER_MINUTES") or "60",
 ], result_dir=Path("/pipeline")))
 ' "${1:-}" < "$env_file"

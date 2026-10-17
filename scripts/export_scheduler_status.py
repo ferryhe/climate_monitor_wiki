@@ -127,7 +127,7 @@ def project(connection, job_ids, *, now, previous=None):
                               "generated_at": schedule.stamp(now), "jobs": jobs}, now=now)
 
 
-def business_status(*, report_root=None, acquisition_root=None, checks_root=None, public=True):
+def business_status(*, report_root=None, acquisition_root=None, checks_root=None, queue_root=None, publisher_root=None, public=True):
     from climate_delivery.report_review import report_states
     def observed(path):
         if not path or not path.is_file():
@@ -170,6 +170,14 @@ def business_status(*, report_root=None, acquisition_root=None, checks_root=None
             "claim_failures": [claim_projection(json.loads(p.read_text())) for p in sorted((path.parent / "claim-history").glob("*.json"))],
             "activation": observed(path.parent / "activation.json"), "writer_activations": state["writer_activations"]}))
     result["T10"] = {"status": "observed" if reviews else "not_configured", "reviews": [row for _, row in sorted(reviews, key=lambda pair: pair[0])[-3:]]}
+    if acquisition_root:
+        registry_root = Path(acquisition_root) / "registry-review"
+        packet = observed(registry_root / "packet.json")
+        from climate_registry.publication import review_activation_status
+        result["T10"]["publication"] = {"candidate_count": len(packet.get("candidates", [])),
+            "result": review_activation_status(registry_root) if (registry_root / "packet.json").is_file() else {"status": "not_configured"},
+            "activation": observed(Path(queue_root) / "public-refresh.json" if queue_root else None)}
+    result["T11"] = observed(Path(publisher_root) / "public-snapshot.json" if publisher_root else None)
     states = report_states(Path(report_root)) if report_root else []
     summaries = [{"occurrence": state["occurrence"], "revision": state["revision"], "status": state["status"],
         "snapshot_sha256": state["snapshot_sha256"], "approved_at": state.get("approval", {}).get("approved_at"),
@@ -188,14 +196,16 @@ def business_status(*, report_root=None, acquisition_root=None, checks_root=None
 
 
 def project_independent(connection, job_ids, *, now, business, definitions):
-    if set(job_ids) != set(schedule.PIPELINE_SLOTS) or len(set(job_ids.values())) != 10:
-        raise ValueError("ten distinct real Hermes job IDs are required")
+    historical = set(job_ids) == set(schedule.LEGACY_PIPELINE_SLOTS)
+    slots = schedule.LEGACY_PIPELINE_SLOTS if historical else schedule.PIPELINE_SLOTS
+    if set(job_ids) != set(slots) or len(set(job_ids.values())) != len(slots):
+        raise ValueError("eleven distinct real Hermes job IDs are required (ten for historical snapshots)")
     actual = {str(item.get("id") or item.get("job_id")): item for item in definitions}
     jobs = {}
     for role, job_id in job_ids.items():
         if job_id not in actual:
             raise ValueError("configured job ID was not observed in Hermes definitions")
-        occurrence = schedule.pipeline_occurrence(role, now)
+        occurrence = schedule.pipeline_occurrence(role, now, historical=historical)
         row = connection.execute("SELECT status,claimed_at,started_at,finished_at FROM executions WHERE job_id=? "
             "AND julianday(claimed_at)>=julianday(?) AND julianday(claimed_at)<julianday(?) ORDER BY claimed_at DESC LIMIT 1",
             (job_id, occurrence.isoformat(), (occurrence + timedelta(minutes=5)).isoformat())).fetchone()
@@ -208,12 +218,13 @@ def project_independent(connection, job_ids, *, now, business, definitions):
                 if value:
                     block[field] = schedule.stamp(datetime.fromisoformat(value))
         jobs[role] = block
-    return validate_snapshot({"schema_version": schedule.PIPELINE_SCHEMA, "generated_at": schedule.stamp(now),
-        "jobs": jobs, "business": business}, now=now)
+    return validate_snapshot({"schema_version": schedule.LEGACY_PIPELINE_SCHEMA if historical else schedule.PIPELINE_SCHEMA,
+        "generated_at": schedule.stamp(now), "jobs": jobs,
+        "business": {key: value for key, value in business.items() if key in slots}}, now=now)
 
 
 def export_snapshot(executions_db, jobs_map, status_dir, *, clock=None, jobs_file=None,
-    report_root=None, acquisition_root=None, checks_root=None):
+    report_root=None, acquisition_root=None, checks_root=None, queue_root=None, publisher_root=None):
     target = Path(status_dir).resolve()
     if target.is_relative_to(ROOT):
         raise ValueError("status output must be outside the production checkout")
@@ -227,14 +238,15 @@ def export_snapshot(executions_db, jobs_map, status_dir, *, clock=None, jobs_fil
             pass
         with sqlite3.connect(Path(executions_db).resolve().as_uri() + "?mode=ro", uri=True) as db:
             job_ids = json.loads(Path(jobs_map).read_text())
-            if set(job_ids) == set(schedule.PIPELINE_SLOTS):
+            if set(job_ids) in (set(schedule.PIPELINE_SLOTS), set(schedule.LEGACY_PIPELINE_SLOTS)):
                 if not jobs_file:
                     raise ValueError("independent observer requires the actual Hermes jobs file")
                 definitions = json.loads(Path(jobs_file).read_text())
                 if isinstance(definitions, dict):
                     definitions = definitions["jobs"]
                 payload = project_independent(db, job_ids, now=now, definitions=definitions,
-                    business=business_status(report_root=report_root, acquisition_root=acquisition_root, checks_root=checks_root))
+                    business=business_status(report_root=report_root, acquisition_root=acquisition_root, checks_root=checks_root,
+                        queue_root=queue_root, publisher_root=publisher_root))
             else:
                 payload = project(db, job_ids, now=now, previous=previous)
         _atomic_write(snapshot, payload)
@@ -250,9 +262,12 @@ def main():
     parser.add_argument("--report-root", type=Path)
     parser.add_argument("--acquisition-root", type=Path)
     parser.add_argument("--checks-root", type=Path)
+    parser.add_argument("--queue-root", type=Path)
+    parser.add_argument("--publisher-root", type=Path)
     args = parser.parse_args()
     export_snapshot(args.executions_db, args.jobs_map, args.status_dir, jobs_file=args.jobs_file,
-        report_root=args.report_root, acquisition_root=args.acquisition_root, checks_root=args.checks_root)
+        report_root=args.report_root, acquisition_root=args.acquisition_root, checks_root=args.checks_root,
+        queue_root=args.queue_root, publisher_root=args.publisher_root)
     return 0
 
 

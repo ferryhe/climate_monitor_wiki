@@ -179,11 +179,19 @@ and does not create the pending 10:30 Weekly Registry Sync task.
 
 ## Independent task observation
 
-`independent-job-status.v1` has ten real job IDs in `jobs.T1` through `jobs.T10`,
+`independent-job-status.v2` has eleven real job IDs in `jobs.T1` through `jobs.T11`,
 with each role's own UTC occurrence and the observed enabled/no_agent/schedule
 fields. `business` separately stores T1 article and meeting results, T2 rotation
 runs, T3 query outcomes, T10 item/source conclusions, claim failures/activation,
 T4 snapshot/revision, T5 pending/approved/code blockers and T6 recipient states.
+T1 is a five-minute incremental queue and retains its last actual batch outcome
+when a later tick has no eligible work. T11 is the hourly report-independent
+public snapshot publisher; its business result comes from the external
+`public-snapshot.json` receipt. The independent writer's approved revision,
+active generation and failed activation/retry are observed separately using
+`--queue-root`. Candidate-only changes do not count as public activation.
+Historical `independent-job-status.v1` ten-role and biweekly four-slot snapshots
+remain readable with their original occurrence rules.
 Cron `completed` never implies a business PASS or an email delivery. Existing
 freshness handling still applies. Observer export has no notification side
 effect; native jobs remain silent on empty queues and unchanged blockers.

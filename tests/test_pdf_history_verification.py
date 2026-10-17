@@ -395,9 +395,9 @@ def test_public_and_runtime_pdf_passage_merge_retains_verified_information(tmp_p
         assert other["summary"] in files._merged_markdown(public_filename)
 
 
-@pytest.mark.parametrize("instant,runs", [("2026-10-06T09:00:00Z", True), ("2026-10-06T10:00:00Z", False),
-    ("2026-12-06T09:00:00Z", False), ("2026-12-06T10:00:00Z", True)])
-def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, monkeypatch):
+@pytest.mark.parametrize("instant,runs", [("2026-10-06T09:00:00Z", True), ("2026-10-06T10:00:00Z", True),
+    ("2026-12-06T09:00:00Z", True), ("2026-12-06T10:00:00Z", True), ("2026-10-06T17:30:00Z", True)])
+def test_incremental_checker_dispatches_in_both_seasons_and_during_daytime(tmp_path, instant, runs, monkeypatch):
     script = Path(__file__).resolve().parents[1] / "scripts/hermes_job_information_check.sh"
     date = tmp_path / "date"
     date.write_text('#!/bin/sh\nexec /bin/date --date="$CHECK_TEST_TIME" +%H\n')
@@ -413,6 +413,7 @@ def test_daily_checker_runs_at_five_et_in_both_seasons(tmp_path, instant, runs, 
     configuration.write_text("TYPESAFE_API_KEY=test-only-placeholder\n")
     result = subprocess.run(["bash", str(script)], env={**os.environ,
         "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"], "CHECK_TEST_TIME": instant,
+        "PYTHON": sys.executable,
         "CHECK_TEST_PACKET": str(packet), "CLIMATE_WIKI_ENV_FILE": str(configuration)}, capture_output=True, text=True)
     assert result.returncode == 0 and packet.exists() is runs
     if runs:

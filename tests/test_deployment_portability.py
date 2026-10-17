@@ -68,7 +68,7 @@ if args[2] == "ps":
         raise SystemExit(result.returncode)
     sys.stdout.write(os.environ["TEST_PS_IDS"])
     raise SystemExit(int(os.environ["TEST_PS_EXIT"]))
-assert args[2:4] == ["exec", "-i"] and args[5:7] == ["python", "-c"]
+assert args[2:4] == ["exec", "-i"] and args[5:7] == ["/usr/local/bin/python3.12", "-c"]
 data = json.load(open(receipt))
 data.update(exec_args=args, stdin_sha256=hashlib.sha256(sys.stdin.buffer.read()).hexdigest(),
             consumer_sha256=hashlib.sha256(args[7].encode()).hexdigest())
@@ -168,7 +168,7 @@ def test_information_check_uses_complete_compose_selection_and_stdin(tmp_path, s
     assert json.loads(direct.stdout)["name"] == "portable-check"
     assert data["exec_args"][4] == "test-writer-id"
     assert data["stdin_sha256"] == hashlib.sha256(env_file.read_bytes()).hexdigest()
-    assert data["consumer_sha256"] == "2ebd95868f586370c8e9df4ec4b2071f4e5c639c36918875b66ded863b29821a"
+    assert data["consumer_sha256"] == "0821a7ff838445c35aecf4e94ea8884cfb51d233d20e2f995aeb4f55a3745c62"
     assert "stdin-test-only" not in " ".join(data["lookup_args"] + data["exec_args"]) + result.stdout + result.stderr
 
 
@@ -216,7 +216,7 @@ def test_information_check_preserves_required_caller_model_and_raw_stdin(tmp_pat
     data = json.loads(receipt.read_text())
     assert {key for key in environment if key.startswith("PORTABLE_")} <= set(data["removed"])
     assert data["stdin_sha256"] == hashlib.sha256(env_file.read_bytes()).hexdigest()
-    assert data["consumer_sha256"] == "2ebd95868f586370c8e9df4ec4b2071f4e5c639c36918875b66ded863b29821a"
+    assert data["consumer_sha256"] == "0821a7ff838445c35aecf4e94ea8884cfb51d233d20e2f995aeb4f55a3745c62"
     assert "stdin$literal" not in " ".join(data["lookup_args"] + data["exec_args"]) + result.stdout + result.stderr
 
 

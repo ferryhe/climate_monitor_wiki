@@ -131,7 +131,7 @@ def reader_service(runtime_type, reader_home=None):
         entry = installed.directory / installed.entrypoint
         if entry.suffix != '.py':
             raise ValueError('unsupported reader executable; start a fresh run')
-        interpreter = payload['interpreter']
+        interpreter = payload['acquisition_runtime']['interpreter']
         config = entry.parent / 'runtime.json'
         if config.exists():
             interpreter = json.loads(secure_read(config)[0])['python']

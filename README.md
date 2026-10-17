@@ -6,15 +6,24 @@ A structured, interlinked knowledge base on climate risk, natural catastrophe in
 search feed activated knowledge; biweekly PDF generation, native Hermes review
 and delayed exact-file delivery are separate tasks. Website, search and PDF candidates use the same Registry. T1/T10 improve and
 review exact candidate snapshots; automatic final checks publish only unchanged
-approved versions. `is_visible` controls their shared public projection. The target is ten cron jobs plus the existing
-PDF writer. See [the current deployment contract](docs/biweekly-et-deployment.md).
+approved versions. `is_visible` controls their shared public projection. The target is eleven application cron jobs plus the existing
+PDF writer. T1 processes bounded, version-bound changes every five minutes; T11
+synchronizes approved Git snapshots independently of report dates. See
+[the current deployment contract](docs/biweekly-et-deployment.md).
 Repo tests, native identity preflight, isolated real-site rehearsal and production
 cycle evidence are separate gates; this description does not claim a cutover.
 
-**Observed production baseline, 2026-10-08:** the public Registry is schema 19
-and the legacy separate Runtime routing is still deployed. The schema 22
-migration and single-Registry cutover are pending; follow the
+**Historical production baseline, 2026-10-08:** the public Registry was schema 19
+and the legacy separate Runtime routing was still deployed. The schema 22
+migration and single-Registry cutover were pending; follow the
 [deployment runbook](docs/deployment.md).
+
+**Read-only server audit, 2026-10-17:** deployed `main` was `24d25c5`.
+Hermes contained 21 jobs: five enabled, four paused Issue124 slots, and twelve
+disabled Step jobs. The new eleven-role schedule is not installed by this PR.
+Host Climate uses Python 3.12, host Hermes uses 3.11, and system Python is 3.14;
+see [runtime ownership](docs/deployment.md#python-runtime-ownership) for the
+separate container interpreters and upgrade checks.
 
 **Historical audit, 2026-09-08:** the URL-by-URL monitor and editable discovery/relevance
 prompts were implemented and tested in the SSH sandbox. At that audit, production
@@ -254,22 +263,17 @@ flowchart LR
     A["web_listening sites"] --> R
     B["Hermes search + governed extraction"] --> R
     P["Management PDF import"] --> R
-    R["One CLIMATE_REGISTRY_DB<br/>pending candidates + immutable evidence"] --> I["Existing T1/T10<br/>information improvement + native review"]
-    I --> K["Automatic exact snapshot checks<br/>published version + is_visible"]
-    K --> C["Same public projection<br/>API + Wiki + RAG + Chat"]
-    K --> Q["Frozen date-range report"]
-    C --> Q
-    Q --> F["HTML/PDF<br/>existing versioned renderer"]
-    R --> M["Existing serial monitor<br/>article summaries + executive"]
-    M --> S["sources/<br/>report + semantic sidecar"]
-    S --> E["climate_delivery<br/>PDF/manifest + retained email"]
-    S --> G["Isolated publisher<br/>rolling content PR"]
-    K -->|Approved public snapshot| G
-    G --> D["Human review + merge + deploy"]
-    D --> V["Registry report association<br/>exact identity and coverage gates"]
-    H["Management parameters/prompts + Hermes"] -. "independent jobs" .-> K
-    H -.-> M
-    H -.-> Q
+    R["One CLIMATE_REGISTRY_DB<br/>pending candidates + immutable evidence"] --> I["T1: bounded incremental improvement<br/>exact versions + retry backoff"]
+    I --> V["T10: independent native review<br/>complete candidate snapshot"]
+    V --> K["Exact snapshot checks + publication<br/>published pointer + display_* tables"]
+    K --> C["Public API<br/>approved and visible versions"]
+    K --> W["Existing writer<br/>detect public revision + activate generation"]
+    W --> X["Wiki + RAG + Chat<br/>same approved snapshot"]
+    K --> Q["T4: frozen 14-day report<br/>existing HTML/PDF renderer"]
+    Q --> F["T5: independent native PDF review<br/>full text + every page"]
+    F --> E["T6: exact approved PDF delivery<br/>at least 60 minutes after approval"]
+    K --> G["T11: isolated public-snapshot publisher<br/>changed public version only"]
+    G --> D["Rolling PR + human merge<br/>independent Render deployment"]
 ```
 
 `CLIMATE_REGISTRY_DB` selects the only business database. Existing acquisition,
@@ -278,6 +282,14 @@ Public API connections are read-only. All current consumers read immutable
 approved versions through the same projection. A later pending update preserves
 the old public version. `is_visible=false` removes the canonical article across
 all its sources. Archived reports and `sources/` remain immutable.
+
+Unchanged candidate versions do not repeat improvement or native review. A
+changed candidate waits for its own review while the previous approved version
+remains public. The writer refreshes Wiki/Chat only when approved public content
+or visibility changes, records the frozen generation identity, and retains the
+previous active generation if reload fails. Historical report-driven monitor,
+publisher and post-deploy association entrypoints remain compatibility tools;
+they are not part of the new scheduled chain.
 
 The future IAA CSC template module is tracked in [#189](https://github.com/ferryhe/climate_monitor_wiki/issues/189)
 and follows the user's `docs/input` samples; this change keeps current PDF formats.
