@@ -87,8 +87,9 @@ from climate_registry.pdf_pipeline import (
     retry_pdf_batch,
 )
 from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
-from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto
+from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto, _merge_pdf_article_payloads
 from climate_registry.list_projection import RegistryListProjection, category_collection
+from climate_registry.display import DisplayReader, display_snapshot
 from climate_registry.range_reports import (
     RENDERER_VERSION,
     RangeReportError,
@@ -598,45 +599,6 @@ responder.chat_evidence.meeting_view = lambda reader, **kwargs: _effective_meeti
     reader, timezone_name="America/New_York", include_unknown=True, **kwargs)
 
 
-def _merge_pdf_article_payloads(
-    public: dict[str, Any] | None, runtime: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    payloads = [item for item in (public, runtime) if item is not None]
-    if not payloads:
-        return None
-    merged = {**payloads[-1], **payloads[0]}
-    occurrences: dict[str, dict[str, Any]] = {}
-    for payload in payloads:
-        for item in payload.get("occurrences", []):
-            occurrence_id = item["occurrence_id"]
-            occurrences[occurrence_id] = (
-                merge_checked_observation(occurrences[occurrence_id], item)
-                if occurrence_id in occurrences else item
-            )
-    merged["occurrences"] = sorted(
-        deduplicate_pdf_occurrences(list(occurrences.values())),
-        key=lambda item: (item.get("report_date") or "", item.get("page") or 0, item["occurrence_id"]),
-        reverse=True,
-    )
-    dates = [item.get("report_date") for item in merged["occurrences"] if item.get("report_date")]
-    merged["first_seen"] = min(dates) if dates else None
-    merged["last_seen"] = max(dates) if dates else None
-    if runtime and runtime.get("type_safe_classification") is not None:
-        merged["type_safe_classification"] = runtime["type_safe_classification"]
-    if merged["occurrences"]:
-        latest = next((item for item in merged["occurrences"] if not item.get("metadata_only")), None)
-        if latest is None:
-            return merged if public and all(item.get("metadata_only") for item in merged["occurrences"]) else None
-        summary = latest.get("display_summary")
-        if isinstance(summary, str) and summary.strip() and latest.get("display_summary_provenance"):
-            merged["summary"] = summary
-            merged["summary_provenance"] = latest["display_summary_provenance"]
-        else:
-            merged["summary"] = latest.get("summary")
-            merged.pop("summary_provenance", None)
-    return merged
-
-
 def _merge_pdf_calendar_items(
     public_items: list[dict[str, Any]], runtime_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -744,6 +706,14 @@ def _registry_list_projection(selected=None, *, prepare=True):
                 before = _registry_file_stamp(selected.database)
                 with selected._source_connection(manage_wal=True, validate=False) as connection:
                     version = connection.execute("PRAGMA user_version").fetchone()[0]
+                    if version >= 24:
+                        if _REGISTRY_LIST_CACHE is not None:
+                            _REGISTRY_LIST_CACHE[1].close()
+                            _REGISTRY_LIST_CACHE = None
+                        if version != 24:
+                            raise RegistryContractError("unsupported display schema")
+                        yield DisplayReader(connection)
+                        return
                     if version < 21:
                         if _REGISTRY_LIST_CACHE is not None:
                             _REGISTRY_LIST_CACHE[1].close()
@@ -832,6 +802,10 @@ def _pdf_reports(selected=None) -> list[dict[str, Any]]:
 
 def _pdf_report(document_sha256: str, *, include_bytes: bool = False, page: int | None = None, page_size: int = 5) -> dict[str, Any]:
     public_reader = _registry_reader()
+    if not include_bytes:
+        with display_snapshot(public_reader) as stored:
+            if stored is not None:
+                return stored.report(document_sha256, pdf=True, page=page, page_size=page_size)
     with (_registry_list_projection(public_reader, prepare=False) if page is not None else nullcontext(None)) as projection:
         with public_reader.public_snapshot(direct=True):
             with public_reader.connect() as connection:
@@ -990,7 +964,11 @@ def registry_imported_report_pdf(document_sha256: str) -> Response:
 @app.get("/api/registry/reports/{report_date}")
 def registry_report(report_date: str) -> dict:
     def read_report() -> dict:
-        report, identity = _registry_reader().report_with_identity(report_date)
+        reader = _registry_reader()
+        with display_snapshot(reader) as stored:
+            if stored is not None:
+                return stored.report(report_date)
+        report, identity = reader.report_with_identity(report_date)
         artifact = load_report_artifact(
             os.getenv("CLIMATE_DELIVERY_OUTPUT_DIR", "").strip(),
             report_date=identity.report_date,
@@ -1165,6 +1143,10 @@ def registry_pdf_articles(
             raise RegistryQueryError("filter is too long")
         if report_date:
             validate_report_date(report_date)
+        with display_snapshot(_registry_reader()) as stored:
+            if stored is not None:
+                return stored.pdf_articles(page=parsed_page, page_size=parsed_size, query=query,
+                    source=source, report_date=report_date, include_linked=include_linked)
         reader, article_ids, _ = _pdf_registry_view()
         public_items = _registry_reader().pdf_articles_all(include_linked=include_linked)
         runtime_items = [] if article_ids is None else reader.pdf_articles_all(
@@ -1189,6 +1171,9 @@ def registry_pdf_articles(
 def registry_pdf_article(article_id: str) -> dict:
     def query_pdf():
         validate_article_id(article_id)
+        with display_snapshot(_registry_reader()) as stored:
+            if stored is not None:
+                return stored.article(article_id, pdf=True)
         reader, article_ids, _ = _pdf_registry_view()
         if article_ids is None:
             return _merge_pdf_article_payloads(reader.pdf_article(article_id), None)
@@ -1223,6 +1208,9 @@ def registry_pdf_calendar(
         validate_page(parsed_page, parsed_size)
         if len(query) > 200 or len(kind) > 80:
             raise RegistryQueryError("filter is too long")
+        with display_snapshot(_registry_reader()) as stored:
+            if stored is not None:
+                return stored.pdf_calendar(page=parsed_page, page_size=parsed_size, query=query, kind=kind)
         reader, _, calendar_ids = _pdf_registry_view()
         if calendar_ids is None:
             return reader.pdf_calendar_items(page=parsed_page, page_size=parsed_size, query=query, kind=kind)
@@ -1250,7 +1238,12 @@ def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
             raise RegistryQueryError("invalid meeting filter")
         if base_date:
             validate_report_date(base_date)
-        return _effective_meetings(_registry_reader(), page=parsed_page, page_size=parsed_size,
+        reader = _registry_reader()
+        with display_snapshot(reader) as stored:
+            if stored is not None:
+                return stored.meetings(page=parsed_page, page_size=parsed_size, query=query,
+                    verification_status=verification_status, base_date=base_date, include_unknown=include_unknown)
+        return _effective_meetings(reader, page=parsed_page, page_size=parsed_size,
             query=query, verification_status=verification_status, base_date=base_date,
             include_unknown=include_unknown)
     def public_payload():
@@ -1263,6 +1256,9 @@ def registry_meetings(page: str = "1", page_size: str = "20", query: str = "",
 def registry_article(article_id: str) -> dict:
     def query_article():
         selected = _registry_reader()
+        with display_snapshot(selected) as stored:
+            if stored is not None:
+                return stored.article(article_id)
         with selected.public_snapshot(direct=True):
             with selected.connect() as connection:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:

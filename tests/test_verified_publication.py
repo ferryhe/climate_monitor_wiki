@@ -49,6 +49,8 @@ def _approve_all(database):
     with sqlite3.connect(database) as db:
         for sha in stage_entities(db):
             _approve(db, sha, {'basis': 'explicit isolated fixture approval'}, status='accepted_legacy')
+        from climate_registry.display import refresh_display
+        refresh_display(db)
 
 
 def test_frozen_verified_primary_gate_direct_projection_and_pending(tmp_path):

@@ -93,7 +93,7 @@ def test_schema_v12_keeps_meeting_reads_and_rejects_writes(tmp_path):
 
     assert query_events(database, base_date="2026-01-01", timezone_name="UTC")["records"] == []
     assert load_snapshot(database, "snapshot-v12")["records"] == []
-    with pytest.raises(ValueError, match="schema 23 for writes"):
+    with pytest.raises(ValueError, match="schema 24 for writes"):
         freeze_snapshot(database, base_date="2026-01-01", timezone_name="UTC")
 
 
@@ -1023,6 +1023,8 @@ def test_approved_partial_meeting_http_filter_supports_focused_unknown_date_reco
         snapshot = snapshot_entity(connection, "meeting", producer_record["event_id"], include_pending=False)
         candidate_sha = stage_snapshot(connection, snapshot, basis="accepted_legacy")
         _approve(connection, candidate_sha, {"basis": "approved partial date fixture"}, status="accepted_legacy")
+        from climate_registry.display import refresh_display
+        refresh_display(connection)
 
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
     monkeypatch.setattr(api_server, "_pdf_registry_view", lambda: (api_server._registry_reader(), set(), set()))
@@ -1225,8 +1227,8 @@ def test_schema_10_upgrades_to_exact_versioned_meeting_contract():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=10)
     assert validate_registry_contract(connection) == 10
-    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
-    assert validate_registry_contract(connection) == 23
+    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    assert validate_registry_contract(connection) == 24
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"meeting_runs", "meeting_run_items", "climate_events", "climate_event_sources",
             "climate_event_versions", "meeting_snapshots"} <= tables
@@ -1237,8 +1239,8 @@ def test_schema_11_upgrades_existing_meeting_sources_without_losing_evidence(tmp
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=11)
     assert validate_registry_contract(connection) == 11
-    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
-    assert validate_registry_contract(connection) == 23
+    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    assert validate_registry_contract(connection) == 24
     columns = {row[1] for row in connection.execute("PRAGMA table_info(climate_event_sources)")}
     assert {"candidate_ordinal", "interpretation_seq"} <= columns
     connection.close()

@@ -491,6 +491,8 @@ def _apply_candidate(
             from .publication import stage_entities
             with connection:
                 stage_entities(connection)
+                from .display import refresh_display
+                refresh_display(connection)
             connection.commit()
         except Exception:
             connection.rollback()

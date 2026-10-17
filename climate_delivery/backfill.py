@@ -710,6 +710,10 @@ def backfill_reports(
             key: len(result[key])
             for key in ("generated", "skipped", "already_valid", "failed")
         }
-        return result
     finally:
         connection.close()
+    if not dry_run:
+        from climate_registry.display import refresh_artifact_display
+        for item in generated + already_valid:
+            refresh_artifact_display(item["report_date"], output_dir=output, database=registry_path)
+    return result

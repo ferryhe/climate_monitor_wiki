@@ -34,6 +34,8 @@ def _approve_all(connection, **kwargs):
     seed_verified_native_meetings(connection)
     for candidate in stage_entities(connection, **kwargs):
         _approve(connection, candidate, {"basis": "Issue #221 approved fixture"}, status="accepted_legacy")
+    from climate_registry.display import refresh_display
+    refresh_display(connection)
 
 
 def _report_database(tmp_path):
@@ -573,6 +575,8 @@ def test_report_summary_provenance_comes_from_approved_summary_field(tmp_path, m
             evidence=evidence, recorded_at="2026-09-08T00:00:00Z", time_basis="legacy_time_unknown")
         candidate = stage_snapshot(connection, snapshot_entity(connection, "article", identity, source_dir=source))
         _approve(connection, candidate, {"basis": "approved report supplement"}, status="accepted_legacy")
+        from climate_registry.display import refresh_display
+        refresh_display(connection)
 
     reader = RegistryReader(database, repository_root=tmp_path / "application", source_dir=source)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))

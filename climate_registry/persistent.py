@@ -430,11 +430,13 @@ def update_registry(
                     from .publication import stage_entities
                     with connection:
                         stage_entities(connection)
+                        connection.execute("PRAGMA optimize")
+                        from .display import refresh_display
+                        refresh_display(connection)
                     connection.commit()
                 except Exception:
                     connection.rollback()
                     raise
-                connection.execute("PRAGMA optimize")
                 if _validate_database(connection) != LATEST_SCHEMA_VERSION:
                     raise RegistryBuildError("candidate registry did not reach the target schema version")
             finally:

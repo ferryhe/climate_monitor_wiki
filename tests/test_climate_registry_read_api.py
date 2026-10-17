@@ -104,6 +104,8 @@ def _approve_fixture(database: Path, metadata_dir: Path | None = None, source_di
             annotations = load_article_annotations(metadata_dir) if metadata_dir else {}
             for sha in stage_entities(connection, annotations=annotations,source_dir=source_dir):
                 _approve(connection, sha, {"basis": "accepted_test_fixture"}, status="accepted_legacy")
+            from climate_registry.display import refresh_display
+            refresh_display(connection)
 
 
 def _registry(tmp_path: Path, *, target_version: int | None = None) -> Path:
@@ -450,10 +452,10 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     status = client.get("/api/registry/status")
     assert status.status_code == 200
     status_payload = status.json()
-    assert len(status_payload.pop("cache_version")) == 64
+    assert len(status_payload.pop("cache_version")) == 32
     assert status_payload == {
         "available": True,
-        "schema_version": 23,
+        "schema_version": 24,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -487,6 +489,9 @@ def test_current_four_historical_report_details_are_api_readable(
     artifact_root = tmp_path / "artifacts"
     expected_artifacts = _write_retained_artifacts(artifact_root)
     monkeypatch.setenv("CLIMATE_DELIVERY_OUTPUT_DIR", str(artifact_root))
+    from climate_registry.display import refresh_artifact_display
+    for report_date in CURRENT_HISTORICAL_DATES:
+        refresh_artifact_display(report_date, output_dir=artifact_root)
     client = TestClient(app)
 
     listing = client.get("/api/registry/reports?page=1&page_size=100")

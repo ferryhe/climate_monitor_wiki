@@ -107,6 +107,8 @@ def _approve_fixture(database):
         seed_verified_articles(connection)
         for sha in stage_entities(connection, annotations={}):
             _approve(connection, sha, {"basis":"explicit historical date fixture"}, status="accepted_legacy")
+        from climate_registry.display import refresh_display
+        refresh_display(connection)
 
 
 @pytest.mark.parametrize("target", [18, 19, 20])

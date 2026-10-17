@@ -54,6 +54,25 @@ def test_large_candidate_writes_reuse_the_reader_transaction(tmp_path):
     assert result["status"] == "applied" and result["changed"] == 2
 
 
+def test_final_validation_failure_keeps_publication_and_display_unchanged(tmp_path, monkeypatch):
+    from climate_registry.display import refresh_display
+    from climate_registry.schema import apply_migrations
+    database, manifest, _, _ = fixture(tmp_path)
+    with sqlite3.connect(database) as db:
+        apply_migrations(db)
+        refresh_display(db)
+    before = database.read_bytes()
+    validate = RegistryReader._validate_contract
+    def reject_corrected(connection):
+        validate(connection)
+        if connection.execute("SELECT 1 FROM knowledge_versions WHERE source_ref LIKE 'category-correction:%'").fetchone():
+            raise ValueError("final correction validation failed")
+    monkeypatch.setattr(RegistryReader, "_validate_contract", staticmethod(reject_corrected))
+    with pytest.raises(RegistryInputError, match="final correction validation failed"):
+        correct_article_categories(database=database, manifest=manifest, apply=True, backup_dir=tmp_path / "backups")
+    assert database.read_bytes() == before
+
+
 @pytest.mark.parametrize("kind,identity", [("article", "a"), ("pdf_article", "pdf-c")])
 def test_unchanged_restage_retains_categories_but_changed_content_does_not(tmp_path, kind, identity):
     database, manifest, plan, bindings = fixture(tmp_path)

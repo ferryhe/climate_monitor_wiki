@@ -511,7 +511,9 @@ def build_audit_registry(source_dir: Path, database: Path, output_dir: Path) -> 
                 for (identity,) in connection.execute("SELECT article_id FROM articles").fetchall():
                     sha = stage_snapshot(connection, snapshot_entity(connection, "article", identity, include_pending=False), basis="accepted_legacy")
                     _approve(connection, sha, {"basis": "immutable published sources audit"}, status="accepted_legacy")
-            connection.execute("PRAGMA optimize")
+                connection.execute("PRAGMA optimize")
+                from .display import refresh_display
+                refresh_display(connection)
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
             foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
             if integrity != "ok" or foreign_keys:

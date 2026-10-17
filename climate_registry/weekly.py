@@ -1846,6 +1846,8 @@ def weekly_sync(
             from .publication import stage_entities
             with sqlite3.connect(candidate) as connection:
                 stage_entities(connection)
+                from .display import refresh_display
+                refresh_display(connection)
             _validate_candidate(candidate, locked)
             candidate_identity = _candidate_identity(candidate)
             _revalidate_upstream(locked, clock=clock, git_runner=git_runner)

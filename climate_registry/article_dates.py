@@ -277,6 +277,8 @@ def import_observations(
             if write:
                 if counts["inserted"]:
                     stage_entities(connection, article_ids={item["article_id"] for item in items})
+                    from .display import refresh_display
+                    refresh_display(connection)
                 connection.commit()
             return counts
         except Exception:

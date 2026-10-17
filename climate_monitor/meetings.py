@@ -121,6 +121,8 @@ def _registry_writer(database):
             with connection:
                 yield connection
                 stage_entities(connection)
+                from climate_registry.display import refresh_display
+                refresh_display(connection)
         finally:
             connection.close()
 

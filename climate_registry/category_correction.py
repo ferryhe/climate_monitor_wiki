@@ -125,7 +125,9 @@ def correct_article_categories(*, database, manifest, apply=False, backup_dir=No
                         json.dumps(fields, ensure_ascii=False), json.dumps(evidence, sort_keys=True, ensure_ascii=False),
                         None, None, stamp, "Reviewed category-only correction; source content and dates retained"))
             if apply:
+                from .display import refresh_display
                 reader._validate_contract(connection)
+                refresh_display(connection)
                 connection.commit()
             else:
                 connection.rollback()

@@ -315,6 +315,8 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                             )
                     from .publication import stage_entities
                     stage_entities(connection)
+                    from .display import refresh_display
+                    refresh_display(connection)
                     connection.commit()
                 except Exception:
                     connection.rollback()

@@ -748,6 +748,11 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
 def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(weekly_fixture):
     connection = sqlite3.connect(weekly_fixture.database)
     with connection:
+        from climate_registry.schema import DISPLAY_DIRTY_TRIGGERS, DISPLAY_TABLE_COLUMNS
+        for name in DISPLAY_DIRTY_TRIGGERS:
+            connection.execute(f"DROP TRIGGER {name}")
+        for name in DISPLAY_TABLE_COLUMNS:
+            connection.execute(f"DROP TABLE {name}")
         connection.execute("DROP TABLE registry_publication")
         connection.execute("DROP TABLE registry_reviews")
         connection.execute("DROP TABLE registry_candidates")
@@ -874,11 +879,11 @@ def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 23
+    ).status()["schema_version"] == 24
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 23
+    ).status()["schema_version"] == 24
     assert backup.read_bytes() == migrated_bytes
 
 
@@ -1000,7 +1005,7 @@ def test_dry_and_formal_no_op_still_validate_exact_live_membership(
     ]
 
 
-def _approve_weekly_fixture(database,source_dir,metadata_dir):
+def _approve_weekly_fixture(database,source_dir,metadata_dir,artifact_root):
     """Explicit fixture review follows capture; weekly capture itself stays pending."""
     from climate_registry.annotations import load_article_annotations
     from climate_registry.publication import stage_entities,_approve
@@ -1009,6 +1014,8 @@ def _approve_weekly_fixture(database,source_dir,metadata_dir):
         seed_verified_articles(connection)
         for sha in stage_entities(connection,annotations=load_article_annotations(metadata_dir),source_dir=source_dir):
             _approve(connection,sha,{"basis":"explicit captured weekly fixture approval"},status="accepted_legacy")
+        from climate_registry.display import refresh_display
+        refresh_display(connection, output_dir=artifact_root)
 
 
 @pytest.mark.parametrize("use_fallback", (False, True))
@@ -1072,7 +1079,7 @@ def test_full_monday_sync_reload_and_read_only_api_contract(
         )
     weekly_fixture.source.write_bytes(source_bytes)
 
-    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,metadata_dir)
+    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,metadata_dir,weekly_fixture.artifact_root)
     result = {**result, "database_sha256_after": refresh._stream_sha256(weekly_fixture.database)}
     binding_args = SimpleNamespace(date=TARGET, source_dir=weekly_fixture.source_dir,
         database=weekly_fixture.database, artifact_root=weekly_fixture.artifact_root)
@@ -1789,7 +1796,7 @@ def test_twenty_five_article_coverage_promotes_only_when_fully_resolved(
         "partial_with_validated_fallback" if fallback_count else "ok"
     )
 
-    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,metadata_dir)
+    _approve_weekly_fixture(weekly_fixture.database,weekly_fixture.source_dir,metadata_dir,weekly_fixture.artifact_root)
     reader = api_server.RegistryReader(
         weekly_fixture.database,
         repository_root=weekly_fixture.repository,
