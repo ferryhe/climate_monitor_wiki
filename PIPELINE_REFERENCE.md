@@ -43,6 +43,10 @@ revisions, creates Wiki/RAG from the same frozen approved data, and records a
 new active generation only after Chat acknowledges it. Pending candidates do
 not replace approved content. Failed activation remains retryable while the
 previous generation stays active. This adds no service or separate refresh cron.
+T11's scheduled trigger is the last successfully synchronized approved revision,
+so an unchanged display database does not cause Wiki generation or legacy report
+discovery. Outstanding legacy rolling report sources are a cutover blocker,
+preserved for human handling rather than carried into routine snapshot updates.
 
 `climate_registry/acquisition_review.py` adds rotation/material-version receipts
 and review gates around the existing managed runner and sole activation writer.

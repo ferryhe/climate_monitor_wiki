@@ -190,6 +190,9 @@ public snapshot publisher; its business result comes from the external
 `public-snapshot.json` receipt. The independent writer's approved revision,
 active generation and failed activation/retry are observed separately using
 `--queue-root`. Candidate-only changes do not count as public activation.
+The publisher also records its last successfully reconciled public revision;
+scheduled unchanged ticks skip generation without replacing the last actual
+business outcome. Failed attempts do not advance that success marker.
 Historical `independent-job-status.v1` ten-role and biweekly four-slot snapshots
 remain readable with their original occurrence rules.
 Cron `completed` never implies a business PASS or an email delivery. Existing

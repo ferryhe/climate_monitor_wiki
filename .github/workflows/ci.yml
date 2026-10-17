@@ -300,7 +300,14 @@ jobs:
           assert taxonomy.taxonomy_id == DEFAULT_TAXONOMY_ID
           assert taxonomy.sha256 == DEFAULT_TAXONOMY_SHA256
           assert taxonomy.categories and taxonomy.constraints.categories_min_items <= taxonomy.constraints.categories_max_items
-          assert metadata.version("hermes-agent") == "0.20.5"
+          import importlib.util, subprocess, sys
+          assert sys.version_info[:2] == (3, 12)
+          assert importlib.util.find_spec("hermes_cli") is None
+          hermes_runtime = json.loads(subprocess.check_output([
+              "/opt/hermes-venv/bin/python", "-c",
+              "import importlib.metadata as m,json,sys; print(json.dumps({'python':list(sys.version_info[:2]),'hermes':m.version('hermes-agent')}))",
+          ], text=True))
+          assert hermes_runtime == {"python": [3, 11], "hermes": "0.20.5"}
           assert metadata.version("web-listening") == "0.1.0"
           assert __import__("shutil").which("hermes")
           assert int(version_parts[0]) == 4 and int(version_parts[1]) >= 23

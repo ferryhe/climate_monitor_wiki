@@ -63,6 +63,7 @@ def test_acquisition_interpreter_preserves_venv_alias_and_rejects_runtime_drift(
     import shutil
     from climate_monitor import hermes_identity as h
     prefix = tmp_path / 'application-venv'
+    prefix.mkdir(mode=0o700)
     (prefix / 'bin').mkdir(parents=True, mode=0o700)
     binary = prefix / 'python-binary'
     shutil.copyfile(safe_managed_interpreter, binary); binary.chmod(0o700)

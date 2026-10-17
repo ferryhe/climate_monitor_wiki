@@ -461,8 +461,21 @@ public refresh, and a failed activation leaves the previous generation usable.
 
 T11 exports only approved public data, including visibility changes, through
 the existing isolated clone, path allowlist, exact lease and rolling PR. It is
-independent of T4 report dates. An unchanged public snapshot is a no-op; human
-merge and deployment remain separate steps.
+independent of T4 report dates. Scheduled ticks compare the approved public
+revision with the last successful frozen publication result. An unchanged
+revision exits before cloning, exporting, generating Wiki or reading report
+directories; pending candidate changes do not trigger work. Successful
+`published`, `unchanged`, `no-op` and `cleaned` results establish that revision.
+Failed attempts remain retryable and do not advance it. A manual invocation
+without `--scheduled` performs a full reconciliation even at the same revision.
+Human merge and deployment remain separate steps.
+
+Public snapshot mode never imports legacy reports. If the rolling branch still
+contains a report source absent from, or different in, current `main`, it stops
+before changing the branch or PR and requests the one-time legacy cutover.
+Sources with identical blobs already in `main`, including squash-merged ones,
+do not block it. This check does not read the authoritative report directory;
+the legacy manual report publisher retains its original authority checks.
 
 T5/T10 require `no_agent=false`, fresh context and the repository's native
 [T5](monitoring/report-review.md) / [T10](monitoring/acquisition-review.md) prompts. The pre-script is read-only; `wakeAgent=false` skips model startup

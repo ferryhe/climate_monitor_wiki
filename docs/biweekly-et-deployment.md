@@ -331,6 +331,11 @@ publisher for T11's report-independent public snapshot mode. Verify eleven
 actual IDs, prompts/scripts, UTC ticker, `no_agent`, interpreter, enabled state
 and next occurrence before enabling the replacement. The host health report is
 outside this application schedule and remains under host-security ownership.
+Before enabling T11, resolve any legacy report sources still pending in its
+rolling PR through the existing human review process. The public publisher
+blocks sources absent from or different in current `main`, preserves the branch
+and PR, and does not read the old report directory or import pending reports.
+An identical source already merged into `main` also passes after a squash merge.
 
 After replacement coverage and readback are verified, archive the old job
 definitions and remove the twelve disabled Step jobs and four paused Issue124
@@ -346,6 +351,10 @@ and reload failure retains the old active generation until a successful retry.
 Verify T11 can update an approved snapshot and visibility with no current
 Monday report. An empty queue or wrong-offset tick must not overwrite the last
 actual business failure with a green completion.
+Prove an unchanged approved revision, including candidate-only changes, causes
+no scheduled clone, Wiki generation or report-directory lookup. Record the
+successful frozen result's revision even after a no-op; a failed publication
+must remain eligible for retry.
 
 Native T5/T10 must run independent Hermes agent cron sessions. The identity
 bridge preflight proves only current session injection. Real T5 text/page-tool

@@ -168,7 +168,7 @@ def test_information_check_uses_complete_compose_selection_and_stdin(tmp_path, s
     assert json.loads(direct.stdout)["name"] == "portable-check"
     assert data["exec_args"][4] == "test-writer-id"
     assert data["stdin_sha256"] == hashlib.sha256(env_file.read_bytes()).hexdigest()
-    assert data["consumer_sha256"] == "0821a7ff838445c35aecf4e94ea8884cfb51d233d20e2f995aeb4f55a3745c62"
+    assert data["consumer_sha256"] == "75a6ef103c865dace28b9b7ac4829f562a0d5769c4f5b82db31e6fdf382a4f05"
     assert "stdin-test-only" not in " ".join(data["lookup_args"] + data["exec_args"]) + result.stdout + result.stderr
 
 
@@ -216,7 +216,7 @@ def test_information_check_preserves_required_caller_model_and_raw_stdin(tmp_pat
     data = json.loads(receipt.read_text())
     assert {key for key in environment if key.startswith("PORTABLE_")} <= set(data["removed"])
     assert data["stdin_sha256"] == hashlib.sha256(env_file.read_bytes()).hexdigest()
-    assert data["consumer_sha256"] == "0821a7ff838445c35aecf4e94ea8884cfb51d233d20e2f995aeb4f55a3745c62"
+    assert data["consumer_sha256"] == "75a6ef103c865dace28b9b7ac4829f562a0d5769c4f5b82db31e6fdf382a4f05"
     assert "stdin$literal" not in " ".join(data["lookup_args"] + data["exec_args"]) + result.stdout + result.stderr
 
 

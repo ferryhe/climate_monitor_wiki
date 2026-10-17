@@ -71,6 +71,7 @@ def safe_managed_interpreter(tmp_path_factory):
     """One private executable copy; hosted CI Python may itself be mode 0777."""
     import shutil
     import sys
+    import sysconfig
     from pathlib import Path
 
     root = tmp_path_factory.mktemp('managed-python')
@@ -79,6 +80,14 @@ def safe_managed_interpreter(tmp_path_factory):
     binary.parent.mkdir(mode=0o700)
     shutil.copyfile(Path(sys.executable).resolve(), binary)
     binary.chmod(0o700)
+    # Relocated official Python uses $ORIGIN/../lib for its shared runtime.
+    soname = sysconfig.get_config_var('INSTSONAME')
+    if soname:
+        library = Path(sys.base_prefix) / 'lib' / soname
+        if library.is_file():
+            (root / 'lib').mkdir(mode=0o700)
+            target = root / 'lib' / soname
+            shutil.copyfile(library, target); target.chmod(0o600)
     # Preserve stdlib discovery for relocatable Python, including -I -S launches.
     config = root / 'pyvenv.cfg'
     config.write_text('home = ' + str(Path(sys._base_executable).resolve().parent)

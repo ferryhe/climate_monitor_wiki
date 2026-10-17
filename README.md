@@ -290,6 +290,10 @@ or visibility changes, records the frozen generation identity, and retains the
 previous active generation if reload fails. Historical report-driven monitor,
 publisher and post-deploy association entrypoints remain compatibility tools;
 they are not part of the new scheduled chain.
+Scheduled T11 compares only the approved public revision with its last successful
+snapshot result. An unchanged revision does not clone, generate Wiki, or inspect
+report files. Legacy reports still pending in the rolling PR block the new
+publication path for a one-time cutover; the routine path never imports them.
 
 The future IAA CSC template module is tracked in [#189](https://github.com/ferryhe/climate_monitor_wiki/issues/189)
 and follows the user's `docs/input` samples; this change keeps current PDF formats.

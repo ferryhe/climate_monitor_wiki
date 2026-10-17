@@ -2195,6 +2195,111 @@ def test_public_snapshot_mode_needs_no_current_report_and_preserves_publication_
     assert len(list((ledger / "public-snapshot-attempts").glob("*.json"))) == 2
 
 
+@pytest.mark.parametrize("initial_status", ["published", "unchanged", "no-op", "cleaned"])
+def test_scheduled_public_snapshot_only_reconciles_changed_approved_revision(local_remote, tmp_path, monkeypatch, initial_status):
+    from climate_registry.publication import public_revision, set_visibility, stage_entities
+    from climate_monitor import schedule
+    _, production = local_remote
+    database, identity = _approved_history_registry(tmp_path, production)
+    ledger = tmp_path / "ledger"
+    argv = ["publisher", "--production-repo", str(production), "--registry-database", str(database),
+        "--ledger-dir", str(ledger), "--report-dir", str(tmp_path / "missing-reports"), "--public-snapshot"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--scheduled"])
+    monkeypatch.setattr(schedule, "pipeline_due", lambda *args: True)
+    calls, failure = [], [False]
+    def reconcile(**kwargs):
+        calls.append(kwargs)
+        if failure[0]: raise publisher.PublishError("retry this reconciliation")
+        return publisher.PublishResult(initial_status, "a" * 40, public_revision=public_revision(database))
+    monkeypatch.setattr(publisher, "publish", reconcile)
+    for name in ("snapshot_registry", "discover_reports"):
+        monkeypatch.setattr(publisher, name, lambda *args, **kwargs: pytest.fail("unchanged revision did publication work"))
+    monkeypatch.setattr("climate_registry.publication.export_public_snapshot",
+        lambda *args, **kwargs: pytest.fail("unchanged revision exported public content"))
+    assert publisher.main() == 0 and len(calls) == 1
+    receipt = ledger / "public-snapshot.json"
+    original = public_revision(database)
+    assert json.loads(receipt.read_text())["last_successful_public_revision"] == original
+    assert publisher.main() == 0 and len(calls) == 1
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE article_versions SET observed_title='Pending candidate change' WHERE article_id=?", (identity,))
+        stage_entities(db)
+    assert public_revision(database) == original
+    assert publisher.main() == 0 and len(calls) == 1
+    monkeypatch.setattr(sys, "argv", argv)  # Manual invocation reconciles the same revision.
+    assert publisher.main() == 0 and len(calls) == 2
+    monkeypatch.setattr(sys, "argv", [*argv, "--scheduled"])
+    set_visibility(database, "article", identity, False)
+    changed = public_revision(database)
+    failure[0] = True
+    with pytest.raises(publisher.PublishError, match="retry this"):
+        publisher.main()
+    assert len(calls) == 3 and json.loads(receipt.read_text())["last_successful_public_revision"] == original
+    failure[0] = False
+    assert publisher.main() == 0 and len(calls) == 4  # Failed changed revision retries next tick.
+    assert json.loads(receipt.read_text())["last_successful_public_revision"] == changed
+    assert publisher.main() == 0 and len(calls) == 4
+    failure[0] = True
+    set_visibility(database, "article", identity, True)
+    with pytest.raises(publisher.PublishError): publisher.main()
+    set_visibility(database, "article", identity, False)  # Return to an older successful revision.
+    failure[0] = False
+    assert publisher.main() == 0 and len(calls) == 6  # Latest failure cannot be hidden by that success.
+
+
+@pytest.mark.parametrize("authority", ["present", "missing", "unreadable"])
+def test_public_snapshot_blocks_legacy_pending_reports_without_reading_authority(local_remote, tmp_path, authority):
+    remote, production = local_remote
+    database, _ = _approved_history_registry(tmp_path, production)
+    reports = tmp_path / "reports"
+    _report(reports / "climate-monitor-2026-08-10.md", "2026-08-10")
+    runner = FakeGhRunner()
+    _publish(production, reports, runner)
+    before = (_git(remote, "show-ref"), runner.pr_url, runner.create_calls, runner.close_calls,
+        _git(production, "status", "--porcelain"), _git(production, "rev-parse", "HEAD"))
+    if authority == "missing": reports.rename(tmp_path / "retired-reports")
+    elif authority == "unreadable": reports.chmod(0)
+    try:
+        with pytest.raises(publisher.PublishError, match="one-time cutover"):
+            publisher.publish(production_repo=production, report_dir=reports, today=date(2026, 10, 17),
+                registry_database=database, runner=runner, verifier=lambda *_: None, public_snapshot=True)
+    finally:
+        if authority == "unreadable": reports.chmod(0o700)
+    assert (_git(remote, "show-ref"), runner.pr_url, runner.create_calls, runner.close_calls,
+        _git(production, "status", "--porcelain"), _git(production, "rev-parse", "HEAD")) == before
+    assert not _candidate_refs(remote)
+
+
+@pytest.mark.parametrize("same_blob", [True, False])
+@pytest.mark.parametrize("day", ["2026-08-10", "2026-08-11"])
+def test_public_snapshot_rolling_source_must_already_match_main_after_squash(local_remote, tmp_path, same_blob, day):
+    remote, production = local_remote
+    database, _ = _approved_history_registry(tmp_path, production)
+    reports = tmp_path / "reports"
+    _report(reports / f"climate-monitor-{day}.md", day)
+    runner = FakeGhRunner()
+    publisher.publish(production_repo=production, report_dir=reports, today=date.fromisoformat(day),
+        allow_offcycle=day != "2026-08-10", runner=runner, verifier=lambda *_: None)
+    admin = tmp_path / "squash"
+    subprocess.run(["git", "clone", str(remote), str(admin)], check=True, capture_output=True)
+    _git(admin, "config", "user.name", "Test"); _git(admin, "config", "user.email", "test@example.test")
+    _git(admin, "merge", "--squash", "origin/" + publisher.BRANCH)
+    if not same_blob:
+        path = admin / f"sources/climate-monitor-{day}.md"
+        path.write_bytes(path.read_bytes() + b"\nDifferent main source.\n")
+        _git(admin, "add", "sources")
+    _git(admin, "commit", "-m", "human squash merge")
+    _git(admin, "push", "origin", "main")
+    before = _git(remote, "show-ref")
+    kwargs = dict(production_repo=production, report_dir=tmp_path / "missing-reports", today=date(2026, 10, 17),
+        registry_database=database, runner=runner, verifier=lambda *_: None, public_snapshot=True)
+    if same_blob:
+        assert publisher.publish(**kwargs).status == "published"
+    else:
+        with pytest.raises(publisher.PublishError, match="one-time cutover"): publisher.publish(**kwargs)
+        assert _git(remote, "show-ref") == before
+
+
 @pytest.mark.parametrize("use_env",[False,True])
 def test_isolated_publisher_republishes_approved_old_date_hide_and_restore_without_new_sources(local_remote,tmp_path,monkeypatch,use_env):
     from climate_registry.publication import set_visibility

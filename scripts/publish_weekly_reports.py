@@ -371,6 +371,7 @@ def validate_remote_branch(
     report_dir: Path,
     allow_offcycle: bool = False,
     today: date,
+    public_snapshot: bool = False,
 ) -> None:
     added_dates: set[str] = set()
     cutoff = today if allow_offcycle else _current_monday(today)
@@ -380,6 +381,13 @@ def validate_remote_branch(
         )
         if not match:
             continue
+        remote_blob = _output(runner, ["git", "rev-parse", f"{ref}:{path}"], checkout)
+        if public_snapshot:
+            main_blob = runner(["git", "rev-parse", f"origin/main:{path}"], cwd=checkout, check=False)
+            if main_blob.returncode or main_blob.stdout.strip() != remote_blob:
+                raise PublishError(f"legacy rolling report requires one-time cutover before public snapshot publication: {path}")
+            added_dates.add(match.group(1))
+            continue
         report_day = date.fromisoformat(match.group(1))
         if status != "A" or (report_day.weekday() != 0 and not allow_offcycle) or report_day > cutoff:
             raise PublishError(f"invalid rolling source: {status} {path}")
@@ -387,7 +395,6 @@ def validate_remote_branch(
         if not authoritative.is_file():
             raise PublishError(f"authoritative report missing for rolling source: {path}")
         validate_report(authoritative, allow_offcycle=allow_offcycle)
-        remote_blob = _output(runner, ["git", "rev-parse", f"{ref}:{path}"], checkout)
         authoritative_blob = _output(
             runner,
             ["git", "hash-object", "--no-filters", str(authoritative.resolve())],
@@ -903,10 +910,11 @@ def _publish_attempt(
             if public_registry:
                 from climate_registry.publication import public_revision
                 revision = public_revision(registry_snapshot)
-                try:
-                    load_registry_selection_snapshot(registry_snapshot,checkout/"sources")
-                except (RegistryInputError,RegistryBuildError) as exc:
-                    raise PublishError("registry selection baseline is invalid") from exc
+                if not public_snapshot:
+                    try:
+                        load_registry_selection_snapshot(registry_snapshot,checkout/"sources")
+                    except (RegistryInputError,RegistryBuildError) as exc:
+                        raise PublishError("registry selection baseline is invalid") from exc
         if public_snapshot and (not public_registry or revision is None):
             raise PublishError("public snapshot publication requires an approved Registry database")
 
@@ -939,6 +947,7 @@ def _publish_attempt(
                 report_dir=report_dir,
                 today=today,
                 allow_offcycle=allow_offcycle,
+                public_snapshot=public_snapshot,
             )
 
         discovered = [] if public_snapshot else discover_reports(report_dir, today=today, allow_offcycle=allow_offcycle)
@@ -1232,6 +1241,9 @@ def _append_publisher_result(
                 "base_sha": result.base_sha if result else None,
                 "published_sha": result.published_sha if result else None,
                 "pr_url": result.pr_url if result else None}
+            attempt["last_successful_public_revision"] = (result.public_revision
+                if result is not None and result.status in {"published", "unchanged", "no-op", "cleaned"}
+                else previous.get("last_successful_public_revision"))
             attempt["last_actual_outcome"] = ({key: value for key, value in attempt.items()} if attempt["status"] != "skipped"
                 else previous.get("last_actual_outcome"))
             atomic_write_json(directory / "public-snapshot-attempts" / (attempt["attempt_id"] + ".json"), attempt)
@@ -1304,14 +1316,24 @@ def main() -> int:
         registry_database = args.registry_database
         if registry_database is None and os.getenv("CLIMATE_REGISTRY_DB", "").strip():
             registry_database = resolve_database()
-        result = publish(
-            production_repo=args.production_repo,
-            report_dir=args.report_dir,
-            today=run_today,
-            registry_database=registry_database,
-            allow_offcycle=args.allow_offcycle,
-            public_snapshot=args.public_snapshot,
-        )
+        result = None
+        if args.scheduled:
+            from climate_registry.publication import public_revision
+            revision = public_revision(resolve_database(registry_database))
+            receipt = args.ledger_dir / "public-snapshot.json"
+            previous = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+            if (revision is not None and previous.get("status") != "failed"
+                and previous.get("last_successful_public_revision") == revision):
+                result = PublishResult("revision-unchanged", previous["base_sha"], public_revision=revision)
+        if result is None:
+            result = publish(
+                production_repo=args.production_repo,
+                report_dir=args.report_dir,
+                today=run_today,
+                registry_database=registry_database,
+                allow_offcycle=args.allow_offcycle,
+                public_snapshot=args.public_snapshot,
+            )
     except Exception as exc:
         try:
             _append_publisher_result(
