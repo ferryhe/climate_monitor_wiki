@@ -799,7 +799,7 @@ def test_web_activation_binding_precedes_all_task_mutations(tmp_path,monkeypatch
     from climate_registry.publication import digest
     from climate_registry.web_ingest_pipeline import enqueue_web_activation,WebIngestPipeline
     from climate_registry.pdf_pipeline import PdfIntakePipeline
-    from climate_delivery.io import atomic_write_json
+    from climate_delivery.io import atomic_write_json,transaction_lock
     database=tmp_path/"registry.sqlite3"
     with sqlite3.connect(database) as db:apply_migrations(db)
     db.close()
@@ -828,6 +828,8 @@ def test_web_activation_binding_precedes_all_task_mutations(tmp_path,monkeypatch
         assert enqueue(database)["stage"]=="failed"
         assert list((queue/"web").glob("*/retry.json"))
     other=tmp_path/"copy.sqlite3";other.write_bytes(database.read_bytes())
+    # flock keeps its coordination inode after releasing ownership.
+    with transaction_lock(queue,"intake-writer"):pass
     files=lambda:{str(p):p.read_bytes() for root in (queue,runtime) for p in root.rglob("*") if p.is_file()}
     before=files();before_a,before_b=database.read_bytes(),other.read_bytes()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(other))
@@ -857,7 +859,7 @@ def test_historical_web_queue_binding_is_checked_independently_of_schema(tmp_pat
     from climate_registry.acquisition import store_acquisition_batch,freeze_acquisition_for_report
     from climate_registry.web_ingest_pipeline import enqueue_web_activation,read_web_activation_request,WebIngestPipeline
     from climate_registry.pdf_pipeline import PdfIntakePipeline
-    from climate_delivery.io import atomic_write_json
+    from climate_delivery.io import atomic_write_json,transaction_lock
     if version==19:
         database=_historical_selected_acquisition(tmp_path)
     else:
@@ -886,6 +888,8 @@ def test_historical_web_queue_binding_is_checked_independently_of_schema(tmp_pat
     other=tmp_path/"other.sqlite3"
     with sqlite3.connect(other) as db:apply_migrations(db)
     db.close()
+    # flock keeps its coordination inode after releasing ownership.
+    with transaction_lock(queue,"intake-writer"):pass
     files=lambda:{str(p):p.read_bytes() for root in (queue,runtime) for p in root.rglob("*") if p.is_file()}
     before=files();before_a,before_b=database.read_bytes(),other.read_bytes();reloads=[]
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(other))
