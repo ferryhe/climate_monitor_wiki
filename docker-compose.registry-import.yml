@@ -36,6 +36,7 @@ services:
       CLIMATE_PDF_INTAKE_QUEUE_DIR: /pdf-intake-queue
       CLIMATE_PDF_RUNTIME_WIKI_DIR: /runtime/wiki
       CLIMATE_PDF_RELOAD_URL: http://wiki:8501/api/reload
+      CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS: ${CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS:-900}
       CLIMATE_REGISTRY_DB: ${CLIMATE_REGISTRY_DB:-/registry/article-registry.sqlite3}
       CLIMATE_REGISTRY_BACKUP_DIR: /pipeline/pdf-intake-backups
       CLIMATE_ACQUISITION_RUN_DIR: /pipeline/acquisition-runs

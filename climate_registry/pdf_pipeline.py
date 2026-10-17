@@ -207,6 +207,14 @@ def load_active_projection(
         return None, None
     try:
         value = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("active PDF Wiki projection is invalid") from exc
+    return _validated_projection(root, value)
+
+
+def _validated_projection(root: Path, value: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """Validate the same generation identity for active and prepared metadata."""
+    try:
         generation_id = value["generation_id"]
         generation = Path(value["path"]).resolve()
         generations = (root / "generations").resolve()
@@ -465,6 +473,8 @@ class PdfIntakePipeline:
     def _activate(self, metadata: dict[str, Any]) -> None:
         metadata.update(_approved_snapshot_metadata(self.database, Path(metadata["pdf_registry_snapshot"]),
             metadata["pdf_registry_sha256"]))
+        if metadata.get("public_registry_revision") is not None and public_revision(self.database) != metadata["public_registry_revision"]:
+            raise RuntimeError("approved Registry revision changed before activation")
         atomic_write_json(self.pending_pointer, metadata)
         try:
             self.reload_chat(metadata["generation_id"])
@@ -799,6 +809,16 @@ class PdfIntakePipeline:
             revision = public_revision(self.database)
             if (prior_generation is None or metadata is None) and revision is None:
                 return {"status": "not_active", "run_id": run_id}
+            receipt = self.queue_dir / "public-refresh.json"
+            previous = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+            prepared = previous.get("prepared_generation")
+            if revision is not None and prepared and prepared.get("public_registry_revision") == revision:
+                generation, prepared = _validated_projection(self.runtime_wiki_dir, prepared)
+                if load_projection_manifest(generation, prepared) is None:
+                    raise RuntimeError("prepared public generation manifest is missing")
+                approved_projection_snapshot(self.runtime_wiki_dir, prepared, database=self.database)
+                self._activate(prepared)
+                return {"status": "chat_ready", "generation_id": generation.name, "run_id": run_id}
             metadata = metadata or {"batch_id": "public-registry", "batch_created_at": "", "projection_kind": "pdf"}
             manifest = load_projection_manifest(prior_generation, metadata)
             pdf_ids = _active_pdf_occurrence_ids(prior_generation, manifest)
@@ -821,6 +841,10 @@ class PdfIntakePipeline:
                 "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id}
             if metadata.get("projection_kind") != "web":
                 updated.update(registry_snapshot=str(snapshot.resolve()), registry_sha256=digest)
+            if revision is not None:
+                updated.update(_approved_snapshot_metadata(self.database, snapshot, digest))
+                atomic_write_json(receipt, {"batch_id": "public-registry", "stage": "prepared", "chat_ready": False,
+                    "public_registry_revision": revision, "prepared_generation": updated, "observed_at": _now()})
             self._activate(updated)
             return {"status": "chat_ready", "generation_id": generation_id, "run_id": run_id}
 
@@ -851,6 +875,9 @@ class PdfIntakePipeline:
                 "public_registry_revision": revision, "error": type(exc).__name__, "observed_at": _now(),
                 "retry_after": (datetime.fromisoformat(_now()) + timedelta(seconds=60)).isoformat()}
         # The old active pointer remains authoritative until reload acknowledges this generation.
+        current = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+        if current.get("prepared_generation"):
+            result["prepared_generation"] = current["prepared_generation"]
         atomic_write_json(receipt, result)
         return result
 

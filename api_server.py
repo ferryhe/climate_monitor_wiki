@@ -1353,6 +1353,10 @@ def reload_wiki(
                     raise HTTPException(status_code=409, detail="PDF activation was withdrawn.") from exc
                 if current_pending != metadata:
                     raise HTTPException(status_code=409, detail="PDF activation was replaced.")
+                if approved_snapshot is not None:
+                    from climate_registry.publication import public_revision
+                    if public_revision(os.getenv("CLIMATE_REGISTRY_DB", "").strip()) != metadata["public_registry_revision"]:
+                        raise HTTPException(status_code=409, detail="Approved Registry revision changed during reload.")
             elif _selected_pdf_projection()[1] != metadata:
                 raise HTTPException(status_code=409, detail="PDF active generation changed during reload.")
             previous_kb = responder.kb

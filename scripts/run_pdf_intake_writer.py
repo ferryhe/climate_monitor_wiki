@@ -21,12 +21,15 @@ def _required(name: str) -> str:
 
 
 def _reload_chat(expected_generation_id: str) -> None:
+    timeout = int(os.getenv("CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS", "900"))
+    if not 1 <= timeout <= 3600:
+        raise ValueError("CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS must be between 1 and 3600")
     call = request.Request(
         _required("CLIMATE_PDF_RELOAD_URL") + "?" + urlencode({"generation_id": expected_generation_id}),
         method="POST",
         headers={"X-Reload-Token": _required("RELOAD_TOKEN")},
     )
-    with request.urlopen(call, timeout=60) as response:
+    with request.urlopen(call, timeout=timeout) as response:
         if response.status != 200:
             raise RuntimeError(f"Chat reload returned HTTP {response.status}")
         payload = json.load(response)

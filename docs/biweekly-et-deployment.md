@@ -360,6 +360,13 @@ Native T5/T10 must run independent Hermes agent cron sessions. The identity
 bridge preflight proves only current session injection. Real T5 text/page-tool
 inspection, mixed five-source T10 review/recovery, original budget reuse,
 partial activation, governed refusals and proposals require isolated real runs.
+The 2026-10-17 deployment inspection found that host Hermes 0.21.4's Docker
+terminal backend does not inject the current session ContextVar. In multiplex
+mode, `docker_forward_env: [HERMES_SESSION_ID]` alone does not preserve that
+identity. A dedicated Docker profile can provide access to the exact application
+artifacts, but T5/T10 must stay paused until the Hermes tool boundary is repaired
+and a real native session proves its identity, file and page tools. Do not replace
+native evidence with a shell reviewer or select a session from the latest DB row.
 Keep T6 no-send throughout rehearsal; it must never load production SMTP.
 Verify repeated ticks, late approval, unchanged vs substantive checks, old PASS
 invalidations, code blockers, hash changes and unknown delivery.

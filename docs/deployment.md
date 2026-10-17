@@ -846,6 +846,13 @@ use the same file under `CLIMATE_REGISTRY_HOST_DIR` with explicit `--database`.
 T1/T10 improve and review pending items. Final automatic checks publish immutable
 exact snapshots. Pending updates preserve old published versions. The existing
 writer activates approved Wiki generations; no new writer or cron is required.
+The writer waits up to `CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS` for the reload
+handshake (default 900 seconds, configurable from 1 to 3600). A large approved
+corpus may need several minutes while the old generation continues serving.
+`public-refresh.json` retains the complete prepared generation before reload;
+retries and restarts at the same approved revision validate and reuse its frozen
+files. A changed approved revision requires a new snapshot. An activation failure
+preserves the old active generation and does not establish a successful refresh.
 
 #### Single Registry publication migration
 
