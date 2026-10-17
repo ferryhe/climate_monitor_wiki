@@ -457,6 +457,22 @@ def test_failure_manifest_distinguishes_known_and_ambiguous_outcomes(
     assert manifest["delivery"]["recipients"][0] == {"id": "alpha", "status": recipient_status}
 
 
+@pytest.mark.parametrize("error", [DeliveryError("rejected delivery"), LockStateError("ambiguous delivery")])
+def test_failure_manifest_preserves_delivery_error_when_display_refresh_fails(tmp_path, monkeypatch, error):
+    from climate_registry.errors import RegistryLockError
+    configure_env(monkeypatch)
+    report = delivery_report(tmp_path)
+    output = tmp_path / "output"
+    refresh_error = RegistryLockError("Registry writer is busy")
+    monkeypatch.setattr("climate_delivery.pipeline.deliver", lambda *args, **kwargs: (_ for _ in ()).throw(error))
+    monkeypatch.setattr("climate_registry.display.refresh_artifact_display", lambda *args, **kwargs: (_ for _ in ()).throw(refresh_error))
+    with pytest.raises(type(error)) as raised:
+        run_delivery(report, output, tmp_path / "state", config_file(tmp_path))
+    assert raised.value is error
+    assert raised.value.__cause__ is refresh_error
+    assert next(output.rglob("manifest.json")).is_file()
+
+
 @pytest.mark.parametrize(
     ("argv", "exit_code", "kind"),
     [

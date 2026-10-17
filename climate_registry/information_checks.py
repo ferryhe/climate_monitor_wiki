@@ -72,6 +72,8 @@ def _writer(database: Path) -> Iterator[sqlite3.Connection]:
                 from .publication import require_publication_migration
                 require_publication_migration(connection)
                 yield connection
+                from .display import refresh_display
+                refresh_display(connection)
         finally:
             connection.close()
 

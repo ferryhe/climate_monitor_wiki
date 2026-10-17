@@ -63,6 +63,9 @@ def test_report_endpoint_adds_null_fields_without_changing_existing_payload(tmp_
     monkeypatch.delenv("CLIMATE_DELIVERY_OUTPUT_DIR", raising=False)
     client = TestClient(app)
 
+    with sqlite3.connect(database) as connection:
+        from climate_registry.display import refresh_display
+        refresh_display(connection)
     response = client.get(f"/api/registry/reports/{REPORT_DATE}")
 
     assert response.status_code == 200
@@ -102,6 +105,9 @@ def test_report_endpoint_projects_valid_artifact_without_sensitive_manifest_data
 
     monkeypatch.setattr(api_server, "load_report_artifact", tracked_loader)
 
+    with sqlite3.connect(database) as connection:
+        from climate_registry.display import refresh_display
+        refresh_display(connection)
     response = TestClient(app).get(f"/api/registry/reports/{REPORT_DATE}")
 
     assert response.status_code == 200
@@ -125,7 +131,7 @@ def test_report_endpoint_projects_valid_artifact_without_sensitive_manifest_data
     assert REPORT_SHA256 not in response.text
     assert "artifact-only" not in response.text
     assert str(fixture.artifact_dir) not in response.text
-    assert artifact_modes == [False]
+    assert artifact_modes == []
 
 
 def test_pdf_download_revalidates_and_sets_safe_headers(tmp_path, monkeypatch):
@@ -143,6 +149,9 @@ def test_pdf_download_revalidates_and_sets_safe_headers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_server, "load_report_artifact", tracked_loader)
 
+    with sqlite3.connect(database) as connection:
+        from climate_registry.display import refresh_display
+        refresh_display(connection)
     response = TestClient(app).get(f"/api/registry/reports/{REPORT_DATE}/pdf")
 
     assert response.status_code == 200
@@ -161,7 +170,7 @@ def test_pdf_download_revalidates_and_sets_safe_headers(tmp_path, monkeypatch):
     assert fallback.status_code == 200
     assert fallback.json()["report_briefing"] is None
     assert fallback.json()["report_pdf"] is None
-    assert artifact_modes == [True, True, False]
+    assert artifact_modes == [True, True]
 
 
 def test_pdf_download_preserves_registry_query_and_unavailable_semantics(tmp_path, monkeypatch):

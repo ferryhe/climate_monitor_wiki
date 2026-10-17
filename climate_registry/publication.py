@@ -613,7 +613,7 @@ def public_connection(source):
             projection.execute(f'DROP TRIGGER "{name}"')
         projection.execute("PRAGMA foreign_keys=OFF")
         for (table,) in source.execute("SELECT name FROM sqlite_master WHERE type='table'"):
-            if table.startswith("sqlite_") or table in PROJECTED_TABLES or table in {"schema_migrations", "registry_candidates", "registry_reviews", "registry_publication"}:
+            if table.startswith(("sqlite_", "display_")) or table in PROJECTED_TABLES or table in {"schema_migrations", "registry_candidates", "registry_reviews", "registry_publication"}:
                 continue
             cursor = source.execute(f'SELECT * FROM "{table}"')
             if cursor.description:
@@ -858,6 +858,9 @@ def migrate_publication(database, backup_dir, *, apply=False):
             else:
                 backup = None
             if version >= 21:
+                from .display import refresh_display
+                with connection:
+                    refresh_display(connection)
                 return {"status":"migrated","schema_version":SCHEMA_VERSION,"accepted_legacy":0,"manual_materialized":0,
                     "manual_published":0,"staged":0,
                     "core_supplements":connection.execute("SELECT count(*) FROM knowledge_versions WHERE source_ref LIKE 'registry-supplement:%'").fetchone()[0],
@@ -878,6 +881,8 @@ def migrate_publication(database, backup_dir, *, apply=False):
                         sha = stage_snapshot(connection, snapshot_entity(connection, kind, identity, include_pending=False,information_groups=information_groups), basis="accepted_legacy")
                         _approve(connection, sha, {"basis": "pre-migration actual public Registry rows", "previous_schema": version}, status="accepted_legacy")
                         accepted += 1
+                from .display import refresh_display
+                refresh_display(connection)
             with connection:
                 materialized = materialize_manual(connection)
                 staged = stage_entities(connection)
@@ -901,6 +906,7 @@ def migrate_publication(database, backup_dir, *, apply=False):
                         _approve(connection, row[0], {"basis": "owner-approved historical manual supplement",
                             "source_rows": [json.loads(item["evidence_json"])["source_row_sha256"] for item in snapshot["supplements"]]}, status="accepted_legacy")
                         supplemented += 1
+                refresh_display(connection)
             return {"status": "migrated", "schema_version": SCHEMA_VERSION, "accepted_legacy": accepted,
                 "manual_materialized": materialized, "manual_published": supplemented,
                 "staged": len(staged), "core_supplements": connection.execute("SELECT count(*) FROM knowledge_versions WHERE source_ref LIKE 'registry-supplement:%'").fetchone()[0],
@@ -1300,3 +1306,43 @@ def _pdf_report_dto(item):
     value["pages"] = []
     value["report_pdf"] = None  # Git provides metadata, never a PDF download.
     return value
+
+
+def _merge_pdf_article_payloads(
+    public: dict[str, Any] | None, runtime: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    from .information_checks import merge_checked_observation, deduplicate_pdf_occurrences
+    payloads = [item for item in (public, runtime) if item is not None]
+    if not payloads:
+        return None
+    merged = {**payloads[-1], **payloads[0]}
+    occurrences: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for item in payload.get("occurrences", []):
+            occurrence_id = item["occurrence_id"]
+            occurrences[occurrence_id] = (
+                merge_checked_observation(occurrences[occurrence_id], item)
+                if occurrence_id in occurrences else item
+            )
+    merged["occurrences"] = sorted(
+        deduplicate_pdf_occurrences(list(occurrences.values())),
+        key=lambda item: (item.get("report_date") or "", item.get("page") or 0, item["occurrence_id"]),
+        reverse=True,
+    )
+    dates = [item.get("report_date") for item in merged["occurrences"] if item.get("report_date")]
+    merged["first_seen"] = min(dates) if dates else None
+    merged["last_seen"] = max(dates) if dates else None
+    if runtime and runtime.get("type_safe_classification") is not None:
+        merged["type_safe_classification"] = runtime["type_safe_classification"]
+    if merged["occurrences"]:
+        latest = next((item for item in merged["occurrences"] if not item.get("metadata_only")), None)
+        if latest is None:
+            return merged if public and all(item.get("metadata_only") for item in merged["occurrences"]) else None
+        summary = latest.get("display_summary")
+        if isinstance(summary, str) and summary.strip() and latest.get("display_summary_provenance"):
+            merged["summary"] = summary
+            merged["summary_provenance"] = latest["display_summary_provenance"]
+        else:
+            merged["summary"] = latest.get("summary")
+            merged.pop("summary_provenance", None)
+    return merged

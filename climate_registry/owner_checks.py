@@ -272,6 +272,9 @@ def _transaction(database, queue_dir, apply):
                 connection.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
                 with connection:
                     yield connection
+                    if apply:
+                        from .display import refresh_display
+                        refresh_display(connection)
 
 
 def _backup(connection, database, backup_dir):

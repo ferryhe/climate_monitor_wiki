@@ -296,14 +296,14 @@ def test_every_legacy_publication_preview_preserves_file_then_explicitly_migrate
             db.execute("DELETE FROM article_versions");db.execute("DELETE FROM articles");db.execute("DELETE FROM sources")
     before=database.read_bytes();inode=database.stat().st_ino
     result=migrate_publication(database,tmp_path/"backups")
-    assert result=={"status":"dry_run","schema_version":version,"target_version":23,"core_articles":2 if populated else 0,"pdf_articles":0}
+    assert result=={"status":"dry_run","schema_version":version,"target_version":24,"core_articles":2 if populated else 0,"pdf_articles":0}
     assert database.read_bytes()==before and database.stat().st_ino==inode and not (tmp_path/"backups").exists()
     migrated=migrate_publication(database,tmp_path/"backups",apply=True)
     assert migrated["accepted_legacy"]==(2 if populated else 0)
     assert Path(migrated["backup"]).read_bytes()==before
     assert _reader(database,tmp_path).articles()["pagination"]["total"]==0  # Legacy acceptance is not factual verification.
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==23 and db.execute("PRAGMA foreign_key_check").fetchall()==[]
+        assert validate_registry_contract(db)==24 and db.execute("PRAGMA foreign_key_check").fetchall()==[]
         publications=db.execute("SELECT * FROM registry_publication ORDER BY entity_id").fetchall()
     repeated=migrate_publication(database,tmp_path/"backups",apply=True)
     assert repeated["accepted_legacy"]==0 and repeated["manual_materialized"]==0
@@ -1630,7 +1630,10 @@ def test_current_api_startup_and_reload_ignore_retired_projection(tmp_path, runt
             _approve(db, stage_snapshot(db, candidate), {"basis":"explicit exact startup fixture approval"}, status="accepted_legacy")
     else:
         database = tmp_path / "registry.sqlite3"
-        with sqlite3.connect(database) as db: apply_migrations(db)
+        with sqlite3.connect(database) as db:
+            apply_migrations(db)
+            from climate_registry.display import refresh_display
+            refresh_display(db)
     env = dict(os.environ, CLIMATE_REGISTRY_DB=str(database), OPENAI_API_KEY="", RELOAD_TOKEN="startup-fixture-token")
     for name in ("CLIMATE_REGISTRY_STATIC_SNAPSHOT", "CLIMATE_RUNTIME_WIKI_DIR", "CLIMATE_PDF_RUNTIME_WIKI_DIR", "CLIMATE_INTAKE_QUEUE_DIR", "CLIMATE_PDF_INTAKE_QUEUE_DIR"):
         env.pop(name, None)
@@ -3392,10 +3395,10 @@ def test_storage_only_21_to_22_preserves_pdf_rows_packets_and_every_public_point
     before=database.read_bytes()
     public=_reader(database,tmp_path).articles()
     result=migrate_publication(database,tmp_path/"backups",apply=True)
-    assert result["schema_version"]==23 and result["accepted_legacy"]==result["manual_materialized"]==result["manual_published"]==result["staged"]==0
+    assert result["schema_version"]==24 and result["accepted_legacy"]==result["manual_materialized"]==result["manual_published"]==result["staged"]==0
     assert Path(result["backup"]).read_bytes()==before
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==23
+        assert validate_registry_contract(db)==24
         assert db.execute("PRAGMA foreign_key_check").fetchall()==[]
         for table,rows in immutable.items():assert db.execute('SELECT * FROM '+table).fetchall()==rows
         migrated=db.execute("SELECT rowid,* FROM article_check_attempts").fetchall()

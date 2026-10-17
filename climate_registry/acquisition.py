@@ -598,6 +598,8 @@ def store_acquisition_batch(database: str | Path, payload: Mapping[str, Any]) ->
         try:
             with connection:
                 stage_entities(connection)
+                from .display import refresh_display
+                refresh_display(connection)
         finally:
             connection.close()
         return result

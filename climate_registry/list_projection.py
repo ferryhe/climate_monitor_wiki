@@ -50,6 +50,7 @@ class RegistryListProjection:
         self.status_combined = dict(self.status_core, articles=reader.approved_merged_article_count(),
             reports=len(reports), latest_report_date=max((item.get("report_date") or "" for item in reports), default="") or None)
         publishers = {include_pdf: reader.publishers(include_pdf=include_pdf) for include_pdf in (False, True)}
+        self.prefix = ""
         db = sqlite3.connect(":memory:", check_same_thread=False)
         self.connection = db
         try:
@@ -144,7 +145,7 @@ class RegistryListProjection:
             if pillar:
                 appearance.append("x.pillar=?")
                 params.append(pillar)
-            core.append("EXISTS (SELECT 1 FROM appearances x WHERE " + " AND ".join(appearance) + ")")
+            core.append(f"EXISTS (SELECT 1 FROM {self.prefix}appearances x WHERE " + " AND ".join(appearance) + ")")
         where = "(" + " AND ".join(core) + ")"
         if include_pdf and not pillar:
             pdf = ["a.pdf_search IS NOT NULL"]
@@ -155,25 +156,25 @@ class RegistryListProjection:
                 pdf.append("a.pdf_source=?")
                 params.append(source.strip().lower().removeprefix("www."))
             if report_date:
-                pdf.append("EXISTS (SELECT 1 FROM appearances x WHERE x.url=a.url AND x.kind='pdf' AND x.report_date=?)")
+                pdf.append(f"EXISTS (SELECT 1 FROM {self.prefix}appearances x WHERE x.url=a.url AND x.kind='pdf' AND x.report_date=?)")
                 params.append(report_date)
             where += " OR (" + " AND ".join(pdf) + ")"
-        total = self.connection.execute("SELECT COUNT(*) FROM articles a WHERE " + where, params).fetchone()[0]
+        total = self.connection.execute(f"SELECT COUNT(*) FROM {self.prefix}articles a WHERE " + where, params).fetchone()[0]
         column = "merged_card" if include_pdf else "core_card"
         order = "a.last_seen DESC, " + ("" if include_pdf else "a.first_seen DESC, ") + "a.article_id DESC"
-        rows = self.connection.execute(f"SELECT {column} FROM articles a WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+        rows = self.connection.execute(f"SELECT {column} FROM {self.prefix}articles a WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             (*params, page_size, (page - 1) * page_size))
         return {"items": [json.loads(row[0]) for row in rows], "pagination": _pagination(page, page_size, total)}
 
     def reports(self, *, page, page_size, include_pdf=False):
         validate_page(page, page_size)
         where = "" if include_pdf else " WHERE source_kind='registry'"
-        total = self.connection.execute("SELECT COUNT(*) FROM reports" + where).fetchone()[0]
+        total = self.connection.execute(f"SELECT COUNT(*) FROM {self.prefix}reports" + where).fetchone()[0]
         order = "report_date DESC, report_id DESC" if include_pdf else "report_date DESC, report_id"
-        rows = self.connection.execute("SELECT card FROM reports" + where + " ORDER BY " + order + " LIMIT ? OFFSET ?",
+        rows = self.connection.execute(f"SELECT card FROM {self.prefix}reports" + where + " ORDER BY " + order + " LIMIT ? OFFSET ?",
             (page_size, (page - 1) * page_size))
         return {"items": [json.loads(row[0]) for row in rows], "pagination": _pagination(page, page_size, total)}
 
     def publishers(self, *, include_pdf=False):
-        rows = self.connection.execute("SELECT card FROM publishers WHERE include_pdf=? ORDER BY position LIMIT 500", (include_pdf,))
+        rows = self.connection.execute(f"SELECT card FROM {self.prefix}publishers WHERE include_pdf=? ORDER BY position LIMIT 500", (include_pdf,))
         return {**self.publisher_metadata[include_pdf], "items": [json.loads(row[0]) for row in rows]}

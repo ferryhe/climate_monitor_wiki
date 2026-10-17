@@ -4,7 +4,7 @@ import re
 import sqlite3
 from functools import lru_cache
 
-from .schema import MIGRATIONS, apply_migrations
+from .schema import MIGRATIONS, apply_migrations, DISPLAY_INDEX_SQL, DISPLAY_DIRTY_TRIGGERS
 
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
@@ -197,10 +197,27 @@ V21_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
 REQUIRED_TABLE_COLUMNS["pdf_intake_summary_adoptions"] = {"adoption_id", "document_sha256",
     "executive_summary_sha256", "adopted_at", "adoption_basis", "receipt_json"}
 V23_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
+REQUIRED_TABLE_COLUMNS.update({
+    "display_state": {"singleton", "generation", "format_version", "policy", "taxonomy_sha256", "ready", "dirty", "metadata"},
+    "display_articles": {"url", "article_id", "last_seen", "first_seen", "core_card", "merged_card", "core_search", "core_source", "publisher", "source_id", "pdf_search", "pdf_source"},
+    "display_appearances": {"url", "kind", "report_date", "pillar"},
+    "display_reports": {"report_id", "report_date", "source_kind", "card"},
+    "display_publishers": {"include_pdf", "position", "card"},
+    "display_pdf_articles": {"url", "article_id", "last_seen", "source", "search", "standalone", "dto"},
+    "display_pdf_calendar": {"occurrence_id", "start_date", "name", "kind", "search", "dto"},
+    "display_details": {"kind", "identity", "dto"},
+    "display_report_details": {"kind", "identity", "header", "article_count", "module_count", "artifact"},
+    "display_modules": {"kind", "identity", "position", "module_kind", "dto"},
+    "display_meeting_intervals": {"start_date", "include_unknown", "metadata"},
+    "display_meetings": {"start_date", "include_unknown", "position", "verification_status", "search", "dto"},
+})
+V24_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 24:
+        return V24_TABLES
     if version >= 23:
         return V23_TABLES
     if version >= 21:
@@ -549,6 +566,8 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version >= 24:
+        names |= frozenset(DISPLAY_DIRTY_TRIGGERS)
     if version >= 23:
         names |= {"pdf_intake_summary_adoptions_append_only_update", "pdf_intake_summary_adoptions_append_only_delete"}
     if version >= 21:
@@ -610,6 +629,8 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version >= 24:
+        names |= frozenset(DISPLAY_INDEX_SQL)
     if version >= 21:
         names |= {"idx_registry_candidates_entity"}
     if version < 20:

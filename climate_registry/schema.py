@@ -1565,6 +1565,46 @@ MIGRATIONS += ((23, "original_pdf_summary_adoptions", """
 """),)
 
 
+DISPLAY_TABLE_COLUMNS = {
+    "display_state": "singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL, format_version INTEGER NOT NULL, policy TEXT NOT NULL, taxonomy_sha256 TEXT NOT NULL, ready INTEGER NOT NULL, dirty INTEGER NOT NULL, metadata TEXT NOT NULL",
+    "display_articles": "url TEXT PRIMARY KEY, article_id TEXT, last_seen TEXT, first_seen TEXT, core_card TEXT, merged_card TEXT, core_search TEXT, core_source TEXT, publisher TEXT, source_id TEXT, pdf_search TEXT, pdf_source TEXT",
+    "display_appearances": "url TEXT, kind TEXT, report_date TEXT, pillar TEXT",
+    "display_reports": "report_id TEXT, report_date TEXT, source_kind TEXT, card TEXT",
+    "display_publishers": "include_pdf INTEGER, position INTEGER, card TEXT",
+    "display_pdf_articles": "url TEXT PRIMARY KEY, article_id TEXT, last_seen TEXT, source TEXT, search TEXT, standalone INTEGER, dto TEXT NOT NULL",
+    "display_pdf_calendar": "occurrence_id TEXT PRIMARY KEY, start_date TEXT, name TEXT, kind TEXT, search TEXT, dto TEXT NOT NULL",
+    "display_details": "kind TEXT, identity TEXT, dto TEXT NOT NULL, PRIMARY KEY(kind,identity)",
+    "display_report_details": "kind TEXT, identity TEXT, header TEXT NOT NULL, article_count INTEGER NOT NULL, module_count INTEGER NOT NULL, artifact TEXT, PRIMARY KEY(kind,identity)",
+    "display_modules": "kind TEXT, identity TEXT, position INTEGER, module_kind TEXT NOT NULL, dto TEXT NOT NULL, PRIMARY KEY(kind,identity,position)",
+    "display_meeting_intervals": "start_date TEXT, include_unknown INTEGER, metadata TEXT NOT NULL, PRIMARY KEY(start_date,include_unknown)",
+    "display_meetings": "start_date TEXT, include_unknown INTEGER, position INTEGER, verification_status TEXT, search TEXT, dto TEXT NOT NULL, PRIMARY KEY(start_date,include_unknown,position)",
+}
+DISPLAY_INDEX_SQL = {
+    "idx_display_articles_order": "display_articles(last_seen DESC,first_seen DESC,article_id DESC)",
+    "idx_display_appearances": "display_appearances(url,kind,report_date,pillar)",
+    "idx_display_reports": "display_reports(source_kind,report_date DESC,report_id)",
+    "idx_display_publishers": "display_publishers(include_pdf,position)",
+    "idx_display_pdf_articles": "display_pdf_articles(last_seen DESC,article_id DESC)",
+    "idx_display_pdf_calendar": "display_pdf_calendar(start_date,name,occurrence_id)",
+}
+DISPLAY_DIRTY_TRIGGERS = {}
+for _table in ("registry_publication", "reports", "pdf_intake_documents", "pdf_intake_document_sources", "pdf_intake_summary_adoptions"):
+    for _operation in ("INSERT", "UPDATE", "DELETE"):
+        _when = ""
+        if _table == "registry_publication" and _operation == "UPDATE":
+            _when = " WHEN OLD.is_visible IS NOT NEW.is_visible OR OLD.published_candidate_sha256 IS NOT NEW.published_candidate_sha256"
+        elif _table == "registry_publication" and _operation == "INSERT":
+            _when = " WHEN NEW.published_candidate_sha256 IS NOT NULL OR NEW.is_visible=0"
+        DISPLAY_DIRTY_TRIGGERS[f"display_dirty_{_table}_{_operation.lower()}"] = (
+            f"AFTER {_operation} ON {_table}{_when} BEGIN UPDATE display_state SET dirty=1 WHERE singleton=1; END;")
+MIGRATIONS += ((24, "published_display_generation", "\n".join(
+    [f"CREATE TABLE {name} ({columns});" for name, columns in DISPLAY_TABLE_COLUMNS.items()]
+    + ["INSERT INTO display_state VALUES(1,0,1,'','',0,1,'{}');"]
+    + [f"CREATE INDEX {name} ON {columns};" for name, columns in DISPLAY_INDEX_SQL.items()]
+    + [f"CREATE TRIGGER {name} {sql}" for name, sql in DISPLAY_DIRTY_TRIGGERS.items()]
+)),)
+
+
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""
 

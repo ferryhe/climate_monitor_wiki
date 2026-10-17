@@ -318,6 +318,11 @@ def run_delivery(
                         )
                     except Exception as manifest_error:
                         raise original_error.with_traceback(original_error.__traceback__) from manifest_error
+                    from climate_registry.display import refresh_artifact_display
+                    try:
+                        refresh_artifact_display(report.report_date, output_dir=output_dir)
+                    except Exception as refresh_error:
+                        raise original_error.with_traceback(original_error.__traceback__) from refresh_error
                     raise
             atomic_write_json(
                 manifest_path,
@@ -330,6 +335,8 @@ def run_delivery(
                     rendering=rendering,
                 ),
             )
+    from climate_registry.display import refresh_artifact_display
+    refresh_artifact_display(report.report_date, output_dir=output_dir)
     return {
         "status": delivery["status"],
         "report_date": report.report_date,

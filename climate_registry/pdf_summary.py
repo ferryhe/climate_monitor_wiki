@@ -92,6 +92,8 @@ def adopt_pdf_summary(database, document_sha256, expected_summary_sha256, *, act
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.execute("INSERT INTO pdf_intake_summary_adoptions VALUES(?,?,?,?,?,?)",
                     (identity, document_sha256, sha, receipt["adopted_at"], receipt["basis"], json.dumps(receipt, ensure_ascii=False, sort_keys=True)))
+                from .display import refresh_display
+                refresh_display(connection)
             return {"status": "adopted" if apply else "dry_run", "adoption_id": identity,
                 "document_sha256": document_sha256, "executive_summary_sha256": sha,
                 "display_label": ORIGINAL_SUMMARY_LABEL, "fact_verification": "not_asserted"}

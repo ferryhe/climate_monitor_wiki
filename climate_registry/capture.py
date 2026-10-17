@@ -940,7 +940,9 @@ def capture_enrich_registry(
                 from .publication import stage_entities
                 with connection:
                     stage_entities(connection)
-                connection.execute("PRAGMA optimize")
+                    connection.execute("PRAGMA optimize")
+                    from .display import refresh_display
+                    refresh_display(connection)
                 connection.row_factory = None
                 _validate_database(connection)
             finally:
